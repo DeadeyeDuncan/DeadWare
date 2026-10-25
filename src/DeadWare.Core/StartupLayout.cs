@@ -73,7 +73,15 @@ public static class StartupTaskPolicy
     }
     public static bool IsOwned(string xml,string sid)=>Owned(Parse(xml),sid);
     public static string? Executable(string xml)=>Value(Parse(xml)?.Element(Ns+"Actions")?.Element(Ns+"Exec"),"Command");
-    public static bool IsCurrent(string xml,string sid,string executable)
+    private static bool MatchesTriggerUser(string? user,string sid,Func<string,string?>? resolveUserSid)
+    {
+        if(user==sid)return true;
+        if(string.IsNullOrWhiteSpace(user)||resolveUserSid is null)return false;
+        // Registration may canonicalize a trigger SID to DOMAIN\account. Validate its
+        // Windows identity; never assume a matching display/account name implies ownership.
+        try {return resolveUserSid(user)==sid;}catch(Exception) {return false;}
+    }
+    public static bool IsCurrent(string xml,string sid,string executable,Func<string,string?>? resolveUserSid=null)
     {
         var task=Parse(xml);if(!Owned(task,sid))return false;
         var principal=task!.Element(Ns+"Principals")!.Element(Ns+"Principal");
@@ -82,7 +90,7 @@ public static class StartupTaskPolicy
         var actions=task.Element(Ns+"Actions")?.Elements().ToArray();
         var settings=task.Element(Ns+"Settings");
         return Value(principal,"LogonType")=="InteractiveToken"&&Value(principal,"RunLevel")=="HighestAvailable"
-            &&triggers?.Length==1&&triggers[0].Name==Ns+"LogonTrigger"&&Value(triggers[0],"UserId")==sid&&Value(triggers[0],"Enabled")!="false"
+            &&triggers?.Length==1&&triggers[0].Name==Ns+"LogonTrigger"&&MatchesTriggerUser(Value(triggers[0],"UserId"),sid,resolveUserSid)&&Value(triggers[0],"Enabled")!="false"
             &&Value(triggers[0],"ExecutionTimeLimit")=="PT0S"&&Value(triggers[0],"StartBoundary") is null&&Value(triggers[0],"EndBoundary") is null
             &&Value(repetition,"Interval") is null&&Value(repetition,"Duration") is null&&(Value(repetition,"StopAtDurationEnd") is null or "false" or "0")
             &&actions?.Length==1&&actions[0].Name==Ns+"Exec"&&string.Equals(Value(actions[0],"Command"),executable,StringComparison.OrdinalIgnoreCase)

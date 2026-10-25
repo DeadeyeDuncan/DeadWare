@@ -103,4 +103,32 @@ public class StartupLayoutTests
         xml.Descendants(n+"LogonTrigger").Single().AddFirst(new XElement(n+"Repetition",new XElement(n+"StopAtDurationEnd","false")));
         Assert.True(StartupTaskPolicy.IsCurrent(xml.ToString(),Sid,@"C:\Apps\DeadWare.exe"));
     }
+    [Theory]
+    [InlineData(Sid,true)]
+    [InlineData("S-1-5-21-123-456-789-1002",false)]
+    [InlineData(null,false)]
+    public void NamedLogonTriggerMustResolveToExpectedSid(string? resolvedSid,bool expected)
+    {
+        var xml=XDocument.Parse(StartupTaskPolicy.CreateXml(Sid,@"C:\Apps\DeadWare.exe"));
+        XNamespace n="http://schemas.microsoft.com/windows/2004/02/mit/task";
+        xml.Descendants(n+"LogonTrigger").Single().Element(n+"UserId")!.Value=@"MACHINE\alice";
+        string? Resolve(string name)=>name==@"MACHINE\alice"?resolvedSid:null;
+        Assert.Equal(expected,StartupTaskPolicy.IsCurrent(xml.ToString(),Sid,@"C:\Apps\DeadWare.exe",Resolve));
+    }
+    [Fact] public void NamedTriggerFailsClosedWithoutResolverOrWhenResolutionThrows()
+    {
+        var xml=XDocument.Parse(StartupTaskPolicy.CreateXml(Sid,@"C:\Apps\DeadWare.exe"));
+        XNamespace n="http://schemas.microsoft.com/windows/2004/02/mit/task";
+        xml.Descendants(n+"LogonTrigger").Single().Element(n+"UserId")!.Value=@"MACHINE\alice";
+        Assert.False(StartupTaskPolicy.IsCurrent(xml.ToString(),Sid,@"C:\Apps\DeadWare.exe"));
+        Assert.False(StartupTaskPolicy.IsCurrent(xml.ToString(),Sid,@"C:\Apps\DeadWare.exe",_=>throw new InvalidOperationException("Identity resolution unavailable.")));
+    }
+    [Fact] public void AccountNameResolutionDoesNotWeakenPrincipalOwnership()
+    {
+        var xml=XDocument.Parse(StartupTaskPolicy.CreateXml(Sid,@"C:\Apps\DeadWare.exe"));
+        XNamespace n="http://schemas.microsoft.com/windows/2004/02/mit/task";
+        xml.Descendants(n+"Principal").Single().Element(n+"UserId")!.Value=@"MACHINE\alice";
+        Assert.False(StartupTaskPolicy.IsOwned(xml.ToString(),Sid));
+        Assert.False(StartupTaskPolicy.IsCurrent(xml.ToString(),Sid,@"C:\Apps\DeadWare.exe",_=>Sid));
+    }
 }

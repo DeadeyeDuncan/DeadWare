@@ -18,6 +18,7 @@ internal static class StartupRegistration
     public static string CurrentSid {get {using var identity=WindowsIdentity.GetCurrent();return identity.User?.Value??throw new InvalidOperationException("Windows user identity unavailable.");}}
     public static bool IsAdministrator {get {using var identity=WindowsIdentity.GetCurrent();return new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator);}}
     public static string Executable=>Environment.ProcessPath??throw new InvalidOperationException("Executable path unavailable.");
+    private static string ResolveUserSid(string account)=>((SecurityIdentifier)new NTAccount(account).Translate(typeof(SecurityIdentifier))).Value;
     private static void Release(object? value) {if(value is not null&&Marshal.IsComObject(value))Marshal.FinalReleaseComObject(value);}
     private static object Connect()
     {
@@ -38,7 +39,7 @@ internal static class StartupRegistration
             service=Connect();folder=((dynamic)service).GetFolder("\\");task=GetTask(folder,name);
             if(task is null)return new(name,false,false,false,false,null,"Off — DeadWare will not start at sign-in.");
             string xml=((dynamic)task).Xml;bool owned=StartupTaskPolicy.IsOwned(xml,sid),enabled=((dynamic)task).Enabled;
-            string? executable=StartupTaskPolicy.Executable(xml);bool repair=owned&&!StartupTaskPolicy.IsCurrent(xml,sid,Executable);
+            string? executable=StartupTaskPolicy.Executable(xml);bool repair=owned&&!StartupTaskPolicy.IsCurrent(xml,sid,Executable,ResolveUserSid);
             string message=!owned?"A task with this name belongs to something else. DeadWare will not change it.":repair?"Startup needs repair: its executable location or task settings differ. Choose Repair startup to use this copy of DeadWare.":enabled?"On — starts as administrator when you sign in.":"Off — the registered startup task is disabled.";
             return new(name,true,owned,enabled,repair,executable,message,TaskXml:xml);
         }
