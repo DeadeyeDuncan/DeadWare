@@ -6,9 +6,13 @@ using DeadWare.Core;
 namespace DeadWare.App;
 public partial class App : Application
 {
+    private GuiInstance? instance;
+    private UiSession? session;
     protected override async void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
+        if(await StartupRegistration.HandleCommandLineAsync(e.Args) is int configurationExit)
+        {Shutdown(configurationExit);return;}
         if(e.Args.Contains("--diagnose"))
         {
             Shutdown(await DiagnoseAsync(e.Args));return;
@@ -16,12 +20,24 @@ public partial class App : Application
         Theme.Apply("Midnight");
         try
         {
-            var session=new UiSession();
+            await GuiInstance.WaitForPreviousAsync(e.Args);
+            instance=new GuiInstance();
+            if(!instance.Acquired)
+            {
+                if(!e.Args.Contains("--startup"))MessageBox.Show("DeadWare is already running in this Windows session. Use its open main window or taskbar button.","DeadWare",MessageBoxButton.OK,MessageBoxImage.Information);
+                Shutdown();return;
+            }
+            session=new UiSession();
             Theme.Apply(session.Settings.Theme);
             var main=new MainWindow(session);MainWindow=main;main.Show();session.Start();
         }
         catch(Exception ex) {MessageBox.Show($"DeadWare could not start: {ex.Message}","DeadWare",MessageBoxButton.OK,MessageBoxImage.Error);Shutdown(1);}
     }
+    protected override void OnSessionEnding(SessionEndingCancelEventArgs e)
+    {
+        session?.SaveForSessionEnding();base.OnSessionEnding(e);
+    }
+    protected override void OnExit(ExitEventArgs e) {instance?.Dispose();base.OnExit(e);}
     private static async Task<int> DiagnoseAsync(string[] args)
     {
         Collector? collector=null;string? output=null;int exit=0;string status="Starting";

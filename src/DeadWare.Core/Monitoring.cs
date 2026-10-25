@@ -105,6 +105,8 @@ public record WindowPlacement(double Left,double Top,double Width,double Height,
 }
 public sealed class UserSettings
 {
+    public bool RestoreOpenWindows {get;set;}=true;
+    public List<string> OpenWindows {get;set;}=new();
     public string WindowPlacementFormat {get;set;}=WindowCoordinates.Format;
     public bool ExtendedSensors {get;set;}
     public string Theme {get;set;}="Midnight";
@@ -125,6 +127,7 @@ public static class SettingsCodec
             bool invalid=s.HistorySeconds is not (60 or 300 or 900) || s.Windows is null;
             if(s.HistorySeconds is not (60 or 300 or 900)) s.HistorySeconds=60;
             s.Windows??=new();
+            s.OpenWindows=DetachedWindowState.Normalize(s.OpenWindows);
             s.Windows=s.Windows.Where(p=>p.Value is not null).Take(16).ToDictionary(p=>p.Key,p=>p.Value);
             using var document=JsonDocument.Parse(json);
             bool legacyPlacement=!document.RootElement.TryGetProperty(nameof(UserSettings.WindowPlacementFormat),out _)||s.WindowPlacementFormat!=WindowCoordinates.Format;

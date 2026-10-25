@@ -14,8 +14,12 @@ public sealed class MainWindow : Window
     private readonly TextBox appSearch=new(){Width=250},sensorSearch=new(){Width=280};
     private readonly DataGrid apps=new(),sensors=new();
     private readonly Dictionary<string,FrameworkElement> pages=new();
+    private readonly CheckBox startup=new() {Content="Start with Windows (administrator)",Margin=new Thickness(0,22,0,8)};
+    private readonly TextBlock startupStatus=Ui.Text("Startup status is checked when this page opens.",12,"Muted"),startupResult=Ui.Text("",12,"Warning");
+    private Button startupRepair=null!,startupDisable=null!,startupRefresh=null!;
     private string page="overview",gpuSignature="";
     private bool syncingGpu,closing,closed;
+    private bool syncingStartup,startupBusy;
     public MainWindow(UiSession session)
     {
         this.session=session;Title="DeadWare";MinWidth=900;MinHeight=640;Ui.Icon(this);session.Place(this,"main",1220,900);
@@ -69,17 +73,49 @@ public sealed class MainWindow : Window
         stack.Children.Add(Ui.Text("Your readings, wherever you need them",20));var intro=Ui.Text("Open any graph in its own resizable native window. Choose Always on top to keep it visible while you work. All windows share the same readings, selected GPU, history range and theme.",14,"Muted");intro.Margin=new(0,12,0,24);stack.Children.Add(intro);
         foreach(var kind in new[]{"cpu","gpu","cputemp","gputemp","network"}){var key=kind;var button=Ui.Button("↗  "+Ui.Title(kind),()=>session.OpenDetached(key));button.HorizontalAlignment=HorizontalAlignment.Left;button.MinWidth=240;button.Margin=new(0,4,0,4);stack.Children.Add(button);}
         var open=Ui.Button("↗  Compact desktop widget",()=>session.OpenDetached("widget"));open.HorizontalAlignment=HorizontalAlignment.Left;open.MinWidth=240;open.Margin=new(0,20,0,4);stack.Children.Add(open);
-        var saved=Ui.Text("Window positions, sizes and topmost choices are remembered. Closing the main window also closes its graphs and stops collection.",12,"Muted");saved.Margin=new(0,20,0,0);stack.Children.Add(saved);
+        var saved=Ui.Text("Positions, sizes and Always on top choices are saved as you work. Closing the main window saves the windows left open for next time and stops collection. Close an individual graph or widget to leave it closed next time.",12,"Muted");saved.Margin=new(0,20,0,0);stack.Children.Add(saved);
+        var restore=new CheckBox {Content="Reopen graphs and widget from the previous session",IsChecked=session.Settings.RestoreOpenWindows,Margin=new Thickness(0,18,0,8)};
+        restore.Checked+=(_,_)=>session.SetRestoreOpenWindows(true);restore.Unchecked+=(_,_)=>session.SetRestoreOpenWindows(false);stack.Children.Add(restore);
+        startup.Checked+=async (_,_)=>{if(!syncingStartup)await ChangeStartupAsync(true);};
+        startup.Unchecked+=async (_,_)=>{if(!syncingStartup)await ChangeStartupAsync(false);};
+        stack.Children.Add(startup);stack.Children.Add(startupStatus);startupResult.Margin=new(0,8,0,4);stack.Children.Add(startupResult);
+        startupRepair=Ui.Button("Enable / repair startup",()=>_ = ChangeStartupAsync(true));
+        startupDisable=Ui.Button("Disable startup",()=>_ = ChangeStartupAsync(false));
+        startupRefresh=Ui.Button("Refresh status",()=>_ = RefreshStartupAsync());
+        var startupButtons=new WrapPanel();startupButtons.Children.Add(startupRepair);startupButtons.Children.Add(startupDisable);startupButtons.Children.Add(startupRefresh);stack.Children.Add(startupButtons);
+        stack.Children.Add(Ui.Text("Windows asks for administrator approval when changing startup. This applies to your Windows account and this executable location. After moving DeadWare, repair startup from the new location. The drive must be available when you sign in.",12,"Muted"));
         var extended=new CheckBox {Content="Extended sensors (may affect responsiveness)",IsChecked=session.Settings.ExtendedSensors,Margin=new Thickness(0,22,0,8)};
         extended.Checked+=(_,_)=>session.SetExtendedSensors(true);extended.Unchecked+=(_,_)=>session.SetExtendedSensors(false);stack.Children.Add(extended);
         stack.Children.Add(Ui.Text("Includes motherboard, controller, storage and memory sensors. Off by default. Restart DeadWare after changing this setting.",12,"Muted"));
-        return stack;
+        return new ScrollViewer {Content=stack,VerticalScrollBarVisibility=ScrollBarVisibility.Auto,HorizontalScrollBarVisibility=ScrollBarVisibility.Disabled};
+    }
+    private void SetStartupBusy(bool busy)
+    {
+        startupBusy=busy;startup.IsEnabled=!busy;startupRepair.IsEnabled=!busy;startupDisable.IsEnabled=!busy;startupRefresh.IsEnabled=!busy;
+    }
+    private void ShowStartupStatus(StartupRegistrationStatus registration)
+    {
+        syncingStartup=true;startup.IsChecked=registration.Error is null?registration.Ready:null;syncingStartup=false;
+        startupStatus.Text=registration.Message+(registration.Executable is null?"":"\nRegistered executable: "+registration.Executable)+(registration.Error is null?"":"\n"+registration.Error);
+        bool ownedOrUnknown=!registration.Registered||registration.Owned;
+        startup.IsEnabled=ownedOrUnknown;startupRepair.IsEnabled=ownedOrUnknown;startupDisable.IsEnabled=ownedOrUnknown;
+    }
+    private async Task RefreshStartupAsync()
+    {
+        if(startupBusy)return;SetStartupBusy(true);startupResult.Text="";
+        var registration=await Task.Run(StartupRegistration.Query);SetStartupBusy(false);ShowStartupStatus(registration);
+    }
+    private async Task ChangeStartupAsync(bool enabled)
+    {
+        if(startupBusy)return;SetStartupBusy(true);startupResult.Text="Waiting for Windows administrator approval…";
+        var result=await StartupRegistration.ConfigureAsync(enabled);SetStartupBusy(false);ShowStartupStatus(result.Registration);startupResult.Text=result.Message;
     }
     private static void Column(DataGrid table,string title,string binding,double weight)=>table.Columns.Add(new DataGridTextColumn {Header=title,Binding=new Binding(binding),Width=new DataGridLength(weight,DataGridLengthUnitType.Star)});
     private void Navigate(string destination)
     {
         page=destination;content.Content=pages[destination];heading.Text=destination switch {"network"=>"Your network, explained","sensors"=>"Hardware sensors","desktop"=>"Make room for your work",_=>"System overview"};
         subtitle.Text=destination switch {"network"=>"See which applications are sending and receiving data.","sensors"=>"Live values and statistics over the selected history range.","desktop"=>"A few useful numbers, wherever you need them.",_=>"The numbers you care about. Room to breathe."};Refresh();
+        if(destination=="desktop")_ = RefreshStartupAsync();
     }
     private void Refresh()
     {
