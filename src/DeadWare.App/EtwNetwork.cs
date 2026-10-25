@@ -7,6 +7,10 @@ namespace DeadWare.App;
 /// <summary>Captures only process lifecycle and TCP/UDP byte counts. No payloads, endpoints, file or disk providers.</summary>
 internal sealed class EtwNetwork : IAsyncDisposable
 {
+    private readonly bool captureDiagnostics;
+    private DiagnosticFailure? failure;
+    public DiagnosticFailure? Failure=>Volatile.Read(ref failure);
+    public EtwNetwork(bool captureDiagnostics=false) {this.captureDiagnostics=captureDiagnostics;}
     private readonly ProcessAttribution attribution=new(ResolveProcess);
     private readonly object lifecycleGate=new();
     private TraceEventSession? session;
@@ -24,10 +28,15 @@ internal sealed class EtwNetwork : IAsyncDisposable
         {
         if(stopping)return;
         if(!Collector.IsElevated) {status="Per-app traffic unavailable: administrator access is required. Interface totals still work.";return;}
+        string phase="Create session";
         try
         {
             // Unique name prevents this app from attaching to or stopping another tool's trace.
             session=new TraceEventSession($"DeadWare-{Environment.ProcessId}-{Guid.NewGuid():N}") {StopOnDispose=true};
+            // Source access starts a regular named session. Kernel mode must be configured first.
+            phase="Enable kernel provider";
+            session.EnableKernelProvider(KernelTraceEventParser.Keywords.NetworkTCPIP|KernelTraceEventParser.Keywords.Process);
+            phase="Attach source callbacks";
             var parser=session.Source.Kernel;
             parser.ProcessStart+=data=>attribution.Refresh(data.ProcessID);
             parser.ProcessDCStart+=data=>attribution.Refresh(data.ProcessID);
@@ -40,19 +49,22 @@ internal sealed class EtwNetwork : IAsyncDisposable
             parser.UdpIpSend+=data=>Record(data.ProcessID,data.TimeStamp.ToUniversalTime().Ticks,data.size,true);
             parser.UdpIpRecvIPV6+=data=>Record(data.ProcessID,data.TimeStamp.ToUniversalTime().Ticks,data.size,false);
             parser.UdpIpSendIPV6+=data=>Record(data.ProcessID,data.TimeStamp.ToUniversalTime().Ticks,data.size,true);
-            session.EnableKernelProvider(KernelTraceEventParser.Keywords.NetworkTCPIP|KernelTraceEventParser.Keywords.Process);
             status="Per-app accounting active · TCP/UDP · IPv4/IPv6 · session totals are estimates";
             active=true;
             processing=Task.Run(()=>
             {
                 try {session.Source.Process();if(!stopping) status="Per-app ETW collection stopped unexpectedly. Restart DeadWare to retry.";}
-                catch(Exception e) {if(!stopping) status=$"Per-app ETW collection failed ({e.GetType().Name}). Restart DeadWare to retry.";}
+                catch(Exception e)
+                {
+                    if(!stopping){failure=DiagnosticFailure.Capture("Process event stream",e,captureDiagnostics);status=$"Per-app ETW collection failed ({e.GetType().Name}). Restart DeadWare to retry.";}
+                }
                 finally {active=false;}
             });
         }
         catch(Exception e)
         {
-            status=$"Per-app ETW unavailable ({e.GetType().Name}). Access or tracing policy may block this session.";
+            failure=DiagnosticFailure.Capture(phase,e,captureDiagnostics);
+            status=$"Per-app ETW unavailable ({e.GetType().Name}). Local diagnostics can identify the startup failure.";
             session?.Dispose();session=null;
         }
         }
@@ -74,7 +86,7 @@ internal sealed class EtwNetwork : IAsyncDisposable
                 if(lost>0) status=$"ETW lost {lost:N0} events · attribution reset; totals cover activity since the latest loss";
                 else if(Interlocked.Read(ref unattributed)>0) status=$"ETW active · {Interlocked.Read(ref unattributed):N0} events could not be attributed · per-app totals are incomplete";
             }
-            catch(Exception e) {status=$"ETW status unavailable ({e.GetType().Name})";}
+            catch(Exception e) {failure=DiagnosticFailure.Capture("Query event loss",e,captureDiagnostics);status=$"ETW status unavailable ({e.GetType().Name})";}
         }
         // A lost lifecycle event can otherwise leave an exited/reused PID cached indefinitely.
         if(now-lastReconciliation>=5) {attribution.Reconcile();lastReconciliation=now;}

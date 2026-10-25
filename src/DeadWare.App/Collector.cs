@@ -7,7 +7,7 @@ using LibreHardwareMonitor.Hardware;
 
 namespace DeadWare.App;
 public record SensorReading(string Id,string Hardware,string Name,string Unit,double? Value);
-public record Reading(Snapshot Sample,IReadOnlyList<Device> Gpus,IReadOnlyList<SensorReading> Sensors,IReadOnlyList<ProcessTraffic> Processes,string CpuName,string HardwareStatus,string NetworkStatus,string EtwStatus,bool Elevated,IReadOnlyDictionary<string,double>? ProviderMilliseconds=null);
+public record Reading(Snapshot Sample,IReadOnlyList<Device> Gpus,IReadOnlyList<SensorReading> Sensors,IReadOnlyList<ProcessTraffic> Processes,string CpuName,string HardwareStatus,string NetworkStatus,string EtwStatus,bool Elevated,IReadOnlyDictionary<string,double>? ProviderMilliseconds=null,DiagnosticFailure? EtwFailure=null);
 
 /// <summary>One serial background loop owns all hardware updates; windows only read immutable publications.</summary>
 public sealed class Collector : IAsyncDisposable
@@ -16,11 +16,11 @@ public sealed class Collector : IAsyncDisposable
     private volatile string stage="Not started";
     public string Stage=>stage;
     public Task Completion=>worker??Task.CompletedTask;
-    public Collector(CollectorOptions? options=null) {this.options=options??new();}
+    public Collector(CollectorOptions? options=null) {this.options=options??new();etw=new(this.options.DiagnosticTimings);}
     private readonly CancellationTokenSource cancellation=new();
     private readonly Stopwatch clock=Stopwatch.StartNew();
     private readonly WindowsCounters windows=new();
-    private readonly EtwNetwork etw=new();
+    private readonly EtwNetwork etw;
     private bool lowLevelAvailable;
     private Task? worker;
     private Reading? latest;
@@ -105,13 +105,13 @@ public sealed class Collector : IAsyncDisposable
                     if(timings is not null){timings["etw/snapshot"]=Stopwatch.GetElapsedTime(providerStarted).TotalMilliseconds;timings["poll/total"]=(clock.Elapsed.TotalSeconds-started)*1000;}
                     double elapsed=clock.Elapsed.TotalSeconds-started;
                     if(elapsed>=1)hardwareStatus+=$" · Slow sample ({elapsed:0.0}s); pausing before the next poll.";
-                    var reading=new Reading(sample,gpus.AsReadOnly(),sensors.AsReadOnly(),processes,cpuName,hardwareStatus,network.Status,EtwStatus,IsElevated,timings);
+                    var reading=new Reading(sample,gpus.AsReadOnly(),sensors.AsReadOnly(),processes,cpuName,hardwareStatus,network.Status,EtwStatus,IsElevated,timings,etw.Failure);
                     History.Add(sample);Volatile.Write(ref latest,reading);SampleAvailable?.Invoke(reading);
                 }
                 catch(Exception e)
                 {
                     var sample=new Snapshot(DateTimeOffset.Now,clock.Elapsed.TotalSeconds,new Dictionary<string,double?>());
-                    var failed=new Reading(sample,Latest?.Gpus??[],[],[],Latest?.CpuName??"Processor",$"Collection failed ({e.GetType().Name}); retrying next second.","Interface readings unavailable",EtwStatus,IsElevated);
+                    var failed=new Reading(sample,Latest?.Gpus??[],[],[],Latest?.CpuName??"Processor",$"Collection failed ({e.GetType().Name}); retrying next second.","Interface readings unavailable",EtwStatus,IsElevated,EtwFailure:etw.Failure);
                     History.Add(sample);Volatile.Write(ref latest,failed);SampleAvailable?.Invoke(failed);
                 }
                 stage="Idle between samples";
@@ -122,7 +122,7 @@ public sealed class Collector : IAsyncDisposable
         catch(Exception e)
         {
             var sample=new Snapshot(DateTimeOffset.Now,clock.Elapsed.TotalSeconds,new Dictionary<string,double?>());
-            var failed=new Reading(sample,[],[],[],"Processor",$"Collector stopped ({e.GetType().Name}). Restart DeadWare to retry.","Interface readings unavailable",EtwStatus,IsElevated);
+            var failed=new Reading(sample,[],[],[],"Processor",$"Collector stopped ({e.GetType().Name}). Restart DeadWare to retry.","Interface readings unavailable",EtwStatus,IsElevated,EtwFailure:etw.Failure);
             History.Add(sample);Volatile.Write(ref latest,failed);SampleAvailable?.Invoke(failed);
         }
         finally
