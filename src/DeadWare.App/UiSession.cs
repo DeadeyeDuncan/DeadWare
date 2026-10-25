@@ -11,6 +11,7 @@ public sealed class UiSession
     public string SettingsStatus {get;private set;}="";
     private readonly string settingsPath=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"DeadWare","settings.json");
     private readonly SettingsSnapshotWriter writer;
+    private readonly LayoutDiagnostics? diagnostics;
     private readonly DetachedWindowState layout;
     private long saveRevision;
     private bool restarting;
@@ -26,16 +27,19 @@ public sealed class UiSession
     public string GpuName=>Current?.Gpus.FirstOrDefault(d=>d.Id==SelectedGpuId)?.Name??"GPU unavailable";
     public double? Value(string id)=>Current?.Sample.Values.GetValueOrDefault(id);
     public bool Stale=>Current is not null && Collector.ElapsedSeconds-Current.Sample.MonotonicSeconds>4;
-    public UiSession()
+    public UiSession(string? layoutDiagnosticPath=null)
     {
+        diagnostics=layoutDiagnosticPath is null?null:new LayoutDiagnostics(layoutDiagnosticPath,settingsPath);
+        diagnostics?.Record("session_begin",new {Version=BuildInfo.Version,Executable=Environment.ProcessPath,SettingsPath=Path.GetFullPath(settingsPath),Elevated=StartupRegistration.IsAdministrator});
         try
         {
             var loaded=File.Exists(settingsPath)?SettingsCodec.Read(File.ReadAllText(settingsPath)):new SettingsRead(new(),null);
             Settings=loaded.Settings;SettingsStatus=loaded.Error??"";
         }
-        catch(Exception e) when(e is IOException or UnauthorizedAccessException) {Settings=new();SettingsStatus="Settings unavailable; using defaults.";}
+        catch(Exception e) when(e is IOException or UnauthorizedAccessException) {Settings=new();SettingsStatus="Settings unavailable; using defaults.";diagnostics?.Record("settings_load_failed",error:e);}
         writer=new(settingsPath);
         layout=new(Settings.RestoreOpenWindows?Settings.OpenWindows:[]);
+        diagnostics?.Record("settings_loaded",new {Status=SettingsStatus,Settings.RestoreOpenWindows,OpenWindows=layout.Remembered,Settings.SelectedGpuId,Disk=LayoutDiagnostics.ReadSettingsState(settingsPath)});
         saveTimer.Tick+=async (_,_)=>{saveTimer.Stop();await SaveAsync();};
         Collector=new(new CollectorOptions(ExtendedSensors:Settings.ExtendedSensors));
         timer.Tick+=(_,_)=>
@@ -59,24 +63,37 @@ public sealed class UiSession
     public async Task SaveAsync()
     {
         Settings.OpenWindows=layout.Remembered.ToList();
-        var text=SettingsCodec.Write(Settings);long revision=++saveRevision;
-        try {await Task.Run(()=>writer.Save(revision,text));}
-        catch(Exception e) when(e is IOException or UnauthorizedAccessException) {SettingsStatus="Settings could not be saved; current choices are temporary.";}
+        string text;
+        try {text=SettingsCodec.Write(Settings);}
+        catch(Exception e) {diagnostics?.Record("settings_serialization_failed",error:e);throw;}
+        long revision=++saveRevision;
+        diagnostics?.Record("save_begin",new {Revision=revision,OpenWindows=Settings.OpenWindows.ToArray(),Settings.RestoreOpenWindows,Settings.SelectedGpuId});
+        try {await Task.Run(()=>WriteSnapshot(revision,text));}
+        catch(Exception e) when(e is IOException or UnauthorizedAccessException) {SettingsStatus="Settings could not be saved; current choices are temporary.";diagnostics?.Record("save_failed",new {Revision=revision},e);}
+        catch(Exception e) {diagnostics?.Record("save_failed",new {Revision=revision},e);throw;}
+    }
+    private void WriteSnapshot(long revision,string text)
+    {
+        writer.Save(revision,text);
+        diagnostics?.Record("save_write_returned",new {Revision=revision,Disk=LayoutDiagnostics.ReadSettingsState(settingsPath,text)});
     }
     private void QueueSave()
     {
         if(layout.Ending)return;
+        if(!saveTimer.IsEnabled)diagnostics?.Record("save_queued",new {OpenWindows=layout.Remembered});
         saveTimer.Stop();saveTimer.Start();
     }
     private void CaptureAll() {foreach(var capture in captureWindows.Values.ToArray())capture();}
     public void SaveForSessionEnding()
     {
+        diagnostics?.Record("windows_session_ending",new {OpenWindows=layout.Remembered});
         layout.BeginShutdown();timer.Stop();saveTimer.Stop();CaptureAll();
         Settings.OpenWindows=layout.Remembered.ToList();
         // Synchronous final disk checkpoint never waits for a UI continuation. The writer's
         // revision gate prevents a previously queued background save from replacing it later.
-        try {writer.Save(++saveRevision,SettingsCodec.Write(Settings));}
-        catch(Exception e) when(e is IOException or UnauthorizedAccessException) {SettingsStatus="The final window layout could not be saved.";}
+        try {WriteSnapshot(++saveRevision,SettingsCodec.Write(Settings));}
+        catch(Exception e) when(e is IOException or UnauthorizedAccessException) {SettingsStatus="The final window layout could not be saved.";diagnostics?.Record("final_save_failed",new {Revision=saveRevision},e);}
+        catch(Exception e) {diagnostics?.Record("final_save_failed",new {Revision=saveRevision},e);throw;}
     }
     public void Place(Window window,string key,double width,double height)
     {
@@ -111,15 +128,17 @@ public sealed class UiSession
         if(detached.TryGetValue(kind,out var existing)) {existing.WindowState=WindowState.Normal;existing.Activate();return;}
         var window=kind=="widget"?(Window)new WidgetWindow(this):new GraphWindow(this,kind);
         detached[kind]=window;
-        window.Closed+=(_,_)=>{detached.Remove(kind);layout.Close(kind);QueueSave();};
-        window.Show();layout.Open(kind);QueueSave();
+        window.Closed+=(_,_)=>{detached.Remove(kind);layout.Close(kind);diagnostics?.Record("window_closed",new {Kind=kind,layout.Ending,OpenWindows=layout.Remembered});QueueSave();};
+        window.Show();layout.Open(kind);diagnostics?.Record("window_opened",new {Kind=kind,OpenWindows=layout.Remembered});QueueSave();
     }
     public Task ShutdownAsync()=>shutdown??=ShutdownCoreAsync();
     private async Task ShutdownCoreAsync()
     {
+        diagnostics?.Record("shutdown_begin",new {OpenWindows=layout.Remembered});
         layout.BeginShutdown();timer.Stop();saveTimer.Stop();CaptureAll();
         foreach(var window in detached.Values.ToArray())window.Close();
         await SaveAsync();await Collector.DisposeAsync();
+        diagnostics?.Record("shutdown_completed");
     }
     public async void RestartElevated()
     {
@@ -127,7 +146,8 @@ public sealed class UiSession
         try
         {
             CaptureAll();await SaveAsync();
-            if(await GuiInstance.LaunchElevatedReplacementAsync())Application.Current.MainWindow.Close();
+            diagnostics?.Record("administrator_restart_requested");
+            if(await GuiInstance.LaunchElevatedReplacementAsync(diagnostics?.OutputPath))Application.Current.MainWindow.Close();
             else MessageBox.Show("The administrator replacement did not confirm this Windows user. Monitoring continues with current permissions.","DeadWare");
         }
         catch(System.ComponentModel.Win32Exception e) {MessageBox.Show(e.NativeErrorCode==1223?"Administrator restart was cancelled. Monitoring continues with current permissions.":"Windows could not restart DeadWare as administrator.","DeadWare");}

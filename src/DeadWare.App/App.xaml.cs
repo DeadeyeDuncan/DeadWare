@@ -27,7 +27,7 @@ public partial class App : Application
                 if(!e.Args.Contains("--startup"))MessageBox.Show("DeadWare is already running in this Windows session. Use its open main window or taskbar button.","DeadWare",MessageBoxButton.OK,MessageBoxImage.Information);
                 Shutdown();return;
             }
-            session=new UiSession();
+            session=new UiSession(LayoutDiagnostics.RequestedPath(e.Args));
             Theme.Apply(session.Settings.Theme);
             var main=new MainWindow(session);MainWindow=main;main.Show();session.Start();
         }

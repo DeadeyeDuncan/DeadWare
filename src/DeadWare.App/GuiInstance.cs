@@ -20,12 +20,13 @@ internal sealed class GuiInstance : IDisposable
     }
     public void Dispose()=>marker?.Dispose();
     private static string ReadyName(string sid,string nonce)=>$"Local\\DeadWare.Restart.{sid}.{Guid.ParseExact(nonce,"N"):N}";
-    public static async Task<bool> LaunchElevatedReplacementAsync()
+    public static async Task<bool> LaunchElevatedReplacementAsync(string? layoutDiagnosticPath=null)
     {
         using var current=Process.GetCurrentProcess();string sid=StartupRegistration.CurrentSid,nonce=Guid.NewGuid().ToString("N");
         using var ready=new EventWaitHandle(false,EventResetMode.ManualReset,ReadyName(sid,nonce));
         var start=new ProcessStartInfo(StartupRegistration.Executable) {UseShellExecute=true,Verb="runas",WorkingDirectory=AppContext.BaseDirectory};
         foreach(string argument in new[]{"--restart-from",current.Id.ToString(CultureInfo.InvariantCulture),"--restart-start",current.StartTime.ToUniversalTime().Ticks.ToString(CultureInfo.InvariantCulture),"--expected-user",sid,"--restart-ready",nonce})start.ArgumentList.Add(argument);
+        if(layoutDiagnosticPath is not null) {start.ArgumentList.Add("--layout-diagnostics");start.ArgumentList.Add(layoutDiagnosticPath);}
         using var child=Process.Start(start)??throw new InvalidOperationException("Windows did not start DeadWare.");
         // The replacement checks identity and opens the parent's ready event before asking it to exit.
         var deadline=Stopwatch.StartNew();
