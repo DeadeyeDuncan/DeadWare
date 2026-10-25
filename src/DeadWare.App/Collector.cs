@@ -1,0 +1,179 @@
+using System.Diagnostics;
+using System.Net.NetworkInformation;
+using System.Runtime.InteropServices;
+using System.Security.Principal;
+using DeadWare.Core;
+using LibreHardwareMonitor.Hardware;
+
+namespace DeadWare.App;
+public record SensorReading(string Id,string Hardware,string Name,string Unit,double? Value);
+public record Reading(Snapshot Sample,IReadOnlyList<Device> Gpus,IReadOnlyList<SensorReading> Sensors,IReadOnlyList<ProcessTraffic> Processes,string CpuName,string HardwareStatus,string NetworkStatus,string EtwStatus,bool Elevated);
+
+/// <summary>One serial background loop owns all hardware updates; windows only read immutable publications.</summary>
+public sealed class Collector : IAsyncDisposable
+{
+    private readonly CancellationTokenSource cancellation=new();
+    private readonly Stopwatch clock=Stopwatch.StartNew();
+    private readonly WindowsCounters windows=new();
+    private readonly EtwNetwork etw=new();
+    private Task? worker;
+    private Reading? latest;
+    public Reading? Latest=>Volatile.Read(ref latest);
+    public SampleHistory History {get;}=new();
+    public event Action<Reading>? SampleAvailable;
+    public static bool IsElevated {get;}=CheckElevation();
+    private static bool CheckElevation() {using var identity=WindowsIdentity.GetCurrent();return new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator);}
+    public void Start()=>worker??=Task.Run(RunAsync);
+    private async Task RunAsync()
+    {
+        Computer? computer=null;
+        string initialization="";
+        try
+        {
+            etw.Start();
+            computer=new Computer {IsCpuEnabled=true,IsGpuEnabled=true,IsMemoryEnabled=true,IsMotherboardEnabled=true,IsControllerEnabled=true,IsStorageEnabled=true,IsNetworkEnabled=false};
+            try { computer.Open(); } catch(Exception e) { initialization=$"Hardware discovery failed ({e.GetType().Name}). Windows counters remain available."; }
+            while(!cancellation.IsCancellationRequested)
+            {
+                double started=clock.Elapsed.TotalSeconds;
+                try
+                {
+                    var values=new Dictionary<string,double?>();
+                    var sensors=new List<SensorReading>();
+                    var gpus=new List<Device>();
+                    var errors=new List<string>();
+                    string cpuName="Windows processor";
+                    double? cpuLoad=null,cpuTemp=null;
+                    foreach(var hardware in computer.Hardware)
+                    {
+                        var hardwareSensors=new List<SensorReading>();
+                        ReadHardware(hardware,hardwareSensors,errors);
+                        sensors.AddRange(hardwareSensors);
+                        if(hardware.HardwareType==HardwareType.Cpu)
+                        {
+                            cpuName=hardware.Name;
+                            cpuLoad??=Choose(hardwareSensors,"%","CPU Total");
+                            cpuTemp??=Choose(hardwareSensors,"°C","CPU Package","Core (Tctl/Tdie)","CPU (Tctl/Tdie)","Core (Tdie)","Core Average");
+                        }
+                        if(hardware.HardwareType is HardwareType.GpuNvidia or HardwareType.GpuAmd or HardwareType.GpuIntel)
+                        {
+                            var id=hardware.Identifier.ToString();gpus.Add(new(id,hardware.Name,hardwareSensors.Any(s=>s.Unit=="°C"&&s.Name is "GPU Core" or "GPU Temperature")));
+                            values[id+"/usage"]=Choose(hardwareSensors,"%","GPU Core","GPU D3D 3D");
+                            values[id+"/temperature"]=Choose(hardwareSensors,"°C","GPU Core","GPU Temperature");
+                        }
+                    }
+                    var fallbackCpu=windows.Cpu();
+                    values["cpu/usage"]=cpuLoad??fallbackCpu;
+                    values["cpu/temperature"]=cpuTemp;
+                    var memory=windows.Memory();values["memory/used"]=memory.Used;values["memory/total"]=memory.Total;
+                    var network=windows.Network(clock.Elapsed.TotalSeconds);
+                    values["network/download"]=network.Down;values["network/upload"]=network.Up;
+                    foreach(var sensor in sensors) values[sensor.Id]=sensor.Value;
+                    var now=clock.Elapsed.TotalSeconds;
+                    var sample=new Snapshot(DateTimeOffset.Now,now,new System.Collections.ObjectModel.ReadOnlyDictionary<string,double?>(values));
+                    string hardwareStatus=initialization.Length>0?initialization:$"{sensors.Count} sensors · {(IsElevated?"Administrator":"Standard user")}";
+                    if(cpuTemp is null) hardwareStatus+=" · CPU temperature unavailable (hardware support, elevation or PawnIO may be required).";
+                    if(gpus.Count==0) hardwareStatus+=" · No supported GPU discovered.";
+                    if(errors.Count>0) hardwareStatus+=" · "+string.Join("; ",errors.Distinct());
+                    var reading=new Reading(sample,gpus.AsReadOnly(),sensors.AsReadOnly(),etw.Take(now),cpuName,hardwareStatus,network.Status,etw.Status,IsElevated);
+                    History.Add(sample);Volatile.Write(ref latest,reading);SampleAvailable?.Invoke(reading);
+                }
+                catch(Exception e)
+                {
+                    var sample=new Snapshot(DateTimeOffset.Now,clock.Elapsed.TotalSeconds,new Dictionary<string,double?>());
+                    var failed=new Reading(sample,Latest?.Gpus??[],[],[],Latest?.CpuName??"Processor",$"Collection failed ({e.GetType().Name}); retrying next second.","Interface readings unavailable",etw.Status,IsElevated);
+                    History.Add(sample);Volatile.Write(ref latest,failed);SampleAvailable?.Invoke(failed);
+                }
+                var wait=Math.Max(0,1-(clock.Elapsed.TotalSeconds-started));
+                await Task.Delay(TimeSpan.FromSeconds(wait),cancellation.Token).ConfigureAwait(false);
+            }
+        }
+        catch(OperationCanceledException) when(cancellation.IsCancellationRequested) { }
+        catch(Exception e)
+        {
+            var sample=new Snapshot(DateTimeOffset.Now,clock.Elapsed.TotalSeconds,new Dictionary<string,double?>());
+            var failed=new Reading(sample,[],[],[],"Processor",$"Collector stopped ({e.GetType().Name}). Restart DeadWare to retry.","Interface readings unavailable",etw.Status,IsElevated);
+            History.Add(sample);Volatile.Write(ref latest,failed);SampleAvailable?.Invoke(failed);
+        }
+        finally
+        {
+            try {computer?.Close();} finally {await etw.DisposeAsync();}
+        }
+    }
+    private static double? Choose(List<SensorReading> sensors,string unit,params string[] names)
+    {
+        foreach(var name in names)
+        {
+            var found=sensors.FirstOrDefault(s=>s.Unit==unit&&s.Name.Equals(name,StringComparison.OrdinalIgnoreCase)&&s.Value.HasValue);
+            if(found is not null) return found.Value;
+        }
+        // Temperatures may have model-specific names. Core sensors are safer than unrelated hotspot/memory sensors.
+        if(unit=="°C") return sensors.FirstOrDefault(s=>s.Unit==unit&&s.Name.Contains("Core",StringComparison.OrdinalIgnoreCase)&&s.Value.HasValue)?.Value;
+        return null;
+    }
+    private static void ReadHardware(IHardware h,List<SensorReading> sensors,List<string> errors)
+    {
+        try
+        {
+            h.Update();
+            foreach(var s in h.Sensors)
+            {
+                bool lowLevel=h.HardwareType==HardwareType.Cpu && s.SensorType is SensorType.Temperature or SensorType.Power or SensorType.Voltage or SensorType.Clock;
+                double? v=SensorValidity.Normalize(s.Value,lowLevel,IsElevated && LibreHardwareMonitor.PawnIo.PawnIo.IsInstalled);
+                if(s.SensorType==SensorType.Load && (v<0||v>100)) v=null;
+                sensors.Add(new(s.Identifier.ToString(),h.Name,s.Name,Unit(s.SensorType),v));
+            }
+        }
+        catch(Exception e) {errors.Add($"{h.Name}: {e.GetType().Name}");}
+        foreach(var sub in h.SubHardware) ReadHardware(sub,sensors,errors);
+    }
+    private static string Unit(SensorType t)=>t switch {SensorType.Load=>"%",SensorType.Temperature=>"°C",SensorType.Clock=>"MHz",SensorType.Fan=>"RPM",SensorType.Voltage=>"V",SensorType.Current=>"A",SensorType.Power=>"W",SensorType.Data=>"GB",SensorType.SmallData=>"MB",SensorType.Throughput=>"B/s",SensorType.Control=>"%",SensorType.Frequency=>"Hz",_=>t.ToString()};
+    public async ValueTask DisposeAsync() {cancellation.Cancel();if(worker is not null) await worker.ConfigureAwait(false);cancellation.Dispose();}
+}
+
+internal sealed class WindowsCounters
+{
+    private ulong? idle,kernel,user;
+    private readonly Dictionary<string,(CounterRate Down,CounterRate Up)> adapters=new();
+    public double? Cpu()
+    {
+        if(!GetSystemTimes(out var i,out var k,out var u)) return null;
+        double? result=null;
+        if(idle.HasValue && i>=idle.Value && k>=kernel!.Value && u>=user!.Value)
+        {
+            ulong total=(k-kernel.Value)+(u-user.Value),unused=i-idle.Value;
+            if(total>0 && unused<=total) result=100d*(total-unused)/total;
+        }
+        idle=i;kernel=k;user=u;return result;
+    }
+    public (double? Used,double? Total) Memory()
+    {
+        var state=new MemoryStatus {Length=(uint)Marshal.SizeOf<MemoryStatus>()};
+        return GlobalMemoryStatusEx(ref state)?(state.TotalPhysical-state.AvailablePhysical,state.TotalPhysical):(null,null);
+    }
+    public (double? Down,double? Up,string Status) Network(double now)
+    {
+        double down=0,up=0;bool valid=true;int count=0;
+        var active=new HashSet<string>();
+        try
+        {
+            foreach(var adapter in NetworkInterface.GetAllNetworkInterfaces().Where(n=>n.OperationalStatus==OperationalStatus.Up&&n.NetworkInterfaceType!=NetworkInterfaceType.Loopback))
+            {
+                count++;active.Add(adapter.Id);
+                if(!adapters.TryGetValue(adapter.Id,out var rates)) adapters[adapter.Id]=rates=(new(),new());
+                try
+                {
+                    var stats=adapter.GetIPStatistics();var d=rates.Down.Update(stats.BytesReceived,now);var u=rates.Up.Update(stats.BytesSent,now);
+                    if(d is null || u is null) valid=false; else {down+=d.Value;up+=u.Value;}
+                }
+                catch(NetworkInformationException) {adapters.Remove(adapter.Id);valid=false;}
+            }
+            foreach(var id in adapters.Keys.Except(active).ToArray()) adapters.Remove(id);
+            return count==0?(null,null,"No active network interface"):(valid?down:null,valid?up:null,$"{count} active interface{(count==1?"":"s")} · totals include virtual adapters; VPN traffic can be counted twice{(!valid?" · waiting for counter baseline / reset":"")}");
+        }
+        catch(Exception e) {return (null,null,$"Interface counters unavailable ({e.GetType().Name})");}
+    }
+    [DllImport("kernel32.dll",SetLastError=true)] [return:MarshalAs(UnmanagedType.Bool)] private static extern bool GetSystemTimes(out ulong idle,out ulong kernel,out ulong user);
+    [DllImport("kernel32.dll",SetLastError=true)] [return:MarshalAs(UnmanagedType.Bool)] private static extern bool GlobalMemoryStatusEx(ref MemoryStatus status);
+    [StructLayout(LayoutKind.Sequential)] private struct MemoryStatus {public uint Length,Load;public ulong TotalPhysical,AvailablePhysical,TotalPageFile,AvailablePageFile,TotalVirtual,AvailableVirtual,AvailableExtendedVirtual;}
+}

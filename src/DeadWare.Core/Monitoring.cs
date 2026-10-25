@@ -1,0 +1,131 @@
+using System.Collections.ObjectModel;
+using System.Text.Json;
+namespace DeadWare.Core;
+
+public record Snapshot(DateTimeOffset Timestamp,double MonotonicSeconds,IReadOnlyDictionary<string,double?> Values);
+public record SamplePoint(DateTimeOffset Timestamp,double MonotonicSeconds,double? Value);
+public record Summary(double? Minimum,double? Maximum,double? Average);
+public sealed class SampleHistory
+{
+    private readonly object gate=new();
+    private readonly Queue<Snapshot> samples=new();
+    public void Add(Snapshot s)
+    {
+        if (!double.IsFinite(s.MonotonicSeconds)) return;
+        lock(gate)
+        {
+            if(samples.Count>0 && s.MonotonicSeconds<=samples.Last().MonotonicSeconds) return;
+            var values=s.Values.ToDictionary(p=>p.Key,p=>Finite(p.Value));
+            samples.Enqueue(s with { Values=new ReadOnlyDictionary<string,double?>(values) });
+            while(samples.Count>900 || (samples.Count>0 && samples.Peek().MonotonicSeconds<s.MonotonicSeconds-900)) samples.Dequeue();
+        }
+    }
+    public static double? Finite(double? value)=>value.HasValue && double.IsFinite(value.Value)?value:null;
+    public IReadOnlyList<Snapshot> Read() {lock(gate) return samples.ToArray();}
+    public IReadOnlyList<SamplePoint> Series(string id,double now,int seconds)
+    {
+        lock(gate) return samples.Where(s=>s.MonotonicSeconds>=now-seconds && s.MonotonicSeconds<=now)
+            .Select(s=>new SamplePoint(s.Timestamp,s.MonotonicSeconds,s.Values.GetValueOrDefault(id))).ToArray();
+    }
+    public static Summary Statistics(IEnumerable<SamplePoint> points)
+    {
+        var v=points.Select(p=>Finite(p.Value)).Where(v=>v.HasValue).Select(v=>v!.Value).ToArray();
+        return v.Length==0?new(null,null,null):new(v.Min(),v.Max(),v.Average());
+    }
+}
+public sealed class CounterRate
+{
+    private long? previous;
+    private double last;
+    public double? Update(long counter,double seconds)
+    {
+        if(counter<0 || !double.IsFinite(seconds)) {previous=null;return null;}
+        double? result=previous.HasValue && counter>=previous.Value && seconds>last ? (counter-previous.Value)/(seconds-last):null;
+        previous=counter;last=seconds;
+        return SampleHistory.Finite(result);
+    }
+}
+public record Device(string Id,string Name,bool HasCoreTemperature=false);
+public static class DeviceSelection
+{
+    public static string? Resolve(string? requested,IReadOnlyList<Device> devices)=>requested is null?(devices.FirstOrDefault(d=>d.HasCoreTemperature)??devices.FirstOrDefault())?.Id:devices.FirstOrDefault(d=>d.Id==requested)?.Id;
+}
+public record ProcessTraffic(int Pid,long Generation,string Name,double? DownloadBytesPerSecond,double? UploadBytesPerSecond,long ReceivedBytes,long SentBytes);
+/// <summary>Generation is the process creation time. Events with a previous generation never enter a reused PID's counters.</summary>
+public sealed class ProcessLedger
+{
+    private sealed class Entry(long generation,string name)
+    {public long Generation=generation;public string Name=name;public long Down,Up,PreviousDown,PreviousUp;}
+    private readonly Dictionary<int,Entry> entries=new();
+    private readonly object gate=new();
+    private double? last;
+    public void Start(int pid,long generation,string name)
+    {
+        lock(gate)
+        {
+            if(entries.TryGetValue(pid,out var e) && e.Generation>=generation) return;
+            entries[pid]=new(generation,name);
+        }
+    }
+    public void Stop(int pid,long generation) {lock(gate) if(entries.TryGetValue(pid,out var e)&&e.Generation==generation) entries.Remove(pid);}
+    public void Add(int pid,long generation,int down,int up)
+    {
+        lock(gate) if(entries.TryGetValue(pid,out var e)&&e.Generation==generation && down>=0 && up>=0) {e.Down+=down;e.Up+=up;}
+    }
+    public IReadOnlyList<ProcessTraffic> Take(double now)
+    {
+        lock(gate)
+        {
+            double elapsed=last.HasValue?now-last.Value:double.NaN;
+            bool valid=double.IsFinite(elapsed)&&elapsed>0;
+            var result=entries.Where(p=>p.Value.Down>0||p.Value.Up>0).Select(p=>new ProcessTraffic(p.Key,p.Value.Generation,p.Value.Name,
+                valid?(p.Value.Down-p.Value.PreviousDown)/elapsed:null,valid?(p.Value.Up-p.Value.PreviousUp)/elapsed:null,p.Value.Down,p.Value.Up)).ToArray();
+            foreach(var e in entries.Values) {e.PreviousDown=e.Down;e.PreviousUp=e.Up;}
+            last=double.IsFinite(now)?now:null;
+            return result;
+        }
+    }
+}
+public record WorkArea(double Left,double Top,double Width,double Height);
+public record WindowPlacement(double Left,double Top,double Width,double Height,bool Topmost)
+{
+    public static WindowPlacement Clamp(WindowPlacement p,IReadOnlyList<WorkArea> areas,double width,double height)
+    {
+        var valid=areas.Where(a=>double.IsFinite(a.Left)&&double.IsFinite(a.Top)&&a.Width>0&&a.Height>0).ToArray();
+        if(valid.Length==0) valid=[new(0,0,1920,1040)];
+        double left=double.IsFinite(p.Left)?p.Left:valid[0].Left+40,top=double.IsFinite(p.Top)?p.Top:valid[0].Top+40;
+        var area=valid.OrderByDescending(a=>Math.Max(0,Math.Min(left+Math.Max(1,p.Width),a.Left+a.Width)-Math.Max(left,a.Left))*Math.Max(0,Math.Min(top+Math.Max(1,p.Height),a.Top+a.Height)-Math.Max(top,a.Top))).First();
+        double w=Math.Min(area.Width,double.IsFinite(p.Width)&&p.Width>=200?p.Width:width);
+        double h=Math.Min(area.Height,double.IsFinite(p.Height)&&p.Height>=150?p.Height:height);
+        return new(Math.Clamp(left,area.Left,area.Left+area.Width-w),Math.Clamp(top,area.Top,area.Top+area.Height-h),w,h,p.Topmost);
+    }
+}
+public sealed class UserSettings
+{
+    public string Theme {get;set;}="Midnight";
+    public int HistorySeconds {get;set;}=60;
+    public string? SelectedGpuId {get;set;}
+    public Dictionary<string,WindowPlacement> Windows {get;set;}=new();
+}
+public record SettingsRead(UserSettings Settings,string? Error);
+public static class SettingsCodec
+{
+    public static SettingsRead Read(string json)
+    {
+        try
+        {
+            var s=JsonSerializer.Deserialize<UserSettings>(json);
+            if(s is null) return new(new(),"Settings were empty; defaults restored.");
+            if(s.Theme is not ("Midnight" or "Ember" or "Glacier" or "Amethyst" or "Daylight")) s.Theme="Midnight";
+            bool invalid=s.HistorySeconds is not (60 or 300 or 900) || s.Windows is null;
+            if(s.HistorySeconds is not (60 or 300 or 900)) s.HistorySeconds=60;
+            s.Windows??=new();
+            s.Windows=s.Windows.Where(p=>p.Value is not null).Take(16).ToDictionary(p=>p.Key,p=>p.Value);
+            return new(s,invalid?"Invalid settings were replaced with defaults.":null);
+        }
+        catch(JsonException) {return new(new(),"Settings could not be read; defaults restored.");}
+    }
+    public static string Write(UserSettings settings)=>JsonSerializer.Serialize(settings,new JsonSerializerOptions{WriteIndented=true});
+}
+
+
