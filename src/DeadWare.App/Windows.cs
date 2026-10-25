@@ -103,7 +103,7 @@ public sealed class MainWindow : Window
         {
             var rows=r.Sensors.Where(s=>(s.Hardware+" "+s.Name).Contains(sensorSearch.Text,StringComparison.OrdinalIgnoreCase)).Select(s=>
             {
-                var summary=SampleHistory.Statistics(session.Collector.History.Series(s.Id,r.Sample.MonotonicSeconds,session.HistorySeconds));
+                var summary=SampleHistory.Statistics(session.Collector.History.Series(s.Id,session.Collector.ElapsedSeconds,session.HistorySeconds));
                 return new {Name=$"{s.Hardware}  /  {s.Name}",Current=Ui.Number(session.Stale?null:s.Value," "+s.Unit),Minimum=Ui.Number(summary.Minimum," "+s.Unit),Average=Ui.Number(summary.Average," "+s.Unit),Maximum=Ui.Number(summary.Maximum," "+s.Unit)};
             }).ToArray();sensors.ItemsSource=rows;sensorCount.Text=$"{rows.Length} sensors · statistics over {session.HistorySeconds/60} minute{(session.HistorySeconds==60?"":"s")} · — means unavailable";
         }

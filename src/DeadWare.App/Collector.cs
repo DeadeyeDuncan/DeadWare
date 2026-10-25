@@ -16,9 +16,11 @@ public sealed class Collector : IAsyncDisposable
     private readonly Stopwatch clock=Stopwatch.StartNew();
     private readonly WindowsCounters windows=new();
     private readonly EtwNetwork etw=new();
+    private bool lowLevelAvailable;
     private Task? worker;
     private Reading? latest;
     public Reading? Latest=>Volatile.Read(ref latest);
+    public double ElapsedSeconds=>clock.Elapsed.TotalSeconds;
     public SampleHistory History {get;}=new();
     public event Action<Reading>? SampleAvailable;
     public static bool IsElevated {get;}=CheckElevation();
@@ -31,6 +33,7 @@ public sealed class Collector : IAsyncDisposable
         try
         {
             etw.Start();
+            lowLevelAvailable=IsElevated&&WindowsCounters.CanAccessPawnIo();
             computer=new Computer {IsCpuEnabled=true,IsGpuEnabled=true,IsMemoryEnabled=true,IsMotherboardEnabled=true,IsControllerEnabled=true,IsStorageEnabled=true,IsNetworkEnabled=false};
             try { computer.Open(); } catch(Exception e) { initialization=$"Hardware discovery failed ({e.GetType().Name}). Windows counters remain available."; }
             while(!cancellation.IsCancellationRequested)
@@ -47,7 +50,7 @@ public sealed class Collector : IAsyncDisposable
                     foreach(var hardware in computer.Hardware)
                     {
                         var hardwareSensors=new List<SensorReading>();
-                        ReadHardware(hardware,hardwareSensors,errors);
+                        ReadHardware(hardware,hardwareSensors,errors,lowLevelAvailable);
                         sensors.AddRange(hardwareSensors);
                         if(hardware.HardwareType==HardwareType.Cpu)
                         {
@@ -111,7 +114,7 @@ public sealed class Collector : IAsyncDisposable
         if(unit=="°C") return sensors.FirstOrDefault(s=>s.Unit==unit&&s.Name.Contains("Core",StringComparison.OrdinalIgnoreCase)&&s.Value.HasValue)?.Value;
         return null;
     }
-    private static void ReadHardware(IHardware h,List<SensorReading> sensors,List<string> errors)
+    private static void ReadHardware(IHardware h,List<SensorReading> sensors,List<string> errors,bool lowLevelAvailable)
     {
         try
         {
@@ -119,13 +122,13 @@ public sealed class Collector : IAsyncDisposable
             foreach(var s in h.Sensors)
             {
                 bool lowLevel=h.HardwareType==HardwareType.Cpu && s.SensorType is SensorType.Temperature or SensorType.Power or SensorType.Voltage or SensorType.Clock;
-                double? v=SensorValidity.Normalize(s.Value,lowLevel,IsElevated && LibreHardwareMonitor.PawnIo.PawnIo.IsInstalled);
+                double? v=SensorValidity.Normalize(s.Value,lowLevel,lowLevelAvailable);
                 if(s.SensorType==SensorType.Load && (v<0||v>100)) v=null;
                 sensors.Add(new(s.Identifier.ToString(),h.Name,s.Name,Unit(s.SensorType),v));
             }
         }
         catch(Exception e) {errors.Add($"{h.Name}: {e.GetType().Name}");}
-        foreach(var sub in h.SubHardware) ReadHardware(sub,sensors,errors);
+        foreach(var sub in h.SubHardware) ReadHardware(sub,sensors,errors,lowLevelAvailable);
     }
     private static string Unit(SensorType t)=>t switch {SensorType.Load=>"%",SensorType.Temperature=>"°C",SensorType.Clock=>"MHz",SensorType.Fan=>"RPM",SensorType.Voltage=>"V",SensorType.Current=>"A",SensorType.Power=>"W",SensorType.Data=>"GB",SensorType.SmallData=>"MB",SensorType.Throughput=>"B/s",SensorType.Control=>"%",SensorType.Frequency=>"Hz",_=>t.ToString()};
     public async ValueTask DisposeAsync() {cancellation.Cancel();if(worker is not null) await worker.ConfigureAwait(false);cancellation.Dispose();}
@@ -133,6 +136,13 @@ public sealed class Collector : IAsyncDisposable
 
 internal sealed class WindowsCounters
 {
+    public static bool CanAccessPawnIo()
+    {
+        if(!LibreHardwareMonitor.PawnIo.PawnIo.IsInstalled)return false;
+        // Open the existing device under normal Windows access checks; never install or modify a driver.
+        using var handle=CreateFile(@"\\?\GLOBALROOT\Device\PawnIO",0xC0000000,3,IntPtr.Zero,3,0x80,IntPtr.Zero);
+        return !handle.IsInvalid;
+    }
     private ulong? idle,kernel,user;
     private readonly Dictionary<string,(CounterRate Down,CounterRate Up)> adapters=new();
     public double? Cpu()
@@ -174,6 +184,7 @@ internal sealed class WindowsCounters
         catch(Exception e) {return (null,null,$"Interface counters unavailable ({e.GetType().Name})");}
     }
     [DllImport("kernel32.dll",SetLastError=true)] [return:MarshalAs(UnmanagedType.Bool)] private static extern bool GetSystemTimes(out ulong idle,out ulong kernel,out ulong user);
+    [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)] private static extern Microsoft.Win32.SafeHandles.SafeFileHandle CreateFile(string name,uint access,uint share,IntPtr security,uint disposition,uint flags,IntPtr template);
     [DllImport("kernel32.dll",SetLastError=true)] [return:MarshalAs(UnmanagedType.Bool)] private static extern bool GlobalMemoryStatusEx(ref MemoryStatus status);
     [StructLayout(LayoutKind.Sequential)] private struct MemoryStatus {public uint Length,Load;public ulong TotalPhysical,AvailablePhysical,TotalPageFile,AvailablePageFile,TotalVirtual,AvailableVirtual,AvailableExtendedVirtual;}
 }

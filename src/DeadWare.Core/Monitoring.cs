@@ -45,7 +45,10 @@ public sealed class CounterRate
         return SampleHistory.Finite(result);
     }
 }
-public record Device(string Id,string Name,bool HasCoreTemperature=false);
+public record Device(string Id,string Name,bool HasCoreTemperature=false)
+{
+    public override string ToString()=>Name;
+}
 public static class DeviceSelection
 {
     public static string? Resolve(string? requested,IReadOnlyList<Device> devices)=>requested is null?(devices.FirstOrDefault(d=>d.HasCoreTemperature)??devices.FirstOrDefault())?.Id:devices.FirstOrDefault(d=>d.Id==requested)?.Id;

@@ -19,7 +19,7 @@ public sealed class UiSession
     public string? SelectedGpuId=>Current is null?null:DeviceSelection.Resolve(Settings.SelectedGpuId,Current.Gpus);
     public string GpuName=>Current?.Gpus.FirstOrDefault(d=>d.Id==SelectedGpuId)?.Name??"GPU unavailable";
     public double? Value(string id)=>Current?.Sample.Values.GetValueOrDefault(id);
-    public bool Stale=>Current is not null && (DateTimeOffset.Now-Current.Sample.Timestamp).TotalSeconds>4;
+    public bool Stale=>Current is not null && Collector.ElapsedSeconds-Current.Sample.MonotonicSeconds>4;
     public UiSession()
     {
         try
@@ -44,7 +44,7 @@ public sealed class UiSession
     {
         var text=SettingsCodec.Write(Settings);
         await saveGate.WaitAsync();
-        try {Directory.CreateDirectory(Path.GetDirectoryName(settingsPath)!);var temp=settingsPath+".tmp";await File.WriteAllTextAsync(temp,text);File.Move(temp,settingsPath,true);}
+        try {Directory.CreateDirectory(Path.GetDirectoryName(settingsPath)!);var temp=settingsPath+"."+Guid.NewGuid().ToString("N")+".tmp";await File.WriteAllTextAsync(temp,text);File.Move(temp,settingsPath,true);}
         catch(Exception e) when(e is IOException or UnauthorizedAccessException) {SettingsStatus="Settings could not be saved; current choices are temporary.";}
         finally {saveGate.Release();}
     }
@@ -53,11 +53,9 @@ public sealed class UiSession
         window.Width=width;window.Height=height;
         if(Settings.Windows.TryGetValue(key,out var saved))
         {
-            var work=SystemParameters.WorkArea;
-            // Native clamp after SourceInitialized handles removed monitors and changes in DPI.
-            if(double.IsFinite(saved.Left)&&double.IsFinite(saved.Top)&&double.IsFinite(saved.Width)&&double.IsFinite(saved.Height)&&saved.Width>=200&&saved.Height>=150)
-            {window.Left=saved.Left;window.Top=saved.Top;window.Width=saved.Width;window.Height=saved.Height;window.Topmost=saved.Topmost;window.WindowStartupLocation=WindowStartupLocation.Manual;}
-            else {var p=WindowPlacement.Clamp(saved,[new(work.Left,work.Top,work.Width,work.Height)],width,height);window.Left=p.Left;window.Top=p.Top;window.Width=p.Width;window.Height=p.Height;}
+            // Bound even enormous but finite persisted dimensions before passing them to WPF.
+            var p=WindowPlacement.Clamp(saved,NativePlacement.WorkAreas(),width,height);
+            window.Left=p.Left;window.Top=p.Top;window.Width=p.Width;window.Height=p.Height;window.Topmost=p.Topmost;window.WindowStartupLocation=WindowStartupLocation.Manual;
         }
         else window.WindowStartupLocation=WindowStartupLocation.CenterScreen;
         window.SourceInitialized+=(_,_)=>NativePlacement.Clamp(window);

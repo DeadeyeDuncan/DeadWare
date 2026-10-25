@@ -24,7 +24,12 @@ internal static class Ui
         return $"{value:0.0} {units[i]}{(rate?"/s":"")}";
     }
     public static void Icon(Window w)
-    {try {w.Icon=new BitmapImage(new Uri("pack://application:,,,/Assets/deadware.ico"));}catch(System.IO.IOException) {}}
+    {
+        // An implicit Window style does not automatically style our derived Window types.
+        w.SetResourceReference(Control.BackgroundProperty,"Background");w.SetResourceReference(Control.ForegroundProperty,"Ink");
+        w.FontFamily=new FontFamily("Segoe UI");w.FontSize=13;
+        try {w.Icon=new BitmapImage(new Uri("pack://application:,,,/Assets/deadware.ico"));}catch(System.IO.IOException) {}
+    }
     public static Image Logo()
     {var image=new Image {Width=38,Height=38,Margin=new Thickness(0,0,9,0)};try{image.Source=new BitmapImage(new Uri("pack://application:,,,/Assets/deadware.png"));}catch(System.IO.IOException){}return image;}
     public static string Title(string kind)=>kind switch {"cpu"=>"CPU usage","cputemp"=>"CPU temperature","gpu"=>"GPU usage","gputemp"=>"GPU temperature",_=>"Network activity"};
@@ -49,8 +54,7 @@ internal sealed class HistoryChart(UiSession session,string kind) : FrameworkEle
         double w=ActualWidth,h=ActualHeight;if(w<90||h<65)return;
         double left=12,top=18,right=74,bottom=27,pw=w-left-right,ph=h-top-bottom;
         var sample=session.Current?.Sample;
-        double now=sample?.MonotonicSeconds??0;
-        if(sample is not null)now+=Math.Max(0,(DateTimeOffset.Now-sample.Timestamp).TotalSeconds);
+        double now=session.Collector.ElapsedSeconds;
         var points=session.Collector.History.Series(session.MetricId(kind),now,session.HistorySeconds);
         var up=kind=="network"?session.Collector.History.Series("network/upload",now,session.HistorySeconds):[];
         double maximum=kind is "cpu" or "gpu"?100:kind=="network"?Math.Max(1000,points.Concat(up).Where(p=>p.Value.HasValue).Select(p=>p.Value!.Value).DefaultIfEmpty(0).Max()*1.15):Math.Max(100,points.Where(p=>p.Value.HasValue).Select(p=>p.Value!.Value).DefaultIfEmpty(0).Max()*1.1);
@@ -118,7 +122,7 @@ internal sealed class ChartCard : Border
             subtitle.Text=data is null?"Discovering hardware…":kind.StartsWith("cpu")?data.CpuName:session.GpuName;
             if(current is null&&data is not null)subtitle.Text+=" · "+(session.Stale?"stale":"sensor unavailable");
         }
-        double now=data?.Sample.MonotonicSeconds??0;var summary=SampleHistory.Statistics(session.Collector.History.Series(id,now,session.HistorySeconds));
+        double now=session.Collector.ElapsedSeconds;var summary=SampleHistory.Statistics(session.Collector.History.Series(id,now,session.HistorySeconds));
         Func<double?,string> format=kind=="network"?v=>Ui.Bytes(v,true):v=>Ui.Number(v,kind.Contains("temp")?"°C":"%");
         stats.Text=$"MIN  {format(summary.Minimum)}      AVG  {format(summary.Average)}      MAX  {format(summary.Maximum)}"+(kind=="network"?"    · Download":"");
         chart.Refresh();
