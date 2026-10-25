@@ -25,6 +25,7 @@ internal static class Ui
     }
     public static void Icon(Window w)
     {
+        NativeTheme.Attach(w);
         // An implicit Window style does not automatically style our derived Window types.
         w.SetResourceReference(Control.BackgroundProperty,"Background");w.SetResourceReference(Control.ForegroundProperty,"Ink");
         w.FontFamily=new FontFamily("Segoe UI");w.FontSize=13;

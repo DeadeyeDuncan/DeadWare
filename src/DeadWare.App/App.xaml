@@ -1,5 +1,94 @@
 <Application x:Class="DeadWare.App.App" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" ShutdownMode="OnExplicitShutdown">
 <Application.Resources>
+<!-- Keep ScrollViewer's behavior and virtualization; theme only its ScrollBar controls. -->
+<Style TargetType="ScrollViewer">
+  <Style.Resources>
+    <!-- The stock template uses this brush for the corner between its two scrollbars. -->
+    <SolidColorBrush x:Key="{x:Static SystemColors.ControlBrushKey}" Color="{DynamicResource ScrollCornerColor}"/>
+  </Style.Resources>
+</Style>
+<Style x:Key="ScrollLineButton" TargetType="RepeatButton">
+  <Setter Property="Focusable" Value="False"/><Setter Property="IsTabStop" Value="False"/>
+  <Setter Property="Background" Value="Transparent"/><Setter Property="Foreground" Value="{DynamicResource Muted}"/>
+  <Setter Property="Template">
+    <Setter.Value>
+      <ControlTemplate TargetType="RepeatButton">
+        <Border x:Name="Surface" Background="{TemplateBinding Background}" CornerRadius="3">
+          <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+        </Border>
+        <ControlTemplate.Triggers>
+          <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Surface" Property="Background" Value="{DynamicResource Control}"/><Setter Property="Foreground" Value="{DynamicResource Ink}"/></Trigger>
+          <Trigger Property="IsPressed" Value="True"><Setter TargetName="Surface" Property="Background" Value="{DynamicResource Line}"/><Setter Property="Foreground" Value="{DynamicResource Accent}"/></Trigger>
+          <Trigger Property="IsEnabled" Value="False"><Setter Property="Foreground" Value="{DynamicResource ScrollDisabled}"/></Trigger>
+        </ControlTemplate.Triggers>
+      </ControlTemplate>
+    </Setter.Value>
+  </Setter>
+</Style>
+<Style x:Key="ScrollPageButton" TargetType="RepeatButton">
+  <Setter Property="Focusable" Value="False"/><Setter Property="IsTabStop" Value="False"/>
+  <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="RepeatButton"><Border Background="Transparent"/></ControlTemplate></Setter.Value></Setter>
+</Style>
+<Style x:Key="ScrollThumbStyle" TargetType="Thumb">
+  <Setter Property="Focusable" Value="False"/><Setter Property="MinWidth" Value="16"/><Setter Property="MinHeight" Value="16"/>
+  <Setter Property="Template">
+    <Setter.Value>
+      <ControlTemplate TargetType="Thumb">
+        <Border Background="Transparent">
+          <Border x:Name="Grip" Background="{DynamicResource ScrollThumb}" CornerRadius="4" Margin="3"/>
+        </Border>
+        <ControlTemplate.Triggers>
+          <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Grip" Property="Background" Value="{DynamicResource ScrollThumbHover}"/></Trigger>
+          <Trigger Property="IsDragging" Value="True"><Setter TargetName="Grip" Property="Background" Value="{DynamicResource Accent}"/></Trigger>
+          <Trigger Property="IsEnabled" Value="False"><Setter TargetName="Grip" Property="Background" Value="{DynamicResource ScrollDisabled}"/></Trigger>
+        </ControlTemplate.Triggers>
+      </ControlTemplate>
+    </Setter.Value>
+  </Setter>
+</Style>
+<ControlTemplate x:Key="VerticalScrollBarTemplate" TargetType="ScrollBar">
+  <Grid Background="{TemplateBinding Background}" SnapsToDevicePixels="True">
+    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+    <RepeatButton Style="{StaticResource ScrollLineButton}" Command="{x:Static ScrollBar.LineUpCommand}" Height="{DynamicResource {x:Static SystemParameters.VerticalScrollBarButtonHeightKey}}" AutomationProperties.Name="Scroll up">
+      <Path Data="M0,4 L4,0 L8,4 Z" Fill="{Binding Foreground,RelativeSource={RelativeSource AncestorType=RepeatButton}}"/>
+    </RepeatButton>
+    <Track x:Name="PART_Track" Grid.Row="1" Orientation="Vertical" IsDirectionReversed="True" Minimum="{TemplateBinding Minimum}" Maximum="{TemplateBinding Maximum}" Value="{Binding Value,RelativeSource={RelativeSource TemplatedParent},Mode=TwoWay}" ViewportSize="{TemplateBinding ViewportSize}">
+      <Track.DecreaseRepeatButton><RepeatButton Style="{StaticResource ScrollPageButton}" Command="{x:Static ScrollBar.PageUpCommand}" AutomationProperties.Name="Page up"/></Track.DecreaseRepeatButton>
+      <Track.Thumb><Thumb Style="{StaticResource ScrollThumbStyle}"/></Track.Thumb>
+      <Track.IncreaseRepeatButton><RepeatButton Style="{StaticResource ScrollPageButton}" Command="{x:Static ScrollBar.PageDownCommand}" AutomationProperties.Name="Page down"/></Track.IncreaseRepeatButton>
+    </Track>
+    <RepeatButton Grid.Row="2" Style="{StaticResource ScrollLineButton}" Command="{x:Static ScrollBar.LineDownCommand}" Height="{DynamicResource {x:Static SystemParameters.VerticalScrollBarButtonHeightKey}}" AutomationProperties.Name="Scroll down">
+      <Path Data="M0,0 L4,4 L8,0 Z" Fill="{Binding Foreground,RelativeSource={RelativeSource AncestorType=RepeatButton}}"/>
+    </RepeatButton>
+  </Grid>
+</ControlTemplate>
+<ControlTemplate x:Key="HorizontalScrollBarTemplate" TargetType="ScrollBar">
+  <Grid Background="{TemplateBinding Background}" SnapsToDevicePixels="True">
+    <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+    <RepeatButton Style="{StaticResource ScrollLineButton}" Command="{x:Static ScrollBar.LineLeftCommand}" Width="{DynamicResource {x:Static SystemParameters.HorizontalScrollBarButtonWidthKey}}" AutomationProperties.Name="Scroll left">
+      <Path Data="M4,0 L0,4 L4,8 Z" Fill="{Binding Foreground,RelativeSource={RelativeSource AncestorType=RepeatButton}}"/>
+    </RepeatButton>
+    <Track x:Name="PART_Track" Grid.Column="1" Orientation="Horizontal" Minimum="{TemplateBinding Minimum}" Maximum="{TemplateBinding Maximum}" Value="{Binding Value,RelativeSource={RelativeSource TemplatedParent},Mode=TwoWay}" ViewportSize="{TemplateBinding ViewportSize}">
+      <Track.DecreaseRepeatButton><RepeatButton Style="{StaticResource ScrollPageButton}" Command="{x:Static ScrollBar.PageLeftCommand}" AutomationProperties.Name="Page left"/></Track.DecreaseRepeatButton>
+      <Track.Thumb><Thumb Style="{StaticResource ScrollThumbStyle}"/></Track.Thumb>
+      <Track.IncreaseRepeatButton><RepeatButton Style="{StaticResource ScrollPageButton}" Command="{x:Static ScrollBar.PageRightCommand}" AutomationProperties.Name="Page right"/></Track.IncreaseRepeatButton>
+    </Track>
+    <RepeatButton Grid.Column="2" Style="{StaticResource ScrollLineButton}" Command="{x:Static ScrollBar.LineRightCommand}" Width="{DynamicResource {x:Static SystemParameters.HorizontalScrollBarButtonWidthKey}}" AutomationProperties.Name="Scroll right">
+      <Path Data="M0,0 L4,4 L0,8 Z" Fill="{Binding Foreground,RelativeSource={RelativeSource AncestorType=RepeatButton}}"/>
+    </RepeatButton>
+  </Grid>
+</ControlTemplate>
+<Style TargetType="ScrollBar">
+  <Setter Property="Background" Value="{DynamicResource Panel}"/><Setter Property="Focusable" Value="False"/><Setter Property="IsTabStop" Value="False"/>
+  <Setter Property="Width" Value="{DynamicResource {x:Static SystemParameters.VerticalScrollBarWidthKey}}"/>
+  <Setter Property="Template" Value="{StaticResource VerticalScrollBarTemplate}"/>
+  <Style.Triggers>
+    <Trigger Property="Orientation" Value="Horizontal">
+      <Setter Property="Width" Value="Auto"/><Setter Property="Height" Value="{DynamicResource {x:Static SystemParameters.HorizontalScrollBarHeightKey}}"/>
+      <Setter Property="Template" Value="{StaticResource HorizontalScrollBarTemplate}"/>
+    </Trigger>
+  </Style.Triggers>
+</Style>
 <Style TargetType="Window"><Setter Property="Background" Value="{DynamicResource Background}"/><Setter Property="Foreground" Value="{DynamicResource Ink}"/><Setter Property="FontFamily" Value="Segoe UI"/><Setter Property="FontSize" Value="13"/></Style>
 <Style TargetType="TextBlock"><Setter Property="Foreground" Value="{DynamicResource Ink}"/></Style>
 <Style TargetType="Button"><Setter Property="Background" Value="{DynamicResource Control}"/><Setter Property="Foreground" Value="{DynamicResource Ink}"/><Setter Property="BorderBrush" Value="{DynamicResource Line}"/><Setter Property="BorderThickness" Value="1"/><Setter Property="Padding" Value="12,7"/><Setter Property="Margin" Value="3"/><Setter Property="Cursor" Value="Hand"/><Setter Property="Template"><Setter.Value><ControlTemplate TargetType="Button"><Border x:Name="Frame" CornerRadius="6" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" Padding="{TemplateBinding Padding}"><ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/></Border><ControlTemplate.Triggers><Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Frame" Property="BorderBrush" Value="{DynamicResource Accent}"/></Trigger><Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="Frame" Property="BorderBrush" Value="{DynamicResource Accent}"/><Setter TargetName="Frame" Property="BorderThickness" Value="2"/></Trigger><Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.5"/></Trigger></ControlTemplate.Triggers></ControlTemplate></Setter.Value></Setter></Style>
