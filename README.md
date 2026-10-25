@@ -17,6 +17,7 @@ DeadWare is a Windows desktop monitor for watching CPU/GPU usage and temperature
 - Searchable sensor readings with minimum, maximum and average values.
 - Selectable graphics adapters on multi-GPU systems.
 - Separate graph windows and a compact widget with always-on-top controls.
+- Compact pop-out graphs prioritize the current reading and chart; their options menu holds history range, Always on top and sensor statistics.
 - Restore the graphs and widget left open, including their saved positions and sizes.
 - Optional administrator startup at your Windows sign-in.
 - Shared 1-, 5- and 15-minute history; all windows use one collector.

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.1 — Compact graph windows
+
+- Smaller pop-out graphs with a compact header and prominent current readings.
+- Move history range, Always on top, hardware details and statistics into a graph options menu.
+- Keep both download and upload readings visible in the compact network graph.
+- Preserve saved window positions, sizes and topmost choices; existing windows can now be resized smaller.
+
 ## 0.2.0 — Startup and saved workspace
 
 - Optional administrator startup at Windows sign-in, with per-user registration and an in-app disable control.

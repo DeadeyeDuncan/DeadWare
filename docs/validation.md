@@ -46,7 +46,15 @@ The installed app recorded successful settings writes and matching readbacks, pr
 
 The command runner's settings-file readbacks remained stale relative to the scheduled app's own readings at the same reported path. Per-process diagnostics and native window comparisons resolved that verification discrepancy; no persistence change was made to address it. The underlying execution-context difference was not identified. No reboot or sign-out was performed, and Computer Use remained off throughout these checks.
 
-## Delivery
+## Compact graph windows (0.2.1)
+
+The Release build completed without warnings or errors and all 56 tests passed. A focused review found no actionable defects in the compact view, shared range controls, topmost binding, event subscriptions or existing placement behavior.
+
+Isolated offscreen WPF checks covered all five graph types at the new 300×180 minimum and 420×230 default window dimensions, with estimated native-frame space removed. Synthetic fixtures exercised missing/stale readings, long device names and rates, both network directions, Midnight/Daylight palettes and live theme changes. Image exports at 96/144/192 DPI are rendering checks, not a real mixed-DPI monitor test. The harness also exercised range buttons and the topmost binding using disposable settings files. It did not start a collector, create a native window, or read/write the user's settings.
+
+The graph options popup uses WPF outside-click dismissal and explicit Escape/focus handling. These native interactions were reviewed but not exercised by the offscreen harness. Existing saved sizes are retained; users can resize pop-outs to the smaller minimum. Dashboard cards, the widget, monitoring and persistence were not changed.
+
+## Published releases
 
 The public [0.2.0 preview](https://github.com/DeadeyeDuncan/DeadWare/releases/tag/v0.2.0) was published on 2026-10-25 from commit `7023b68`. Its [Windows build](https://github.com/DeadeyeDuncan/DeadWare/actions/runs/40240862148) and [release workflow](https://github.com/DeadeyeDuncan/DeadWare/actions/runs/40241033973) passed. The downloaded Windows x64 ZIP matched both its checksum file and GitHub's asset digest: `b91382259a2f5413c04ab7de04748a86ec522f93ff01ee88775aaec69fafcb51`. Required app/runtime/license files were present, with no local settings or NuGet restore file included.
 

@@ -159,8 +159,8 @@ internal sealed class GraphWindow : Window
 {
     public GraphWindow(UiSession session,string kind)
     {
-        Title=$"DeadWare · {Ui.Title(kind)}";MinWidth=420;MinHeight=300;Ui.Icon(this);session.Place(this,kind,680,430);
-        var root=new DockPanel {Margin=new Thickness(12)};var bar=new DockPanel();var pin=new CheckBox {Content="Always on top",IsChecked=Topmost,VerticalAlignment=VerticalAlignment.Center};pin.Checked+=(_,_)=>Topmost=true;pin.Unchecked+=(_,_)=>Topmost=false;DockPanel.SetDock(pin,Dock.Right);bar.Children.Add(pin);bar.Children.Add(Ui.Range(session));DockPanel.SetDock(bar,Dock.Top);root.Children.Add(bar);root.Children.Add(new ChartCard(session,kind,false));Content=root;
+        Title=$"DeadWare · {Ui.Title(kind)}";MinWidth=300;MinHeight=180;Ui.Icon(this);session.Place(this,kind,420,230);
+        Content=new CompactGraph(session,kind,this) {Margin=new Thickness(6)};
     }
 }
 internal sealed class WidgetWindow : Window

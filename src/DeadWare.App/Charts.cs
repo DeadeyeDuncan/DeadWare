@@ -44,7 +44,7 @@ internal static class Ui
 }
 
 /// <summary>Native WPF drawing; real timestamps set X coordinates and missing readings split the line.</summary>
-internal sealed class HistoryChart(UiSession session,string kind) : FrameworkElement
+internal sealed class HistoryChart(UiSession session,string kind,bool compact=false) : FrameworkElement
 {
     private readonly UiSession session=session;
     private readonly string kind=kind;
@@ -52,24 +52,29 @@ internal sealed class HistoryChart(UiSession session,string kind) : FrameworkEle
     protected override void OnRender(DrawingContext dc)
     {
         base.OnRender(dc);
-        double w=ActualWidth,h=ActualHeight;if(w<90||h<65)return;
+        double w=ActualWidth,h=ActualHeight;if(w<90||h<(compact?48:65))return;
         var axisLabel=Formatted("Now");
-        double left=12,top=18,right=74,bottom=axisLabel.Height+18,pw=w-left-right,ph=h-top-bottom;
         var sample=session.Current?.Sample;
         double now=session.Collector.ElapsedSeconds;
         var points=session.Collector.History.Series(session.MetricId(kind),now,session.HistorySeconds);
         var up=kind=="network"?session.Collector.History.Series("network/upload",now,session.HistorySeconds):[];
         double maximum=kind is "cpu" or "gpu"?100:kind=="network"?Math.Max(1000,points.Concat(up).Where(p=>p.Value.HasValue).Select(p=>p.Value!.Value).DefaultIfEmpty(0).Max()*1.15):Math.Max(100,points.Where(p=>p.Value.HasValue).Select(p=>p.Value!.Value).DefaultIfEmpty(0).Max()*1.1);
+        string Axis(double value)=>kind=="network"?Ui.Bytes(value,true):$"{value:0}{(kind.Contains("temp")?"°":"%")}";
+        double left=compact?3:12,top=compact?8:18;
+        double right=compact?Enumerable.Range(0,3).Max(i=>Formatted(Axis(maximum*i/2)).Width)+10:74;
+        double bottom=axisLabel.Height+(compact?10:18),pw=w-left-right,ph=h-top-bottom;
+        if(pw<=0||ph<=0)return;
         for(int i=0;i<3;i++)
         {
             double value=maximum*i/2,y=top+ph*(1-value/maximum);
             dc.DrawLine(new Pen(Theme.Brush("Line"),1){DashStyle=new DashStyle([3,5],0)},new(left,y),new(left+pw,y));
-            Label(dc,kind=="network"?Ui.Bytes(value,true):$"{value:0}{(kind.Contains("temp")?"°":"%")}",left+pw+7,y-7);
+            Label(dc,Axis(value),left+pw+7,y-7);
         }
-        Label(dc,$"{session.HistorySeconds/60} min ago",left,h-axisLabel.Height-6);Label(dc,"Now",left+pw-axisLabel.Width,h-axisLabel.Height-6);
+        double timeLabelY=h-axisLabel.Height-(compact?2:6);
+        Label(dc,$"{session.HistorySeconds/60} min ago",left,timeLabelY);Label(dc,"Now",left+pw-axisLabel.Width,timeLabelY);
         DrawSeries(dc,points,now,maximum,left,top,pw,ph,kind=="network"?"Download":kind.StartsWith("gpu")?"Gpu":"Cpu",false);
         if(kind=="network") DrawSeries(dc,up,now,maximum,left,top,pw,ph,"Cpu",true);
-        if(!points.Concat(up).Any(p=>p.Value.HasValue)) Label(dc,sample is null?"Waiting for first sample…":"No available readings in this range",left+15,top+ph/2);
+        if(!points.Concat(up).Any(p=>p.Value.HasValue)) Label(dc,sample is null?(compact?"Waiting for data…":"Waiting for first sample…"):(compact?"No readings in this range":"No available readings in this range"),left+(compact?4:15),top+ph/2);
     }
     private void DrawSeries(DrawingContext dc,IReadOnlyList<SamplePoint> points,double now,double maximum,double left,double top,double width,double height,string color,bool dashed)
     {
