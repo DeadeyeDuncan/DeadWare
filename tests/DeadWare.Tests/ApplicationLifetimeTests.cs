@@ -5,6 +5,36 @@ namespace DeadWare.Tests;
 
 public class ApplicationLifetimeTests
 {
+    [Fact] public void OldSettingsKeepTheDashboardVisibleAtWindowsStartup()
+    {
+        var settings=SettingsCodec.Read("""{"RestoreOpenWindows":true,"OpenWindows":["gpu","widget"]}""").Settings;
+        Assert.False(settings.StartInTray);Assert.False(new UserSettings().StartInTray);
+        Assert.True(ApplicationLifetime.ShouldShowDashboardOnLaunch(true,settings.StartInTray,true));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void StartInTrayRoundtripPreservesLayoutPreference(bool enabled)
+    {
+        var settings=new UserSettings {StartInTray=enabled,RestoreOpenWindows=true,OpenWindows=["gpu","widget"]};
+        var restored=SettingsCodec.Read(SettingsCodec.Write(settings)).Settings;
+        Assert.Equal(enabled,restored.StartInTray);Assert.True(restored.RestoreOpenWindows);
+        Assert.Equal(new[]{"gpu","widget"},restored.OpenWindows);
+    }
+
+    [Theory]
+    [InlineData(false,false,false,true)]
+    [InlineData(false,false,true,true)]
+    [InlineData(false,true,false,true)]
+    [InlineData(false,true,true,true)]
+    [InlineData(true,false,false,true)]
+    [InlineData(true,false,true,true)]
+    [InlineData(true,true,false,true)]
+    [InlineData(true,true,true,false)]
+    public void OnlyAutomaticOptedInLaunchWithWorkingTrayHidesDashboard(bool startup,bool enabled,bool trayAvailable,bool visible)
+        =>Assert.Equal(visible,ApplicationLifetime.ShouldShowDashboardOnLaunch(startup,enabled,trayAvailable));
+
     [Fact] public void DashboardCloseHidesOnlyWhenTheTrayCanRestoreIt()
     {
         var lifetime=new ApplicationLifetime();

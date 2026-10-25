@@ -83,6 +83,9 @@ public sealed class MainWindow : Window
         startup.Checked+=async (_,_)=>{if(!syncingStartup)await ChangeStartupAsync(true);};
         startup.Unchecked+=async (_,_)=>{if(!syncingStartup)await ChangeStartupAsync(false);};
         stack.Children.Add(startup);stack.Children.Add(startupStatus);startupResult.Margin=new(0,8,0,4);stack.Children.Add(startupResult);
+        var startInTray=new CheckBox {Content="Start in the system tray",IsChecked=session.Settings.StartInTray,Margin=new Thickness(0,10,0,6)};
+        startInTray.Checked+=(_,_)=>session.SetStartInTray(true);startInTray.Unchecked+=(_,_)=>session.SetStartInTray(false);stack.Children.Add(startInTray);
+        stack.Children.Add(Ui.Text("At Windows sign-in, hide only the dashboard. Graphs and the widget still follow the reopen setting above. Manual launches show the dashboard.",12,"Muted"));
         startupRepair=Ui.Button("Enable / repair startup",()=>_ = ChangeStartupAsync(true));
         startupDisable=Ui.Button("Disable startup",()=>_ = ChangeStartupAsync(false));
         startupRefresh=Ui.Button("Refresh status",()=>_ = RefreshStartupAsync());

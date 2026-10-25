@@ -7,6 +7,7 @@ public sealed class ApplicationLifetime
 {
     private Task? quit;
     public bool IsEnding {get;private set;}
+    public static bool ShouldShowDashboardOnLaunch(bool windowsStartup,bool startInTray,bool trayAvailable)=>!windowsStartup||!startInTray||!trayAvailable;
     public DashboardCloseBehavior GetDashboardCloseBehavior(bool trayAvailable)=>IsEnding?DashboardCloseBehavior.AllowClose:trayAvailable?DashboardCloseBehavior.Hide:DashboardCloseBehavior.KeepVisible;
     public void BeginSessionEnding()=>IsEnding=true;
 

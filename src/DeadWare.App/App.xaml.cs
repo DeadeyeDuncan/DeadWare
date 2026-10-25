@@ -34,7 +34,9 @@ public partial class App : Application
             var main=new MainWindow(session,lifetime,()=>tray is not null,RequestQuit);MainWindow=main;
             try {tray=new TrayIcon(Dispatcher,ShowDashboard,RequestQuit);}
             catch(Exception) {main.SetTrayUnavailable();}
-            main.Show();session.Start();
+            bool windowsStartup=e.Args.Contains("--startup")&&!e.Args.Contains("--restart-from");
+            if(ApplicationLifetime.ShouldShowDashboardOnLaunch(windowsStartup,session.Settings.StartInTray,tray is not null))main.Show();
+            session.Start();
         }
         catch(Exception ex) {MessageBox.Show($"DeadWare could not start: {ex.Message}","DeadWare",MessageBoxButton.OK,MessageBoxImage.Error);await QuitAsync(1);}
     }

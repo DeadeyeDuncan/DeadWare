@@ -106,6 +106,7 @@ public record WindowPlacement(double Left,double Top,double Width,double Height,
 public sealed class UserSettings
 {
     public bool RestoreOpenWindows {get;set;}=true;
+    public bool StartInTray {get;set;}
     public List<string> OpenWindows {get;set;}=new();
     public string WindowPlacementFormat {get;set;}=WindowCoordinates.Format;
     public bool ExtendedSensors {get;set;}

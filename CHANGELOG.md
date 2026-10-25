@@ -4,6 +4,7 @@
 
 - Closing the dashboard now hides it in the system tray while pop-out graphs, the widget and monitoring keep running.
 - Reopen the same dashboard from the tray icon; use Quit DeadWare in the tray menu or dashboard to fully exit.
+- Optional Start in the system tray setting hides the dashboard at Windows sign-in while restoring your chosen graphs and widget.
 - Full quit saves the open workspace for next launch. Administrator restart and Windows sign-out keep their shutdown behavior.
 
 ## 0.2.1 — Compact graph windows
