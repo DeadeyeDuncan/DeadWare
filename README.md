@@ -17,6 +17,8 @@ DeadWare is a Windows desktop monitor for watching CPU/GPU usage and temperature
 - Searchable sensor readings with minimum, maximum and average values.
 - Selectable graphics adapters on multi-GPU systems.
 - Separate graph windows and a compact widget with always-on-top controls.
+- Restore the graphs and widget left open, including their saved positions and sizes.
+- Optional administrator startup at your Windows sign-in.
 - Shared 1-, 5- and 15-minute history; all windows use one collector.
 - Five saved themes: **Midnight**, **Ember**, **Glacier**, **Amethyst**, and **Daylight**.
 
@@ -27,6 +29,16 @@ Get the Windows x64 ZIP from [Releases](https://github.com/DeadeyeDuncan/DeadWar
 Windows 10/11 x64 is the initial target. ARM64 and other operating systems are not validated. Releases remain previews while hardware coverage expands.
 
 Start as a normal user. If a capability needs additional permissions, the app shows its status and provides an explicit administrator restart action. Administrator access does not guarantee every sensor is available. DeadWare does not disable Windows protections or install a custom monitoring driver.
+
+## Startup and saved workspace
+
+In **Desktop layout**, enable **Start with Windows** to launch DeadWare as administrator when you sign in. Windows approval is needed to configure this option. It creates a task for your Windows account, runs only in your signed-in session, and stores no password. You can turn it off from the same page. Only one monitoring instance runs at a time.
+
+Keep window restoration enabled, open the graphs and widget you want, and arrange them. Leave those windows open when you close the main DeadWare window: they will reopen with their saved positions, sizes and always-on-top choices. Closing a graph or widget individually keeps it closed next time. Positions are kept within available monitors if your display setup changes. Readings and graph history start a new session.
+
+Version 0.1.0 saved window positions but did not record which windows were open. After upgrading, arrange your desired windows once to establish the saved workspace.
+
+Startup points to the executable's current location. Keep the extracted folder in a permanent location. If you move it, enable startup again from the new location; disable startup before removing the app. Close DeadWare before replacing files during an upgrade.
 
 ## Hardware compatibility
 
@@ -59,10 +71,10 @@ dotnet run --project src/DeadWare.App/DeadWare.App.csproj
 Create a self-contained portable ZIP and SHA-256 checksum:
 
 ```powershell
-pwsh -File scripts/publish.ps1 -Version 0.1.0
+pwsh -File scripts/publish.ps1 -Version 0.2.0
 ```
 
-The packaging script runs tests before publishing and writes output under `artifacts/`. GitHub Actions runs the same script. Pushing a version tag such as `v0.1.0` builds and publishes a **prerelease** after tests pass. Workflows use pinned action commits.
+The packaging script runs tests before publishing and writes output under `artifacts/`. GitHub Actions runs the same script. Pushing a version tag such as `v0.2.0` builds and publishes a **prerelease** after tests pass, using the matching `docs/releases/v0.2.0.md` release notes. Workflows use pinned action commits.
 
 ## Project direction
 

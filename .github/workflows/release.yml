@@ -30,5 +30,7 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           $files = Get-ChildItem artifacts/DeadWare-*-win-x64.zip* | Select-Object -ExpandProperty FullName
-          gh release create $env:RELEASE_TAG @files --verify-tag --prerelease --title "DeadWare $env:RELEASE_TAG" --notes-file docs/releases/first-release.md
+          $notes = Join-Path 'docs/releases' ($env:RELEASE_TAG + '.md')
+          if (-not (Test-Path -LiteralPath $notes -PathType Leaf)) { throw 'Version-specific release notes are missing.' }
+          gh release create $env:RELEASE_TAG @files --verify-tag --prerelease --title "DeadWare $env:RELEASE_TAG" --notes-file $notes
           if ($LASTEXITCODE -ne 0) { throw 'Release creation failed' }

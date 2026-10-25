@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.0 — Startup and saved workspace
+
+- Optional administrator startup at Windows sign-in, with per-user registration and an in-app disable control.
+- Restore previously open pop-out graphs and the desktop widget, including saved positions, sizes and topmost choices.
+- Checkpoint workspace changes and preserve open windows during application shutdown and administrator restart.
+- Prevent duplicate monitoring instances when starting from Windows or opening the app again.
+
 ## 0.1.0 — First preview
 
 - Real CPU/GPU usage and temperature charts with detected hardware and explicit sensor availability.
