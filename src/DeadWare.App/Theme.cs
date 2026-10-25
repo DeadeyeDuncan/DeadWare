@@ -5,6 +5,9 @@ internal static class Theme
 {
     public static string CurrentName {get;private set;}="Midnight";
     public static bool IsDark=>CurrentName!="Daylight";
+    // Binding source for the stock ScrollViewer corner; shared Style resources do not
+    // reliably inherit application DynamicResource invalidation after a palette switch.
+    public static SolidColorBrush ScrollCorner {get;}=new();
     public static readonly string[] Names=["Midnight","Ember","Glacier","Amethyst","Daylight"];
     private static readonly Dictionary<string,string[]> Palettes=new()
     {
@@ -42,7 +45,7 @@ internal static class Theme
             Application.Current.Resources["ScrollDisabled"]=Brush("Line");
         }
         Application.Current.Resources["ScrollThumbHover"]=SystemParameters.HighContrast?SystemColors.HighlightBrush:Brush("Muted");
-        Application.Current.Resources["ScrollCornerColor"]=((SolidColorBrush)Brush("Panel")).Color;
+        ScrollCorner.Color=((SolidColorBrush)Brush("Panel")).Color;
         NativeTheme.RefreshOpenWindows();
     }
     public static Brush Brush(string name)=>(Brush)Application.Current.Resources[name];
