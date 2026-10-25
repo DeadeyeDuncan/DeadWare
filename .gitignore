@@ -1,0 +1,12 @@
+.superpowers/
+.tools/
+**/bin/
+**/obj/
+artifacts/
+TestResults/
+*.user
+*.suo
+.vs/
+*.log
+*.etl
+*.dmp
