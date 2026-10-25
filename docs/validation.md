@@ -54,7 +54,15 @@ Isolated offscreen WPF checks covered all five graph types at the new 300×180 m
 
 The graph options popup uses WPF outside-click dismissal and explicit Escape/focus handling. These native interactions were reviewed but not exercised by the offscreen harness. Existing saved sizes are retained; users can resize pop-outs to the smaller minimum. Dashboard cards, the widget, monitoring and persistence were not changed.
 
-## Published releases
+## Tray lifetime (0.3.0)
+
+The Release build completed without warnings or errors and all 60 tests passed. Four lifecycle tests cover hide versus unavailable-tray fallback, session-ending close behavior, reentrant/repeated quit, and cleanup after teardown failure. Independent review accepted the implementation after a session-ending cleanup gap was corrected.
+
+A separate native-free WPF probe passed 79 checks against the actual dashboard close handler, session shutdown, App session-ending/exit hooks and isolated saved settings. Hiding did not cancel the collector, close detached windows or change the remembered set. Explicit quit closed fixture windows and persisted their open set. Failure paths still reached cleanup, and normal quit/session ending reused one collector-stop task. A never-completing hardware-worker fixture returned from the session-ending stop after approximately 3.01 seconds. This bounded path runs without a dispatcher continuation; it requests ETW disposal before awaiting hardware completion. The three-second deadline is a best-effort limit, not a guarantee that every stuck provider completes.
+
+These checks used no native tray, displayed windows, live collector, UAC, real Windows sign-out or user settings. Native tray clicks and visibility require the installed-app smoke check. Explorer restart and actual Windows sign-out are not covered by the fixture checks.
+
+## Published release records
 
 The public [0.2.1 preview](https://github.com/DeadeyeDuncan/DeadWare/releases/tag/v0.2.1) was published on 2026-10-25 from commit `60f4e9c`. The [Windows build](https://github.com/DeadeyeDuncan/DeadWare/actions/runs/40241998790) and [release workflow](https://github.com/DeadeyeDuncan/DeadWare/actions/runs/40242000182) passed. Its downloaded Windows x64 ZIP matched both the checksum file and GitHub asset digest: `180d9b48e86f5ab7e162da24bf18c38bc3ec95542d184c915b61809d648bc804`. The archive contained required app/runtime/license files and no local settings or NuGet restore file. After the user closed the prior version, the compact update was installed at the existing path and launched through the administrator startup task. Native inspection found one app process with the dashboard and GPU graph windows open; a GPU graph was sized 406×204 pixels, below the former minimum. Computer Use remained off.
 

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.0 — Keep monitoring from the tray
+
+- Closing the dashboard now hides it in the system tray while pop-out graphs, the widget and monitoring keep running.
+- Reopen the same dashboard from the tray icon; use Quit DeadWare in the tray menu or dashboard to fully exit.
+- Full quit saves the open workspace for next launch. Administrator restart and Windows sign-out keep their shutdown behavior.
+
 ## 0.2.1 — Compact graph windows
 
 - Smaller pop-out graphs with a compact header and prominent current readings.

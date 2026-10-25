@@ -8,6 +8,8 @@ namespace DeadWare.App;
 public sealed class MainWindow : Window
 {
     private readonly UiSession session;
+    private readonly ApplicationLifetime lifetime;
+    private readonly Func<bool> trayAvailable;
     private readonly ContentControl content=new();
     private readonly TextBlock heading=Ui.Text("System overview",28),subtitle=Ui.Text("The numbers you care about. Room to breathe.",13,"Muted"),status=Ui.Text("Starting the shared collector…",11,"Muted"),memory=Ui.Text("Memory —",12,"Muted"),networkStatus=Ui.Text("",12,"Warning"),networkEmpty=Ui.Text("",13,"Muted"),sensorCount=Ui.Text("",12,"Muted");
     private readonly ComboBox gpu=new(){MaxWidth=340,DisplayMemberPath="Name",SelectedValuePath="Id"};
@@ -18,17 +20,19 @@ public sealed class MainWindow : Window
     private readonly TextBlock startupStatus=Ui.Text("Startup status is checked when this page opens.",12,"Muted"),startupResult=Ui.Text("",12,"Warning");
     private Button startupRepair=null!,startupDisable=null!,startupRefresh=null!;
     private string page="overview",gpuSignature="";
-    private bool syncingGpu,closing,closed;
+    private bool syncingGpu;
     private bool syncingStartup,startupBusy;
-    public MainWindow(UiSession session)
+    private readonly TextBlock trayNotice=Ui.Text("Close hides to the system tray.\nQuit stops monitoring.",10,"Muted");
+    public MainWindow(UiSession session,ApplicationLifetime lifetime,Func<bool> trayAvailable,Action quit)
     {
-        this.session=session;Title="DeadWare";MinWidth=900;MinHeight=640;Ui.Icon(this);session.Place(this,"main",1220,900);
+        this.session=session;this.lifetime=lifetime;this.trayAvailable=trayAvailable;Title="DeadWare";MinWidth=900;MinHeight=640;Ui.Icon(this);session.Place(this,"main",1220,900);
         var shell=new Grid();shell.ColumnDefinitions.Add(new(){Width=new GridLength(185)});shell.ColumnDefinitions.Add(new(){Width=new GridLength(1,GridUnitType.Star)});Content=shell;
         var sidebar=new DockPanel {Margin=new Thickness(14,24,14,16)};Grid.SetColumn(sidebar,0);shell.Children.Add(sidebar);
         var brand=Ui.Row(Ui.Logo(),Ui.Text("DeadWare",21));brand.Margin=new(0,0,0,27);DockPanel.SetDock(brand,Dock.Top);sidebar.Children.Add(brand);
         var sideBottom=new StackPanel();DockPanel.SetDock(sideBottom,Dock.Bottom);sidebar.Children.Add(sideBottom);
         sideBottom.Children.Add(Ui.Text("COLOR THEME",10,"Muted"));var theme=new ComboBox {ItemsSource=Theme.Names,SelectedItem=session.Settings.Theme,Margin=new Thickness(0,8,0,15)};theme.SelectionChanged+=(_,_)=>{if(theme.SelectedItem is string name)session.SetTheme(name);};sideBottom.Children.Add(theme);
         var elevate=Ui.Button("Restart as administrator",session.RestartElevated);elevate.FontSize=10;sideBottom.Children.Add(elevate);
+        var quitButton=Ui.Button("Quit DeadWare",quit);quitButton.FontSize=11;sideBottom.Children.Add(quitButton);trayNotice.Margin=new Thickness(3,5,3,8);sideBottom.Children.Add(trayNotice);
         sideBottom.Children.Add(Ui.Text($"Local monitoring\n1 second samples · 15 min memory\nv{BuildInfo.Version}",10,"Muted"));
         var nav=new StackPanel();sidebar.Children.Add(nav);
         foreach(var item in new[]{("overview","▦  Overview"),("network","⇄  Network"),("sensors","≡  Sensors"),("desktop","▱  Desktop layout")})
@@ -73,7 +77,7 @@ public sealed class MainWindow : Window
         stack.Children.Add(Ui.Text("Your readings, wherever you need them",20));var intro=Ui.Text("Open any graph in its own resizable native window. Choose Always on top to keep it visible while you work. All windows share the same readings, selected GPU, history range and theme.",14,"Muted");intro.Margin=new(0,12,0,24);stack.Children.Add(intro);
         foreach(var kind in new[]{"cpu","gpu","cputemp","gputemp","network"}){var key=kind;var button=Ui.Button("↗  "+Ui.Title(kind),()=>session.OpenDetached(key));button.HorizontalAlignment=HorizontalAlignment.Left;button.MinWidth=240;button.Margin=new(0,4,0,4);stack.Children.Add(button);}
         var open=Ui.Button("↗  Compact desktop widget",()=>session.OpenDetached("widget"));open.HorizontalAlignment=HorizontalAlignment.Left;open.MinWidth=240;open.Margin=new(0,20,0,4);stack.Children.Add(open);
-        var saved=Ui.Text("Positions, sizes and Always on top choices are saved as you work. Closing the main window saves the windows left open for next time and stops collection. Close an individual graph or widget to leave it closed next time.",12,"Muted");saved.Margin=new(0,20,0,0);stack.Children.Add(saved);
+        var saved=Ui.Text("Positions, sizes and Always on top choices are saved as you work. Closing the dashboard hides it to the system tray while graphs and the widget keep monitoring. Choose Quit DeadWare to save the windows left open for next time and stop collection. Close an individual graph or widget to leave it closed next time.",12,"Muted");saved.Margin=new(0,20,0,0);stack.Children.Add(saved);
         var restore=new CheckBox {Content="Reopen graphs and widget from the previous session",IsChecked=session.Settings.RestoreOpenWindows,Margin=new Thickness(0,18,0,8)};
         restore.Checked+=(_,_)=>session.SetRestoreOpenWindows(true);restore.Unchecked+=(_,_)=>session.SetRestoreOpenWindows(false);stack.Children.Add(restore);
         startup.Checked+=async (_,_)=>{if(!syncingStartup)await ChangeStartupAsync(true);};
@@ -148,11 +152,15 @@ public sealed class MainWindow : Window
             }).ToArray();sensors.ItemsSource=rows;sensorCount.Text=$"{rows.Length} sensors · statistics over {session.HistorySeconds/60} minute{(session.HistorySeconds==60?"":"s")} · — means unavailable";
         }
     }
-    private async void OnClosing(object? sender,CancelEventArgs e)
+    public void SetTrayUnavailable()=>trayNotice.Text="System tray unavailable. Keep this window open; use Quit DeadWare to exit.";
+    private void OnClosing(object? sender,CancelEventArgs e)
     {
-        if(closed)return;e.Cancel=true;if(closing)return;closing=true;IsEnabled=false;status.Text="Stopping collectors and saving window positions…";
-        try {await session.ShutdownAsync();}catch(Exception ex){MessageBox.Show($"A collector reported a shutdown error: {ex.Message}","DeadWare");}
-        closed=true;Application.Current.Shutdown();
+        switch(lifetime.GetDashboardCloseBehavior(trayAvailable()))
+        {
+            case DashboardCloseBehavior.AllowClose:return;
+            case DashboardCloseBehavior.Hide:e.Cancel=true;Hide();return;
+            default:e.Cancel=true;SetTrayUnavailable();return;
+        }
     }
 }
 internal sealed class GraphWindow : Window

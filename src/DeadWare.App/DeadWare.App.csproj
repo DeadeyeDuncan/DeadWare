@@ -1,5 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
-  <PropertyGroup><OutputType>WinExe</OutputType><TargetFramework>net10.0-windows</TargetFramework><UseWPF>true</UseWPF><ApplicationManifest>app.manifest</ApplicationManifest><ApplicationIcon Condition="Exists('../../assets/deadware.ico')">../../assets/deadware.ico</ApplicationIcon><AssemblyName>DeadWare</AssemblyName><RootNamespace>DeadWare.App</RootNamespace><Platforms>AnyCPU;x64</Platforms></PropertyGroup>
+  <PropertyGroup><OutputType>WinExe</OutputType><TargetFramework>net10.0-windows</TargetFramework><UseWPF>true</UseWPF><UseWindowsForms>true</UseWindowsForms><ApplicationManifest>app.manifest</ApplicationManifest><ApplicationIcon Condition="Exists('../../assets/deadware.ico')">../../assets/deadware.ico</ApplicationIcon><AssemblyName>DeadWare</AssemblyName><RootNamespace>DeadWare.App</RootNamespace><Platforms>AnyCPU;x64</Platforms></PropertyGroup>
+  <ItemGroup><Using Remove="System.Drawing"/><Using Remove="System.Windows.Forms"/></ItemGroup>
   <ItemGroup><ProjectReference Include="../DeadWare.Core/DeadWare.Core.csproj"/><PackageReference Include="LibreHardwareMonitorLib" Version="0.9.6"/><PackageReference Include="Microsoft.Diagnostics.Tracing.TraceEvent" Version="4.0.0"/></ItemGroup>
   <ItemGroup><Resource Include="../../assets/deadware.png" Link="Assets/deadware.png" Condition="Exists('../../assets/deadware.png')"/><Resource Include="../../assets/deadware.ico" Link="Assets/deadware.ico" Condition="Exists('../../assets/deadware.ico')"/></ItemGroup>
 </Project>

@@ -8,6 +8,8 @@ public partial class App : Application
 {
     private GuiInstance? instance;
     private UiSession? session;
+    private TrayIcon? tray;
+    private readonly ApplicationLifetime lifetime=new();
     protected override async void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
@@ -24,20 +26,46 @@ public partial class App : Application
             instance=new GuiInstance();
             if(!instance.Acquired)
             {
-                if(!e.Args.Contains("--startup"))MessageBox.Show("DeadWare is already running in this Windows session. Use its open main window or taskbar button.","DeadWare",MessageBoxButton.OK,MessageBoxImage.Information);
+                if(!e.Args.Contains("--startup"))MessageBox.Show("DeadWare is already running in this Windows session. Double-click its system tray icon or right-click it and choose Show dashboard. The icon may be in the tray overflow.","DeadWare",MessageBoxButton.OK,MessageBoxImage.Information);
                 Shutdown();return;
             }
             session=new UiSession(LayoutDiagnostics.RequestedPath(e.Args));
             Theme.Apply(session.Settings.Theme);
-            var main=new MainWindow(session);MainWindow=main;main.Show();session.Start();
+            var main=new MainWindow(session,lifetime,()=>tray is not null,RequestQuit);MainWindow=main;
+            try {tray=new TrayIcon(Dispatcher,ShowDashboard,RequestQuit);}
+            catch(Exception) {main.SetTrayUnavailable();}
+            main.Show();session.Start();
         }
-        catch(Exception ex) {MessageBox.Show($"DeadWare could not start: {ex.Message}","DeadWare",MessageBoxButton.OK,MessageBoxImage.Error);Shutdown(1);}
+        catch(Exception ex) {MessageBox.Show($"DeadWare could not start: {ex.Message}","DeadWare",MessageBoxButton.OK,MessageBoxImage.Error);await QuitAsync(1);}
     }
+    private void ShowDashboard()
+    {
+        if(lifetime.IsEnding||MainWindow is not MainWindow main)return;
+        main.Show();if(main.WindowState==WindowState.Minimized)main.WindowState=WindowState.Normal;main.Activate();
+    }
+    private async void RequestQuit()=>await QuitAsync();
+    internal Task QuitAsync(int exitCode=0)=>lifetime.QuitAsync(async ()=>
+    {
+        if(MainWindow is not null)MainWindow.IsEnabled=false;
+        try {if(session is not null)await session.ShutdownAsync();}
+        catch(Exception ex) {MessageBox.Show($"DeadWare reported a shutdown error: {ex.Message}","DeadWare",MessageBoxButton.OK,MessageBoxImage.Warning);}
+    },()=>{try {DisposeTray();}finally {Shutdown(exitCode);}});
+    private void DisposeTray() {var current=tray;tray=null;current?.Dispose();}
     protected override void OnSessionEnding(SessionEndingCancelEventArgs e)
     {
-        session?.SaveForSessionEnding();base.OnSessionEnding(e);
+        lifetime.BeginSessionEnding();
+        try {session?.SaveForSessionEnding();}
+        finally
+        {
+            try {session?.StopCollectorForSessionEnding();}
+            finally {try {DisposeTray();}finally {base.OnSessionEnding(e);}}
+        }
     }
-    protected override void OnExit(ExitEventArgs e) {instance?.Dispose();base.OnExit(e);}
+    protected override void OnExit(ExitEventArgs e)
+    {
+        lifetime.BeginSessionEnding();
+        try {DisposeTray();}finally {try {instance?.Dispose();}finally {base.OnExit(e);}}
+    }
     private static async Task<int> DiagnoseAsync(string[] args)
     {
         Collector? collector=null;string? output=null;int exit=0;string status="Starting";

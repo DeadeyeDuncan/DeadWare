@@ -16,6 +16,7 @@ public sealed class UiSession
     private long saveRevision;
     private bool restarting;
     private Task? shutdown;
+    private Task? collectorStop;
     private readonly DispatcherTimer timer=new() {Interval=TimeSpan.FromSeconds(1)};
     private readonly DispatcherTimer saveTimer=new() {Interval=TimeSpan.FromMilliseconds(500)};
     private readonly Dictionary<string,Window> detached=new();
@@ -95,6 +96,19 @@ public sealed class UiSession
         catch(Exception e) when(e is IOException or UnauthorizedAccessException) {SettingsStatus="The final window layout could not be saved.";diagnostics?.Record("final_save_failed",new {Revision=saveRevision},e);}
         catch(Exception e) {diagnostics?.Record("final_save_failed",new {Revision=saveRevision},e);throw;}
     }
+    private Task StopCollectorAsync()=>collectorStop??=Task.Run(async ()=>await Collector.DisposeAsync().ConfigureAwait(false));
+    internal void StopCollectorForSessionEnding()
+    {
+        // Windows session ending cannot wait for a dispatcher continuation. The shared stop
+        // runs entirely on the pool, stops ETW first, and is bounded even if hardware hangs.
+        try
+        {
+            StopCollectorAsync().WaitAsync(TimeSpan.FromSeconds(3)).GetAwaiter().GetResult();
+            diagnostics?.Record("session_end_collector_stopped");
+        }
+        catch(TimeoutException e) {diagnostics?.Record("session_end_collector_stop_timeout",new {DeadlineSeconds=3},e);}
+        catch(Exception e) {diagnostics?.Record("session_end_collector_stop_failed",error:e);}
+    }
     public void Place(Window window,string key,double width,double height)
     {
         window.Width=width;window.Height=height;
@@ -137,7 +151,7 @@ public sealed class UiSession
         diagnostics?.Record("shutdown_begin",new {OpenWindows=layout.Remembered});
         layout.BeginShutdown();timer.Stop();saveTimer.Stop();CaptureAll();
         foreach(var window in detached.Values.ToArray())window.Close();
-        await SaveAsync();await Collector.DisposeAsync();
+        try {await SaveAsync();}finally {await StopCollectorAsync();}
         diagnostics?.Record("shutdown_completed");
     }
     public async void RestartElevated()
@@ -147,7 +161,7 @@ public sealed class UiSession
         {
             CaptureAll();await SaveAsync();
             diagnostics?.Record("administrator_restart_requested");
-            if(await GuiInstance.LaunchElevatedReplacementAsync(diagnostics?.OutputPath))Application.Current.MainWindow.Close();
+            if(await GuiInstance.LaunchElevatedReplacementAsync(diagnostics?.OutputPath))await ((App)Application.Current).QuitAsync();
             else MessageBox.Show("The administrator replacement did not confirm this Windows user. Monitoring continues with current permissions.","DeadWare");
         }
         catch(System.ComponentModel.Win32Exception e) {MessageBox.Show(e.NativeErrorCode==1223?"Administrator restart was cancelled. Monitoring continues with current permissions.":"Windows could not restart DeadWare as administrator.","DeadWare");}

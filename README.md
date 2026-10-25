@@ -18,6 +18,7 @@ DeadWare is a Windows desktop monitor for watching CPU/GPU usage and temperature
 - Selectable graphics adapters on multi-GPU systems.
 - Separate graph windows and a compact widget with always-on-top controls.
 - Compact pop-out graphs prioritize the current reading and chart; their options menu holds history range, Always on top and sensor statistics.
+- Close the dashboard to the system tray and keep graphs, the widget and monitoring running independently.
 - Restore the graphs and widget left open, including their saved positions and sizes.
 - Optional administrator startup at your Windows sign-in.
 - Shared 1-, 5- and 15-minute history; all windows use one collector.
@@ -36,11 +37,13 @@ Start as a normal user. If a capability needs additional permissions, the app sh
 
 In **Desktop layout**, enable **Start with Windows** to launch DeadWare as administrator when you sign in. Windows approval is needed to configure this option. It creates a task for your Windows account, runs only in your signed-in session, and stores no password. You can turn it off from the same page. Only one monitoring instance runs at a time.
 
-Keep window restoration enabled, open the graphs and widget you want, and arrange them. Leave those windows open when you close the main DeadWare window: they will reopen with their saved positions, sizes and always-on-top choices. Closing a graph or widget individually keeps it closed next time. Positions are kept within available monitors if your display setup changes. Readings and graph history start a new session.
+Closing the dashboard with its X or Alt+F4 hides it in the system tray. Pop-out graphs, the widget and monitoring keep running, even with no dashboard open. Double-click the DeadWare tray icon or right-click it and choose **Show dashboard** to reopen it. Windows may place the icon in the hidden-icons area next to the clock.
+
+To fully stop monitoring, choose **Quit DeadWare** from the tray menu or dashboard. Keep window restoration enabled and leave your desired graphs and widget open when you quit: they will reopen with their saved positions, sizes and always-on-top choices. Closing a graph or widget individually keeps it closed next time. Positions are kept within available monitors if your display setup changes. Readings and graph history start a new session after a full quit; hiding the dashboard does not reset them.
 
 Version 0.1.0 saved window positions but did not record which windows were open. After upgrading, arrange your desired windows once to establish the saved workspace.
 
-Startup points to the executable's current location. Keep the extracted folder in a permanent location. If you move it, enable startup again from the new location; disable startup before removing the app. Close DeadWare before replacing files during an upgrade.
+Startup points to the executable's current location. Keep the extracted folder in a permanent location. If you move it, enable startup again from the new location; disable startup before removing the app. Choose **Quit DeadWare** before replacing files during an upgrade; closing the dashboard alone leaves it running.
 
 ## Hardware compatibility
 
