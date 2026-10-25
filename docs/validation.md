@@ -62,7 +62,9 @@ A separate native-free WPF probe passed 94 checks against the actual dashboard c
 
 The Start in the system tray checkbox persisted both states through its actual event handlers. Old settings default to showing the dashboard, and a never-shown dashboard retained its saved placement while quitting with the graph/widget set preserved. The startup policy hides only an opted-in Windows startup with an available tray; fresh manual launches, administrator replacements and tray failures show the dashboard. Actual hidden startup and later native activation remain runtime checks.
 
-These checks used no native tray, displayed windows, live collector, UAC, real Windows sign-out or user settings. Native tray clicks and visibility require the installed-app smoke check. Explorer restart and actual Windows sign-out are not covered by the fixture checks.
+These fixture checks used no native tray, displayed windows, live collector, UAC, real Windows sign-out or user settings. Explorer restart and actual Windows sign-out are not covered by them.
+
+The user then confirmed the installed 0.3.0 dashboard could hide while graphs kept updating, reopen through the tray, and fully quit through Quit DeadWare. Process inspection confirmed the old instance exited. The user enabled Start in the system tray; a fresh launch through the existing administrator startup task left the dashboard hidden and restored all five graph windows. Native inspection matched every saved position, size and topmost flag from the pre-quit snapshot. A second `--startup` launch exited successfully without another monitoring process. The app was left running with the dashboard hidden and the restored graphs visible. Computer Use stayed off throughout; no actual reboot/sign-out or new UAC handoff was performed.
 
 ## Published release records
 
