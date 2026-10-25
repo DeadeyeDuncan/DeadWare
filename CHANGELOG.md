@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Show the GPU selector only on Overview; remove it from Network, Sensors and Desktop layout without changing the selected adapter or history controls.
+
 ## 0.3.0 — Keep monitoring from the tray
 
 - Closing the dashboard now hides it in the system tray while pop-out graphs, the widget and monitoring keep running.

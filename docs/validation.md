@@ -66,7 +66,11 @@ These fixture checks used no native tray, displayed windows, live collector, UAC
 
 The user then confirmed the installed 0.3.0 dashboard could hide while graphs kept updating, reopen through the tray, and fully quit through Quit DeadWare. Process inspection confirmed the old instance exited. The user enabled Start in the system tray; a fresh launch through the existing administrator startup task left the dashboard hidden and restored all five graph windows. Native inspection matched every saved position, size and topmost flag from the pre-quit snapshot. A second `--startup` launch exited successfully without another monitoring process. The app was left running with the dashboard hidden and the restored graphs visible. Computer Use stayed off throughout; no actual reboot/sign-out or new UAC handoff was performed.
 
-## Published release records
+## Toolbar correction (unreleased)
+
+The GPU selector is now shown only on Overview. The Release build passed with no warnings or errors. A native-free navigation probe passed 22 checks through Overview, Network, Sensors and back: the GPU label and selector collapsed together, the same history controls remained available, GPU/history choices stayed unchanged and no settings were written. Desktop layout uses the same non-Overview visibility rule; its Task Scheduler query was not invoked by the probe. This correction is in source for the next update; the installed 0.3.0 binary was not replaced.
+
+## Release records
 
 The public [0.3.0 preview](https://github.com/DeadeyeDuncan/DeadWare/releases/tag/v0.3.0) was published on 2026-10-25 from commit `744669a`. The [Windows build](https://github.com/DeadeyeDuncan/DeadWare/actions/runs/40243803091) and [release workflow](https://github.com/DeadeyeDuncan/DeadWare/actions/runs/40243804738) passed. The downloaded Windows x64 ZIP matched its checksum file and GitHub asset digest: `781e4b856f31fb2b1ad4a40d1aa67abc7691a9c4193dadaf198025115ea4bc5c`. Required application, Windows Forms runtime and license files were present; no local settings or NuGet restore file was included. The installed build uses the same product code from `177e411`, followed only by validation documentation commits.
 
