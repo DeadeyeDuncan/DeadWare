@@ -85,4 +85,22 @@ public class StartupLayoutTests
         trigger.Add(new XElement(n+"EndBoundary","2020-01-01T00:00:00"));
         Assert.False(StartupTaskPolicy.IsCurrent(xml.ToString(),Sid,@"C:\Apps\DeadWare.exe"));
     }
+    [Theory]
+    [InlineData("<Interval>PT30M</Interval><Duration>PT1H</Duration><StopAtDurationEnd>true</StopAtDurationEnd>")]
+    [InlineData("<Interval>PT30M</Interval><StopAtDurationEnd>false</StopAtDurationEnd>")]
+    [InlineData("<Duration>PT1H</Duration><StopAtDurationEnd>true</StopAtDurationEnd>")]
+    public void RepeatingLogonTriggerRequiresRepair(string repetition)
+    {
+        var xml=XDocument.Parse(StartupTaskPolicy.CreateXml(Sid,@"C:\Apps\DeadWare.exe"));
+        XNamespace n="http://schemas.microsoft.com/windows/2004/02/mit/task";
+        xml.Descendants(n+"LogonTrigger").Single().AddFirst(XElement.Parse($"<Repetition xmlns=\"{n}\">{repetition}</Repetition>"));
+        Assert.False(StartupTaskPolicy.IsCurrent(xml.ToString(),Sid,@"C:\Apps\DeadWare.exe"));
+    }
+    [Fact] public void InactiveRepetitionDefaultsDoNotRequireRepair()
+    {
+        var xml=XDocument.Parse(StartupTaskPolicy.CreateXml(Sid,@"C:\Apps\DeadWare.exe"));
+        XNamespace n="http://schemas.microsoft.com/windows/2004/02/mit/task";
+        xml.Descendants(n+"LogonTrigger").Single().AddFirst(new XElement(n+"Repetition",new XElement(n+"StopAtDurationEnd","false")));
+        Assert.True(StartupTaskPolicy.IsCurrent(xml.ToString(),Sid,@"C:\Apps\DeadWare.exe"));
+    }
 }

@@ -78,11 +78,13 @@ public static class StartupTaskPolicy
         var task=Parse(xml);if(!Owned(task,sid))return false;
         var principal=task!.Element(Ns+"Principals")!.Element(Ns+"Principal");
         var triggers=task.Element(Ns+"Triggers")?.Elements().ToArray();
+        var repetition=triggers?.Length==1?triggers[0].Element(Ns+"Repetition"):null;
         var actions=task.Element(Ns+"Actions")?.Elements().ToArray();
         var settings=task.Element(Ns+"Settings");
         return Value(principal,"LogonType")=="InteractiveToken"&&Value(principal,"RunLevel")=="HighestAvailable"
             &&triggers?.Length==1&&triggers[0].Name==Ns+"LogonTrigger"&&Value(triggers[0],"UserId")==sid&&Value(triggers[0],"Enabled")!="false"
             &&Value(triggers[0],"ExecutionTimeLimit")=="PT0S"&&Value(triggers[0],"StartBoundary") is null&&Value(triggers[0],"EndBoundary") is null
+            &&Value(repetition,"Interval") is null&&Value(repetition,"Duration") is null&&(Value(repetition,"StopAtDurationEnd") is null or "false" or "0")
             &&actions?.Length==1&&actions[0].Name==Ns+"Exec"&&string.Equals(Value(actions[0],"Command"),executable,StringComparison.OrdinalIgnoreCase)
             &&Value(actions[0],"Arguments")=="--startup"&&string.Equals(Value(actions[0],"WorkingDirectory"),Path.GetDirectoryName(executable),StringComparison.OrdinalIgnoreCase)
             &&Value(settings,"Enabled")!="false"&&Value(settings,"MultipleInstancesPolicy")=="IgnoreNew"&&Value(settings,"ExecutionTimeLimit")=="PT0S"
