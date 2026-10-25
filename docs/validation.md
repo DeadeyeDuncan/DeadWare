@@ -29,3 +29,9 @@ On 2026-10-25 the user tested the corrected published build as administrator wit
 Real mixed-DPI multi-monitor restoration, sustained IPv4/IPv6 TCP/UDP attribution under trace loss, additional CPU/GPU vendors, motherboard sensors, laptops and ARM64 have not been validated. Automated tests cover the pure accounting, history and restoration logic; they cannot establish hardware compatibility or whole-system performance.
 
 Raw diagnostics remain local and are excluded from source control. Reports should redact personal details before upload.
+
+## Delivery
+
+The public [0.1.0 preview](https://github.com/DeadeyeDuncan/DeadWare/releases/tag/v0.1.0) was published on 2026-10-25 from commit `1a036e6`. The [Windows build](https://github.com/DeadeyeDuncan/DeadWare/actions/runs/40228886325) and [release workflow](https://github.com/DeadeyeDuncan/DeadWare/actions/runs/40229056889) both passed. CI uses the verified .NET SDK 10.0.402.
+
+The release contains a self-contained Windows x64 ZIP (approximately 69.5 MiB) and a SHA-256 file. The checksum file was checked against GitHub's uploaded-asset digest: `9a14b73592cecb17c1bbb443610b5826427284a43cb18dc9a16fc3fbcd4a5c3f`.
