@@ -25,7 +25,7 @@ public sealed class MainWindow : Window
         var sideBottom=new StackPanel();DockPanel.SetDock(sideBottom,Dock.Bottom);sidebar.Children.Add(sideBottom);
         sideBottom.Children.Add(Ui.Text("COLOR THEME",10,"Muted"));var theme=new ComboBox {ItemsSource=Theme.Names,SelectedItem=session.Settings.Theme,Margin=new Thickness(0,8,0,15)};theme.SelectionChanged+=(_,_)=>{if(theme.SelectedItem is string name)session.SetTheme(name);};sideBottom.Children.Add(theme);
         var elevate=Ui.Button("Restart as administrator",session.RestartElevated);elevate.FontSize=10;sideBottom.Children.Add(elevate);
-        sideBottom.Children.Add(Ui.Text("Local monitoring\n1 second samples · 15 min memory\nv0.1.0",10,"Muted"));
+        sideBottom.Children.Add(Ui.Text($"Local monitoring\n1 second samples · 15 min memory\nv{BuildInfo.Version}",10,"Muted"));
         var nav=new StackPanel();sidebar.Children.Add(nav);
         foreach(var item in new[]{("overview","▦  Overview"),("network","⇄  Network"),("sensors","≡  Sensors"),("desktop","▱  Desktop layout")})
         {var key=item.Item1;var button=Ui.Button(item.Item2,()=>Navigate(key));button.HorizontalContentAlignment=HorizontalAlignment.Left;button.Margin=new(0,3,0,3);button.Padding=new(10,13,10,13);nav.Children.Add(button);}
@@ -69,7 +69,11 @@ public sealed class MainWindow : Window
         stack.Children.Add(Ui.Text("Your readings, wherever you need them",20));var intro=Ui.Text("Open any graph in its own resizable native window. Choose Always on top to keep it visible while you work. All windows share the same readings, selected GPU, history range and theme.",14,"Muted");intro.Margin=new(0,12,0,24);stack.Children.Add(intro);
         foreach(var kind in new[]{"cpu","gpu","cputemp","gputemp","network"}){var key=kind;var button=Ui.Button("↗  "+Ui.Title(kind),()=>session.OpenDetached(key));button.HorizontalAlignment=HorizontalAlignment.Left;button.MinWidth=240;button.Margin=new(0,4,0,4);stack.Children.Add(button);}
         var open=Ui.Button("↗  Compact desktop widget",()=>session.OpenDetached("widget"));open.HorizontalAlignment=HorizontalAlignment.Left;open.MinWidth=240;open.Margin=new(0,20,0,4);stack.Children.Add(open);
-        var saved=Ui.Text("Window positions, sizes and topmost choices are remembered. Closing the main window also closes its graphs and stops collection.",12,"Muted");saved.Margin=new(0,20,0,0);stack.Children.Add(saved);return stack;
+        var saved=Ui.Text("Window positions, sizes and topmost choices are remembered. Closing the main window also closes its graphs and stops collection.",12,"Muted");saved.Margin=new(0,20,0,0);stack.Children.Add(saved);
+        var extended=new CheckBox {Content="Extended sensors (may affect responsiveness)",IsChecked=session.Settings.ExtendedSensors,Margin=new Thickness(0,22,0,8)};
+        extended.Checked+=(_,_)=>session.SetExtendedSensors(true);extended.Unchecked+=(_,_)=>session.SetExtendedSensors(false);stack.Children.Add(extended);
+        stack.Children.Add(Ui.Text("Includes motherboard, controller, storage and memory sensors. Off by default. Restart DeadWare after changing this setting.",12,"Muted"));
+        return stack;
     }
     private static void Column(DataGrid table,string title,string binding,double weight)=>table.Columns.Add(new DataGridTextColumn {Header=title,Binding=new Binding(binding),Width=new DataGridLength(weight,DataGridLengthUnitType.Star)});
     private void Navigate(string destination)

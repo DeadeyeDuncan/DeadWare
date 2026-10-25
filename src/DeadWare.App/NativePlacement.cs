@@ -5,6 +5,7 @@ using DeadWare.Core;
 namespace DeadWare.App;
 internal static class NativePlacement
 {
+    // Every rectangle in this class and persisted settings is in physical screen pixels.
     public static IReadOnlyList<WorkArea> WorkAreas()
     {
         var areas=new List<WorkArea>();
@@ -17,21 +18,38 @@ internal static class NativePlacement
         EnumDisplayMonitors(IntPtr.Zero,IntPtr.Zero,callback,IntPtr.Zero);
         return areas;
     }
-    public static void Clamp(Window window)
+    public static WindowPlacement? CaptureNormal(Window window)
     {
         var handle=new WindowInteropHelper(window).Handle;
-        if(!GetWindowRect(handle,out var rect)) return;
-        var monitor=MonitorFromWindow(handle,2);var info=new MonitorInfo {Size=Marshal.SizeOf<MonitorInfo>()};
-        if(!GetMonitorInfo(monitor,ref info)) return;
-        var work=info.Work;int w=Math.Min(rect.Right-rect.Left,work.Right-work.Left),h=Math.Min(rect.Bottom-rect.Top,work.Bottom-work.Top);
-        SetWindowPos(handle,IntPtr.Zero,Math.Clamp(rect.Left,work.Left,work.Right-w),Math.Clamp(rect.Top,work.Top,work.Bottom-h),w,h,0x0014);
+        if(handle==IntPtr.Zero||IsIconic(handle)||IsZoomed(handle)||!GetWindowRect(handle,out var rect))return null;
+        return new(rect.Left,rect.Top,rect.Right-rect.Left,rect.Bottom-rect.Top,window.Topmost);
+    }
+    public static void Restore(Window window,WindowPlacement? saved,double defaultWidthDips,double defaultHeightDips)
+    {
+        var handle=new WindowInteropHelper(window).Handle;
+        var current=CaptureNormal(window);if(current is null)return;
+        var areas=WorkAreas();
+        // First bound corrupt coordinates so native integer conversion cannot overflow.
+        var bounded=WindowPlacement.Clamp(saved??current,areas,800,600);
+        var rect=new RectI {Left=(int)bounded.Left,Top=(int)bounded.Top,Right=(int)(bounded.Left+bounded.Width),Bottom=(int)(bounded.Top+bounded.Height)};
+        var target=MonitorFromRect(ref rect,2);
+        uint dpi=96;
+        if(GetDpiForMonitor(target,0,out uint targetDpi,out _)==0&&targetDpi>0)dpi=targetDpi;
+        var defaults=WindowCoordinates.FromDipSize(bounded.Left,bounded.Top,defaultWidthDips,defaultHeightDips,dpi,window.Topmost);
+        var placement=WindowPlacement.Clamp(saved??current,areas,defaults.Width,defaults.Height);
+        // SetWindowPos uses the same physical coordinates. WPF processes WM_DPICHANGED itself;
+        // assigning these pixels to Window.Left/Width (DIPs) would apply scaling a second time.
+        SetWindowPos(handle,IntPtr.Zero,(int)placement.Left,(int)placement.Top,(int)placement.Width,(int)placement.Height,0x0014);
     }
     [StructLayout(LayoutKind.Sequential)] private struct RectI {public int Left,Top,Right,Bottom;}
     [StructLayout(LayoutKind.Sequential)] private struct MonitorInfo {public int Size;public RectI Monitor,Work;public uint Flags;}
-    [DllImport("user32.dll")] private static extern IntPtr MonitorFromWindow(IntPtr window,uint flags);
     private delegate bool MonitorCallback(IntPtr monitor,IntPtr dc,ref RectI bounds,IntPtr data);
+    [DllImport("user32.dll")] private static extern IntPtr MonitorFromRect(ref RectI rect,uint flags);
+    [DllImport("shcore.dll")] private static extern int GetDpiForMonitor(IntPtr monitor,int type,out uint x,out uint y);
     [DllImport("user32.dll")] private static extern bool EnumDisplayMonitors(IntPtr dc,IntPtr clip,MonitorCallback callback,IntPtr data);
     [DllImport("user32.dll")] private static extern bool GetMonitorInfo(IntPtr monitor,ref MonitorInfo info);
     [DllImport("user32.dll")] private static extern bool GetWindowRect(IntPtr window,out RectI rect);
+    [DllImport("user32.dll")] private static extern bool IsIconic(IntPtr window);
+    [DllImport("user32.dll")] private static extern bool IsZoomed(IntPtr window);
     [DllImport("user32.dll")] private static extern bool SetWindowPos(IntPtr window,IntPtr after,int x,int y,int width,int height,uint flags);
 }

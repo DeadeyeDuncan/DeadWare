@@ -7,11 +7,16 @@ using LibreHardwareMonitor.Hardware;
 
 namespace DeadWare.App;
 public record SensorReading(string Id,string Hardware,string Name,string Unit,double? Value);
-public record Reading(Snapshot Sample,IReadOnlyList<Device> Gpus,IReadOnlyList<SensorReading> Sensors,IReadOnlyList<ProcessTraffic> Processes,string CpuName,string HardwareStatus,string NetworkStatus,string EtwStatus,bool Elevated);
+public record Reading(Snapshot Sample,IReadOnlyList<Device> Gpus,IReadOnlyList<SensorReading> Sensors,IReadOnlyList<ProcessTraffic> Processes,string CpuName,string HardwareStatus,string NetworkStatus,string EtwStatus,bool Elevated,IReadOnlyDictionary<string,double>? ProviderMilliseconds=null);
 
 /// <summary>One serial background loop owns all hardware updates; windows only read immutable publications.</summary>
 public sealed class Collector : IAsyncDisposable
 {
+    private readonly CollectorOptions options;
+    private volatile string stage="Not started";
+    public string Stage=>stage;
+    public Task Completion=>worker??Task.CompletedTask;
+    public Collector(CollectorOptions? options=null) {this.options=options??new();}
     private readonly CancellationTokenSource cancellation=new();
     private readonly Stopwatch clock=Stopwatch.StartNew();
     private readonly WindowsCounters windows=new();
@@ -24,33 +29,46 @@ public sealed class Collector : IAsyncDisposable
     public SampleHistory History {get;}=new();
     public event Action<Reading>? SampleAvailable;
     public static bool IsElevated {get;}=CheckElevation();
+    private string EtwStatus=>options.EtwEnabled?etw.Status:"Per-app accounting disabled for diagnostic isolation";
     private static bool CheckElevation() {using var identity=WindowsIdentity.GetCurrent();return new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator);}
     public void Start()=>worker??=Task.Run(RunAsync);
     private async Task RunAsync()
     {
         Computer? computer=null;
         string initialization="";
+        double hardwareOpenMilliseconds=0,etwOpenMilliseconds=0;
         try
         {
-            etw.Start();
-            lowLevelAvailable=IsElevated&&WindowsCounters.CanAccessPawnIo();
-            computer=new Computer {IsCpuEnabled=true,IsGpuEnabled=true,IsMemoryEnabled=true,IsMotherboardEnabled=true,IsControllerEnabled=true,IsStorageEnabled=true,IsNetworkEnabled=false};
-            try { computer.Open(); } catch(Exception e) { initialization=$"Hardware discovery failed ({e.GetType().Name}). Windows counters remain available."; }
+            long initializationStarted=Stopwatch.GetTimestamp();
+            stage="Starting ETW";
+            if(options.EtwEnabled)etw.Start();
+            etwOpenMilliseconds=Stopwatch.GetElapsedTime(initializationStarted).TotalMilliseconds;
+            if(options.HardwareEnabled)
+            {
+                stage="Opening hardware providers";initializationStarted=Stopwatch.GetTimestamp();
+                lowLevelAvailable=IsElevated&&WindowsCounters.CanAccessPawnIo();
+                var sources=options.Sources;
+                computer=new Computer {IsCpuEnabled=sources.Cpu,IsGpuEnabled=sources.Gpu,IsMemoryEnabled=sources.Memory,IsMotherboardEnabled=sources.Motherboard,IsControllerEnabled=sources.Controllers,IsStorageEnabled=sources.Storage,IsNetworkEnabled=false};
+                try { computer.Open(); } catch(Exception e) { initialization=$"Hardware discovery failed ({e.GetType().Name}). Windows counters remain available."; }
+                hardwareOpenMilliseconds=Stopwatch.GetElapsedTime(initializationStarted).TotalMilliseconds;
+            }
             while(!cancellation.IsCancellationRequested)
             {
                 double started=clock.Elapsed.TotalSeconds;
                 try
                 {
+                    Dictionary<string,double>? timings=options.DiagnosticTimings?new(){["open/hardware"]=hardwareOpenMilliseconds,["open/etw"]=etwOpenMilliseconds}:null;
                     var values=new Dictionary<string,double?>();
                     var sensors=new List<SensorReading>();
                     var gpus=new List<Device>();
                     var errors=new List<string>();
                     string cpuName="Windows processor";
                     double? cpuLoad=null,cpuTemp=null;
-                    foreach(var hardware in computer.Hardware)
+                    foreach(var hardware in computer?.Hardware??[])
                     {
+                        stage=$"Polling {hardware.HardwareType}";
                         var hardwareSensors=new List<SensorReading>();
-                        ReadHardware(hardware,hardwareSensors,errors,lowLevelAvailable);
+                        ReadHardware(hardware,hardwareSensors,errors,lowLevelAvailable,timings);
                         sensors.AddRange(hardwareSensors);
                         if(hardware.HardwareType==HardwareType.Cpu)
                         {
@@ -65,42 +83,53 @@ public sealed class Collector : IAsyncDisposable
                             values[id+"/temperature"]=Choose(hardwareSensors,"°C","GPU Core","GPU Temperature");
                         }
                     }
-                    var fallbackCpu=windows.Cpu();
+                    stage="Reading Windows counters";
+                    long providerStarted=Stopwatch.GetTimestamp();var fallbackCpu=windows.Cpu();
+                    if(timings is not null)timings["windows/cpu"]=Stopwatch.GetElapsedTime(providerStarted).TotalMilliseconds;
                     values["cpu/usage"]=cpuLoad??fallbackCpu;
                     values["cpu/temperature"]=cpuTemp;
-                    var memory=windows.Memory();values["memory/used"]=memory.Used;values["memory/total"]=memory.Total;
-                    var network=windows.Network(clock.Elapsed.TotalSeconds);
+                    providerStarted=Stopwatch.GetTimestamp();var memory=windows.Memory();values["memory/used"]=memory.Used;values["memory/total"]=memory.Total;
+                    if(timings is not null)timings["windows/memory"]=Stopwatch.GetElapsedTime(providerStarted).TotalMilliseconds;
+                    providerStarted=Stopwatch.GetTimestamp();var network=windows.Network(clock.Elapsed.TotalSeconds);
+                    if(timings is not null)timings["windows/network"]=Stopwatch.GetElapsedTime(providerStarted).TotalMilliseconds;
                     values["network/download"]=network.Down;values["network/upload"]=network.Up;
                     foreach(var sensor in sensors) values[sensor.Id]=sensor.Value;
                     var now=clock.Elapsed.TotalSeconds;
                     var sample=new Snapshot(DateTimeOffset.Now,now,new System.Collections.ObjectModel.ReadOnlyDictionary<string,double?>(values));
-                    string hardwareStatus=initialization.Length>0?initialization:$"{sensors.Count} sensors · {(IsElevated?"Administrator":"Standard user")}";
+                    string hardwareStatus=initialization.Length>0?initialization:!options.HardwareEnabled?"Hardware collection disabled for diagnostic isolation":$"{sensors.Count} sensors · {(IsElevated?"Administrator":"Standard user")} · {(options.ExtendedSensors?"Extended sensors enabled":"CPU/GPU sensors")}";
                     if(cpuTemp is null) hardwareStatus+=" · CPU temperature unavailable (hardware support, elevation or PawnIO may be required).";
-                    if(gpus.Count==0) hardwareStatus+=" · No supported GPU discovered.";
+                    if(gpus.Count==0&&options.HardwareEnabled) hardwareStatus+=" · No supported GPU discovered.";
                     if(errors.Count>0) hardwareStatus+=" · "+string.Join("; ",errors.Distinct());
-                    var reading=new Reading(sample,gpus.AsReadOnly(),sensors.AsReadOnly(),etw.Take(now),cpuName,hardwareStatus,network.Status,etw.Status,IsElevated);
+                    stage="Reading ETW counters";providerStarted=Stopwatch.GetTimestamp();
+                    var processes=options.EtwEnabled?etw.Take(now):[];
+                    if(timings is not null){timings["etw/snapshot"]=Stopwatch.GetElapsedTime(providerStarted).TotalMilliseconds;timings["poll/total"]=(clock.Elapsed.TotalSeconds-started)*1000;}
+                    double elapsed=clock.Elapsed.TotalSeconds-started;
+                    if(elapsed>=1)hardwareStatus+=$" · Slow sample ({elapsed:0.0}s); pausing before the next poll.";
+                    var reading=new Reading(sample,gpus.AsReadOnly(),sensors.AsReadOnly(),processes,cpuName,hardwareStatus,network.Status,EtwStatus,IsElevated,timings);
                     History.Add(sample);Volatile.Write(ref latest,reading);SampleAvailable?.Invoke(reading);
                 }
                 catch(Exception e)
                 {
                     var sample=new Snapshot(DateTimeOffset.Now,clock.Elapsed.TotalSeconds,new Dictionary<string,double?>());
-                    var failed=new Reading(sample,Latest?.Gpus??[],[],[],Latest?.CpuName??"Processor",$"Collection failed ({e.GetType().Name}); retrying next second.","Interface readings unavailable",etw.Status,IsElevated);
+                    var failed=new Reading(sample,Latest?.Gpus??[],[],[],Latest?.CpuName??"Processor",$"Collection failed ({e.GetType().Name}); retrying next second.","Interface readings unavailable",EtwStatus,IsElevated);
                     History.Add(sample);Volatile.Write(ref latest,failed);SampleAvailable?.Invoke(failed);
                 }
-                var wait=Math.Max(0,1-(clock.Elapsed.TotalSeconds-started));
-                await Task.Delay(TimeSpan.FromSeconds(wait),cancellation.Token).ConfigureAwait(false);
+                stage="Idle between samples";
+                await Task.Delay(PollingPolicy.DelayAfter(clock.Elapsed.TotalSeconds-started),cancellation.Token).ConfigureAwait(false);
             }
         }
         catch(OperationCanceledException) when(cancellation.IsCancellationRequested) { }
         catch(Exception e)
         {
             var sample=new Snapshot(DateTimeOffset.Now,clock.Elapsed.TotalSeconds,new Dictionary<string,double?>());
-            var failed=new Reading(sample,[],[],[],"Processor",$"Collector stopped ({e.GetType().Name}). Restart DeadWare to retry.","Interface readings unavailable",etw.Status,IsElevated);
+            var failed=new Reading(sample,[],[],[],"Processor",$"Collector stopped ({e.GetType().Name}). Restart DeadWare to retry.","Interface readings unavailable",EtwStatus,IsElevated);
             History.Add(sample);Volatile.Write(ref latest,failed);SampleAvailable?.Invoke(failed);
         }
         finally
         {
+            stage="Stopping providers";
             try {computer?.Close();} finally {await etw.DisposeAsync();}
+            stage="Stopped";
         }
     }
     private static double? Choose(List<SensorReading> sensors,string unit,params string[] names)
@@ -114,8 +143,9 @@ public sealed class Collector : IAsyncDisposable
         if(unit=="°C") return sensors.FirstOrDefault(s=>s.Unit==unit&&s.Name.Contains("Core",StringComparison.OrdinalIgnoreCase)&&s.Value.HasValue)?.Value;
         return null;
     }
-    private static void ReadHardware(IHardware h,List<SensorReading> sensors,List<string> errors,bool lowLevelAvailable)
+    private static void ReadHardware(IHardware h,List<SensorReading> sensors,List<string> errors,bool lowLevelAvailable,Dictionary<string,double>? timings)
     {
+        long started=Stopwatch.GetTimestamp();
         try
         {
             h.Update();
@@ -128,10 +158,17 @@ public sealed class Collector : IAsyncDisposable
             }
         }
         catch(Exception e) {errors.Add($"{h.Name}: {e.GetType().Name}");}
-        foreach(var sub in h.SubHardware) ReadHardware(sub,sensors,errors,lowLevelAvailable);
+        finally {if(timings is not null)timings["hardware"+h.Identifier]=Stopwatch.GetElapsedTime(started).TotalMilliseconds;}
+        foreach(var sub in h.SubHardware) ReadHardware(sub,sensors,errors,lowLevelAvailable,timings);
     }
     private static string Unit(SensorType t)=>t switch {SensorType.Load=>"%",SensorType.Temperature=>"°C",SensorType.Clock=>"MHz",SensorType.Fan=>"RPM",SensorType.Voltage=>"V",SensorType.Current=>"A",SensorType.Power=>"W",SensorType.Data=>"GB",SensorType.SmallData=>"MB",SensorType.Throughput=>"B/s",SensorType.Control=>"%",SensorType.Frequency=>"Hz",_=>t.ToString()};
-    public async ValueTask DisposeAsync() {cancellation.Cancel();if(worker is not null) await worker.ConfigureAwait(false);cancellation.Dispose();}
+    public async ValueTask DisposeAsync()
+    {
+        cancellation.Cancel();
+        // Stop our trace even if a hardware provider is stuck. Native stop never runs on the UI thread.
+        await Task.Run(async()=>{await etw.DisposeAsync();if(worker is not null)await worker.ConfigureAwait(false);}).ConfigureAwait(false);
+        cancellation.Dispose();
+    }
 }
 
 internal sealed class WindowsCounters

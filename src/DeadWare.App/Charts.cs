@@ -52,7 +52,8 @@ internal sealed class HistoryChart(UiSession session,string kind) : FrameworkEle
     {
         base.OnRender(dc);
         double w=ActualWidth,h=ActualHeight;if(w<90||h<65)return;
-        double left=12,top=18,right=74,bottom=27,pw=w-left-right,ph=h-top-bottom;
+        var axisLabel=Formatted("Now");
+        double left=12,top=18,right=74,bottom=axisLabel.Height+18,pw=w-left-right,ph=h-top-bottom;
         var sample=session.Current?.Sample;
         double now=session.Collector.ElapsedSeconds;
         var points=session.Collector.History.Series(session.MetricId(kind),now,session.HistorySeconds);
@@ -64,7 +65,7 @@ internal sealed class HistoryChart(UiSession session,string kind) : FrameworkEle
             dc.DrawLine(new Pen(Theme.Brush("Line"),1){DashStyle=new DashStyle([3,5],0)},new(left,y),new(left+pw,y));
             Label(dc,kind=="network"?Ui.Bytes(value,true):$"{value:0}{(kind.Contains("temp")?"°":"%")}",left+pw+7,y-7);
         }
-        Label(dc,$"{session.HistorySeconds/60} min ago",left,h-18);Label(dc,"Now",left+pw-24,h-18);
+        Label(dc,$"{session.HistorySeconds/60} min ago",left,h-axisLabel.Height-6);Label(dc,"Now",left+pw-axisLabel.Width,h-axisLabel.Height-6);
         DrawSeries(dc,points,now,maximum,left,top,pw,ph,kind=="network"?"Download":kind.StartsWith("gpu")?"Gpu":"Cpu",false);
         if(kind=="network") DrawSeries(dc,up,now,maximum,left,top,pw,ph,"Cpu",true);
         if(!points.Concat(up).Any(p=>p.Value.HasValue)) Label(dc,sample is null?"Waiting for first sample…":"No available readings in this range",left+15,top+ph/2);
@@ -87,7 +88,8 @@ internal sealed class HistoryChart(UiSession session,string kind) : FrameworkEle
         if(lastPoint.HasValue) dc.DrawEllipse(Theme.Brush(color),null,lastPoint.Value,2.5,2.5);
     }
     private void Label(DrawingContext dc,string text,double x,double y)
-    {dc.DrawText(new FormattedText(text,CultureInfo.CurrentCulture,FlowDirection.LeftToRight,new Typeface("Segoe UI"),11,Theme.Brush("Muted"),VisualTreeHelper.GetDpi(this).PixelsPerDip),new(x,y));}
+    {dc.DrawText(Formatted(text),new(x,y));}
+    private FormattedText Formatted(string text)=>new(text,CultureInfo.CurrentCulture,FlowDirection.LeftToRight,new Typeface("Segoe UI"),11,Theme.Brush("Muted"),VisualTreeHelper.GetDpi(this).PixelsPerDip);
 }
 internal sealed class ChartCard : Border
 {
@@ -98,7 +100,8 @@ internal sealed class ChartCard : Border
     public ChartCard(UiSession session,string kind,bool popButton=true)
     {
         this.session=session;this.kind=kind;CornerRadius=new(10);BorderThickness=new(1);Padding=new(16,12,16,10);Margin=new(6);SetResourceReference(BackgroundProperty,"Panel");SetResourceReference(BorderBrushProperty,"Line");
-        chart=new(session,kind){MinHeight=118};
+        // A forced MinHeight larger than the grid's remaining row caused WPF to clip axis labels.
+        chart=new(session,kind){ClipToBounds=true};
         var grid=new Grid();grid.RowDefinitions.Add(new(){Height=GridLength.Auto});grid.RowDefinitions.Add(new(){Height=GridLength.Auto});grid.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});grid.RowDefinitions.Add(new(){Height=GridLength.Auto});
         var header=new DockPanel();var title=Ui.Text(Ui.Title(kind),14);title.FontWeight=FontWeights.SemiBold;header.Children.Add(title);
         if(popButton){var pop=Ui.Button("Pop out ↗",()=>session.OpenDetached(kind));pop.HorizontalAlignment=HorizontalAlignment.Right;DockPanel.SetDock(pop,Dock.Right);header.Children.Insert(0,pop);}

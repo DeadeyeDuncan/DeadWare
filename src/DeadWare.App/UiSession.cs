@@ -6,7 +6,7 @@ using DeadWare.Core;
 namespace DeadWare.App;
 public sealed class UiSession
 {
-    public Collector Collector {get;}=new();
+    public Collector Collector {get;}
     public UserSettings Settings {get;}
     public string SettingsStatus {get;private set;}="";
     private readonly string settingsPath=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"DeadWare","settings.json");
@@ -28,6 +28,7 @@ public sealed class UiSession
             Settings=loaded.Settings;SettingsStatus=loaded.Error??"";
         }
         catch(Exception e) when(e is IOException or UnauthorizedAccessException) {Settings=new();SettingsStatus="Settings unavailable; using defaults.";}
+        Collector=new(new CollectorOptions(ExtendedSensors:Settings.ExtendedSensors));
         timer.Tick+=(_,_)=>
         {
             if(Settings.SelectedGpuId is null && Current is {Gpus.Count:>0} reading)
@@ -39,6 +40,7 @@ public sealed class UiSession
     public void SetRange(int seconds) {Settings.HistorySeconds=seconds;Changed?.Invoke();_ = SaveAsync();}
     public void SetGpu(string? id) {Settings.SelectedGpuId=id;Changed?.Invoke();_ = SaveAsync();}
     public void SetTheme(string theme) {Settings.Theme=theme;Theme.Apply(theme);Changed?.Invoke();_ = SaveAsync();}
+    public void SetExtendedSensors(bool enabled) {Settings.ExtendedSensors=enabled;_ = SaveAsync();}
     public string MetricId(string kind)=>kind switch {"cpu"=>"cpu/usage","cputemp"=>"cpu/temperature","gpu"=>(SelectedGpuId??"unavailable")+"/usage","gputemp"=>(SelectedGpuId??"unavailable")+"/temperature",_=>"network/download"};
     public async Task SaveAsync()
     {
@@ -51,20 +53,20 @@ public sealed class UiSession
     public void Place(Window window,string key,double width,double height)
     {
         window.Width=width;window.Height=height;
-        if(Settings.Windows.TryGetValue(key,out var saved))
+        Settings.Windows.TryGetValue(key,out var saved);
+        if(saved is not null)window.Topmost=saved.Topmost;
+        window.WindowStartupLocation=saved is null?WindowStartupLocation.CenterScreen:WindowStartupLocation.Manual;
+        WindowPlacement? lastNormal=null;
+        void Capture(){if(NativePlacement.CaptureNormal(window) is { } placement)lastNormal=placement;}
+        window.SourceInitialized+=(_,_)=>NativePlacement.Restore(window,saved,width,height);
+        window.Loaded+=(_,_)=>{NativePlacement.Restore(window,saved,width,height);Capture();};
+        window.LocationChanged+=(_,_)=>Capture();window.SizeChanged+=(_,_)=>Capture();
+        window.Closing+=(_,_)=>
         {
-            // Bound even enormous but finite persisted dimensions before passing them to WPF.
-            var p=WindowPlacement.Clamp(saved,NativePlacement.WorkAreas(),width,height);
-            window.Left=p.Left;window.Top=p.Top;window.Width=p.Width;window.Height=p.Height;window.Topmost=p.Topmost;window.WindowStartupLocation=WindowStartupLocation.Manual;
-        }
-        else window.WindowStartupLocation=WindowStartupLocation.CenterScreen;
-        window.SourceInitialized+=(_,_)=>NativePlacement.Clamp(window);
-        window.Closing+=(_,_)=>Remember(window,key);
-    }
-    private void Remember(Window window,string key)
-    {
-        var r=window.WindowState==WindowState.Normal?new Rect(window.Left,window.Top,window.Width,window.Height):window.RestoreBounds;
-        Settings.Windows[key]=new(r.Left,r.Top,r.Width,r.Height,window.Topmost);_ = SaveAsync();
+            Capture();
+            if(lastNormal is not null)Settings.Windows[key]=lastNormal with {Topmost=window.Topmost};
+            _ = SaveAsync();
+        };
     }
     public void OpenDetached(string kind)
     {

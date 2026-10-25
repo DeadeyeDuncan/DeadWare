@@ -105,6 +105,8 @@ public record WindowPlacement(double Left,double Top,double Width,double Height,
 }
 public sealed class UserSettings
 {
+    public string WindowPlacementFormat {get;set;}=WindowCoordinates.Format;
+    public bool ExtendedSensors {get;set;}
     public string Theme {get;set;}="Midnight";
     public int HistorySeconds {get;set;}=60;
     public string? SelectedGpuId {get;set;}
@@ -124,7 +126,12 @@ public static class SettingsCodec
             if(s.HistorySeconds is not (60 or 300 or 900)) s.HistorySeconds=60;
             s.Windows??=new();
             s.Windows=s.Windows.Where(p=>p.Value is not null).Take(16).ToDictionary(p=>p.Key,p=>p.Value);
-            return new(s,invalid?"Invalid settings were replaced with defaults.":null);
+            using var document=JsonDocument.Parse(json);
+            bool legacyPlacement=!document.RootElement.TryGetProperty(nameof(UserSettings.WindowPlacementFormat),out _)||s.WindowPlacementFormat!=WindowCoordinates.Format;
+            bool resetPlacement=legacyPlacement&&s.Windows.Count>0;
+            if(legacyPlacement)s.Windows.Clear();
+            s.WindowPlacementFormat=WindowCoordinates.Format;
+            return new(s,resetPlacement?"Window layout was reset for the new DPI-safe placement format.":invalid?"Invalid settings were replaced with defaults.":null);
         }
         catch(JsonException) {return new(new(),"Settings could not be read; defaults restored.");}
     }
