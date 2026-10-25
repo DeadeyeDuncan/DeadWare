@@ -38,9 +38,13 @@ On the development PC, the installed executable successfully enabled, disabled a
 
 Actual registration exposed a Windows normalization detail that the unregistered XML roundtrip did not: Windows stores the logon trigger account as a name while retaining the principal SID. The app now resolves only the trigger name to its SID; task ownership still requires the exact principal SID and ownership marker. Unknown or different identities are rejected.
 
-Offscreen WPF checks exercised themed ScrollViewer, DataGrid and dropdown scrollbars, both orientations, line/page commands, thumb movement, and live Midnight/Daylight changes. Rendered-pixel checks cover the scrollbar corner during theme changes. These checks created no visible windows. Native title-bar behavior on Windows 11 remains a separate installed-app check; older Windows keeps the standard native frame.
+Offscreen WPF checks exercised themed ScrollViewer, DataGrid and dropdown scrollbars, both orientations, line/page commands, thumb movement, and live Midnight/Daylight changes. Rendered-pixel checks cover the scrollbar corner during theme changes. These checks created no visible windows. On the installed Windows 11 build, DWM reported dark mode enabled for the dashboard, both GPU graph windows and the widget. The user confirmed the styling looked correct and the app stayed responsive. Older Windows keeps the standard native frame; live High Contrast transitions were not exercised.
 
 The opt-in layout diagnostic passed 27 isolated checks covering disabled behavior, path validation, existing-file protection, readback results, error isolation and its size cap. Tests used disposable files. A file-symlink case was not exercised because creating that link required unavailable privileges.
+
+The installed app recorded successful settings writes and matching readbacks, preserved open graphs while closing the main window, and completed shutdown cleanly. A normal scheduled run with diagnostics off saved the widget and two GPU graphs. A subsequent task launch read that saved set; native physical-pixel inspection confirmed the dashboard, widget and both graphs matched the previously captured positions, sizes and topmost flags exactly. A quiet duplicate launch exited without another collector. The startup definition was restored to its ordinary `--startup` action after the diagnostic check.
+
+The command runner's settings-file readbacks remained stale relative to the scheduled app's own readings at the same reported path. Per-process diagnostics and native window comparisons resolved that verification discrepancy; no persistence change was made to address it. The underlying execution-context difference was not identified. No reboot or sign-out was performed, and Computer Use remained off throughout these checks.
 
 ## Delivery
 
