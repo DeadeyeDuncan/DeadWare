@@ -30,6 +30,18 @@ Real mixed-DPI multi-monitor restoration, sustained IPv4/IPv6 TCP/UDP attributio
 
 Raw diagnostics remain local and are excluded from source control. Reports should redact personal details before upload.
 
+## Startup and saved workspace (0.2.0)
+
+On 2026-10-25, the Release build and self-contained Windows package passed all 56 tests. New coverage includes the remembered open-window set, shutdown preservation, revision-ordered saves, per-user task policy, unexpected task repetition, and Windows account-name/SID equivalence. Independent review accepted the feature after the policy corrections.
+
+On the development PC, the installed executable successfully enabled, disabled and re-enabled its owned startup task. Native Task Scheduler inspection confirmed the current user, interactive logon, highest privileges, the stable executable path with `--startup`, a ten-second sign-in delay, unlimited trigger/task execution time, IgnoreNew, battery operation, and no idle or network prerequisite. The app's read-only query confirmed the final registration is ready with no repair needed.
+
+Actual registration exposed a Windows normalization detail that the unregistered XML roundtrip did not: Windows stores the logon trigger account as a name while retaining the principal SID. The app now resolves only the trigger name to its SID; task ownership still requires the exact principal SID and ownership marker. Unknown or different identities are rejected.
+
+Offscreen WPF checks exercised themed ScrollViewer, DataGrid and dropdown scrollbars, both orientations, line/page commands, thumb movement, and live Midnight/Daylight changes. Rendered-pixel checks cover the scrollbar corner during theme changes. These checks created no visible windows. Native title-bar behavior on Windows 11 remains a separate installed-app check; older Windows keeps the standard native frame.
+
+The opt-in layout diagnostic passed 27 isolated checks covering disabled behavior, path validation, existing-file protection, readback results, error isolation and its size cap. Tests used disposable files. A file-symlink case was not exercised because creating that link required unavailable privileges.
+
 ## Delivery
 
 The public [0.1.0 preview](https://github.com/DeadeyeDuncan/DeadWare/releases/tag/v0.1.0) was published on 2026-10-25 from commit `1a036e6`. The [Windows build](https://github.com/DeadeyeDuncan/DeadWare/actions/runs/40228886325) and [release workflow](https://github.com/DeadeyeDuncan/DeadWare/actions/runs/40229056889) both passed. CI uses the verified .NET SDK 10.0.402.

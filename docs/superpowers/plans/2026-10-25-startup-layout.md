@@ -30,18 +30,22 @@
 
 Owner: implementation worker. Files: src/**, tests/**, Directory.Build.props only. Use existing project-local SDK at I:/DeadWare/.tools/dotnet/dotnet.exe; no dependency/runtime installation needed.
 
-- [ ] Add meaningful failing tests for open-set normalization/roundtrip, explicit-close vs main-shutdown state, stale-save protection where extracted, and startup task policy/identity/path escaping.
-- [ ] Implement layout persistence/restoration through existing UiSession and NativePlacement.
-- [ ] Implement owned per-user elevated Task Scheduler registration, status, disable, CLI helper and Desktop controls.
-- [ ] Add single-instance and safe elevation handoff, preserving diagnostics behavior.
-- [ ] Build/test Release, normal-user diagnostics only, self-review, commit owned files and report evidence. Never use Computer Use or run elevated tests in worker.
+- [x] Add meaningful failing tests for open-set normalization/roundtrip, explicit-close vs main-shutdown state, stale-save protection where extracted, and startup task policy/identity/path escaping.
+- [x] Implement layout persistence/restoration through existing UiSession and NativePlacement.
+- [x] Implement owned per-user elevated Task Scheduler registration, status, disable, CLI helper and Desktop controls.
+- [x] Add single-instance and safe elevation handoff, preserving diagnostics behavior.
+- [x] Build/test Release, normal-user diagnostics only, self-review, commit owned files and report evidence. Never use Computer Use or run elevated tests in worker.
 
 ## Task 2 — integration, review, deployment
 
 Owner: parent. Files: docs/**, README.md, CHANGELOG.md, scripts/** and .github/**; no overlapping source edits while worker active.
 
-- [ ] Update documentation, 0.2.0 packaging defaults and version-specific release notes.
-- [ ] Independent review, fix important findings, package with all tests passing.
-- [ ] Install verified local build with rollback; preserve shortcut target/admin flag.
+- [x] Update documentation, 0.2.0 packaging defaults and version-specific release notes.
+- [x] Independent review, fix important findings, package with all tests passing.
+- [x] Install verified local build with rollback; preserve shortcut target/admin flag.
 - [ ] Register current-user startup using one-time Windows approval; inspect actual task principal, trigger, action, runlevel and settings. Exercise start-on-demand without sign-out, check duplicate guard and ask user to arrange/reopen windows manually without Computer Use.
 - [ ] Commit/publish the tested update through existing GitHub workflows and record bounded validation. Queue a canonical chronicler brief at verified completion.
+
+## Follow-up scope — native title bars and scrollbars
+
+The user additionally requested dark title bars and scrollbars for the app and widget. Reuse existing palettes across the main app, graphs and widget, with live updates and a light Daylight preset. Preserve native window controls and ordinary scrolling. Use supported DWM behavior where available and safe native fallback on older Windows. An opt-in bounded layout trace will resolve the outstanding save discrepancy before delivery; it records local settings operations only and remains disabled in normal use.

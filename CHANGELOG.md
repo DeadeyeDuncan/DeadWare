@@ -6,6 +6,7 @@
 - Restore previously open pop-out graphs and the desktop widget, including saved positions, sizes and topmost choices.
 - Checkpoint workspace changes and preserve open windows during application shutdown and administrator restart.
 - Prevent duplicate monitoring instances when starting from Windows or opening the app again.
+- Theme-aware scrollbars and Windows 11 native title bars across the main app, pop-out graphs and widget.
 
 ## 0.1.0 — First preview
 

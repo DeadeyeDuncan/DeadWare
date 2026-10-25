@@ -21,6 +21,7 @@ DeadWare is a Windows desktop monitor for watching CPU/GPU usage and temperature
 - Optional administrator startup at your Windows sign-in.
 - Shared 1-, 5- and 15-minute history; all windows use one collector.
 - Five saved themes: **Midnight**, **Ember**, **Glacier**, **Amethyst**, and **Daylight**.
+- Scrollbars follow the selected theme across all windows, with matching native title bars on Windows 11.
 
 ## Download and run
 
@@ -57,6 +58,8 @@ Rates reflect observed traffic, not ISP billing totals. Adapter totals and attri
 Diagnostic output is generated only when explicitly requested. It can include hardware names and running application information; redact it before attaching it to a public issue.
 
 For local troubleshooting, `DeadWare.exe --diagnose output.json --samples 3` collects a short sample and exits. Add `--no-hardware` to isolate Windows counters and network tracking, or `--no-etw` to isolate hardware collection from per-app tracing. Diagnostics include provider timings. Avoid enabling extended sensors when investigating a responsiveness problem.
+
+For workspace-saving problems, start the app with `--layout-diagnostics "C:\path\layout.jsonl"` using an absolute local output path. This opt-in, size-limited trace records settings paths, open-window IDs and save results; it follows an administrator restart and contains no sensor readings or network traffic. Use a new file or a previous DeadWare layout trace. Treat it as private diagnostic data.
 
 ## Build
 
