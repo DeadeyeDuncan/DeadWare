@@ -7,6 +7,8 @@ Windows desktop monitor centered on four charts: CPU usage, CPU temperature, GPU
 
 Clean dark UI follows the accepted concept: readable typography, generous grouping, mint CPU, amber GPU, blue download and dashed mint upload. Use a red/silver/black hardware emblem to fit the Dead app brand without changing semantic chart colors. Include sensor details with current/minimum/maximum/average and detected hardware names.
 
+User added preset themes during implementation: Midnight, Ember, Glacier, Amethyst and Daylight. Persist the selection and apply it live across all open windows. Keep semantic colors distinguishable and use readable light-mode equivalents. Unknown saved themes fall back safely. A custom theme editor is not in this release.
+
 ## Compatibility and trustworthy readings
 Target supported Windows 10/11 x64 computers first using .NET 10 LTS, WPF, and a self-contained distribution. Do not claim ARM64 support without validation. Discover devices, allow GPU selection on multi-GPU systems, and use stable sensor IDs. LibreHardwareMonitor provides supported hardware readings; Windows CPU/memory/network counters provide fallbacks. Show unavailable or stale readings explicitly, never fabricate data or convert unknown to zero. Missing sensors must not prevent other monitoring. Capability status explains normal-user vs elevated monitoring and unsupported/blocked sensors. Never disable Windows protections or install a custom kernel driver.
 

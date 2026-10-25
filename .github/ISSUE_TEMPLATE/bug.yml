@@ -1,0 +1,28 @@
+name: Bug or hardware compatibility
+description: Report a failure or missing hardware reading.
+body:
+  - type: markdown
+    attributes:
+      value: Please remove usernames, IP addresses, serial numbers and other personal details from logs or screenshots before posting publicly.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: Include reproduction steps, expected result and actual result.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: DeadWare version and Windows version
+    validations:
+      required: true
+  - type: textarea
+    id: hardware
+    attributes:
+      label: Hardware and permissions
+      description: CPU/GPU model, relevant motherboard or laptop model, and whether DeadWare ran as administrator. Do not include serial numbers.
+  - type: textarea
+    id: status
+    attributes:
+      label: Capability/status message shown by DeadWare
