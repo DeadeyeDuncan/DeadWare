@@ -44,7 +44,7 @@ Owner: parent. Files: docs/**, README.md, CHANGELOG.md, scripts/** and .github/*
 - [x] Independent review, fix important findings, package with all tests passing.
 - [x] Install verified local build with rollback; preserve shortcut target/admin flag.
 - [x] Register current-user startup using one-time Windows approval; inspect actual task principal, trigger, action, runlevel and settings. Exercise start-on-demand without sign-out, check duplicate guard and ask user to arrange/reopen windows manually without Computer Use.
-- [ ] Commit/publish the tested update through existing GitHub workflows and record bounded validation. Queue a canonical chronicler brief at verified completion.
+- [x] Commit/publish the tested update through existing GitHub workflows and record bounded validation. Queue a canonical chronicler brief at verified completion.
 
 ## Follow-up scope — native title bars and scrollbars
 

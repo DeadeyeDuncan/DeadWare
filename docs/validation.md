@@ -48,6 +48,8 @@ The command runner's settings-file readbacks remained stale relative to the sche
 
 ## Delivery
 
+The public [0.2.0 preview](https://github.com/DeadeyeDuncan/DeadWare/releases/tag/v0.2.0) was published on 2026-10-25 from commit `7023b68`. Its [Windows build](https://github.com/DeadeyeDuncan/DeadWare/actions/runs/40240862148) and [release workflow](https://github.com/DeadeyeDuncan/DeadWare/actions/runs/40241033973) passed. The downloaded Windows x64 ZIP matched both its checksum file and GitHub's asset digest: `b91382259a2f5413c04ab7de04748a86ec522f93ff01ee88775aaec69fafcb51`. Required app/runtime/license files were present, with no local settings or NuGet restore file included.
+
 The public [0.1.0 preview](https://github.com/DeadeyeDuncan/DeadWare/releases/tag/v0.1.0) was published on 2026-10-25 from commit `1a036e6`. The [Windows build](https://github.com/DeadeyeDuncan/DeadWare/actions/runs/40228886325) and [release workflow](https://github.com/DeadeyeDuncan/DeadWare/actions/runs/40229056889) both passed. CI uses the verified .NET SDK 10.0.402.
 
 The release contains a self-contained Windows x64 ZIP (approximately 69.5 MiB) and a SHA-256 file. The checksum file was checked against GitHub's uploaded-asset digest: `9a14b73592cecb17c1bbb443610b5826427284a43cb18dc9a16fc3fbcd4a5c3f`.
