@@ -32,6 +32,8 @@ Start as a normal user. If a capability needs additional permissions, the app sh
 
 DeadWare discovers hardware rather than assuming a particular PC. [LibreHardwareMonitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor) supplies supported sensor data; Windows counters provide basic fallbacks. Support varies by CPU, GPU, motherboard, laptop firmware, drivers and permissions. Missing sensors are shown as unavailable, and missing history remains a graph gap.
 
+The default hardware scan focuses on CPU and GPU sensors. Extended motherboard, controller, storage and memory-device sensors are optional and off by default, since low-level polling can affect responsiveness on some machines. Changing this setting requires restarting DeadWare. Windows memory usage remains available without extended scanning.
+
 This first release is **not complete HWiNFO sensor parity**. A successful launch on one PC is not evidence that every sensor works on every device. Please report compatibility findings through the hardware issue template with device models and the capability message, without serial numbers.
 
 ## Network measurements and privacy
@@ -41,6 +43,8 @@ Interface totals work independently of per-process attribution. Application traf
 Rates reflect observed traffic, not ISP billing totals. Adapter totals and attributed application traffic may differ due to virtual adapters, local traffic, protocol overhead or lost events. Session history is held in memory; long-term usage storage is not included. Settings are kept in the user's local application-data directory.
 
 Diagnostic output is generated only when explicitly requested. It can include hardware names and running application information; redact it before attaching it to a public issue.
+
+For local troubleshooting, `DeadWare.exe --diagnose output.json --samples 3` collects a short sample and exits. Add `--no-hardware` to isolate Windows counters and network tracking, or `--no-etw` to isolate hardware collection from per-app tracing. Diagnostics include provider timings. Avoid enabling extended sensors when investigating a responsiveness problem.
 
 ## Build
 

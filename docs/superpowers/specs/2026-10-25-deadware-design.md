@@ -14,6 +14,8 @@ Target supported Windows 10/11 x64 computers first using .NET 10 LTS, WPF, and a
 
 One-second samples with bounded 15-minute memory history; 1/5/15-minute graph windows and gaps for missing values. Collect off the UI thread without overlapping polls. Historic missing readings must remain gaps. Display min/max/average over the selected history. Use actual elapsed monotonic time for byte rates.
 
+After the first elevated smoke test caused severe system lag, the default sensor scope is narrowed to CPU/GPU. Extended motherboard, controller, storage and memory-device scanning is opt-in and requires restart. Polling must retain an idle interval even when a hardware pass exceeds its nominal cadence. Local diagnostics can disable hardware or ETW independently and report provider timings. These changes reduce polling scope; they do not by themselves establish the cause or resolution of the reported lag. Confirm responsiveness with bounded isolated elevated checks before releasing.
+
 ## Network
 Interface totals work without elevation. Per-process TCP/UDP IPv4/IPv6 byte counts use Microsoft ETW when permitted. Present permission/error state with an explicit restart-as-administrator action; run without elevation by default. Capture traffic metadata and byte counts only, not payloads. Do not claim traffic attribution is exact billing, or silently substitute interface totals for per-process data. Handle PID reuse, exiting processes, event loss, network adapter resets, and no active interface. Keep data locally in memory; user settings only persist in local app data. No cloud telemetry, firewall control, or packet payload recording.
 
