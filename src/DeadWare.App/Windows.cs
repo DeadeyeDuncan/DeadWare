@@ -36,7 +36,7 @@ public sealed class MainWindow : Window
         sideBottom.Children.Add(Ui.Text("COLOR THEME",10,"Muted"));var theme=new ComboBox {ItemsSource=Theme.Names,SelectedItem=session.Settings.Theme,Margin=new Thickness(0,8,0,15)};theme.SelectionChanged+=(_,_)=>{if(theme.SelectedItem is string name)session.SetTheme(name);};sideBottom.Children.Add(theme);
         var elevate=Ui.Button("Restart as administrator",session.RestartElevated);elevate.FontSize=10;sideBottom.Children.Add(elevate);
         var quitButton=Ui.Button("Quit DeadWare",quit);quitButton.FontSize=11;sideBottom.Children.Add(quitButton);trayNotice.Margin=new Thickness(3,5,3,8);sideBottom.Children.Add(trayNotice);
-        sideBottom.Children.Add(Ui.Text($"Local monitoring\n1 second samples · 6 h memory\nv{BuildInfo.Version}",10,"Muted"));
+        sideBottom.Children.Add(Ui.Text($"Local monitoring\n1 second samples · 6 h saved graphs\nv{BuildInfo.Version}",10,"Muted"));
         var nav=new StackPanel();sidebar.Children.Add(nav);
         foreach(var item in new[]{("overview","▦  Overview"),("network","⇄  Network"),("cooling","◷  Cooling Health"),("sensors","≡  Sensors"),("desktop","▱  Desktop layout")})
         {var key=item.Item1;var button=Ui.Button(item.Item2,()=>Navigate(key));button.HorizontalContentAlignment=HorizontalAlignment.Left;button.Margin=new(0,3,0,3);button.Padding=new(10,13,10,13);nav.Children.Add(button);}
@@ -127,19 +127,19 @@ public sealed class MainWindow : Window
         gpuControls.Visibility=destination=="overview"?Visibility.Visible:Visibility.Collapsed;
         liveToolbar.Visibility=destination=="cooling"?Visibility.Collapsed:Visibility.Visible;
         page=destination;content.Content=pages[destination];heading.Text=destination switch {"network"=>"Your network, explained","cooling"=>"Cooling Health","sensors"=>"Hardware sensors","desktop"=>"Make room for your work",_=>"System overview"};
-        subtitle.Text=destination switch {"network"=>"See which applications are sending and receiving data.","cooling"=>"Learn your usual temperatures. Notice sustained changes.","sensors"=>"Live values and statistics over the selected history range.","desktop"=>"A few useful numbers, wherever you need them.",_=>"The numbers you care about. Room to breathe."};Refresh();
+        subtitle.Text=destination switch {"network"=>"See which applications are sending and receiving data.","cooling"=>"Learn your usual temperatures. Notice sustained changes.","sensors"=>"Current-session values and statistics over the selected range.","desktop"=>"A few useful numbers, wherever you need them.",_=>"The numbers you care about. Room to breathe."};Refresh();
         if(destination=="desktop")_ = RefreshStartupAsync();
     }
     private void Refresh()
     {
-        var r=session.Current;if(r is null){status.Text="Discovering hardware and starting the shared collector…";return;}
+        var r=session.Current;if(r is null){status.Text="Discovering hardware and starting the shared collector…\n"+session.GraphHistory.Status;return;}
         var signature=string.Join('|',r.Gpus.Select(d=>d.Id+":"+d.Name));
         if(signature!=gpuSignature)
         {
             gpuSignature=signature;syncingGpu=true;gpu.ItemsSource=r.Gpus;gpu.SelectedValue=session.SelectedGpuId;syncingGpu=false;
         }
         else if((gpu.SelectedItem as Device)?.Id!=session.SelectedGpuId){syncingGpu=true;gpu.SelectedValue=session.SelectedGpuId;syncingGpu=false;}
-        status.Text=(session.Stale?"STALE — the collector has not published a recent sample. ":"")+r.HardwareStatus+"\n"+r.NetworkStatus+(session.SettingsStatus.Length>0?"\n"+session.SettingsStatus:"");
+        status.Text=(session.Stale?"STALE — the collector has not published a recent sample. ":"")+r.HardwareStatus+"\n"+r.NetworkStatus+"\n"+session.GraphHistory.Status+(session.SettingsStatus.Length>0?"\n"+session.SettingsStatus:"");
         memory.Text=$"Memory  {Ui.Bytes(session.Value("memory/used"))} / {Ui.Bytes(session.Value("memory/total"))}    ·    Last sample {r.Sample.Timestamp:HH:mm:ss}";
         networkStatus.Text=r.EtwStatus;RefreshTables();
     }

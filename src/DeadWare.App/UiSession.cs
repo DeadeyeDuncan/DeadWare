@@ -8,6 +8,7 @@ public sealed class UiSession
 {
     public Collector Collector {get;}
     public CoolingHistoryService Cooling {get;}
+    public GraphHistoryService GraphHistory {get;}
     public UserSettings Settings {get;}
     public string SettingsStatus {get;private set;}="";
     private readonly string settingsPath=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"DeadWare","settings.json");
@@ -44,6 +45,8 @@ public sealed class UiSession
         diagnostics?.Record("settings_loaded",new {Status=SettingsStatus,Settings.RestoreOpenWindows,OpenWindows=layout.Remembered,Settings.SelectedGpuId,Disk=LayoutDiagnostics.ReadSettingsState(settingsPath)});
         saveTimer.Tick+=async (_,_)=>{saveTimer.Stop();await SaveAsync();};
         Collector=new(new CollectorOptions(ExtendedSensors:Settings.ExtendedSensors));
+        GraphHistory=new(Path.Combine(Path.GetDirectoryName(settingsPath)!,"live-graph-history.db"),Environment.MachineName,Collector.History);
+        Collector.SampleAvailable+=GraphHistory.TryRecord;
         Cooling=new(Path.Combine(Path.GetDirectoryName(settingsPath)!,"cooling-history.db"),Environment.MachineName,Settings.CoolingConfigurationId);
         Cooling.Configure(Settings.CoolingRecording,Settings.CoolingNotifications,Settings.CoolingDetailedDays,Settings.CoolingSummaryDays,Settings.CoolingConfigurationId);
         Collector.SampleAvailable+=Cooling.TryRecord;
@@ -57,7 +60,7 @@ public sealed class UiSession
     public void Start()
     {
         foreach(string key in layout.Remembered)OpenDetached(key);
-        Cooling.Start();_ = SaveAsync();Collector.Start();timer.Start();
+        GraphHistory.Start();Cooling.Start();_ = SaveAsync();Collector.Start();timer.Start();
     }
     public void SetRange(int seconds) {Settings.HistorySeconds=seconds;Changed?.Invoke();_ = SaveAsync();}
     public void SetGpu(string? id) {Settings.SelectedGpuId=id;Changed?.Invoke();_ = SaveAsync();}
@@ -120,7 +123,8 @@ public sealed class UiSession
         // independently even when a native provider is slow to finish shutting down.
         var providerStop=Collector.DisposeAsync().AsTask();
         Collector.SampleAvailable-=Cooling.TryRecord;
-        await Task.WhenAll(providerStop,Cooling.StopAsync()).ConfigureAwait(false);
+        Collector.SampleAvailable-=GraphHistory.TryRecord;
+        await Task.WhenAll(providerStop,Cooling.StopAsync(),GraphHistory.StopAsync()).ConfigureAwait(false);
     });
     internal void StopCollectorForSessionEnding()
     {

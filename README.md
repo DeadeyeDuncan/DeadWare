@@ -21,7 +21,7 @@ DeadWare is a Windows desktop monitor for watching CPU/GPU usage and temperature
 - Close the dashboard to the system tray and keep graphs, the widget and monitoring running independently.
 - Restore the graphs and widget left open, including their saved positions and sizes.
 - Optional administrator startup at your Windows sign-in.
-- Shared 1-, 5- and 15-minute plus 1-, 3- and 6-hour live graph ranges; all windows use one collector. Choose a range above the dashboard or in a pop-out's **⋯** menu. The choice is saved for next time; live history builds while DeadWare is running and starts fresh after quitting. Cooling Health's saved history is separate.
+- Shared 1-, 5- and 15-minute plus 1-, 3- and 6-hour graph ranges; all windows use one collector. Choose a range above the dashboard or in a pop-out's **⋯** menu. The choice and recent CPU/GPU/network traces are saved locally across quits and computer restarts. Cooling Health's longer saved history is separate.
 - Local Cooling Health history, fixed reference comparisons, CSV export and optional sustained-change warnings.
 - Five saved themes: **Midnight**, **Ember**, **Glacier**, **Amethyst**, and **Daylight**.
 - Scrollbars follow the selected theme across all windows, with matching native title bars on Windows 11.
@@ -42,7 +42,11 @@ For a quiet sign-in, also enable **Start in the system tray**. This hides the da
 
 Closing the dashboard with its X or Alt+F4 hides it in the system tray. Pop-out graphs, the widget and monitoring keep running, even with no dashboard open. Double-click the DeadWare tray icon or right-click it and choose **Show dashboard** to reopen it. Windows may place the icon in the hidden-icons area next to the clock.
 
-To fully stop monitoring, choose **Quit DeadWare** from the tray menu or dashboard. Keep window restoration enabled and leave your desired graphs and widget open when you quit: they will reopen with their saved positions, sizes and always-on-top choices. Closing a graph or widget individually keeps it closed next time. Positions are kept within available monitors if your display setup changes. Live graph history starts a new session after a full quit; saved Cooling Health history remains available. Hiding the dashboard resets neither.
+To fully stop monitoring, choose **Quit DeadWare** from the tray menu or dashboard. Keep window restoration enabled and leave your desired graphs and widget open when you quit: they will reopen with their saved positions, sizes and always-on-top choices. Closing a graph or widget individually keeps it closed next time. Positions are kept within available monitors if your display setup changes. Recent graph history and saved Cooling Health history remain available after quitting. Hiding the dashboard resets neither.
+
+Graph history is saved automatically in `%LOCALAPPDATA%\DeadWare\live-graph-history.db`, independently of Cooling Health recording. It retains the last six elapsed hours of CPU/GPU usage and temperature plus combined download/upload rates. Time while DeadWare was stopped remains a gap; after more than six hours away, the old readings fall outside the available range. Current values always come from fresh readings. Writes run in the background every 15 seconds and flush on normal quit; a crash or abrupt power loss can lose the latest unsaved batch. The database is capped at 64 MiB with a bounded journal. A save error is shown in the dashboard status while live monitoring continues.
+
+Restoration matches local machine and hardware metadata, including GPU model/type rather than enumeration order. Ambiguous identical-model GPUs are not restored; an indistinguishable same-model physical replacement cannot always be detected. Full sensor-table statistics and per-application traffic totals remain current-session data. The first upgrade from a version without graph persistence cannot recover its earlier in-memory traces.
 
 Version 0.1.0 saved window positions but did not record which windows were open. After upgrading, arrange your desired windows once to establish the saved workspace.
 
@@ -74,7 +78,7 @@ Cooling Health flags changes worth investigating. It cannot diagnose a blocked c
 
 Interface totals work independently of per-process attribution. Application traffic uses Windows ETW metadata, including TCP/UDP IPv4/IPv6 byte events. The app does not record packet payloads or send telemetry to a cloud service. No firewall management is included.
 
-Rates reflect observed traffic, not ISP billing totals. Adapter totals and attributed application traffic may differ due to virtual adapters, local traffic, protocol overhead or lost events. Network session history is held in memory; long-term network usage totals are not included. Thermal history is stored separately as described above. Settings are kept in the user's local application-data directory.
+Rates reflect observed traffic, not ISP billing totals. Adapter totals and attributed application traffic may differ due to virtual adapters, local traffic, protocol overhead or lost events. The combined network graph's last six hours are stored locally; per-application activity and names are not persisted in that cache. Long-term network usage totals are not included. Thermal history is stored separately as described above. Settings are kept in the user's local application-data directory.
 
 Diagnostic output is generated only when explicitly requested. It can include hardware names and running application information; redact it before attaching it to a public issue.
 

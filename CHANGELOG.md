@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.2 — Remember graph history
+
+- Automatically save and restore the last six elapsed hours of CPU/GPU usage and temperature plus combined network upload/download graphs across quits and restarts.
+- Keep downtime and session boundaries visible as gaps, without substituting saved values for current readings or mixing identifiable different hardware.
+- Save on a background timer and flush on normal shutdown. Bounded local storage and visible errors leave live monitoring running if history cannot be saved.
+
 ## 0.4.1 — Longer live graphs
 
 - Add 1-, 3- and 6-hour ranges alongside the existing minute ranges for CPU, GPU and combined network graphs. The shared range selection survives restart.

@@ -38,7 +38,7 @@ internal static class Ui
     public static UniformGrid Range(UiSession session)
     {
         var row=new UniformGrid {Columns=3,Width=216};foreach(int seconds in HistoryRanges.Seconds)
-        {int n=seconds;var button=Button(HistoryRanges.Label(seconds),()=>session.SetRange(n));button.Tag=seconds;button.ToolTip="Show the last "+HistoryRanges.Label(seconds)+" of this monitoring session";row.Children.Add(button);}
+        {int n=seconds;var button=Button(HistoryRanges.Label(seconds),()=>session.SetRange(n));button.Tag=seconds;button.ToolTip="Show the last "+HistoryRanges.Label(seconds)+" of graph history";row.Children.Add(button);}
         void Refresh(){foreach(Button b in row.Children){b.FontWeight=(int)b.Tag==session.HistorySeconds?FontWeights.Bold:FontWeights.Normal;b.SetResourceReference(Control.ForegroundProperty,(int)b.Tag==session.HistorySeconds?"Accent":"Muted");}}
         row.Loaded+=(_,_)=>{session.Changed+=Refresh;Refresh();};row.Unloaded+=(_,_)=>session.Changed-=Refresh;return row;
     }

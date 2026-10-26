@@ -2,8 +2,14 @@ using System.Collections.ObjectModel;
 using System.Text.Json;
 namespace DeadWare.Core;
 
-public record Snapshot(DateTimeOffset Timestamp,double MonotonicSeconds,IReadOnlyDictionary<string,double?> Values);
-public record SamplePoint(DateTimeOffset Timestamp,double MonotonicSeconds,double? Value);
+public record Snapshot(DateTimeOffset Timestamp,double MonotonicSeconds,IReadOnlyDictionary<string,double?> Values)
+{
+    public string? SessionId {get;init;}
+}
+public record SamplePoint(DateTimeOffset Timestamp,double MonotonicSeconds,double? Value)
+{
+    public bool BreakBefore {get;init;}
+}
 public record Summary(double? Minimum,double? Maximum,double? Average);
 public static class HistoryRanges
 {
@@ -24,29 +30,70 @@ public sealed class SampleHistory
         lock(gate)
         {
             if(s.MonotonicSeconds<=lastSeconds) return;
-            var values=new Dictionary<string,double?>(s.Values.Count,StringComparer.Ordinal);
-            foreach(var pair in s.Values)
-            {
-                if(!keys.TryGetValue(pair.Key,out var key))
-                {
-                    key=pair.Key;
-                    // A local, bounded cache shares repeated provider identifiers without
-                    // retaining arbitrary new identifiers forever through string.Intern.
-                    if(keys.Count<4096)keys.Add(key,key);
-                }
-                values.Add(key,Finite(pair.Value));
-            }
-            samples.Enqueue(s with { Values=new ReadOnlyDictionary<string,double?>(values) });
+            samples.Enqueue(Copy(s));
             lastSeconds=s.MonotonicSeconds;
             while(samples.Count>HistoryRanges.MaximumSeconds+1 || (samples.Count>0 && samples.Peek().MonotonicSeconds<s.MonotonicSeconds-HistoryRanges.MaximumSeconds)) samples.Dequeue();
         }
     }
     public static double? Finite(double? value)=>value.HasValue && double.IsFinite(value.Value)?value:null;
+    // Caller supplies timestamps rebased to this collector's monotonic timeline.
+    // Existing live samples win; later hardware discovery may add metrics to the
+    // same restored timestamp without replacing earlier restored metrics.
+    public void Restore(IReadOnlyList<Snapshot> restored,double now)
+    {
+        if(!double.IsFinite(now))return;
+        lock(gate)
+        {
+            double cutoff=Math.Max(now,lastSeconds)-HistoryRanges.MaximumSeconds;
+            double firstLive=samples.FirstOrDefault(s=>s.SessionId is null)?.MonotonicSeconds??double.PositiveInfinity;
+            var merged=samples.ToDictionary(s=>s.MonotonicSeconds);
+            foreach(var sample in restored)
+            {
+                double time=sample.MonotonicSeconds;
+                if(string.IsNullOrEmpty(sample.SessionId)||!double.IsFinite(time)||time<cutoff||time>now||time>=firstLive)continue;
+                if(merged.TryGetValue(time,out var existing))
+                {
+                    if(existing.SessionId!=sample.SessionId)continue;
+                    var values=existing.Values.ToDictionary(p=>p.Key,p=>p.Value,StringComparer.Ordinal);
+                    foreach(var pair in sample.Values)values.TryAdd(pair.Key,pair.Value);
+                    merged[time]=Copy(existing with {Values=values});
+                }
+                else merged[time]=Copy(sample);
+            }
+            var ordered=merged.Values.Where(s=>s.MonotonicSeconds>=cutoff).OrderBy(s=>s.MonotonicSeconds).TakeLast(HistoryRanges.MaximumSeconds+1).ToArray();
+            samples.Clear();foreach(var sample in ordered)samples.Enqueue(sample);
+            if(ordered.Length>0)lastSeconds=ordered[^1].MonotonicSeconds;
+        }
+    }
+    // Collection gate owns the bounded identifier cache.
+    private Snapshot Copy(Snapshot sample)
+    {
+        var values=new Dictionary<string,double?>(sample.Values.Count,StringComparer.Ordinal);
+        foreach(var pair in sample.Values)
+        {
+            if(!keys.TryGetValue(pair.Key,out var key))
+            {
+                key=pair.Key;if(keys.Count<4096)keys.Add(key,key);
+            }
+            values.Add(key,Finite(pair.Value));
+        }
+        return sample with {Values=new ReadOnlyDictionary<string,double?>(values)};
+    }
     public IReadOnlyList<Snapshot> Read() {lock(gate) return samples.ToArray();}
     public IReadOnlyList<SamplePoint> Series(string id,double now,int seconds)
     {
-        lock(gate) return samples.Where(s=>s.MonotonicSeconds>=now-seconds && s.MonotonicSeconds<=now)
-            .Select(s=>new SamplePoint(s.Timestamp,s.MonotonicSeconds,s.Values.GetValueOrDefault(id))).ToArray();
+        lock(gate)
+        {
+            var points=new List<SamplePoint>();Snapshot? previous=null;
+            foreach(var sample in samples)
+            {
+                if(sample.MonotonicSeconds<now-seconds||sample.MonotonicSeconds>now)continue;
+                points.Add(new(sample.Timestamp,sample.MonotonicSeconds,sample.Values.GetValueOrDefault(id))
+                    {BreakBefore=previous is not null&&previous.SessionId!=sample.SessionId});
+                previous=sample;
+            }
+            return points;
+        }
     }
     private Snapshot[] Capture(double now,int seconds)
     {
@@ -110,6 +157,7 @@ public sealed class SampleHistory
         {
             var point=points[i];double time=point.MonotonicSeconds;
             if(!double.IsFinite(time)||time<now-seconds||time>now)continue;
+            if(point.BreakBefore)Gap(point);
             if(Finite(point.Value) is not { } value){Gap(point);previous=time;continue;}
             if(time-previous>2.5)Gap(point);
             int column=(int)Math.Clamp((time-(now-seconds))*pixelWidth/seconds,0,pixelWidth-1);
