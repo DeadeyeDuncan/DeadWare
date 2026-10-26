@@ -5,19 +5,40 @@ namespace DeadWare.Core;
 public record Snapshot(DateTimeOffset Timestamp,double MonotonicSeconds,IReadOnlyDictionary<string,double?> Values);
 public record SamplePoint(DateTimeOffset Timestamp,double MonotonicSeconds,double? Value);
 public record Summary(double? Minimum,double? Maximum,double? Average);
+public static class HistoryRanges
+{
+    public const int MaximumSeconds=21600;
+    public static IReadOnlyList<int> Seconds {get;}=Array.AsReadOnly(new[]{60,300,900,3600,10800,MaximumSeconds});
+    public static bool IsSupported(int seconds)=>Seconds.Contains(seconds);
+    public static string Label(int seconds)=>seconds<3600?$"{seconds/60} min":$"{seconds/3600} h";
+}
 public sealed class SampleHistory
 {
     private readonly object gate=new();
     private readonly Queue<Snapshot> samples=new();
+    private readonly Dictionary<string,string> keys=new(StringComparer.Ordinal);
+    private double lastSeconds=double.NegativeInfinity;
     public void Add(Snapshot s)
     {
         if (!double.IsFinite(s.MonotonicSeconds)) return;
         lock(gate)
         {
-            if(samples.Count>0 && s.MonotonicSeconds<=samples.Last().MonotonicSeconds) return;
-            var values=s.Values.ToDictionary(p=>p.Key,p=>Finite(p.Value));
+            if(s.MonotonicSeconds<=lastSeconds) return;
+            var values=new Dictionary<string,double?>(s.Values.Count,StringComparer.Ordinal);
+            foreach(var pair in s.Values)
+            {
+                if(!keys.TryGetValue(pair.Key,out var key))
+                {
+                    key=pair.Key;
+                    // A local, bounded cache shares repeated provider identifiers without
+                    // retaining arbitrary new identifiers forever through string.Intern.
+                    if(keys.Count<4096)keys.Add(key,key);
+                }
+                values.Add(key,Finite(pair.Value));
+            }
             samples.Enqueue(s with { Values=new ReadOnlyDictionary<string,double?>(values) });
-            while(samples.Count>900 || (samples.Count>0 && samples.Peek().MonotonicSeconds<s.MonotonicSeconds-900)) samples.Dequeue();
+            lastSeconds=s.MonotonicSeconds;
+            while(samples.Count>HistoryRanges.MaximumSeconds+1 || (samples.Count>0 && samples.Peek().MonotonicSeconds<s.MonotonicSeconds-HistoryRanges.MaximumSeconds)) samples.Dequeue();
         }
     }
     public static double? Finite(double? value)=>value.HasValue && double.IsFinite(value.Value)?value:null;
@@ -26,6 +47,82 @@ public sealed class SampleHistory
     {
         lock(gate) return samples.Where(s=>s.MonotonicSeconds>=now-seconds && s.MonotonicSeconds<=now)
             .Select(s=>new SamplePoint(s.Timestamp,s.MonotonicSeconds,s.Values.GetValueOrDefault(id))).ToArray();
+    }
+    private Snapshot[] Capture(double now,int seconds)
+    {
+        lock(gate)return samples.Where(s=>s.MonotonicSeconds>=now-seconds&&s.MonotonicSeconds<=now).ToArray();
+    }
+    public Summary Summarize(string id,double now,int seconds)
+    {
+        var summary=new Accumulator();
+        foreach(var sample in Capture(now,seconds))summary.Add(sample.Values.GetValueOrDefault(id));
+        return summary.Finish();
+    }
+    public IReadOnlyDictionary<string,Summary> Summaries(IEnumerable<string> ids,double now,int seconds)
+    {
+        var summaries=ids.Distinct(StringComparer.Ordinal).ToDictionary(id=>id,_=>new Accumulator(),StringComparer.Ordinal);
+        if(summaries.Count==0)return new Dictionary<string,Summary>();
+        // Capture references once and release the collection lock before walking all sensors.
+        // No per-reading SamplePoint objects or arrays are needed for table statistics.
+        foreach(var sample in Capture(now,seconds))
+            foreach(var pair in summaries)
+                if(sample.Values.TryGetValue(pair.Key,out var value))pair.Value.Add(value);
+        return summaries.ToDictionary(p=>p.Key,p=>p.Value.Finish(),StringComparer.Ordinal);
+    }
+    private sealed class Accumulator
+    {
+        private int count;
+        private double minimum=double.PositiveInfinity,maximum=double.NegativeInfinity,total;
+        public void Add(double? value)
+        {
+            if(Finite(value) is not { } number)return;
+            minimum=Math.Min(minimum,number);maximum=Math.Max(maximum,number);total+=number;count++;
+        }
+        public Summary Finish()=>count==0?new(null,null,null):new(minimum,maximum,total/count);
+    }
+    /// <summary>
+    /// Keep each pixel column's first, minimum, maximum and last reading in time order.
+    /// Null markers preserve actual collection gaps; callers must not infer gaps from
+    /// elapsed time between the retained points, which can be far apart after reduction.
+    /// </summary>
+    public static IReadOnlyList<SamplePoint> ReduceForChart(IReadOnlyList<SamplePoint> points,double now,int seconds,int pixelWidth)
+    {
+        if(!double.IsFinite(now))throw new ArgumentOutOfRangeException(nameof(now));
+        if(seconds<=0)throw new ArgumentOutOfRangeException(nameof(seconds));
+        if(pixelWidth<=0)throw new ArgumentOutOfRangeException(nameof(pixelWidth));
+        var result=new List<SamplePoint>();
+        int bucket=-1,first=-1,minimum=-1,maximum=-1,last=-1;
+        double previous=double.NaN;
+        void Flush()
+        {
+            if(first<0)return;
+            Span<int> indices=stackalloc int[]{first,minimum,maximum,last};indices.Sort();
+            int added=-1;
+            foreach(int index in indices)if(index!=added){result.Add(points[index]);added=index;}
+            first=minimum=maximum=last=-1;bucket=-1;
+        }
+        void Gap(SamplePoint point)
+        {
+            Flush();
+            if(result.Count==0||result[^1].Value.HasValue)result.Add(point with {Value=null});
+        }
+        for(int i=0;i<points.Count;i++)
+        {
+            var point=points[i];double time=point.MonotonicSeconds;
+            if(!double.IsFinite(time)||time<now-seconds||time>now)continue;
+            if(Finite(point.Value) is not { } value){Gap(point);previous=time;continue;}
+            if(time-previous>2.5)Gap(point);
+            int column=(int)Math.Clamp((time-(now-seconds))*pixelWidth/seconds,0,pixelWidth-1);
+            if(column!=bucket){Flush();bucket=column;}
+            if(first<0)first=minimum=maximum=i;
+            else
+            {
+                if(value<points[minimum].Value)minimum=i;
+                if(value>points[maximum].Value)maximum=i;
+            }
+            last=i;previous=time;
+        }
+        Flush();return result;
     }
     public static Summary Statistics(IEnumerable<SamplePoint> points)
     {
@@ -130,8 +227,8 @@ public static class SettingsCodec
             var s=JsonSerializer.Deserialize<UserSettings>(json);
             if(s is null) return new(new(),"Settings were empty; defaults restored.");
             if(s.Theme is not ("Midnight" or "Ember" or "Glacier" or "Amethyst" or "Daylight")) s.Theme="Midnight";
-            bool invalid=s.HistorySeconds is not (60 or 300 or 900) || s.Windows is null;
-            if(s.HistorySeconds is not (60 or 300 or 900)) s.HistorySeconds=60;
+            bool invalid=!HistoryRanges.IsSupported(s.HistorySeconds) || s.Windows is null;
+            if(!HistoryRanges.IsSupported(s.HistorySeconds)) s.HistorySeconds=60;
             s.Windows??=new();
             if(s.CoolingDetailedDays is not (7 or 30))s.CoolingDetailedDays=30;
             if(s.CoolingSummaryDays is not (30 or 90))s.CoolingSummaryDays=90;

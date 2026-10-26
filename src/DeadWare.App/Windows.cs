@@ -12,7 +12,7 @@ public sealed class MainWindow : Window
     private readonly Func<bool> trayAvailable;
     private readonly ContentControl content=new();
     private readonly TextBlock heading=Ui.Text("System overview",28),subtitle=Ui.Text("The numbers you care about. Room to breathe.",13,"Muted"),status=Ui.Text("Starting the shared collector…",11,"Muted"),memory=Ui.Text("Memory —",12,"Muted"),networkStatus=Ui.Text("",12,"Warning"),networkEmpty=Ui.Text("",13,"Muted"),sensorCount=Ui.Text("",12,"Muted");
-    private readonly ComboBox gpu=new(){MaxWidth=340,DisplayMemberPath="Name",SelectedValuePath="Id"};
+    private readonly ComboBox gpu=new(){MaxWidth=340,VerticalAlignment=VerticalAlignment.Center,DisplayMemberPath="Name",SelectedValuePath="Id"};
     private readonly StackPanel gpuControls;
     private readonly DockPanel liveToolbar;
     private readonly TextBox appSearch=new(){Width=250},sensorSearch=new(){Width=280};
@@ -23,6 +23,7 @@ public sealed class MainWindow : Window
     private Button startupRepair=null!,startupDisable=null!,startupRefresh=null!;
     private string page="overview",gpuSignature="";
     private bool syncingGpu;
+    private bool refreshingSensors;
     private bool syncingStartup,startupBusy;
     private readonly TextBlock trayNotice=Ui.Text("Close hides to the system tray.\nQuit stops monitoring.",10,"Muted");
     public MainWindow(UiSession session,ApplicationLifetime lifetime,Func<bool> trayAvailable,Action quit)
@@ -35,7 +36,7 @@ public sealed class MainWindow : Window
         sideBottom.Children.Add(Ui.Text("COLOR THEME",10,"Muted"));var theme=new ComboBox {ItemsSource=Theme.Names,SelectedItem=session.Settings.Theme,Margin=new Thickness(0,8,0,15)};theme.SelectionChanged+=(_,_)=>{if(theme.SelectedItem is string name)session.SetTheme(name);};sideBottom.Children.Add(theme);
         var elevate=Ui.Button("Restart as administrator",session.RestartElevated);elevate.FontSize=10;sideBottom.Children.Add(elevate);
         var quitButton=Ui.Button("Quit DeadWare",quit);quitButton.FontSize=11;sideBottom.Children.Add(quitButton);trayNotice.Margin=new Thickness(3,5,3,8);sideBottom.Children.Add(trayNotice);
-        sideBottom.Children.Add(Ui.Text($"Local monitoring\n1 second samples · 15 min memory\nv{BuildInfo.Version}",10,"Muted"));
+        sideBottom.Children.Add(Ui.Text($"Local monitoring\n1 second samples · 6 h memory\nv{BuildInfo.Version}",10,"Muted"));
         var nav=new StackPanel();sidebar.Children.Add(nav);
         foreach(var item in new[]{("overview","▦  Overview"),("network","⇄  Network"),("cooling","◷  Cooling Health"),("sensors","≡  Sensors"),("desktop","▱  Desktop layout")})
         {var key=item.Item1;var button=Ui.Button(item.Item2,()=>Navigate(key));button.HorizontalContentAlignment=HorizontalAlignment.Left;button.Margin=new(0,3,0,3);button.Padding=new(10,13,10,13);nav.Children.Add(button);}
@@ -48,6 +49,7 @@ public sealed class MainWindow : Window
         main.Children.Add(content);
         pages["overview"]=Overview();pages["network"]=Network();pages["cooling"]=new CoolingHealthPage(session);pages["sensors"]=Sensors();pages["desktop"]=Desktop();Navigate("overview");
         session.Changed+=Refresh;Closed+=(_,_)=>session.Changed-=Refresh;Closing+=OnClosing;
+        IsVisibleChanged+=(_,_)=>{if(IsVisible)Refresh();};
     }
     private FrameworkElement Overview()
     {
@@ -141,9 +143,9 @@ public sealed class MainWindow : Window
         memory.Text=$"Memory  {Ui.Bytes(session.Value("memory/used"))} / {Ui.Bytes(session.Value("memory/total"))}    ·    Last sample {r.Sample.Timestamp:HH:mm:ss}";
         networkStatus.Text=r.EtwStatus;RefreshTables();
     }
-    private void RefreshTables()
+    private async void RefreshTables()
     {
-        var r=session.Current;if(r is null)return;
+        var r=session.Current;if(r is null||!IsVisible)return;
         if(page=="network")
         {
             var rows=r.Processes.Where(p=>p.Name.Contains(appSearch.Text,StringComparison.OrdinalIgnoreCase)||p.Pid.ToString().Contains(appSearch.Text)).OrderByDescending(p=>(p.DownloadBytesPerSecond??0)+(p.UploadBytesPerSecond??0))
@@ -152,11 +154,22 @@ public sealed class MainWindow : Window
         }
         if(page=="sensors")
         {
-            var rows=r.Sensors.Where(s=>(s.Hardware+" "+s.Name).Contains(sensorSearch.Text,StringComparison.OrdinalIgnoreCase)).Select(s=>
+            if(refreshingSensors)return;
+            refreshingSensors=true;
+            try
             {
-                var summary=SampleHistory.Statistics(session.Collector.History.Series(s.Id,session.Collector.ElapsedSeconds,session.HistorySeconds));
-                return new {Name=$"{s.Hardware}  /  {s.Name}",Current=Ui.Number(session.Stale?null:s.Value," "+s.Unit),Minimum=Ui.Number(summary.Minimum," "+s.Unit),Average=Ui.Number(summary.Average," "+s.Unit),Maximum=Ui.Number(summary.Maximum," "+s.Unit)};
-            }).ToArray();sensors.ItemsSource=rows;sensorCount.Text=$"{rows.Length} sensors · statistics over {session.HistorySeconds/60} minute{(session.HistorySeconds==60?"":"s")} · — means unavailable";
+                string query=sensorSearch.Text;int seconds=session.HistorySeconds;double now=session.Collector.ElapsedSeconds;
+                var matching=r.Sensors.Where(s=>(s.Hardware+" "+s.Name).Contains(query,StringComparison.OrdinalIgnoreCase)).ToArray();
+                var summaries=await Task.Run(()=>session.Collector.History.Summaries(matching.Select(s=>s.Id),now,seconds));
+                // A range/search/page change must not publish an older query over the new view.
+                if(!IsVisible||page!="sensors"||query!=sensorSearch.Text||seconds!=session.HistorySeconds)return;
+                var rows=matching.Select(s=>
+                {
+                    var summary=summaries[s.Id];
+                    return new {Name=$"{s.Hardware}  /  {s.Name}",Current=Ui.Number(session.Stale?null:s.Value," "+s.Unit),Minimum=Ui.Number(summary.Minimum," "+s.Unit),Average=Ui.Number(summary.Average," "+s.Unit),Maximum=Ui.Number(summary.Maximum," "+s.Unit)};
+                }).ToArray();sensors.ItemsSource=rows;sensorCount.Text=$"{rows.Length} sensors · statistics over {HistoryRanges.Label(seconds)} · — means unavailable";
+            }
+            finally {refreshingSensors=false;}
         }
     }
     public void SetTrayUnavailable()=>trayNotice.Text="System tray unavailable. Keep this window open; use Quit DeadWare to exit.";

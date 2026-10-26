@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.1 — Longer live graphs
+
+- Add 1-, 3- and 6-hour ranges alongside the existing minute ranges for CPU, GPU and combined network graphs. The shared range selection survives restart.
+- Retain up to six hours of live samples in memory. Longer charts preserve spikes and gaps while reducing drawing work to the graph's width.
+- Keep the compact options menu narrow with two rows of range choices, and avoid history statistics work for hidden dashboards and closed graph menus.
+
 ## 0.4.0 — Cooling Health
 
 - Cooling Health records local CPU/GPU temperature, load, package power and available clock/fan history. Day/week/month charts and CSV export preserve unavailable readings and recording gaps.

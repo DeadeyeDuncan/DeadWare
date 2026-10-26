@@ -21,7 +21,7 @@ DeadWare is a Windows desktop monitor for watching CPU/GPU usage and temperature
 - Close the dashboard to the system tray and keep graphs, the widget and monitoring running independently.
 - Restore the graphs and widget left open, including their saved positions and sizes.
 - Optional administrator startup at your Windows sign-in.
-- Shared 1-, 5- and 15-minute history; all windows use one collector.
+- Shared 1-, 5- and 15-minute plus 1-, 3- and 6-hour live graph ranges; all windows use one collector. Choose a range above the dashboard or in a pop-out's **⋯** menu. The choice is saved for next time; live history builds while DeadWare is running and starts fresh after quitting. Cooling Health's saved history is separate.
 - Local Cooling Health history, fixed reference comparisons, CSV export and optional sustained-change warnings.
 - Five saved themes: **Midnight**, **Ember**, **Glacier**, **Amethyst**, and **Daylight**.
 - Scrollbars follow the selected theme across all windows, with matching native title bars on Windows 11.

@@ -9,11 +9,25 @@ public class MonitoringTests
     [Fact] public void HistoryBoundsByTimeAndCountAndUsesActualTimestamps()
     {
         var h = new SampleHistory();
-        for (int i=0;i<2000;i++) h.Add(S(i, i));
-        Assert.Equal(900, h.Read().Count);
-        Assert.Equal(Epoch.AddSeconds(1100), h.Read()[0].Timestamp);
-        h.Add(S(4000, 2));
+        for (int i=0;i<=21605;i++) h.Add(S(i, i));
+        Assert.Equal(21601, h.Read().Count);
+        Assert.Equal(Epoch.AddSeconds(5), h.Read()[0].Timestamp);
+        Assert.Equal(21601, h.Series("cpu",21605,21600).Count);
+        Assert.Equal(10801, h.Series("cpu",21605,10800).Count);
+        Assert.Equal(3601, h.Series("cpu",21605,3600).Count);
+        h.Add(S(43206, 2));
         Assert.Single(h.Read());
+    }
+    [Fact] public void DenseHistoryRemainsBoundedAndCopiesPublishedValues()
+    {
+        var h=new SampleHistory();
+        var values=new Dictionary<string,double?> { ["cpu"]=12 };
+        for(int i=0;i<22000;i++)h.Add(new Snapshot(Epoch.AddMilliseconds(i),i/1000d,values));
+        values["cpu"]=99;
+        var points=h.Series("cpu",22,60);
+        Assert.Equal(21601,points.Count);
+        Assert.All(points,p=>Assert.Equal(12,p.Value));
+        Assert.Equal(0.399,points[0].MonotonicSeconds,5);
     }
     [Fact] public void UnknownAndNonFiniteAreGapsWhileZeroIsValid()
     {
@@ -64,6 +78,13 @@ public class MonitoringTests
         var s=new UserSettings { HistorySeconds=300,SelectedGpuId="/gpu/1",Windows=new(){["main"]=new WindowPlacement(50,60,1100,800,true)}};
         var decoded=SettingsCodec.Read(SettingsCodec.Write(s)).Settings;
         Assert.Equal("/gpu/1",decoded.SelectedGpuId);Assert.Equal(300,decoded.HistorySeconds);Assert.True(decoded.Windows["main"].Topmost);
+    }
+    [Theory][InlineData(3600)][InlineData(10800)][InlineData(21600)]
+    public void HourRangesSurviveSettingsRoundtrip(int seconds)
+    {
+        var loaded=SettingsCodec.Read(SettingsCodec.Write(new UserSettings {HistorySeconds=seconds}));
+        Assert.Null(loaded.Error);
+        Assert.Equal(seconds,loaded.Settings.HistorySeconds);
     }
     [Fact] public void RemovedMonitorAndInvalidWindowSizesClampToVisibleWorkArea()
     {

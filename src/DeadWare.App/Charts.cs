@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using DeadWare.Core;
@@ -34,10 +35,10 @@ internal static class Ui
     public static Image Logo()
     {var image=new Image {Width=38,Height=38,Margin=new Thickness(0,0,9,0)};try{image.Source=new BitmapImage(new Uri("pack://application:,,,/Assets/deadware.png"));}catch(System.IO.IOException){}return image;}
     public static string Title(string kind)=>kind switch {"cpu"=>"CPU usage","cputemp"=>"CPU temperature","gpu"=>"GPU usage","gputemp"=>"GPU temperature",_=>"Network activity"};
-    public static StackPanel Range(UiSession session)
+    public static UniformGrid Range(UiSession session)
     {
-        var row=Row();foreach(int seconds in new[]{60,300,900})
-        {int n=seconds;var button=Button($"{seconds/60} min",()=>session.SetRange(n));button.Tag=seconds;row.Children.Add(button);}
+        var row=new UniformGrid {Columns=3,Width=216};foreach(int seconds in HistoryRanges.Seconds)
+        {int n=seconds;var button=Button(HistoryRanges.Label(seconds),()=>session.SetRange(n));button.Tag=seconds;button.ToolTip="Show the last "+HistoryRanges.Label(seconds)+" of this monitoring session";row.Children.Add(button);}
         void Refresh(){foreach(Button b in row.Children){b.FontWeight=(int)b.Tag==session.HistorySeconds?FontWeights.Bold:FontWeights.Normal;b.SetResourceReference(Control.ForegroundProperty,(int)b.Tag==session.HistorySeconds?"Accent":"Muted");}}
         row.Loaded+=(_,_)=>{session.Changed+=Refresh;Refresh();};row.Unloaded+=(_,_)=>session.Changed-=Refresh;return row;
     }
@@ -71,23 +72,22 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
             Label(dc,Axis(value),left+pw+7,y-7);
         }
         double timeLabelY=h-axisLabel.Height-(compact?2:6);
-        Label(dc,$"{session.HistorySeconds/60} min ago",left,timeLabelY);Label(dc,"Now",left+pw-axisLabel.Width,timeLabelY);
+        Label(dc,$"{HistoryRanges.Label(session.HistorySeconds)} ago",left,timeLabelY);Label(dc,"Now",left+pw-axisLabel.Width,timeLabelY);
         DrawSeries(dc,points,now,maximum,left,top,pw,ph,kind=="network"?"Download":kind.StartsWith("gpu")?"Gpu":"Cpu",false);
         if(kind=="network") DrawSeries(dc,up,now,maximum,left,top,pw,ph,"Cpu",true);
         if(!points.Concat(up).Any(p=>p.Value.HasValue)) Label(dc,sample is null?(compact?"Waiting for data…":"Waiting for first sample…"):(compact?"No readings in this range":"No available readings in this range"),left+(compact?4:15),top+ph/2);
     }
     private void DrawSeries(DrawingContext dc,IReadOnlyList<SamplePoint> points,double now,double maximum,double left,double top,double width,double height,string color,bool dashed)
     {
-        var geometry=new StreamGeometry();bool open=false;double previous=double.NaN;Point? lastPoint=null;
+        var geometry=new StreamGeometry();bool open=false;Point? lastPoint=null;
         using(var context=geometry.Open())
         {
-            foreach(var point in points)
+            foreach(var point in SampleHistory.ReduceForChart(points,now,session.HistorySeconds,(int)Math.Ceiling(width)))
             {
-                if(!point.Value.HasValue){open=false;previous=point.MonotonicSeconds;continue;}
-                if(point.MonotonicSeconds-previous>2.5)open=false;
+                if(!point.Value.HasValue){open=false;continue;}
                 var p=new Point(left+width*(1-(now-point.MonotonicSeconds)/session.HistorySeconds),top+height*(1-Math.Clamp(point.Value.Value/maximum,0,1)));
                 if(!open){context.BeginFigure(p,false,false);open=true;}else context.LineTo(p,true,false);
-                previous=point.MonotonicSeconds;lastPoint=p;
+                lastPoint=p;
             }
         }
         geometry.Freeze();var pen=new Pen(Theme.Brush(color),2);if(dashed)pen.DashStyle=new DashStyle([4,3],0);dc.DrawGeometry(null,pen,geometry);
@@ -115,9 +115,11 @@ internal sealed class ChartCard : Border
         var metric=new StackPanel {Margin=new Thickness(0,5,0,5)};metric.Children.Add(value);metric.Children.Add(subtitle);Grid.SetRow(metric,1);grid.Children.Add(metric);
         Grid.SetRow(chart,2);grid.Children.Add(chart);Grid.SetRow(stats,3);grid.Children.Add(stats);Child=grid;
         Loaded+=(_,_)=>{session.Changed+=Refresh;Refresh();};Unloaded+=(_,_)=>session.Changed-=Refresh;
+        IsVisibleChanged+=(_,_)=>{if(IsVisible)Refresh();};
     }
     private void Refresh()
     {
+        if(!IsVisible)return;
         string id=session.MetricId(kind);double? current=session.Stale?null:session.Value(id);var data=session.Current;
         value.SetResourceReference(TextBlock.ForegroundProperty,kind=="network"?"Download":kind.StartsWith("gpu")?"Gpu":"Cpu");
         if(kind=="network")
@@ -131,7 +133,7 @@ internal sealed class ChartCard : Border
             subtitle.Text=data is null?"Discovering hardware…":kind.StartsWith("cpu")?data.CpuName:session.GpuName;
             if(current is null&&data is not null)subtitle.Text+=" · "+(session.Stale?"stale":"sensor unavailable");
         }
-        double now=session.Collector.ElapsedSeconds;var summary=SampleHistory.Statistics(session.Collector.History.Series(id,now,session.HistorySeconds));
+        double now=session.Collector.ElapsedSeconds;var summary=session.Collector.History.Summarize(id,now,session.HistorySeconds);
         Func<double?,string> format=kind=="network"?v=>Ui.Bytes(v,true):v=>Ui.Number(v,kind.Contains("temp")?"°C":"%");
         stats.Text=$"MIN  {format(summary.Minimum)}      AVG  {format(summary.Average)}      MAX  {format(summary.Maximum)}"+(kind=="network"?"    · Download":"");
         chart.Refresh();

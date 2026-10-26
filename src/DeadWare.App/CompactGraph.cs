@@ -53,7 +53,7 @@ internal sealed class CompactGraph : Border
         Refresh();
     }
 
-    private void OpenOptions() {Refresh();popup.IsOpen=true;}
+    private void OpenOptions() {popup.IsOpen=true;Refresh();}
 
     private void Refresh()
     {
@@ -76,9 +76,12 @@ internal sealed class CompactGraph : Border
         status.Text=data is null?"Discovering hardware…":session.Stale?"Stale · waiting for fresh readings":unavailable?"Reading unavailable":"";
         status.Visibility=status.Text.Length==0?Visibility.Collapsed:Visibility.Visible;
         // Keep secondary information accessible without reserving graph space for it.
-        double now=session.Collector.ElapsedSeconds;var summary=SampleHistory.Statistics(session.Collector.History.Series(id,now,session.HistorySeconds));
-        Func<double?,string> format=kind=="network"?v=>Ui.Bytes(v,true):v=>Ui.Number(v,kind.Contains("temp")?" °C":" %");
-        stats.Text=$"{(kind=="network"?"Download · ":"")}Last {session.HistorySeconds/60} min\nMin  {format(summary.Minimum)}\nAvg  {format(summary.Average)}\nMax  {format(summary.Maximum)}";
+        if(popup.IsOpen)
+        {
+            double now=session.Collector.ElapsedSeconds;var summary=session.Collector.History.Summarize(id,now,session.HistorySeconds);
+            Func<double?,string> format=kind=="network"?v=>Ui.Bytes(v,true):v=>Ui.Number(v,kind.Contains("temp")?" °C":" %");
+            stats.Text=$"{(kind=="network"?"Download · ":"")}Last {HistoryRanges.Label(session.HistorySeconds)}\nMin  {format(summary.Minimum)}\nAvg  {format(summary.Average)}\nMax  {format(summary.Maximum)}";
+        }
         chart.Refresh();
     }
 }
