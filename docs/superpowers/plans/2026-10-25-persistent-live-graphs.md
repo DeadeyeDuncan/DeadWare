@@ -12,7 +12,7 @@
 - [x] Restore merge: `Monitoring.cs` and tests. Snapshot session metadata; explicit plot discontinuities; merge old metrics into matching restored snapshots, let live snapshots win collisions, exclude expired/nonfinite samples, preserve retention and monotonic ordering. Verify fast restarts and late device restoration.
 - [x] Runtime: `GraphHistoryService.cs`, optional projection helper, and app tests. Nonblocking 120-item queue, periodic flush independent of arriving samples, immutable graph-only projection, stable hardware mapping and retry after an empty first publication, visible storage failures, bounded background startup.
 - [x] Integration: `UiSession.cs`, dashboard status and shutdown tests. Subscribe/start once; cancel providers and drain both history workers concurrently. Preserve the existing three-second Windows shutdown budget and leave live monitoring usable on storage failure.
-- [ ] Delivery: update usage/release notes, run the complete suite and focused offscreen/fixture verification, review, package, safely install after tray Quit, verify restoration, and publish the preview.
+- [x] Delivery: update usage/release notes, run the complete suite and focused offscreen/fixture verification, review, package, safely install after tray Quit, verify restoration, and publish the preview.
 
 ## Acceptance and limits
 
