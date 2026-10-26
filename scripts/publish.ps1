@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [ValidatePattern('^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$')][string]$Version = '0.3.0',
+    [ValidatePattern('^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$')][string]$Version = '0.4.0',
     [string]$Dotnet = 'dotnet'
 )
 $ErrorActionPreference = 'Stop'
@@ -16,7 +16,7 @@ $stage = Join-Path $artifacts "package-$buildId/DeadWare"
 
 Push-Location $repo
 try {
-    & $Dotnet test 'tests/DeadWare.Tests/DeadWare.Tests.csproj' -c Release --nologo
+    & $Dotnet test 'DeadWare.slnx' -c Release --nologo
     if ($LASTEXITCODE -ne 0) { throw 'Tests failed. No package produced.' }
     & $Dotnet publish 'src/DeadWare.App/DeadWare.App.csproj' -c Release -r win-x64 --self-contained true -p:PublishTrimmed=false -p:PublishSingleFile=false "-p:Version=$Version" -p:DebugType=None -o $stage --nologo
     if ($LASTEXITCODE -ne 0) { throw 'Publish failed. No package produced.' }

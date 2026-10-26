@@ -7,6 +7,7 @@ namespace DeadWare.App;
 public sealed class UiSession
 {
     public Collector Collector {get;}
+    public CoolingHistoryService Cooling {get;}
     public UserSettings Settings {get;}
     public string SettingsStatus {get;private set;}="";
     private readonly string settingsPath=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"DeadWare","settings.json");
@@ -43,6 +44,9 @@ public sealed class UiSession
         diagnostics?.Record("settings_loaded",new {Status=SettingsStatus,Settings.RestoreOpenWindows,OpenWindows=layout.Remembered,Settings.SelectedGpuId,Disk=LayoutDiagnostics.ReadSettingsState(settingsPath)});
         saveTimer.Tick+=async (_,_)=>{saveTimer.Stop();await SaveAsync();};
         Collector=new(new CollectorOptions(ExtendedSensors:Settings.ExtendedSensors));
+        Cooling=new(Path.Combine(Path.GetDirectoryName(settingsPath)!,"cooling-history.db"),Environment.MachineName,Settings.CoolingConfigurationId);
+        Cooling.Configure(Settings.CoolingRecording,Settings.CoolingNotifications,Settings.CoolingDetailedDays,Settings.CoolingSummaryDays,Settings.CoolingConfigurationId);
+        Collector.SampleAvailable+=Cooling.TryRecord;
         timer.Tick+=(_,_)=>
         {
             if(Settings.SelectedGpuId is null && Current is {Gpus.Count:>0} reading)
@@ -53,7 +57,7 @@ public sealed class UiSession
     public void Start()
     {
         foreach(string key in layout.Remembered)OpenDetached(key);
-        Collector.Start();timer.Start();
+        Cooling.Start();_ = SaveAsync();Collector.Start();timer.Start();
     }
     public void SetRange(int seconds) {Settings.HistorySeconds=seconds;Changed?.Invoke();_ = SaveAsync();}
     public void SetGpu(string? id) {Settings.SelectedGpuId=id;Changed?.Invoke();_ = SaveAsync();}
@@ -61,6 +65,19 @@ public sealed class UiSession
     public void SetExtendedSensors(bool enabled) {Settings.ExtendedSensors=enabled;_ = SaveAsync();}
     public void SetRestoreOpenWindows(bool enabled) {Settings.RestoreOpenWindows=enabled;_ = SaveAsync();}
     public void SetStartInTray(bool enabled) {Settings.StartInTray=enabled;_ = SaveAsync();}
+    public void SetCoolingOptions(bool recording,bool notifications,int detailedDays,int summaryDays)
+    {
+        Settings.CoolingRecording=recording;Settings.CoolingNotifications=notifications;
+        Settings.CoolingDetailedDays=detailedDays==7?7:30;Settings.CoolingSummaryDays=summaryDays==30?30:90;
+        Cooling.Configure(recording,notifications,Settings.CoolingDetailedDays,Settings.CoolingSummaryDays,Settings.CoolingConfigurationId);
+        _ = SaveAsync();
+    }
+    public void NewCoolingSetup()
+    {
+        Settings.CoolingConfigurationId=Guid.NewGuid().ToString("N");
+        Cooling.Configure(Settings.CoolingRecording,Settings.CoolingNotifications,Settings.CoolingDetailedDays,Settings.CoolingSummaryDays,Settings.CoolingConfigurationId);
+        _ = SaveAsync();
+    }
     public string MetricId(string kind)=>kind switch {"cpu"=>"cpu/usage","cputemp"=>"cpu/temperature","gpu"=>(SelectedGpuId??"unavailable")+"/usage","gputemp"=>(SelectedGpuId??"unavailable")+"/temperature",_=>"network/download"};
     public async Task SaveAsync()
     {
@@ -97,7 +114,14 @@ public sealed class UiSession
         catch(Exception e) when(e is IOException or UnauthorizedAccessException) {SettingsStatus="The final window layout could not be saved.";diagnostics?.Record("final_save_failed",new {Revision=saveRevision},e);}
         catch(Exception e) {diagnostics?.Record("final_save_failed",new {Revision=saveRevision},e);throw;}
     }
-    private Task StopCollectorAsync()=>collectorStop??=Task.Run(async ()=>await Collector.DisposeAsync().ConfigureAwait(false));
+    private Task StopCollectorAsync()=>collectorStop??=Task.Run(async ()=>
+    {
+        // Request provider cancellation before closing the recording queue. History drains
+        // independently even when a native provider is slow to finish shutting down.
+        var providerStop=Collector.DisposeAsync().AsTask();
+        Collector.SampleAvailable-=Cooling.TryRecord;
+        await Task.WhenAll(providerStop,Cooling.StopAsync()).ConfigureAwait(false);
+    });
     internal void StopCollectorForSessionEnding()
     {
         // Windows session ending cannot wait for a dispatcher continuation. The shared stop

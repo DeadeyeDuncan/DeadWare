@@ -6,7 +6,8 @@ using DeadWare.Core;
 using LibreHardwareMonitor.Hardware;
 
 namespace DeadWare.App;
-public record SensorReading(string Id,string Hardware,string Name,string Unit,double? Value);
+public record SensorReading(string Id,string Hardware,string Name,string Unit,double? Value,
+    string HardwareId="",string HardwareType="",string SensorType="",string Validity="Unknown");
 public record Reading(Snapshot Sample,IReadOnlyList<Device> Gpus,IReadOnlyList<SensorReading> Sensors,IReadOnlyList<ProcessTraffic> Processes,string CpuName,string HardwareStatus,string NetworkStatus,string EtwStatus,bool Elevated,IReadOnlyDictionary<string,double>? ProviderMilliseconds=null,DiagnosticFailure? EtwFailure=null);
 
 /// <summary>One serial background loop owns all hardware updates; windows only read immutable publications.</summary>
@@ -154,7 +155,9 @@ public sealed class Collector : IAsyncDisposable
                 bool lowLevel=h.HardwareType==HardwareType.Cpu && s.SensorType is SensorType.Temperature or SensorType.Power or SensorType.Voltage or SensorType.Clock;
                 double? v=SensorValidity.Normalize(s.Value,lowLevel,lowLevelAvailable);
                 if(s.SensorType==SensorType.Load && (v<0||v>100)) v=null;
-                sensors.Add(new(s.Identifier.ToString(),h.Name,s.Name,Unit(s.SensorType),v));
+                sensors.Add(new(s.Identifier.ToString(),h.Name,s.Name,Unit(s.SensorType),v,
+                    h.Identifier.ToString(),h.HardwareType.ToString(),s.SensorType.ToString(),
+                    v.HasValue?"Available":lowLevel&&!lowLevelAvailable?"Low-level access unavailable":"Missing or invalid provider value"));
             }
         }
         catch(Exception e) {errors.Add($"{h.Name}: {e.GetType().Name}");}

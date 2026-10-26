@@ -34,6 +34,14 @@ public partial class App : Application
             var main=new MainWindow(session,lifetime,()=>tray is not null,RequestQuit);MainWindow=main;
             try {tray=new TrayIcon(Dispatcher,ShowDashboard,RequestQuit);}
             catch(Exception) {main.SetTrayUnavailable();}
+            session.Cooling.WarningRaised+=warning=>
+            {
+                if(lifetime.IsEnding||Dispatcher.HasShutdownStarted)return;
+                Dispatcher.BeginInvoke(()=>
+                {
+                    if(!lifetime.IsEnding&&session.Settings.CoolingNotifications)tray?.ShowCoolingWarning(warning.Message);
+                });
+            };
             bool windowsStartup=e.Args.Contains("--startup")&&!e.Args.Contains("--restart-from");
             if(ApplicationLifetime.ShouldShowDashboardOnLaunch(windowsStartup,session.Settings.StartInTray,tray is not null))main.Show();
             session.Start();

@@ -107,6 +107,11 @@ public sealed class UserSettings
 {
     public bool RestoreOpenWindows {get;set;}=true;
     public bool StartInTray {get;set;}
+    public bool CoolingRecording {get;set;}=true;
+    public bool CoolingNotifications {get;set;}
+    public int CoolingDetailedDays {get;set;}=30;
+    public int CoolingSummaryDays {get;set;}=90;
+    public string CoolingConfigurationId {get;set;}=Guid.NewGuid().ToString("N");
     public List<string> OpenWindows {get;set;}=new();
     public string WindowPlacementFormat {get;set;}=WindowCoordinates.Format;
     public bool ExtendedSensors {get;set;}
@@ -128,6 +133,9 @@ public static class SettingsCodec
             bool invalid=s.HistorySeconds is not (60 or 300 or 900) || s.Windows is null;
             if(s.HistorySeconds is not (60 or 300 or 900)) s.HistorySeconds=60;
             s.Windows??=new();
+            if(s.CoolingDetailedDays is not (7 or 30))s.CoolingDetailedDays=30;
+            if(s.CoolingSummaryDays is not (30 or 90))s.CoolingSummaryDays=90;
+            if(!Guid.TryParse(s.CoolingConfigurationId,out _))s.CoolingConfigurationId=Guid.NewGuid().ToString("N");
             s.OpenWindows=DetachedWindowState.Normalize(s.OpenWindows);
             s.Windows=s.Windows.Where(p=>p.Value is not null).Take(16).ToDictionary(p=>p.Key,p=>p.Value);
             using var document=JsonDocument.Parse(json);

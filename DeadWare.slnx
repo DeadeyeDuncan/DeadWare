@@ -1,4 +1,4 @@
 <Solution>
   <Folder Name="/src/">
     <Project Path="src/DeadWare.App/DeadWare.App.csproj" />
-  </Folder><Project Path="src/DeadWare.Core/DeadWare.Core.csproj" /><Project Path="tests/DeadWare.Tests/DeadWare.Tests.csproj" /></Solution>
+  </Folder><Project Path="src/DeadWare.Core/DeadWare.Core.csproj" /><Project Path="tests/DeadWare.Tests/DeadWare.Tests.csproj" /><Project Path="tests/DeadWare.App.Tests/DeadWare.App.Tests.csproj" /></Solution>

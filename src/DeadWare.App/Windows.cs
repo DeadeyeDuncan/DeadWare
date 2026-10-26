@@ -14,6 +14,7 @@ public sealed class MainWindow : Window
     private readonly TextBlock heading=Ui.Text("System overview",28),subtitle=Ui.Text("The numbers you care about. Room to breathe.",13,"Muted"),status=Ui.Text("Starting the shared collector…",11,"Muted"),memory=Ui.Text("Memory —",12,"Muted"),networkStatus=Ui.Text("",12,"Warning"),networkEmpty=Ui.Text("",13,"Muted"),sensorCount=Ui.Text("",12,"Muted");
     private readonly ComboBox gpu=new(){MaxWidth=340,DisplayMemberPath="Name",SelectedValuePath="Id"};
     private readonly StackPanel gpuControls;
+    private readonly DockPanel liveToolbar;
     private readonly TextBox appSearch=new(){Width=250},sensorSearch=new(){Width=280};
     private readonly DataGrid apps=new(),sensors=new();
     private readonly Dictionary<string,FrameworkElement> pages=new();
@@ -36,16 +37,16 @@ public sealed class MainWindow : Window
         var quitButton=Ui.Button("Quit DeadWare",quit);quitButton.FontSize=11;sideBottom.Children.Add(quitButton);trayNotice.Margin=new Thickness(3,5,3,8);sideBottom.Children.Add(trayNotice);
         sideBottom.Children.Add(Ui.Text($"Local monitoring\n1 second samples · 15 min memory\nv{BuildInfo.Version}",10,"Muted"));
         var nav=new StackPanel();sidebar.Children.Add(nav);
-        foreach(var item in new[]{("overview","▦  Overview"),("network","⇄  Network"),("sensors","≡  Sensors"),("desktop","▱  Desktop layout")})
+        foreach(var item in new[]{("overview","▦  Overview"),("network","⇄  Network"),("cooling","◷  Cooling Health"),("sensors","≡  Sensors"),("desktop","▱  Desktop layout")})
         {var key=item.Item1;var button=Ui.Button(item.Item2,()=>Navigate(key));button.HorizontalContentAlignment=HorizontalAlignment.Left;button.Margin=new(0,3,0,3);button.Padding=new(10,13,10,13);nav.Children.Add(button);}
         var main=new DockPanel {Margin=new Thickness(18,25,26,16)};Grid.SetColumn(main,1);shell.Children.Add(main);
         var footer=new StackPanel {Margin=new Thickness(4,10,4,0)};footer.Children.Add(status);DockPanel.SetDock(footer,Dock.Bottom);main.Children.Add(footer);
         var header=new StackPanel();DockPanel.SetDock(header,Dock.Top);main.Children.Add(header);
         var titleRow=new DockPanel();var widget=Ui.Button("↗ Open widget",()=>session.OpenDetached("widget"));widget.HorizontalAlignment=HorizontalAlignment.Right;DockPanel.SetDock(widget,Dock.Right);titleRow.Children.Add(widget);titleRow.Children.Add(heading);header.Children.Add(titleRow);subtitle.Margin=new(0,8,0,0);header.Children.Add(subtitle);
-        var toolbar=new DockPanel {Margin=new Thickness(0,18,0,12)};var ranges=Ui.Range(session);DockPanel.SetDock(ranges,Dock.Right);toolbar.Children.Add(ranges);var gpuLabel=Ui.Text("GPU",12,"Muted");gpuLabel.Margin=new(0,0,8,0);gpuControls=Ui.Row(gpuLabel,gpu);toolbar.Children.Add(gpuControls);header.Children.Add(toolbar);
+        liveToolbar=new DockPanel {Margin=new Thickness(0,18,0,12)};var ranges=Ui.Range(session);DockPanel.SetDock(ranges,Dock.Right);liveToolbar.Children.Add(ranges);var gpuLabel=Ui.Text("GPU",12,"Muted");gpuLabel.Margin=new(0,0,8,0);gpuControls=Ui.Row(gpuLabel,gpu);liveToolbar.Children.Add(gpuControls);header.Children.Add(liveToolbar);
         gpu.SelectionChanged+=(_,_)=>{if(!syncingGpu)session.SetGpu((gpu.SelectedItem as Device)?.Id);};
         main.Children.Add(content);
-        pages["overview"]=Overview();pages["network"]=Network();pages["sensors"]=Sensors();pages["desktop"]=Desktop();Navigate("overview");
+        pages["overview"]=Overview();pages["network"]=Network();pages["cooling"]=new CoolingHealthPage(session);pages["sensors"]=Sensors();pages["desktop"]=Desktop();Navigate("overview");
         session.Changed+=Refresh;Closed+=(_,_)=>session.Changed-=Refresh;Closing+=OnClosing;
     }
     private FrameworkElement Overview()
@@ -122,8 +123,9 @@ public sealed class MainWindow : Window
     private void Navigate(string destination)
     {
         gpuControls.Visibility=destination=="overview"?Visibility.Visible:Visibility.Collapsed;
-        page=destination;content.Content=pages[destination];heading.Text=destination switch {"network"=>"Your network, explained","sensors"=>"Hardware sensors","desktop"=>"Make room for your work",_=>"System overview"};
-        subtitle.Text=destination switch {"network"=>"See which applications are sending and receiving data.","sensors"=>"Live values and statistics over the selected history range.","desktop"=>"A few useful numbers, wherever you need them.",_=>"The numbers you care about. Room to breathe."};Refresh();
+        liveToolbar.Visibility=destination=="cooling"?Visibility.Collapsed:Visibility.Visible;
+        page=destination;content.Content=pages[destination];heading.Text=destination switch {"network"=>"Your network, explained","cooling"=>"Cooling Health","sensors"=>"Hardware sensors","desktop"=>"Make room for your work",_=>"System overview"};
+        subtitle.Text=destination switch {"network"=>"See which applications are sending and receiving data.","cooling"=>"Learn your usual temperatures. Notice sustained changes.","sensors"=>"Live values and statistics over the selected history range.","desktop"=>"A few useful numbers, wherever you need them.",_=>"The numbers you care about. Room to breathe."};Refresh();
         if(destination=="desktop")_ = RefreshStartupAsync();
     }
     private void Refresh()

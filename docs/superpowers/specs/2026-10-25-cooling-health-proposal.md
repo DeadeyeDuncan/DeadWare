@@ -2,7 +2,7 @@
 
 Status: researched proposal, not implemented. This describes a possible next feature; it does not certify the current computer's cooling health.
 
-Review: an independent builder check found no important unanswered questions for planning this first release. The unknown AIO model limits later pump/coolant integration, not the thermal-history scope below. User approval of this proposed scope is pending.
+Review: an independent builder check found no important unanswered questions for planning this first release. The user approved this scope and explicitly resumed implementation on 2026-10-25 after a temporary pause. The unknown AIO model limits later pump/coolant integration, not the thermal-history scope below.
 
 ## User intent and established context
 

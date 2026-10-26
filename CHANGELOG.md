@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Cooling Health records local CPU/GPU temperature, load, package power and available clock/fan history. Day/week/month charts and CSV export preserve unavailable readings and recording gaps.
+- Save an explicit fixed reference period and compare ten sustained minutes at similar power, load and available fan speed. Optional tray warnings have acknowledgment and a persistent 24-hour cooldown.
+- Separate cooling setups and sensor mappings keep references from silently mixing. Learning, stale and insufficient-data states explain when comparison is unavailable.
+- Keep 30 days of minute detail and 90 days of hourly summaries by default, with retention controls and bounded local SQLite storage. Recording errors leave live monitoring running.
 - Show the GPU selector only on Overview; remove it from Network, Sensors and Desktop layout without changing the selected adapter or history controls.
 
 ## 0.3.0 — Keep monitoring from the tray
