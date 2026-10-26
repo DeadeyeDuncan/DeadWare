@@ -82,7 +82,9 @@ The corrected offscreen WPF probe passed **86 checks** with a plain Application 
 
 An earlier discarded probe instantiated the real App class and a dispatcher drain unexpectedly invoked its queued startup, opening a modal test window. The exact startup branch was not captured. The test process was stopped; the installed 0.3.0 process remained running. Default settings metadata showed no recent write and no new default thermal database was observed. That run is not counted as native-free evidence. The replacement probe uses only copied resource definitions and never constructs DeadWare.App.App. Computer Use remained off.
 
-Independent source review accepted the corrected identity, muted-warning, new-setup, hidden-dashboard and retention behavior. The installed 0.4.0 smoke check and sustained real-machine performance are still pending at this candidate gate. No actual cooling fault was simulated; fixture thresholds do not validate prediction accuracy or additional AIO hardware support.
+Independent source review accepted the corrected identity, muted-warning, new-setup, hidden-dashboard and retention behavior. No actual cooling fault was simulated; fixture thresholds do not validate prediction accuracy or additional AIO hardware support.
+
+After the user chose Quit DeadWare, the candidate was installed at the existing stable path with the prior 0.3.0 directory retained for rollback. It was launched through the existing administrator startup task. One process was observed and all five graph windows reopened; four matched the pre-update bounds exactly and the CPU-usage window moved one physical pixel horizontally. The dashboard was also visible by inspection time; whether the user opened it before inspection was not established. The user confirmed **v0.4.0, history appears, PC responsive** after opening Cooling Health. This is a short native smoke check, not a sustained-performance or real-fault prediction test. The app was left running; Computer Use remained off.
 
 ## Published release records
 

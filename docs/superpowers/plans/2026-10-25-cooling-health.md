@@ -69,10 +69,10 @@ Files: App/CoolingHealthPage.cs, App/ThermalHistoryChart.cs, Windows.cs; docs, v
 - [x] Reference start/end controls, save and select prior reference, new-setup action, clear learning/unsupported/stale messages. Expose available coverage, optional notifications, warning log/acknowledgment and confounders; no pump failure label.
 - [x] Hide unrelated live range/GPU controls on this page; preserve overview and network fix.
 - [x] Run Release build + full tests; native-free fixtures for projection/service/UI, dark/light/empty/data states; storage growth/queue and bounded shutdown checks. Independent whole-change review; fix substantive findings.
-- [ ] Package reviewable build and document evidence/limits. Request tray Quit only when ready to replace running files, then native/manual smoke with Computer Use off. Publish only after responsive smoke confirmation, consistent with prior release workflow.
+- [x] Package reviewable build and document evidence/limits. Request tray Quit only when ready to replace running files, then native/manual smoke with Computer Use off. Publish only after responsive smoke confirmation, consistent with prior release workflow.
 
 ## Execution notes
 
 The user has approved the design and explicitly requested implementation. Use parallel ownership for the pure analysis and persistence modules, then integrate UI/runtime and review; no further workflow-choice approval is needed.
 
-Rulings from implementation: match available fan context within max(250 RPM, 20%), with fan-stop separated; log warnings even when notifications are muted; disable reference comparison for ambiguous identical devices; use schema v2 lightweight reference headers and a bounded immutable active-reference cache. SQLitePCLRaw 3.0.5 replaces the vulnerable transitive native package. Native installation/smoke and public release remain pending.
+Rulings from implementation: match available fan context within max(250 RPM, 20%), with fan-stop separated; log warnings even when notifications are muted; disable reference comparison for ambiguous identical devices; use schema v2 lightweight reference headers and a bounded immutable active-reference cache. SQLitePCLRaw 3.0.5 replaces the vulnerable transitive native package. Native installation and responsive history smoke passed; public release verification is tracked in docs/validation.md.

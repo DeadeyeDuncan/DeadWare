@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 — Cooling Health
 
 - Cooling Health records local CPU/GPU temperature, load, package power and available clock/fan history. Day/week/month charts and CSV export preserve unavailable readings and recording gaps.
 - Save an explicit fixed reference period and compare ten sustained minutes at similar power, load and available fan speed. Optional tray warnings have acknowledgment and a persistent 24-hour cooldown.
