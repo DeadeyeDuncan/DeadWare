@@ -1,5 +1,11 @@
 # Release validation
 
+## Update banner navigation candidate (0.6.4, 2026-10-27)
+
+The dashboard now collapses the update-available banner while Updates is active and reevaluates it when navigating elsewhere. The page check runs on the UI dispatcher alongside the latest release state, so a queued background refresh cannot make the banner reappear on Updates. Update checks, installation and tray notifications retain their existing behavior.
+
+All 262 automated tests passed (217 core/update, 45 Windows app). The real-dashboard regression first failed because Review update navigated successfully but left the banner Visible instead of Collapsed, then passed after the narrow MainWindow fix. Coverage includes Review update and sidebar navigation, service-state changes on Updates, a queued dispatcher refresh, restoration when leaving with a newer release, and no-release states on both pages. The targeted rendering suite passed 2/2; independent review found no actionable issues and whitespace checks passed. Offscreen Overview/Updates captures under ignored `artifacts/ui-update-notice/` confirm the layout with synthetic release data, without native windows, live collection or user-settings writes. The installed package reported 0.6.3 before publication; live installation remains for the user's updater test.
+
 ## Widget graphs (0.6.3, 2026-10-27)
 
 The compact widget now contains CPU and selected-GPU history charts. Solid usage traces retain the CPU/GPU theme colors; dashed blue temperature traces use a separate °C axis, starting at 0–100°C and expanding above 100°C. Both reuse the existing collector, selected graph range, selected GPU, persisted history, reduction and gap handling. The existing 300×320 minimum, 340×390 default, remembered placement, Always on top and memory/network summaries remain.

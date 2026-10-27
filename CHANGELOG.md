@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.6.4 — Hide the update banner on Updates
+
+- Hide the update-available banner while the Updates page is open, including during background status changes.
+- Restore the banner on other pages when a newer release remains available.
+
 ## 0.6.3 — Widget graphs
 
 - Show stacked CPU and selected-GPU history graphs in the compact widget, each combining solid usage and dashed temperature lines in different colors.
