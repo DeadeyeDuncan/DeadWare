@@ -1,4 +1,6 @@
 <Solution>
   <Folder Name="/src/">
     <Project Path="src/DeadWare.App/DeadWare.App.csproj" />
+    <Project Path="src/DeadWare.UpdateCore/DeadWare.UpdateCore.csproj" />
+    <Project Path="src/DeadWare.Updater/DeadWare.Updater.csproj" />
   </Folder><Project Path="src/DeadWare.Core/DeadWare.Core.csproj" /><Project Path="tests/DeadWare.Tests/DeadWare.Tests.csproj" /><Project Path="tests/DeadWare.App.Tests/DeadWare.App.Tests.csproj" /></Solution>

@@ -1,6 +1,7 @@
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
+using System.Windows.Media;
 using System.Windows.Threading;
 using DeadWare.Core;
 using Microsoft.Win32;
@@ -12,7 +13,7 @@ internal sealed class BatteryHistoryPage : ScrollViewer
     private sealed record RangeChoice(string Label, int Days) { public override string ToString() => Label; }
     private readonly UiSession session;
     private readonly ComboBox range = new() { MinWidth = 120 };
-    private readonly TextBlock percentage = Ui.Text("—", 42, "Accent"), power = Ui.Text("Waiting for battery…", 17), saver = Ui.Text("Battery saver unknown", 13, "Muted");
+    private readonly TextBlock percentage = Ui.Text("—", 42, "Accent"), power = Ui.Text("Waiting for battery…", 17);
     private readonly TextBlock summary = Ui.Text("", 12, "Muted"), recordingStatus = Ui.Text("", 12, "Muted"), storage = Ui.Text("", 11, "Muted"), actionStatus = Ui.Text("", 12, "Warning");
     private readonly BatteryHistoryChart chart = new() { Height = 320, Margin = new(0, 12, 0, 6) };
     private readonly CheckBox recording = new() { Content = "Record battery history on this device" };
@@ -30,7 +31,7 @@ internal sealed class BatteryHistoryPage : ScrollViewer
         var body = new StackPanel { Margin = new(6, 10, 6, 10) }; Content = body;
         var current = new Grid(); current.ColumnDefinitions.Add(new() { Width = GridLength.Auto }); current.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) });
         percentage.Margin = new(0, 0, 26, 0); current.Children.Add(percentage);
-        var state = new StackPanel { VerticalAlignment = VerticalAlignment.Center }; state.Children.Add(power); saver.Margin = new(0, 6, 0, 0); state.Children.Add(saver); Grid.SetColumn(state, 1); current.Children.Add(state);
+        power.VerticalAlignment = VerticalAlignment.Center; Grid.SetColumn(power, 1); current.Children.Add(power);
         body.Children.Add(Card(current));
         var controls = new WrapPanel { Margin = new(0, 0, 0, 10) };
         range.ItemsSource = new[] { new RangeChoice("Day", 1), new("Week", 7), new("Month", 30), new("Year", 365), new("All history", 0) }; range.SelectedIndex = 0;
@@ -39,8 +40,13 @@ internal sealed class BatteryHistoryPage : ScrollViewer
         export = Ui.Button("Export CSV…", () => _ = ExportAsync()); controls.Children.Add(export);
         if (showOpenWindow) controls.Children.Add(Ui.Button("Open in window ↗", () => session.OpenDetached("batteryhistory")));
         body.Children.Add(controls);
-        var history = new StackPanel(); history.Children.Add(Ui.Text("Battery charge", 16)); history.Children.Add(chart); history.Children.Add(summary);
-        var hint = Ui.Text("Line and dots: charge. Vertical ranges: minimum–maximum in a summarized time bucket. Green marks: charging. Amber marks: battery saver. Solid marks mean all observations in the bucket reported that state; outlined marks mean mixed states. Gaps remain unconnected. Dates use local time.", 11, "Muted");
+        var history = new StackPanel(); history.Children.Add(Ui.Text("Battery charge", 16)); history.Children.Add(chart);
+        var legend = new WrapPanel { Margin = new(0, 0, 0, 8) };
+        legend.Children.Add(TraceLegend("Saver off", "Accent", DashStyles.Solid));
+        legend.Children.Add(TraceLegend("Saver on", "Warning", DashStyles.Dash));
+        legend.Children.Add(TraceLegend("State unknown", "Muted", DashStyles.Dot));
+        history.Children.Add(legend); history.Children.Add(summary);
+        var hint = Ui.Text("The charge line changes color and style at recorded saver changes. Hollow dots mean mixed or unknown saver state in a summarized time bucket; vertical ranges show minimum–maximum charge. Green marks: charging. Amber marks: saver enabled; outlined marks: mixed states. Gaps remain unconnected. Dates use local time.", 11, "Muted");
         hint.Margin = new(0, 10, 0, 0); history.Children.Add(hint); body.Children.Add(Card(history));
         var settings = new StackPanel(); settings.Children.Add(Ui.Text("Keep a lasting record", 16)); recording.Margin = new(0, 12, 0, 8); settings.Children.Add(recording);
         settings.Children.Add(recordingStatus); storage.Margin = new(0, 8, 0, 8); settings.Children.Add(storage);
@@ -54,6 +60,14 @@ internal sealed class BatteryHistoryPage : ScrollViewer
         Unloaded += (_, _) => { session.Changed -= RefreshCurrent; timer.Stop(); revision++; };
         IsVisibleChanged += (_, _) => UpdateVisibility(); RefreshCurrent();
     }
+    private static StackPanel TraceLegend(string label, string color, DashStyle dash)
+    {
+        var item = new StackPanel { Orientation = Orientation.Horizontal, Margin = new(0, 0, 18, 4) };
+        var line = new System.Windows.Shapes.Line { X1 = 0, Y1 = 7, X2 = 24, Y2 = 7, Width = 24, Height = 14, StrokeThickness = 2,
+            StrokeDashArray = dash.Dashes, StrokeDashCap = PenLineCap.Round, Margin = new(0, 0, 6, 0) };
+        line.SetResourceReference(System.Windows.Shapes.Shape.StrokeProperty, color);
+        item.Children.Add(line); item.Children.Add(Ui.Text(label, 11, color)); return item;
+    }
     private static Border Card(UIElement content) { var card = Ui.Panel(content, new(16)); card.Margin = new(0, 0, 0, 12); return card; }
     private void ChangeRecording(bool enabled)
     { if (syncing) return; session.SetBatteryRecording(enabled); recordingStatus.Text = session.Battery.Status; }
@@ -66,7 +80,6 @@ internal sealed class BatteryHistoryPage : ScrollViewer
             BatteryPowerState.NoBattery => "No battery detected", BatteryPowerState.Charging => "Charging",
             BatteryPowerState.OnBattery => "On battery", BatteryPowerState.PluggedIn => "Plugged in · not charging", _ => "Battery reading unavailable"
         };
-        saver.Text = current.SaverEnabled is { } saving ? $"Battery saver {(saving ? "on" : "off")}" : "Battery saver unknown";
         syncing = true; recording.IsChecked = session.Settings.BatteryRecording; syncing = false;
         recordingStatus.Text = session.Battery.Status; chart.InvalidateVisual();
     }

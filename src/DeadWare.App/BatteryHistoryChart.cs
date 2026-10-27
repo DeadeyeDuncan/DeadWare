@@ -36,18 +36,20 @@ internal sealed class BatteryHistoryChart : FrameworkElement
             dc.DrawLine(new Pen(Theme.Brush("Line"), 1) { DashStyle = DashStyles.Dot }, new(left, y), new(left + width, y));
             Label(dc, $"{i * 25}%", left + width + 8, y - 7);
         }
-        var charge = new Pen(Theme.Brush("Accent"), 1.8);
         BatteryHistoryBucket? previous = null;
         foreach (var bucket in view.Buckets)
         {
             double x = X(bucket.Start + (bucket.End - bucket.Start) / 2);
             if (bucket.Average is { } average)
             {
+                var charge = ChargePen(bucket);
                 if (previous is not null && CanConnect(previous, bucket))
-                    dc.DrawLine(charge, new(X(previous.Start), Y(previous.Average!.Value)), new(x, Y(average)));
+                    // The earlier observation's state lasts until the next recorded change.
+                    dc.DrawLine(ChargePen(previous), new(X(previous.Start), Y(previous.Average!.Value)), new(x, Y(average)));
                 if (bucket.Minimum is { } minimum && bucket.Maximum is { } maximum)
-                    dc.DrawLine(new Pen(Theme.Brush("Muted"), 1), new(x, Y(minimum)), new(x, Y(maximum)));
-                dc.DrawEllipse(Theme.Brush("Accent"), null, new(x, Y(average)), 2, 2);
+                    dc.DrawLine(new Pen(charge.Brush, 1), new(x, Y(minimum)), new(x, Y(maximum)));
+                bool certain = bucket.SaverKnownSamples == bucket.Samples && (bucket.SaverSamples == 0 || bucket.SaverSamples == bucket.Samples);
+                dc.DrawEllipse(certain ? charge.Brush : null, certain ? null : new Pen(charge.Brush, 1.3), new(x, Y(average)), 2, 2);
             }
             Mark(dc, bucket.ChargingSamples, bucket.Samples, x, top + height + 34, "Cpu");
             Mark(dc, bucket.SaverSamples, bucket.Samples, x, top + height + 52, "Warning");
@@ -63,6 +65,12 @@ internal sealed class BatteryHistoryChart : FrameworkElement
         Label(dc, "Charging", left + width + 8, top + height + 30);
         Label(dc, "Saver", left + width + 8, top + height + 48);
         if (!view.Buckets.Any(b => b.ValidSamples > 0)) Label(dc, "No charge readings in this range yet", left + 10, top + height / 2);
+    }
+    private static Pen ChargePen(BatteryHistoryBucket bucket)
+    {
+        bool known = bucket.SaverKnownSamples == bucket.Samples;
+        return new Pen(Theme.Brush(!known ? "Muted" : bucket.SaverSamples > 0 ? "Warning" : "Accent"), 1.8)
+        { DashStyle = !known ? DashStyles.Dot : bucket.SaverSamples > 0 ? DashStyles.Dash : DashStyles.Solid };
     }
     private static void Mark(DrawingContext dc, long enabled, long count, double x, double y, string color)
     {

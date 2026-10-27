@@ -37,8 +37,8 @@ public sealed class MainWindow : Window
         var elevate=Ui.Button("Restart as administrator",session.RestartElevated);elevate.FontSize=10;sideBottom.Children.Add(elevate);
         var quitButton=Ui.Button("Quit DeadWare",quit);quitButton.FontSize=11;sideBottom.Children.Add(quitButton);trayNotice.Margin=new Thickness(3,5,3,8);sideBottom.Children.Add(trayNotice);
         sideBottom.Children.Add(Ui.Text($"Local monitoring\n1 second samples · 6 h saved graphs\nv{BuildInfo.Version}",10,"Muted"));
-        var nav=new StackPanel();sidebar.Children.Add(nav);
-        foreach(var item in new[]{("overview","▦  Overview"),("network","⇄  Network"),("cooling","◷  Cooling Health"),("battery","▤  Battery history"),("sensors","≡  Sensors"),("desktop","▱  Desktop layout")})
+        var nav=new StackPanel();sidebar.Children.Add(new ScrollViewer{Content=nav,VerticalScrollBarVisibility=ScrollBarVisibility.Auto,HorizontalScrollBarVisibility=ScrollBarVisibility.Disabled});
+        foreach(var item in new[]{("overview","▦  Overview"),("network","⇄  Network"),("cooling","◷  Cooling Health"),("battery","▤  Battery history"),("sensors","≡  Sensors"),("desktop","▱  Desktop layout"),("updates","↓  Updates")})
         {var key=item.Item1;var button=Ui.Button(item.Item2,()=>Navigate(key));button.HorizontalContentAlignment=HorizontalAlignment.Left;button.Margin=new(0,3,0,3);button.Padding=new(10,13,10,13);nav.Children.Add(button);}
         var main=new DockPanel {Margin=new Thickness(18,25,26,16)};Grid.SetColumn(main,1);shell.Children.Add(main);
         var footer=new StackPanel {Margin=new Thickness(4,10,4,0)};footer.Children.Add(status);DockPanel.SetDock(footer,Dock.Bottom);main.Children.Add(footer);
@@ -47,7 +47,7 @@ public sealed class MainWindow : Window
         liveToolbar=new DockPanel {Margin=new Thickness(0,18,0,12)};var ranges=Ui.Range(session);DockPanel.SetDock(ranges,Dock.Right);liveToolbar.Children.Add(ranges);var gpuLabel=Ui.Text("GPU",12,"Muted");gpuLabel.Margin=new(0,0,8,0);gpuControls=Ui.Row(gpuLabel,gpu);liveToolbar.Children.Add(gpuControls);header.Children.Add(liveToolbar);
         gpu.SelectionChanged+=(_,_)=>{if(!syncingGpu)session.SetGpu((gpu.SelectedItem as Device)?.Id);};
         main.Children.Add(content);
-        pages["overview"]=Overview();pages["network"]=Network();pages["cooling"]=new CoolingHealthPage(session);pages["battery"]=new BatteryHistoryPage(session);pages["sensors"]=Sensors();pages["desktop"]=Desktop();Navigate("overview");
+        pages["overview"]=Overview();pages["network"]=Network();pages["cooling"]=new CoolingHealthPage(session);pages["battery"]=new BatteryHistoryPage(session);pages["sensors"]=Sensors();pages["desktop"]=Desktop();pages["updates"]=new UpdatesPage(session);Navigate("overview");
         session.Changed+=Refresh;Closed+=(_,_)=>session.Changed-=Refresh;Closing+=OnClosing;
         IsVisibleChanged+=(_,_)=>{if(IsVisible)Refresh();};
     }
@@ -126,9 +126,9 @@ public sealed class MainWindow : Window
     private void Navigate(string destination)
     {
         gpuControls.Visibility=destination=="overview"?Visibility.Visible:Visibility.Collapsed;
-        liveToolbar.Visibility=destination is "cooling" or "battery"?Visibility.Collapsed:Visibility.Visible;
-        page=destination;content.Content=pages[destination];heading.Text=destination switch {"network"=>"Your network, explained","cooling"=>"Cooling Health","battery"=>"Battery history","sensors"=>"Hardware sensors","desktop"=>"Make room for your work",_=>"System overview"};
-        subtitle.Text=destination switch {"network"=>"See which applications are sending and receiving data.","cooling"=>"Learn your usual temperatures. Notice sustained changes.","battery"=>"See charge fall and recover. Keep the history for years.","sensors"=>"Current-session values and statistics over the selected range.","desktop"=>"A few useful numbers, wherever you need them.",_=>"The numbers you care about. Room to breathe."};Refresh();
+        liveToolbar.Visibility=destination is "cooling" or "battery" or "updates"?Visibility.Collapsed:Visibility.Visible;
+        page=destination;content.Content=pages[destination];heading.Text=destination switch {"network"=>"Your network, explained","cooling"=>"Cooling Health","battery"=>"Battery history","updates"=>"Keep DeadWare current","sensors"=>"Hardware sensors","desktop"=>"Make room for your work",_=>"System overview"};
+        subtitle.Text=destination switch {"network"=>"See which applications are sending and receiving data.","cooling"=>"Learn your usual temperatures. Notice sustained changes.","battery"=>"See charge fall and recover. Keep the history for years.","updates"=>"Update when you are ready. Keep the previous installation within reach.","sensors"=>"Current-session values and statistics over the selected range.","desktop"=>"A few useful numbers, wherever you need them.",_=>"The numbers you care about. Room to breathe."};Refresh();
         if(destination=="desktop")_ = RefreshStartupAsync();
     }
     private void Refresh()

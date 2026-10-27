@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [ValidatePattern('^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$')][string]$Version = '0.5.0',
+    [ValidatePattern('^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$')][string]$Version = '0.6.0',
     [string]$Dotnet = 'dotnet'
 )
 $ErrorActionPreference = 'Stop'
@@ -20,6 +20,10 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Tests failed. No package produced.' }
     & $Dotnet publish 'src/DeadWare.App/DeadWare.App.csproj' -c Release -r win-x64 --self-contained true -p:PublishTrimmed=false -p:PublishSingleFile=false "-p:Version=$Version" -p:DebugType=None -o $stage --nologo
     if ($LASTEXITCODE -ne 0) { throw 'Publish failed. No package produced.' }
+    $helperStage = Join-Path $artifacts "helper-$buildId"
+    & $Dotnet publish 'src/DeadWare.Updater/DeadWare.Updater.csproj' -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true -p:PublishTrimmed=false "-p:Version=$Version" -p:DebugType=None -o $helperStage --nologo
+    if ($LASTEXITCODE -ne 0) { throw 'Updater publish failed. No package produced.' }
+    Copy-Item -LiteralPath (Join-Path $helperStage 'DeadWare.Updater.exe') -Destination $stage
     foreach ($name in @('LICENSE','THIRD-PARTY-NOTICES.md','README.md','CHANGELOG.md')) {
         Copy-Item -LiteralPath (Join-Path $repo $name) -Destination $stage
     }
@@ -54,6 +58,12 @@ try {
         [pscustomobject]@{ Package=$entry.Name; License=if($licenseNode){$licenseNode.InnerText}else{'See package manifest'}; Copyright=if($copyrightNode){$copyrightNode.InnerText}else{''}; Project=if($projectNode){$projectNode.InnerText}else{''} }
     }
     $inventory | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $licenseDir 'dependencies.json') -Encoding utf8
+    $packageFiles = [ordered]@{}
+    foreach ($file in (Get-ChildItem -LiteralPath $stage -File -Recurse | Sort-Object FullName)) {
+        $relative = [IO.Path]::GetRelativePath($stage,$file.FullName).Replace('\','/')
+        $packageFiles[$relative] = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+    }
+    [pscustomobject]@{ Format=1; Version=$Version; Files=$packageFiles } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $stage 'deadware-package.json') -Encoding utf8
     $archive = Join-Path $artifacts "DeadWare-$Version-win-x64.zip"
     Compress-Archive -LiteralPath $stage -DestinationPath $archive -CompressionLevel Optimal -Force
     $hash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()

@@ -24,16 +24,29 @@ DeadWare is a Windows desktop monitor for watching CPU/GPU usage and temperature
 - Shared 1-, 5- and 15-minute plus 1-, 3- and 6-hour graph ranges; all windows use one collector. Choose a range above the dashboard or in a pop-out's **⋯** menu. The choice and recent CPU/GPU/network traces are saved locally across quits and computer restarts. Cooling Health's longer saved history is separate.
 - Local Cooling Health history, fixed reference comparisons, CSV export and optional sustained-change warnings.
 - Lifetime battery-percentage history with recorded charging and Windows battery-saver periods, Day/Week/Month/Year/All views, CSV export and a separate remembered window.
+- Manual GitHub release checks, verified in-app updates and rollback to the previous installed version.
 - Five saved themes: **Midnight**, **Ember**, **Glacier**, **Amethyst**, and **Daylight**.
 - Scrollbars follow the selected theme across all windows, with matching native title bars on Windows 11.
 
 ## Download and run
 
-Get the Windows x64 ZIP from [Releases](https://github.com/DeadeyeDuncan/DeadWare/releases). Extract the **entire** archive and run `DeadWare.exe` inside the `DeadWare` folder. The .NET runtime is bundled. The initial preview is portable and unsigned; no installer or automatic updater is included.
+Get the Windows x64 ZIP from [Releases](https://github.com/DeadeyeDuncan/DeadWare/releases). Extract the **entire** archive and run `DeadWare.exe` inside the `DeadWare` folder. The .NET runtime is bundled. The app is portable and unsigned. Version 0.6.0 adds manual update and rollback controls; older installations need one complete ZIP upgrade to gain those controls.
 
-Windows 10/11 x64 is the initial target. ARM64 and other operating systems are not validated. Releases remain previews while hardware coverage expands.
+Windows 10/11 x64 is the target. ARM64 and other operating systems are not validated. Hardware coverage varies by device.
 
 Start as a normal user. If a capability needs additional permissions, the app shows its status and provides an explicit administrator restart action. Administrator access does not guarantee every sensor is available. DeadWare does not disable Windows protections or install a custom monitoring driver.
+
+## Updates and rollback
+
+Open **Updates** and choose **Check for updates**. DeadWare checks the normal published release in `DeadeyeDuncan/DeadWare`; draft/preview releases and source commits are excluded. There is no automatic polling or unattended installation. An installed build newer than the published release stays on its current version.
+
+When an eligible update is available, **Update & restart** downloads the complete Windows x64 ZIP, checks its SHA-256 digest/checksum and validates the package's file manifest. Download/preparation can be cancelled. Once the installer is ready, DeadWare performs its normal Quit to save settings and drain history, replaces only managed app files, and restarts at the same path with remembered windows. Settings and battery/Cooling Health/live graph databases stay in `%LOCALAPPDATA%\DeadWare`.
+
+**Roll back & restart** restores the previous verified installed version, keeping current settings and recordings. The first updater-enabled installation may have no registered rollback; one becomes available after an in-app update. Only a verified older backup is offered. If replacement or startup fails, the helper restores the previous app when the failed process has exited. It never forcibly terminates monitoring or overwrites a still-running replacement. A running app that did not confirm startup must be quit normally before rollback/recovery can proceed.
+
+Updates require the complete packaged app directory, including `deadware-package.json` and `DeadWare.Updater.exe`, and permission to write app files. Shortcuts and Windows startup keep their existing executable path. Verification failures, offline checks and unavailable backups leave the current installation intact. Update checks/downloads contact GitHub and do not upload monitoring data. Update staging, the previous snapshot and operation results are stored in the local `updates` directory, partitioned by installation path.
+
+New tagged versions are published as normal GitHub releases with ZIP/checksum assets. Older historical previews remain archived and are ignored by the updater. Publishing a release is separate from pushing source to a branch or opening a pull request.
 
 ## Startup and saved workspace
 
@@ -63,11 +76,11 @@ This first release is **not complete HWiNFO sensor parity**. A successful launch
 
 ## Battery history
 
-Open **Battery history** in the sidebar to see how charge drops and recovers, along with current charging and Windows battery-saver status. Choose **Open in window** for a separate resizable window; its position, size and Always on top choice are remembered. The Day/Week/Month/Year/All history selector is independent of the live graph range. Desktop layout can also open the battery window.
+Open **Battery history** in the sidebar to see how charge drops and recovers, along with current charging status. The charge line shows Windows battery-saver periods: the normal solid line means saver off, dashed amber means saver on, and dotted gray means unknown state. A legend identifies each style. Choose **Open in window** for a separate resizable window; its position, size and Always on top choice are remembered. The Day/Week/Month/Year/All history selector is independent of the live graph range. Desktop layout can also open the battery window.
 
 DeadWare records the system battery total once per minute plus observed charging/power and battery-saver state changes. Recording starts automatically on a battery-equipped device and can be paused without deleting saved history. Windows supplies these readings without administrator access. Unknown readings stay unavailable; a desktop with no battery says so. Multiple physical batteries appear as the combined system charge.
 
-Observations are kept indefinitely in `%LOCALAPPDATA%\DeadWare\battery-history.db`, independently of the six-hour live graph cache and Cooling Health retention. There is no automatic expiry or size-based deletion. Storage usage and recording errors appear on the page. The database grows with recorded observations; long-range charts use bounded summaries without deleting originals. Dots show percentage averages and vertical lines show minimum–maximum in each displayed bucket. Green marks identify recorded charging and amber marks identify battery saver; filled marks mean all observations in a bucket reported that state, and outlined marks mean mixed states. They do not establish the state during unobserved time. Missing data, sleep, pauses and restarts remain gaps.
+Observations are kept indefinitely in `%LOCALAPPDATA%\DeadWare\battery-history.db`, independently of the six-hour live graph cache and Cooling Health retention. There is no automatic expiry or size-based deletion. Storage usage and recording errors appear on the page. The database grows with recorded observations; long-range charts use bounded summaries without deleting originals. Dots show percentage averages and vertical lines show minimum–maximum in each displayed bucket. Hollow charge dots indicate mixed or unknown saver state within a summarized bucket. Green marks identify recorded charging and amber marks identify battery saver; filled marks mean all observations in a bucket reported that state, and outlined marks mean mixed states. They do not establish the state during unobserved time. Missing data, sleep, pauses and restarts remain gaps.
 
 History begins with this version while DeadWare runs; earlier device history cannot be reconstructed. Writes flush every 15 seconds and on normal **Quit DeadWare**. Abrupt power loss can lose the unsaved batch. A storage problem reports an error while the other monitors continue. Resolve storage access and restart to retry. Battery data stays local to this Windows profile; source-code synchronization through GitHub does not copy it to another computer. Export the selected range to a new CSV for a backup, or copy the database while DeadWare is fully quit. Keep your own backup before resetting Windows or deleting the profile. Do not synchronize an open database.
 
@@ -110,10 +123,10 @@ dotnet run --project src/DeadWare.App/DeadWare.App.csproj
 Create a self-contained portable ZIP and SHA-256 checksum:
 
 ```powershell
-pwsh -File scripts/publish.ps1 -Version 0.5.0
+pwsh -File scripts/publish.ps1 -Version 0.6.0
 ```
 
-The packaging script runs tests before publishing and writes output under `artifacts/`. GitHub Actions runs the same script. Pushing a version tag such as `v0.2.0` builds and publishes a **prerelease** after tests pass, using the matching `docs/releases/v0.2.0.md` release notes. Workflows use pinned action commits.
+The packaging script runs tests before publishing, bundles the independent self-contained update helper, and records all managed file hashes in `deadware-package.json`. Output goes under `artifacts/`. GitHub Actions runs the same script. Pushing a normal three-part version tag such as `v0.6.0` builds and publishes a normal release after tests pass, using the matching `docs/releases/v0.6.0.md` notes. Workflows use pinned action commits.
 
 ## Project direction
 
