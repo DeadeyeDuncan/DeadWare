@@ -1,5 +1,13 @@
 # Release validation
 
+## Startup update checks candidate (0.6.1, 2026-10-27)
+
+All **262 tests passed** (217 core, 45 Windows app). New regressions first failed for the missing startup-check/notification behavior and notice control, then passed with the implementation. Coverage verifies one metadata request per launch, each newer normal version announced at most once per process, manual rechecks, current/older/preview exclusion, missing/rate-limited/unavailable responses, asynchronous cancellation on shutdown and no created download/staging/install files during a startup check. Existing verification, rollback, battery and history tests remain green.
+
+The real availability notice rendered offscreen in Midnight and Daylight at 620 pixels. It stays collapsed without a newer release, remains available independently of installation readiness, and its Review update action only invokes navigation. The existing plain-Application fixture suppresses real App startup, native windows, hardware collection and profile access. Inline review checked that the GUI startup hook runs after monitoring/startup acknowledgment, duplicate-instance and diagnostic/configuration paths return before it, shutdown cancels the check, and the tray click opens Updates rather than installation. Native Windows notification delivery and physical sign-in were not exercised; the persistent dashboard notice covers availability when tray notifications are not visible.
+
+The startup check reuses the existing bounded release client and normal-release policy. Package download, preparation, helper launch, restart and rollback remain explicit user actions. No running installation was replaced to perform these tests. Local rendering evidence is under `.superpowers/sdd/2026-10-27-startup-updates/ui/`.
+
 ## Published normal release (0.6.0, 2026-10-27)
 
 Battery-history [PR #3](https://github.com/DeadeyeDuncan/DeadWare/pull/3) and updater [PR #4](https://github.com/DeadeyeDuncan/DeadWare/pull/4) were merged into `main` with their commit history preserved. Tag `v0.6.0` points to `ff0f71084a4234eafa9acb580d072e867901663b`; its tree matches the final tested feature tree. The [main Windows build](https://github.com/DeadeyeDuncan/DeadWare/actions/runs/40538604514) and [release workflow](https://github.com/DeadeyeDuncan/DeadWare/actions/runs/40538702834) succeeded. The release log confirms **254 passing tests** (217 core, 37 Windows app). GitHub's latest-release endpoint returns [DeadWare v0.6.0](https://github.com/DeadeyeDuncan/DeadWare/releases/tag/v0.6.0) with both draft and prerelease flags false.

@@ -15,6 +15,7 @@ public sealed class MainWindow : Window
     private readonly ComboBox gpu=new(){MaxWidth=340,VerticalAlignment=VerticalAlignment.Center,DisplayMemberPath="Name",SelectedValuePath="Id"};
     private readonly StackPanel gpuControls;
     private readonly DockPanel liveToolbar;
+    private readonly UpdateNotice updateNotice;
     private readonly TextBox appSearch=new(){Width=250},sensorSearch=new(){Width=280};
     private readonly DataGrid apps=new(),sensors=new();
     private readonly Dictionary<string,FrameworkElement> pages=new();
@@ -44,11 +45,14 @@ public sealed class MainWindow : Window
         var footer=new StackPanel {Margin=new Thickness(4,10,4,0)};footer.Children.Add(status);DockPanel.SetDock(footer,Dock.Bottom);main.Children.Add(footer);
         var header=new StackPanel();DockPanel.SetDock(header,Dock.Top);main.Children.Add(header);
         var titleRow=new DockPanel();var widget=Ui.Button("↗ Open widget",()=>session.OpenDetached("widget"));widget.HorizontalAlignment=HorizontalAlignment.Right;DockPanel.SetDock(widget,Dock.Right);titleRow.Children.Add(widget);titleRow.Children.Add(heading);header.Children.Add(titleRow);subtitle.Margin=new(0,8,0,0);header.Children.Add(subtitle);
+        updateNotice=new(ShowUpdates);header.Children.Add(updateNotice);
         liveToolbar=new DockPanel {Margin=new Thickness(0,18,0,12)};var ranges=Ui.Range(session);DockPanel.SetDock(ranges,Dock.Right);liveToolbar.Children.Add(ranges);var gpuLabel=Ui.Text("GPU",12,"Muted");gpuLabel.Margin=new(0,0,8,0);gpuControls=Ui.Row(gpuLabel,gpu);liveToolbar.Children.Add(gpuControls);header.Children.Add(liveToolbar);
         gpu.SelectionChanged+=(_,_)=>{if(!syncingGpu)session.SetGpu((gpu.SelectedItem as Device)?.Id);};
         main.Children.Add(content);
         pages["overview"]=Overview();pages["network"]=Network();pages["cooling"]=new CoolingHealthPage(session);pages["battery"]=new BatteryHistoryPage(session);pages["sensors"]=Sensors();pages["desktop"]=Desktop();pages["updates"]=new UpdatesPage(session);Navigate("overview");
-        session.Changed+=Refresh;Closed+=(_,_)=>session.Changed-=Refresh;Closing+=OnClosing;
+        session.Changed+=Refresh;session.Updates.Changed+=RefreshUpdateNotice;
+        Closed+=(_,_)=>{session.Changed-=Refresh;session.Updates.Changed-=RefreshUpdateNotice;};Closing+=OnClosing;
+        RefreshUpdateNotice();
         IsVisibleChanged+=(_,_)=>{if(IsVisible)Refresh();};
     }
     private FrameworkElement Overview()
@@ -123,6 +127,13 @@ public sealed class MainWindow : Window
         var result=await StartupRegistration.ConfigureAsync(enabled);SetStartupBusy(false);ShowStartupStatus(result.Registration);startupResult.Text=result.Message;
     }
     private static void Column(DataGrid table,string title,string binding,double weight)=>table.Columns.Add(new DataGridTextColumn {Header=title,Binding=new Binding(binding),Width=new DataGridLength(weight,DataGridLengthUnitType.Star)});
+    public void ShowUpdates()=>Navigate("updates");
+    private void RefreshUpdateNotice()
+    {
+        if(lifetime.IsEnding||Dispatcher.HasShutdownStarted)return;
+        if(Dispatcher.CheckAccess())updateNotice.ApplyState(session.Updates.State);
+        else Dispatcher.InvokeAsync(RefreshUpdateNotice);
+    }
     private void Navigate(string destination)
     {
         gpuControls.Visibility=destination=="overview"?Visibility.Visible:Visibility.Collapsed;

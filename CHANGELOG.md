@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.1 — Startup update notices
+
+- Check for the latest normal GitHub release once per app launch, after monitoring starts.
+- Show a persistent dashboard notice and system-tray notification when a newer version is available; Review update opens Updates.
+- Keep downloads, installation, restart and rollback explicit. Handle offline checks quietly and cancel pending checks on shutdown.
+
 ## 0.6.0 — Manual updates and rollback
 
 - Show battery saver directly on the charge trace with a different color and dashed line, a graph legend and distinct unknown/mixed states; remove saver text from the current-status card.
