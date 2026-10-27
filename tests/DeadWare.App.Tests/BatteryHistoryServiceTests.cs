@@ -8,6 +8,31 @@ namespace DeadWare.App.Tests;
 public class BatteryHistoryServiceTests
 {
     [Fact]
+    public async Task Queue_loss_breaks_the_first_accepted_observation_after_the_loss()
+    {
+        using var fixture = new Fixture(); var service = new BatteryHistoryService(fixture.Path, "tablet");
+        const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+        var store = (BatteryHistoryStore)typeof(BatteryHistoryService).GetField("store", flags)!.GetValue(service)!;
+        store.Initialize();
+        var ready = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        typeof(BatteryHistoryService).GetField("initialization", flags)!.SetValue(service, ready.Task);
+        var start = DateTimeOffset.UtcNow.AddMinutes(-5); service.Start();
+        try
+        {
+            for (int i = 0; i < 121; i++) service.TryRecord(Reading(start.AddSeconds(i), i, saver: i % 2 == 1));
+            Assert.Equal(1, service.DroppedSamples); ready.SetResult();
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            while (service.PendingSamples > 0) await Task.Delay(10, timeout.Token);
+            service.TryRecord(Reading(start.AddSeconds(122), 122)); await service.StopAsync();
+            using var writer = new StringWriter(); store.ExportCsv("tablet", writer, null, DateTimeOffset.UtcNow);
+            var rows = writer.ToString().Split('\n', StringSplitOptions.RemoveEmptyEntries).Skip(1).Select(line => line.Trim().Split(',')).ToArray();
+            Assert.Equal(121, rows.Length);
+            Assert.All(rows.Take(120), row => Assert.Equal(rows[0][4], row[4]));
+            Assert.NotEqual(rows[119][4], rows[120][4]);
+        }
+        finally { ready.TrySetResult(); await service.StopAsync(); }
+    }
+    [Fact]
     public async Task Normal_quit_saves_sparse_observations_and_reopen_keeps_saver_and_charging()
     {
         using var fixture = new Fixture(); var service = new BatteryHistoryService(fixture.Path, "tablet");

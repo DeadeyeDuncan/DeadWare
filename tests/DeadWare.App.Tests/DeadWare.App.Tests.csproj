@@ -1,4 +1,5 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup><TargetFramework>net10.0-windows</TargetFramework><UseWPF>true</UseWPF><IsPackable>false</IsPackable><IsTestProject>true</IsTestProject></PropertyGroup>
   <ItemGroup><PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1"/><PackageReference Include="xunit" Version="2.9.3"/><PackageReference Include="xunit.runner.visualstudio" Version="3.1.4"><PrivateAssets>all</PrivateAssets></PackageReference><ProjectReference Include="../../src/DeadWare.App/DeadWare.App.csproj"/></ItemGroup>
+  <ItemGroup><None Include="../../src/DeadWare.App/App.xaml" Link="Fixtures/App.xaml" CopyToOutputDirectory="PreserveNewest"/></ItemGroup>
 </Project>

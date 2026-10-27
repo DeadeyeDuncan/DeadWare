@@ -6,6 +6,8 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using System.Windows.Markup;
+using System.Xml.Linq;
 using DeadWare.App;
 using DeadWare.Core;
 using Xunit;
@@ -41,6 +43,18 @@ public class BatteryUiTests
             {
                 // A plain Application has no DeadWare startup handler, settings IO or hardware worker.
                 var app = new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
+                // Parse only the real styles, never the Application root/startup code.
+                var source = XDocument.Load(Path.Combine(AppContext.BaseDirectory, "Fixtures", "App.xaml"));
+                XNamespace presentation = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
+                var dictionary = new XElement(presentation + "ResourceDictionary",
+                    new XAttribute(XNamespace.Xmlns + "x", "http://schemas.microsoft.com/winfx/2006/xaml"),
+                    new XAttribute(XNamespace.Xmlns + "local", "clr-namespace:DeadWare.App;assembly=DeadWare"),
+                    source.Root!.Element(presentation + "Application.Resources")!.Elements());
+                // The app's internal static corner brush is the sole code-backed resource;
+                // use the same color without introducing a second Application instance.
+                foreach (var color in dictionary.Descendants().Attributes("Color").Where(a => a.Value.Contains("local:Theme.ScrollCorner")))
+                    color.Value = "#151B24";
+                app.Resources = (ResourceDictionary)XamlReader.Parse(dictionary.ToString());
                 var assembly = typeof(Collector).Assembly;
                 var pageType = assembly.GetType("DeadWare.App.BatteryHistoryPage"); Assert.NotNull(pageType);
                 var session = (UiSession)RuntimeHelpers.GetUninitializedObject(typeof(UiSession));
@@ -64,6 +78,8 @@ public class BatteryUiTests
                             { Minimum = 10, Maximum = 100, Samples = 10, ValidSamples = 10, ChargingSamples = 5, SaverSamples = 4, SaverKnownSamples = 8 }).ToArray();
                         var view = new BatteryHistoryView(now.AddYears(-5), now, buckets, empty ? 0 : 2000, empty ? null : now.AddYears(-5), 12345, "Fixture saved locally.");
                         pageType.GetMethod("ApplyView", All)!.Invoke(page, [view]);
+                        var selector = (ComboBox)pageType.GetField("range", All)!.GetValue(page)!;
+                        selector.SelectedIndex = empty ? 0 : 4;
                         double width = empty ? 620 : 1050;
                         page.Measure(new Size(width, 760)); page.Arrange(new Rect(0, 0, width, 760)); page.UpdateLayout();
                         var bitmap = new RenderTargetBitmap((int)width, 760, 96, 96, PixelFormats.Pbgra32); bitmap.Render(page);
