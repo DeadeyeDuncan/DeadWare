@@ -1,12 +1,16 @@
 # Release validation
 
-## Desktop-aware navigation candidate (0.6.2, 2026-10-27)
+## Desktop-aware navigation (0.6.2, 2026-10-27)
 
 Work was performed on `Dev` in an isolated worktree, preserving the pre-existing uncommitted graph-styling change in the primary checkout. All 262 automated tests passed (217 core/update and 45 Windows app), including the extended real-dashboard fixture. The battery regression first failed with expected Collapsed versus actual Visible, then passed after the visibility correction. Independent review found no actionable defects or release blockers; `git diff --check` passed.
 
 The existing single-Application offscreen WPF fixture exercises the actual session-change refresh with no reading, explicit NoBattery, unknown status, and on-battery/charging/plugged-in states. Both battery entry points collapse only for NoBattery and return for other states; an open Battery history page returns to Overview after battery removal. Midnight and Daylight dashboard renders confirm the Settings label/title and absence of battery controls for a desktop. The fixture uses an unstarted isolated session without native windows, hardware collection or user-settings writes.
 
 A separate read-only Windows power-status query on Mothership succeeded with battery flags 128 (no battery). This establishes the host's reported state; battery hardware insertion/removal is covered by fixtures rather than a physical laptop test. The running installed 0.6.1 app was left untouched so the user can test the published update through its updater. Recording, history storage and restored detached windows were not changed.
+
+[PR #6](https://github.com/DeadeyeDuncan/DeadWare/pull/6) merged Dev into main, and `v0.6.2` points to `759ac88632f1884601e7d19469cd0c727e475afd`, with the same tree as tested Dev commit `3bdbab5`. The [Dev build](https://github.com/DeadeyeDuncan/DeadWare/actions/runs/40595074891), [PR build](https://github.com/DeadeyeDuncan/DeadWare/actions/runs/40595092879), [main build](https://github.com/DeadeyeDuncan/DeadWare/actions/runs/40595382133) and [release workflow](https://github.com/DeadeyeDuncan/DeadWare/actions/runs/40595409171) all succeeded. GitHub's latest-release endpoint returns [v0.6.2](https://github.com/DeadeyeDuncan/DeadWare/releases/tag/v0.6.2) as a normal published release.
+
+The production `ReleaseClient` detected the public release as newer than 0.6.1 and explicitly downloaded it to isolated artifacts. Its size, checksum and GitHub digest agreed: 117,506,452 bytes, SHA-256 `e07be7dbe7b07d6aacd1fff4b76ebffc648390584396f23e66f3a66b83d25d21`. Production extraction validated all 575 managed files in 576 ZIP entries, with no settings, databases, journals or restore cache included. ProductVersion is `0.6.2+759ac88632f1884601e7d19469cd0c727e475afd`. Evidence is under ignored `artifacts/public-release-v0.6.2/verified.json` and `artifacts/ui-desktop-settings/` in the Dev worktree. This verifies publication and package eligibility; the user's live in-app installation test remains pending.
 
 ## Tablet in-app upgrade (0.6.0 to 0.6.1, 2026-10-27)
 
