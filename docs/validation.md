@@ -1,12 +1,16 @@
 # Release validation
 
-## Widget graphs grouped by metric candidate (0.6.5, 2026-10-27)
+## Widget graphs grouped by metric (0.6.5, 2026-10-27)
 
 The widget now compares CPU and selected-GPU usage together in the first graph, then both temperatures together in the second. CPU uses the Cpu theme color and a solid line consistently; GPU uses Gpu and a dashed line consistently. Usage shares a fixed 0–100% axis, and both temperatures share one °C axis whose range includes either device. The previous per-device usage/temperature overlay mode was removed. Dashboard and detached single-metric charts retain their existing behavior.
 
 All 262 automated tests passed (217 core/update, 45 Windows app), and the self-contained app/helper package built successfully. The real-widget regression first failed with expected chart kinds cpu/cputemp versus actual cpu/gpu, then passed after correction. The fixture verifies metric grouping, both devices' actual traces and color/dash consistency on both charts, gaps in one device without erasing the other, missing time/session boundaries, shared 100% and 160°C scales with a 145°C GPU peak, a 140°C scale after switching to another GPU while retaining a 125°C CPU peak, both GPU traces/legends switching, dense ranges, stale/unavailable states, footer bounds and event cleanup. Minimum/default/large client sizes and Midnight/Daylight renders were checked; independent review found no actionable defects and whitespace checks passed. Evidence is under ignored `artifacts/ui-widget-metrics/`.
 
 UI checks use synthetic data and an unstarted session, with no native windows, collector or user-settings writes. Pinning, saved placement, memory/network summaries, graph persistence and the Updates-banner fix remain intact. Physical live widget operation and a new mixed-DPI or long-running soak are not established by these fixtures. The installed package reported 0.6.2 before publication; live installation is left for the user's updater test.
+
+[PR #9](https://github.com/DeadeyeDuncan/DeadWare/pull/9) merged Dev into main. Tag `v0.6.5` points to `caa07e487e7345f0d797ec1e4e3f9dd633526f2f`, whose tree matches tested Dev commit `2316aa8`. The [Dev build](https://github.com/DeadeyeDuncan/DeadWare/actions/runs/40600046274), [PR build](https://github.com/DeadeyeDuncan/DeadWare/actions/runs/40600052309), [main build](https://github.com/DeadeyeDuncan/DeadWare/actions/runs/40600320486) and [release workflow](https://github.com/DeadeyeDuncan/DeadWare/actions/runs/40600335546) all passed.
+
+The production `ReleaseClient` fetched latest normal [v0.6.5](https://github.com/DeadeyeDuncan/DeadWare/releases/tag/v0.6.5), confirmed it is newer than 0.6.4, and verified its public download/checksum/digest. The ZIP is 117,507,881 bytes; SHA-256 `f6799537e92bcd3083e3c3b929accf5d6940c9071958404866d62027b9d265c6`. Production extraction validated 575 managed files in 576 entries, with no local settings, databases, journals or restore cache included. ProductVersion is `0.6.5+caa07e487e7345f0d797ec1e4e3f9dd633526f2f`; evidence is under ignored `artifacts/public-release-v0.6.5/verified.json`. Read-only before/after executable and manifest hashes show the inspected 0.6.2 package stayed unchanged. This task performed no live installation, rollback or restart.
 
 ## Update banner navigation (0.6.4, 2026-10-27)
 
