@@ -1,5 +1,13 @@
 # Release validation
 
+## Published normal release (0.6.0, 2026-10-27)
+
+Battery-history [PR #3](https://github.com/DeadeyeDuncan/DeadWare/pull/3) and updater [PR #4](https://github.com/DeadeyeDuncan/DeadWare/pull/4) were merged into `main` with their commit history preserved. Tag `v0.6.0` points to `ff0f71084a4234eafa9acb580d072e867901663b`; its tree matches the final tested feature tree. The [main Windows build](https://github.com/DeadeyeDuncan/DeadWare/actions/runs/40538604514) and [release workflow](https://github.com/DeadeyeDuncan/DeadWare/actions/runs/40538702834) succeeded. The release log confirms **254 passing tests** (217 core, 37 Windows app). GitHub's latest-release endpoint returns [DeadWare v0.6.0](https://github.com/DeadeyeDuncan/DeadWare/releases/tag/v0.6.0) with both draft and prerelease flags false.
+
+The public Windows x64 ZIP was downloaded through the production `ReleaseClient`, which verified its exact size and SHA-256 against GitHub's asset digest and the published checksum file. SHA-256 is `c9d24e40c9fec035e9ea9226fd7a7973bed1d6ea732fdf2ddeddcdd6887ed2ef`; size is 117,504,786 bytes. Production extraction verified all 575 manifest-listed files across 576 ZIP entries. No settings, databases, database journals or restore cache are included. The executable reports `0.6.0+ff0f71084a4234eafa9acb580d072e867901663b`. The release/version policy recognizes it as newer than 0.4.2 and does not offer it as an update over 0.6.0. This verifies the public metadata/download/package path without running another hardware collector or touching profile data.
+
+Other computers running 0.5.x or earlier need one complete manual ZIP upgrade to gain the new Updates page; [cross-computer instructions](development.md) now direct completed work to `main` and describe that upgrade. Local evidence is under `.superpowers/sdd/2026-10-27-release-0.6.0/`, including `tag.json`, `public-verify.log` and `public-release-check/verified.json`.
+
 ## Battery saver trace correction (0.6.0 follow-up, 2026-10-27)
 
 The user's requested correction removes saver status from the current percentage/power card and puts it directly on the charge trace. Saver-off segments use the normal solid accent line, saver-on segments use dashed amber, and unknown segments use dotted muted color. Each segment takes the state of its earlier observation, so a newly observed state starts at its recorded timestamp. Mixed/unknown summarized buckets use hollow charge dots and retain the separate state coverage marks. The graph includes a matching legend; stored observations and recording policy are unchanged.
