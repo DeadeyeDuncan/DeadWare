@@ -24,7 +24,7 @@ DeadWare is a Windows desktop monitor for watching CPU/GPU usage and temperature
 - Shared 1-, 5- and 15-minute plus 1-, 3- and 6-hour graph ranges; all windows use one collector. Choose a range above the dashboard or in a pop-out's **⋯** menu. The choice and recent CPU/GPU/network traces are saved locally across quits and computer restarts. Cooling Health's longer saved history is separate.
 - Local Cooling Health history, fixed reference comparisons, CSV export and optional sustained-change warnings.
 - Lifetime battery-percentage history with recorded charging and Windows battery-saver periods, Day/Week/Month/Year/All views, CSV export and a separate remembered window.
-- Manual GitHub release checks, verified in-app updates and rollback to the previous installed version.
+- Startup and manual GitHub release checks, update-available notices, verified user-initiated updates and rollback to the previous installed version.
 - Five saved themes: **Midnight**, **Ember**, **Glacier**, **Amethyst**, and **Daylight**.
 - Scrollbars follow the selected theme across all windows, with matching native title bars on Windows 11.
 
@@ -38,7 +38,7 @@ Start as a normal user. If a capability needs additional permissions, the app sh
 
 ## Updates and rollback
 
-Open **Updates** and choose **Check for updates**. DeadWare checks the normal published release in `DeadeyeDuncan/DeadWare`; draft/preview releases and source commits are excluded. There is no automatic polling or unattended installation. An installed build newer than the published release stays on its current version.
+DeadWare checks the latest normal release in `DeadeyeDuncan/DeadWare` once after starting, without delaying monitoring. A newer version appears in a persistent dashboard notice and a system-tray notification; **Review update** opens Updates. You choose when to download and install it with **Update & restart**. You can also choose **Check for updates** on that page at any time. Checks do not download app packages or install anything. Draft/preview releases and source commits are excluded, and an installed newer build stays on its current version. Offline or rate-limit errors appear on Updates without interrupting startup. There is no recurring polling while the app remains open.
 
 When an eligible update is available, **Update & restart** downloads the complete Windows x64 ZIP, checks its SHA-256 digest/checksum and validates the package's file manifest. Download/preparation can be cancelled. Once the installer is ready, DeadWare performs its normal Quit to save settings and drain history, replaces only managed app files, and restarts at the same path with remembered windows. Settings and battery/Cooling Health/live graph databases stay in `%LOCALAPPDATA%\DeadWare`.
 
@@ -123,7 +123,7 @@ dotnet run --project src/DeadWare.App/DeadWare.App.csproj
 Create a self-contained portable ZIP and SHA-256 checksum:
 
 ```powershell
-pwsh -File scripts/publish.ps1 -Version 0.6.0
+pwsh -File scripts/publish.ps1 -Version 0.6.1
 ```
 
 The packaging script runs tests before publishing, bundles the independent self-contained update helper, and records all managed file hashes in `deadware-package.json`. Output goes under `artifacts/`. GitHub Actions runs the same script. Pushing a normal three-part version tag such as `v0.6.0` builds and publishes a normal release after tests pass, using the matching `docs/releases/v0.6.0.md` notes. Workflows use pinned action commits.

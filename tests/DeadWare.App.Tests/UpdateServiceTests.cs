@@ -10,6 +10,56 @@ namespace DeadWare.App.Tests;
 
 public class UpdateServiceTests
 {
+    [Fact] public async Task Startup_checks_once_and_announces_each_newer_version_once_without_downloading()
+    {
+        string root=Path.Combine(Path.GetTempPath(),"DeadWare-startup-update-"+Guid.NewGuid().ToString("N"));
+        var handler=new Handler{Content=Release()};using var http=new HttpClient(handler);
+        var service=new UpdateService("0.6.0",Path.Combine(root,"app"),http,Path.Combine(root,"cache"));
+        var notices=new List<ReleaseInfo>();Subscribe(service,notices.Add);Assert.Equal(0,handler.Calls);
+        await Task.WhenAll(Startup(service),Startup(service));
+        Assert.Equal(1,handler.Calls);Assert.Single(notices);Assert.False(Directory.Exists(root));
+        Assert.False(service.State.CanUpdate); // The availability notice does not require or change app files.
+        await service.CheckAsync(CancellationToken.None);Assert.Single(notices);
+        handler.Content=Release().Replace("0.6.1","0.6.2");await service.CheckAsync(CancellationToken.None);
+        handler.Content=Release();await service.CheckAsync(CancellationToken.None);
+        Assert.Equal(new[]{new Version(0,6,1),new Version(0,6,2)},notices.Select(n=>n.Version));
+        Assert.Equal(4,handler.Calls);Assert.False(Directory.Exists(root));
+    }
+    [Theory]
+    [InlineData("0.6.1",false)] [InlineData("0.7.0",false)] [InlineData("0.6.0",true)]
+    public async Task Startup_does_not_announce_current_older_or_preview_releases(string installed,bool preview)
+    {
+        var handler=new Handler{Content=preview?Release().Replace("\"prerelease\":false","\"prerelease\":true"):Release()};
+        using var http=new HttpClient(handler);var service=new UpdateService(installed,http:http);
+        var notices=new List<ReleaseInfo>();Subscribe(service,notices.Add);await Startup(service);
+        Assert.Empty(notices);Assert.False(service.State.Busy);
+    }
+    [Theory]
+    [InlineData(HttpStatusCode.NotFound)] [InlineData(HttpStatusCode.Forbidden)] [InlineData(HttpStatusCode.ServiceUnavailable)]
+    public async Task Unavailable_startup_checks_finish_without_a_notification_or_install(HttpStatusCode status)
+    {
+        using var http=new HttpClient(new Handler{Status=status});var service=new UpdateService("0.6.0",http:http);
+        var notices=new List<ReleaseInfo>();Subscribe(service,notices.Add);await Startup(service);
+        Assert.Empty(notices);Assert.False(service.State.Busy);Assert.False(service.State.CanUpdate);
+    }
+    [Fact] public async Task Startup_network_work_is_asynchronous_and_can_be_cancelled_for_shutdown()
+    {
+        var handler=new WaitingHandler();using var http=new HttpClient(handler);using var cancellation=new CancellationTokenSource();
+        var service=new UpdateService("0.6.0",http:http);var notices=new List<ReleaseInfo>();Subscribe(service,notices.Add);
+        var check=Startup(service,cancellation.Token);await handler.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.False(check.IsCompleted);cancellation.Cancel();await check.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Empty(notices);Assert.False(service.State.Busy);Assert.Contains("cancelled",service.State.Status,StringComparison.OrdinalIgnoreCase);
+    }
+    private static Task Startup(UpdateService service,CancellationToken token=default)
+        =>service.CheckAtStartupAsync(token);
+    private static void Subscribe(UpdateService service,Action<ReleaseInfo> notification)
+        =>service.UpdateAvailable+=notification;
+    private sealed class WaitingHandler:HttpMessageHandler
+    {
+        public TaskCompletionSource Started {get;}=new(TaskCreationOptions.RunContinuationsAsynchronously);
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,CancellationToken token)
+        {Started.TrySetResult();await Task.Delay(Timeout.InfiniteTimeSpan,token);return new(HttpStatusCode.OK);}
+    }
     [Fact] public async Task An_unfinished_install_offers_recovery_instead_of_another_update()
     {
         string root=Path.Combine(Path.GetTempPath(),"DeadWare-pending-"+Guid.NewGuid().ToString("N"));

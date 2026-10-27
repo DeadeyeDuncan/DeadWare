@@ -139,6 +139,7 @@ public class BatteryUiTests
                 var updatesType=assembly.GetType("DeadWare.App.UpdatesPage"); Assert.NotNull(updatesType);
                 var updateService=new UpdateService("0.6.0",Path.Combine(Path.GetTempPath(),Guid.NewGuid().ToString("N")));
                 Set(session,"<Updates>k__BackingField",updateService);
+                var noticeType=assembly.GetType("DeadWare.App.UpdateNotice");Assert.NotNull(noticeType);
                 foreach(string theme in new[]{"Midnight","Daylight"})
                 {
                     assembly.GetType("DeadWare.App.Theme")!.GetMethod("Apply",All)!.Invoke(null,[theme]);
@@ -152,9 +153,23 @@ public class BatteryUiTests
                     var buttons=Descendants(updates).OfType<Button>().ToArray();
                     Assert.False(buttons.Single(b=>b.Content?.ToString()=="Update & restart").IsEnabled);
                     Assert.False(buttons.Single(b=>b.Content?.ToString()!.StartsWith("Roll back")==true).IsEnabled);
+                    int reviewed=0;
+                    var notice=(FrameworkElement)Activator.CreateInstance(noticeType,All,null,[new Action(()=>reviewed++)],null)!;
+                    var available=new DeadWare.UpdateCore.ReleaseInfo(new Version(0,6,2),"v0.6.2","Fixture",new Uri("https://example.invalid/update.zip"),new Uri("https://example.invalid/checksum"),new string('a',64),100);
+                    void Notice(UpdateState value)=>noticeType.GetMethod("ApplyState",All)!.Invoke(notice,[value]);
+                    Notice(new UpdateState("0.6.1"));Assert.Equal(Visibility.Collapsed,notice.Visibility);
+                    Notice(new UpdateState("0.6.2"){Release=available});Assert.Equal(Visibility.Collapsed,notice.Visibility);
+                    Notice(new UpdateState("0.6.1"){Release=available,Busy=true});Assert.Equal(Visibility.Visible,notice.Visibility);
+                    notice.Measure(new Size(620,110));notice.Arrange(new Rect(0,0,620,110));notice.UpdateLayout();
+                    Assert.Contains("0.6.2",string.Join(" ",Descendants(notice).OfType<TextBlock>().Select(t=>t.Text)));
+                    var review=Descendants(notice).OfType<Button>().Single();Assert.Equal("Review update",review.Content);
+                    review.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));Assert.Equal(1,reviewed);
                     string? output=Environment.GetEnvironmentVariable("DEADWARE_UI_OUTPUT");
                     if(output is not null)
                     {
+                        var noticeBitmap=new RenderTargetBitmap(620,110,96,96,PixelFormats.Pbgra32);noticeBitmap.Render(notice);
+                        using(var noticeFile=File.Create(Path.Combine(output,$"startup-notice-{theme}.png")))
+                        {var noticeEncoder=new PngBitmapEncoder();noticeEncoder.Frames.Add(BitmapFrame.Create(noticeBitmap));noticeEncoder.Save(noticeFile);}
                         var bitmap=new RenderTargetBitmap(620,720,96,96,PixelFormats.Pbgra32);bitmap.Render(updates);
                         using var file=File.Create(Path.Combine(output,$"updates-{theme}.png"));var encoder=new PngBitmapEncoder();encoder.Frames.Add(BitmapFrame.Create(bitmap));encoder.Save(file);
                     }

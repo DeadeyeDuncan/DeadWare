@@ -8,7 +8,7 @@ namespace DeadWare.App;
 
 public sealed record UpdateState(string InstalledVersion)
 {
-    public string Status {get;init;}="Check GitHub for a newer normal release when you are ready.";
+    public string Status {get;init;}="Checks for updates once at startup. Install when you are ready.";
     public string LocalStatus {get;init;}="";
     public string LastOperation {get;init;}="";
     public ReleaseInfo? Release {get;init;}
@@ -19,20 +19,24 @@ public sealed record UpdateState(string InstalledVersion)
     public bool CanCancel {get;init;}
     public int Progress {get;init;}
     public DateTimeOffset? LastChecked {get;init;}
-    public bool CanUpdate=>!Busy&&!NeedsRecovery&&InstallationVerified&&Release is not null&&ReleasePolicy.IsNewer(Release,InstalledVersion);
+    public bool HasNewerRelease=>Release is not null&&ReleasePolicy.IsNewer(Release,InstalledVersion);
+    public bool CanUpdate=>!Busy&&!NeedsRecovery&&InstallationVerified&&HasNewerRelease;
     public bool CanRollback=>!Busy&&InstallationVerified&&Previous is not null;
 }
 
-/// <summary>On-demand updates only. File and network work never runs on the collector.</summary>
+/// <summary>Startup/manual checks; installation always requires an explicit action. Independent of the collector.</summary>
 public sealed class UpdateService
 {
     private readonly UpdatePaths paths;
     private readonly ReleaseClient releases;
     private readonly object gate=new();
+    private readonly HashSet<Version> announced=new();
     private UpdateState state;
     private int busy;
+    private int startupChecked;
     public UpdateState State=>Volatile.Read(ref state);
     public event Action? Changed;
+    public event Action<ReleaseInfo>? UpdateAvailable;
     public UpdateService(string version,string? install=null,HttpClient? http=null,string? cacheBase=null)
     {state=new(version);paths=new(install??AppContext.BaseDirectory,cacheBase);releases=new(http);}
     private void Publish(Func<UpdateState,UpdateState> change)
@@ -65,14 +69,25 @@ public sealed class UpdateService
         catch(Exception error) when(error is IOException or UnauthorizedAccessException or ArgumentException)
         {Publish(s=>s with {InstallationVerified=false,Previous=null,LocalStatus="Install the complete updater-enabled package before updating from this folder. "+error.Message});}
     }
+    public Task CheckAtStartupAsync(CancellationToken token)
+    {
+        if(token.IsCancellationRequested||Interlocked.Exchange(ref startupChecked,1)!=0)return Task.CompletedTask;
+        return CheckAsync(token);
+    }
     public async Task CheckAsync(CancellationToken token)
     {
         if(!Begin("Checking GitHub…"))return;
         try
         {
             var release=await releases.CheckAsync(token);
+            token.ThrowIfCancellationRequested();
             Publish(s=>s with {Release=release,LastChecked=DateTimeOffset.Now,Status=release is null?"No normal release has been published yet.":
                 ReleasePolicy.IsNewer(release,s.InstalledVersion)?$"Version {release.Version} is available.":$"No newer release. GitHub has {release.Version}; installed {s.InstalledVersion}."});
+            if(release is not null&&ReleasePolicy.IsNewer(release,State.InstalledVersion))
+            {
+                bool first;lock(gate)first=announced.Add(release.Version);
+                if(first)UpdateAvailable?.Invoke(release);
+            }
         }
         catch(OperationCanceledException){Publish(s=>s with {Status=token.IsCancellationRequested?"Check cancelled.":"GitHub did not respond in time. Try again later."});}
         catch(HttpRequestException error) when(error.StatusCode is HttpStatusCode.Forbidden or HttpStatusCode.TooManyRequests)
