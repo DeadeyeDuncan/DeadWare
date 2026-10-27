@@ -1,4 +1,4 @@
-name: Prerelease
+name: Release
 on:
   push:
     tags: ['v*']
@@ -21,9 +21,9 @@ jobs:
         env:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          if ($env:RELEASE_TAG -notmatch '^v(\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?)$') { throw 'Invalid version tag' }
+          if ($env:RELEASE_TAG -notmatch '^v((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*))$') { throw 'Use a normal three-part version tag' }
           ./scripts/publish.ps1 -Version $Matches[1]
-      - name: Publish prerelease
+      - name: Publish release
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -32,5 +32,5 @@ jobs:
           $files = Get-ChildItem artifacts/DeadWare-*-win-x64.zip* | Select-Object -ExpandProperty FullName
           $notes = Join-Path 'docs/releases' ($env:RELEASE_TAG + '.md')
           if (-not (Test-Path -LiteralPath $notes -PathType Leaf)) { throw 'Version-specific release notes are missing.' }
-          gh release create $env:RELEASE_TAG @files --verify-tag --prerelease --title "DeadWare $env:RELEASE_TAG" --notes-file $notes
+          gh release create $env:RELEASE_TAG @files --verify-tag --title "DeadWare $env:RELEASE_TAG" --notes-file $notes
           if ($LASTEXITCODE -ne 0) { throw 'Release creation failed' }

@@ -64,6 +64,12 @@ internal sealed class UpdateFixture : IDisposable
         if(extra is not null){using var writer=new StreamWriter(zip.CreateEntry(extra).Open());writer.Write("untrusted");}
         return path;
     }
+    public void AddFile(string package,string name,string value)
+    {
+        File.WriteAllText(Path.Combine(package,name),value);
+        var manifest=Packages.ReadManifest(package);manifest.Files[name]=Hash(Encoding.UTF8.GetBytes(value));
+        File.WriteAllText(Path.Combine(package,Packages.ManifestName),JsonSerializer.Serialize(manifest));
+    }
     public static string Hash(byte[] data)=>Convert.ToHexString(SHA256.HashData(data)).ToLowerInvariant();
     public void Dispose(){if(Directory.Exists(Root))Directory.Delete(Root,true);}
 }

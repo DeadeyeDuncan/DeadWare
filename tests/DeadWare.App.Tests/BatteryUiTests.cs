@@ -102,6 +102,29 @@ public class BatteryUiTests
                 stalePage.Measure(new Size(620, 760)); stalePage.Arrange(new Rect(0, 0, 620, 760)); stalePage.UpdateLayout();
                 var staleText = string.Join("\n", Descendants(stalePage).OfType<TextBlock>().Select(t => t.Text));
                 Assert.Contains("Waiting for a fresh reading", staleText); Assert.Contains("Battery saver unknown", staleText);
+                var updatesType=assembly.GetType("DeadWare.App.UpdatesPage"); Assert.NotNull(updatesType);
+                var updateService=new UpdateService("0.6.0",Path.Combine(Path.GetTempPath(),Guid.NewGuid().ToString("N")));
+                Set(session,"<Updates>k__BackingField",updateService);
+                foreach(string theme in new[]{"Midnight","Daylight"})
+                {
+                    assembly.GetType("DeadWare.App.Theme")!.GetMethod("Apply",All)!.Invoke(null,[theme]);
+                    var updates=(FrameworkElement)Activator.CreateInstance(updatesType,All,null,[session],null)!;
+                    var state=new UpdateState("0.6.0"){Status="No normal release has been published yet.",LocalStatus="No earlier packaged installation is available for rollback yet."};
+                    updatesType.GetMethod("ApplyState",All)!.Invoke(updates,[state]);
+                    updates.Measure(new Size(620,720));updates.Arrange(new Rect(0,0,620,720));updates.UpdateLayout();
+                    Assert.NotNull(((ScrollViewer)updates).Background);
+                    var updateText=string.Join("\n",Descendants(updates).OfType<TextBlock>().Select(t=>t.Text));
+                    Assert.Contains("0.6.0",updateText);Assert.Contains("No normal release",updateText);
+                    var buttons=Descendants(updates).OfType<Button>().ToArray();
+                    Assert.False(buttons.Single(b=>b.Content?.ToString()=="Update & restart").IsEnabled);
+                    Assert.False(buttons.Single(b=>b.Content?.ToString()!.StartsWith("Roll back")==true).IsEnabled);
+                    string? output=Environment.GetEnvironmentVariable("DEADWARE_UI_OUTPUT");
+                    if(output is not null)
+                    {
+                        var bitmap=new RenderTargetBitmap(620,720,96,96,PixelFormats.Pbgra32);bitmap.Render(updates);
+                        using var file=File.Create(Path.Combine(output,$"updates-{theme}.png"));var encoder=new PngBitmapEncoder();encoder.Frames.Add(BitmapFrame.Create(bitmap));encoder.Save(file);
+                    }
+                }
                 app.Shutdown();
             }
             catch (Exception error) { failure = error; }

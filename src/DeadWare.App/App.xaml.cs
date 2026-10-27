@@ -45,6 +45,7 @@ public partial class App : Application
             bool windowsStartup=e.Args.Contains("--startup")&&!e.Args.Contains("--restart-from");
             if(ApplicationLifetime.ShouldShowDashboardOnLaunch(windowsStartup,session.Settings.StartInTray,tray is not null))main.Show();
             session.Start();
+            UpdateService.AcknowledgeStartup(e.Args,AppContext.BaseDirectory,BuildInfo.Version);
         }
         catch(Exception ex) {MessageBox.Show($"DeadWare could not start: {ex.Message}","DeadWare",MessageBoxButton.OK,MessageBoxImage.Error);await QuitAsync(1);}
     }

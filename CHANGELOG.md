@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.0 — Manual updates and rollback
+
+- Add Updates with on-demand checks for normal GitHub releases, release notes and explicit Update & restart / Roll back & restart actions.
+- Verify release ZIP digests/checksums, safe archive paths and every managed file before preparing a replacement.
+- Apply through an independent helper after normal Quit, preserve settings/history and install paths, and retain a verified previous version for rollback.
+- Recover interrupted or failed replacements without force-terminating monitoring. Show unavailable releases/backups and clear preparation/operation status.
+- Publish future tagged versions as normal releases. Historical previews are ignored by the updater; no automatic checks or preview-channel controls are added.
+
 ## 0.5.0 — Lifetime battery history
 
 - Record battery percentage and charging/power and Windows battery-saver changes into independent local history with no automatic expiry.

@@ -10,6 +10,7 @@ public sealed class UiSession
     public CoolingHistoryService Cooling {get;}
     public GraphHistoryService GraphHistory {get;}
     public BatteryHistoryService Battery {get;}
+    public UpdateService Updates {get;}=new(BuildInfo.Version);
     public UserSettings Settings {get;}
     public string SettingsStatus {get;private set;}="";
     private readonly string settingsPath=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"DeadWare","settings.json");

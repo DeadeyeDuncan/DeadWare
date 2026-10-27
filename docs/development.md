@@ -30,4 +30,6 @@ git status --short --branch
 
 Build/test with the .NET 10 SDK, then package with `pwsh -File scripts/publish.ps1`. CI tests and packages feature-branch and pull-request changes. The dashboard shows the installed version; package assemblies also contain the source commit in their informational version. Use the same versioned ZIP to upgrade multiple computers, choosing **Quit DeadWare** before replacing files. Windows startup registration follows the installed path, so keep that path stable.
 
+Updater work is on `feat/in-app-updates`, initially stacked on the battery branch. Follow its pull request when continuing that work on another computer. Source pushes preserve development progress; they do not themselves create a user-facing update. After review/merge and validation, a tag such as `v0.6.0` publishes the matching normal release and makes it visible to installed updaters. Include the helper and generated package manifest whenever distributing a build. Older versions need one full manual package upgrade to gain in-app updating.
+
 Settings, battery history, Cooling Health history and live graph caches are local device data under `%LOCALAPPDATA%\DeadWare`. They do not belong in Git. Back up database files with DeadWare fully quit; do not cloud-sync an open SQLite database. Each computer starts its own battery history when the new version runs.

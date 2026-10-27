@@ -67,7 +67,7 @@ public static class Packages
     public static PackageManifest ReadManifest(string root, string? expectedVersion = null)
     {
         var manifest = SafeFiles.ReadJson<PackageManifest>(SafeFiles.Child(root, ManifestName));
-        if (manifest.Format != 1 || manifest.Files is null || manifest.Files.Count is < 3 or > 2048 ||
+        if (manifest.Format != 1 || string.IsNullOrWhiteSpace(manifest.Version) || manifest.Files is null || manifest.Files.Count is < 3 or > 2048 ||
             expectedVersion is not null && manifest.Version != expectedVersion) throw new InvalidDataException("Unsupported or incorrect package manifest.");
         ReleasePolicy.VersionOf(manifest.Version);
         var paths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -103,6 +103,7 @@ public static class Packages
             string relative = entry.FullName[9..].TrimEnd('/');
             if (relative.Length == 0) continue;
             SafeFiles.RelativeName(relative);
+            if(relative.Equals(ManifestName,StringComparison.OrdinalIgnoreCase)&&entry.Length>1024*1024)throw new InvalidDataException("The package manifest is too large.");
             if (!names.Add(relative) || entry.Length < 0 || entry.Length > maximumExpandedBytes - expanded)
                 throw new InvalidDataException("Duplicate package paths or expanded-size limit exceeded.");
             expanded += entry.Length;
@@ -115,7 +116,12 @@ public static class Packages
                 string file = SafeFiles.Child(destination, entry.FullName[9..]);
                 Directory.CreateDirectory(Path.GetDirectoryName(file)!);
                 using var input = entry.Open(); using var output = new FileStream(file, FileMode.CreateNew, FileAccess.Write, FileShare.None);
-                input.CopyTo(output);
+                var buffer=new byte[65536];long copied=0;int count;
+                while((count=input.Read(buffer))>0)
+                {
+                    if(copied>entry.Length-count)throw new InvalidDataException("Expanded package data exceeds its declared size.");
+                    output.Write(buffer,0,count);copied+=count;
+                }
                 if (output.Length != entry.Length) throw new InvalidDataException("Incorrect extracted file size.");
             }
             var manifest = ValidateDirectory(destination, expectedVersion);
