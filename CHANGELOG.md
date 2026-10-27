@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.5 — Group widget graphs by metric
+
+- Put CPU and selected-GPU usage together on the first widget graph, and both temperatures together on the second.
+- Keep CPU's color and solid line consistent across both graphs, and GPU's color and dashed line consistent across both.
+- Use one shared percent scale for usage and one shared °C scale for temperatures, expanding the latter for either device above 100°C.
+
 ## 0.6.4 — Hide the update banner on Updates
 
 - Hide the update-available banner while the Updates page is open, including during background status changes.

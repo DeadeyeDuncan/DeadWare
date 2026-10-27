@@ -223,21 +223,21 @@ internal sealed class GraphWindow : Window
 internal sealed class WidgetWindow : Window
 {
     private readonly UiSession session;
-    private readonly WidgetGraph cpu,gpu;
+    private readonly WidgetGraph usage,temperature;
     private readonly TextBlock memory=Ui.Text("—",12,"Muted"),network=Ui.Text("—",12),status=Ui.Text("",10,"Muted");
     public WidgetWindow(UiSession session)
     {
         this.session=session;Title="DeadWare · Quick glance";MinWidth=300;MinHeight=320;Ui.Icon(this);Topmost=true;session.Place(this,"widget",340,390);
         var grid=new Grid {Margin=new Thickness(8)};grid.RowDefinitions.Add(new(){Height=GridLength.Auto});grid.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});grid.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});grid.RowDefinitions.Add(new(){Height=GridLength.Auto});
         var pin=new CheckBox {Content="Always on top",IsChecked=Topmost};pin.Checked+=(_,_)=>Topmost=true;pin.Unchecked+=(_,_)=>Topmost=false;grid.Children.Add(pin);
-        cpu=new(session,"cpu");gpu=new(session,"gpu");Grid.SetRow(cpu,1);grid.Children.Add(cpu);Grid.SetRow(gpu,2);grid.Children.Add(gpu);
+        usage=new(session,"cpu");temperature=new(session,"cputemp");Grid.SetRow(usage,1);grid.Children.Add(usage);Grid.SetRow(temperature,2);grid.Children.Add(temperature);
         var summary=new StackPanel {Margin=new Thickness(0,6,0,0)};summary.Children.Add(memory);summary.Children.Add(network);status.TextWrapping=TextWrapping.NoWrap;status.TextTrimming=TextTrimming.CharacterEllipsis;summary.Children.Add(status);Grid.SetRow(summary,3);grid.Children.Add(summary);Content=grid;
         session.Changed+=Refresh;Closed+=(_,_)=>session.Changed-=Refresh;Refresh();
     }
     private void Refresh()
     {
         double? V(string id)=>session.Stale?null:session.Value(id);
-        cpu.Refresh();gpu.Refresh();
+        usage.Refresh();temperature.Refresh();
         memory.Text=$"Memory  {Ui.Bytes(V("memory/used"))} / {Ui.Bytes(V("memory/total"))}";network.Text=$"↓ {Ui.Bytes(V("network/download"),true)}    ↑ {Ui.Bytes(V("network/upload"),true)}";
         status.Text=session.Current is null?"Discovering hardware…":session.Stale?"Readings stale · open main window for status":"Shared collector · — means unavailable";status.ToolTip=status.Text;
     }

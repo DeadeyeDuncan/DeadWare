@@ -1,5 +1,13 @@
 # Release validation
 
+## Widget graphs grouped by metric candidate (0.6.5, 2026-10-27)
+
+The widget now compares CPU and selected-GPU usage together in the first graph, then both temperatures together in the second. CPU uses the Cpu theme color and a solid line consistently; GPU uses Gpu and a dashed line consistently. Usage shares a fixed 0–100% axis, and both temperatures share one °C axis whose range includes either device. The previous per-device usage/temperature overlay mode was removed. Dashboard and detached single-metric charts retain their existing behavior.
+
+All 262 automated tests passed (217 core/update, 45 Windows app), and the self-contained app/helper package built successfully. The real-widget regression first failed with expected chart kinds cpu/cputemp versus actual cpu/gpu, then passed after correction. The fixture verifies metric grouping, both devices' actual traces and color/dash consistency on both charts, gaps in one device without erasing the other, missing time/session boundaries, shared 100% and 160°C scales with a 145°C GPU peak, a 140°C scale after switching to another GPU while retaining a 125°C CPU peak, both GPU traces/legends switching, dense ranges, stale/unavailable states, footer bounds and event cleanup. Minimum/default/large client sizes and Midnight/Daylight renders were checked; independent review found no actionable defects and whitespace checks passed. Evidence is under ignored `artifacts/ui-widget-metrics/`.
+
+UI checks use synthetic data and an unstarted session, with no native windows, collector or user-settings writes. Pinning, saved placement, memory/network summaries, graph persistence and the Updates-banner fix remain intact. Physical live widget operation and a new mixed-DPI or long-running soak are not established by these fixtures. The installed package reported 0.6.2 before publication; live installation is left for the user's updater test.
+
 ## Update banner navigation (0.6.4, 2026-10-27)
 
 The dashboard now collapses the update-available banner while Updates is active and reevaluates it when navigating elsewhere. The page check runs on the UI dispatcher alongside the latest release state, so a queued background refresh cannot make the banner reappear on Updates. Update checks, installation and tray notifications retain their existing behavior.

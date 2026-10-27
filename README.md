@@ -68,7 +68,7 @@ Startup points to the executable's current location. Keep the extracted folder i
 
 ## Desktop widget
 
-The compact widget stacks CPU and selected-GPU graphs. Each graph combines a solid usage line with a blue dashed temperature line, with small current-value legends. The left axis shows 0–100% usage; the right shows °C and expands above 100°C when needed. The widget follows the shared history range and GPU selection, uses saved graph history, and keeps unavailable readings and downtime as gaps. Memory and network summaries remain below the graphs.
+The compact widget has a **Usage** graph with CPU and selected-GPU utilization together, followed by a **Temperature** graph with both devices' temperatures together. CPU uses the CPU theme color and a solid line in both graphs; GPU uses the GPU theme color and a dashed line in both. Small CPU/GPU legends show the current readings. Usage shares a 0–100% scale; temperature shares a °C scale that expands above 100°C when needed. The widget follows the shared history range and GPU selection, uses saved graph history, and keeps unavailable readings and downtime as gaps. Memory and network summaries remain below the graphs.
 
 ## Hardware compatibility
 
@@ -127,7 +127,7 @@ dotnet run --project src/DeadWare.App/DeadWare.App.csproj
 Create a self-contained portable ZIP and SHA-256 checksum:
 
 ```powershell
-pwsh -File scripts/publish.ps1 -Version 0.6.4
+pwsh -File scripts/publish.ps1 -Version 0.6.5
 ```
 
 The packaging script runs tests before publishing, bundles the independent self-contained update helper, and records all managed file hashes in `deadware-package.json`. Output goes under `artifacts/`. GitHub Actions runs the same script. Pushing a normal three-part version tag such as `v0.6.0` builds and publishes a normal release after tests pass, using the matching `docs/releases/v0.6.0.md` notes. Workflows use pinned action commits.

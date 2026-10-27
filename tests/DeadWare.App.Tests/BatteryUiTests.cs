@@ -287,9 +287,9 @@ public class BatteryUiTests
             if (seconds is -18 or -17 or -16) continue;
             history.Add(new(DateTimeOffset.UtcNow.AddSeconds(seconds), seconds, new Dictionary<string, double?>
             {
-                ["cpu/usage"] = 35 + 15 * Math.Sin(seconds / 5.0), ["cpu/temperature"] = seconds == -30 ? null : seconds == -3 ? 125 : 60 + 5 * Math.Sin(seconds / 7.0),
+                ["cpu/usage"] = seconds == -40 ? null : 35 + 15 * Math.Sin(seconds / 5.0), ["cpu/temperature"] = seconds == -30 ? null : seconds == -3 ? 125 : 60 + 5 * Math.Sin(seconds / 7.0),
                 ["gpu-a/usage"] = 5, ["gpu-a/temperature"] = 40,
-                ["gpu-b/usage"] = 75 + 10 * Math.Sin(seconds / 4.0), ["gpu-b/temperature"] = seconds == -30 ? null : 90 + 5 * Math.Sin(seconds / 6.0),
+                ["gpu-b/usage"] = 75 + 10 * Math.Sin(seconds / 4.0), ["gpu-b/temperature"] = seconds == -25 ? null : seconds == -4 ? 145 : 90 + 5 * Math.Sin(seconds / 6.0),
                 ["memory/used"] = 8e9, ["memory/total"] = 32e9, ["network/download"] = 12345, ["network/upload"] = 3456
             }) { SessionId = seconds >= -10 ? "restart" : "fixture" });
         }
@@ -318,6 +318,7 @@ public class BatteryUiTests
                 viewport.Measure(size); viewport.Arrange(new Rect(new Point(), size)); viewport.UpdateLayout();
                 var charts = Descendants(content).OfType<FrameworkElement>().Where(element => element.GetType().Name == "HistoryChart").ToArray();
                 Assert.Equal(2, charts.Length);
+                Assert.Equal(new[] { "cpu", "cputemp" }, charts.Select(chart => (string)chart.GetType().GetField("kind", All)!.GetValue(chart)!));
                 foreach (var chart in charts)
                 {
                     Assert.True(chart.ActualHeight >= 48, $"Chart clipped at {size}: {chart.ActualHeight}");
@@ -326,16 +327,19 @@ public class BatteryUiTests
                     Assert.Equal(2, series.Length);
                     string kind = (string)chart.GetType().GetField("kind", All)!.GetValue(chart)!;
                     Color ColorOf(string name) => ((SolidColorBrush)Application.Current.Resources[name]).Color;
-                    Assert.Equal(ColorOf(kind == "cpu" ? "Cpu" : "Gpu"), ((SolidColorBrush)series[0].Pen.Brush).Color);
-                    Assert.Equal(ColorOf("Download"), ((SolidColorBrush)series[1].Pen.Brush).Color);
+                    Assert.Equal(ColorOf("Cpu"), ((SolidColorBrush)series[0].Pen.Brush).Color);
+                    Assert.Equal(ColorOf("Gpu"), ((SolidColorBrush)series[1].Pen.Brush).Color);
                     Assert.Empty(series[0].Pen.DashStyle.Dashes); Assert.NotEmpty(series[1].Pen.DashStyle.Dashes);
-                    Assert.Equal(3, PathGeometry.CreateFromGeometry(series[0].Geometry).Figures.Count);
-                    Assert.Equal(4, PathGeometry.CreateFromGeometry(series[1].Geometry).Figures.Count);
-                    if (kind == "cpu")
+                    Assert.Equal(4, PathGeometry.CreateFromGeometry(series[0].Geometry).Figures.Count);
+                    Assert.Equal(kind == "cpu" ? 3 : 4, PathGeometry.CreateFromGeometry(series[1].Geometry).Figures.Count);
+                    var grid = Drawings(drawing).Select(item => item.Geometry).OfType<LineGeometry>().Where(line => line.StartPoint.Y == line.EndPoint.Y).OrderBy(line => line.StartPoint.Y).ToArray();
+                    double top = grid[0].StartPoint.Y, height = grid[^1].StartPoint.Y - top;
+                    string metric = kind == "cpu" ? "usage" : "temperature"; double maximum = kind == "cpu" ? 100 : 160;
+                    for (int i = 0; i < 2; i++)
                     {
-                        var grid = Drawings(drawing).Select(item => item.Geometry).OfType<LineGeometry>().Where(line => line.StartPoint.Y == line.EndPoint.Y).OrderBy(line => line.StartPoint.Y).ToArray();
-                        double top = grid[0].StartPoint.Y, height = grid[^1].StartPoint.Y - top;
-                        Assert.Equal(top + height * (1 - 125.0 / 140), series[1].Geometry.Bounds.Top, 3);
+                        string id = (i == 0 ? "cpu" : "gpu-b") + "/" + metric;
+                        double peak = history.Read().Select(sample => sample.Values[id]).Where(value => value.HasValue).Max()!.Value;
+                        Assert.Equal(top + height * (1 - peak / maximum), series[i].Geometry.Bounds.Top, 3);
                     }
                 }
                 string text = string.Join("\n", Descendants(content).OfType<TextBlock>().Select(block => block.Text));
@@ -343,8 +347,9 @@ public class BatteryUiTests
                 var statusBounds = status.TransformToAncestor(content).TransformBounds(new Rect(status.RenderSize));
                 Assert.True(statusBounds.Bottom <= content.ActualHeight + .01, $"Status extends below widget: {statusBounds} / {content.RenderSize}");
                 Assert.True(statusBounds.Right <= content.ActualWidth + .01, $"Status extends outside widget: {statusBounds} / {content.RenderSize}");
-                Assert.Contains(Descendants(content).OfType<TextBlock>(), block => block.Text == "GPU" && block.ToolTip?.ToString() == "Selected GPU");
-                Assert.Contains("Usage 75.0 %", text); Assert.Contains("Temp 90.0 °C", text);
+                Assert.Equal(2, Descendants(content).OfType<TextBlock>().Count(block => block.Text.StartsWith("GPU ") && block.ToolTip?.ToString() == "Selected GPU"));
+                Assert.Contains("CPU 35.0 %", text); Assert.Contains("GPU 75.0 %", text);
+                Assert.Contains("CPU 60.0 °C", text); Assert.Contains("GPU 90.0 °C", text);
                 Assert.DoesNotContain("First GPU", text); Assert.Contains("Memory", text); Assert.Contains("Shared collector", text);
                 if (output is not null)
                 {
@@ -354,21 +359,28 @@ public class BatteryUiTests
                 }
             }
         }
-        var gpuChart = Descendants(content).OfType<FrameworkElement>().Single(element => element.GetType().Name == "HistoryChart" && (string)element.GetType().GetField("kind", All)!.GetValue(element)! == "gpu");
-        string selectedTrace = Drawings(VisualTreeHelper.GetDrawing(gpuChart)!).First(item => item.Geometry is StreamGeometry).Geometry.ToString();
+        var comparisonCharts = Descendants(content).OfType<FrameworkElement>().Where(element => element.GetType().Name == "HistoryChart").ToArray();
+        string[] selectedTraces = comparisonCharts.Select(chart => Drawings(VisualTreeHelper.GetDrawing(chart)!).Where(item => item.Geometry is StreamGeometry).Last().Geometry.ToString()).ToArray();
         session.Settings.SelectedGpuId = "gpu-a"; Changed(); content.UpdateLayout();
-        Assert.Contains("Usage 5.0 %", string.Join("\n", Descendants(content).OfType<TextBlock>().Select(block => block.Text)));
-        Assert.NotEqual(selectedTrace, Drawings(VisualTreeHelper.GetDrawing(gpuChart)!).First(item => item.Geometry is StreamGeometry).Geometry.ToString());
+        string switched = string.Join("\n", Descendants(content).OfType<TextBlock>().Select(block => block.Text));
+        Assert.Contains("GPU 5.0 %", switched); Assert.Contains("GPU 40.0 °C", switched);
+        Assert.Equal(2, Descendants(content).OfType<TextBlock>().Count(block => block.Text.StartsWith("GPU ") && block.ToolTip?.ToString() == "First GPU"));
+        for (int i = 0; i < comparisonCharts.Length; i++)
+            Assert.NotEqual(selectedTraces[i], Drawings(VisualTreeHelper.GetDrawing(comparisonCharts[i])!).Where(item => item.Geometry is StreamGeometry).Last().Geometry.ToString());
+        var thermalDrawing = VisualTreeHelper.GetDrawing(comparisonCharts[1])!;
+        var thermalGrid = Drawings(thermalDrawing).Select(item => item.Geometry).OfType<LineGeometry>().Where(line => line.StartPoint.Y == line.EndPoint.Y).OrderBy(line => line.StartPoint.Y).ToArray();
+        double thermalTop = thermalGrid[0].StartPoint.Y, thermalHeight = thermalGrid[^1].StartPoint.Y - thermalTop;
+        Assert.Equal(thermalTop + thermalHeight * (1 - 125.0 / 140), Drawings(thermalDrawing).First(item => item.Geometry is StreamGeometry).Geometry.Bounds.Top, 3);
         session.Settings.HistorySeconds = 3600; Changed(); content.UpdateLayout();
         Assert.All(Descendants(content).OfType<FrameworkElement>().Where(element => element.GetType().Name == "HistoryChart"), chart =>
             Assert.All(Drawings(VisualTreeHelper.GetDrawing(chart)!).Where(item => item.Geometry is StreamGeometry), item => Assert.Equal(1, item.Pen.Thickness)));
         session.Settings.HistorySeconds = 60;
         Set(collector, "latest", reading with { Sample = reading.Sample with { MonotonicSeconds = -10 } }); Changed();
         string stale = string.Join("\n", Descendants(content).OfType<TextBlock>().Select(block => block.Text));
-        Assert.Contains("Readings stale", stale); Assert.Contains("Usage — %", stale); Assert.Contains("Temp — °C", stale);
-        Assert.DoesNotContain("Usage 5.0 %", stale);
+        Assert.Contains("Readings stale", stale); Assert.Contains("CPU — %", stale); Assert.Contains("GPU — %", stale); Assert.Contains("CPU — °C", stale); Assert.Contains("GPU — °C", stale);
+        Assert.DoesNotContain("GPU 5.0 %", stale);
         Set(collector, "latest", reading with { Sample = reading.Sample with { Values = new Dictionary<string, double?>() } }); Changed();
-        Assert.Contains("Temp — °C", string.Join("\n", Descendants(content).OfType<TextBlock>().Select(block => block.Text)));
+        Assert.Contains("GPU — °C", string.Join("\n", Descendants(content).OfType<TextBlock>().Select(block => block.Text)));
         var subscribed = (Action)typeof(UiSession).GetField("Changed", All)!.GetValue(session)!;
         viewport.Child = null; widget.Content = content;
         widget.Close();

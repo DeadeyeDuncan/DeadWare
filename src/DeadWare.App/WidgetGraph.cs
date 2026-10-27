@@ -3,23 +3,22 @@ using System.Windows.Controls;
 using System.Windows.Shapes;
 namespace DeadWare.App;
 
-/// <summary>A compact usage/temperature view over the shared collector history.</summary>
+/// <summary>Compare CPU and GPU readings for one metric over the shared history.</summary>
 internal sealed class WidgetGraph : Border
 {
     private readonly UiSession session;
     private readonly string kind;
-    private readonly TextBlock title=Ui.Text("",12,"Muted"),usage=Ui.Text("",11),temperature=Ui.Text("",11,"Download");
+    private readonly TextBlock title=Ui.Text("",12,"Muted"),cpu=Ui.Text("",11,"Cpu"),gpu=Ui.Text("",11,"Gpu");
     private readonly HistoryChart chart;
     public WidgetGraph(UiSession session,string kind)
     {
         this.session=session;this.kind=kind;
         CornerRadius=new(8);BorderThickness=new(1);Padding=new(8,5,8,4);Margin=new(0,5,0,0);
         SetResourceReference(BackgroundProperty,"Panel");SetResourceReference(BorderBrushProperty,"Line");
-        chart=new(session,kind,true){TemperatureOverlay=true,ClipToBounds=true};
+        chart=new(session,kind,true){CompareDevices=true,ClipToBounds=true};
         var grid=new Grid();grid.RowDefinitions.Add(new(){Height=GridLength.Auto});grid.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});
         title.TextWrapping=TextWrapping.NoWrap;title.TextTrimming=TextTrimming.CharacterEllipsis;
-        usage.SetResourceReference(TextBlock.ForegroundProperty,kind=="cpu"?"Cpu":"Gpu");
-        var legend=Ui.Row(Legend(usage,kind=="cpu"?"Cpu":"Gpu",false),Legend(temperature,"Download",true));
+        var legend=Ui.Row(Legend(cpu,"Cpu",false),Legend(gpu,"Gpu",true));
         var header=new DockPanel();DockPanel.SetDock(legend,Dock.Right);header.Children.Add(legend);header.Children.Add(title);grid.Children.Add(header);
         Grid.SetRow(chart,1);grid.Children.Add(chart);Child=grid;
     }
@@ -32,8 +31,10 @@ internal sealed class WidgetGraph : Border
     public void Refresh()
     {
         double? Value(string metric)=>session.Stale?null:session.Value(session.MetricId(metric));
-        title.Text=kind=="cpu"?"CPU":"GPU";title.ToolTip=kind=="cpu"?session.Current?.CpuName:session.GpuName;
-        usage.Text="Usage "+Ui.Number(Value(kind))+" %";temperature.Text="Temp "+Ui.Number(Value(kind=="cpu"?"cputemp":"gputemp"))+" °C";
+        bool thermal=kind=="cputemp";string unit=thermal?" °C":" %";
+        title.Text=thermal?"Temp":"Usage";title.ToolTip=thermal?"CPU and selected GPU temperature (°C)":"CPU and selected GPU usage (%)";
+        cpu.Text="CPU "+Ui.Number(Value(kind))+unit;cpu.ToolTip=session.Current?.CpuName;
+        gpu.Text="GPU "+Ui.Number(Value(thermal?"gputemp":"gpu"))+unit;gpu.ToolTip=session.GpuName;
         chart.Refresh();
     }
 }
