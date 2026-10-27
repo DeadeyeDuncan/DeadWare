@@ -32,11 +32,11 @@
 
 **Interfaces:** `BatteryReading(double? Percentage, BatteryPowerState PowerState, bool? SaverEnabled)`; `BatterySample(DateTimeOffset Timestamp, double MonotonicSeconds, BatteryReading Reading, string Segment)`; `BatteryRecorder.Observe(...)` yields sparse samples. `WindowsBattery.Read()` supplies normalized native flags; `Reading.Battery` carries the optional immutable observation.
 
-- [ ] Write tests for 0/100/unknown/no battery, charging/on-AC/discharging, saver on/off/unknown, one-minute cadence and immediate state changes, gaps/restart and clock jumps.
-- [ ] Run the focused tests and observe missing-feature failures.
-- [ ] Implement normalization, sparse sampling and native adapter. Keep battery failures independent of the hardware provider.
-- [ ] Run focused tests; expected PASS. Run a short native diagnostic; compare percentage/state with this Surface.
-- [ ] Commit the tested observation layer.
+- [x] Write tests for 0/100/unknown/no battery, charging/on-AC/discharging, saver on/off/unknown, one-minute cadence and immediate state changes, gaps/restart and clock jumps.
+- [x] Run the focused tests and observe missing-feature failures.
+- [x] Implement normalization, sparse sampling and native adapter. Keep battery failures independent of the hardware provider.
+- [x] Run focused tests; expected PASS. Run a short native diagnostic; compare percentage/state with this Surface.
+- [x] Commit the tested observation layer.
 
 ### Task 2: Permanent SQLite history and background worker
 
@@ -44,11 +44,11 @@
 
 **Interfaces:** `BatteryHistoryStore.Initialize/Append/Read/ExportCsv`, `BatteryHistoryView` with bounded `BatteryHistoryBucket` results; `BatteryHistoryService.Start/TryRecord/Configure/ReadViewAsync/ExportCsvAsync/StopAsync`.
 
-- [ ] Write close/reopen, machine partition, multi-year oldest retention, bound/min/max/charging/saver summaries, CSV, corrupt/newer DB and lock-failure tests. Write service cadence, recording toggle, queue-gap and final-drain tests.
-- [ ] Run focused tests; expected missing-feature FAIL.
-- [ ] Implement versioned append-only schema with UTC timestamps, segment, percent, power state and nullable saver. Limit queries with SQL time buckets; stream CSV; do not read lifetime data into memory. Serialize service operations off-thread and flush on timer/Quit.
-- [ ] Run focused tests; expected PASS; measure multi-year fixture size/query behavior.
-- [ ] Commit the tested persistence layer and synchronize GitHub.
+- [x] Write close/reopen, machine partition, multi-year oldest retention, bound/min/max/charging/saver summaries, CSV, corrupt/newer DB and lock-failure tests. Write service cadence, recording toggle, queue-gap and final-drain tests.
+- [x] Run focused tests; expected missing-feature FAIL.
+- [x] Implement versioned append-only schema with UTC timestamps, segment, percent, power state and nullable saver. Limit queries with SQL time buckets; stream CSV; do not read lifetime data into memory. Serialize service operations off-thread and flush on timer/Quit.
+- [x] Run focused tests; expected PASS; measure multi-year fixture size/query behavior.
+- [x] Commit the tested persistence layer and synchronize GitHub.
 
 ### Task 3: Dedicated chart, page/window and lifecycle
 
@@ -56,20 +56,20 @@
 
 **Interfaces:** `BatteryHistoryPage(UiSession)` uses `session.Battery`; `BatteryHistoryChart.SetData(view)` draws percentage ranges and charging/saver markers. Detached key `batteryhistory` restores a dedicated window.
 
-- [ ] Add failing window-key/settings and UI/worker-shutdown coverage before integration.
-- [ ] Add Battery history navigation, current percentage/power/saver status, Day/Week/Month/Year/All selection, recording control, CSV export, storage/status and open-window action. Show mixed charging/saver coverage honestly in aggregated views; connect only contiguous unaggregated same-segment observations.
-- [ ] Subscribe/start/drain the battery worker alongside existing history services, including the bounded sign-out path.
-- [ ] Run focused and full solution tests; expected PASS. Render actual controls offscreen in Midnight/Daylight at narrow/wide sizes and empty/day/multi-year data.
-- [ ] Commit the tested UI/integration.
+- [x] Add failing window-key/settings and UI/worker-shutdown coverage before integration.
+- [x] Add Battery history navigation, current percentage/power/saver status, Day/Week/Month/Year/All selection, recording control, CSV export, storage/status and open-window action. Show mixed charging/saver coverage honestly in aggregated views; connect only contiguous unaggregated same-segment observations.
+- [x] Subscribe/start/drain the battery worker alongside existing history services, including the bounded sign-out path.
+- [x] Run focused and full solution tests; expected PASS. Render actual controls offscreen in Midnight/Daylight at narrow/wide sizes and empty/day/multi-year data.
+- [x] Commit the tested UI/integration.
 
 ### Task 4: Versioned delivery and GitHub handoff
 
 **Files:** Update `README.md`, `CHANGELOG.md`, `Directory.Build.props`, `scripts/publish.ps1`, `docs/validation.md`; create `docs/releases/v0.5.0.md` and a short cross-computer workflow document.
 
-- [ ] Review full change against the approved design inline. Fix material issues with regression proof.
-- [ ] Run solution tests/build and `scripts/publish.ps1 -Version 0.5.0`; expected zero failures and a complete portable ZIP/checksum.
-- [ ] Verify archive version/content, run read-only collector diagnostics, and retain validation evidence without private device readings in Git.
-- [ ] Commit and synchronize all source/docs/tests to `feat/battery-history`, create and attach a pull request, and inspect CI. Keep main history intact; provide the tested package and links.
+- [x] Review full change against the approved design inline. Fix material issues with regression proof.
+- [x] Run solution tests/build and `scripts/publish.ps1 -Version 0.5.0`; expected zero failures and a complete portable ZIP/checksum.
+- [x] Verify archive version/content, run read-only collector diagnostics, and retain validation evidence without private device readings in Git.
+- [x] Commit and synchronize all source/docs/tests to `feat/battery-history`, create and attach a pull request, and inspect CI. Keep main history intact; provide the tested package and links.
 
 ## Inline self-review
 

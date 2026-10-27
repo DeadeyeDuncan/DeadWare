@@ -45,4 +45,4 @@ Reuse existing WPF theme/layout primitives, SQLite dependency, collector publica
 
 ## Inline builder check
 
-The existing collector, UI session, SQLite history workers and Cooling Health page supply the integration points. A distinct store is necessary because the six-hour graph cache and Cooling Health retention would discard lifetime battery history. The original six-hour/wattage proposal was rejected and is superseded by this document. The remaining defaults above are routine builder choices; approval of this complete design is the outstanding checkpoint.
+The existing collector, UI session, SQLite history workers and Cooling Health page supply the integration points. A distinct store is necessary because the six-hour graph cache and Cooling Health retention would discard lifetime battery history. This lifetime design supersedes the original six-hour proposal. The user approved the complete design, including saver history, and authorized implementation on 2026-10-27.

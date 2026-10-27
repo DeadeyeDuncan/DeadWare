@@ -1,6 +1,22 @@
 # Preview validation
 
-DeadWare targets Windows 10/11 x64. Hardware discovery is dynamic, but compatibility has only been exercised on one development PC so far. This document records observed coverage, not a certification of other hardware.
+## Lifetime battery history candidate (0.5.0, 2026-10-27)
+
+All **215 automated tests passed** locally (182 core and 33 Windows app). Coverage includes Windows percentage/charging/saver normalization, unknown and absent values, minute cadence plus immediate state changes, sleep/clock/restart boundaries, paused recording, exact queue-loss segmentation, periodic and normal-Quit flush, and bounded sign-out draining while a hardware provider stays stuck. SQLite fixtures verify close/reopen, independent machines, no expiry across twelve years, 20,000 observations summarized to at most 100 buckets, minimum/maximum and charging/saver coverage, original-observation CSV, idempotency, invalid-batch rollback, a locked writer and preservation of newer/corrupt stores.
+
+The actual WPF battery page/chart rendered offscreen using the application's control styles in Midnight and Daylight, at 620- and 1050-pixel widths, with empty and five-year fixtures. A separate assertion verifies that stale current readings hide both percentage and saver state. CI exposed that the original screenshot fixture's real elapsed clock could age past the app's four-second freshness threshold on a slow runner; the fixture now uses frozen elapsed time and tests the stale state explicitly. This changes test determinism, not the product freshness policy. Review was performed inline under the user's standing preference.
+
+The local self-contained x64 package contains 573 entries. Its SHA-256 is `1b071634073d1aed5fa078a41be27abe9efbd28c608a0e2ea9e0d87bd76de074`; the checksum file matches, and no user settings, databases or restore cache are included. A three-sample native diagnostic on this Surface completed successfully, reading 77 percent, on battery, and saver disabled without hardware scanning or ETW. Charging and saver-on transitions are covered by fixtures; no physical charger transition or Windows saver-setting change was performed.
+
+The checked package was installed at the existing `%LOCALAPPDATA%\Programs\DeadWare` path while the app was stopped, retaining the complete previous 0.4.2 installation under the source checkout's ignored artifacts directory. The installed executable, app and core hashes match the tested package; ProductVersion is `0.5.0+770648862383e6bae3afd8ad6504373431817f7e`. Existing local settings/history were preserved. Native Computer Use confirmed the new sidebar page, current percentage/power/saver status, actual saved charge decline from 77 to 75 percent, increasing stored observation count and the separate Battery history window. Recording is enabled and the battery window appears in saved `OpenWindows`.
+
+Native normal Quit exited the process, flushed the store and retained the battery window in settings. Relaunch automatically restored that window and the original history start time; the display showed six saved observations and the earlier 77-percent reading alongside current 74 percent. The installed app was left running with Battery history open. Existing source/product code remained unchanged by the test-clock correction.
+
+An isolated 20,000-observation fixture beginning in 2018 used 1,961,984 bytes. Its All history query returned 1,284 buckets in about 59 ms and allocated about 378 KB; bulk fixture writes took about 1.03 seconds. These are single-run local fixture measurements, not guarantees about a full lifetime database or every device. Queries aggregate in SQLite and bound returned chart data; originals remain in storage.
+
+Source, design, tests and cross-computer workflow are saved on GitHub in [PR #3](https://github.com/DeadeyeDuncan/DeadWare/pull/3). Both the [feature push build](https://github.com/DeadeyeDuncan/DeadWare/actions/runs/40519216162) and [pull request build](https://github.com/DeadeyeDuncan/DeadWare/actions/runs/40519229478) passed at `f6c9017`. Local build/test/package/UI/diagnostic/deployment evidence is under `.superpowers/sdd/2026-10-27-battery-history/`. Lifetime retention is a storage policy tested with historical fixtures, not a physical multi-year soak. Device history begins when this version runs; it does not reconstruct earlier Windows battery history.
+
+DeadWare targets Windows 10/11 x64. Hardware discovery is dynamic. Coverage recorded here includes the original development PC and this Surface tablet; it is not a certification of other hardware.
 
 ## Observed hardware and UI
 
