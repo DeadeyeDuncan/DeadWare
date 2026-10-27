@@ -2,6 +2,7 @@
 
 ## 0.6.0 — Manual updates and rollback
 
+- Show battery saver directly on the charge trace with a different color and dashed line, a graph legend and distinct unknown/mixed states; remove saver text from the current-status card.
 - Add Updates with on-demand checks for normal GitHub releases, release notes and explicit Update & restart / Roll back & restart actions.
 - Verify release ZIP digests/checksums, safe archive paths and every managed file before preparing a replacement.
 - Apply through an independent helper after normal Quit, preserve settings/history and install paths, and retain a verified previous version for rollback.

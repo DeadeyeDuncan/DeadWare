@@ -71,6 +71,37 @@ public class BatteryUiTests
                 foreach (string theme in new[] { "Midnight", "Daylight" })
                 {
                     assembly.GetType("DeadWare.App.Theme")!.GetMethod("Apply", All)!.Invoke(null, [theme]);
+                    var traceType = assembly.GetType("DeadWare.App.BatteryHistoryChart")!;
+                    var trace = (FrameworkElement)Activator.CreateInstance(traceType, true)!;
+                    var start = now.AddMinutes(-9);
+                    var traceBuckets = Enumerable.Range(0, 7).Select(i => Bucket(start.AddMinutes(i), 90 - i * 4) with
+                    { SaverSamples = i is 2 or 3 ? 1 : 0, SaverKnownSamples = i == 5 ? 0 : 1 }).ToList();
+                    traceBuckets.Add(Bucket(start.AddMinutes(7), 60) with
+                    { End = start.AddMinutes(8), Minimum = 55, Maximum = 65, Samples = 10, ValidSamples = 10, SaverSamples = 4, SaverKnownSamples = 10 });
+                    var traceView = new BatteryHistoryView(start, now, traceBuckets, 17, start, 12345, "Fixture saved locally.");
+                    traceType.GetMethod("SetData", All)!.Invoke(trace, [traceView]);
+                    trace.Measure(new Size(620, 320)); trace.Arrange(new Rect(0, 0, 620, 320)); trace.UpdateLayout();
+                    var drawings = Drawings(VisualTreeHelper.GetDrawing(trace)!).ToArray();
+                    var lines = drawings.Where(d => d.Geometry is LineGeometry line && line.StartPoint.X < line.EndPoint.X && line.StartPoint.Y != line.EndPoint.Y).ToArray();
+                    Color ResourceColor(string key) => ((SolidColorBrush)app.Resources[key]).Color;
+                    Assert.Equal(new[] { "Accent", "Accent", "Warning", "Warning", "Accent", "Muted" }.Select(ResourceColor),
+                        lines.Select(d => ((SolidColorBrush)d.Pen.Brush).Color));
+                    Assert.Empty(lines[0].Pen.DashStyle.Dashes);
+                    Assert.NotEmpty(lines[2].Pen.DashStyle.Dashes);
+                    Assert.NotEqual(lines[2].Pen.DashStyle.Dashes.ToArray(), lines[5].Pen.DashStyle.Dashes.ToArray());
+                    // Unknown and mixed summary points must not imply a single known saver state.
+                    Assert.Equal(2, drawings.Count(d => d.Geometry is EllipseGeometry && d.Brush is null && d.Pen is not null));
+                    string? traceOutput = Environment.GetEnvironmentVariable("DEADWARE_UI_OUTPUT");
+                    if (traceOutput is not null)
+                    {
+                        Directory.CreateDirectory(traceOutput);
+                        var tracePage = (FrameworkElement)Activator.CreateInstance(pageType, All, null, [session, false], null)!;
+                        pageType.GetMethod("ApplyView", All)!.Invoke(tracePage, [traceView]);
+                        tracePage.Measure(new Size(620, 760)); tracePage.Arrange(new Rect(0, 0, 620, 760)); tracePage.UpdateLayout();
+                        var traceBitmap = new RenderTargetBitmap(620, 760, 96, 96, PixelFormats.Pbgra32); traceBitmap.Render(tracePage);
+                        using var stream = File.Create(Path.Combine(traceOutput, $"battery-{theme}-saver.png"));
+                        var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(traceBitmap)); encoder.Save(stream);
+                    }
                     foreach (bool empty in new[] { true, false })
                     {
                         var page = (FrameworkElement)Activator.CreateInstance(pageType, All, null, [session, true], null)!;
@@ -86,7 +117,10 @@ public class BatteryUiTests
                         var bitmap = new RenderTargetBitmap((int)width, 760, 96, 96, PixelFormats.Pbgra32); bitmap.Render(page);
                         Assert.Equal(width, page.ActualWidth); Assert.Equal(760, page.ActualHeight);
                         var text = string.Join("\n", Descendants(page).OfType<TextBlock>().Select(t => t.Text));
-                        Assert.Contains("Battery saver on", text); Assert.Contains("Charging", text);
+                        var currentCard = (Border)((StackPanel)((ScrollViewer)page).Content).Children[0];
+                        Assert.DoesNotContain("saver", string.Join(" ", Descendants(currentCard).OfType<TextBlock>().Select(t => t.Text)), StringComparison.OrdinalIgnoreCase);
+                        Assert.Contains("Charging", text);
+                        Assert.Contains("Saver off", text); Assert.Contains("Saver on", text);
                         Assert.Contains("retained indefinitely", text);
                         string? output = Environment.GetEnvironmentVariable("DEADWARE_UI_OUTPUT");
                         if (output is not null)
@@ -101,7 +135,7 @@ public class BatteryUiTests
                 var stalePage = (FrameworkElement)Activator.CreateInstance(pageType, All, null, [session, false], null)!;
                 stalePage.Measure(new Size(620, 760)); stalePage.Arrange(new Rect(0, 0, 620, 760)); stalePage.UpdateLayout();
                 var staleText = string.Join("\n", Descendants(stalePage).OfType<TextBlock>().Select(t => t.Text));
-                Assert.Contains("Waiting for a fresh reading", staleText); Assert.Contains("Battery saver unknown", staleText);
+                Assert.Contains("Waiting for a fresh reading", staleText); Assert.DoesNotContain("Battery saver unknown", staleText);
                 var updatesType=assembly.GetType("DeadWare.App.UpdatesPage"); Assert.NotNull(updatesType);
                 var updateService=new UpdateService("0.6.0",Path.Combine(Path.GetTempPath(),Guid.NewGuid().ToString("N")));
                 Set(session,"<Updates>k__BackingField",updateService);
@@ -139,6 +173,13 @@ public class BatteryUiTests
         yield return root;
         for (int i = 0; i < VisualTreeHelper.GetChildrenCount(root); i++)
             foreach (var child in Descendants(VisualTreeHelper.GetChild(root, i))) yield return child;
+    }
+    private static IEnumerable<GeometryDrawing> Drawings(Drawing drawing)
+    {
+        if (drawing is GeometryDrawing geometry) yield return geometry;
+        if (drawing is DrawingGroup group)
+            foreach (var child in group.Children)
+                foreach (var nested in Drawings(child)) yield return nested;
     }
     private static BatteryHistoryBucket Bucket(DateTimeOffset stamp, double value = 80) =>
         new(stamp, stamp, value, value, value, 1, 1, 0, 0, 1, "fixture");

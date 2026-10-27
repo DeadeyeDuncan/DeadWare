@@ -9,7 +9,7 @@ The user wants to see how battery percentage falls over time and when the comput
 ## Proposed experience
 
 - Add **Battery history** beside Cooling Health and an **Open battery history window** action. The same view works in the dashboard and its own resizable, remembered window.
-- Show current battery percentage, plain charging/power status and Windows battery-saver status. Chart charge from 0 to 100 percent, distinguish charging and battery-saver periods, and expose Day, Week, Month, Year and All history ranges. Unknown saver status stays unknown rather than appearing disabled.
+- Show current battery percentage and plain charging/power status. Per the user's follow-up, show Windows battery saver in the charge graph instead of the current-status card: a normal solid line for off, dashed amber for on, dotted muted color for unknown, and a legend. Summarized buckets with mixed or unknown saver state use hollow charge dots. Chart charge from 0 to 100 percent, distinguish charging periods, and expose Day, Week, Month, Year and All history ranges. Unknown saver status stays unknown rather than appearing disabled.
 - Preserve real date/time spacing. Missing readings, sleep, stopped monitoring and process restarts are gaps. A long-range chart summarizes readings to fit the screen; it must not suggest that a charging state lasted throughout an unobserved interval.
 - Start recording automatically when DeadWare runs on a battery-equipped machine. Provide a recording checkbox, storage/status text and CSV export. A desktop with no system battery shows that clearly while older saved history stays viewable.
 - Recording starts after this upgrade. Existing device lifetime history cannot be reconstructed. Stored readings survive normal app upgrades and restarts.
