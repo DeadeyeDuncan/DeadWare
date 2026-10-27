@@ -229,6 +229,7 @@ public class BatteryUiTests
                     }
                 }
                 lifetime.BeginSessionEnding(); dashboard.Close();
+                VerifyWidget(session, collector, current, assembly);
                 app.Shutdown();
             }
             catch (Exception error) { failure = error; }
@@ -236,6 +237,106 @@ public class BatteryUiTests
         thread.SetApartmentState(ApartmentState.STA); thread.Start();
         Assert.True(thread.Join(TimeSpan.FromSeconds(30)), "Offscreen rendering timed out.");
         if (failure is not null) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(failure).Throw();
+    }
+
+    private static void VerifyWidget(UiSession session, Collector collector, Reading current, Assembly assembly)
+    {
+        void Set(object target, string name, object? value) => target.GetType().GetField(name, All)!.SetValue(target, value);
+        void Changed() => ((Action)typeof(UiSession).GetField("Changed", All)!.GetValue(session)!).Invoke();
+        var history = new SampleHistory();
+        for (int seconds = -55; seconds <= 0; seconds++)
+        {
+            if (seconds is -18 or -17 or -16) continue;
+            history.Add(new(DateTimeOffset.UtcNow.AddSeconds(seconds), seconds, new Dictionary<string, double?>
+            {
+                ["cpu/usage"] = 35 + 15 * Math.Sin(seconds / 5.0), ["cpu/temperature"] = seconds == -30 ? null : seconds == -3 ? 125 : 60 + 5 * Math.Sin(seconds / 7.0),
+                ["gpu-a/usage"] = 5, ["gpu-a/temperature"] = 40,
+                ["gpu-b/usage"] = 75 + 10 * Math.Sin(seconds / 4.0), ["gpu-b/temperature"] = seconds == -30 ? null : 90 + 5 * Math.Sin(seconds / 6.0),
+                ["memory/used"] = 8e9, ["memory/total"] = 32e9, ["network/download"] = 12345, ["network/upload"] = 3456
+            }) { SessionId = seconds >= -10 ? "restart" : "fixture" });
+        }
+        Set(collector, "<History>k__BackingField", history);
+        var reading = current with { Sample = history.Read()[^1], Gpus = [new("gpu-a", "First GPU", true), new("gpu-b", "Selected GPU", true)] };
+        Set(collector, "latest", reading); session.Settings.HistorySeconds = 60; session.Settings.SelectedGpuId = "gpu-b";
+        var widgetType = assembly.GetType("DeadWare.App.WidgetWindow")!;
+        var widget = (Window)Activator.CreateInstance(widgetType, All, null, [session], null)!;
+        Assert.Equal(300, widget.MinWidth); Assert.Equal(320, widget.MinHeight);
+        Assert.Equal(340, widget.Width); Assert.Equal(390, widget.Height);
+        var content = (FrameworkElement)widget.Content;
+        // Capture the viewport parent: rendering the Margin-bearing child directly
+        // shifts its drawing but clips it at the unshifted child size.
+        widget.Content = null;
+        var viewport = new Border { Child = content };
+        System.Windows.Documents.TextElement.SetFontFamily(viewport, widget.FontFamily);
+        System.Windows.Documents.TextElement.SetFontSize(viewport, widget.FontSize);
+        widget.Content = viewport;
+        string? output = Environment.GetEnvironmentVariable("DEADWARE_UI_OUTPUT");
+        foreach (string theme in new[] { "Midnight", "Daylight" })
+        {
+            assembly.GetType("DeadWare.App.Theme")!.GetMethod("Apply", All)!.Invoke(null, [theme]); Changed();
+            foreach (var size in new[] { new Size(284, 281), new Size(324, 351), new Size(620, 550) })
+            {
+                viewport.SetResourceReference(Border.BackgroundProperty, "Background");
+                viewport.Measure(size); viewport.Arrange(new Rect(new Point(), size)); viewport.UpdateLayout();
+                var charts = Descendants(content).OfType<FrameworkElement>().Where(element => element.GetType().Name == "HistoryChart").ToArray();
+                Assert.Equal(2, charts.Length);
+                foreach (var chart in charts)
+                {
+                    Assert.True(chart.ActualHeight >= 48, $"Chart clipped at {size}: {chart.ActualHeight}");
+                    var drawing = VisualTreeHelper.GetDrawing(chart)!;
+                    var series = Drawings(drawing).Where(item => item.Geometry is StreamGeometry).ToArray();
+                    Assert.Equal(2, series.Length);
+                    string kind = (string)chart.GetType().GetField("kind", All)!.GetValue(chart)!;
+                    Color ColorOf(string name) => ((SolidColorBrush)Application.Current.Resources[name]).Color;
+                    Assert.Equal(ColorOf(kind == "cpu" ? "Cpu" : "Gpu"), ((SolidColorBrush)series[0].Pen.Brush).Color);
+                    Assert.Equal(ColorOf("Download"), ((SolidColorBrush)series[1].Pen.Brush).Color);
+                    Assert.Empty(series[0].Pen.DashStyle.Dashes); Assert.NotEmpty(series[1].Pen.DashStyle.Dashes);
+                    Assert.Equal(3, PathGeometry.CreateFromGeometry(series[0].Geometry).Figures.Count);
+                    Assert.Equal(4, PathGeometry.CreateFromGeometry(series[1].Geometry).Figures.Count);
+                    if (kind == "cpu")
+                    {
+                        var grid = Drawings(drawing).Select(item => item.Geometry).OfType<LineGeometry>().Where(line => line.StartPoint.Y == line.EndPoint.Y).OrderBy(line => line.StartPoint.Y).ToArray();
+                        double top = grid[0].StartPoint.Y, height = grid[^1].StartPoint.Y - top;
+                        Assert.Equal(top + height * (1 - 125.0 / 140), series[1].Geometry.Bounds.Top, 3);
+                    }
+                }
+                string text = string.Join("\n", Descendants(content).OfType<TextBlock>().Select(block => block.Text));
+                var status = Descendants(content).OfType<TextBlock>().Single(block => block.Text.StartsWith("Shared collector"));
+                var statusBounds = status.TransformToAncestor(content).TransformBounds(new Rect(status.RenderSize));
+                Assert.True(statusBounds.Bottom <= content.ActualHeight + .01, $"Status extends below widget: {statusBounds} / {content.RenderSize}");
+                Assert.True(statusBounds.Right <= content.ActualWidth + .01, $"Status extends outside widget: {statusBounds} / {content.RenderSize}");
+                Assert.Contains(Descendants(content).OfType<TextBlock>(), block => block.Text == "GPU" && block.ToolTip?.ToString() == "Selected GPU");
+                Assert.Contains("Usage 75.0 %", text); Assert.Contains("Temp 90.0 °C", text);
+                Assert.DoesNotContain("First GPU", text); Assert.Contains("Memory", text); Assert.Contains("Shared collector", text);
+                if (output is not null)
+                {
+                    var bitmap = new RenderTargetBitmap((int)size.Width, (int)size.Height, 96, 96, PixelFormats.Pbgra32); bitmap.Render(viewport);
+                    using var file = File.Create(Path.Combine(output, $"widget-{theme}-{size.Width:0}x{size.Height:0}.png"));
+                    var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap)); encoder.Save(file);
+                }
+            }
+        }
+        var gpuChart = Descendants(content).OfType<FrameworkElement>().Single(element => element.GetType().Name == "HistoryChart" && (string)element.GetType().GetField("kind", All)!.GetValue(element)! == "gpu");
+        string selectedTrace = Drawings(VisualTreeHelper.GetDrawing(gpuChart)!).First(item => item.Geometry is StreamGeometry).Geometry.ToString();
+        session.Settings.SelectedGpuId = "gpu-a"; Changed(); content.UpdateLayout();
+        Assert.Contains("Usage 5.0 %", string.Join("\n", Descendants(content).OfType<TextBlock>().Select(block => block.Text)));
+        Assert.NotEqual(selectedTrace, Drawings(VisualTreeHelper.GetDrawing(gpuChart)!).First(item => item.Geometry is StreamGeometry).Geometry.ToString());
+        session.Settings.HistorySeconds = 3600; Changed(); content.UpdateLayout();
+        Assert.All(Descendants(content).OfType<FrameworkElement>().Where(element => element.GetType().Name == "HistoryChart"), chart =>
+            Assert.All(Drawings(VisualTreeHelper.GetDrawing(chart)!).Where(item => item.Geometry is StreamGeometry), item => Assert.Equal(1, item.Pen.Thickness)));
+        session.Settings.HistorySeconds = 60;
+        Set(collector, "latest", reading with { Sample = reading.Sample with { MonotonicSeconds = -10 } }); Changed();
+        string stale = string.Join("\n", Descendants(content).OfType<TextBlock>().Select(block => block.Text));
+        Assert.Contains("Readings stale", stale); Assert.Contains("Usage — %", stale); Assert.Contains("Temp — °C", stale);
+        Assert.DoesNotContain("Usage 5.0 %", stale);
+        Set(collector, "latest", reading with { Sample = reading.Sample with { Values = new Dictionary<string, double?>() } }); Changed();
+        Assert.Contains("Temp — °C", string.Join("\n", Descendants(content).OfType<TextBlock>().Select(block => block.Text)));
+        var subscribed = (Action)typeof(UiSession).GetField("Changed", All)!.GetValue(session)!;
+        viewport.Child = null; widget.Content = content;
+        widget.Close();
+        var remaining = (Action?)typeof(UiSession).GetField("Changed", All)!.GetValue(session);
+        Assert.DoesNotContain(remaining?.GetInvocationList() ?? [], handler => handler.Target == widget);
+        Assert.Contains(subscribed.GetInvocationList(), handler => handler.Target == widget);
     }
 
     private static IEnumerable<DependencyObject> Descendants(DependencyObject root)

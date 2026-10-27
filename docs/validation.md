@@ -1,5 +1,13 @@
 # Release validation
 
+## Widget graphs candidate (0.6.3, 2026-10-27)
+
+The compact widget now contains CPU and selected-GPU history charts. Solid usage traces retain the CPU/GPU theme colors; dashed blue temperature traces use a separate °C axis, starting at 0–100°C and expanding above 100°C. Both reuse the existing collector, selected graph range, selected GPU, persisted history, reduction and gap handling. The existing 300×320 minimum, 340×390 default, remembered placement, Always on top and memory/network summaries remain.
+
+All 262 automated tests passed (217 core/update and 45 Windows app), and the self-contained app/helper package built successfully. The actual-widget regression first failed with two expected charts versus zero, then passed. The extended single-Application offscreen fixture covers minimum/default/large client sizes (284×281, 324×351, 620×550), Midnight/Daylight themes, two trace colors and dash styles, null/time/session gaps, selected-GPU trace changes, 125°C mapped to an adaptive 140°C axis, dense-hour stroke width, stale/missing current values with units, and event cleanup after widget close. Independent review found no actionable defects; whitespace checks passed.
+
+The initial PNG capture rendered a control with an eight-pixel margin directly, which clipped the preview footer despite correct product layout. The fixture now captures through a viewport host and asserts the status bounds fit inside the actual content. UI fixtures use synthetic readings and an unstarted session; no native windows, collector, user-settings writes or live app replacement are involved. Local preview evidence stays under ignored `artifacts/ui-widget/`. Physical live widget operation, real mixed-DPI monitors and a new long-running soak remain manual checks. The installed package reported 0.6.2 before publication and is reserved for the user's updater test.
+
 ## Desktop-aware navigation (0.6.2, 2026-10-27)
 
 Work was performed on `Dev` in an isolated worktree, preserving the pre-existing uncommitted graph-styling change in the primary checkout. All 262 automated tests passed (217 core/update and 45 Windows app), including the extended real-dashboard fixture. The battery regression first failed with expected Collapsed versus actual Visible, then passed after the visibility correction. Independent review found no actionable defects or release blockers; `git diff --check` passed.
