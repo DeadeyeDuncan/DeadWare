@@ -9,6 +9,7 @@ public sealed class UiSession
     public Collector Collector {get;}
     public CoolingHistoryService Cooling {get;}
     public GraphHistoryService GraphHistory {get;}
+    public BatteryHistoryService Battery {get;}
     public UserSettings Settings {get;}
     public string SettingsStatus {get;private set;}="";
     private readonly string settingsPath=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"DeadWare","settings.json");
@@ -50,6 +51,9 @@ public sealed class UiSession
         Cooling=new(Path.Combine(Path.GetDirectoryName(settingsPath)!,"cooling-history.db"),Environment.MachineName,Settings.CoolingConfigurationId);
         Cooling.Configure(Settings.CoolingRecording,Settings.CoolingNotifications,Settings.CoolingDetailedDays,Settings.CoolingSummaryDays,Settings.CoolingConfigurationId);
         Collector.SampleAvailable+=Cooling.TryRecord;
+        Battery=new(Path.Combine(Path.GetDirectoryName(settingsPath)!,"battery-history.db"),Environment.MachineName);
+        Battery.Configure(Settings.BatteryRecording);
+        Collector.SampleAvailable+=Battery.TryRecord;
         timer.Tick+=(_,_)=>
         {
             if(Settings.SelectedGpuId is null && Current is {Gpus.Count:>0} reading)
@@ -60,7 +64,7 @@ public sealed class UiSession
     public void Start()
     {
         foreach(string key in layout.Remembered)OpenDetached(key);
-        GraphHistory.Start();Cooling.Start();_ = SaveAsync();Collector.Start();timer.Start();
+        GraphHistory.Start();Cooling.Start();Battery.Start();_ = SaveAsync();Collector.Start();timer.Start();
     }
     public void SetRange(int seconds) {Settings.HistorySeconds=seconds;Changed?.Invoke();_ = SaveAsync();}
     public void SetGpu(string? id) {Settings.SelectedGpuId=id;Changed?.Invoke();_ = SaveAsync();}
@@ -68,6 +72,7 @@ public sealed class UiSession
     public void SetExtendedSensors(bool enabled) {Settings.ExtendedSensors=enabled;_ = SaveAsync();}
     public void SetRestoreOpenWindows(bool enabled) {Settings.RestoreOpenWindows=enabled;_ = SaveAsync();}
     public void SetStartInTray(bool enabled) {Settings.StartInTray=enabled;_ = SaveAsync();}
+    public void SetBatteryRecording(bool enabled) {Settings.BatteryRecording=enabled;Battery.Configure(enabled);Changed?.Invoke();_ = SaveAsync();}
     public void SetCoolingOptions(bool recording,bool notifications,int detailedDays,int summaryDays)
     {
         Settings.CoolingRecording=recording;Settings.CoolingNotifications=notifications;
@@ -124,7 +129,8 @@ public sealed class UiSession
         var providerStop=Collector.DisposeAsync().AsTask();
         Collector.SampleAvailable-=Cooling.TryRecord;
         Collector.SampleAvailable-=GraphHistory.TryRecord;
-        await Task.WhenAll(providerStop,Cooling.StopAsync(),GraphHistory.StopAsync()).ConfigureAwait(false);
+        Collector.SampleAvailable-=Battery.TryRecord;
+        await Task.WhenAll(providerStop,Cooling.StopAsync(),GraphHistory.StopAsync(),Battery.StopAsync()).ConfigureAwait(false);
     });
     internal void StopCollectorForSessionEnding()
     {
@@ -169,7 +175,7 @@ public sealed class UiSession
     {
         if(layout.Ending||!DetachedWindowState.IsAllowed(kind))return;
         if(detached.TryGetValue(kind,out var existing)) {existing.WindowState=WindowState.Normal;existing.Activate();return;}
-        var window=kind=="widget"?(Window)new WidgetWindow(this):new GraphWindow(this,kind);
+        var window=kind=="batteryhistory"?(Window)new BatteryHistoryWindow(this):kind=="widget"?new WidgetWindow(this):new GraphWindow(this,kind);
         detached[kind]=window;
         window.Closed+=(_,_)=>{detached.Remove(kind);layout.Close(kind);diagnostics?.Record("window_closed",new {Kind=kind,layout.Ending,OpenWindows=layout.Remembered});QueueSave();};
         window.Show();layout.Open(kind);diagnostics?.Record("window_opened",new {Kind=kind,OpenWindows=layout.Remembered});QueueSave();

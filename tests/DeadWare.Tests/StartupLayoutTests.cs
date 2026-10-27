@@ -5,6 +5,14 @@ namespace DeadWare.Tests;
 
 public class StartupLayoutTests
 {
+    [Fact] public void BatteryHistoryWindowAndRecordingChoiceSurviveSettingsRoundtrip()
+    {
+        var settings=SettingsCodec.Read("""{"OpenWindows":["batteryhistory","widget"],"BatteryRecording":false}""").Settings;
+        var roundtrip=SettingsCodec.Read(SettingsCodec.Write(settings)).Settings;
+        Assert.Contains("batteryhistory",roundtrip.OpenWindows);
+        Assert.False(roundtrip.BatteryRecording);
+        Assert.True(new UserSettings().BatteryRecording);
+    }
     [Fact] public void OldPlacementHistoryDoesNotReopenClosedWindows()
     {
         var settings=SettingsCodec.Read("""{"WindowPlacementFormat":"physical-pixels-v1","Windows":{"cpu":{"Left":10,"Top":10,"Width":600,"Height":400}}}""").Settings;

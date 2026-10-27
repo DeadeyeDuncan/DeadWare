@@ -38,7 +38,7 @@ public sealed class MainWindow : Window
         var quitButton=Ui.Button("Quit DeadWare",quit);quitButton.FontSize=11;sideBottom.Children.Add(quitButton);trayNotice.Margin=new Thickness(3,5,3,8);sideBottom.Children.Add(trayNotice);
         sideBottom.Children.Add(Ui.Text($"Local monitoring\n1 second samples · 6 h saved graphs\nv{BuildInfo.Version}",10,"Muted"));
         var nav=new StackPanel();sidebar.Children.Add(nav);
-        foreach(var item in new[]{("overview","▦  Overview"),("network","⇄  Network"),("cooling","◷  Cooling Health"),("sensors","≡  Sensors"),("desktop","▱  Desktop layout")})
+        foreach(var item in new[]{("overview","▦  Overview"),("network","⇄  Network"),("cooling","◷  Cooling Health"),("battery","▤  Battery history"),("sensors","≡  Sensors"),("desktop","▱  Desktop layout")})
         {var key=item.Item1;var button=Ui.Button(item.Item2,()=>Navigate(key));button.HorizontalContentAlignment=HorizontalAlignment.Left;button.Margin=new(0,3,0,3);button.Padding=new(10,13,10,13);nav.Children.Add(button);}
         var main=new DockPanel {Margin=new Thickness(18,25,26,16)};Grid.SetColumn(main,1);shell.Children.Add(main);
         var footer=new StackPanel {Margin=new Thickness(4,10,4,0)};footer.Children.Add(status);DockPanel.SetDock(footer,Dock.Bottom);main.Children.Add(footer);
@@ -47,7 +47,7 @@ public sealed class MainWindow : Window
         liveToolbar=new DockPanel {Margin=new Thickness(0,18,0,12)};var ranges=Ui.Range(session);DockPanel.SetDock(ranges,Dock.Right);liveToolbar.Children.Add(ranges);var gpuLabel=Ui.Text("GPU",12,"Muted");gpuLabel.Margin=new(0,0,8,0);gpuControls=Ui.Row(gpuLabel,gpu);liveToolbar.Children.Add(gpuControls);header.Children.Add(liveToolbar);
         gpu.SelectionChanged+=(_,_)=>{if(!syncingGpu)session.SetGpu((gpu.SelectedItem as Device)?.Id);};
         main.Children.Add(content);
-        pages["overview"]=Overview();pages["network"]=Network();pages["cooling"]=new CoolingHealthPage(session);pages["sensors"]=Sensors();pages["desktop"]=Desktop();Navigate("overview");
+        pages["overview"]=Overview();pages["network"]=Network();pages["cooling"]=new CoolingHealthPage(session);pages["battery"]=new BatteryHistoryPage(session);pages["sensors"]=Sensors();pages["desktop"]=Desktop();Navigate("overview");
         session.Changed+=Refresh;Closed+=(_,_)=>session.Changed-=Refresh;Closing+=OnClosing;
         IsVisibleChanged+=(_,_)=>{if(IsVisible)Refresh();};
     }
@@ -80,6 +80,7 @@ public sealed class MainWindow : Window
         var stack=new StackPanel {Margin=new Thickness(8)};
         stack.Children.Add(Ui.Text("Your readings, wherever you need them",20));var intro=Ui.Text("Open any graph in its own resizable native window. Choose Always on top to keep it visible while you work. All windows share the same readings, selected GPU, history range and theme.",14,"Muted");intro.Margin=new(0,12,0,24);stack.Children.Add(intro);
         foreach(var kind in new[]{"cpu","gpu","cputemp","gputemp","network"}){var key=kind;var button=Ui.Button("↗  "+Ui.Title(kind),()=>session.OpenDetached(key));button.HorizontalAlignment=HorizontalAlignment.Left;button.MinWidth=240;button.Margin=new(0,4,0,4);stack.Children.Add(button);}
+        var batteryWindow=Ui.Button("↗  Battery history",()=>session.OpenDetached("batteryhistory"));batteryWindow.HorizontalAlignment=HorizontalAlignment.Left;batteryWindow.MinWidth=240;batteryWindow.Margin=new(0,4,0,4);stack.Children.Add(batteryWindow);
         var open=Ui.Button("↗  Compact desktop widget",()=>session.OpenDetached("widget"));open.HorizontalAlignment=HorizontalAlignment.Left;open.MinWidth=240;open.Margin=new(0,20,0,4);stack.Children.Add(open);
         var saved=Ui.Text("Positions, sizes and Always on top choices are saved as you work. Closing the dashboard hides it to the system tray while graphs and the widget keep monitoring. Choose Quit DeadWare to save the windows left open for next time and stop collection. Close an individual graph or widget to leave it closed next time.",12,"Muted");saved.Margin=new(0,20,0,0);stack.Children.Add(saved);
         var restore=new CheckBox {Content="Reopen graphs and widget from the previous session",IsChecked=session.Settings.RestoreOpenWindows,Margin=new Thickness(0,18,0,8)};
@@ -125,9 +126,9 @@ public sealed class MainWindow : Window
     private void Navigate(string destination)
     {
         gpuControls.Visibility=destination=="overview"?Visibility.Visible:Visibility.Collapsed;
-        liveToolbar.Visibility=destination=="cooling"?Visibility.Collapsed:Visibility.Visible;
-        page=destination;content.Content=pages[destination];heading.Text=destination switch {"network"=>"Your network, explained","cooling"=>"Cooling Health","sensors"=>"Hardware sensors","desktop"=>"Make room for your work",_=>"System overview"};
-        subtitle.Text=destination switch {"network"=>"See which applications are sending and receiving data.","cooling"=>"Learn your usual temperatures. Notice sustained changes.","sensors"=>"Current-session values and statistics over the selected range.","desktop"=>"A few useful numbers, wherever you need them.",_=>"The numbers you care about. Room to breathe."};Refresh();
+        liveToolbar.Visibility=destination is "cooling" or "battery"?Visibility.Collapsed:Visibility.Visible;
+        page=destination;content.Content=pages[destination];heading.Text=destination switch {"network"=>"Your network, explained","cooling"=>"Cooling Health","battery"=>"Battery history","sensors"=>"Hardware sensors","desktop"=>"Make room for your work",_=>"System overview"};
+        subtitle.Text=destination switch {"network"=>"See which applications are sending and receiving data.","cooling"=>"Learn your usual temperatures. Notice sustained changes.","battery"=>"See charge fall and recover. Keep the history for years.","sensors"=>"Current-session values and statistics over the selected range.","desktop"=>"A few useful numbers, wherever you need them.",_=>"The numbers you care about. Room to breathe."};Refresh();
         if(destination=="desktop")_ = RefreshStartupAsync();
     }
     private void Refresh()
@@ -181,6 +182,19 @@ public sealed class MainWindow : Window
             case DashboardCloseBehavior.Hide:e.Cancel=true;Hide();return;
             default:e.Cancel=true;SetTrayUnavailable();return;
         }
+    }
+}
+internal sealed class BatteryHistoryWindow : Window
+{
+    public BatteryHistoryWindow(UiSession session)
+    {
+        Title="Battery history — DeadWare";MinWidth=620;MinHeight=520;Ui.Icon(this);session.Place(this,"batteryhistory",940,830);
+        var panel=new DockPanel {Margin=new Thickness(16)};
+        var header=new DockPanel {Margin=new Thickness(6,0,6,8)};
+        var pin=new CheckBox {Content="Always on top",VerticalAlignment=VerticalAlignment.Center,IsChecked=Topmost};
+        pin.Checked+=(_,_)=>Topmost=true;pin.Unchecked+=(_,_)=>Topmost=false;DockPanel.SetDock(pin,Dock.Right);header.Children.Add(pin);
+        header.Children.Add(Ui.Text("Battery history",24));DockPanel.SetDock(header,Dock.Top);panel.Children.Add(header);
+        panel.Children.Add(new BatteryHistoryPage(session,false));Content=panel;
     }
 }
 internal sealed class GraphWindow : Window

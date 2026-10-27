@@ -250,6 +250,7 @@ public record WindowPlacement(double Left,double Top,double Width,double Height,
 }
 public sealed class UserSettings
 {
+    public bool BatteryRecording {get;set;}=true;
     public bool RestoreOpenWindows {get;set;}=true;
     public bool StartInTray {get;set;}
     public bool CoolingRecording {get;set;}=true;
