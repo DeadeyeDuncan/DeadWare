@@ -1,6 +1,6 @@
 # Manual GitHub updates and rollback
 
-Status: proposed design for approval. No updater product code has been written.
+Status: approved by the user on 2026-10-27: manual checks, normal releases only, update and previous-version rollback preserving history.
 
 ## Intent
 
