@@ -1,6 +1,6 @@
 # Long-term battery history
 
-Status: proposed design, awaiting approval.
+Status: approved by the user on 2026-10-27, including battery-saver history.
 
 ## Intent
 

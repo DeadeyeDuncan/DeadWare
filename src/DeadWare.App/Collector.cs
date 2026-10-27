@@ -8,7 +8,10 @@ using LibreHardwareMonitor.Hardware;
 namespace DeadWare.App;
 public record SensorReading(string Id,string Hardware,string Name,string Unit,double? Value,
     string HardwareId="",string HardwareType="",string SensorType="",string Validity="Unknown");
-public record Reading(Snapshot Sample,IReadOnlyList<Device> Gpus,IReadOnlyList<SensorReading> Sensors,IReadOnlyList<ProcessTraffic> Processes,string CpuName,string HardwareStatus,string NetworkStatus,string EtwStatus,bool Elevated,IReadOnlyDictionary<string,double>? ProviderMilliseconds=null,DiagnosticFailure? EtwFailure=null);
+public record Reading(Snapshot Sample,IReadOnlyList<Device> Gpus,IReadOnlyList<SensorReading> Sensors,IReadOnlyList<ProcessTraffic> Processes,string CpuName,string HardwareStatus,string NetworkStatus,string EtwStatus,bool Elevated,IReadOnlyDictionary<string,double>? ProviderMilliseconds=null,DiagnosticFailure? EtwFailure=null)
+{
+    public BatteryReading Battery {get;init;}=BatteryReading.Unavailable;
+}
 
 /// <summary>One serial background loop owns all hardware updates; windows only read immutable publications.</summary>
 public sealed class Collector : IAsyncDisposable
@@ -106,7 +109,7 @@ public sealed class Collector : IAsyncDisposable
                     if(timings is not null){timings["etw/snapshot"]=Stopwatch.GetElapsedTime(providerStarted).TotalMilliseconds;timings["poll/total"]=(clock.Elapsed.TotalSeconds-started)*1000;}
                     double elapsed=clock.Elapsed.TotalSeconds-started;
                     if(elapsed>=1)hardwareStatus+=$" · Slow sample ({elapsed:0.0}s); pausing before the next poll.";
-                    var reading=new Reading(sample,gpus.AsReadOnly(),sensors.AsReadOnly(),processes,cpuName,hardwareStatus,network.Status,EtwStatus,IsElevated,timings,etw.Failure);
+                    var reading=new Reading(sample,gpus.AsReadOnly(),sensors.AsReadOnly(),processes,cpuName,hardwareStatus,network.Status,EtwStatus,IsElevated,timings,etw.Failure) {Battery=WindowsBattery.Read()};
                     History.Add(sample);Volatile.Write(ref latest,reading);SampleAvailable?.Invoke(reading);
                 }
                 catch(Exception e)
