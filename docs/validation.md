@@ -1,12 +1,18 @@
 # Release validation
 
+## Tablet in-app upgrade (0.6.0 to 0.6.1, 2026-10-27)
+
+After the user's explicit installation request, native Computer Use operated the installed 0.6.0 Updates page: Check for updates found the normal 0.6.1 release, then Update & restart downloaded/verified it, performed normal Quit and reopened the app at its existing path. The real helper recorded success, cleared pending recovery and retained a verified 0.6.0 rollback. Installed executable, app/update assemblies, helper and manifest hashes match the checked public package; ProductVersion is `0.6.1+5e2c9cdb42ba2018010d881caa91fc25bd4a097b`.
+
+Before launching the old version, settings and the three history databases were backed up locally with the app closed. Settings remained semantically identical after upgrade. Native inspection confirmed restored live graph traces and battery history with its original start time and an increasing observation count. The new Updates page showed an automatically completed startup check, matching installed/published 0.6.1 versions, Last operation: Updated to 0.6.1, and an enabled Roll back to 0.6.0 action. No additional Check action was used after restart. The app was left running on Battery history. Private backup/deployment evidence stays in ignored artifacts and `.superpowers/sdd/2026-10-27-tablet-update-0.6.1/`.
+
 ## Published startup update checks (0.6.1, 2026-10-27)
 
 [PR #5](https://github.com/DeadeyeDuncan/DeadWare/pull/5) merged into `main`, and tag `v0.6.1` points to `5e2c9cdb42ba2018010d881caa91fc25bd4a097b`, with the same tree as tested commit `c5cf201`. Both [main CI](https://github.com/DeadeyeDuncan/DeadWare/actions/runs/40544462325) and the [release workflow](https://github.com/DeadeyeDuncan/DeadWare/actions/runs/40544521264) succeeded. The release log confirms 262 passing tests (217 core, 45 Windows app). GitHub's latest-release endpoint returns [v0.6.1](https://github.com/DeadeyeDuncan/DeadWare/releases/tag/v0.6.1) as a normal published release.
 
 A native-free probe called the actual application's `UpdateService.CheckAtStartupAsync` twice against the public release with an installed-version fixture of 0.6.0. It detected 0.6.1, announced it exactly once, and created no install/cache/download files. A separate explicit download through `ReleaseClient` then verified the public ZIP's size, GitHub digest and checksum. SHA-256 is `a7c2c2e98430e8d308d2f12eaad9380e79254099a0586aa37e05246491712f7f`; size is 117,506,271 bytes. Production extraction validated all 575 managed files in 576 ZIP entries; no settings, databases, journals or restore cache are included. ProductVersion is `0.6.1+5e2c9cdb42ba2018010d881caa91fc25bd4a097b`.
 
-The installed tablet build remains 0.6.0 for the user to update when convenient; publication and these checks did not replace its files or launch another collector. Version 0.6.0 can find this release with Check for updates; after the user installs 0.6.1, subsequent launches check automatically. Evidence is under `.superpowers/sdd/2026-10-27-startup-updates/`, including `tag.json`, `public-check.log` and `published-check/verified.json`.
+At publication, the tablet was left on 0.6.0 for the user to choose installation time; the later authorized live upgrade is recorded above. Publication and package checks did not replace its files or launch another collector. Version 0.6.0 finds this release with Check for updates; 0.6.1 checks automatically on subsequent launches. Publication evidence is under `.superpowers/sdd/2026-10-27-startup-updates/`, including `tag.json`, `public-check.log` and `published-check/verified.json`.
 
 ## Startup update checks candidate (0.6.1, 2026-10-27)
 
