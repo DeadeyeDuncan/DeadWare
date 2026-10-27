@@ -27,35 +27,35 @@ Malformed versions/assets, archive traversal/collisions/size abuse, tampered rol
 
 Files: create `src/DeadWare.UpdateCore/{Releases,Packages}.cs` and its project; reference it from existing core tests; add `UpdatePolicyTests.cs` and `UpdatePackageTests.cs`.
 
-- [ ] Write tests for stable-only version/asset selection, latest older than installed, digest/checksum agreement, and bounded/path-safe manifest extraction.
-- [ ] Watch focused tests fail for missing behavior.
-- [ ] Implement fixed-repository latest release metadata and validated ZIP preparation, using manifest format 1 and version/hash checks.
-- [ ] Run focused tests and existing core suite; commit tested policy.
+- [x] Write tests for stable-only version/asset selection, latest older than installed, digest/checksum agreement, and bounded/path-safe manifest extraction.
+- [x] Watch focused tests fail for missing behavior.
+- [x] Implement fixed-repository latest release metadata and validated ZIP preparation, using manifest format 1 and version/hash checks.
+- [x] Run focused tests and existing core suite; commit tested policy.
 
 ### Task 2: Transaction/helper and handshake
 
 Files: create `src/DeadWare.UpdateCore/{Transactions,Handoff}.cs`, `src/DeadWare.Updater/{Program.cs,DeadWare.Updater.csproj}`; add transaction, rollback and handoff tests.
 
-- [ ] Write failing file-fixture tests for successful update/rollback, current/stage tampering, partial-copy recovery, outside-root/reparse rejection and prior backup validation.
-- [ ] Implement one verified previous snapshot, durable pending/result/rollback metadata, process identity validation, helper-ready handshake and startup acknowledgment. Copy only manifest files; preserve unrelated files and reject collisions with unmanaged target files.
-- [ ] Verify interrupted pending transactions restore before another operation, with no force termination. Commit passing transaction tests.
+- [x] Write failing file-fixture tests for successful update/rollback, current/stage tampering, partial-copy recovery, outside-root/reparse rejection and prior backup validation.
+- [x] Implement one verified previous snapshot, durable pending/result/rollback metadata, process identity validation, helper-ready handshake and startup acknowledgment. Copy only manifest files; preserve unrelated files and reject collisions with unmanaged target files.
+- [x] Verify interrupted pending transactions restore before another operation, with no force termination. Commit passing transaction tests.
 
 ### Task 3: WPF integration
 
 Files: create `src/DeadWare.App/{UpdateService,UpdatesPage}.cs`; modify `App.xaml.cs`, `UiSession.cs`, `Windows.cs`, app project and app tests.
 
-- [ ] Add failing service/UI tests for check/update/rollback state, cancellation, no normal release, and startup acknowledgment validation.
-- [ ] Add Updates navigation and manual controls; prepare off-thread, launch ready helper, then use normal Quit. Signal startup only after the normal session starts. Show recoverable last operation results.
-- [ ] Render actual controls in dark/light themes and verify existing battery/history/window shutdown behavior with the full suite. Commit integration.
+- [x] Add failing service/UI tests for check/update/rollback state, cancellation, no normal release, and startup acknowledgment validation.
+- [x] Add Updates navigation and manual controls; prepare off-thread, launch ready helper, then use normal Quit. Signal startup only after the normal session starts. Show recoverable last operation results.
+- [x] Render actual controls in dark/light themes and verify existing battery/history/window shutdown behavior with the full suite. Commit integration.
 
 ### Task 4: Package, validate, deliver
 
 Files: modify publish/release workflows, version metadata, README/changelog/validation and release notes.
 
-- [ ] Package the self-contained single-file helper and `deadware-package.json` listing all shipped file hashes; bump version to 0.6.0 and publish normal releases from version tags.
-- [ ] Run full tests/build/package; exercise the real helper's update, rollback and failed-start recovery in disposable directories with a standalone acknowledgment fixture, never the tablet's live histories.
-- [ ] Install the checked updater at the existing tablet path with the old version backed up. Verify native Updates UI and real stable-release check without downgrading the tablet.
-- [ ] Push all work, open/attach a stacked PR, verify CI, and document the one-time manual upgrade needed on other computers. Public publication remains a separate reviewed action.
+- [x] Package the self-contained single-file helper and `deadware-package.json` listing all shipped file hashes; bump version to 0.6.0 and publish normal releases from version tags.
+- [x] Run full tests/build/package; exercise the real helper's update, rollback and failed-start recovery in disposable directories with a standalone acknowledgment fixture, never the tablet's live histories.
+- [x] Install the checked updater at the existing tablet path with the old version backed up. Verify native Updates UI and real stable-release check without downgrading the tablet.
+- [x] Push all work, open/attach a stacked PR, verify CI, and document the one-time manual upgrade needed on other computers. Public publication remains a separate reviewed action.
 
 ## Inline self-review
 
