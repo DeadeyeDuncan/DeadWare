@@ -21,7 +21,7 @@ public sealed class MainWindow : Window
     private readonly Dictionary<string,FrameworkElement> pages=new();
     private readonly CheckBox startup=new() {Content="Start with Windows (administrator)",Margin=new Thickness(0,22,0,8)};
     private readonly TextBlock startupStatus=Ui.Text("Startup status is checked when this page opens.",12,"Muted"),startupResult=Ui.Text("",12,"Warning");
-    private Button startupRepair=null!,startupDisable=null!,startupRefresh=null!;
+    private Button startupRepair=null!,startupDisable=null!,startupRefresh=null!,batteryNavigation=null!,batteryWindow=null!;
     private string page="overview",gpuSignature="";
     private bool syncingGpu;
     private bool refreshingSensors;
@@ -39,8 +39,8 @@ public sealed class MainWindow : Window
         var quitButton=Ui.Button("Quit DeadWare",quit);quitButton.FontSize=11;sideBottom.Children.Add(quitButton);trayNotice.Margin=new Thickness(3,5,3,8);sideBottom.Children.Add(trayNotice);
         sideBottom.Children.Add(Ui.Text($"Local monitoring\n1 second samples · 6 h saved graphs\nv{BuildInfo.Version}",10,"Muted"));
         var nav=new StackPanel();sidebar.Children.Add(new ScrollViewer{Content=nav,VerticalScrollBarVisibility=ScrollBarVisibility.Auto,HorizontalScrollBarVisibility=ScrollBarVisibility.Disabled});
-        foreach(var item in new[]{("overview","▦  Overview"),("network","⇄  Network"),("cooling","◷  Cooling Health"),("battery","▤  Battery history"),("sensors","≡  Sensors"),("desktop","▱  Desktop layout"),("updates","↓  Updates")})
-        {var key=item.Item1;var button=Ui.Button(item.Item2,()=>Navigate(key));button.HorizontalContentAlignment=HorizontalAlignment.Left;button.Margin=new(0,3,0,3);button.Padding=new(10,13,10,13);nav.Children.Add(button);}
+        foreach(var item in new[]{("overview","▦  Overview"),("network","⇄  Network"),("cooling","◷  Cooling Health"),("battery","▤  Battery history"),("sensors","≡  Sensors"),("desktop","▱  Settings"),("updates","↓  Updates")})
+        {var key=item.Item1;var button=Ui.Button(item.Item2,()=>Navigate(key));button.HorizontalContentAlignment=HorizontalAlignment.Left;button.Margin=new(0,3,0,3);button.Padding=new(10,13,10,13);nav.Children.Add(button);if(key=="battery")batteryNavigation=button;}
         var main=new DockPanel {Margin=new Thickness(18,25,26,16)};Grid.SetColumn(main,1);shell.Children.Add(main);
         var footer=new StackPanel {Margin=new Thickness(4,10,4,0)};footer.Children.Add(status);DockPanel.SetDock(footer,Dock.Bottom);main.Children.Add(footer);
         var header=new StackPanel();DockPanel.SetDock(header,Dock.Top);main.Children.Add(header);
@@ -84,7 +84,7 @@ public sealed class MainWindow : Window
         var stack=new StackPanel {Margin=new Thickness(8)};
         stack.Children.Add(Ui.Text("Your readings, wherever you need them",20));var intro=Ui.Text("Open any graph in its own resizable native window. Choose Always on top to keep it visible while you work. All windows share the same readings, selected GPU, history range and theme.",14,"Muted");intro.Margin=new(0,12,0,24);stack.Children.Add(intro);
         foreach(var kind in new[]{"cpu","gpu","cputemp","gputemp","network"}){var key=kind;var button=Ui.Button("↗  "+Ui.Title(kind),()=>session.OpenDetached(key));button.HorizontalAlignment=HorizontalAlignment.Left;button.MinWidth=240;button.Margin=new(0,4,0,4);stack.Children.Add(button);}
-        var batteryWindow=Ui.Button("↗  Battery history",()=>session.OpenDetached("batteryhistory"));batteryWindow.HorizontalAlignment=HorizontalAlignment.Left;batteryWindow.MinWidth=240;batteryWindow.Margin=new(0,4,0,4);stack.Children.Add(batteryWindow);
+        batteryWindow=Ui.Button("↗  Battery history",()=>session.OpenDetached("batteryhistory"));batteryWindow.HorizontalAlignment=HorizontalAlignment.Left;batteryWindow.MinWidth=240;batteryWindow.Margin=new(0,4,0,4);stack.Children.Add(batteryWindow);
         var open=Ui.Button("↗  Compact desktop widget",()=>session.OpenDetached("widget"));open.HorizontalAlignment=HorizontalAlignment.Left;open.MinWidth=240;open.Margin=new(0,20,0,4);stack.Children.Add(open);
         var saved=Ui.Text("Positions, sizes and Always on top choices are saved as you work. Closing the dashboard hides it to the system tray while graphs and the widget keep monitoring. Choose Quit DeadWare to save the windows left open for next time and stop collection. Close an individual graph or widget to leave it closed next time.",12,"Muted");saved.Margin=new(0,20,0,0);stack.Children.Add(saved);
         var restore=new CheckBox {Content="Reopen graphs and widget from the previous session",IsChecked=session.Settings.RestoreOpenWindows,Margin=new Thickness(0,18,0,8)};
@@ -138,13 +138,16 @@ public sealed class MainWindow : Window
     {
         gpuControls.Visibility=destination=="overview"?Visibility.Visible:Visibility.Collapsed;
         liveToolbar.Visibility=destination is "cooling" or "battery" or "updates"?Visibility.Collapsed:Visibility.Visible;
-        page=destination;content.Content=pages[destination];heading.Text=destination switch {"network"=>"Your network, explained","cooling"=>"Cooling Health","battery"=>"Battery history","updates"=>"Keep DeadWare current","sensors"=>"Hardware sensors","desktop"=>"Make room for your work",_=>"System overview"};
-        subtitle.Text=destination switch {"network"=>"See which applications are sending and receiving data.","cooling"=>"Learn your usual temperatures. Notice sustained changes.","battery"=>"See charge fall and recover. Keep the history for years.","updates"=>"Update when you are ready. Keep the previous installation within reach.","sensors"=>"Current-session values and statistics over the selected range.","desktop"=>"A few useful numbers, wherever you need them.",_=>"The numbers you care about. Room to breathe."};Refresh();
+        page=destination;content.Content=pages[destination];heading.Text=destination switch {"network"=>"Your network, explained","cooling"=>"Cooling Health","battery"=>"Battery history","updates"=>"Keep DeadWare current","sensors"=>"Hardware sensors","desktop"=>"Settings",_=>"System overview"};
+        subtitle.Text=destination switch {"network"=>"See which applications are sending and receiving data.","cooling"=>"Learn your usual temperatures. Notice sustained changes.","battery"=>"See charge fall and recover. Keep the history for years.","updates"=>"Update when you are ready. Keep the previous installation within reach.","sensors"=>"Current-session values and statistics over the selected range.","desktop"=>"Manage windows, startup and monitoring options.",_=>"The numbers you care about. Room to breathe."};Refresh();
         if(destination=="desktop")_ = RefreshStartupAsync();
     }
     private void Refresh()
     {
-        var r=session.Current;if(r is null){status.Text="Discovering hardware and starting the shared collector…\n"+session.GraphHistory.Status;return;}
+        var r=session.Current;bool noBattery=r?.Battery.PowerState==BatteryPowerState.NoBattery;
+        batteryNavigation.Visibility=batteryWindow.Visibility=noBattery?Visibility.Collapsed:Visibility.Visible;
+        if(noBattery&&page=="battery"){Navigate("overview");return;}
+        if(r is null){status.Text="Discovering hardware and starting the shared collector…\n"+session.GraphHistory.Status;return;}
         var signature=string.Join('|',r.Gpus.Select(d=>d.Id+":"+d.Name));
         if(signature!=gpuSignature)
         {

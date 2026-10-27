@@ -174,6 +174,61 @@ public class BatteryUiTests
                         using var file=File.Create(Path.Combine(output,$"updates-{theme}.png"));var encoder=new PngBitmapEncoder();encoder.Frames.Add(BitmapFrame.Create(bitmap));encoder.Save(file);
                     }
                 }
+                // Exercise the actual dashboard with an unstarted session: no hardware,
+                // database writes, native window or installed settings are involved.
+                Set(session, "captureWindows", new Dictionary<Window, Action>());
+                Set(session, "layout", new DetachedWindowState([]));
+                Set(session, "<GraphHistory>k__BackingField", new GraphHistoryService(Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".db"), "fixture", new SampleHistory()));
+                Set(session, "<SettingsStatus>k__BackingField", "");
+                Set(collector, "<History>k__BackingField", new SampleHistory());
+                Set(collector, "latest", null!);
+                var lifetime = new ApplicationLifetime();
+                var dashboard = new MainWindow(session, lifetime, () => true, () => { });
+                var shell = (Grid)dashboard.Content;
+                var sidebar = (DockPanel)shell.Children[0];
+                var navigation = (StackPanel)sidebar.Children.OfType<ScrollViewer>().Single().Content;
+                var batteryNavigation = navigation.Children.OfType<Button>().Single(b => b.Content?.ToString()?.Contains("Battery history") == true);
+                var pages = (Dictionary<string, FrameworkElement>)typeof(MainWindow).GetField("pages", All)!.GetValue(dashboard)!;
+                var settings = (StackPanel)((ScrollViewer)pages["desktop"]).Content;
+                var batteryWindow = settings.Children.OfType<Button>().Single(b => b.Content?.ToString()?.Contains("Battery history") == true);
+                void RefreshDashboard() => ((Action)typeof(UiSession).GetField("Changed", All)!.GetValue(session)!).Invoke();
+                void Navigate(string destination) => typeof(MainWindow).GetMethod("Navigate", All)!.Invoke(dashboard, [destination]);
+                void AssertBatteryVisibility(Visibility expected)
+                {
+                    Assert.Equal(expected, batteryNavigation.Visibility);
+                    Assert.Equal(expected, batteryWindow.Visibility);
+                }
+                AssertBatteryVisibility(Visibility.Visible);
+                Set(collector, "latest", current with { Battery = new(null, BatteryPowerState.NoBattery, null) });
+                RefreshDashboard(); AssertBatteryVisibility(Visibility.Collapsed);
+                Set(collector, "latest", current with { Battery = BatteryReading.Unavailable });
+                RefreshDashboard(); AssertBatteryVisibility(Visibility.Visible);
+                foreach (var power in new[] { BatteryPowerState.OnBattery, BatteryPowerState.Charging, BatteryPowerState.PluggedIn })
+                {
+                    Set(collector, "latest", current with { Battery = new(73, power, false) });
+                    RefreshDashboard(); AssertBatteryVisibility(Visibility.Visible);
+                }
+                Navigate("battery");
+                Assert.Same(pages["battery"], ((ContentControl)typeof(MainWindow).GetField("content", All)!.GetValue(dashboard)!).Content);
+                Set(collector, "latest", current with { Battery = new(null, BatteryPowerState.NoBattery, null) });
+                RefreshDashboard(); AssertBatteryVisibility(Visibility.Collapsed);
+                Assert.Same(pages["overview"], ((ContentControl)typeof(MainWindow).GetField("content", All)!.GetValue(dashboard)!).Content);
+                // Suppress the startup-status query while rendering the real Settings page.
+                Set(dashboard, "startupBusy", true); Navigate("desktop");
+                string? dashboardOutput = Environment.GetEnvironmentVariable("DEADWARE_UI_OUTPUT");
+                if (dashboardOutput is not null)
+                {
+                    foreach (string theme in new[] { "Midnight", "Daylight" })
+                    {
+                        assembly.GetType("DeadWare.App.Theme")!.GetMethod("Apply", All)!.Invoke(null, [theme]);
+                        shell.SetResourceReference(Panel.BackgroundProperty, "Background");
+                        shell.Measure(new Size(1220, 900)); shell.Arrange(new Rect(0, 0, 1220, 900)); shell.UpdateLayout();
+                        var bitmap = new RenderTargetBitmap(1220, 900, 96, 96, PixelFormats.Pbgra32); bitmap.Render(shell);
+                        using var file = File.Create(Path.Combine(dashboardOutput, $"desktop-settings-{theme}.png"));
+                        var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap)); encoder.Save(file);
+                    }
+                }
+                lifetime.BeginSessionEnding(); dashboard.Close();
                 app.Shutdown();
             }
             catch (Exception error) { failure = error; }

@@ -1,5 +1,13 @@
 # Release validation
 
+## Desktop-aware navigation candidate (0.6.2, 2026-10-27)
+
+Work was performed on `Dev` in an isolated worktree, preserving the pre-existing uncommitted graph-styling change in the primary checkout. All 262 automated tests passed (217 core/update and 45 Windows app), including the extended real-dashboard fixture. The battery regression first failed with expected Collapsed versus actual Visible, then passed after the visibility correction. Independent review found no actionable defects or release blockers; `git diff --check` passed.
+
+The existing single-Application offscreen WPF fixture exercises the actual session-change refresh with no reading, explicit NoBattery, unknown status, and on-battery/charging/plugged-in states. Both battery entry points collapse only for NoBattery and return for other states; an open Battery history page returns to Overview after battery removal. Midnight and Daylight dashboard renders confirm the Settings label/title and absence of battery controls for a desktop. The fixture uses an unstarted isolated session without native windows, hardware collection or user-settings writes.
+
+A separate read-only Windows power-status query on Mothership succeeded with battery flags 128 (no battery). This establishes the host's reported state; battery hardware insertion/removal is covered by fixtures rather than a physical laptop test. The running installed 0.6.1 app was left untouched so the user can test the published update through its updater. Recording, history storage and restored detached windows were not changed.
+
 ## Tablet in-app upgrade (0.6.0 to 0.6.1, 2026-10-27)
 
 After the user's explicit installation request, native Computer Use operated the installed 0.6.0 Updates page: Check for updates found the normal 0.6.1 release, then Update & restart downloaded/verified it, performed normal Quit and reopened the app at its existing path. The real helper recorded success, cleared pending recovery and retained a verified 0.6.0 rollback. Installed executable, app/update assemblies, helper and manifest hashes match the checked public package; ProductVersion is `0.6.1+5e2c9cdb42ba2018010d881caa91fc25bd4a097b`.
