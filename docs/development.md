@@ -10,14 +10,14 @@ git fetch origin
 git branch -vv
 ```
 
-The battery-history and updater pull requests are merged. Continue their completed work from `main` on each computer:
+Use `Dev` for active development on each computer. Published changes are integrated into `main` through a pull request:
 
 ```powershell
-git switch main
+git switch Dev
 git pull --ff-only
 ```
 
-Fresh clones start on `main`. For future work that is still in a pull request, continue its feature branch instead. Update `main` before beginning another branch. If Git reports uncommitted changes or divergent history, preserve/commit the local work and reconcile it explicitly. Avoid overwriting or force-pushing a computer's changes.
+Fresh clones start on `main`; fetch before switching to `Dev`. For work that is still in a separate pull request, continue its feature branch instead. Update the target branch before beginning new work. If Git reports uncommitted changes or divergent history, preserve/commit the local work and reconcile it explicitly. Avoid overwriting or force-pushing a computer's changes.
 
 Before moving to a different computer, commit the work to its feature branch and push it. Check that GitHub shows the latest commit; local commits alone do not transfer. Push useful checkpoints during longer tasks. Use a pull request to record the intended behavior, tests and remaining work.
 
@@ -32,6 +32,6 @@ Build/test with the .NET 10 SDK, then package with `pwsh -File scripts/publish.p
 
 Source pushes preserve development progress; they do not themselves create a user-facing update. A normal version tag such as `v0.6.0` publishes the matching release and makes it visible to installed updaters. Include the helper and generated package manifest whenever distributing a build.
 
-For another computer running 0.5.x or earlier, download the complete Windows x64 ZIP from [v0.6.1](https://github.com/DeadeyeDuncan/DeadWare/releases/tag/v0.6.1), choose **Quit DeadWare**, then extract/copy the entire `DeadWare` folder's contents into its existing app folder. Keep the existing executable path and include `DeadWare.Updater.exe` and `deadware-package.json`. Start DeadWare again. This one-time manual upgrade adds **Updates**. Version 0.6.0 can already install 0.6.1 through **Check for updates** and **Update & restart**. Version 0.6.1 checks at each launch and notifies about newer normal releases; download and installation still require **Update & restart**. Current settings and local histories remain in the Windows profile.
+For another computer running 0.5.x or earlier, download the complete Windows x64 ZIP from [v0.6.2](https://github.com/DeadeyeDuncan/DeadWare/releases/tag/v0.6.2), choose **Quit DeadWare**, then extract/copy the entire `DeadWare` folder's contents into its existing app folder. Keep the existing executable path and include `DeadWare.Updater.exe` and `deadware-package.json`. Start DeadWare again. This one-time manual upgrade adds **Updates**. Version 0.6.0 or later can install 0.6.2 through **Check for updates** and **Update & restart**. Version 0.6.1 or later checks at each launch and notifies about newer normal releases; download and installation still require **Update & restart**. Current settings and local histories remain in the Windows profile.
 
 Settings, battery history, Cooling Health history and live graph caches are local device data under `%LOCALAPPDATA%\DeadWare`. They do not belong in Git. Back up database files with DeadWare fully quit; do not cloud-sync an open SQLite database. Each computer starts its own battery history when the new version runs.

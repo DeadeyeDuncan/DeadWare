@@ -50,7 +50,7 @@ New tagged versions are published as normal GitHub releases with ZIP/checksum as
 
 ## Startup and saved workspace
 
-In **Desktop layout**, enable **Start with Windows** to launch DeadWare as administrator when you sign in. Windows approval is needed to configure this option. It creates a task for your Windows account, runs only in your signed-in session, and stores no password. You can turn it off from the same page. Only one monitoring instance runs at a time.
+In **Settings**, enable **Start with Windows** to launch DeadWare as administrator when you sign in. Windows approval is needed to configure this option. It creates a task for your Windows account, runs only in your signed-in session, and stores no password. You can turn it off from the same page. Only one monitoring instance runs at a time.
 
 For a quiet sign-in, also enable **Start in the system tray**. This hides the dashboard only for Windows startup launches. Remembered graphs and the widget still reopen when restoration is enabled; turn restoration off too if you want only the tray icon. A fresh manual launch still shows the dashboard. If the tray icon cannot be created, the dashboard stays accessible.
 
@@ -76,7 +76,7 @@ This first release is **not complete HWiNFO sensor parity**. A successful launch
 
 ## Battery history
 
-Open **Battery history** in the sidebar to see how charge drops and recovers, along with current charging status. The charge line shows Windows battery-saver periods: the normal solid line means saver off, dashed amber means saver on, and dotted gray means unknown state. A legend identifies each style. Choose **Open in window** for a separate resizable window; its position, size and Always on top choice are remembered. The Day/Week/Month/Year/All history selector is independent of the live graph range. Desktop layout can also open the battery window.
+Open **Battery history** in the sidebar to see how charge drops and recovers, along with current charging status. The charge line shows Windows battery-saver periods: the normal solid line means saver off, dashed amber means saver on, and dotted gray means unknown state. A legend identifies each style. Choose **Open in window** for a separate resizable window; its position, size and Always on top choice are remembered. The Day/Week/Month/Year/All history selector is independent of the live graph range. **Settings** can also open the battery window. When Windows reports no battery, both entry points hide automatically; they return if a battery is detected or its status is unknown. Saved battery history is kept.
 
 DeadWare records the system battery total once per minute plus observed charging/power and battery-saver state changes. Recording starts automatically on a battery-equipped device and can be paused without deleting saved history. Windows supplies these readings without administrator access. Unknown readings stay unavailable; a desktop with no battery says so. Multiple physical batteries appear as the combined system charge.
 
@@ -123,7 +123,7 @@ dotnet run --project src/DeadWare.App/DeadWare.App.csproj
 Create a self-contained portable ZIP and SHA-256 checksum:
 
 ```powershell
-pwsh -File scripts/publish.ps1 -Version 0.6.1
+pwsh -File scripts/publish.ps1 -Version 0.6.2
 ```
 
 The packaging script runs tests before publishing, bundles the independent self-contained update helper, and records all managed file hashes in `deadware-package.json`. Output goes under `artifacts/`. GitHub Actions runs the same script. Pushing a normal three-part version tag such as `v0.6.0` builds and publishes a normal release after tests pass, using the matching `docs/releases/v0.6.0.md` notes. Workflows use pinned action commits.

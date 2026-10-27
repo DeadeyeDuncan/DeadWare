@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.2 — Desktop-aware navigation
+
+- Hide Battery history in the sidebar and its Settings window button when Windows reports no battery; restore them when a battery is detected or its status is unknown.
+- Return to Overview if the open Battery history page becomes unavailable, while retaining saved history and existing detached windows.
+- Rename Desktop layout to Settings.
+
 ## 0.6.1 — Startup update notices
 
 - Check for the latest normal GitHub release once per app launch, after monitoring starts.
