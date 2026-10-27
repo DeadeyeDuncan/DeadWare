@@ -228,6 +228,7 @@ public class BatteryUiTests
                         var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap)); encoder.Save(file);
                     }
                 }
+                VerifyUpdateNotice(dashboard, updateService, pages, navigation, shell);
                 lifetime.BeginSessionEnding(); dashboard.Close();
                 VerifyWidget(session, collector, current, assembly);
                 app.Shutdown();
@@ -237,6 +238,43 @@ public class BatteryUiTests
         thread.SetApartmentState(ApartmentState.STA); thread.Start();
         Assert.True(thread.Join(TimeSpan.FromSeconds(30)), "Offscreen rendering timed out.");
         if (failure is not null) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(failure).Throw();
+    }
+
+    private static void VerifyUpdateNotice(MainWindow dashboard, UpdateService updates, Dictionary<string, FrameworkElement> pages, StackPanel navigation, Grid shell)
+    {
+        var notice = (Border)typeof(MainWindow).GetField("updateNotice", All)!.GetValue(dashboard)!;
+        var content = (ContentControl)typeof(MainWindow).GetField("content", All)!.GetValue(dashboard)!;
+        var available = new DeadWare.UpdateCore.ReleaseInfo(new Version(0, 7, 0), "v0.7.0", "Fixture", new Uri("https://example.invalid/update.zip"), new Uri("https://example.invalid/checksum"), new string('a', 64), 100);
+        void Navigate(string destination) => typeof(MainWindow).GetMethod("Navigate", All)!.Invoke(dashboard, [destination]);
+        void State(UpdateState state)
+        {
+            typeof(UpdateService).GetField("state", All)!.SetValue(updates, state);
+            ((Action)typeof(UpdateService).GetField("Changed", All)!.GetValue(updates)!).Invoke();
+        }
+        void Capture(string name)
+        {
+            string? output = Environment.GetEnvironmentVariable("DEADWARE_UI_OUTPUT"); if (output is null) return;
+            shell.SetResourceReference(Panel.BackgroundProperty, "Background");
+            shell.Measure(new Size(1220, 900)); shell.Arrange(new Rect(0, 0, 1220, 900)); shell.UpdateLayout();
+            var bitmap = new RenderTargetBitmap(1220, 900, 96, 96, PixelFormats.Pbgra32); bitmap.Render(shell);
+            using var file = File.Create(Path.Combine(output, name + ".png"));
+            var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap)); encoder.Save(file);
+        }
+        Navigate("overview"); State(new UpdateState("0.6.0") { Release = available });
+        Assert.Equal(Visibility.Visible, notice.Visibility); Capture("update-notice-overview");
+        ((Grid)notice.Child).Children.OfType<Button>().Single().RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        Assert.Same(pages["updates"], content.Content); Assert.Equal(Visibility.Collapsed, notice.Visibility);
+        Capture("update-notice-updates");
+        State(updates.State with { Busy = true }); Assert.Equal(Visibility.Collapsed, notice.Visibility);
+        Task.Run(() => updates.ReportFailure(new IOException("Fixture status change"))).GetAwaiter().GetResult();
+        dashboard.Dispatcher.Invoke(() => { }, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+        Assert.Equal(Visibility.Collapsed, notice.Visibility);
+        Navigate("overview"); Assert.Equal(Visibility.Visible, notice.Visibility);
+        navigation.Children.OfType<Button>().Single(button => button.Content?.ToString()?.Contains("Updates") == true).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        Assert.Same(pages["updates"], content.Content); Assert.Equal(Visibility.Collapsed, notice.Visibility);
+        State(new UpdateState("0.6.0")); Assert.Equal(Visibility.Collapsed, notice.Visibility);
+        Navigate("overview"); Assert.Equal(Visibility.Collapsed, notice.Visibility);
+        Navigate("updates"); Assert.Equal(Visibility.Collapsed, notice.Visibility);
     }
 
     private static void VerifyWidget(UiSession session, Collector collector, Reading current, Assembly assembly)
