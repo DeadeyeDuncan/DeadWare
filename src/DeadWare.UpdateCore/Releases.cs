@@ -15,6 +15,7 @@ public static partial class ReleasePolicy
     public const long MaximumDownloadBytes = 256L * 1024 * 1024;
     public static Version VersionOf(string text)
     {
+        if(string.IsNullOrWhiteSpace(text))throw new InvalidDataException("A normal three-part version is required.");
         string value = text.Split('+')[0];
         if (!VersionPattern().IsMatch(value) || !Version.TryParse(value, out var version))
             throw new InvalidDataException("A normal three-part version is required.");

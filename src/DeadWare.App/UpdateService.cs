@@ -14,11 +14,12 @@ public sealed record UpdateState(string InstalledVersion)
     public ReleaseInfo? Release {get;init;}
     public BackupRecord? Previous {get;init;}
     public bool InstallationVerified {get;init;}
+    public bool NeedsRecovery {get;init;}
     public bool Busy {get;init;}
     public bool CanCancel {get;init;}
     public int Progress {get;init;}
     public DateTimeOffset? LastChecked {get;init;}
-    public bool CanUpdate=>!Busy&&InstallationVerified&&Release is not null&&ReleasePolicy.IsNewer(Release,InstalledVersion);
+    public bool CanUpdate=>!Busy&&!NeedsRecovery&&InstallationVerified&&Release is not null&&ReleasePolicy.IsNewer(Release,InstalledVersion);
     public bool CanRollback=>!Busy&&InstallationVerified&&Previous is not null;
 }
 
@@ -51,13 +52,15 @@ public sealed class UpdateService
             var result=await Task.Run(()=>
             {
                 UpdateCache.CleanupCompletedJobs(paths);
-                if(!File.Exists(paths.PendingFile))Packages.ValidateDirectory(paths.Install,ReleasePolicy.VersionOf(State.InstalledVersion).ToString());
+                bool pending=File.Exists(paths.PendingFile);
+                if(!pending)Packages.ValidateDirectory(paths.Install,ReleasePolicy.VersionOf(State.InstalledVersion).ToString());
                 var previous=new InstallTransaction(paths).Previous();
                 var last=File.Exists(paths.ResultFile)?SafeFiles.ReadJson<UpdateResult>(paths.ResultFile):null;
-                return(previous,last);
+                return(previous,last,pending);
             });
-            Publish(s=>s with {InstallationVerified=true,Previous=result.previous,
-                LocalStatus=result.previous is null?"No earlier packaged installation is available for rollback yet.":$"Rollback available: {result.previous.Version}.",LastOperation=result.last?.Message??""});
+            Publish(s=>s with {InstallationVerified=true,Previous=result.previous,NeedsRecovery=result.pending,
+                LocalStatus=result.pending?result.previous is null?"An unfinished update requires repair using a complete package.":"An unfinished update needs recovery. Use Roll back & restart before installing another update.":
+                    result.previous is null?"No earlier packaged installation is available for rollback yet.":$"Rollback available: {result.previous.Version}.",LastOperation=result.last?.Message??""});
         }
         catch(Exception error) when(error is IOException or UnauthorizedAccessException or ArgumentException)
         {Publish(s=>s with {InstallationVerified=false,Previous=null,LocalStatus="Install the complete updater-enabled package before updating from this folder. "+error.Message});}
@@ -84,6 +87,7 @@ public sealed class UpdateService
         try
         {
             string currentVersion=ReleasePolicy.VersionOf(State.InstalledVersion).ToString();
+            if(!rollback&&File.Exists(paths.PendingFile))throw new InvalidOperationException("Recover the unfinished update with Roll back & restart first.");
             if(!File.Exists(paths.PendingFile))await Task.Run(()=>Packages.ValidateDirectory(paths.Install,currentVersion),token);
             string id=Guid.NewGuid().ToString("N");jobDirectory=paths.JobDirectory(id);Directory.CreateDirectory(jobDirectory);
             string stage=SafeFiles.Child(jobDirectory,"package"),target;

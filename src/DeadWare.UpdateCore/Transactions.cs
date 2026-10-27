@@ -99,11 +99,17 @@ public sealed class InstallTransaction(UpdatePaths paths)
             File.Delete(file);
         }
         CopySnapshot(backup,paths.Install,old);Packages.ValidateDirectory(paths.Install,pending.Previous.Version);File.Delete(paths.PendingFile);
+        try
+        {
+            var referenced=File.Exists(paths.RollbackFile)?SafeFiles.ReadJson<BackupRecord>(paths.RollbackFile):null;
+            if(referenced is null||!string.Equals(referenced.Id,pending.Previous.Id,StringComparison.OrdinalIgnoreCase))DeleteOwnedBackup(pending.Previous.Id);
+        }
+        catch(IOException){}catch(UnauthorizedAccessException){}
     }
     private PendingInstall Pending()
     {
         var pending=SafeFiles.ReadJson<PendingInstall>(paths.PendingFile);
-        if(!Path.GetFullPath(pending.Install).Equals(paths.Install,StringComparison.OrdinalIgnoreCase)||pending.TargetFiles is null||pending.TargetFiles.Count>2048)
+        if(pending.Previous is null||!Path.GetFullPath(pending.Install).Equals(paths.Install,StringComparison.OrdinalIgnoreCase)||pending.TargetFiles is null||pending.TargetFiles.Count>2048)
             throw new InvalidDataException("Invalid interrupted-update journal.");
         ReleasePolicy.VersionOf(pending.TargetVersion);
         foreach(var file in pending.TargetFiles){SafeFiles.RelativeName(file.Key);if(!ReleasePolicy.HashPattern().IsMatch(file.Value))throw new InvalidDataException("Invalid journal hash.");}
@@ -111,8 +117,10 @@ public sealed class InstallTransaction(UpdatePaths paths)
     }
     private void ValidateBackup(BackupRecord record)
     {
+        if(record is null)throw new InvalidDataException("Missing rollback metadata.");
+        ReleasePolicy.VersionOf(record.Version);
         string backup=paths.BackupDirectory(record.Id);
-        if(!ReleasePolicy.HashPattern().IsMatch(record.ManifestHash)||!Packages.Hash(SafeFiles.Child(backup,Packages.ManifestName)).Equals(record.ManifestHash,StringComparison.OrdinalIgnoreCase))
+        if(string.IsNullOrWhiteSpace(record.ManifestHash)||!ReleasePolicy.HashPattern().IsMatch(record.ManifestHash)||!Packages.Hash(SafeFiles.Child(backup,Packages.ManifestName)).Equals(record.ManifestHash,StringComparison.OrdinalIgnoreCase))
             throw new InvalidDataException("Rollback verification failed.");
         Packages.ValidateDirectory(backup,record.Version);
     }

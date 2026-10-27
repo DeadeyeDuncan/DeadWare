@@ -5,6 +5,14 @@ namespace DeadWare.Tests;
 
 public class UpdateTransactionTests
 {
+    [Fact] public void Corrupt_recovery_metadata_is_reported_without_a_null_reference_failure()
+    {
+        using var fixture=new UpdateFixture();string installed=fixture.Package("app","0.6.0","old"),stage=fixture.Package("stage","0.6.1","new");
+        var paths=new UpdatePaths(installed,Path.Combine(fixture.Root,"cache"));var transaction=new InstallTransaction(paths);
+        transaction.Apply(stage,"0.6.0","0.6.1");var pending=SafeFiles.ReadJson<PendingInstall>(paths.PendingFile);
+        SafeFiles.WriteJson(paths.PendingFile,pending with {Previous=null!});
+        Assert.Throws<InvalidDataException>(()=>transaction.Previous());
+    }
     [Fact] public void Update_then_explicit_rollback_preserves_unmanaged_files_and_outside_history()
     {
         using var fixture=new UpdateFixture(); string installed=fixture.Package("app","0.6.0","old app");
@@ -35,6 +43,7 @@ public class UpdateTransactionTests
         }
         Assert.Equal("old app",File.ReadAllText(Path.Combine(installed,"DeadWare.exe")));
         Assert.False(File.Exists(paths.PendingFile)); Packages.ValidateDirectory(installed,"0.6.0");
+        Assert.Empty(Directory.GetDirectories(Path.Combine(paths.Root,"previous")));
     }
     [Fact] public void Pending_transaction_can_be_recovered_after_an_interruption()
     {

@@ -11,14 +11,14 @@ public static class UpdateHandoff
     public static string JobFile(UpdatePaths paths,string id,string name)=>SafeFiles.Child(paths.JobDirectory(id),name);
     public static void RequireIdentity(ProcessIdentity expected,ProcessIdentity actual)
     {
-        if(expected.Pid<=0||expected.Pid!=actual.Pid||expected.StartTicks!=actual.StartTicks||expected.SessionId!=actual.SessionId||
+        if(expected is null||actual is null||expected.Pid<=0||expected.Pid!=actual.Pid||expected.StartTicks!=actual.StartTicks||expected.SessionId!=actual.SessionId||
             expected.UserSid!=actual.UserSid||!Path.GetFullPath(expected.Executable).Equals(Path.GetFullPath(actual.Executable),StringComparison.OrdinalIgnoreCase))
             throw new InvalidDataException("The update process identity no longer matches.");
     }
     public static void ValidateJob(UpdatePaths paths,UpdateJob job)
     {
         UpdatePaths.Id(job.Id);
-        if(job.Key!=paths.Key||!Path.GetFullPath(job.InstallDirectory).Equals(paths.Install,StringComparison.OrdinalIgnoreCase)||
+        if(job.Parent is null||job.Key!=paths.Key||!Path.GetFullPath(job.InstallDirectory).Equals(paths.Install,StringComparison.OrdinalIgnoreCase)||
             !Path.GetFullPath(job.StageDirectory).Equals(SafeFiles.Child(paths.JobDirectory(job.Id),"package"),StringComparison.OrdinalIgnoreCase)||
             !Path.GetFullPath(job.Parent.Executable).Equals(SafeFiles.Child(paths.Install,"DeadWare.exe"),StringComparison.OrdinalIgnoreCase)||
             job.Parent.Pid<=0||string.IsNullOrWhiteSpace(job.Parent.UserSid)||job.Created<DateTimeOffset.UtcNow.AddDays(-1)||job.Created>DateTimeOffset.UtcNow.AddMinutes(5)||

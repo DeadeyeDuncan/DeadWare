@@ -10,6 +10,25 @@ namespace DeadWare.App.Tests;
 
 public class UpdateServiceTests
 {
+    [Fact] public async Task An_unfinished_install_offers_recovery_instead_of_another_update()
+    {
+        string root=Path.Combine(Path.GetTempPath(),"DeadWare-pending-"+Guid.NewGuid().ToString("N"));
+        try
+        {
+            string Package(string name,string version)
+            {
+                string folder=Path.Combine(root,name);Directory.CreateDirectory(folder);
+                foreach(string file in new[]{"DeadWare.exe","DeadWare.dll","DeadWare.Updater.exe"})File.WriteAllText(Path.Combine(folder,file),version+file);
+                SafeFiles.WriteJson(Path.Combine(folder,Packages.ManifestName),new PackageManifest(1,version,Directory.GetFiles(folder).ToDictionary(f=>Path.GetFileName(f)!,Packages.Hash)));return folder;
+            }
+            string installed=Package("app","0.6.0"),stage=Package("stage","0.6.1"),cache=Path.Combine(root,"cache");
+            new InstallTransaction(new UpdatePaths(installed,cache)).Apply(stage,"0.6.0","0.6.1");
+            using var http=new HttpClient(new Handler{Content=Release().Replace("0.6.1","0.6.2")});
+            var service=new UpdateService("0.6.1",installed,http,cache);await service.ReadLocalAsync();await service.CheckAsync(CancellationToken.None);
+            Assert.True(service.State.CanRollback);Assert.False(service.State.CanUpdate);Assert.Contains("unfinished",service.State.LocalStatus);
+        }
+        finally{if(Directory.Exists(root))Directory.Delete(root,true);}
+    }
     [Fact] public async Task Opening_update_view_does_not_check_online_and_missing_package_disables_install()
     {
         var handler=new Handler();using var http=new HttpClient(handler);
