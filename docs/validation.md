@@ -1,5 +1,13 @@
 # Release validation
 
+## Published startup update checks (0.6.1, 2026-10-27)
+
+[PR #5](https://github.com/DeadeyeDuncan/DeadWare/pull/5) merged into `main`, and tag `v0.6.1` points to `5e2c9cdb42ba2018010d881caa91fc25bd4a097b`, with the same tree as tested commit `c5cf201`. Both [main CI](https://github.com/DeadeyeDuncan/DeadWare/actions/runs/40544462325) and the [release workflow](https://github.com/DeadeyeDuncan/DeadWare/actions/runs/40544521264) succeeded. The release log confirms 262 passing tests (217 core, 45 Windows app). GitHub's latest-release endpoint returns [v0.6.1](https://github.com/DeadeyeDuncan/DeadWare/releases/tag/v0.6.1) as a normal published release.
+
+A native-free probe called the actual application's `UpdateService.CheckAtStartupAsync` twice against the public release with an installed-version fixture of 0.6.0. It detected 0.6.1, announced it exactly once, and created no install/cache/download files. A separate explicit download through `ReleaseClient` then verified the public ZIP's size, GitHub digest and checksum. SHA-256 is `a7c2c2e98430e8d308d2f12eaad9380e79254099a0586aa37e05246491712f7f`; size is 117,506,271 bytes. Production extraction validated all 575 managed files in 576 ZIP entries; no settings, databases, journals or restore cache are included. ProductVersion is `0.6.1+5e2c9cdb42ba2018010d881caa91fc25bd4a097b`.
+
+The installed tablet build remains 0.6.0 for the user to update when convenient; publication and these checks did not replace its files or launch another collector. Version 0.6.0 can find this release with Check for updates; after the user installs 0.6.1, subsequent launches check automatically. Evidence is under `.superpowers/sdd/2026-10-27-startup-updates/`, including `tag.json`, `public-check.log` and `published-check/verified.json`.
+
 ## Startup update checks candidate (0.6.1, 2026-10-27)
 
 All **262 tests passed** (217 core, 45 Windows app). New regressions first failed for the missing startup-check/notification behavior and notice control, then passed with the implementation. Coverage verifies one metadata request per launch, each newer normal version announced at most once per process, manual rechecks, current/older/preview exclusion, missing/rate-limited/unavailable responses, asynchronous cancellation on shutdown and no created download/staging/install files during a startup check. Existing verification, rollback, battery and history tests remain green.
