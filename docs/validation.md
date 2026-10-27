@@ -1,10 +1,14 @@
 # Release validation
 
-## Update banner navigation candidate (0.6.4, 2026-10-27)
+## Update banner navigation (0.6.4, 2026-10-27)
 
 The dashboard now collapses the update-available banner while Updates is active and reevaluates it when navigating elsewhere. The page check runs on the UI dispatcher alongside the latest release state, so a queued background refresh cannot make the banner reappear on Updates. Update checks, installation and tray notifications retain their existing behavior.
 
 All 262 automated tests passed (217 core/update, 45 Windows app). The real-dashboard regression first failed because Review update navigated successfully but left the banner Visible instead of Collapsed, then passed after the narrow MainWindow fix. Coverage includes Review update and sidebar navigation, service-state changes on Updates, a queued dispatcher refresh, restoration when leaving with a newer release, and no-release states on both pages. The targeted rendering suite passed 2/2; independent review found no actionable issues and whitespace checks passed. Offscreen Overview/Updates captures under ignored `artifacts/ui-update-notice/` confirm the layout with synthetic release data, without native windows, live collection or user-settings writes. The installed package reported 0.6.3 before publication; live installation remains for the user's updater test.
+
+[PR #8](https://github.com/DeadeyeDuncan/DeadWare/pull/8) merged Dev into main. Tag `v0.6.4` points to `c976c3c8d3d2b8000ead9651c5de2da1e1b08974`, with the same tree as tested Dev commit `1d7d472`. The [Dev build](https://github.com/DeadeyeDuncan/DeadWare/actions/runs/40598724258), [PR build](https://github.com/DeadeyeDuncan/DeadWare/actions/runs/40598731787), [main build](https://github.com/DeadeyeDuncan/DeadWare/actions/runs/40598998824) and [release workflow](https://github.com/DeadeyeDuncan/DeadWare/actions/runs/40599017341) all passed.
+
+The production `ReleaseClient` fetched latest normal [v0.6.4](https://github.com/DeadeyeDuncan/DeadWare/releases/tag/v0.6.4), confirmed it is newer than 0.6.3, and verified the public download/checksum/digest. The ZIP is 117,507,859 bytes, SHA-256 `274a73c1f0d18a6198118e1a789636d340be49db31be7261280b09665039bf84`. Production extraction verified 575 managed files in 576 ZIP entries, with no local settings, databases, journals or restore cache included. ProductVersion is `0.6.4+c976c3c8d3d2b8000ead9651c5de2da1e1b08974`; evidence is under ignored `artifacts/public-release-v0.6.4/verified.json`. No live install, rollback or restart was performed by this task. Read-only installation snapshots differed: 0.6.3 before publication, 0.6.2 afterward, so this gate does not claim an unchanged installed package or establish the cause of that difference.
 
 ## Widget graphs (0.6.3, 2026-10-27)
 
