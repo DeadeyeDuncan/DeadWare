@@ -222,20 +222,22 @@ internal sealed class GraphWindow : Window
 internal sealed class WidgetWindow : Window
 {
     private readonly UiSession session;
-    private readonly TextBlock cpu=Ui.Text("—",22,"Cpu"),gpu=Ui.Text("—",22,"Gpu"),memory=Ui.Text("—",12,"Muted"),network=Ui.Text("—",13),status=Ui.Text("",10,"Muted");
+    private readonly WidgetGraph cpu,gpu;
+    private readonly TextBlock memory=Ui.Text("—",12,"Muted"),network=Ui.Text("—",12),status=Ui.Text("",10,"Muted");
     public WidgetWindow(UiSession session)
     {
         this.session=session;Title="DeadWare · Quick glance";MinWidth=300;MinHeight=320;Ui.Icon(this);Topmost=true;session.Place(this,"widget",340,390);
-        var stack=new StackPanel {Margin=new Thickness(18)};var pin=new CheckBox {Content="Always on top",IsChecked=Topmost};pin.Checked+=(_,_)=>Topmost=true;pin.Unchecked+=(_,_)=>Topmost=false;stack.Children.Add(pin);
-        stack.Children.Add(Ui.Text("CPU",11,"Muted"));cpu.Margin=new(0,3,0,18);stack.Children.Add(cpu);stack.Children.Add(Ui.Text("GPU",11,"Muted"));gpu.Margin=new(0,3,0,18);stack.Children.Add(gpu);memory.Margin=new(0,0,0,15);stack.Children.Add(memory);network.Margin=new(0,0,0,15);stack.Children.Add(network);stack.Children.Add(status);Content=stack;
+        var grid=new Grid {Margin=new Thickness(8)};grid.RowDefinitions.Add(new(){Height=GridLength.Auto});grid.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});grid.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});grid.RowDefinitions.Add(new(){Height=GridLength.Auto});
+        var pin=new CheckBox {Content="Always on top",IsChecked=Topmost};pin.Checked+=(_,_)=>Topmost=true;pin.Unchecked+=(_,_)=>Topmost=false;grid.Children.Add(pin);
+        cpu=new(session,"cpu");gpu=new(session,"gpu");Grid.SetRow(cpu,1);grid.Children.Add(cpu);Grid.SetRow(gpu,2);grid.Children.Add(gpu);
+        var summary=new StackPanel {Margin=new Thickness(0,6,0,0)};summary.Children.Add(memory);summary.Children.Add(network);status.TextWrapping=TextWrapping.NoWrap;status.TextTrimming=TextTrimming.CharacterEllipsis;summary.Children.Add(status);Grid.SetRow(summary,3);grid.Children.Add(summary);Content=grid;
         session.Changed+=Refresh;Closed+=(_,_)=>session.Changed-=Refresh;Refresh();
     }
     private void Refresh()
     {
         double? V(string id)=>session.Stale?null:session.Value(id);
-        cpu.Text=$"{Ui.Number(V("cpu/usage")," %")}   {Ui.Number(V("cpu/temperature")," °C")}";
-        gpu.Text=$"{Ui.Number(V(session.MetricId("gpu"))," %")}   {Ui.Number(V(session.MetricId("gputemp"))," °C")}";
+        cpu.Refresh();gpu.Refresh();
         memory.Text=$"Memory  {Ui.Bytes(V("memory/used"))} / {Ui.Bytes(V("memory/total"))}";network.Text=$"↓ {Ui.Bytes(V("network/download"),true)}    ↑ {Ui.Bytes(V("network/upload"),true)}";
-        status.Text=session.Current is null?"Discovering hardware…":session.Stale?"Readings stale · open main window for status":"Shared collector · — means unavailable\n"+session.GpuName;
+        status.Text=session.Current is null?"Discovering hardware…":session.Stale?"Readings stale · open main window for status":"Shared collector · — means unavailable";status.ToolTip=status.Text;
     }
 }

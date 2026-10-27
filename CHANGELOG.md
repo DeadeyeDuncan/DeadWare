@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.3 — Widget graphs
+
+- Show stacked CPU and selected-GPU history graphs in the compact widget, each combining solid usage and dashed temperature lines in different colors.
+- Label percent and °C scales separately, expand the temperature scale above 100°C, and retain small current readings plus memory/network summaries.
+- Reuse the shared history range, GPU selection and saved graph history, preserving missing-data gaps and stale-reading status.
+
 ## 0.6.2 — Desktop-aware navigation
 
 - Hide Battery history in the sidebar and its Settings window button when Windows reports no battery; restore them when a battery is detected or its status is unknown.

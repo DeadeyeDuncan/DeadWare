@@ -16,7 +16,7 @@ DeadWare is a Windows desktop monitor for watching CPU/GPU usage and temperature
 - Per-application network rates when Windows permits ETW capture.
 - Searchable sensor readings with minimum, maximum and average values.
 - Selectable graphics adapters on multi-GPU systems.
-- Separate graph windows and a compact widget with always-on-top controls.
+- Separate graph windows and a compact widget with CPU/GPU usage and temperature charts and always-on-top controls.
 - Compact pop-out graphs prioritize the current reading and chart; their options menu holds history range, Always on top and sensor statistics.
 - Close the dashboard to the system tray and keep graphs, the widget and monitoring running independently.
 - Restore the graphs and widget left open, including their saved positions and sizes.
@@ -65,6 +65,10 @@ Restoration matches local machine and hardware metadata, including GPU model/typ
 Version 0.1.0 saved window positions but did not record which windows were open. After upgrading, arrange your desired windows once to establish the saved workspace.
 
 Startup points to the executable's current location. Keep the extracted folder in a permanent location. If you move it, enable startup again from the new location; disable startup before removing the app. Choose **Quit DeadWare** before replacing files during an upgrade; closing the dashboard alone leaves it running.
+
+## Desktop widget
+
+The compact widget stacks CPU and selected-GPU graphs. Each graph combines a solid usage line with a blue dashed temperature line, with small current-value legends. The left axis shows 0–100% usage; the right shows °C and expands above 100°C when needed. The widget follows the shared history range and GPU selection, uses saved graph history, and keeps unavailable readings and downtime as gaps. Memory and network summaries remain below the graphs.
 
 ## Hardware compatibility
 
@@ -123,7 +127,7 @@ dotnet run --project src/DeadWare.App/DeadWare.App.csproj
 Create a self-contained portable ZIP and SHA-256 checksum:
 
 ```powershell
-pwsh -File scripts/publish.ps1 -Version 0.6.2
+pwsh -File scripts/publish.ps1 -Version 0.6.3
 ```
 
 The packaging script runs tests before publishing, bundles the independent self-contained update helper, and records all managed file hashes in `deadware-package.json`. Output goes under `artifacts/`. GitHub Actions runs the same script. Pushing a normal three-part version tag such as `v0.6.0` builds and publishes a normal release after tests pass, using the matching `docs/releases/v0.6.0.md` notes. Workflows use pinned action commits.
