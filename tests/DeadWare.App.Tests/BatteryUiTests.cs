@@ -60,7 +60,8 @@ public class BatteryUiTests
                 var session = (UiSession)RuntimeHelpers.GetUninitializedObject(typeof(UiSession));
                 var collector = (Collector)RuntimeHelpers.GetUninitializedObject(typeof(Collector));
                 void Set(object target, string name, object value) => target.GetType().GetField(name, All)!.SetValue(target, value);
-                Set(collector, "clock", Stopwatch.StartNew());
+                // A frozen elapsed clock keeps fixture freshness independent of runner speed.
+                Set(collector, "clock", new Stopwatch());
                 Set(collector, "latest", new Reading(new(DateTimeOffset.UtcNow, 0, new Dictionary<string, double?>()), [], [], [], "CPU", "", "", "", false)
                     { Battery = new(73, BatteryPowerState.Charging, true) });
                 Set(session, "<Collector>k__BackingField", collector);
@@ -95,6 +96,12 @@ public class BatteryUiTests
                         }
                     }
                 }
+                var current = collector.Latest!;
+                Set(collector, "latest", current with { Sample = current.Sample with { MonotonicSeconds = -10 } });
+                var stalePage = (FrameworkElement)Activator.CreateInstance(pageType, All, null, [session, false], null)!;
+                stalePage.Measure(new Size(620, 760)); stalePage.Arrange(new Rect(0, 0, 620, 760)); stalePage.UpdateLayout();
+                var staleText = string.Join("\n", Descendants(stalePage).OfType<TextBlock>().Select(t => t.Text));
+                Assert.Contains("Waiting for a fresh reading", staleText); Assert.Contains("Battery saver unknown", staleText);
                 app.Shutdown();
             }
             catch (Exception error) { failure = error; }
