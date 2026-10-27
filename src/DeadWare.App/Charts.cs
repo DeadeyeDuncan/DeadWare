@@ -49,7 +49,7 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
 {
     private readonly UiSession session=session;
     private readonly string kind=kind;
-    public bool TemperatureOverlay {get;init;}
+    public bool CompareDevices {get;init;}
     public void Refresh()=>InvalidateVisual();
     protected override void OnRender(DrawingContext dc)
     {
@@ -59,34 +59,27 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
         var sample=session.Current?.Sample;
         double now=session.Collector.ElapsedSeconds;
         var points=session.Collector.History.Series(session.MetricId(kind),now,session.HistorySeconds);
-        var up=kind=="network"?session.Collector.History.Series("network/upload",now,session.HistorySeconds):[];
-        bool combined=TemperatureOverlay&&kind is "cpu" or "gpu";
-        var temperature=combined?session.Collector.History.Series(session.MetricId(kind=="cpu"?"cputemp":"gputemp"),now,session.HistorySeconds):[];
-        double maximum=kind is "cpu" or "gpu"?100:kind=="network"?Math.Max(1000,points.Concat(up).Where(p=>p.Value.HasValue).Select(p=>p.Value!.Value).DefaultIfEmpty(0).Max()*1.15):Math.Max(100,points.Where(p=>p.Value.HasValue).Select(p=>p.Value!.Value).DefaultIfEmpty(0).Max()*1.1);
-        double temperatureMaximum=Math.Max(100,Math.Ceiling(temperature.Where(p=>p.Value.HasValue).Select(p=>p.Value!.Value).DefaultIfEmpty(0).Max()*1.1/20)*20);
-        string Axis(double value)=>kind=="network"?Ui.Bytes(value,true):$"{value:0}{(kind.Contains("temp")?"°":"%")}";
-        string TemperatureAxis(double value)=>$"{value:0}°C";
-        double left=combined?Formatted("100%").Width+8:compact?3:12,top=compact?8:18;
-        double right=combined?Enumerable.Range(0,3).Max(i=>Formatted(TemperatureAxis(temperatureMaximum*i/2)).Width)+10:compact?Enumerable.Range(0,3).Max(i=>Formatted(Axis(maximum*i/2)).Width)+10:74;
+        bool compare=CompareDevices&&kind is "cpu" or "cputemp";
+        var secondary=kind=="network"?session.Collector.History.Series("network/upload",now,session.HistorySeconds):compare?session.Collector.History.Series(session.MetricId(kind=="cpu"?"gpu":"gputemp"),now,session.HistorySeconds):[];
+        double maximum=kind is "cpu" or "gpu"?100:kind=="network"?Math.Max(1000,points.Concat(secondary).Where(p=>p.Value.HasValue).Select(p=>p.Value!.Value).DefaultIfEmpty(0).Max()*1.15):Math.Max(100,points.Concat(secondary).Where(p=>p.Value.HasValue).Select(p=>p.Value!.Value).DefaultIfEmpty(0).Max()*1.1);
+        if(compare&&kind=="cputemp")maximum=Math.Ceiling(maximum/20)*20;
+        string Axis(double value)=>kind=="network"?Ui.Bytes(value,true):$"{value:0}{(kind.Contains("temp")?(compare?"°C":"°"):"%")}";
+        double left=compact?3:12,top=compact?8:18;
+        double right=compact?Enumerable.Range(0,3).Max(i=>Formatted(Axis(maximum*i/2)).Width)+10:74;
         double bottom=axisLabel.Height+(compact?10:18),pw=w-left-right,ph=h-top-bottom;
         if(pw<=0||ph<=0)return;
         for(int i=0;i<3;i++)
         {
             double value=maximum*i/2,y=top+ph*(1-value/maximum);
             dc.DrawLine(new Pen(Theme.Brush("Line"),1){DashStyle=new DashStyle([3,5],0)},new(left,y),new(left+pw,y));
-            if(combined)
-            {
-                Label(dc,Axis(value),0,y-7);
-                Label(dc,TemperatureAxis(temperatureMaximum*i/2),left+pw+7,y-7);
-            }
-            else Label(dc,Axis(value),left+pw+7,y-7);
+            Label(dc,Axis(value),left+pw+7,y-7);
         }
         double timeLabelY=h-axisLabel.Height-(compact?2:6);
         Label(dc,$"{HistoryRanges.Label(session.HistorySeconds)} ago",left,timeLabelY);Label(dc,"Now",left+pw-axisLabel.Width,timeLabelY);
         DrawSeries(dc,points,now,maximum,left,top,pw,ph,kind=="network"?"Download":kind.StartsWith("gpu")?"Gpu":"Cpu",false);
-        if(kind=="network") DrawSeries(dc,up,now,maximum,left,top,pw,ph,"Cpu",true);
-        if(combined) DrawSeries(dc,temperature,now,temperatureMaximum,left,top,pw,ph,"Download",true);
-        if(!points.Concat(up).Concat(temperature).Any(p=>p.Value.HasValue)) Label(dc,sample is null?(compact?"Waiting for data…":"Waiting for first sample…"):(compact?"No readings in this range":"No available readings in this range"),left+(compact?4:15),top+ph/2);
+        if(kind=="network") DrawSeries(dc,secondary,now,maximum,left,top,pw,ph,"Cpu",true);
+        else if(compare) DrawSeries(dc,secondary,now,maximum,left,top,pw,ph,"Gpu",true);
+        if(!points.Concat(secondary).Any(p=>p.Value.HasValue)) Label(dc,sample is null?(compact?"Waiting for data…":"Waiting for first sample…"):(compact?"No readings in this range":"No available readings in this range"),left+(compact?4:15),top+ph/2);
     }
     private void DrawSeries(DrawingContext dc,IReadOnlyList<SamplePoint> points,double now,double maximum,double left,double top,double width,double height,string color,bool dashed)
     {
@@ -101,7 +94,7 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
                 lastPoint=p;
             }
         }
-        bool dense=TemperatureOverlay&&session.HistorySeconds>=3600;
+        bool dense=CompareDevices&&session.HistorySeconds>=3600;
         geometry.Freeze();var pen=new Pen(Theme.Brush(color),dense?1:2);if(dashed)pen.DashStyle=new DashStyle([4,3],0);dc.DrawGeometry(null,pen,geometry);
         double markerRadius=dense?1.5:2.5;
         if(lastPoint.HasValue) dc.DrawEllipse(Theme.Brush(color),null,lastPoint.Value,markerRadius,markerRadius);
