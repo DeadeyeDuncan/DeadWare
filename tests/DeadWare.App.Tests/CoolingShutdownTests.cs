@@ -18,6 +18,7 @@ public class CoolingShutdownTests
         string root=Path.Combine(Path.GetTempPath(),"DeadWare-tests-"+Guid.NewGuid().ToString("N"));
         var history=new CoolingHistoryService(Path.Combine(root,"history.db"),"fixture","setup");
         var graphs=new GraphHistoryService(Path.Combine(root,"graphs.db"),"fixture",new SampleHistory());
+        var battery=new BatteryHistoryService(Path.Combine(root,"battery.db"),"fixture");
         var blocked=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var cancellation=new CancellationTokenSource();
         // Never construct/start a hardware collector, Application or Window. Only exercise the stop path.
@@ -26,17 +27,21 @@ public class CoolingShutdownTests
         Set(collector,"etw",Activator.CreateInstance(typeof(Collector).Assembly.GetType("DeadWare.App.EtwNetwork")!,[false])!);
         var session=(UiSession)RuntimeHelpers.GetUninitializedObject(typeof(UiSession));
         Set(session,"<Collector>k__BackingField",collector);Set(session,"<Cooling>k__BackingField",history);Set(session,"<GraphHistory>k__BackingField",graphs);
+        Set(session,"<Battery>k__BackingField",battery);
         try
         {
             history.Start();history.TryRecord(ThermalProjectionTests.Reading(ThermalProjectionTests.Sensor("t","CPU Package","Temperature",60)));
             graphs.Start();
             var graphReading=new Reading(new Snapshot(DateTimeOffset.UtcNow,1,new Dictionary<string,double?>{{"network/download",100},{"network/upload",0}}),[],[],[],"Processor","","","",false);
             graphs.TryRecord(graphReading);
+            battery.Start();battery.TryRecord(graphReading with {Battery=new(60,BatteryPowerState.OnBattery,true)});
             var watch=Stopwatch.StartNew();
             typeof(UiSession).GetMethod("StopCollectorForSessionEnding",flags)!.Invoke(session,null);
             Assert.InRange(watch.Elapsed.TotalSeconds,2.8,4.5);
             Assert.True(cancellation.IsCancellationRequested);Assert.True(history.StopAsync().IsCompleted);
             Assert.True(graphs.StopAsync().IsCompleted);
+            Assert.True(battery.StopAsync().IsCompleted);
+            Assert.Equal(1,(await battery.ReadViewAsync(0)).TotalObservations);
             var savedGraphs=new GraphHistoryStore(Path.Combine(root,"graphs.db"));savedGraphs.Initialize();
             Assert.Single(savedGraphs.Read(DateTimeOffset.UtcNow));
             Assert.Single((await history.ReadViewAsync(null,null,1)).Devices);
@@ -45,6 +50,6 @@ public class CoolingShutdownTests
             typeof(UiSession).GetMethod("StopCollectorForSessionEnding",flags)!.Invoke(session,null);
             Assert.Same(stop,typeof(UiSession).GetField("collectorStop",flags)!.GetValue(session));
         }
-        finally {blocked.TrySetResult();await Task.WhenAll(history.StopAsync(),graphs.StopAsync());if(Directory.Exists(root))Directory.Delete(root,true);}
+        finally {blocked.TrySetResult();await Task.WhenAll(history.StopAsync(),graphs.StopAsync(),battery.StopAsync());if(Directory.Exists(root))Directory.Delete(root,true);}
     }
 }

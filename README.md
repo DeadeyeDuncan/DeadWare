@@ -23,6 +23,7 @@ DeadWare is a Windows desktop monitor for watching CPU/GPU usage and temperature
 - Optional administrator startup at your Windows sign-in.
 - Shared 1-, 5- and 15-minute plus 1-, 3- and 6-hour graph ranges; all windows use one collector. Choose a range above the dashboard or in a pop-out's **⋯** menu. The choice and recent CPU/GPU/network traces are saved locally across quits and computer restarts. Cooling Health's longer saved history is separate.
 - Local Cooling Health history, fixed reference comparisons, CSV export and optional sustained-change warnings.
+- Lifetime battery-percentage history with recorded charging and Windows battery-saver periods, Day/Week/Month/Year/All views, CSV export and a separate remembered window.
 - Five saved themes: **Midnight**, **Ember**, **Glacier**, **Amethyst**, and **Daylight**.
 - Scrollbars follow the selected theme across all windows, with matching native title bars on Windows 11.
 
@@ -59,6 +60,16 @@ DeadWare discovers hardware rather than assuming a particular PC. [LibreHardware
 The default hardware scan focuses on CPU and GPU sensors. Extended motherboard, controller, storage and memory-device sensors are optional and off by default, since low-level polling can affect responsiveness on some machines. Changing this setting requires restarting DeadWare. Windows memory usage remains available without extended scanning.
 
 This first release is **not complete HWiNFO sensor parity**. A successful launch on one PC is not evidence that every sensor works on every device. Please report compatibility findings through the hardware issue template with device models and the capability message, without serial numbers.
+
+## Battery history
+
+Open **Battery history** in the sidebar to see how charge drops and recovers, along with current charging and Windows battery-saver status. Choose **Open in window** for a separate resizable window; its position, size and Always on top choice are remembered. The Day/Week/Month/Year/All history selector is independent of the live graph range. Desktop layout can also open the battery window.
+
+DeadWare records the system battery total once per minute plus observed charging/power and battery-saver state changes. Recording starts automatically on a battery-equipped device and can be paused without deleting saved history. Windows supplies these readings without administrator access. Unknown readings stay unavailable; a desktop with no battery says so. Multiple physical batteries appear as the combined system charge.
+
+Observations are kept indefinitely in `%LOCALAPPDATA%\DeadWare\battery-history.db`, independently of the six-hour live graph cache and Cooling Health retention. There is no automatic expiry or size-based deletion. Storage usage and recording errors appear on the page. The database grows with recorded observations; long-range charts use bounded summaries without deleting originals. Dots show percentage averages and vertical lines show minimum–maximum in each displayed bucket. Green marks identify recorded charging and amber marks identify battery saver; filled marks mean all observations in a bucket reported that state, and outlined marks mean mixed states. They do not establish the state during unobserved time. Missing data, sleep, pauses and restarts remain gaps.
+
+History begins with this version while DeadWare runs; earlier device history cannot be reconstructed. Writes flush every 15 seconds and on normal **Quit DeadWare**. Abrupt power loss can lose the unsaved batch. A storage problem reports an error while the other monitors continue. Resolve storage access and restart to retry. Battery data stays local to this Windows profile; source-code synchronization through GitHub does not copy it to another computer. Export the selected range to a new CSV for a backup, or copy the database while DeadWare is fully quit. Keep your own backup before resetting Windows or deleting the profile. Do not synchronize an open database.
 
 ## Cooling Health
 
@@ -99,12 +110,14 @@ dotnet run --project src/DeadWare.App/DeadWare.App.csproj
 Create a self-contained portable ZIP and SHA-256 checksum:
 
 ```powershell
-pwsh -File scripts/publish.ps1 -Version 0.4.0
+pwsh -File scripts/publish.ps1 -Version 0.5.0
 ```
 
 The packaging script runs tests before publishing and writes output under `artifacts/`. GitHub Actions runs the same script. Pushing a version tag such as `v0.2.0` builds and publishes a **prerelease** after tests pass, using the matching `docs/releases/v0.2.0.md` release notes. Workflows use pinned action commits.
 
 ## Project direction
+
+For development across computers, use the [GitHub synchronization workflow](docs/development.md). Source checkouts and installed portable app folders have separate purposes; committed changes and versioned packages identify what each computer is using.
 
 The first release focuses on everyday monitoring, hardware adaptability and usable detached windows. Future work can expand compatibility validation, long-term usage history, signed installers and additional telemetry sources. Development plans are in `docs/superpowers/`.
 

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.0 — Lifetime battery history
+
+- Record battery percentage and charging/power and Windows battery-saver changes into independent local history with no automatic expiry.
+- Add Day/Week/Month/Year/All charts, original-observation CSV export, current status, storage/error reporting and an opt-out recording control.
+- Open Battery history in its own remembered, resizable, always-on-top window. Preserve unavailable readings and restart/sleep/paused-monitoring gaps.
+- Keep long-range queries and writes off the UI/collector threads, and drain pending battery observations during normal Quit and bounded sign-out.
+
+
 ## 0.4.2 — Remember graph history
 
 - Automatically save and restore the last six elapsed hours of CPU/GPU usage and temperature plus combined network upload/download graphs across quits and restarts.
