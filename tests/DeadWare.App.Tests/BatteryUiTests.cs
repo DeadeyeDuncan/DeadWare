@@ -198,6 +198,8 @@ public class BatteryUiTests
                 var widgetChoices = settings.Children.OfType<WrapPanel>().SelectMany(panel => panel.Children.OfType<CheckBox>()).Where(box => box.Tag is string kind && new[] { "cpu", "cputemp", "memory", "network" }.Contains(kind)).ToArray();
                 Assert.Equal(4, widgetChoices.Length);
                 Assert.All(widgetChoices, choice => Assert.True(choice.IsChecked));
+                var widgetPin = Assert.Single(settings.Children.OfType<CheckBox>(), box => box.Content?.ToString() == "Widget always on top");
+                Assert.True(widgetPin.IsChecked);
                 Assert.Single(settings.Children.OfType<Button>(), button => button.Content?.ToString()?.Contains("RAM usage") == true);
                 var polling = Assert.Single(settings.Children.OfType<StackPanel>().SelectMany(panel => panel.Children.OfType<ComboBox>()),
                     combo => System.Windows.Automation.AutomationProperties.GetName(combo) == "Data polling interval");
@@ -232,6 +234,11 @@ public class BatteryUiTests
                 Assert.False(widgetChoices.Single(choice => (string)choice.Tag == "network").IsChecked);
                 session.SetWidgetGraph("network", true);
                 Assert.All(widgetChoices, choice => Assert.True(choice.IsChecked));
+                Assert.False(session.Settings.Windows.ContainsKey("widget"));
+                widgetPin.IsChecked = false; CompleteSettingsSave(session);
+                Assert.False(SettingsCodec.Read(File.ReadAllText(pollingSettingsPath)).Settings.WidgetAlwaysOnTop);
+                Assert.False(session.Settings.Windows.ContainsKey("widget"));
+                session.SetWidgetAlwaysOnTop(true); Assert.True(widgetPin.IsChecked);
                 var batteryWindow = settings.Children.OfType<Button>().Single(b => b.Content?.ToString()?.Contains("Battery history") == true);
                 void RefreshDashboard() => ((Action)typeof(UiSession).GetField("Changed", All)!.GetValue(session)!).Invoke();
                 void Navigate(string destination) => typeof(MainWindow).GetMethod("Navigate", All)!.Invoke(dashboard, [destination]);
@@ -272,7 +279,7 @@ public class BatteryUiTests
                 }
                 VerifyUpdateNotice(dashboard, updateService, pages, navigation, shell);
                 lifetime.BeginSessionEnding(); dashboard.Close();
-                VerifyWidget(session, collector, current, assembly, widgetChoices, pollingSettingsPath);
+                VerifyWidget(session, collector, current, assembly, widgetChoices, widgetPin, pollingSettingsPath);
                 app.Shutdown();
             }
             catch (Exception error) { failure = error; }
@@ -380,7 +387,7 @@ public class BatteryUiTests
         Navigate("updates"); Assert.Equal(Visibility.Collapsed, notice.Visibility);
     }
 
-    private static void VerifyWidget(UiSession session, Collector collector, Reading current, Assembly assembly, CheckBox[] widgetChoices, string settingsPath)
+    private static void VerifyWidget(UiSession session, Collector collector, Reading current, Assembly assembly, CheckBox[] widgetChoices, CheckBox widgetPin, string settingsPath)
     {
         void Set(object target, string name, object? value) => target.GetType().GetField(name, All)!.SetValue(target, value);
         void Changed() => ((Action)typeof(UiSession).GetField("Changed", All)!.GetValue(session)!).Invoke();
@@ -407,6 +414,7 @@ public class BatteryUiTests
         Assert.Equal(300, widget.MinWidth); Assert.Equal(520, widget.MinHeight);
         Assert.Equal(340, widget.Width); Assert.Equal(600, widget.Height);
         var content = (FrameworkElement)widget.Content;
+        Assert.Empty(Descendants(content).OfType<CheckBox>());
         // Capture the viewport parent: rendering the Margin-bearing child directly
         // shifts its drawing but clips it at the unshifted child size.
         widget.Content = null;
@@ -502,19 +510,38 @@ public class BatteryUiTests
         Assert.StartsWith("0.0 %", ramValue.Text); Assert.Contains("0.0 B / 32.0 GB", ramValue.Text);
         VerifyWidgetNetwork(session, collector, reading, content, viewport, history);
         Set(collector, "<History>k__BackingField", history); Set(collector, "latest", reading); Changed();
-        VerifyWidgetSelection(session, collector, widget, content, viewport, assembly, widgetChoices, settingsPath);
+        VerifyWidgetSelection(session, collector, widget, content, viewport, assembly, widgetChoices, widgetPin, settingsPath);
         var subscribed = (Action)typeof(UiSession).GetField("Changed", All)!.GetValue(session)!;
         viewport.Child = null; widget.Content = content;
         widget.Close();
         var remaining = (Action?)typeof(UiSession).GetField("Changed", All)!.GetValue(session);
         Assert.DoesNotContain(remaining?.GetInvocationList() ?? [], handler => handler.Target == widget);
         Assert.Contains(subscribed.GetInvocationList(), handler => handler.Target == widget);
+        var originalSettings = session.Settings;
         var savedWidget = new WindowPlacement(100, 200, 340, 390, false);
-        session.Settings.Windows["widget"] = savedWidget;
+        var legacyJson = System.Text.Json.Nodes.JsonNode.Parse(SettingsCodec.Write(originalSettings))!.AsObject();
+        legacyJson.Remove(nameof(UserSettings.WidgetAlwaysOnTop));
+        legacyJson["Windows"]!["widget"] = System.Text.Json.JsonSerializer.SerializeToNode(savedWidget);
+        var migrated = SettingsCodec.Read(legacyJson.ToJsonString()).Settings;
+        Assert.False(migrated.WidgetAlwaysOnTop);
+        Set(session, "<Settings>k__BackingField", migrated);
         var restored = (Window)Activator.CreateInstance(widgetType, All, null, [session], null)!;
         Assert.False(restored.Topmost); Assert.Equal(WindowStartupLocation.Manual, restored.WindowStartupLocation);
         Assert.Equal(savedWidget, session.Settings.Windows["widget"]); Assert.Equal(520, restored.MinHeight);
-        restored.Close(); session.Settings.Windows.Remove("widget");
+        restored.Close();
+        migrated.WidgetAlwaysOnTop = true;
+        var preferred = (Window)Activator.CreateInstance(widgetType, All, null, [session], null)!;
+        Assert.True(preferred.Topmost); Assert.Equal(savedWidget, session.Settings.Windows["widget"]);
+        preferred.Close();
+        var otherPlacement = new WindowPlacement(20, 30, 420, 230, false);
+        migrated.Windows["cpu"] = otherPlacement;
+        var other = new Window(); session.Place(other, "cpu", 420, 230);
+        Assert.False(other.Topmost); other.Close();
+        session.SetWidgetAlwaysOnTop(false);
+        Assert.Equal(savedWidget, session.Settings.Windows["widget"]);
+        Assert.Equal(otherPlacement, session.Settings.Windows["cpu"]);
+        CompleteSettingsSave(session); File.Delete(settingsPath);
+        Set(session, "<Settings>k__BackingField", originalSettings);
     }
 
     private static void VerifyWidgetNetwork(UiSession session, Collector collector, Reading reading, FrameworkElement content, Border viewport, SampleHistory history)
@@ -544,14 +571,14 @@ public class BatteryUiTests
     }
 
     private static void VerifyWidgetSelection(UiSession session, Collector collector, Window widget, FrameworkElement content,
-        Border viewport, Assembly assembly, CheckBox[] choices, string settingsPath)
+        Border viewport, Assembly assembly, CheckBox[] choices, CheckBox pin, string settingsPath)
     {
         string[] kinds = ["cpu", "cputemp", "memory", "network"];
         double[] minima = [180, 200, 280, 400, 520];
         var graphs = Descendants(content).OfType<FrameworkElement>().Where(element => element.GetType().Name == "WidgetGraph").ToArray();
         var empty = Descendants(content).OfType<TextBlock>().Single(block => block.Text.StartsWith("No graphs selected"));
         var status = Descendants(content).OfType<TextBlock>().Single(block => block.Text.StartsWith("Shared collector"));
-        var pin = Descendants(content).OfType<CheckBox>().Single(box => box.Content?.ToString() == "Always on top");
+        Assert.Empty(Descendants(content).OfType<CheckBox>());
         double width = widget.Width, height = widget.Height;
         bool topmost = widget.Topmost;
         var windowState = widget.WindowState;
@@ -605,10 +632,13 @@ public class BatteryUiTests
         }
         foreach (var choice in choices) choice.IsChecked = (string)choice.Tag is "memory" or "network";
         CompleteSettingsSave(session);
-        Assert.Equal(new[] { "memory", "network" }, SettingsCodec.Read(File.ReadAllText(settingsPath)).Settings.WidgetGraphs);
+        var savedSettings = SettingsCodec.Read(File.ReadAllText(settingsPath)).Settings;
+        Assert.Equal(new[] { "memory", "network" }, savedSettings.WidgetGraphs);
+        Assert.False(savedSettings.WidgetAlwaysOnTop);
         bool hadPlacement = session.Settings.Windows.Remove("widget", out var savedPlacement);
         var fresh = (Window)Activator.CreateInstance(assembly.GetType("DeadWare.App.WidgetWindow")!, All, null, [session], null)!;
         Assert.Equal(280, fresh.MinHeight); Assert.Equal(360, fresh.Height); Assert.Equal(340, fresh.Width);
+        Assert.False(fresh.Topmost);
         Assert.Equal(2, Descendants((FrameworkElement)fresh.Content).OfType<FrameworkElement>().Count(element => element.GetType().Name == "WidgetGraph" && element.Visibility == Visibility.Visible));
         fresh.Close();
         if (hadPlacement) session.Settings.Windows["widget"] = savedPlacement!;

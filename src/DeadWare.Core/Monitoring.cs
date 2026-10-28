@@ -256,6 +256,7 @@ public record WindowPlacement(double Left,double Top,double Width,double Height,
 public sealed class UserSettings
 {
     public List<string> WidgetGraphs {get;set;}=WidgetGraphSelection.Kinds.ToList();
+    public bool WidgetAlwaysOnTop {get;set;}=true;
     public double PollingIntervalSeconds {get;set;}=1;
     public bool BatteryRecording {get;set;}=true;
     public bool RestoreOpenWindows {get;set;}=true;
@@ -290,12 +291,15 @@ public static class SettingsCodec
             s.PollingIntervalSeconds=PollingPolicy.Normalize(s.PollingIntervalSeconds);
             if(!HistoryRanges.IsSupported(s.HistorySeconds)) s.HistorySeconds=60;
             s.Windows??=new();
+            using var document=JsonDocument.Parse(json);
+            // Retain the pin choice even when legacy coordinates must be discarded.
+            if(!document.RootElement.TryGetProperty(nameof(UserSettings.WidgetAlwaysOnTop),out _)&&
+                s.Windows.TryGetValue("widget",out var widget)&&widget is not null)s.WidgetAlwaysOnTop=widget.Topmost;
             if(s.CoolingDetailedDays is not (7 or 30))s.CoolingDetailedDays=30;
             if(s.CoolingSummaryDays is not (30 or 90))s.CoolingSummaryDays=90;
             if(!Guid.TryParse(s.CoolingConfigurationId,out _))s.CoolingConfigurationId=Guid.NewGuid().ToString("N");
             s.OpenWindows=DetachedWindowState.Normalize(s.OpenWindows);
             s.Windows=s.Windows.Where(p=>p.Value is not null).Take(16).ToDictionary(p=>p.Key,p=>p.Value);
-            using var document=JsonDocument.Parse(json);
             bool legacyPlacement=!document.RootElement.TryGetProperty(nameof(UserSettings.WindowPlacementFormat),out _)||s.WindowPlacementFormat!=WindowCoordinates.Format;
             bool resetPlacement=legacyPlacement&&s.Windows.Count>0;
             if(legacyPlacement)s.Windows.Clear();
