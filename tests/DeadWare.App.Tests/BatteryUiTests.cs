@@ -195,6 +195,9 @@ public class BatteryUiTests
                 Assert.Equal(6, overviewCards.Length);
                 Assert.Single(overviewCards, card => (string)card.GetType().GetField("kind", All)!.GetValue(card)! == "memory");
                 var settings = (StackPanel)((ScrollViewer)pages["desktop"]).Content;
+                var widgetChoices = settings.Children.OfType<WrapPanel>().SelectMany(panel => panel.Children.OfType<CheckBox>()).Where(box => box.Tag is string kind && new[] { "cpu", "cputemp", "memory", "network" }.Contains(kind)).ToArray();
+                Assert.Equal(4, widgetChoices.Length);
+                Assert.All(widgetChoices, choice => Assert.True(choice.IsChecked));
                 Assert.Single(settings.Children.OfType<Button>(), button => button.Content?.ToString()?.Contains("RAM usage") == true);
                 var polling = Assert.Single(settings.Children.OfType<StackPanel>().SelectMany(panel => panel.Children.OfType<ComboBox>()),
                     combo => System.Windows.Automation.AutomationProperties.GetName(combo) == "Data polling interval");
@@ -225,6 +228,10 @@ public class BatteryUiTests
                 Set(collector, "latest", current with { Sample = current.Sample with { MonotonicSeconds = -14, PollingIntervalSeconds = 10 } });
                 Assert.True(session.Stale);
                 Set(collector, "latest", current);
+                session.SetWidgetGraph("network", false);
+                Assert.False(widgetChoices.Single(choice => (string)choice.Tag == "network").IsChecked);
+                session.SetWidgetGraph("network", true);
+                Assert.All(widgetChoices, choice => Assert.True(choice.IsChecked));
                 var batteryWindow = settings.Children.OfType<Button>().Single(b => b.Content?.ToString()?.Contains("Battery history") == true);
                 void RefreshDashboard() => ((Action)typeof(UiSession).GetField("Changed", All)!.GetValue(session)!).Invoke();
                 void Navigate(string destination) => typeof(MainWindow).GetMethod("Navigate", All)!.Invoke(dashboard, [destination]);
@@ -265,7 +272,7 @@ public class BatteryUiTests
                 }
                 VerifyUpdateNotice(dashboard, updateService, pages, navigation, shell);
                 lifetime.BeginSessionEnding(); dashboard.Close();
-                VerifyWidget(session, collector, current, assembly);
+                VerifyWidget(session, collector, current, assembly, widgetChoices, pollingSettingsPath);
                 app.Shutdown();
             }
             catch (Exception error) { failure = error; }
@@ -373,7 +380,7 @@ public class BatteryUiTests
         Navigate("updates"); Assert.Equal(Visibility.Collapsed, notice.Visibility);
     }
 
-    private static void VerifyWidget(UiSession session, Collector collector, Reading current, Assembly assembly)
+    private static void VerifyWidget(UiSession session, Collector collector, Reading current, Assembly assembly, CheckBox[] widgetChoices, string settingsPath)
     {
         void Set(object target, string name, object? value) => target.GetType().GetField(name, All)!.SetValue(target, value);
         void Changed() => ((Action)typeof(UiSession).GetField("Changed", All)!.GetValue(session)!).Invoke();
@@ -494,6 +501,8 @@ public class BatteryUiTests
         Set(collector, "latest", reading with { Sample = reading.Sample with { Values = new Dictionary<string, double?> { ["memory/usage"] = 0, ["memory/used"] = 0, ["memory/total"] = 32e9 } } }); Changed();
         Assert.StartsWith("0.0 %", ramValue.Text); Assert.Contains("0.0 B / 32.0 GB", ramValue.Text);
         VerifyWidgetNetwork(session, collector, reading, content, viewport, history);
+        Set(collector, "<History>k__BackingField", history); Set(collector, "latest", reading); Changed();
+        VerifyWidgetSelection(session, collector, widget, content, viewport, assembly, widgetChoices, settingsPath);
         var subscribed = (Action)typeof(UiSession).GetField("Changed", All)!.GetValue(session)!;
         viewport.Child = null; widget.Content = content;
         widget.Close();
@@ -532,6 +541,89 @@ public class BatteryUiTests
         Set(collector, "<History>k__BackingField", new SampleHistory());
         Set(collector, "latest", reading with { Sample = reading.Sample with { Values = new Dictionary<string, double?>() } }); Changed();
         Assert.All(Drawings(VisualTreeHelper.GetDrawing(chart)!).Where(item => item.Geometry is StreamGeometry), item => Assert.True(item.Geometry.IsEmpty()));
+    }
+
+    private static void VerifyWidgetSelection(UiSession session, Collector collector, Window widget, FrameworkElement content,
+        Border viewport, Assembly assembly, CheckBox[] choices, string settingsPath)
+    {
+        string[] kinds = ["cpu", "cputemp", "memory", "network"];
+        double[] minima = [180, 200, 280, 400, 520];
+        var graphs = Descendants(content).OfType<FrameworkElement>().Where(element => element.GetType().Name == "WidgetGraph").ToArray();
+        var empty = Descendants(content).OfType<TextBlock>().Single(block => block.Text.StartsWith("No graphs selected"));
+        var status = Descendants(content).OfType<TextBlock>().Single(block => block.Text.StartsWith("Shared collector"));
+        var pin = Descendants(content).OfType<CheckBox>().Single(box => box.Content?.ToString() == "Always on top");
+        double width = widget.Width, height = widget.Height;
+        bool topmost = widget.Topmost;
+        var windowState = widget.WindowState;
+        int samples = collector.History.Read().Count;
+        pin.IsChecked = false;
+        string? output = Environment.GetEnvironmentVariable("DEADWARE_UI_OUTPUT");
+        foreach (string theme in new[] { "Midnight", "Daylight" })
+        {
+            assembly.GetType("DeadWare.App.Theme")!.GetMethod("Apply", All)!.Invoke(null, [theme]);
+            for (int mask = 0; mask < 16; mask++)
+            {
+                foreach (var choice in choices) choice.IsChecked = (mask & (1 << Array.IndexOf(kinds, (string)choice.Tag))) != 0;
+                var selected = kinds.Where((_, index) => (mask & (1 << index)) != 0).ToArray();
+                Assert.Equal(selected, session.Settings.WidgetGraphs);
+                Assert.Equal(selected, graphs.Where(graph => graph.Visibility == Visibility.Visible)
+                    .Select(graph => (string)graph.GetType().GetField("kind", All)!.GetValue(graph)!));
+                Assert.Equal(minima[selected.Length], widget.MinHeight);
+                Assert.Equal(width, widget.Width); Assert.Equal(height, widget.Height);
+                Assert.False(widget.Topmost); Assert.Equal(windowState, widget.WindowState);
+                Assert.Equal(samples, collector.History.Read().Count);
+                Assert.Equal(selected.Length == 0 ? Visibility.Visible : Visibility.Collapsed, empty.Visibility);
+                foreach (var graph in graphs)
+                {
+                    var row = ((Grid)graph.Parent).RowDefinitions[Grid.GetRow(graph)];
+                    if (graph.Visibility == Visibility.Visible) Assert.True(row.Height.IsStar);
+                    else Assert.Equal(0, row.Height.Value);
+                }
+                var size = new Size(284, widget.MinHeight - 39);
+                viewport.SetResourceReference(Border.BackgroundProperty, "Background");
+                viewport.Measure(size); viewport.Arrange(new Rect(new Point(), size)); viewport.UpdateLayout();
+                foreach (var chart in graphs.Where(graph => graph.Visibility == Visibility.Visible).SelectMany(Descendants)
+                    .OfType<FrameworkElement>().Where(element => element.GetType().Name == "HistoryChart"))
+                {
+                    Assert.True(chart.ActualHeight >= 48, $"Selected chart clipped for mask {mask}: {chart.ActualHeight}");
+                    Assert.NotNull(VisualTreeHelper.GetDrawing(chart));
+                }
+                var bounds = status.TransformToAncestor(content).TransformBounds(new Rect(status.RenderSize));
+                Assert.True(bounds.Bottom <= content.ActualHeight + .01); Assert.True(bounds.Right <= content.ActualWidth + .01);
+                if (selected.Length == 0)
+                {
+                    var hint = empty.TransformToAncestor(content).TransformBounds(new Rect(empty.RenderSize));
+                    Assert.True(hint.Bottom <= content.ActualHeight + .01); Assert.True(hint.Right <= content.ActualWidth + .01);
+                }
+                if (output is not null)
+                {
+                    var bitmap = new RenderTargetBitmap((int)size.Width, (int)size.Height, 96, 96, PixelFormats.Pbgra32); bitmap.Render(viewport);
+                    using var file = File.Create(Path.Combine(output, $"widget-selection-{theme}-{mask:X}.png"));
+                    var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap)); encoder.Save(file);
+                }
+            }
+        }
+        foreach (var choice in choices) choice.IsChecked = (string)choice.Tag is "memory" or "network";
+        CompleteSettingsSave(session);
+        Assert.Equal(new[] { "memory", "network" }, SettingsCodec.Read(File.ReadAllText(settingsPath)).Settings.WidgetGraphs);
+        bool hadPlacement = session.Settings.Windows.Remove("widget", out var savedPlacement);
+        var fresh = (Window)Activator.CreateInstance(assembly.GetType("DeadWare.App.WidgetWindow")!, All, null, [session], null)!;
+        Assert.Equal(280, fresh.MinHeight); Assert.Equal(360, fresh.Height); Assert.Equal(340, fresh.Width);
+        Assert.Equal(2, Descendants((FrameworkElement)fresh.Content).OfType<FrameworkElement>().Count(element => element.GetType().Name == "WidgetGraph" && element.Visibility == Visibility.Visible));
+        fresh.Close();
+        if (hadPlacement) session.Settings.Windows["widget"] = savedPlacement!;
+        foreach (var choice in choices) choice.IsChecked = true;
+        pin.IsChecked = topmost;
+        CompleteSettingsSave(session); File.Delete(settingsPath);
+    }
+
+    private static void CompleteSettingsSave(UiSession session)
+    {
+        var save = session.SaveAsync();
+        var frame = new System.Windows.Threading.DispatcherFrame();
+        var dispatcher = System.Windows.Threading.Dispatcher.CurrentDispatcher;
+        _ = save.ContinueWith(_ => dispatcher.BeginInvoke(new Action(() => frame.Continue = false)), TaskScheduler.Default);
+        System.Windows.Threading.Dispatcher.PushFrame(frame); save.GetAwaiter().GetResult();
     }
 
     private static IEnumerable<DependencyObject> Descendants(DependencyObject root)

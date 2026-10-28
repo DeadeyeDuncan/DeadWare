@@ -73,6 +73,15 @@ public sealed class UiSession
     public void SetGpu(string? id) {Settings.SelectedGpuId=id;Changed?.Invoke();_ = SaveAsync();}
     public void SetTheme(string theme) {Settings.Theme=theme;Theme.Apply(theme);Changed?.Invoke();_ = SaveAsync();}
     public void SetExtendedSensors(bool enabled) {Settings.ExtendedSensors=enabled;_ = SaveAsync();}
+    public void SetWidgetGraph(string kind,bool enabled)
+    {
+        if(!WidgetGraphSelection.Kinds.Contains(kind,StringComparer.Ordinal))return;
+        var selected=new HashSet<string>(WidgetGraphSelection.Normalize(Settings.WidgetGraphs),StringComparer.Ordinal);
+        if(enabled)selected.Add(kind);else selected.Remove(kind);
+        var next=WidgetGraphSelection.Normalize(selected);
+        if(Settings.WidgetGraphs is not null&&Settings.WidgetGraphs.SequenceEqual(next,StringComparer.Ordinal))return;
+        Settings.WidgetGraphs=next;Changed?.Invoke();_ = SaveAsync();
+    }
     public void SetPollingInterval(double seconds)
     {
         Settings.PollingIntervalSeconds=PollingPolicy.Normalize(seconds);

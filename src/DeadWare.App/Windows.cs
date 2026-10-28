@@ -23,13 +23,14 @@ public sealed class MainWindow : Window
     private readonly TextBox appSearch=new(){Width=250},sensorSearch=new(){Width=280};
     private readonly DataGrid apps=new(),sensors=new();
     private readonly Dictionary<string,FrameworkElement> pages=new();
+    private readonly Dictionary<string,CheckBox> widgetGraphChoices=new(StringComparer.Ordinal);
     private readonly CheckBox startup=new() {Content="Start with Windows (administrator)",Margin=new Thickness(0,22,0,8)};
     private readonly TextBlock startupStatus=Ui.Text("Startup status is checked when this page opens.",12,"Muted"),startupResult=Ui.Text("",12,"Warning");
     private Button startupRepair=null!,startupDisable=null!,startupRefresh=null!,batteryNavigation=null!,batteryWindow=null!;
     private string page="overview",gpuSignature="";
     private bool syncingGpu;
     private bool refreshingSensors;
-    private bool syncingStartup,startupBusy;
+    private bool syncingStartup,startupBusy,syncingWidgetGraphs;
     private readonly TextBlock trayNotice=Ui.Text("Close hides to the system tray.\nQuit stops monitoring.",10,"Muted");
     private readonly TextBlock monitoringInfo=Ui.Text("",10,"Muted");
     public MainWindow(UiSession session,ApplicationLifetime lifetime,Func<bool> trayAvailable,Action quit)
@@ -95,6 +96,20 @@ public sealed class MainWindow : Window
         var pollingLabel=Ui.Text("Data polling interval",14);pollingLabel.Margin=new(0,0,12,0);
         var pollingRow=Ui.Row(pollingLabel,polling);pollingRow.Margin=new(0,0,0,8);stack.Children.Add(pollingRow);
         var pollingHelp=Ui.Text("Applies without restarting after the current wait or reading finishes. Faster polling uses more resources; slow hardware may take longer than the selected interval. At 5 or 10 seconds, Cooling Health records history but does not gather enough samples for reference comparisons.",12,"Muted");pollingHelp.Margin=new(0,0,0,20);stack.Children.Add(pollingHelp);
+        var widgetLabel=Ui.Text("Widget graphs",14);widgetLabel.Margin=new(0,0,0,8);stack.Children.Add(widgetLabel);
+        var widgetOptions=new WrapPanel {Margin=new Thickness(0,0,0,6)};
+        var selectedGraphs=WidgetGraphSelection.Normalize(session.Settings.WidgetGraphs);
+        foreach(var item in new[]{("cpu","CPU / GPU usage"),("cputemp","CPU / GPU temperature"),("memory","RAM usage"),("network","Network activity")})
+        {
+            var key=item.Item1;
+            var choice=new CheckBox {Content=item.Item2,Tag=key,IsChecked=selectedGraphs.Contains(key),Margin=new Thickness(0,0,20,8)};
+            System.Windows.Automation.AutomationProperties.SetName(choice,"Show "+item.Item2+" in widget");
+            choice.Checked+=(_,_)=>{if(!syncingWidgetGraphs)session.SetWidgetGraph(key,true);};
+            choice.Unchecked+=(_,_)=>{if(!syncingWidgetGraphs)session.SetWidgetGraph(key,false);};
+            widgetGraphChoices.Add(key,choice);widgetOptions.Children.Add(choice);
+        }
+        stack.Children.Add(widgetOptions);
+        var widgetHelp=Ui.Text("Choose the graphs shown in the widget. Changes apply immediately; resize the widget to your preferred height.",12,"Muted");widgetHelp.Margin=new(0,0,0,20);stack.Children.Add(widgetHelp);
         foreach(var kind in new[]{"cpu","gpu","cputemp","gputemp","memory","network"}){var key=kind;var button=Ui.Button("↗  "+Ui.Title(kind),()=>session.OpenDetached(key));button.HorizontalAlignment=HorizontalAlignment.Left;button.MinWidth=240;button.Margin=new(0,4,0,4);stack.Children.Add(button);}
         batteryWindow=Ui.Button("↗  Battery history",()=>session.OpenDetached("batteryhistory"));batteryWindow.HorizontalAlignment=HorizontalAlignment.Left;batteryWindow.MinWidth=240;batteryWindow.Margin=new(0,4,0,4);stack.Children.Add(batteryWindow);
         var open=Ui.Button("↗  Compact desktop widget",()=>session.OpenDetached("widget"));open.HorizontalAlignment=HorizontalAlignment.Left;open.MinWidth=240;open.Margin=new(0,20,0,4);stack.Children.Add(open);
@@ -158,6 +173,13 @@ public sealed class MainWindow : Window
     private void Refresh()
     {
         monitoringInfo.Text=$"Local monitoring\n{session.Settings.PollingIntervalSeconds:0.#} s polling · 6 h saved graphs\nv{BuildInfo.Version}";
+        syncingWidgetGraphs=true;
+        try
+        {
+            var selectedGraphs=WidgetGraphSelection.Normalize(session.Settings.WidgetGraphs);
+            foreach(var choice in widgetGraphChoices)choice.Value.IsChecked=selectedGraphs.Contains(choice.Key);
+        }
+        finally {syncingWidgetGraphs=false;}
         var r=session.Current;bool noBattery=r?.Battery.PowerState==BatteryPowerState.NoBattery;
         batteryNavigation.Visibility=batteryWindow.Visibility=noBattery?Visibility.Collapsed:Visibility.Visible;
         if(noBattery&&page=="battery"){Navigate("overview");return;}
@@ -236,20 +258,47 @@ internal sealed class GraphWindow : Window
 internal sealed class WidgetWindow : Window
 {
     private readonly UiSession session;
-    private readonly WidgetGraph usage,temperature,memory,network;
+    private readonly Dictionary<string,WidgetGraph> graphs=new(StringComparer.Ordinal);
+    private readonly Grid cards=new();
+    private readonly TextBlock empty=Ui.Text("No graphs selected. Choose graphs in Settings.",12,"Muted");
     private readonly TextBlock status=Ui.Text("",10,"Muted");
+    private string? appliedSelection;
     public WidgetWindow(UiSession session)
     {
-        this.session=session;Title="DeadWare · Quick glance";MinWidth=300;MinHeight=520;Ui.Icon(this);Topmost=true;session.Place(this,"widget",340,600);
-        var grid=new Grid {Margin=new Thickness(8)};grid.RowDefinitions.Add(new(){Height=GridLength.Auto});for(int i=0;i<4;i++)grid.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});grid.RowDefinitions.Add(new(){Height=GridLength.Auto});
+        this.session=session;Title="DeadWare · Quick glance";MinWidth=300;
+        int count=WidgetGraphSelection.Normalize(session.Settings.WidgetGraphs).Count;
+        MinHeight=WidgetGraphSelection.MinimumHeight(count);Ui.Icon(this);Topmost=true;session.Place(this,"widget",340,WidgetGraphSelection.DefaultHeight(count));
+        var grid=new Grid {Margin=new Thickness(8)};grid.RowDefinitions.Add(new(){Height=GridLength.Auto});grid.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});grid.RowDefinitions.Add(new(){Height=GridLength.Auto});
         var pin=new CheckBox {Content="Always on top",IsChecked=Topmost};pin.Checked+=(_,_)=>Topmost=true;pin.Unchecked+=(_,_)=>Topmost=false;grid.Children.Add(pin);
-        usage=new(session,"cpu");temperature=new(session,"cputemp");memory=new(session,"memory");network=new(session,"network");Grid.SetRow(usage,1);grid.Children.Add(usage);Grid.SetRow(temperature,2);grid.Children.Add(temperature);Grid.SetRow(memory,3);grid.Children.Add(memory);Grid.SetRow(network,4);grid.Children.Add(network);
-        var summary=new StackPanel {Margin=new Thickness(0,6,0,0)};status.TextWrapping=TextWrapping.NoWrap;status.TextTrimming=TextTrimming.CharacterEllipsis;summary.Children.Add(status);Grid.SetRow(summary,5);grid.Children.Add(summary);Content=grid;
+        foreach(string kind in WidgetGraphSelection.Kinds)
+        {
+            int row=cards.RowDefinitions.Count;cards.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});
+            var graph=new WidgetGraph(session,kind);graphs.Add(kind,graph);Grid.SetRow(graph,row);cards.Children.Add(graph);
+        }
+        var area=new Grid();area.Children.Add(cards);empty.TextAlignment=TextAlignment.Center;empty.HorizontalAlignment=HorizontalAlignment.Center;empty.VerticalAlignment=VerticalAlignment.Center;empty.Margin=new(12);area.Children.Add(empty);Grid.SetRow(area,1);grid.Children.Add(area);
+        var summary=new StackPanel {Margin=new Thickness(0,6,0,0)};status.TextWrapping=TextWrapping.NoWrap;status.TextTrimming=TextTrimming.CharacterEllipsis;summary.Children.Add(status);Grid.SetRow(summary,2);grid.Children.Add(summary);Content=grid;
         session.Changed+=Refresh;Closed+=(_,_)=>session.Changed-=Refresh;Refresh();
     }
     private void Refresh()
     {
-        usage.Refresh();temperature.Refresh();memory.Refresh();network.Refresh();
+        var selected=WidgetGraphSelection.Normalize(session.Settings.WidgetGraphs);
+        string signature=string.Join('|',selected);
+        if(signature!=appliedSelection)
+        {
+            double minimum=WidgetGraphSelection.MinimumHeight(selected.Count);
+            var before=minimum>MinHeight?NativePlacement.CaptureNormal(this):null;
+            MinHeight=minimum;
+            foreach(var graph in graphs)
+            {
+                bool visible=selected.Contains(graph.Key);
+                graph.Value.Visibility=visible?Visibility.Visible:Visibility.Collapsed;
+                cards.RowDefinitions[Grid.GetRow(graph.Value)].Height=visible?new GridLength(1,GridUnitType.Star):new GridLength(0);
+            }
+            empty.Visibility=selected.Count==0?Visibility.Visible:Visibility.Collapsed;
+            appliedSelection=signature;
+            if(before is not null)NativePlacement.Restore(this,before,340,WidgetGraphSelection.DefaultHeight(selected.Count));
+        }
+        foreach(var graph in graphs.Values)if(graph.Visibility==Visibility.Visible)graph.Refresh();
         status.Text=session.Current is null?"Discovering hardware…":session.Stale?"Readings stale · open main window for status":"Shared collector · — means unavailable";status.ToolTip=status.Text;
     }
 }

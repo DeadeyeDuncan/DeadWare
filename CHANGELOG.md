@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.12 — Choose widget graphs
+
+- Add saved Settings checkboxes for CPU/GPU usage, CPU/GPU temperature, RAM and Network, applying changes to an open widget.
+- Collapse hidden graph rows and show a helpful empty state when all graphs are off; collection and history continue.
+- Adjust minimum/default widget heights to the selected count while retaining current size and pin when hiding graphs.
+
 ## 0.6.11 — RAM usage graphs
 
 - Add a RAM usage graph beside Network on the overview and as the widget's fourth graph, showing percent and current used/total memory.
