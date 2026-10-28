@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.16 — Themed graph range dropdown
+
+- Replace the six graph range buttons with a compact dropdown on the dashboard and in pop-out options.
+- Keep the same 1-, 5- and 15-minute plus 1-, 3- and 6-hour choices, with one saved selection shared across windows.
+- Match the dropdown to the selected app theme.
+
 ## 0.6.15 — Browse release note history
 
 - Add Show release note history in Updates to browse all normal published versions, including current and older releases, newest first.

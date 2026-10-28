@@ -36,12 +36,18 @@ internal static class Ui
     public static Image Logo()
     {var image=new Image {Width=38,Height=38,Margin=new Thickness(0,0,9,0)};try{image.Source=new BitmapImage(new Uri("pack://application:,,,/Assets/deadware.png"));}catch(System.IO.IOException){}return image;}
     public static string Title(string kind)=>kind switch {"cpu"=>"CPU usage","cputemp"=>"CPU temperature","gpu"=>"GPU usage","gputemp"=>"GPU temperature","usage"=>"CPU / GPU usage","temperature"=>"CPU / GPU temperature","memory"=>"RAM usage",_=>"Network activity"};
-    public static UniformGrid Range(UiSession session)
+    private sealed record RangeChoice(int Seconds,string Label)
+    {public override string ToString()=>Label;}
+    public static ComboBox Range(UiSession session)
     {
-        var row=new UniformGrid {Columns=3,Width=216};foreach(int seconds in HistoryRanges.Seconds)
-        {int n=seconds;var button=Button(HistoryRanges.Label(seconds),()=>session.SetRange(n));button.Tag=seconds;button.ToolTip="Show the last "+HistoryRanges.Label(seconds)+" of graph history";row.Children.Add(button);}
-        void Refresh(){foreach(Button b in row.Children){b.FontWeight=(int)b.Tag==session.HistorySeconds?FontWeights.Bold:FontWeights.Normal;b.SetResourceReference(Control.ForegroundProperty,(int)b.Tag==session.HistorySeconds?"Accent":"Muted");}}
-        row.Loaded+=(_,_)=>{session.Changed+=Refresh;Refresh();};row.Unloaded+=(_,_)=>session.Changed-=Refresh;return row;
+        var range=new ComboBox {Width=140,VerticalAlignment=VerticalAlignment.Center,
+            ItemsSource=HistoryRanges.Seconds.Select(seconds=>new RangeChoice(seconds,HistoryRanges.Label(seconds))).ToArray(),
+            DisplayMemberPath=nameof(RangeChoice.Label),SelectedValuePath=nameof(RangeChoice.Seconds),SelectedValue=session.HistorySeconds,
+            ToolTip="Choose how much graph history to show"};
+        System.Windows.Automation.AutomationProperties.SetName(range,"Graph history range");
+        range.SelectionChanged+=(_,_)=>{if(range.SelectedValue is int seconds&&seconds!=session.HistorySeconds)session.SetRange(seconds);};
+        void Refresh()=>range.SelectedValue=session.HistorySeconds;
+        range.Loaded+=(_,_)=>{session.Changed+=Refresh;Refresh();};range.Unloaded+=(_,_)=>session.Changed-=Refresh;return range;
     }
 }
 
