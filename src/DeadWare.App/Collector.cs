@@ -98,6 +98,7 @@ public sealed class Collector : IAsyncDisposable
                     values["cpu/usage"]=cpuLoad??fallbackCpu;
                     values["cpu/temperature"]=cpuTemp;
                     providerStarted=Stopwatch.GetTimestamp();var memory=windows.Memory();values["memory/used"]=memory.Used;values["memory/total"]=memory.Total;
+                    values["memory/usage"]=MemoryUsage.Percentage(memory.Used,memory.Total);
                     if(timings is not null)timings["windows/memory"]=Stopwatch.GetElapsedTime(providerStarted).TotalMilliseconds;
                     providerStarted=Stopwatch.GetTimestamp();var network=windows.Network(clock.Elapsed.TotalSeconds);
                     if(timings is not null)timings["windows/network"]=Stopwatch.GetElapsedTime(providerStarted).TotalMilliseconds;

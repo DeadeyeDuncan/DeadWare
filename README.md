@@ -7,7 +7,7 @@
 [![Windows build](https://github.com/DeadeyeDuncan/DeadWare/actions/workflows/build.yml/badge.svg)](https://github.com/DeadeyeDuncan/DeadWare/actions/workflows/build.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-DeadWare is a Windows desktop monitor for watching CPU/GPU usage and temperatures alongside application network activity. Keep the dashboard open, detach a graph, or use the compact desktop widget.
+DeadWare is a Windows desktop monitor for watching CPU/GPU usage and temperatures, RAM usage and application network activity. Keep the dashboard open, detach a graph, or use the compact desktop widget.
 
 ## Features
 
@@ -16,12 +16,12 @@ DeadWare is a Windows desktop monitor for watching CPU/GPU usage and temperature
 - Per-application network rates when Windows permits ETW capture.
 - Searchable sensor readings with minimum, maximum and average values.
 - Selectable graphics adapters on multi-GPU systems.
-- Separate graph windows and a compact widget with CPU/GPU usage, temperature and network charts and always-on-top controls.
+- Separate graph windows and a compact widget with CPU/GPU usage, temperature, RAM and network charts and always-on-top controls.
 - Compact pop-out graphs prioritize the current reading and chart; their options menu holds history range, Always on top and sensor statistics.
 - Close the dashboard to the system tray and keep graphs, the widget and monitoring running independently.
 - Restore the graphs and widget left open, including their saved positions and sizes.
 - Optional administrator startup at your Windows sign-in.
-- Shared 1-, 5- and 15-minute plus 1-, 3- and 6-hour graph ranges; all windows use one collector. Choose a range above the dashboard or in a pop-out's **⋯** menu. The choice and recent CPU/GPU/network traces are saved locally across quits and computer restarts. Cooling Health's longer saved history is separate.
+- Shared 1-, 5- and 15-minute plus 1-, 3- and 6-hour graph ranges; all windows use one collector. Choose a range above the dashboard or in a pop-out's **⋯** menu. The choice and recent CPU/GPU/RAM/network traces are saved locally across quits and computer restarts. Cooling Health's longer saved history is separate.
 - Local Cooling Health history, fixed reference comparisons, CSV export and optional sustained-change warnings.
 - Lifetime battery-percentage history with recorded charging and Windows battery-saver periods, Day/Week/Month/Year/All views, CSV export and a separate remembered window.
 - Startup and manual GitHub release checks, update-available notices, verified user-initiated updates and rollback to the previous installed version.
@@ -62,7 +62,7 @@ Closing the dashboard with its X or Alt+F4 hides it in the system tray. Pop-out 
 
 To fully stop monitoring, choose **Quit DeadWare** from the tray menu or dashboard. Keep window restoration enabled and leave your desired graphs and widget open when you quit: they will reopen with their saved positions, sizes and always-on-top choices. Closing a graph or widget individually keeps it closed next time. Positions are kept within available monitors if your display setup changes. Recent graph history and saved Cooling Health history remain available after quitting. Hiding the dashboard resets neither.
 
-Graph history is saved automatically in `%LOCALAPPDATA%\DeadWare\live-graph-history.db`, independently of Cooling Health recording. It retains the last six elapsed hours of CPU/GPU usage and temperature plus combined download/upload rates. Time while DeadWare was stopped remains a gap; after more than six hours away, the old readings fall outside the available range. Current values always come from fresh readings. Writes run in the background every 15 seconds and flush on normal quit; a crash or abrupt power loss can lose the latest unsaved batch. The database is capped at 64 MiB with a bounded journal. A save error is shown in the dashboard status while live monitoring continues.
+Graph history is saved automatically in `%LOCALAPPDATA%\DeadWare\live-graph-history.db`, independently of Cooling Health recording. It retains the last six elapsed hours of CPU/GPU usage and temperature, RAM usage percentage and combined download/upload rates. RAM uses a 0–100% scale with current used/total memory shown beside it; its history begins with readings collected in version 0.6.11 or later. Time while DeadWare was stopped remains a gap; after more than six hours away, the old readings fall outside the available range. Current values always come from fresh readings. Writes run in the background every 15 seconds and flush on normal quit; a crash or abrupt power loss can lose the latest unsaved batch. The database is capped at 64 MiB with a bounded journal. A save error is shown in the dashboard status while live monitoring continues.
 
 Restoration matches local machine and hardware metadata, including GPU model/type rather than enumeration order. Ambiguous identical-model GPUs are not restored; an indistinguishable same-model physical replacement cannot always be detected. Full sensor-table statistics and per-application traffic totals remain current-session data. The first upgrade from a version without graph persistence cannot recover its earlier in-memory traces.
 
@@ -72,7 +72,7 @@ Startup points to the executable's current location. Keep the extracted folder i
 
 ## Desktop widget
 
-The compact widget has a **Usage** graph with CPU and selected-GPU utilization together, followed by a **Temperature** graph with both devices' temperatures together. CPU uses the CPU theme color and a solid line in both graphs; GPU uses the GPU theme color and a dashed line in both. Small CPU/GPU legends show the current readings. Usage shares a 0–100% scale; temperature shares a °C scale that expands above 100°C when needed. A third **Network** graph shows download as a solid blue line and upload as a dashed green line on one bytes-per-second scale, with current rates in its legend. The widget follows the shared history range and GPU selection, uses saved graph history, and keeps unavailable readings and downtime as gaps. Memory and status remain below the graphs. The widget is taller to fit all three charts; older saved sizes expand to the new minimum while staying within the available work area.
+The compact widget has a **Usage** graph with CPU and selected-GPU utilization together, followed by a **Temperature** graph with both devices' temperatures together. CPU uses the CPU theme color and a solid line in both graphs; GPU uses the GPU theme color and a dashed line in both. Small CPU/GPU legends show the current readings. Usage shares a 0–100% scale; temperature shares a °C scale that expands above 100°C when needed. A third **RAM** graph shows physical memory usage on a 0–100% scale, with current percent and used/total memory in its legend. A fourth **Network** graph shows download as a solid blue line and upload as a dashed green line on one bytes-per-second scale, with current rates in its legend. The widget follows the shared history range and GPU selection, uses saved graph history, and keeps unavailable readings and downtime as gaps. Status remains below the graphs. The widget is taller to fit all four charts; older saved sizes expand to the new minimum while staying within the available work area.
 
 ## Hardware compatibility
 
@@ -131,7 +131,7 @@ dotnet run --project src/DeadWare.App/DeadWare.App.csproj
 Create a self-contained portable ZIP and SHA-256 checksum:
 
 ```powershell
-pwsh -File scripts/publish.ps1 -Version 0.6.10
+pwsh -File scripts/publish.ps1 -Version 0.6.11
 ```
 
 The packaging script runs tests before publishing, bundles the independent self-contained update helper, and records all managed file hashes in `deadware-package.json`. Output goes under `artifacts/`. GitHub Actions runs the same script. Pushing a normal three-part version tag such as `v0.6.0` builds and publishes a normal release after tests pass, using the matching `docs/releases/v0.6.0.md` notes. Workflows use pinned action commits.

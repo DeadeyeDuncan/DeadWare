@@ -1,5 +1,17 @@
 # Release validation
 
+## RAM usage graphs (0.6.11, 2026-10-27)
+
+RAM is a fixed 0–100% graph on the overview, beside Network, and the widget's fourth card between Temperature and Network. Current percentage and used/total memory use the Accent theme color. A RAM pop-out participates in saved-window restoration. The widget minimum is 300×520 and default 340×600; the existing placement policy grows older saved sizes and clamps them within the target work area.
+
+The collector derives one `memory/usage` percentage from the existing Windows used/total counters. Zero is valid; missing/nonfinite values, negative usage, nonpositive total and used-over-total pairs remain unknown. Percentage is calculated per sample, so a total-memory change does not reinterpret earlier readings. One machine-wide hashed RAM percentage metric joins the existing graph cache without a schema change or CPU/GPU metadata requirement. Older cache rows contain no RAM and remain gaps rather than backfilled readings. Cadence metadata and restart boundaries survive restore, and newer live samples win.
+
+All 382 tests passed (307 core/update, 75 Windows app), and `scripts/publish.ps1 -Version 0.6.11` built the self-contained app/helper package. Core and service regressions first failed before RAM calculation/projection existed, then passed. The UI test first exposed the older widget height; it now verifies six overview cards, a RAM Settings entry, four widget charts, RAM's single solid Accent line and 100% scale, null/time/restart gaps, current/zero/stale/unknown readings, CPU/GPU selection and existing network behavior. Widget renders at minimum/default/large client sizes passed for Midnight and Daylight. Six pure placement cases cover legacy 400/480-DIP sizes growing to 520 at 96/144/192 DPI; these are geometry checks rather than native HWND restoration.
+
+A half-second six-hour cache fixture retained all 43,201 samples with seven realistic hashed graph metrics, including RAM, using 38,793,216 bytes within the unchanged 64 MiB limit. Existing cache failure, retention and compatibility checks also passed. Independent review and whitespace checks passed.
+
+An ignored offscreen harness verified the real overview factory and RAM compact graph across all five themes and a switch back: single Accent trace/value, fixed percentage scale, correct used/total text, valid zero, stale/unknown states, four explicit gaps and empty history. RAM and Network retained equal card heights at representative 900/1220-frame content widths; compact pop-out clients at 284×141 and 400×190 kept labels within bounds. Midnight/Daylight overview and pop-out PNGs, plus widget PNGs, were visually inspected under `artifacts/ram-ui-validation/` and `artifacts/ui-ram-0.6.11/`. The harness used unshown managed owners with zero native handles and forced offscreen visibility; no collector/hardware worker or user-settings I/O ran. Popup detail text was checked without opening a native popup. No live installation, restart, rollback or real six-hour soak was performed. Release notes describe the feature without generic installation boilerplate.
+
 ## Network rate colors (0.6.10, 2026-10-27)
 
 Network activity cards use separate inline runs for the current download and upload rates. Download resolves the Download theme resource; upload resolves Cpu, matching the solid download and dashed upload graph lines. Refresh updates each run's text while retaining its dynamic color resource and the existing arrows, spacing and 24px size.

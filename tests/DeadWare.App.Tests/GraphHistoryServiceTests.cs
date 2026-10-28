@@ -72,7 +72,7 @@ public class GraphHistoryServiceTests
         reading=reading with {Gpus=[..reading.Gpus,new("/gpu/1","Same model")],Sensors=[..reading.Sensors,new("private-extra","Same model","GPU Core","%",50,"/gpu/1","GpuAmd","Load","Available")]};
         var mapping=GraphHistoryProjection.Mappings(reading,"machine");
         Assert.DoesNotContain(mapping.Values,key=>key.StartsWith("/gpu/"));
-        Assert.Equal(4,mapping.Count);
+        Assert.Equal(5,mapping.Count);
         Assert.DoesNotContain(mapping.Keys,key=>key.Contains("Test CPU")||key.Contains("private"));
     }
 
@@ -212,6 +212,61 @@ public class GraphHistoryServiceTests
         Assert.Equal(2,saved.Count);Assert.Equal(saved[0].SessionId,saved[1].SessionId);
     }
 
+    [Fact]
+    public void Ram_projection_is_machine_wide_without_hardware_metadata_and_excludes_raw_totals()
+    {
+        var reading=WithMemory(Reading(DateTimeOffset.UtcNow,1),8,16);
+        var mapping=GraphHistoryProjection.Mappings(reading,"machine");
+        var memory=Assert.Single(mapping,pair=>pair.Value=="memory/usage");
+        Assert.Equal(3,mapping.Count);
+        Assert.DoesNotContain(mapping.Values,key=>key is "memory/used" or "memory/total");
+        Assert.DoesNotContain(mapping.Keys,key=>key.Contains("machine")||key.Contains("Test CPU"));
+        Assert.NotEqual(memory.Key,Assert.Single(GraphHistoryProjection.Mappings(reading,"another-machine"),pair=>pair.Value=="memory/usage").Key);
+    }
+
+    [Fact]
+    public async Task Ram_history_flushes_and_restores_unknown_zero_cadence_and_restart_gaps()
+    {
+        using var fixture=new Fixture();var origin=DateTimeOffset.UtcNow.AddMinutes(-2);
+        var old=new GraphHistoryService(fixture.Path,"machine",new SampleHistory());
+        var first=WithMemory(Reading(origin,0),8,16);
+        var second=WithMemory(Reading(origin.AddSeconds(10),10),null,16);
+        var third=WithMemory(Reading(origin.AddSeconds(10.5),10.5),0,32);
+        old.Start();old.TryRecord(first with {Sample=first.Sample with {PollingIntervalSeconds=10}});
+        old.TryRecord(second with {Sample=second.Sample with {PollingIntervalSeconds=0.5}});
+        old.TryRecord(third with {Sample=third.Sample with {PollingIntervalSeconds=0.5}});
+        await old.StopAsync();
+        var history=new SampleHistory();var current=WithMemory(Reading(DateTimeOffset.UtcNow,1),8,32);
+        history.Add(current.Sample);
+        var reopened=new GraphHistoryService(fixture.Path,"machine",history);
+        reopened.Start();reopened.TryRecord(current);await reopened.StopAsync();
+        var points=history.Series("memory/usage",1,21600);
+        Assert.Equal(new double?[]{50,null,0,25},points.Select(point=>point.Value));
+        Assert.Equal(new double[]{10,0.5,0.5,1},points.Select(point=>point.PollingIntervalSeconds));
+        Assert.True(points[^1].BreakBefore);
+        Assert.Null(history.Read()[^1].SessionId);
+        Assert.Equal(25,history.Summarize("memory/usage",1,21600).Average);
+        var store=new GraphHistoryStore(fixture.Path);store.Initialize();
+        Assert.All(store.Read(DateTimeOffset.UtcNow),row=>Assert.Equal(3,row.Values.Count));
+    }
+
+    [Fact]
+    public async Task Legacy_rows_without_ram_remain_unknown_instead_of_backfilling_current_usage()
+    {
+        using var fixture=new Fixture();var now=DateTimeOffset.UtcNow;
+        var current=WithMemory(Reading(now,1),8,16);
+        var networkKey=Assert.Single(GraphHistoryProjection.Mappings(current,"machine"),pair=>pair.Value=="network/download").Key;
+        var store=new GraphHistoryStore(fixture.Path);store.Initialize();
+        store.Append([new("legacy",now.AddSeconds(-5),50,new Dictionary<string,double?>{[networkKey]=100})],now);
+        var history=new SampleHistory();history.Add(current.Sample);
+        var service=new GraphHistoryService(fixture.Path,"machine",history);
+        service.Start();service.TryRecord(current);await service.StopAsync();
+        var points=history.Series("memory/usage",1,60);
+        Assert.Equal(new double?[]{null,50},points.Select(point=>point.Value));
+        Assert.True(points[^1].BreakBefore);
+        Assert.Equal(50,history.Summarize("memory/usage",1,60).Average);
+    }
+
     private static Reading Reading(DateTimeOffset time,double mono,double? cpu=40,double? temperature=60,double? download=100,double? upload=20)=>new(
         new(time,mono,new Dictionary<string,double?>{{"cpu/usage",cpu},{"cpu/temperature",temperature},{"network/download",download},{"network/upload",upload},{"private-extra",999}}),
         [],[new("cpu-load","Test CPU","CPU Total","%",cpu,"/cpu/0","Cpu","Load","Available")],
@@ -220,6 +275,12 @@ public class GraphHistoryServiceTests
     {
         var values=reading.Sample.Values.ToDictionary(p=>p.Key,p=>p.Value);values[id+"/usage"]=value;values[id+"/temperature"]=55;
         return reading with {Sample=reading.Sample with {Values=values},Gpus=[new(id,model)],Sensors=[..reading.Sensors,new(id+"/load",model,"GPU Core","%",value,id,"GpuAmd","Load","Available")]};
+    }
+    private static Reading WithMemory(Reading reading,double? used,double? total)
+    {
+        var values=reading.Sample.Values.ToDictionary(pair=>pair.Key,pair=>pair.Value);
+        values["memory/used"]=used;values["memory/total"]=total;values["memory/usage"]=MemoryUsage.Percentage(used,total);
+        return reading with {Sample=reading.Sample with {Values=values},Sensors=[],Gpus=[]};
     }
     private sealed class Fixture:IDisposable
     {

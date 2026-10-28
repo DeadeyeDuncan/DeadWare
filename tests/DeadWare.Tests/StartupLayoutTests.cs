@@ -20,9 +20,9 @@ public class StartupLayoutTests
     }
     [Fact] public void OpenWindowsRoundtripFiltersUnknownNullAndDuplicateIds()
     {
-        var read=SettingsCodec.Read("""{"OpenWindows":["cpu","cpu",null,"arbitrary","widget","GPU","network"],"RestoreOpenWindows":false}""");
+        var read=SettingsCodec.Read("""{"OpenWindows":["cpu","cpu",null,"arbitrary","widget","GPU","network","memory","memory"],"RestoreOpenWindows":false}""");
         var roundtrip=SettingsCodec.Read(SettingsCodec.Write(read.Settings)).Settings;
-        Assert.Equal(new[]{"cpu","widget","network"},roundtrip.OpenWindows);
+        Assert.Equal(new[]{"cpu","widget","network","memory"},roundtrip.OpenWindows);
         Assert.False(roundtrip.RestoreOpenWindows);
         Assert.Empty(SettingsCodec.Read("""{"OpenWindows":null}""").Settings.OpenWindows);
     }
