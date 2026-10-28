@@ -174,6 +174,7 @@ public class BatteryUiTests
                         using var file=File.Create(Path.Combine(output,$"updates-{theme}.png"));var encoder=new PngBitmapEncoder();encoder.Frames.Add(BitmapFrame.Create(bitmap));encoder.Save(file);
                     }
                 }
+                VerifyReleaseNotes(session, assembly);
                 // Exercise the actual dashboard with an unstarted session: no hardware,
                 // database writes, native window or installed settings are involved.
                 Set(session, "captureWindows", new Dictionary<Window, Action>());
@@ -238,6 +239,67 @@ public class BatteryUiTests
         thread.SetApartmentState(ApartmentState.STA); thread.Start();
         Assert.True(thread.Join(TimeSpan.FromSeconds(30)), "Offscreen rendering timed out.");
         if (failure is not null) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(failure).Throw();
+    }
+
+    private static void VerifyReleaseNotes(UiSession session, Assembly assembly)
+    {
+        var type = assembly.GetType("DeadWare.App.UpdatesPage")!;
+        var page = (ScrollViewer)Activator.CreateInstance(type, All, null, [session], null)!;
+        var release = new DeadWare.UpdateCore.ReleaseInfo(new Version(0, 6, 5), "v0.6.5", "Newest changes", new Uri("https://example.invalid/update.zip"), new Uri("https://example.invalid/checksum"), new string('a', 64), 100);
+        void Apply(UpdateState state) { type.GetMethod("ApplyState", All)!.Invoke(page, [state]); page.UpdateLayout(); }
+        TextBlock[] Text() => Descendants(page).OfType<TextBlock>().ToArray();
+        string[] Versions() => Text().Where(block => block.Text.StartsWith("v0.6.")).Select(block => block.Text).ToArray();
+        Apply(new UpdateState("0.6.2") { Release = release });
+        page.Measure(new Size(620, 720)); page.Arrange(new Rect(0, 0, 620, 720)); page.UpdateLayout();
+        Assert.Contains(Text(), block => block.Text == "v0.6.5");
+        Assert.Contains(Text(), block => block.Text == "Newest changes");
+        string longNotes = string.Join("\n", Enumerable.Range(1, 30).Select(index => $"Change {index}: detailed release notes wrap within the available page width and remain readable while scrolling."));
+        var state = new UpdateState("0.6.2")
+        {
+            Release = release,
+            ReleaseNotes = [new(new(0, 6, 5), "v0.6.5", "Newest changes"), new(new(0, 6, 4), "v0.6.4", longNotes), new(new(0, 6, 3), "v0.6.3", " \n")]
+        };
+        string? output = Environment.GetEnvironmentVariable("DEADWARE_UI_OUTPUT");
+        foreach (string theme in new[] { "Midnight", "Daylight" })
+        {
+            assembly.GetType("DeadWare.App.Theme")!.GetMethod("Apply", All)!.Invoke(null, [theme]);
+            page = (ScrollViewer)Activator.CreateInstance(type, All, null, [session], null)!;
+            foreach (var size in new[] { new Size(420, 720), new Size(900, 900) })
+            {
+                Apply(state); page.Measure(size); page.Arrange(new Rect(new Point(), size)); page.UpdateLayout();
+                Assert.Equal(new[] { "v0.6.5", "v0.6.4", "v0.6.3" }, Versions());
+                Assert.DoesNotContain(Text(), block => block.Text == "v0.6.2");
+                Assert.Contains(Text(), block => block.Text == "No release notes provided.");
+                Assert.Equal(ScrollBarVisibility.Auto, page.VerticalScrollBarVisibility);
+                Assert.True(page.ExtentHeight > page.ViewportHeight);
+                var notesBody = Text().Single(block => block.Text == longNotes);
+                Assert.Equal(TextWrapping.Wrap, notesBody.TextWrapping); Assert.True(notesBody.ActualWidth < size.Width);
+                var first = Text().Single(block => block.Text == "v0.6.5");
+                Apply(state with { Busy = true, Progress = 25 }); Assert.Same(first, Text().Single(block => block.Text == "v0.6.5"));
+                if (output is not null)
+                {
+                    foreach (bool end in new[] { false, true })
+                    {
+                        double notesTop = Text().Single(block => block.Text == "Release notes").TransformToAncestor(page).Transform(new Point()).Y + page.VerticalOffset;
+                        page.ScrollToVerticalOffset(end ? page.ExtentHeight : Math.Max(0, notesTop - 8)); page.UpdateLayout();
+                        var bitmap = new RenderTargetBitmap((int)size.Width, (int)size.Height, 96, 96, PixelFormats.Pbgra32); bitmap.Render(page);
+                        using var file = File.Create(Path.Combine(output, $"release-notes-{theme}-{size.Width:0}-{(end ? "end" : "start")}.png"));
+                        var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap)); encoder.Save(file);
+                    }
+                }
+            }
+        }
+        Apply(state with { ReleaseNotes = [new(new(0, 6, 6), "v0.6.6", "Replacement history")] });
+        Assert.Equal(new[] { "v0.6.6" }, Versions()); Assert.DoesNotContain(Text(), block => block.Text == longNotes);
+        Apply(state with { ReleaseNotes = [], ReleaseNotesStatus = "Earlier release notes could not be loaded." });
+        Assert.Equal(new[] { "v0.6.5" }, Versions()); Assert.Contains(Text(), block => block.Text == "Newest changes");
+        var text = Text(); Assert.True(Array.FindIndex(text, block => block.Text == "Earlier release notes could not be loaded.") < Array.FindIndex(text, block => block.Text == "v0.6.5"));
+        Apply(state with { ReleaseNotes = [], ReleaseNotesStatus = "Loading release notes…" });
+        Assert.Contains(Text(), block => block.Text == "Loading release notes…"); Assert.Contains(Text(), block => block.Text == "Newest changes");
+        Apply(new UpdateState("0.6.2") { Release = release with { Notes = "" } });
+        Assert.Contains(Text(), block => block.Text == "No release notes provided."); Assert.DoesNotContain(Text(), block => block.Text == "Loading release notes…");
+        Apply(new UpdateState("0.6.2")); Assert.Empty(Versions());
+        Assert.Contains(Text(), block => block.Text == "Release notes appear after a published release is found.");
     }
 
     private static void VerifyUpdateNotice(MainWindow dashboard, UpdateService updates, Dictionary<string, FrameworkElement> pages, StackPanel navigation, Grid shell)

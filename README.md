@@ -40,6 +40,8 @@ Start as a normal user. If a capability needs additional permissions, the app sh
 
 DeadWare checks the latest normal release in `DeadeyeDuncan/DeadWare` once after starting, without delaying monitoring. When a newer version is available, a dashboard banner appears outside the Updates page and a system-tray notification lets you know; **Review update** opens Updates. You choose when to download and install it with **Update & restart**. You can also choose **Check for updates** on that page at any time. Checks do not download app packages or install anything. Draft/preview releases and source commits are excluded, and an installed newer build stays on its current version. Offline or rate-limit errors appear on Updates without interrupting startup. There is no recurring polling while the app remains open.
 
+Release notes include every normal release newer than the installed version through the offered update, newest first, with separate version headings. If earlier notes cannot be loaded, the page keeps the latest notes and explains the missing history. Installation still uses the latest eligible package.
+
 When an eligible update is available, **Update & restart** downloads the complete Windows x64 ZIP, checks its SHA-256 digest/checksum and validates the package's file manifest. Download/preparation can be cancelled. Once the installer is ready, DeadWare performs its normal Quit to save settings and drain history, replaces only managed app files, and restarts at the same path with remembered windows. Settings and battery/Cooling Health/live graph databases stay in `%LOCALAPPDATA%\DeadWare`.
 
 **Roll back & restart** restores the previous verified installed version, keeping current settings and recordings. The first updater-enabled installation may have no registered rollback; one becomes available after an in-app update. Only a verified older backup is offered. If replacement or startup fails, the helper restores the previous app when the failed process has exited. It never forcibly terminates monitoring or overwrites a still-running replacement. A running app that did not confirm startup must be quit normally before rollback/recovery can proceed.
@@ -127,7 +129,7 @@ dotnet run --project src/DeadWare.App/DeadWare.App.csproj
 Create a self-contained portable ZIP and SHA-256 checksum:
 
 ```powershell
-pwsh -File scripts/publish.ps1 -Version 0.6.5
+pwsh -File scripts/publish.ps1 -Version 0.6.6
 ```
 
 The packaging script runs tests before publishing, bundles the independent self-contained update helper, and records all managed file hashes in `deadware-package.json`. Output goes under `artifacts/`. GitHub Actions runs the same script. Pushing a normal three-part version tag such as `v0.6.0` builds and publishes a normal release after tests pass, using the matching `docs/releases/v0.6.0.md` notes. Workflows use pinned action commits.

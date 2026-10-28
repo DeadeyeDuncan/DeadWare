@@ -12,6 +12,8 @@ public sealed record UpdateState(string InstalledVersion)
     public string LocalStatus {get;init;}="";
     public string LastOperation {get;init;}="";
     public ReleaseInfo? Release {get;init;}
+    public IReadOnlyList<ReleaseNote> ReleaseNotes {get;init;}=[];
+    public string ReleaseNotesStatus {get;init;}="";
     public BackupRecord? Previous {get;init;}
     public bool InstallationVerified {get;init;}
     public bool NeedsRecovery {get;init;}
@@ -81,12 +83,27 @@ public sealed class UpdateService
         {
             var release=await releases.CheckAsync(token);
             token.ThrowIfCancellationRequested();
-            Publish(s=>s with {Release=release,LastChecked=DateTimeOffset.Now,Status=release is null?"No normal release has been published yet.":
+            bool newer=release is not null&&ReleasePolicy.IsNewer(release,State.InstalledVersion);
+            IReadOnlyList<ReleaseNote> notes=release is null?[]:Array.AsReadOnly(new[]{new ReleaseNote(release.Version,release.Tag,release.Notes)});
+            Publish(s=>s with {Release=release,ReleaseNotes=notes,ReleaseNotesStatus=newer?"Loading release notes for newer versions…":"",LastChecked=DateTimeOffset.Now,Status=release is null?"No normal release has been published yet.":
                 ReleasePolicy.IsNewer(release,s.InstalledVersion)?$"Version {release.Version} is available.":$"No newer release. GitHub has {release.Version}; installed {s.InstalledVersion}."});
-            if(release is not null&&ReleasePolicy.IsNewer(release,State.InstalledVersion))
+            if(release is not null&&newer)
             {
                 bool first;lock(gate)first=announced.Add(release.Version);
                 if(first)UpdateAvailable?.Invoke(release);
+                try
+                {
+                    var history=await releases.ReadNotesAsync(State.InstalledVersion,release,token);
+                    token.ThrowIfCancellationRequested();
+                    Publish(s=>s with {ReleaseNotes=history,ReleaseNotesStatus=""});
+                }
+                catch(OperationCanceledException) when(token.IsCancellationRequested)
+                {
+                    Publish(s=>s with {ReleaseNotesStatus="Release note history check cancelled. Showing the latest release only."});
+                    throw;
+                }
+                catch(Exception)
+                {Publish(s=>s with {ReleaseNotesStatus="Could not load earlier release notes. Showing the latest release only; Check for updates to retry."});}
             }
         }
         catch(OperationCanceledException){Publish(s=>s with {Status=token.IsCancellationRequested?"Check cancelled.":"GitHub did not respond in time. Try again later."});}
