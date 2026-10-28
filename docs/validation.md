@@ -1,5 +1,13 @@
 # Release validation
 
+## Network rate colors (0.6.10, 2026-10-27)
+
+Network activity cards use separate inline runs for the current download and upload rates. Download resolves the Download theme resource; upload resolves Cpu, matching the solid download and dashed upload graph lines. Refresh updates each run's text while retaining its dynamic color resource and the existing arrows, spacing and 24px size.
+
+All 355 tests passed (289 core/update, 66 Windows app), and `scripts/publish.ps1 -Version 0.6.10` built the self-contained app/helper package. Independent review found no issues and `git diff --check` passed. No live installation or restart was performed; installation remains available for the user's updater test. The release notes describe the color change without installation boilerplate.
+
+An offscreen real ChartCard was reused through Midnight, Ember, Glacier, Amethyst, Daylight and back to Midnight. Each current-rate color exactly matched its graph StreamGeometry pen; download remained solid and upload dashed. Arrows/rates, single-line 24px formatting, stale/unknown dashes and one-direction-only readings were checked. Midnight and Daylight 600×350 renders were visually inspected. Evidence and previews are in ignored `artifacts/network-card-color-validation/`. The harness used an unshown managed Window with a verified zero native handle and forced card visibility for offscreen refresh; it started no collector or hardware worker and performed no user-settings I/O. This is synthetic UI proof rather than a live installation test.
+
 ## Adjustable data polling (0.6.9, 2026-10-27)
 
 Settings offers 0.5, 1, 2, 5 and 10 seconds, retaining the one-second default and saving the choice. Changes take effect at the next scheduling boundary; a pending wait or hardware pass may finish first. Collection remains one serial worker, with at least 250 ms of idle time and a full selected interval after an overrun. The display refreshes at 0.5 seconds for the fastest choice and one second otherwise. Freshness uses the selected and last sample cadences so switching intervals does not prematurely blank valid readings. The sidebar shows the current interval.
