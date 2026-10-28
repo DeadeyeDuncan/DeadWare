@@ -37,9 +37,20 @@ internal static class NativePlacement
         if(GetDpiForMonitor(target,0,out uint targetDpi,out _)==0&&targetDpi>0)dpi=targetDpi;
         var defaults=WindowCoordinates.FromDipSize(bounded.Left,bounded.Top,defaultWidthDips,defaultHeightDips,dpi,window.Topmost);
         var placement=WindowPlacement.Clamp(saved??current,areas,defaults.Width,defaults.Height);
+        placement=ClampMinimum(placement,areas,window.MinWidth,window.MinHeight,dpi);
         // SetWindowPos uses the same physical coordinates. WPF processes WM_DPICHANGED itself;
         // assigning these pixels to Window.Left/Width (DIPs) would apply scaling a second time.
         SetWindowPos(handle,IntPtr.Zero,(int)placement.Left,(int)placement.Top,(int)placement.Width,(int)placement.Height,0x0014);
+    }
+    public static WindowPlacement ClampMinimum(WindowPlacement placement,IReadOnlyList<WorkArea> areas,double minWidthDips,double minHeightDips,uint dpi)
+    {
+        // Grow in target-monitor pixels before clamping position, so old small layouts remain on screen.
+        // Select the work area from the original bounded rectangle, not the enlarged footprint.
+        var target=areas.Where(a=>double.IsFinite(a.Left)&&double.IsFinite(a.Top)&&a.Width>0&&a.Height>0)
+            .OrderByDescending(a=>Math.Max(0,Math.Min(placement.Left+placement.Width,a.Left+a.Width)-Math.Max(placement.Left,a.Left))*Math.Max(0,Math.Min(placement.Top+placement.Height,a.Top+a.Height)-Math.Max(placement.Top,a.Top)))
+            .Take(1).ToArray();
+        var minimum=WindowCoordinates.FromDipSize(placement.Left,placement.Top,minWidthDips,minHeightDips,dpi,placement.Topmost);
+        return WindowPlacement.Clamp(placement with {Width=Math.Max(placement.Width,minimum.Width),Height=Math.Max(placement.Height,minimum.Height)},target,placement.Width,placement.Height);
     }
     [StructLayout(LayoutKind.Sequential)] private struct RectI {public int Left,Top,Right,Bottom;}
     [StructLayout(LayoutKind.Sequential)] private struct MonitorInfo {public int Size;public RectI Monitor,Work;public uint Flags;}

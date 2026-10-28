@@ -1,5 +1,15 @@
 # Release validation
 
+## Network graph in the widget candidate (0.6.7, 2026-10-27)
+
+The widget adds a third Network card below the existing Usage and Temperature cards. It reuses the unchanged HistoryChart network renderer: solid Download blue and dashed Cpu green for upload, sharing a dynamic bytes-per-second scale that includes both directions. Current rates move into the Network legend; memory/status, pinning, shared history/range and CPU/GPU grouping/colors remain. The minimum is now 300×400 and the default 340×480 so all three charts remain readable.
+
+All 299 automated tests passed (239 core/update, 60 Windows app), and self-contained app/helper packaging succeeded. The real-widget regression first failed because only two charts existed, then passed with cpu/cputemp/network. Actual-drawing checks cover both directions, upload-dominant scaling, per-direction gaps, stale/empty/missing-download states, high-throughput axis/legend bounds at minimum width, prior GPU switching and CPU/GPU traces, footer bounds and event cleanup. Midnight/Daylight previews at minimum/default/large sizes were inspected under ignored `artifacts/ui-widget-network/`. The targeted UI/minimum-placement gate passed 10/10.
+
+Older physical saved sizes are enlarged to target-monitor WPF minima before final work-area clamping. Eight pure placement cases cover 320/390-pixel legacy heights at 96/144/192 DPI, negative monitor coordinates, pin choice, unchanged larger bounds, and adjacent monitors. Review caught a first-draft regression where enlargement could select a neighboring monitor and apply the original DPI there; the exact two-monitor case failed before correction, then passed after selecting the work area from the original bounded rectangle. Final independent review found no actionable issues; whitespace checks passed.
+
+These are synthetic/offscreen rendering and pure placement-policy checks, not actual HWND restoration or real mixed-DPI monitor tests. No native test windows, hardware collector or user-settings writes were used. The inspected installed package reported 0.6.6 before publication; live installation remains the user's choice.
+
 ## Release notes for every missed version (0.6.6, 2026-10-27)
 
 Updates now lists each normal release newer than the installed version through the latest eligible update, sorted numerically newest first and labelled by version. The existing validated latest release remains the sole installation target. Notes for intermediate versions do not require old package assets. Drafts, previews, installed/older versions and releases beyond the offered target are excluded; duplicate versions are collapsed and validated latest notes take precedence. Failed or cancelled optional history retrieval preserves the latest notes and update availability with an explicit notes-area explanation.

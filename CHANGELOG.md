@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.7 — Network graph in the widget
+
+- Add a third widget graph for download and upload, sharing a bytes-per-second scale and the existing history range.
+- Show current rates in the network legend while retaining CPU/GPU usage and temperature graphs, memory and status.
+- Make room for all three charts and grow older saved sizes to the window minimum before clamping their on-screen position.
+
 ## 0.6.6 — Release notes for every missed version
 
 - Show notes for every normal release newer than the installed version through the offered update, with separate version sections ordered newest first.

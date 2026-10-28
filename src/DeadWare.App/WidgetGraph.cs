@@ -3,22 +3,25 @@ using System.Windows.Controls;
 using System.Windows.Shapes;
 namespace DeadWare.App;
 
-/// <summary>Compare CPU and GPU readings for one metric over the shared history.</summary>
+/// <summary>Compare two readings for one metric over the shared history.</summary>
 internal sealed class WidgetGraph : Border
 {
     private readonly UiSession session;
     private readonly string kind;
-    private readonly TextBlock title=Ui.Text("",12,"Muted"),cpu=Ui.Text("",11,"Cpu"),gpu=Ui.Text("",11,"Gpu");
+    private readonly TextBlock title=Ui.Text("",12,"Muted"),primary=Ui.Text("",11),secondary=Ui.Text("",11);
     private readonly HistoryChart chart;
     public WidgetGraph(UiSession session,string kind)
     {
         this.session=session;this.kind=kind;
         CornerRadius=new(8);BorderThickness=new(1);Padding=new(8,5,8,4);Margin=new(0,5,0,0);
         SetResourceReference(BackgroundProperty,"Panel");SetResourceReference(BorderBrushProperty,"Line");
-        chart=new(session,kind,true){CompareDevices=true,ClipToBounds=true};
+        bool network=kind=="network";
+        chart=new(session,kind,true){CompareDevices=!network,ClipToBounds=true};
         var grid=new Grid();grid.RowDefinitions.Add(new(){Height=GridLength.Auto});grid.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});
         title.TextWrapping=TextWrapping.NoWrap;title.TextTrimming=TextTrimming.CharacterEllipsis;
-        var legend=Ui.Row(Legend(cpu,"Cpu",false),Legend(gpu,"Gpu",true));
+        string firstColor=network?"Download":"Cpu",secondColor=network?"Cpu":"Gpu";
+        primary.SetResourceReference(TextBlock.ForegroundProperty,firstColor);secondary.SetResourceReference(TextBlock.ForegroundProperty,secondColor);
+        var legend=Ui.Row(Legend(primary,firstColor,false),Legend(secondary,secondColor,true));
         var header=new DockPanel();DockPanel.SetDock(legend,Dock.Right);header.Children.Add(legend);header.Children.Add(title);grid.Children.Add(header);
         Grid.SetRow(chart,1);grid.Children.Add(chart);Child=grid;
     }
@@ -31,10 +34,19 @@ internal sealed class WidgetGraph : Border
     public void Refresh()
     {
         double? Value(string metric)=>session.Stale?null:session.Value(session.MetricId(metric));
-        bool thermal=kind=="cputemp";string unit=thermal?" °C":" %";
-        title.Text=thermal?"Temp":"Usage";title.ToolTip=thermal?"CPU and selected GPU temperature (°C)":"CPU and selected GPU usage (%)";
-        cpu.Text="CPU "+Ui.Number(Value(kind))+unit;cpu.ToolTip=session.Current?.CpuName;
-        gpu.Text="GPU "+Ui.Number(Value(thermal?"gputemp":"gpu"))+unit;gpu.ToolTip=session.GpuName;
+        if(kind=="network")
+        {
+            title.Text="Network";title.ToolTip="Network download (solid) and upload (dashed), in bytes per second";
+            primary.Text="↓ "+Ui.Bytes(session.Stale?null:session.Value("network/download"),true);primary.ToolTip="Download rate";
+            secondary.Text="↑ "+Ui.Bytes(session.Stale?null:session.Value("network/upload"),true);secondary.ToolTip="Upload rate";
+        }
+        else
+        {
+            bool thermal=kind=="cputemp";string unit=thermal?" °C":" %";
+            title.Text=thermal?"Temp":"Usage";title.ToolTip=thermal?"CPU and selected GPU temperature (°C)":"CPU and selected GPU usage (%)";
+            primary.Text="CPU "+Ui.Number(Value(kind))+unit;primary.ToolTip=session.Current?.CpuName;
+            secondary.Text="GPU "+Ui.Number(Value(thermal?"gputemp":"gpu"))+unit;secondary.ToolTip=session.GpuName;
+        }
         chart.Refresh();
     }
 }
