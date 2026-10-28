@@ -1,5 +1,17 @@
 # Release validation
 
+## Choose widget graphs (0.6.12, 2026-10-27)
+
+Settings has four saved checkboxes for combined CPU/GPU usage, combined CPU/GPU temperature, RAM and Network. Changes update an open widget immediately. Legacy settings default to all four; explicit empty lists remain empty, and null/unsupported/duplicate entries normalize to a canonical supported selection. All-off shows a Settings hint while pin and status remain available. Hiding cards collapses their grid rows and skips their UI refresh; the shared collector and history continue.
+
+Existing size, pin and window state are retained when hiding cards, with a lower minimum so the user can resize. Count-based fresh defaults are 180/240/360/480/600 DIPs for zero through four graphs; minima are 180/200/280/400/520. On live minimum growth, normal native bounds are captured before changing MinHeight and restored through the existing physical-pixel work-area policy. Minimized/maximized/zero-handle windows skip native restoration. No new placement algorithm or history schema was added.
+
+All 414 tests passed (334 core/update, 80 Windows app), and `scripts/publish.ps1 -Version 0.6.12` built the self-contained app/helper package. Model tests first failed on missing selection APIs, then passed, covering all 16 settings subsets, default-list independence, canonical normalization and height policy. The real Settings UI regression first found zero controls where four were expected. It now exercises the checkboxes, guarded programmatic synchronization, actual saved RAM/Network choices and fresh-widget reopening with those choices through a temporary settings writer.
+
+The offscreen real-widget fixture rendered all 16 selections in Midnight and Daylight at their minimum client heights, checking visible kinds/order, collapsed rows, empty hint, footer bounds, current size/pin/state retention and unaffected history. It caught a real one-graph minimum bug: 180 DIPs left a 45.45px chart below the renderer's 48px threshold. Raising that minimum to 200 fixed it. The focused UI/placement gate passed 20/20; five pure two-monitor cases cover count-based growth at 192 DPI without switching the selected monitor. Existing four-card colors, readings, gaps, GPU switching and close cleanup remain covered.
+
+Settings and representative one/two/zero-graph PNGs were visually inspected under ignored `artifacts/ui-widget-selection-0.6.12/`. Independent reviews and whitespace checks passed. These are offscreen WPF and pure geometry checks; no native test windows, live collection, user-profile settings writes, live installation, restart or rollback were performed. Release notes contain feature behavior without generic installation instructions.
+
 ## RAM usage graphs (0.6.11, 2026-10-27)
 
 RAM is a fixed 0–100% graph on the overview, beside Network, and the widget's fourth card between Temperature and Network. Current percentage and used/total memory use the Accent theme color. A RAM pop-out participates in saved-window restoration. The widget minimum is 300×520 and default 340×600; the existing placement policy grows older saved sizes and clamps them within the target work area.

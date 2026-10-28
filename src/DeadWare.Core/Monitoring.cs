@@ -255,6 +255,7 @@ public record WindowPlacement(double Left,double Top,double Width,double Height,
 }
 public sealed class UserSettings
 {
+    public List<string> WidgetGraphs {get;set;}=WidgetGraphSelection.Kinds.ToList();
     public double PollingIntervalSeconds {get;set;}=1;
     public bool BatteryRecording {get;set;}=true;
     public bool RestoreOpenWindows {get;set;}=true;
@@ -283,6 +284,9 @@ public static class SettingsCodec
             if(s is null) return new(new(),"Settings were empty; defaults restored.");
             if(s.Theme is not ("Midnight" or "Ember" or "Glacier" or "Amethyst" or "Daylight")) s.Theme="Midnight";
             bool invalid=!HistoryRanges.IsSupported(s.HistorySeconds) || s.Windows is null || PollingPolicy.Normalize(s.PollingIntervalSeconds)!=s.PollingIntervalSeconds;
+            var widgetGraphs=WidgetGraphSelection.Normalize(s.WidgetGraphs);
+            invalid|=s.WidgetGraphs is null||!s.WidgetGraphs.SequenceEqual(widgetGraphs,StringComparer.Ordinal);
+            s.WidgetGraphs=widgetGraphs;
             s.PollingIntervalSeconds=PollingPolicy.Normalize(s.PollingIntervalSeconds);
             if(!HistoryRanges.IsSupported(s.HistorySeconds)) s.HistorySeconds=60;
             s.Windows??=new();

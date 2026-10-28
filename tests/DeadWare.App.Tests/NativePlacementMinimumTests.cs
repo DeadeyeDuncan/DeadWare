@@ -8,6 +8,16 @@ namespace DeadWare.App.Tests;
 public class NativePlacementMinimumTests
 {
     [Theory]
+    [InlineData(0,390,650)] [InlineData(1,400,640)] [InlineData(2,560,480)]
+    [InlineData(3,800,240)] [InlineData(4,1040,0)]
+    public void Selected_widget_count_keeps_live_minimum_growth_on_its_original_monitor(int count,double height,double top)
+    {
+        var saved=new WindowPlacement(1260,650,340,390,true);
+        WorkArea[] areas=[new(0,0,1600,1040),new(1600,0,2560,1440)];
+        Assert.Equal(new WindowPlacement(1000,top,600,height,true),Constrain(saved,areas,300,WidgetGraphSelection.MinimumHeight(count),192));
+    }
+
+    [Theory]
     [InlineData(400,96)] [InlineData(480,96)]
     [InlineData(400,144)] [InlineData(480,144)]
     [InlineData(400,192)] [InlineData(480,192)]
