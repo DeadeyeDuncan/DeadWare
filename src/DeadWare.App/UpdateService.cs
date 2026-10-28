@@ -35,6 +35,7 @@ public sealed class UpdateService
     private readonly HashSet<Version> announced=new();
     private UpdateState state;
     private int busy;
+    private int checking;
     private int startupChecked;
     public UpdateState State=>Volatile.Read(ref state);
     public event Action? Changed;
@@ -44,15 +45,16 @@ public sealed class UpdateService
     private void Publish(Func<UpdateState,UpdateState> change)
     {lock(gate)Volatile.Write(ref state,change(state));Changed?.Invoke();}
     public void ReportFailure(Exception error)=>Publish(s=>s with {Status="Update could not continue: "+error.Message});
-    private bool Begin(string message)
+    private bool Begin(string message,bool metadataCheck=false)
     {
         if(Interlocked.CompareExchange(ref busy,1,0)!=0)return false;
+        Volatile.Write(ref checking,metadataCheck?1:0);
         Publish(s=>s with {Busy=true,CanCancel=true,Progress=0,Status=message});return true;
     }
-    private void End(){Interlocked.Exchange(ref busy,0);Publish(s=>s with {Busy=false,CanCancel=false});}
+    private void End(){Volatile.Write(ref checking,0);Interlocked.Exchange(ref busy,0);Publish(s=>s with {Busy=false,CanCancel=false});}
     public async Task ReadLocalAsync()
     {
-        if(Volatile.Read(ref busy)!=0)return;
+        if(Volatile.Read(ref busy)!=0&&Volatile.Read(ref checking)==0)return;
         try
         {
             var result=await Task.Run(()=>
@@ -78,7 +80,7 @@ public sealed class UpdateService
     }
     public async Task CheckAsync(CancellationToken token)
     {
-        if(!Begin("Checking GitHub…"))return;
+        if(!Begin("Checking GitHub…",true))return;
         try
         {
             var release=await releases.CheckAsync(token);

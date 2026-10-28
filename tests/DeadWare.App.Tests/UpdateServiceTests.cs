@@ -158,6 +158,25 @@ public class UpdateServiceTests
         Assert.False(service.State.Busy);Assert.Contains("cancelled",service.State.Status,StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("Loading",service.State.ReleaseNotesStatus);Assert.Single(service.State.ReleaseNotes);
     }
+    [Fact] public async Task Local_install_verification_can_finish_while_note_history_is_loading()
+    {
+        string root=Path.Combine(Path.GetTempPath(),"DeadWare-notes-verification-"+Guid.NewGuid().ToString("N"));Directory.CreateDirectory(root);
+        var handler=new NotesWaitingHandler();using var http=new HttpClient(handler);using var cancellation=new CancellationTokenSource();
+        var service=new UpdateService("0.6.2",root,http,Path.Combine(root,"cache"));
+        Task check=Task.CompletedTask;
+        try
+        {
+            var files=new Dictionary<string,string>{{"DeadWare.exe","app"},{"DeadWare.dll","assembly"},{"DeadWare.Updater.exe","helper"}};
+            foreach(var pair in files)File.WriteAllText(Path.Combine(root,pair.Key),pair.Value);
+            SafeFiles.WriteJson(Path.Combine(root,Packages.ManifestName),new PackageManifest(1,"0.6.2",files.ToDictionary(p=>p.Key,p=>Packages.Hash(Path.Combine(root,p.Key)))));
+            check=service.CheckAsync(cancellation.Token);await handler.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.True(service.State.Busy);await service.ReadLocalAsync();
+            Assert.True(service.State.InstallationVerified);Assert.False(service.State.CanUpdate);
+            cancellation.Cancel();await check.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.True(service.State.CanUpdate);
+        }
+        finally{cancellation.Cancel();await check;Directory.Delete(root,true);}
+    }
     private sealed class NotesWaitingHandler:HttpMessageHandler
     {
         public TaskCompletionSource Started {get;}=new(TaskCreationOptions.RunContinuationsAsynchronously);
