@@ -66,13 +66,19 @@ public sealed class UiSession
     }
     public void Start()
     {
-        foreach(string key in layout.Remembered)OpenDetached(key);
+        // Restore the saved window types exactly; the launch preference only affects new requests.
+        foreach(string key in layout.Remembered)OpenDetachedCore(key);
         GraphHistory.Start();Cooling.Start();Battery.Start();_ = SaveAsync();Collector.Start();timer.Start();
     }
     public void SetRange(int seconds) {Settings.HistorySeconds=seconds;Changed?.Invoke();_ = SaveAsync();}
     public void SetGpu(string? id) {Settings.SelectedGpuId=id;Changed?.Invoke();_ = SaveAsync();}
     public void SetTheme(string theme) {Settings.Theme=theme;Theme.Apply(theme);Changed?.Invoke();_ = SaveAsync();}
     public void SetExtendedSensors(bool enabled) {Settings.ExtendedSensors=enabled;_ = SaveAsync();}
+    public void SetJoinedPopouts(bool enabled)
+    {
+        if(Settings.JoinCpuGpuPopouts==enabled)return;
+        Settings.JoinCpuGpuPopouts=enabled;Changed?.Invoke();_ = SaveAsync();
+    }
     public void SetWidgetAlwaysOnTop(bool enabled)
     {
         bool changed=Settings.WidgetAlwaysOnTop!=enabled;
@@ -199,7 +205,8 @@ public sealed class UiSession
             topmost.RemoveValueChanged(window,pinChanged);captureWindows.Remove(window);
         };
     }
-    public void OpenDetached(string kind)
+    public void OpenDetached(string kind)=>OpenDetachedCore(PopoutGraphMode.Resolve(kind,Settings.JoinCpuGpuPopouts));
+    private void OpenDetachedCore(string kind)
     {
         if(layout.Ending||!DetachedWindowState.IsAllowed(kind))return;
         if(detached.TryGetValue(kind,out var existing)) {existing.WindowState=WindowState.Normal;existing.Activate();return;}

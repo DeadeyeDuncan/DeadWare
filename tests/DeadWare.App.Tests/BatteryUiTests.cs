@@ -200,7 +200,9 @@ public class BatteryUiTests
                 Assert.All(widgetChoices, choice => Assert.True(choice.IsChecked));
                 var widgetPin = Assert.Single(settings.Children.OfType<CheckBox>(), box => box.Content?.ToString() == "Widget always on top");
                 Assert.True(widgetPin.IsChecked);
-                Assert.Single(settings.Children.OfType<Button>(), button => button.Content?.ToString()?.Contains("RAM usage") == true);
+                Assert.DoesNotContain(settings.Children.OfType<Button>(), button => button.Content?.ToString()?.StartsWith("↗") == true);
+                var joinedPopouts = Assert.Single(settings.Children.OfType<CheckBox>(), box => box.Content?.ToString() == "Join CPU and GPU graphs in pop-outs");
+                Assert.False(joinedPopouts.IsChecked);
                 var polling = Assert.Single(settings.Children.OfType<StackPanel>().SelectMany(panel => panel.Children.OfType<ComboBox>()),
                     combo => System.Windows.Automation.AutomationProperties.GetName(combo) == "Data polling interval");
                 Assert.Equal(new[] { "0.5 seconds", "1 second (default)", "2 seconds", "5 seconds", "10 seconds" }, polling.Items.Cast<object>().Select(item => item.ToString()));
@@ -230,6 +232,9 @@ public class BatteryUiTests
                 Set(collector, "latest", current with { Sample = current.Sample with { MonotonicSeconds = -14, PollingIntervalSeconds = 10 } });
                 Assert.True(session.Stale);
                 Set(collector, "latest", current);
+                joinedPopouts.IsChecked = true; CompleteSettingsSave(session);
+                Assert.True(SettingsCodec.Read(File.ReadAllText(pollingSettingsPath)).Settings.JoinCpuGpuPopouts);
+                session.SetJoinedPopouts(false); Assert.False(joinedPopouts.IsChecked);
                 session.SetWidgetGraph("network", false);
                 Assert.False(widgetChoices.Single(choice => (string)choice.Tag == "network").IsChecked);
                 session.SetWidgetGraph("network", true);
@@ -239,13 +244,11 @@ public class BatteryUiTests
                 Assert.False(SettingsCodec.Read(File.ReadAllText(pollingSettingsPath)).Settings.WidgetAlwaysOnTop);
                 Assert.False(session.Settings.Windows.ContainsKey("widget"));
                 session.SetWidgetAlwaysOnTop(true); Assert.True(widgetPin.IsChecked);
-                var batteryWindow = settings.Children.OfType<Button>().Single(b => b.Content?.ToString()?.Contains("Battery history") == true);
                 void RefreshDashboard() => ((Action)typeof(UiSession).GetField("Changed", All)!.GetValue(session)!).Invoke();
                 void Navigate(string destination) => typeof(MainWindow).GetMethod("Navigate", All)!.Invoke(dashboard, [destination]);
                 void AssertBatteryVisibility(Visibility expected)
                 {
                     Assert.Equal(expected, batteryNavigation.Visibility);
-                    Assert.Equal(expected, batteryWindow.Visibility);
                 }
                 AssertBatteryVisibility(Visibility.Visible);
                 Set(collector, "latest", current with { Battery = new(null, BatteryPowerState.NoBattery, null) });
@@ -409,6 +412,7 @@ public class BatteryUiTests
         Set(collector, "<History>k__BackingField", history);
         var reading = current with { Sample = history.Read()[^1], Gpus = [new("gpu-a", "First GPU", true), new("gpu-b", "Selected GPU", true)] };
         Set(collector, "latest", reading); session.Settings.HistorySeconds = 60; session.Settings.SelectedGpuId = "gpu-b";
+        VerifyJoinedPopouts(session, collector, reading, assembly, history);
         var widgetType = assembly.GetType("DeadWare.App.WidgetWindow")!;
         var widget = (Window)Activator.CreateInstance(widgetType, All, null, [session], null)!;
         Assert.Equal(300, widget.MinWidth); Assert.Equal(520, widget.MinHeight);
@@ -542,6 +546,87 @@ public class BatteryUiTests
         Assert.Equal(otherPlacement, session.Settings.Windows["cpu"]);
         CompleteSettingsSave(session); File.Delete(settingsPath);
         Set(session, "<Settings>k__BackingField", originalSettings);
+    }
+
+    private static void VerifyJoinedPopouts(UiSession session, Collector collector, Reading reading, Assembly assembly, SampleHistory history)
+    {
+        var windowType = assembly.GetType("DeadWare.App.GraphWindow")!;
+        var graphType = assembly.GetType("DeadWare.App.CompactGraph")!;
+        void Latest(Reading? value) => typeof(Collector).GetField("latest", All)!.SetValue(collector, value);
+        string? output = Environment.GetEnvironmentVariable("DEADWARE_UI_OUTPUT");
+        foreach (string kind in new[] { "usage", "temperature" })
+        {
+            var window = (Window)Activator.CreateInstance(windowType, All, null, [session, kind], null)!;
+            Assert.Equal(kind == "usage" ? "DeadWare · CPU / GPU usage" : "DeadWare · CPU / GPU temperature", window.Title);
+            var graph = (FrameworkElement)window.Content;
+            var chart = (FrameworkElement)graphType.GetField("chart", All)!.GetValue(graph)!;
+            var cpu = (TextBlock)graphType.GetField("value", All)!.GetValue(graph)!;
+            var gpu = (TextBlock)graphType.GetField("upload", All)!.GetValue(graph)!;
+            var status = (TextBlock)graphType.GetField("status", All)!.GetValue(graph)!;
+            var stats = (TextBlock)graphType.GetField("stats", All)!.GetValue(graph)!;
+            Assert.True((bool)chart.GetType().GetProperty("CompareDevices")!.GetValue(chart)!);
+            Assert.Equal(kind == "usage" ? "cpu" : "cputemp", chart.GetType().GetField("kind", All)!.GetValue(chart));
+            window.Content = null;
+            var viewport = new Border { Child = graph }; window.Content = viewport;
+            void Refresh() { graphType.GetMethod("Refresh", All)!.Invoke(graph, null); viewport.UpdateLayout(); }
+            GeometryDrawing[] Traces() => Drawings(VisualTreeHelper.GetDrawing(chart)!).Where(item => item.Geometry is StreamGeometry).ToArray();
+            foreach (string theme in new[] { "Midnight", "Daylight" })
+            {
+                assembly.GetType("DeadWare.App.Theme")!.GetMethod("Apply", All)!.Invoke(null, [theme]); Refresh();
+                foreach (var size in new[] { new Size(284, 141), new Size(404, 191) })
+                {
+                    viewport.SetResourceReference(Border.BackgroundProperty, "Background");
+                    viewport.Measure(size); viewport.Arrange(new Rect(new Point(), size)); viewport.UpdateLayout();
+                    Assert.True(chart.ActualHeight >= 48, $"Joined {kind} clipped at {size}: {chart.ActualHeight}");
+                    Assert.True(cpu.ActualWidth >= cpu.DesiredSize.Width - .01); Assert.True(gpu.ActualWidth >= gpu.DesiredSize.Width - .01);
+                    var traces = Traces(); Assert.Equal(2, traces.Length);
+                    Assert.Equal(((SolidColorBrush)Application.Current.Resources["Cpu"]).Color, ((SolidColorBrush)traces[0].Pen.Brush).Color);
+                    Assert.Equal(((SolidColorBrush)Application.Current.Resources["Gpu"]).Color, ((SolidColorBrush)traces[1].Pen.Brush).Color);
+                    Assert.Empty(traces[0].Pen.DashStyle.Dashes); Assert.NotEmpty(traces[1].Pen.DashStyle.Dashes);
+                    Assert.Equal(((SolidColorBrush)traces[0].Pen.Brush).Color, ((SolidColorBrush)cpu.Foreground).Color);
+                    Assert.Equal(((SolidColorBrush)traces[1].Pen.Brush).Color, ((SolidColorBrush)gpu.Foreground).Color);
+                    Assert.Equal(4, PathGeometry.CreateFromGeometry(traces[0].Geometry).Figures.Count);
+                    Assert.Equal(kind == "usage" ? 3 : 4, PathGeometry.CreateFromGeometry(traces[1].Geometry).Figures.Count);
+                    var grid = Drawings(VisualTreeHelper.GetDrawing(chart)!).Select(item => item.Geometry).OfType<LineGeometry>().Where(line => line.StartPoint.Y == line.EndPoint.Y).OrderBy(line => line.StartPoint.Y).ToArray();
+                    double top = grid[0].StartPoint.Y, height = grid[^1].StartPoint.Y - top;
+                    for (int device = 0; device < 2; device++)
+                    {
+                        string metric = (device == 0 ? "cpu/" : "gpu-b/") + (kind == "usage" ? "usage" : "temperature");
+                        double peak = history.Read().Select(sample => sample.Values[metric]).Max()!.Value;
+                        Assert.Equal(top + height * (1 - peak / (kind == "usage" ? 100 : 160)), traces[device].Geometry.Bounds.Top, 3);
+                    }
+                    Assert.Equal(kind == "usage" ? "CPU 35.0 %" : "CPU 60.0 °C", cpu.Text);
+                    Assert.Equal(kind == "usage" ? "GPU 75.0 %" : "GPU 90.0 °C", gpu.Text);
+                    Assert.Equal("Selected GPU", gpu.ToolTip);
+                    Assert.Contains("Selected GPU", System.Windows.Automation.AutomationProperties.GetName(gpu));
+                    if (output is not null)
+                    {
+                        var bitmap = new RenderTargetBitmap((int)size.Width, (int)size.Height, 96, 96, PixelFormats.Pbgra32); bitmap.Render(viewport);
+                        using var file = File.Create(Path.Combine(output, $"joined-{kind}-{theme}-{size.Width:0}x{size.Height:0}.png"));
+                        var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap)); encoder.Save(file);
+                    }
+                }
+            }
+            graphType.GetMethod("RefreshStatistics", All)!.Invoke(graph, null);
+            Assert.Contains("CPU · CPU", stats.Text); Assert.Contains("GPU · Selected GPU", stats.Text);
+            Assert.Equal(2, stats.Text.Split("Min  ").Length - 1);
+            string cpuTrace = Traces()[0].Geometry.ToString(), gpuTrace = Traces()[1].Geometry.ToString();
+            session.Settings.SelectedGpuId = "gpu-a"; Refresh();
+            Assert.Equal(kind == "usage" ? "GPU 5.0 %" : "GPU 40.0 °C", gpu.Text);
+            Assert.Equal("First GPU", gpu.ToolTip); Assert.NotEqual(gpuTrace, Traces()[1].Geometry.ToString());
+            if (kind == "usage") Assert.Equal(cpuTrace, Traces()[0].Geometry.ToString());
+            session.Settings.SelectedGpuId = "gpu-b";
+            string cpuMetric = kind == "usage" ? "cpu/usage" : "cpu/temperature";
+            var missing = new Dictionary<string, double?>(reading.Sample.Values) { [cpuMetric] = null };
+            Latest(reading with { Sample = reading.Sample with { Values = missing } }); Refresh();
+            Assert.Contains("—", cpu.Text); Assert.DoesNotContain("—", gpu.Text); Assert.Equal(Visibility.Visible, status.Visibility);
+            Latest(reading with { Sample = reading.Sample with { MonotonicSeconds = -10 } }); Refresh();
+            Assert.Contains("—", cpu.Text); Assert.Contains("—", gpu.Text); Assert.Contains("Stale", status.Text);
+            Latest(null); Refresh(); Assert.Contains("Discovering", status.Text);
+            Latest(reading); Refresh(); Assert.Equal(Visibility.Collapsed, status.Visibility);
+            Assert.Equal(IntPtr.Zero, new System.Windows.Interop.WindowInteropHelper(window).Handle);
+            window.Close();
+        }
     }
 
     private static void VerifyWidgetNetwork(UiSession session, Collector collector, Reading reading, FrameworkElement content, Border viewport, SampleHistory history)

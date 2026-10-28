@@ -257,6 +257,7 @@ public sealed class UserSettings
 {
     public List<string> WidgetGraphs {get;set;}=WidgetGraphSelection.Kinds.ToList();
     public bool WidgetAlwaysOnTop {get;set;}=true;
+    public bool JoinCpuGpuPopouts {get;set;}
     public double PollingIntervalSeconds {get;set;}=1;
     public bool BatteryRecording {get;set;}=true;
     public bool RestoreOpenWindows {get;set;}=true;
