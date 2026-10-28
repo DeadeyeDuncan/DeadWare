@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.11 — RAM usage graphs
+
+- Add a RAM usage graph beside Network on the overview and as the widget's fourth graph, showing percent and current used/total memory.
+- Save RAM's six-hour percentage history using the shared polling interval, range and gap handling; earlier versions have no RAM history to restore.
+- Support a remembered RAM pop-out and grow older saved widget sizes to fit four graphs.
+
 ## 0.6.10 — Network rate colors
 
 - Match the current upload rate color to the upload graph line while keeping download in its own graph color.

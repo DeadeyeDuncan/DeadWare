@@ -17,6 +17,7 @@ public static class GraphHistoryProjection
             foreach(string metric in metrics)result[identity+"/"+metric]=prefix+"/"+metric;
         }
         Add("Network","interface totals","network","download","upload");
+        Add("Memory","physical memory","memory","usage");
         var cpus=reading.Sensors.Where(s=>s.HardwareType=="Cpu"&&s.HardwareId.Length>0&&s.Hardware.Length>0)
             .GroupBy(s=>s.HardwareId,StringComparer.Ordinal).ToArray();
         // CPU graph values are machine-wide. Multiple sockets cannot be assigned a

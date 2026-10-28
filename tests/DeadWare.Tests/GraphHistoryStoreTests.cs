@@ -2,10 +2,11 @@ using System.Diagnostics;
 using DeadWare.Core;
 using Microsoft.Data.Sqlite;
 using Xunit;
+using Xunit.Abstractions;
 
 namespace DeadWare.Tests;
 
-public sealed class GraphHistoryStoreTests : IDisposable
+public sealed class GraphHistoryStoreTests(ITestOutputHelper output) : IDisposable
 {
     private readonly string directory = Path.Combine(Path.GetTempPath(), "DeadWare-graph-store-" + Guid.NewGuid().ToString("N"));
     private static readonly DateTimeOffset Epoch = new(2026, 10, 25, 12, 0, 0, TimeSpan.Zero);
@@ -82,18 +83,29 @@ public sealed class GraphHistoryStoreTests : IDisposable
         Assert.Equal(43201, read.Count); Assert.Equal(79.9, read[0].MonotonicSeconds); Assert.Equal(4399.9, read[^1].MonotonicSeconds);
     }
 
-    [Fact] public void Half_second_polling_preserves_six_hours_within_the_unchanged_storage_limit()
+    [Fact] public void Half_second_polling_preserves_six_hours_including_ram_within_the_unchanged_storage_limit()
     {
         var store = Store();
-        var values = Enumerable.Range(0, 6).ToDictionary(index => new string('a', 64) + "/metric-" + index, _ => (double?)50);
-        var rows = Enumerable.Range(0, 43201).Select(index => Row(index / 2d) with
+        var values = new Dictionary<string,double?>
+        {
+            [new string('a',64)+"/usage"] = 50.123456789,
+            [new string('a',64)+"/temperature"] = 62.25,
+            [new string('b',64)+"/usage"] = 21.9733,
+            [new string('b',64)+"/temperature"] = 44.2,
+            [new string('c',64)+"/download"] = 1234567.89012345,
+            [new string('c',64)+"/upload"] = 987654.32,
+            [new string('d',64)+"/usage"] = 49.55
+        };
+        var rows = Enumerable.Range(0, 43201).Select(index => Row(index / 2d,session:new string('s',32)) with
             { Values = values, PollingIntervalSeconds = 0.5 }).ToArray();
         foreach (var batch in rows.Chunk(120)) store.Append(batch, Epoch.AddHours(6));
         var restored = Store().Read(Epoch.AddHours(6));
         Assert.Equal(43201, restored.Count);
         Assert.Equal(0, restored[0].MonotonicSeconds); Assert.Equal(21600, restored[^1].MonotonicSeconds);
         Assert.All(restored, row => Assert.Equal(0.5, row.PollingIntervalSeconds));
+        Assert.All(restored, row => Assert.Equal(7,row.Values.Count));
         Assert.InRange(store.StorageBytes, 1, GraphHistoryStore.MaximumDatabaseBytes);
+        output.WriteLine($"43,201 half-second samples with seven graph metrics including RAM: {store.StorageBytes:N0} bytes / {GraphHistoryStore.MaximumDatabaseBytes:N0} byte limit.");
     }
 
     [Fact] public void InvalidInputIsRejectedBeforeChangingPreviouslySavedHistory()

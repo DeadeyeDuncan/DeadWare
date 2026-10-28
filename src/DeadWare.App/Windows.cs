@@ -64,7 +64,8 @@ public sealed class MainWindow : Window
     {
         var stack=new StackPanel();var charts=new UniformGrid {Columns=2,Rows=2,Height=530};
         foreach(var kind in new[]{"cpu","gpu","cputemp","gputemp"})charts.Children.Add(new ChartCard(session,kind));stack.Children.Add(charts);
-        memory.Margin=new(8,8,8,8);stack.Children.Add(memory);stack.Children.Add(new ChartCard(session,"network"){Height=265});
+        memory.Margin=new(8,8,8,8);stack.Children.Add(memory);
+        var bottom=new UniformGrid {Columns=2,Rows=1,Height=265};bottom.Children.Add(new ChartCard(session,"memory"));bottom.Children.Add(new ChartCard(session,"network"));stack.Children.Add(bottom);
         var note=Ui.Text("One collector feeds every window. Unknown readings stay blank; no synthetic data is shown.",11,"Muted");note.Margin=new(8);stack.Children.Add(note);
         return new ScrollViewer {Content=stack,VerticalScrollBarVisibility=ScrollBarVisibility.Auto,HorizontalScrollBarVisibility=ScrollBarVisibility.Disabled};
     }
@@ -94,7 +95,7 @@ public sealed class MainWindow : Window
         var pollingLabel=Ui.Text("Data polling interval",14);pollingLabel.Margin=new(0,0,12,0);
         var pollingRow=Ui.Row(pollingLabel,polling);pollingRow.Margin=new(0,0,0,8);stack.Children.Add(pollingRow);
         var pollingHelp=Ui.Text("Applies without restarting after the current wait or reading finishes. Faster polling uses more resources; slow hardware may take longer than the selected interval. At 5 or 10 seconds, Cooling Health records history but does not gather enough samples for reference comparisons.",12,"Muted");pollingHelp.Margin=new(0,0,0,20);stack.Children.Add(pollingHelp);
-        foreach(var kind in new[]{"cpu","gpu","cputemp","gputemp","network"}){var key=kind;var button=Ui.Button("↗  "+Ui.Title(kind),()=>session.OpenDetached(key));button.HorizontalAlignment=HorizontalAlignment.Left;button.MinWidth=240;button.Margin=new(0,4,0,4);stack.Children.Add(button);}
+        foreach(var kind in new[]{"cpu","gpu","cputemp","gputemp","memory","network"}){var key=kind;var button=Ui.Button("↗  "+Ui.Title(kind),()=>session.OpenDetached(key));button.HorizontalAlignment=HorizontalAlignment.Left;button.MinWidth=240;button.Margin=new(0,4,0,4);stack.Children.Add(button);}
         batteryWindow=Ui.Button("↗  Battery history",()=>session.OpenDetached("batteryhistory"));batteryWindow.HorizontalAlignment=HorizontalAlignment.Left;batteryWindow.MinWidth=240;batteryWindow.Margin=new(0,4,0,4);stack.Children.Add(batteryWindow);
         var open=Ui.Button("↗  Compact desktop widget",()=>session.OpenDetached("widget"));open.HorizontalAlignment=HorizontalAlignment.Left;open.MinWidth=240;open.Margin=new(0,20,0,4);stack.Children.Add(open);
         var saved=Ui.Text("Positions, sizes and Always on top choices are saved as you work. Closing the dashboard hides it to the system tray while graphs and the widget keep monitoring. Choose Quit DeadWare to save the windows left open for next time and stop collection. Close an individual graph or widget to leave it closed next time.",12,"Muted");saved.Margin=new(0,20,0,0);stack.Children.Add(saved);
@@ -235,22 +236,20 @@ internal sealed class GraphWindow : Window
 internal sealed class WidgetWindow : Window
 {
     private readonly UiSession session;
-    private readonly WidgetGraph usage,temperature,network;
-    private readonly TextBlock memory=Ui.Text("—",12,"Muted"),status=Ui.Text("",10,"Muted");
+    private readonly WidgetGraph usage,temperature,memory,network;
+    private readonly TextBlock status=Ui.Text("",10,"Muted");
     public WidgetWindow(UiSession session)
     {
-        this.session=session;Title="DeadWare · Quick glance";MinWidth=300;MinHeight=400;Ui.Icon(this);Topmost=true;session.Place(this,"widget",340,480);
-        var grid=new Grid {Margin=new Thickness(8)};grid.RowDefinitions.Add(new(){Height=GridLength.Auto});grid.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});grid.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});grid.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});grid.RowDefinitions.Add(new(){Height=GridLength.Auto});
+        this.session=session;Title="DeadWare · Quick glance";MinWidth=300;MinHeight=520;Ui.Icon(this);Topmost=true;session.Place(this,"widget",340,600);
+        var grid=new Grid {Margin=new Thickness(8)};grid.RowDefinitions.Add(new(){Height=GridLength.Auto});for(int i=0;i<4;i++)grid.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});grid.RowDefinitions.Add(new(){Height=GridLength.Auto});
         var pin=new CheckBox {Content="Always on top",IsChecked=Topmost};pin.Checked+=(_,_)=>Topmost=true;pin.Unchecked+=(_,_)=>Topmost=false;grid.Children.Add(pin);
-        usage=new(session,"cpu");temperature=new(session,"cputemp");network=new(session,"network");Grid.SetRow(usage,1);grid.Children.Add(usage);Grid.SetRow(temperature,2);grid.Children.Add(temperature);Grid.SetRow(network,3);grid.Children.Add(network);
-        var summary=new StackPanel {Margin=new Thickness(0,6,0,0)};summary.Children.Add(memory);status.TextWrapping=TextWrapping.NoWrap;status.TextTrimming=TextTrimming.CharacterEllipsis;summary.Children.Add(status);Grid.SetRow(summary,4);grid.Children.Add(summary);Content=grid;
+        usage=new(session,"cpu");temperature=new(session,"cputemp");memory=new(session,"memory");network=new(session,"network");Grid.SetRow(usage,1);grid.Children.Add(usage);Grid.SetRow(temperature,2);grid.Children.Add(temperature);Grid.SetRow(memory,3);grid.Children.Add(memory);Grid.SetRow(network,4);grid.Children.Add(network);
+        var summary=new StackPanel {Margin=new Thickness(0,6,0,0)};status.TextWrapping=TextWrapping.NoWrap;status.TextTrimming=TextTrimming.CharacterEllipsis;summary.Children.Add(status);Grid.SetRow(summary,5);grid.Children.Add(summary);Content=grid;
         session.Changed+=Refresh;Closed+=(_,_)=>session.Changed-=Refresh;Refresh();
     }
     private void Refresh()
     {
-        double? V(string id)=>session.Stale?null:session.Value(id);
-        usage.Refresh();temperature.Refresh();network.Refresh();
-        memory.Text=$"Memory  {Ui.Bytes(V("memory/used"))} / {Ui.Bytes(V("memory/total"))}";
+        usage.Refresh();temperature.Refresh();memory.Refresh();network.Refresh();
         status.Text=session.Current is null?"Discovering hardware…":session.Stale?"Readings stale · open main window for status":"Shared collector · — means unavailable";status.ToolTip=status.Text;
     }
 }

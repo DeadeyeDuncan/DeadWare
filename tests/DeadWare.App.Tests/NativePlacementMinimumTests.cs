@@ -8,6 +8,19 @@ namespace DeadWare.App.Tests;
 public class NativePlacementMinimumTests
 {
     [Theory]
+    [InlineData(400,96)] [InlineData(480,96)]
+    [InlineData(400,144)] [InlineData(480,144)]
+    [InlineData(400,192)] [InlineData(480,192)]
+    public void Four_graph_widget_expands_older_saved_sizes_within_the_work_area(double oldHeight,int dpi)
+    {
+        double scale=dpi/96d;
+        var saved=new WindowPlacement(100,2160-oldHeight*scale,340*scale,oldHeight*scale,true);
+        var actual=Constrain(saved,[new(0,0,3840,2160)],300,520,(uint)dpi);
+        Assert.Equal(340*scale,actual.Width); Assert.Equal(520*scale,actual.Height);
+        Assert.Equal(2160-actual.Height,actual.Top); Assert.Equal(100,actual.Left); Assert.True(actual.Topmost);
+    }
+
+    [Theory]
     [InlineData(320,96)] [InlineData(390,96)]
     [InlineData(320,144)] [InlineData(390,144)]
     [InlineData(320,192)] [InlineData(390,192)]

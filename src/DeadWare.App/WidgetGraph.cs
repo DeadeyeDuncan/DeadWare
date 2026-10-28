@@ -3,7 +3,7 @@ using System.Windows.Controls;
 using System.Windows.Shapes;
 namespace DeadWare.App;
 
-/// <summary>Compare two readings for one metric over the shared history.</summary>
+/// <summary>Compact readings and traces over the shared history.</summary>
 internal sealed class WidgetGraph : Border
 {
     private readonly UiSession session;
@@ -15,13 +15,13 @@ internal sealed class WidgetGraph : Border
         this.session=session;this.kind=kind;
         CornerRadius=new(8);BorderThickness=new(1);Padding=new(8,5,8,4);Margin=new(0,5,0,0);
         SetResourceReference(BackgroundProperty,"Panel");SetResourceReference(BorderBrushProperty,"Line");
-        bool network=kind=="network";
-        chart=new(session,kind,true){CompareDevices=!network,ClipToBounds=true};
+        bool network=kind=="network",memory=kind=="memory";
+        chart=new(session,kind,true){CompareDevices=kind is "cpu" or "cputemp",ClipToBounds=true};
         var grid=new Grid();grid.RowDefinitions.Add(new(){Height=GridLength.Auto});grid.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});
         title.TextWrapping=TextWrapping.NoWrap;title.TextTrimming=TextTrimming.CharacterEllipsis;
-        string firstColor=network?"Download":"Cpu",secondColor=network?"Cpu":"Gpu";
+        string firstColor=network?"Download":memory?"Accent":"Cpu",secondColor=network?"Cpu":"Gpu";
         primary.SetResourceReference(TextBlock.ForegroundProperty,firstColor);secondary.SetResourceReference(TextBlock.ForegroundProperty,secondColor);
-        var legend=Ui.Row(Legend(primary,firstColor,false),Legend(secondary,secondColor,true));
+        var legend=memory?Ui.Row(Legend(primary,firstColor,false)):Ui.Row(Legend(primary,firstColor,false),Legend(secondary,secondColor,true));
         var header=new DockPanel();DockPanel.SetDock(legend,Dock.Right);header.Children.Add(legend);header.Children.Add(title);grid.Children.Add(header);
         Grid.SetRow(chart,1);grid.Children.Add(chart);Child=grid;
     }
@@ -39,6 +39,14 @@ internal sealed class WidgetGraph : Border
             title.Text="Network";title.ToolTip="Network download (solid) and upload (dashed), in bytes per second";
             primary.Text="↓ "+Ui.Bytes(session.Stale?null:session.Value("network/download"),true);primary.ToolTip="Download rate";
             secondary.Text="↑ "+Ui.Bytes(session.Stale?null:session.Value("network/upload"),true);secondary.ToolTip="Upload rate";
+        }
+        else if(kind=="memory")
+        {
+            title.Text="RAM";title.ToolTip="Physical memory usage (%)";
+            double? current=Value(kind);
+            primary.Text=Ui.Number(current)+" %";
+            if(current.HasValue)primary.Text+=$" · {Ui.Bytes(session.Value("memory/used"))} / {Ui.Bytes(session.Value("memory/total"))}";
+            primary.ToolTip="RAM usage and used / total memory";
         }
         else
         {

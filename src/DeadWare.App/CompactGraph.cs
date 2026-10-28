@@ -59,12 +59,18 @@ internal sealed class CompactGraph : Border
     {
         string id=session.MetricId(kind);double? current=session.Stale?null:session.Value(id);
         var data=session.Current;
-        value.SetResourceReference(TextBlock.ForegroundProperty,kind=="network"?"Download":kind.StartsWith("gpu")?"Gpu":"Cpu");
+        value.SetResourceReference(TextBlock.ForegroundProperty,kind=="network"?"Download":kind=="memory"?"Accent":kind.StartsWith("gpu")?"Gpu":"Cpu");
         if(kind=="network")
         {
             value.Text=$"↓ {Ui.Bytes(current,true)}";upload.Text=$"↑ {Ui.Bytes(session.Stale?null:session.Value("network/upload"),true)}";
             details.Text="↓ Download: solid line\n↑ Upload: dashed line\nBoth directions share the same scale.";
             AutomationProperties.SetName(value,$"Download {Ui.Bytes(current,true)}");AutomationProperties.SetName(upload,$"Upload {Ui.Bytes(session.Stale?null:session.Value("network/upload"),true)}");
+        }
+        else if(kind=="memory")
+        {
+            value.Text=Ui.Number(current," %");
+            details.Text=data is null?"Discovering memory…":session.Stale?"RAM readings stale":current is null?"RAM usage unavailable":$"{Ui.Bytes(session.Value("memory/used"))} / {Ui.Bytes(session.Value("memory/total"))} in use";
+            AutomationProperties.SetName(value,$"RAM usage {value.Text}");
         }
         else
         {

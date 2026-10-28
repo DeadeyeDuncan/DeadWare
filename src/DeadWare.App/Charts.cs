@@ -35,7 +35,7 @@ internal static class Ui
     }
     public static Image Logo()
     {var image=new Image {Width=38,Height=38,Margin=new Thickness(0,0,9,0)};try{image.Source=new BitmapImage(new Uri("pack://application:,,,/Assets/deadware.png"));}catch(System.IO.IOException){}return image;}
-    public static string Title(string kind)=>kind switch {"cpu"=>"CPU usage","cputemp"=>"CPU temperature","gpu"=>"GPU usage","gputemp"=>"GPU temperature",_=>"Network activity"};
+    public static string Title(string kind)=>kind switch {"cpu"=>"CPU usage","cputemp"=>"CPU temperature","gpu"=>"GPU usage","gputemp"=>"GPU temperature","memory"=>"RAM usage",_=>"Network activity"};
     public static UniformGrid Range(UiSession session)
     {
         var row=new UniformGrid {Columns=3,Width=216};foreach(int seconds in HistoryRanges.Seconds)
@@ -62,7 +62,7 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
         var points=session.Collector.History.Series(session.MetricId(kind),now,session.HistorySeconds);
         bool compare=CompareDevices&&kind is "cpu" or "cputemp";
         var secondary=kind=="network"?session.Collector.History.Series("network/upload",now,session.HistorySeconds):compare?session.Collector.History.Series(session.MetricId(kind=="cpu"?"gpu":"gputemp"),now,session.HistorySeconds):[];
-        double maximum=kind is "cpu" or "gpu"?100:kind=="network"?Math.Max(1000,points.Concat(secondary).Where(p=>p.Value.HasValue).Select(p=>p.Value!.Value).DefaultIfEmpty(0).Max()*1.15):Math.Max(100,points.Concat(secondary).Where(p=>p.Value.HasValue).Select(p=>p.Value!.Value).DefaultIfEmpty(0).Max()*1.1);
+        double maximum=kind is "cpu" or "gpu" or "memory"?100:kind=="network"?Math.Max(1000,points.Concat(secondary).Where(p=>p.Value.HasValue).Select(p=>p.Value!.Value).DefaultIfEmpty(0).Max()*1.15):Math.Max(100,points.Concat(secondary).Where(p=>p.Value.HasValue).Select(p=>p.Value!.Value).DefaultIfEmpty(0).Max()*1.1);
         if(compare&&kind=="cputemp")maximum=Math.Ceiling(maximum/20)*20;
         string Axis(double value)=>kind=="network"?Ui.Bytes(value,true):$"{value:0}{(kind.Contains("temp")?(compare?"°C":"°"):"%")}";
         double left=compact?3:12,top=compact?8:18;
@@ -77,7 +77,7 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
         }
         double timeLabelY=h-axisLabel.Height-(compact?2:6);
         Label(dc,$"{HistoryRanges.Label(session.HistorySeconds)} ago",left,timeLabelY);Label(dc,"Now",left+pw-axisLabel.Width,timeLabelY);
-        DrawSeries(dc,points,now,maximum,left,top,pw,ph,kind=="network"?"Download":kind.StartsWith("gpu")?"Gpu":"Cpu",false);
+        DrawSeries(dc,points,now,maximum,left,top,pw,ph,kind=="network"?"Download":kind=="memory"?"Accent":kind.StartsWith("gpu")?"Gpu":"Cpu",false);
         if(kind=="network") DrawSeries(dc,secondary,now,maximum,left,top,pw,ph,"Cpu",true);
         else if(compare) DrawSeries(dc,secondary,now,maximum,left,top,pw,ph,"Gpu",true);
         if(!points.Concat(secondary).Any(p=>p.Value.HasValue)) Label(dc,sample is null?(compact?"Waiting for data…":"Waiting for first sample…"):(compact?"No readings in this range":"No available readings in this range"),left+(compact?4:15),top+ph/2);
@@ -134,11 +134,16 @@ internal sealed class ChartCard : Border
     {
         if(!IsVisible)return;
         string id=session.MetricId(kind);double? current=session.Stale?null:session.Value(id);var data=session.Current;
-        value.SetResourceReference(TextBlock.ForegroundProperty,kind=="network"?"Download":kind.StartsWith("gpu")?"Gpu":"Cpu");
+        value.SetResourceReference(TextBlock.ForegroundProperty,kind=="network"?"Download":kind=="memory"?"Accent":kind.StartsWith("gpu")?"Gpu":"Cpu");
         if(kind=="network")
         {
             downloadValue.Text=$"↓ {Ui.Bytes(current,true)}    ";uploadValue.Text=$"↑ {Ui.Bytes(session.Stale?null:session.Value("network/upload"),true)}";
             subtitle.Text="Blue: download    ·    Dashed green: upload    ·    Shared scale";
+        }
+        else if(kind=="memory")
+        {
+            value.Text=Ui.Number(current," %");
+            subtitle.Text=data is null?"Discovering memory…":session.Stale?"RAM readings stale":current is null?"RAM usage unavailable":$"{Ui.Bytes(session.Value("memory/used"))} / {Ui.Bytes(session.Value("memory/total"))} in use";
         }
         else
         {
