@@ -1,5 +1,15 @@
 # Release validation
 
+## Joined CPU/GPU pop-outs (0.6.14, 2026-10-27)
+
+Settings now contains a saved, default-off **Join CPU and GPU graphs in pop-outs** option instead of redundant graph, battery and widget launch buttons. New overview usage requests resolve to one joined usage window; temperature requests resolve to one joined temperature window. Existing open windows and exact remembered types remain unchanged. Joined and individual types retain independent saved bounds and pin flags through the existing placement path.
+
+Joined pop-outs reuse the widget's comparison renderer: solid CPU color and dashed GPU color, both current readings, shared 0–100% usage and expanding temperature axes. Options details include both device names and separate min/average/max summaries. RAM, network, battery and widget launch targets keep their existing behavior.
+
+All 450 tests passed (370 core/update, 80 Windows app), and `scripts/publish.ps1 -Version 0.6.14` built the self-contained app/helper package. Core regressions first failed on the missing API, then passed defaults, settings round trips, routing, allowed remembered keys, deduplication and shutdown preservation. The real Settings fixture first failed on the remaining launch buttons and absent checkbox; it now verifies removal, saved selection and guarded programmatic synchronization.
+
+The real joined window/graph fixture verifies both traces and matching value colors, line styles, fixed usage and 160°C thermal scales, gaps, GPU selection, independent missing CPU, stale/discovery states and current-value accessibility. Both charts render at 284×141 and 404×191 client sizes in Midnight and Daylight; minimum previews were visually inspected under ignored `artifacts/ui-joined-popouts-0.6.14/`. Statistics checks confirm two labeled summaries; their numeric selection is reviewed in code rather than independently asserted. Independent reviews and `git diff --check` passed. Windows remain unshown with zero native handles; settings writes use an isolated temporary writer. No live collection, user-profile settings I/O, native placement/stacking, installation, restart or rollback was tested. Live installation is left for the user's updater test.
+
 ## Widget pin control in Settings (0.6.13, 2026-10-27)
 
 The widget's Always on top checkbox is now in Settings beside the widget graph choices. The widget checkbox and reserved header row are removed; existing sizes and graph-selection height policy remain. The dedicated saved preference applies to open widgets through the existing session notification, and can be changed while the widget is closed without inventing window coordinates. Existing saved widget-placement pin flags are synchronized when present.

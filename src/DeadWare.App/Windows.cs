@@ -25,9 +25,10 @@ public sealed class MainWindow : Window
     private readonly Dictionary<string,FrameworkElement> pages=new();
     private readonly Dictionary<string,CheckBox> widgetGraphChoices=new(StringComparer.Ordinal);
     private readonly CheckBox widgetAlwaysOnTop=new() {Content="Widget always on top",Margin=new Thickness(0,0,0,12)};
+    private readonly CheckBox joinedPopouts=new() {Content="Join CPU and GPU graphs in pop-outs",Margin=new Thickness(0,0,0,8)};
     private readonly CheckBox startup=new() {Content="Start with Windows (administrator)",Margin=new Thickness(0,22,0,8)};
     private readonly TextBlock startupStatus=Ui.Text("Startup status is checked when this page opens.",12,"Muted"),startupResult=Ui.Text("",12,"Warning");
-    private Button startupRepair=null!,startupDisable=null!,startupRefresh=null!,batteryNavigation=null!,batteryWindow=null!;
+    private Button startupRepair=null!,startupDisable=null!,startupRefresh=null!,batteryNavigation=null!;
     private string page="overview",gpuSignature="";
     private bool syncingGpu;
     private bool refreshingSensors;
@@ -116,9 +117,12 @@ public sealed class MainWindow : Window
         widgetAlwaysOnTop.Unchecked+=(_,_)=>{if(!syncingWidgetGraphs)session.SetWidgetAlwaysOnTop(false);};
         stack.Children.Add(widgetAlwaysOnTop);
         var widgetHelp=Ui.Text("Choose the graphs shown in the widget. Changes apply immediately; resize the widget to your preferred height.",12,"Muted");widgetHelp.Margin=new(0,0,0,20);stack.Children.Add(widgetHelp);
-        foreach(var kind in new[]{"cpu","gpu","cputemp","gputemp","memory","network"}){var key=kind;var button=Ui.Button("↗  "+Ui.Title(kind),()=>session.OpenDetached(key));button.HorizontalAlignment=HorizontalAlignment.Left;button.MinWidth=240;button.Margin=new(0,4,0,4);stack.Children.Add(button);}
-        batteryWindow=Ui.Button("↗  Battery history",()=>session.OpenDetached("batteryhistory"));batteryWindow.HorizontalAlignment=HorizontalAlignment.Left;batteryWindow.MinWidth=240;batteryWindow.Margin=new(0,4,0,4);stack.Children.Add(batteryWindow);
-        var open=Ui.Button("↗  Compact desktop widget",()=>session.OpenDetached("widget"));open.HorizontalAlignment=HorizontalAlignment.Left;open.MinWidth=240;open.Margin=new(0,20,0,4);stack.Children.Add(open);
+        var popoutLabel=Ui.Text("Graph pop-outs",14);popoutLabel.Margin=new(0,0,0,8);stack.Children.Add(popoutLabel);
+        joinedPopouts.IsChecked=session.Settings.JoinCpuGpuPopouts;
+        System.Windows.Automation.AutomationProperties.SetName(joinedPopouts,"Join CPU and GPU graphs in pop-outs");
+        joinedPopouts.Checked+=(_,_)=>{if(!syncingWidgetGraphs)session.SetJoinedPopouts(true);};
+        joinedPopouts.Unchecked+=(_,_)=>{if(!syncingWidgetGraphs)session.SetJoinedPopouts(false);};stack.Children.Add(joinedPopouts);
+        var popoutHelp=Ui.Text("Use the overview's Pop out buttons. Joined mode puts CPU and GPU usage on one chart and both temperatures on another. Applies to new pop-outs; existing windows and remembered layouts keep their current form.",12,"Muted");popoutHelp.Margin=new(0,0,0,20);stack.Children.Add(popoutHelp);
         var saved=Ui.Text("Positions, sizes and Always on top choices are saved as you work. Closing the dashboard hides it to the system tray while graphs and the widget keep monitoring. Choose Quit DeadWare to save the windows left open for next time and stop collection. Close an individual graph or widget to leave it closed next time.",12,"Muted");saved.Margin=new(0,20,0,0);stack.Children.Add(saved);
         var restore=new CheckBox {Content="Reopen graphs and widget from the previous session",IsChecked=session.Settings.RestoreOpenWindows,Margin=new Thickness(0,18,0,8)};
         restore.Checked+=(_,_)=>session.SetRestoreOpenWindows(true);restore.Unchecked+=(_,_)=>session.SetRestoreOpenWindows(false);stack.Children.Add(restore);
@@ -185,10 +189,11 @@ public sealed class MainWindow : Window
             var selectedGraphs=WidgetGraphSelection.Normalize(session.Settings.WidgetGraphs);
             foreach(var choice in widgetGraphChoices)choice.Value.IsChecked=selectedGraphs.Contains(choice.Key);
             widgetAlwaysOnTop.IsChecked=session.Settings.WidgetAlwaysOnTop;
+            joinedPopouts.IsChecked=session.Settings.JoinCpuGpuPopouts;
         }
         finally {syncingWidgetGraphs=false;}
         var r=session.Current;bool noBattery=r?.Battery.PowerState==BatteryPowerState.NoBattery;
-        batteryNavigation.Visibility=batteryWindow.Visibility=noBattery?Visibility.Collapsed:Visibility.Visible;
+        batteryNavigation.Visibility=noBattery?Visibility.Collapsed:Visibility.Visible;
         if(noBattery&&page=="battery"){Navigate("overview");return;}
         if(r is null){status.Text="Discovering hardware and starting the shared collector…\n"+session.GraphHistory.Status;return;}
         var signature=string.Join('|',r.Gpus.Select(d=>d.Id+":"+d.Name));

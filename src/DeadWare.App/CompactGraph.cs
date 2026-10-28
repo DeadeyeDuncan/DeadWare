@@ -13,6 +13,8 @@ internal sealed class CompactGraph : Border
 {
     private readonly UiSession session;
     private readonly string kind;
+    private readonly string chartKind;
+    private readonly bool joined;
     private readonly HistoryChart chart;
     private readonly TextBlock value=Ui.Text("—",26),upload=Ui.Text("—",18,"Cpu"),status=Ui.Text("",10,"Warning");
     private readonly TextBlock details=Ui.Text("Discovering hardware…",12,"Muted"),stats=Ui.Text("",12,"Muted");
@@ -22,21 +24,23 @@ internal sealed class CompactGraph : Border
     public CompactGraph(UiSession session,string kind,Window owner)
     {
         this.session=session;this.kind=kind;
+        joined=kind is "usage" or "temperature";
+        chartKind=kind switch {"usage"=>"cpu","temperature"=>"cputemp",_=>kind};
         Padding=new Thickness(8,3,8,3);CornerRadius=new CornerRadius(8);BorderThickness=new Thickness(1);
         SetResourceReference(BackgroundProperty,"Panel");SetResourceReference(BorderBrushProperty,"Line");
         var grid=new Grid();grid.RowDefinitions.Add(new(){Height=GridLength.Auto});grid.RowDefinitions.Add(new(){Height=GridLength.Auto});grid.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});Child=grid;
         var header=new Grid();header.ColumnDefinitions.Add(new(){Width=new GridLength(1,GridUnitType.Star)});header.ColumnDefinitions.Add(new(){Width=GridLength.Auto});header.ColumnDefinitions.Add(new(){Width=GridLength.Auto});grid.Children.Add(header);
-        var title=Ui.Text(kind switch {"cputemp"=>"CPU temp","gputemp"=>"GPU temp","network"=>"Network",_=>Ui.Title(kind)},12);
+        var title=Ui.Text(kind switch {"usage"=>"Usage","temperature"=>"Temp","cputemp"=>"CPU temp","gputemp"=>"GPU temp","network"=>"Network",_=>Ui.Title(kind)},12);
         title.FontWeight=FontWeights.SemiBold;title.TextWrapping=TextWrapping.NoWrap;title.TextTrimming=TextTrimming.CharacterEllipsis;title.Margin=new Thickness(0,0,6,0);header.Children.Add(title);
         AutomationProperties.SetName(title,Ui.Title(kind));
         value.TextWrapping=TextWrapping.NoWrap;upload.TextWrapping=TextWrapping.NoWrap;
         var readings=new StackPanel {VerticalAlignment=VerticalAlignment.Center};readings.Children.Add(value);
-        if(kind=="network"){value.FontSize=18;readings.Children.Add(upload);}
+        if(kind=="network"||joined){value.FontSize=18;readings.Children.Add(upload);}
         Grid.SetColumn(readings,1);header.Children.Add(readings);
         options=Ui.Button("⋯",OpenOptions);options.Width=28;options.Height=28;options.FontSize=18;options.Padding=new Thickness(0);options.Margin=new Thickness(6,0,0,0);options.ToolTip="Graph options";
         AutomationProperties.SetName(options,"Graph options");Grid.SetColumn(options,2);header.Children.Add(options);
         status.Visibility=Visibility.Collapsed;status.TextWrapping=TextWrapping.NoWrap;status.TextTrimming=TextTrimming.CharacterEllipsis;Grid.SetRow(status,1);grid.Children.Add(status);
-        chart=new HistoryChart(session,kind,true) {ClipToBounds=true};Grid.SetRow(chart,2);grid.Children.Add(chart);
+        chart=new HistoryChart(session,chartKind,true) {CompareDevices=joined,ClipToBounds=true};Grid.SetRow(chart,2);grid.Children.Add(chart);
 
         var menu=new StackPanel();KeyboardNavigation.SetTabNavigation(menu,KeyboardNavigationMode.Cycle);
         menu.Children.Add(Ui.Text("History range",12));var ranges=Ui.Range(session);ranges.Margin=new Thickness(-3,3,-3,5);menu.Children.Add(ranges);
@@ -57,10 +61,21 @@ internal sealed class CompactGraph : Border
 
     private void Refresh()
     {
-        string id=session.MetricId(kind);double? current=session.Stale?null:session.Value(id);
+        string id=session.MetricId(chartKind);double? current=session.Stale?null:session.Value(id);
+        double? other=joined?(session.Stale?null:session.Value(session.MetricId(chartKind=="cpu"?"gpu":"gputemp"))):null;
         var data=session.Current;
         value.SetResourceReference(TextBlock.ForegroundProperty,kind=="network"?"Download":kind=="memory"?"Accent":kind.StartsWith("gpu")?"Gpu":"Cpu");
-        if(kind=="network")
+        upload.SetResourceReference(TextBlock.ForegroundProperty,joined?"Gpu":"Cpu");
+        if(joined)
+        {
+            string unit=chartKind=="cputemp"?" °C":" %";
+            value.Text="CPU "+Ui.Number(current)+unit;upload.Text="GPU "+Ui.Number(other)+unit;
+            value.ToolTip=data?.CpuName;upload.ToolTip=session.GpuName;
+            details.Text=$"CPU · {data?.CpuName??"Unavailable"}\nSolid CPU-color line\n\nGPU · {session.GpuName}\nDashed GPU-color line\nBoth devices share the same scale.";
+            AutomationProperties.SetName(value,$"{data?.CpuName??"CPU"} {value.Text}");
+            AutomationProperties.SetName(upload,$"{session.GpuName} {upload.Text}");
+        }
+        else if(kind=="network")
         {
             value.Text=$"↓ {Ui.Bytes(current,true)}";upload.Text=$"↑ {Ui.Bytes(session.Stale?null:session.Value("network/upload"),true)}";
             details.Text="↓ Download: solid line\n↑ Upload: dashed line\nBoth directions share the same scale.";
@@ -78,16 +93,25 @@ internal sealed class CompactGraph : Border
             details.Text=data is null?"Discovering hardware…":kind.StartsWith("cpu")?data.CpuName:session.GpuName;
             AutomationProperties.SetName(value,$"{Ui.Title(kind)} {value.Text}");
         }
-        bool unavailable=current is null||(kind=="network"&&session.Value("network/upload") is null);
+        bool unavailable=current is null||(joined&&other is null)||(kind=="network"&&session.Value("network/upload") is null);
         status.Text=data is null?"Discovering hardware…":session.Stale?"Stale · waiting for fresh readings":unavailable?"Reading unavailable":"";
         status.Visibility=status.Text.Length==0?Visibility.Collapsed:Visibility.Visible;
         // Keep secondary information accessible without reserving graph space for it.
-        if(popup.IsOpen)
-        {
-            double now=session.Collector.ElapsedSeconds;var summary=session.Collector.History.Summarize(id,now,session.HistorySeconds);
-            Func<double?,string> format=kind=="network"?v=>Ui.Bytes(v,true):v=>Ui.Number(v,kind.Contains("temp")?" °C":" %");
-            stats.Text=$"{(kind=="network"?"Download · ":"")}Last {HistoryRanges.Label(session.HistorySeconds)}\nMin  {format(summary.Minimum)}\nAvg  {format(summary.Average)}\nMax  {format(summary.Maximum)}";
-        }
+        if(popup.IsOpen)RefreshStatistics();
         chart.Refresh();
+    }
+
+    private void RefreshStatistics()
+    {
+        double now=session.Collector.ElapsedSeconds;
+        Func<double?,string> format=kind=="network"?v=>Ui.Bytes(v,true):v=>Ui.Number(v,chartKind.Contains("temp")?" °C":" %");
+        string Summary(string metric)
+        {
+            var summary=session.Collector.History.Summarize(session.MetricId(metric),now,session.HistorySeconds);
+            return $"Min  {format(summary.Minimum)}\nAvg  {format(summary.Average)}\nMax  {format(summary.Maximum)}";
+        }
+        stats.Text=joined
+            ?$"Last {HistoryRanges.Label(session.HistorySeconds)}\nCPU · {session.Current?.CpuName??"Unavailable"}\n{Summary(chartKind)}\n\nGPU · {session.GpuName}\n{Summary(chartKind=="cpu"?"gpu":"gputemp")}"
+            :$"{(kind=="network"?"Download · ":"")}Last {HistoryRanges.Label(session.HistorySeconds)}\n{Summary(chartKind)}";
     }
 }

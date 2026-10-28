@@ -16,7 +16,7 @@ DeadWare is a Windows desktop monitor for watching CPU/GPU usage and temperature
 - Per-application network rates when Windows permits ETW capture.
 - Searchable sensor readings with minimum, maximum and average values.
 - Selectable graphics adapters on multi-GPU systems.
-- Separate graph windows and a compact widget with CPU/GPU usage, temperature, RAM and network charts and always-on-top controls.
+- Separate or joined CPU/GPU graph windows and a compact widget with usage, temperature, RAM and network charts and always-on-top controls.
 - Compact pop-out graphs prioritize the current reading and chart; their options menu holds history range, Always on top and sensor statistics.
 - Close the dashboard to the system tray and keep graphs, the widget and monitoring running independently.
 - Restore the graphs and widget left open, including their saved positions and sizes.
@@ -70,6 +70,12 @@ Version 0.1.0 saved window positions but did not record which windows were open.
 
 Startup points to the executable's current location. Keep the extracted folder in a permanent location. If you move it, enable startup again from the new location; disable startup before removing the app. Choose **Quit DeadWare** before replacing files during an upgrade; closing the dashboard alone leaves it running.
 
+## Graph pop-outs
+
+Use the overview cards' **Pop out** buttons to open graphs. In **Settings → Graph pop-outs**, enable **Join CPU and GPU graphs in pop-outs** to put CPU and selected-GPU usage together on one chart, and both temperatures together on another. The option is off by default. CPU keeps its theme color and solid line in both charts; GPU keeps its own color and dashed line. Both current readings and device statistics are available, with a shared 0–100% usage scale and a shared temperature scale that expands above 100°C when needed.
+
+The choice applies to new pop-outs. Existing open windows and remembered layouts keep their current form, and joined and separate windows remember their own positions, sizes and pin choices. RAM, Network and Battery history windows keep their existing behavior. Open the widget from the dashboard's **Open widget** button.
+
 ## Desktop widget
 
 The widget's pin control is in **Settings → Widget always on top**. Changes update an open widget immediately and are saved even when it is closed. Earlier saved widget pin choices carry over. Other graph windows keep their existing Always on top controls.
@@ -88,7 +94,7 @@ This first release is **not complete HWiNFO sensor parity**. A successful launch
 
 ## Battery history
 
-Open **Battery history** in the sidebar to see how charge drops and recovers, along with current charging status. The charge line shows Windows battery-saver periods: the normal solid line means saver off, dashed amber means saver on, and dotted gray means unknown state. A legend identifies each style. Choose **Open in window** for a separate resizable window; its position, size and Always on top choice are remembered. The Day/Week/Month/Year/All history selector is independent of the live graph range. **Settings** can also open the battery window. When Windows reports no battery, both entry points hide automatically; they return if a battery is detected or its status is unknown. Saved battery history is kept.
+Open **Battery history** in the sidebar to see how charge drops and recovers, along with current charging status. The charge line shows Windows battery-saver periods: the normal solid line means saver off, dashed amber means saver on, and dotted gray means unknown state. A legend identifies each style. Choose **Open in window** for a separate resizable window; its position, size and Always on top choice are remembered. The Day/Week/Month/Year/All history selector is independent of the live graph range. When Windows reports no battery, the sidebar entry hides automatically; it returns if a battery is detected or its status is unknown. Saved battery history is kept.
 
 DeadWare records the system battery total once per minute plus observed charging/power and battery-saver state changes. Recording starts automatically on a battery-equipped device and can be paused without deleting saved history. Windows supplies these readings without administrator access. Unknown readings stay unavailable; a desktop with no battery says so. Multiple physical batteries appear as the combined system charge.
 
@@ -135,7 +141,7 @@ dotnet run --project src/DeadWare.App/DeadWare.App.csproj
 Create a self-contained portable ZIP and SHA-256 checksum:
 
 ```powershell
-pwsh -File scripts/publish.ps1 -Version 0.6.13
+pwsh -File scripts/publish.ps1 -Version 0.6.14
 ```
 
 The packaging script runs tests before publishing, bundles the independent self-contained update helper, and records all managed file hashes in `deadware-package.json`. Output goes under `artifacts/`. GitHub Actions runs the same script. Pushing a normal three-part version tag such as `v0.6.0` builds and publishes a normal release after tests pass, using the matching `docs/releases/v0.6.0.md` notes. Workflows use pinned action commits.

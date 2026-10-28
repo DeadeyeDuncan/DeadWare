@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.6.14 — Joined CPU/GPU pop-outs
+
+- Add a saved Settings option to join CPU/GPU usage on one pop-out and both temperatures on another, using consistent device colors and line styles.
+- Show both devices' current readings and statistics, with shared usage and temperature scales.
+- Apply the option to new pop-outs while retaining existing open windows and remembered layouts.
+- Remove the redundant graph, Battery history and widget launch buttons from Settings; keep the overview and dashboard launch controls.
+
 ## 0.6.13 — Widget pin control in Settings
 
 - Move the widget's Always on top checkbox into Settings and use the freed space for graphs.
