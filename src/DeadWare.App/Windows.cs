@@ -15,7 +15,7 @@ public sealed class MainWindow : Window
     private readonly ApplicationLifetime lifetime;
     private readonly Func<bool> trayAvailable;
     private readonly ContentControl content=new();
-    private readonly TextBlock heading=Ui.Heading("System overview",28),subtitle=Ui.Text("The numbers you care about. Room to breathe.",13,"Muted"),status=Ui.Text("Starting the shared collector…",11,"Muted"),memory=Ui.Text("Memory —",12,"Muted"),networkStatus=Ui.Text("",12,"Warning"),networkEmpty=Ui.Text("",13,"Muted"),sensorCount=Ui.Text("",12,"Muted");
+    private readonly TextBlock heading=Ui.Heading("System overview",28),subtitle=Ui.Text("",13,"Muted"),status=Ui.Text("Starting the shared collector…",11,"Muted"),memory=Ui.Text("Memory —",12,"Muted"),networkStatus=Ui.Text("",12,"Warning"),networkEmpty=Ui.Text("",13,"Muted"),sensorCount=Ui.Text("",12,"Muted");
     private readonly ComboBox gpu=new(){MaxWidth=340,VerticalAlignment=VerticalAlignment.Center,DisplayMemberPath="Name",SelectedValuePath="Id"};
     private readonly StackPanel gpuControls;
     private readonly DockPanel liveToolbar;
@@ -177,7 +177,8 @@ public sealed class MainWindow : Window
         gpuControls.Visibility=destination=="overview"?Visibility.Visible:Visibility.Collapsed;
         liveToolbar.Visibility=destination is "cooling" or "battery" or "updates"?Visibility.Collapsed:Visibility.Visible;
         page=destination;content.Content=pages[destination];heading.Text=destination switch {"network"=>"Your network, explained","cooling"=>"Cooling Health","battery"=>"Battery history","updates"=>"Keep DeadWare current","sensors"=>"Hardware sensors","desktop"=>"Settings",_=>"System overview"};
-        subtitle.Text=destination switch {"network"=>"See which applications are sending and receiving data.","cooling"=>"Learn your usual temperatures. Notice sustained changes.","battery"=>"See charge fall and recover. Keep the history for years.","updates"=>"Update when you are ready. Keep the previous installation within reach.","sensors"=>"Current-session values and statistics over the selected range.","desktop"=>"Manage windows, startup and monitoring options.",_=>"The numbers you care about. Room to breathe."};RefreshUpdateNotice();Refresh();
+        subtitle.Text=destination switch {"network"=>"See which applications are sending and receiving data.","cooling"=>"Learn your usual temperatures. Notice sustained changes.","battery"=>"See charge fall and recover. Keep the history for years.","updates"=>"Update when you are ready. Keep the previous installation within reach.","sensors"=>"Current-session values and statistics over the selected range.","desktop"=>"Manage windows, startup and monitoring options.",_=>""};
+        subtitle.Visibility=subtitle.Text.Length==0?Visibility.Collapsed:Visibility.Visible;RefreshUpdateNotice();Refresh();
         if(destination=="desktop")_ = RefreshStartupAsync();
     }
     private void Refresh()
