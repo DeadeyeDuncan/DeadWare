@@ -309,7 +309,7 @@ public class BatteryUiTests
     {
         var shell = (FrameworkElement)dashboard.Content;
         var heading = (TextBlock)typeof(MainWindow).GetField("heading", All)!.GetValue(dashboard)!;
-        var subtitle = (TextBlock)typeof(MainWindow).GetField("subtitle", All)!.GetValue(dashboard)!;
+        var status = (TextBlock)typeof(MainWindow).GetField("status", All)!.GetValue(dashboard)!;
         var appSearch = (TextBox)typeof(MainWindow).GetField("appSearch", All)!.GetValue(dashboard)!;
         var apps = (DataGrid)typeof(MainWindow).GetField("apps", All)!.GetValue(dashboard)!;
         var sensors = (DataGrid)typeof(MainWindow).GetField("sensors", All)!.GetValue(dashboard)!;
@@ -332,10 +332,10 @@ public class BatteryUiTests
                     if (destination == "sensors") sensors.ItemsSource = new[] { new { Name = "Fixture CPU temperature", Current = "60.0 °C", Minimum = "45.0 °C", Average = "55.0 °C", Maximum = "65.0 °C" } };
                     shell.Measure(new Size(1220, 900)); shell.Arrange(new Rect(0, 0, 1220, 900)); shell.UpdateLayout();
                     shell.Dispatcher.Invoke(() => { }, System.Windows.Threading.DispatcherPriority.ApplicationIdle); shell.UpdateLayout();
-                    AssertFont(heading.FontFamily, header); AssertFont(subtitle.FontFamily, body);
+                    AssertFont(heading.FontFamily, header); AssertFont(status.FontFamily, body);
                     AssertFont(button.FontFamily, body); AssertFont(dashboard.FontFamily, body);
                     Assert.Equal(ResourceColor("Heading"), ((SolidColorBrush)heading.Foreground).Color);
-                    Assert.Equal(ResourceColor("Muted"), ((SolidColorBrush)subtitle.Foreground).Color);
+                    Assert.Equal(ResourceColor("Muted"), ((SolidColorBrush)status.Foreground).Color);
                     if (destination == "network")
                     {
                         AssertFont(appSearch.FontFamily, body); AssertFont(apps.FontFamily, body);

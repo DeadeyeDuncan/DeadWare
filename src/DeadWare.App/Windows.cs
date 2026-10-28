@@ -15,7 +15,7 @@ public sealed class MainWindow : Window
     private readonly ApplicationLifetime lifetime;
     private readonly Func<bool> trayAvailable;
     private readonly ContentControl content=new();
-    private readonly TextBlock heading=Ui.Heading("System overview",28),subtitle=Ui.Text("",13,"Muted"),status=Ui.Text("Starting the shared collector…",11,"Muted"),memory=Ui.Text("Memory —",12,"Muted"),networkStatus=Ui.Text("",12,"Warning"),networkEmpty=Ui.Text("",13,"Muted"),sensorCount=Ui.Text("",12,"Muted");
+    private readonly TextBlock heading=Ui.Heading("System overview",28),status=Ui.Text("Starting the shared collector…",11,"Muted"),memory=Ui.Text("Memory —",12,"Muted"),networkStatus=Ui.Text("",12,"Warning"),networkEmpty=Ui.Text("",13,"Muted"),sensorCount=Ui.Text("",12,"Muted");
     private readonly ComboBox gpu=new(){MaxWidth=340,VerticalAlignment=VerticalAlignment.Center,DisplayMemberPath="Name",SelectedValuePath="Id"};
     private readonly StackPanel gpuControls;
     private readonly DockPanel liveToolbar;
@@ -52,7 +52,7 @@ public sealed class MainWindow : Window
         var main=new DockPanel {Margin=new Thickness(18,25,26,16)};Grid.SetColumn(main,1);shell.Children.Add(main);
         var footer=new StackPanel {Margin=new Thickness(4,10,4,0)};footer.Children.Add(status);DockPanel.SetDock(footer,Dock.Bottom);main.Children.Add(footer);
         var header=new StackPanel();DockPanel.SetDock(header,Dock.Top);main.Children.Add(header);
-        var titleRow=new DockPanel();var widget=Ui.Button("↗ Open widget",()=>session.OpenDetached("widget"));widget.HorizontalAlignment=HorizontalAlignment.Right;DockPanel.SetDock(widget,Dock.Right);titleRow.Children.Add(widget);titleRow.Children.Add(heading);header.Children.Add(titleRow);subtitle.Margin=new(0,8,0,0);header.Children.Add(subtitle);
+        var titleRow=new DockPanel();var widget=Ui.Button("↗ Open widget",()=>session.OpenDetached("widget"));widget.HorizontalAlignment=HorizontalAlignment.Right;DockPanel.SetDock(widget,Dock.Right);titleRow.Children.Add(widget);titleRow.Children.Add(heading);header.Children.Add(titleRow);
         updateNotice=new(ShowUpdates);header.Children.Add(updateNotice);
         liveToolbar=new DockPanel {Margin=new Thickness(0,18,0,12)};var ranges=Ui.Range(session);DockPanel.SetDock(ranges,Dock.Right);liveToolbar.Children.Add(ranges);var gpuLabel=Ui.Text("GPU",12,"Muted");gpuLabel.Margin=new(0,0,8,0);gpuControls=Ui.Row(gpuLabel,gpu);liveToolbar.Children.Add(gpuControls);header.Children.Add(liveToolbar);
         gpu.SelectionChanged+=(_,_)=>{if(!syncingGpu)session.SetGpu((gpu.SelectedItem as Device)?.Id);};
@@ -177,8 +177,7 @@ public sealed class MainWindow : Window
         gpuControls.Visibility=destination=="overview"?Visibility.Visible:Visibility.Collapsed;
         liveToolbar.Visibility=destination is "cooling" or "battery" or "updates"?Visibility.Collapsed:Visibility.Visible;
         page=destination;content.Content=pages[destination];heading.Text=destination switch {"network"=>"Network","cooling"=>"Cooling Health","battery"=>"Battery history","updates"=>"Keep DeadWare current","sensors"=>"Hardware sensors","desktop"=>"Settings",_=>"System overview"};
-        subtitle.Text=destination switch {"cooling"=>"Learn your usual temperatures. Notice sustained changes.","battery"=>"See charge fall and recover. Keep the history for years.","sensors"=>"Current-session values and statistics over the selected range.","desktop"=>"Manage windows, startup and monitoring options.",_=>""};
-        subtitle.Visibility=subtitle.Text.Length==0?Visibility.Collapsed:Visibility.Visible;RefreshUpdateNotice();Refresh();
+        RefreshUpdateNotice();Refresh();
         if(destination=="desktop")_ = RefreshStartupAsync();
     }
     private void Refresh()
