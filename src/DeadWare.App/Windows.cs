@@ -176,8 +176,8 @@ public sealed class MainWindow : Window
     {
         gpuControls.Visibility=destination=="overview"?Visibility.Visible:Visibility.Collapsed;
         liveToolbar.Visibility=destination is "cooling" or "battery" or "updates"?Visibility.Collapsed:Visibility.Visible;
-        page=destination;content.Content=pages[destination];heading.Text=destination switch {"network"=>"Your network, explained","cooling"=>"Cooling Health","battery"=>"Battery history","updates"=>"Keep DeadWare current","sensors"=>"Hardware sensors","desktop"=>"Settings",_=>"System overview"};
-        subtitle.Text=destination switch {"network"=>"See which applications are sending and receiving data.","cooling"=>"Learn your usual temperatures. Notice sustained changes.","battery"=>"See charge fall and recover. Keep the history for years.","updates"=>"Update when you are ready. Keep the previous installation within reach.","sensors"=>"Current-session values and statistics over the selected range.","desktop"=>"Manage windows, startup and monitoring options.",_=>""};
+        page=destination;content.Content=pages[destination];heading.Text=destination switch {"network"=>"Network","cooling"=>"Cooling Health","battery"=>"Battery history","updates"=>"Keep DeadWare current","sensors"=>"Hardware sensors","desktop"=>"Settings",_=>"System overview"};
+        subtitle.Text=destination switch {"cooling"=>"Learn your usual temperatures. Notice sustained changes.","battery"=>"See charge fall and recover. Keep the history for years.","updates"=>"Update when you are ready. Keep the previous installation within reach.","sensors"=>"Current-session values and statistics over the selected range.","desktop"=>"Manage windows, startup and monitoring options.",_=>""};
         subtitle.Visibility=subtitle.Text.Length==0?Visibility.Collapsed:Visibility.Visible;RefreshUpdateNotice();Refresh();
         if(destination=="desktop")_ = RefreshStartupAsync();
     }
