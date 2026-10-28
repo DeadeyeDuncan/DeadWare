@@ -26,6 +26,7 @@ public sealed class MainWindow : Window
     private readonly Dictionary<string,CheckBox> widgetGraphChoices=new(StringComparer.Ordinal);
     private readonly CheckBox widgetAlwaysOnTop=new() {Content="Widget always on top",Margin=new Thickness(0,0,0,12)};
     private readonly CheckBox joinedPopouts=new() {Content="Join CPU and GPU graphs in pop-outs",Margin=new Thickness(0,0,0,8)};
+    private readonly CheckBox gpuFanSpeed=new() {Content="Show GPU fan speed on temperature graphs",Margin=new Thickness(0,0,0,8)};
     private readonly CheckBox startup=new() {Content="Start with Windows (administrator)",Margin=new Thickness(0,22,0,8)};
     private readonly TextBlock startupStatus=Ui.Text("Startup status is checked when this page opens.",12,"Muted"),startupResult=Ui.Text("",12,"Warning");
     private Button startupRepair=null!,startupDisable=null!,startupRefresh=null!,batteryNavigation=null!;
@@ -98,6 +99,11 @@ public sealed class MainWindow : Window
         var pollingLabel=Ui.Text("Data polling interval",14);pollingLabel.Margin=new(0,0,12,0);
         var pollingRow=Ui.Row(pollingLabel,polling);pollingRow.Margin=new(0,0,0,8);stack.Children.Add(pollingRow);
         var pollingHelp=Ui.Text("Applies without restarting after the current wait or reading finishes. Faster polling uses more resources; slow hardware may take longer than the selected interval. At 5 or 10 seconds, Cooling Health records history but does not gather enough samples for reference comparisons.",12,"Muted");pollingHelp.Margin=new(0,0,0,20);stack.Children.Add(pollingHelp);
+        gpuFanSpeed.IsChecked=session.Settings.ShowGpuFanSpeed;
+        System.Windows.Automation.AutomationProperties.SetName(gpuFanSpeed,"Show GPU fan speed on temperature graphs");
+        gpuFanSpeed.Checked+=(_,_)=>{if(!syncingWidgetGraphs)session.SetGpuFanSpeed(true);};
+        gpuFanSpeed.Unchecked+=(_,_)=>{if(!syncingWidgetGraphs)session.SetGpuFanSpeed(false);};stack.Children.Add(gpuFanSpeed);
+        var fanHelp=Ui.Text("Adds the selected GPU's first reported fan as a dotted amber line on its own left RPM scale. Applies immediately to the overview, temperature pop-outs and widget. Unsupported fan readings stay unavailable; 0 RPM means stopped.",12,"Muted");fanHelp.Margin=new(0,0,0,20);stack.Children.Add(fanHelp);
         var widgetLabel=Ui.Text("Widget graphs",14);widgetLabel.Margin=new(0,0,0,8);stack.Children.Add(widgetLabel);
         var widgetOptions=new WrapPanel {Margin=new Thickness(0,0,0,6)};
         var selectedGraphs=WidgetGraphSelection.Normalize(session.Settings.WidgetGraphs);
@@ -190,6 +196,7 @@ public sealed class MainWindow : Window
             foreach(var choice in widgetGraphChoices)choice.Value.IsChecked=selectedGraphs.Contains(choice.Key);
             widgetAlwaysOnTop.IsChecked=session.Settings.WidgetAlwaysOnTop;
             joinedPopouts.IsChecked=session.Settings.JoinCpuGpuPopouts;
+            gpuFanSpeed.IsChecked=session.Settings.ShowGpuFanSpeed;
         }
         finally {syncingWidgetGraphs=false;}
         var r=session.Current;bool noBattery=r?.Battery.PowerState==BatteryPowerState.NoBattery;

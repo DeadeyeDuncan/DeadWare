@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.6.20 — GPU fan speed on temperature graphs
+
+- Add the saved **Show GPU fan speed on temperature graphs** Settings option, off by default and applied immediately to the dashboard GPU temperature graph, GPU/joined temperature pop-outs and widget temperature graph.
+- Plot the selected GPU's first fan RPM as a dotted warning-color line on a separate left RPM scale, with temperature on the right °C scale.
+- Keep missing fan readings unavailable with gaps, and preserve valid 0 RPM readings.
+- Save the last six hours of GPU fan history from this version onward; earlier samples remain unavailable.
+
 ## 0.6.19 — Graph colors and themed text
 
 - Add filled-circle color pickers to Overview graphs, with presets, custom colors and a theme-default reset.

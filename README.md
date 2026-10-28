@@ -12,6 +12,7 @@ DeadWare is a Windows desktop monitor for watching CPU/GPU usage and temperature
 ## Features
 
 - CPU and GPU utilization and temperature graphs with detected device names.
+- Optional GPU fan RPM on temperature graphs, with a separate scale and saved history.
 - A combined download/upload graph with a shared scale and distinct line styles.
 - Per-application network rates when Windows permits ETW capture.
 - Searchable sensor readings with minimum, maximum and average values.
@@ -66,7 +67,7 @@ Closing the dashboard with its X or Alt+F4 hides it in the system tray. Pop-out 
 
 To fully stop monitoring, choose **Quit DeadWare** from the tray menu or dashboard. Keep window restoration enabled and leave your desired graphs and widget open when you quit: they will reopen with their saved positions, sizes and always-on-top choices. Closing a graph or widget individually keeps it closed next time. Positions are kept within available monitors if your display setup changes. Recent graph history and saved Cooling Health history remain available after quitting. Hiding the dashboard resets neither.
 
-Graph history is saved automatically in `%LOCALAPPDATA%\DeadWare\live-graph-history.db`, independently of Cooling Health recording. It retains the last six elapsed hours of CPU/GPU usage and temperature, RAM usage percentage and combined download/upload rates. RAM uses a 0–100% scale with current used/total memory shown beside it; its history begins with readings collected in version 0.6.11 or later. Time while DeadWare was stopped remains a gap; after more than six hours away, the old readings fall outside the available range. Current values always come from fresh readings. Writes run in the background every 15 seconds and flush on normal quit; a crash or abrupt power loss can lose the latest unsaved batch. The database is capped at 64 MiB with a bounded journal. A save error is shown in the dashboard status while live monitoring continues.
+Graph history is saved automatically in `%LOCALAPPDATA%\DeadWare\live-graph-history.db`, independently of Cooling Health recording. It retains the last six elapsed hours of CPU/GPU usage and temperature, GPU fan RPM, RAM usage percentage and combined download/upload rates. RAM uses a 0–100% scale with current used/total memory shown beside it; its history begins with readings collected in version 0.6.11 or later. GPU fan history begins with readings collected in version 0.6.20 or later; earlier samples remain unavailable. Time while DeadWare was stopped remains a gap; after more than six hours away, the old readings fall outside the available range. Current values always come from fresh readings. Writes run in the background every 15 seconds and flush on normal quit; a crash or abrupt power loss can lose the latest unsaved batch. The database is capped at 64 MiB with a bounded journal. A save error is shown in the dashboard status while live monitoring continues.
 
 Restoration matches local machine and hardware metadata, including GPU model/type rather than enumeration order. Ambiguous identical-model GPUs are not restored; an indistinguishable same-model physical replacement cannot always be detected. Full sensor-table statistics and per-application traffic totals remain current-session data. The first upgrade from a version without graph persistence cannot recover its earlier in-memory traces.
 
@@ -79,6 +80,8 @@ Startup points to the executable's current location. Keep the extracted folder i
 Use the overview cards' **Pop out** buttons to open graphs. In **Settings → Graph pop-outs**, enable **Join CPU and GPU graphs in pop-outs** to put CPU and selected-GPU usage together on one chart, and both temperatures together on another. The option is off by default. CPU keeps its theme color and solid line in both charts; GPU keeps its own color and dashed line. Both current readings and device statistics are available, with a shared 0–100% usage scale and a shared temperature scale that expands above 100°C when needed.
 
 The choice applies to new pop-outs. Existing open windows and remembered layouts keep their current form, and joined and separate windows remember their own positions, sizes and pin choices. RAM, Network and Battery history windows keep their existing behavior. Open the widget from the dashboard's **Open widget** button.
+
+In **Settings**, enable **Show GPU fan speed on temperature graphs** to add the selected GPU's first reported fan RPM to the dashboard GPU temperature graph, separate or joined GPU temperature pop-outs, and the widget temperature graph. This saved option is off by default and applies immediately to open graphs. Fan speed uses a dotted line in the theme's warning color (amber by default) and a separate left RPM scale; temperature keeps the right °C scale. A missing fan reading stays unavailable and leaves a gap. A reported 0 RPM is a valid stopped-fan reading.
 
 ## Desktop widget
 
@@ -145,7 +148,7 @@ dotnet run --project src/DeadWare.App/DeadWare.App.csproj
 Create a self-contained portable ZIP and SHA-256 checksum:
 
 ```powershell
-pwsh -File scripts/publish.ps1 -Version 0.6.19
+pwsh -File scripts/publish.ps1 -Version 0.6.20
 ```
 
 The packaging script runs tests before publishing, bundles the independent self-contained update helper, and records all managed file hashes in `deadware-package.json`. Output goes under `artifacts/`. GitHub Actions runs the same script. Pushing a normal three-part version tag such as `v0.6.0` builds and publishes a normal release after tests pass, using the matching `docs/releases/v0.6.0.md` notes. Workflows use pinned action commits.

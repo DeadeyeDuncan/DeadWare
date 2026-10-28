@@ -212,6 +212,7 @@ public class BatteryUiTests
                 var uiTimer = new System.Windows.Threading.DispatcherTimer();
                 Set(session, "timer", uiTimer);
                 Set(session, "writer", new SettingsSnapshotWriter(pollingSettingsPath));
+                VerifyGpuFanSpeed(session, collector, assembly, settings, pollingSettingsPath);
                 VerifyRangeDropdown(session, dashboard, assembly, pollingSettingsPath);
                 foreach (double seconds in new double[] { 10, .5, 1 })
                 {
@@ -397,6 +398,113 @@ public class BatteryUiTests
     {
         var bitmap = new RenderTargetBitmap((int)Math.Ceiling(element.ActualWidth), (int)Math.Ceiling(element.ActualHeight), 96, 96, PixelFormats.Pbgra32); bitmap.Render(element);
         using var file = File.Create(path); var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap)); encoder.Save(file);
+    }
+
+    private static void VerifyGpuFanSpeed(UiSession session, Collector collector, Assembly assembly, StackPanel settings, string settingsPath)
+    {
+        var toggle = Assert.Single(settings.Children.OfType<CheckBox>(), choice => choice.Content?.ToString() == "Show GPU fan speed on temperature graphs");
+        Assert.False(toggle.IsChecked);
+        var originalHistory = collector.History; var originalReading = collector.Latest;
+        string? originalGpu = session.Settings.SelectedGpuId;
+        var history = new SampleHistory();
+        for (int second = -55; second <= 0; second++)
+            history.Add(new(DateTimeOffset.UtcNow.AddSeconds(second), second, new Dictionary<string, double?>
+            {
+                ["cpu/temperature"] = 60, ["gpu-a/temperature"] = 40, ["gpu-b/temperature"] = 80,
+                ["gpu-a/fan"] = 500, ["gpu-b/fan"] = second == -30 ? null : second == 0 ? 0 : 2400 + second * 10
+            }));
+        Set(collector, "<History>k__BackingField", history);
+        Set(collector, "latest", new Reading(history.Read()[^1], [new("gpu-a", "First GPU", true), new("gpu-b", "Selected GPU", true)], [], [], "CPU", "", "", "", false));
+        session.Settings.SelectedGpuId = "gpu-b";
+        var chartType = assembly.GetType("DeadWare.App.HistoryChart")!;
+        var charts = new List<(FrameworkElement Chart, int Count)>();
+        foreach (var spec in new[] { ("gputemp", false), ("cputemp", true), ("cputemp", false), ("gpu", false) })
+        {
+            var chart = (FrameworkElement)Activator.CreateInstance(chartType, All, null, [session, spec.Item1, true], null)!;
+            chartType.GetProperty("CompareDevices")!.SetValue(chart, spec.Item2);
+            chart.Measure(new Size(284, 130)); chart.Arrange(new Rect(0, 0, 284, 130)); chart.UpdateLayout();
+            var traces = Traces(chart);
+            charts.Add((chart, traces.Length));
+        }
+        toggle.IsChecked = true; CompleteSettingsSave(session);
+        Assert.True(SettingsCodec.Read(File.ReadAllText(settingsPath)).Settings.ShowGpuFanSpeed);
+        Assert.Equal("gpu-b/fan", session.MetricId("gpufan"));
+        foreach (string theme in new[] { "Midnight", "Daylight", "Neon" })
+        {
+            assembly.GetType("DeadWare.App.Theme")!.GetMethod("Apply", All)!.Invoke(null, [theme]);
+            foreach (var (chart, count) in charts)
+            {
+                chartType.GetMethod("Refresh")!.Invoke(chart, null); chart.UpdateLayout();
+                bool eligible = (string)chartType.GetField("kind", All)!.GetValue(chart)! == "gputemp" || (bool)chartType.GetProperty("CompareDevices")!.GetValue(chart)!;
+                var traces = Traces(chart);
+                Assert.Equal(count + (eligible ? 1 : 0), traces.Length);
+                if (!eligible) continue;
+                var grid = Drawings(VisualTreeHelper.GetDrawing(chart)!).Select(drawing => drawing.Geometry).OfType<LineGeometry>().OrderBy(line => line.StartPoint.Y).ToArray();
+                double fraction = (string)chartType.GetField("kind", All)!.GetValue(chart)! == "gputemp" ? .8 : .6;
+                Assert.Equal(grid[0].StartPoint.Y + (grid[^1].StartPoint.Y - grid[0].StartPoint.Y) * (1 - fraction), traces[0].Geometry.Bounds.Top, 3);
+                Assert.Equal(((SolidColorBrush)Application.Current.Resources["Warning"]).Color, ((SolidColorBrush)traces[^1].Pen.Brush).Color);
+                Assert.Equal(new double[] { 1, 3 }, traces[^1].Pen.DashStyle.Dashes);
+                Assert.Equal(2, PathGeometry.CreateFromGeometry(traces[^1].Geometry).Figures.Count);
+                Assert.True(traces[^1].Geometry.Bounds.Width > 0);
+                Assert.All(Drawings(VisualTreeHelper.GetDrawing(chart)!).Select(drawing => drawing.Geometry).OfType<LineGeometry>(), line => Assert.True(line.Bounds.Width > 100));
+                var rpmLabels = Glyphs(VisualTreeHelper.GetDrawing(chart)!).Select(glyph => new string(glyph.GlyphRun.Characters.ToArray())).Where(label => label.EndsWith(" RPM", StringComparison.Ordinal)).ToArray();
+                Assert.Equal(new[] { "0 RPM", "1500 RPM", "3000 RPM" }, rpmLabels);
+            }
+        }
+        var gpuChart = charts[0].Chart;
+        string selected = Traces(gpuChart)[^1].Geometry.ToString();
+        session.SetGpu("gpu-a"); chartType.GetMethod("Refresh")!.Invoke(gpuChart, null); gpuChart.UpdateLayout();
+        Assert.NotEqual(selected, Traces(gpuChart)[^1].Geometry.ToString());
+        Assert.Equal("gpu-a/fan", session.MetricId("gpufan"));
+        session.SetGpu("gpu-b");
+        foreach (var spec in new[] { ("CompactGraph", "gputemp"), ("CompactGraph", "temperature"), ("WidgetGraph", "cputemp"), ("ChartCard", "gputemp") })
+        {
+            var type = assembly.GetType("DeadWare.App." + spec.Item1)!;
+            object[] arguments = spec.Item1 == "CompactGraph" ? [session, spec.Item2, new Window()] : spec.Item1 == "ChartCard" ? [session, spec.Item2, false] : [session, spec.Item2];
+            var surface = (FrameworkElement)Activator.CreateInstance(type, All, null, arguments, null)!;
+            var viewport = new Border { Child = surface };
+            viewport.Measure(new Size(300, 230)); viewport.Arrange(new Rect(0, 0, 300, 230)); viewport.UpdateLayout();
+            type.GetMethod("Refresh", All)!.Invoke(surface, null); viewport.UpdateLayout();
+            var chart = Descendants(surface).OfType<FrameworkElement>().Single(element => element.GetType() == chartType);
+            Assert.Equal(spec.Item2 is "temperature" or "cputemp" ? 3 : 2, Traces(chart).Length);
+            // Dashboard cards refresh only while visible; their Window remains hidden in this fixture.
+            if (spec.Item1 != "ChartCard") Assert.Contains(Descendants(surface).OfType<TextBlock>(), text => text.Text.Contains("GPU fan") && text.Text.Contains("0 RPM"));
+            string? output = Environment.GetEnvironmentVariable("DEADWARE_UI_OUTPUT");
+            if (output is not null) Capture(viewport, Path.Combine(output, "gpu-fan-" + spec.Item1 + "-" + spec.Item2 + ".png"));
+            if (spec.Item1 != "ChartCard")
+            {
+                var compactSize = new Size(284, spec.Item1 == "CompactGraph" ? 140 : 110);
+                viewport.Measure(compactSize); viewport.Arrange(new Rect(new Point(), compactSize)); viewport.UpdateLayout();
+                Assert.True(chart.ActualHeight >= 48, $"{spec.Item1}/{spec.Item2} chart height: {chart.ActualHeight}");
+                Assert.Equal(spec.Item2 is "temperature" or "cputemp" ? 3 : 2, Traces(chart).Length);
+                if (output is not null) Capture(viewport, Path.Combine(output, "gpu-fan-compact-" + spec.Item1 + "-" + spec.Item2 + ".png"));
+            }
+        }
+        foreach (var values in new[] { (Temperature: (double?)80, Fan: (double?)null), (Temperature: (double?)null, Fan: (double?)1500), (Temperature: (double?)null, Fan: (double?)null) })
+        {
+            var missingHistory = new SampleHistory();
+            for (int second = -2; second <= 0; second++)
+                missingHistory.Add(new(DateTimeOffset.UtcNow.AddSeconds(second), second, new Dictionary<string, double?> { ["gpu-b/temperature"] = values.Temperature, ["gpu-b/fan"] = values.Fan }));
+            Set(collector, "<History>k__BackingField", missingHistory);
+            Set(collector, "latest", collector.Latest! with { Sample = missingHistory.Read()[^1] });
+            chartType.GetMethod("Refresh")!.Invoke(gpuChart, null); gpuChart.UpdateLayout();
+            Assert.Equal(values.Temperature is null, Traces(gpuChart)[0].Geometry.IsEmpty());
+            Assert.Equal(values.Fan is null, Traces(gpuChart)[1].Geometry.IsEmpty());
+        }
+        toggle.IsChecked = false; CompleteSettingsSave(session);
+        Assert.False(session.Settings.ShowGpuFanSpeed);
+        chartType.GetMethod("Refresh")!.Invoke(gpuChart, null); gpuChart.UpdateLayout(); Assert.Single(Traces(gpuChart));
+        Set(collector, "<History>k__BackingField", originalHistory); Set(collector, "latest", originalReading); session.SetGpu(originalGpu);
+
+        static void Set(object target, string name, object? value) => target.GetType().GetField(name, All)!.SetValue(target, value);
+        static GeometryDrawing[] Traces(FrameworkElement chart) => Drawings(VisualTreeHelper.GetDrawing(chart)!).Where(item => item.Geometry is StreamGeometry).ToArray();
+        static IEnumerable<GlyphRunDrawing> Glyphs(Drawing drawing)
+        {
+            if (drawing is GlyphRunDrawing glyph) yield return glyph;
+            if (drawing is DrawingGroup group)
+                foreach (var child in group.Children)
+                    foreach (var nested in Glyphs(child)) yield return nested;
+        }
     }
 
     private static void VerifyRangeDropdown(UiSession session, MainWindow dashboard, Assembly assembly, string settingsPath)
@@ -1026,7 +1134,7 @@ public class BatteryUiTests
                     string kind = (string)graph.GetType().GetField("kind", All)!.GetValue(graph)!;
                     string[] kinds = kind switch { "cpu" => ["cpu", "gpu"], "cputemp" => ["cputemp", "gputemp"], "network" => ["download", "upload"], _ => ["memory"] };
                     Assert.Equal(kinds.Select(Expected), Traces(Field(graph, "chart")).Select(trace => BrushColor(trace.Pen.Brush)));
-                    Assert.Equal(kinds.Select(Expected), Descendants(graph).OfType<System.Windows.Shapes.Line>().Select(line => BrushColor(line.Stroke)));
+                    Assert.Equal(kinds.Select(Expected), Descendants(graph).OfType<System.Windows.Shapes.Line>().Where(line => line.Parent is not UIElement { Visibility: Visibility.Collapsed }).Select(line => BrushColor(line.Stroke)));
                     Assert.Equal(Expected(kinds[0]), BrushColor(((TextBlock)Field(graph, "primary")).Foreground));
                     if (kinds.Length == 2) Assert.Equal(Expected(kinds[1]), BrushColor(((TextBlock)Field(graph, "secondary")).Foreground));
                 }

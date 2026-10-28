@@ -17,6 +17,7 @@ internal sealed class CompactGraph : Border
     private readonly bool joined;
     private readonly HistoryChart chart;
     private readonly TextBlock value=Ui.Text("—",26,font:"MetricFont"),upload=Ui.Text("—",18,"Cpu",font:"MetricFont"),status=Ui.Text("",10,"Warning");
+    private readonly TextBlock fan=Ui.Text("",10,"Warning",font:"MetricFont");
     private readonly TextBlock details=Ui.Text("Discovering hardware…",12,"Muted"),stats=Ui.Text("",12,"Muted");
     private readonly Button options;
     private readonly Popup popup;
@@ -39,7 +40,8 @@ internal sealed class CompactGraph : Border
         Grid.SetColumn(readings,1);header.Children.Add(readings);
         options=Ui.Button("⋯",OpenOptions);options.Width=28;options.Height=28;options.FontSize=18;options.Padding=new Thickness(0);options.Margin=new Thickness(6,0,0,0);options.ToolTip="Graph options";
         AutomationProperties.SetName(options,"Graph options");Grid.SetColumn(options,2);header.Children.Add(options);
-        status.Visibility=Visibility.Collapsed;status.TextWrapping=TextWrapping.NoWrap;status.TextTrimming=TextTrimming.CharacterEllipsis;Grid.SetRow(status,1);grid.Children.Add(status);
+        var annotations=new StackPanel();status.Visibility=Visibility.Collapsed;status.TextWrapping=TextWrapping.NoWrap;status.TextTrimming=TextTrimming.CharacterEllipsis;annotations.Children.Add(status);
+        fan.Visibility=Visibility.Collapsed;fan.ToolTip="Selected GPU's first reported fan · dotted trace · separate left RPM scale";annotations.Children.Add(fan);Grid.SetRow(annotations,1);grid.Children.Add(annotations);
         chart=new HistoryChart(session,chartKind,true) {CompareDevices=joined,ClipToBounds=true};Grid.SetRow(chart,2);grid.Children.Add(chart);
 
         var menu=new StackPanel();KeyboardNavigation.SetTabNavigation(menu,KeyboardNavigationMode.Cycle);
@@ -64,6 +66,9 @@ internal sealed class CompactGraph : Border
         string id=session.MetricId(chartKind);double? current=session.Stale?null:session.Value(id);
         double? other=joined?(session.Stale?null:session.Value(session.MetricId(chartKind=="cpu"?"gpu":"gputemp"))):null;
         var data=session.Current;
+        bool showFan=session.Settings.ShowGpuFanSpeed&&(kind=="gputemp"||kind=="temperature");
+        fan.Visibility=showFan?Visibility.Visible:Visibility.Collapsed;
+        if(showFan)fan.Text=Ui.GpuFanText(session)+" · dotted · left RPM";
         value.SetResourceReference(TextBlock.ForegroundProperty,Theme.GraphKey(chartKind));
         upload.SetResourceReference(TextBlock.ForegroundProperty,Theme.GraphKey(joined?(chartKind=="cpu"?"gpu":"gputemp"):"upload"));
         if(joined)
@@ -71,7 +76,7 @@ internal sealed class CompactGraph : Border
             string unit=chartKind=="cputemp"?" °C":" %";
             value.Text="CPU "+Ui.Number(current)+unit;upload.Text="GPU "+Ui.Number(other)+unit;
             value.ToolTip=data?.CpuName;upload.ToolTip=session.GpuName;
-            details.Text=$"CPU · {data?.CpuName??"Unavailable"}\nSolid CPU-color line\n\nGPU · {session.GpuName}\nDashed GPU-color line\nBoth devices share the same scale.";
+            details.Text=$"CPU · {data?.CpuName??"Unavailable"}\nSolid CPU-color line\n\nGPU · {session.GpuName}\nDashed GPU-color line\n"+(showFan?"CPU / GPU temperatures share the right °C scale.":"Both devices share the same scale.");
             AutomationProperties.SetName(value,$"{data?.CpuName??"CPU"} {value.Text}");
             AutomationProperties.SetName(upload,$"{session.GpuName} {upload.Text}");
         }
@@ -93,6 +98,7 @@ internal sealed class CompactGraph : Border
             details.Text=data is null?"Discovering hardware…":kind.StartsWith("cpu")?data.CpuName:session.GpuName;
             AutomationProperties.SetName(value,$"{Ui.Title(kind)} {value.Text}");
         }
+        if(showFan)details.Text+="\n\nGPU first fan: dotted warning line\nSeparate left RPM scale.";
         bool unavailable=current is null||(joined&&other is null)||(kind=="network"&&session.Value("network/upload") is null);
         status.Text=data is null?"Discovering hardware…":session.Stale?"Stale · waiting for fresh readings":unavailable?"Reading unavailable":"";
         status.Visibility=status.Text.Length==0?Visibility.Collapsed:Visibility.Visible;

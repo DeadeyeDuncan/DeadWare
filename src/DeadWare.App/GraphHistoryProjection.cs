@@ -28,7 +28,7 @@ public static class GraphHistoryProjection
         {
             if(string.IsNullOrWhiteSpace(gpu.Name)||reading.Gpus.Count(g=>g.Name.Equals(gpu.Name,StringComparison.OrdinalIgnoreCase))!=1)continue;
             var metadata=reading.Sensors.FirstOrDefault(s=>s.HardwareId==gpu.Id&&s.HardwareType is "GpuAmd" or "GpuNvidia" or "GpuIntel");
-            if(metadata is not null)Add(metadata.HardwareType,gpu.Name,gpu.Id,"usage","temperature");
+            if(metadata is not null)Add(metadata.HardwareType,gpu.Name,gpu.Id,"usage","temperature","fan");
         }
         return result;
     }
