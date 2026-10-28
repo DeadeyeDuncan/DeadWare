@@ -1,5 +1,13 @@
 # Release validation
 
+## Themed graph range dropdown (0.6.16, 2026-10-27)
+
+The dashboard and compact graph options share a 140-DIP dropdown instead of the six range buttons. The existing six values and labels, saved history range and cross-window notification path remain. The selector reuses the app's implicit ComboBox style and its dynamic theme resources. Compact graph options focus the dropdown; Escape is left to an open dropdown before the outer options menu closes.
+
+All 461 tests passed (372 core/update, 89 Windows app), and `scripts/publish.ps1 -Version 0.6.16` packaged the self-contained app/helper. The real WPF regression first failed on the old UniformGrid. It now checks initial selection, all six choices, one notification for a changed choice and none for an unchanged choice, two-selector synchronization, programmatic changes, persistence and unload/reload behavior. Foreground/background and compact dimensions pass across all five palettes.
+
+Visual QA caught the custom ComboBox template displaying the choice object's debug text. A rendered-label assertion failed before adding the same label-returning ToString pattern already used by polling choices. Corrected Midnight/Daylight previews and the dashboard were inspected under ignored `artifacts/ui-range-dropdown-0.6.16/`. Independent review and whitespace checks passed. Previews use an unshown managed owner for resource invalidation, with a verified zero native handle and temporary settings writer. Native dropdown opening, nested-popup capture, focus and keyboard interaction were not exercised. No live collection, user-profile settings I/O, installation, restart or rollback was tested. The installed app is left for the user's updater test.
+
 ## Release note history browser (0.6.15, 2026-10-27)
 
 The Updates release-notes card has a **Show release note history** button. It loads normal published releases newest first, including current and older versions, independently of the update candidate or asset availability. Hide restores the usual current/missed-version notes. Each explicit Show refreshes online; startup and opening Updates retain their existing behavior. Loading uses the shared cancellable operation guard, with inline error/retry text and retained earlier history on refresh failure.

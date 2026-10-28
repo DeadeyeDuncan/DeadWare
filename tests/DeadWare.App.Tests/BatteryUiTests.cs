@@ -211,6 +211,7 @@ public class BatteryUiTests
                 var uiTimer = new System.Windows.Threading.DispatcherTimer();
                 Set(session, "timer", uiTimer);
                 Set(session, "writer", new SettingsSnapshotWriter(pollingSettingsPath));
+                VerifyRangeDropdown(session, dashboard, assembly, pollingSettingsPath);
                 foreach (double seconds in new double[] { 10, .5, 1 })
                 {
                     polling.SelectedValue = seconds;
@@ -290,6 +291,74 @@ public class BatteryUiTests
         thread.SetApartmentState(ApartmentState.STA); thread.Start();
         Assert.True(thread.Join(TimeSpan.FromSeconds(30)), "Offscreen rendering timed out.");
         if (failure is not null) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(failure).Throw();
+    }
+
+    private static void VerifyRangeDropdown(UiSession session, MainWindow dashboard, Assembly assembly, string settingsPath)
+    {
+        var toolbar = (DockPanel)typeof(MainWindow).GetField("liveToolbar", All)!.GetValue(dashboard)!;
+        var main = Assert.IsType<ComboBox>(toolbar.Children[0]);
+        var second = Assert.IsType<ComboBox>(assembly.GetType("DeadWare.App.Ui")!.GetMethod("Range", All)!.Invoke(null, [session]));
+        int original = session.HistorySeconds;
+        Assert.Equal(original, main.SelectedValue); Assert.Equal(original, second.SelectedValue);
+        Assert.Equal("Graph history range", System.Windows.Automation.AutomationProperties.GetName(main));
+        Assert.Equal(HistoryRanges.Seconds, main.Items.Cast<object>().Select(item => (int)item.GetType().GetProperty("Seconds")!.GetValue(item)!));
+        Assert.Equal(HistoryRanges.Seconds.Select(HistoryRanges.Label), main.Items.Cast<object>().Select(item => (string)item.GetType().GetProperty("Label")!.GetValue(item)!));
+        main.RaiseEvent(new RoutedEventArgs(FrameworkElement.LoadedEvent)); second.RaiseEvent(new RoutedEventArgs(FrameworkElement.LoadedEvent));
+        int notifications = 0; void Changed() => notifications++;
+        Window? previewOwner = null;
+        session.Changed += Changed;
+        try
+        {
+            foreach (int seconds in HistoryRanges.Seconds)
+            {
+                int expected = session.HistorySeconds == seconds ? 0 : 1;
+                notifications = 0; main.SelectedValue = seconds;
+                Assert.Equal(seconds, session.HistorySeconds); Assert.Equal(seconds, second.SelectedValue);
+                Assert.Equal(expected, notifications);
+            }
+            notifications = 0; second.SelectedValue = 10800;
+            Assert.Equal(10800, main.SelectedValue); Assert.Equal(1, notifications);
+            notifications = 0; session.SetRange(300);
+            Assert.Equal(300, main.SelectedValue); Assert.Equal(300, second.SelectedValue); Assert.Equal(1, notifications);
+            CompleteSettingsSave(session); Assert.Equal(300, SettingsCodec.Read(File.ReadAllText(settingsPath)).Settings.HistorySeconds);
+            main.RaiseEvent(new RoutedEventArgs(FrameworkElement.UnloadedEvent)); second.RaiseEvent(new RoutedEventArgs(FrameworkElement.UnloadedEvent));
+            session.SetRange(60); Assert.Equal(300, main.SelectedValue); Assert.Equal(300, second.SelectedValue);
+            main.RaiseEvent(new RoutedEventArgs(FrameworkElement.LoadedEvent)); second.RaiseEvent(new RoutedEventArgs(FrameworkElement.LoadedEvent));
+            Assert.Equal(60, main.SelectedValue); Assert.Equal(60, second.SelectedValue);
+            var themeType = assembly.GetType("DeadWare.App.Theme")!;
+            var preview = new Border { Child = second };
+            previewOwner = new Window { Content = preview };
+            foreach (string theme in (string[])themeType.GetField("Names", All)!.GetValue(null)!)
+            {
+                themeType.GetMethod("Apply", All)!.Invoke(null, [theme]);
+                preview.SetResourceReference(Border.BackgroundProperty, "Background");
+                preview.Measure(new Size(160, 44)); preview.Arrange(new Rect(0, 0, 160, 44)); preview.UpdateLayout();
+                Color ColorOf(string key) => ((SolidColorBrush)Application.Current.Resources[key]).Color;
+                Assert.Equal(ColorOf("Control"), ((SolidColorBrush)second.Background).Color);
+                Assert.Equal(ColorOf("Ink"), ((SolidColorBrush)second.Foreground).Color);
+                Assert.Contains(Descendants(second).OfType<TextBlock>(), block => block.Text == HistoryRanges.Label(session.HistorySeconds));
+                Assert.True(second.ActualHeight < 45); Assert.True(second.ActualWidth < 150);
+                string? output = Environment.GetEnvironmentVariable("DEADWARE_UI_OUTPUT");
+                if (output is not null)
+                {
+                    var bitmap = new RenderTargetBitmap(160, 44, 96, 96, PixelFormats.Pbgra32); bitmap.Render(preview);
+                    using var file = File.Create(Path.Combine(output, $"history-range-{theme}.png"));
+                    var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap)); encoder.Save(file);
+                }
+            }
+        }
+        finally
+        {
+            session.Changed -= Changed;
+            session.SetRange(original);
+            main.RaiseEvent(new RoutedEventArgs(FrameworkElement.UnloadedEvent)); second.RaiseEvent(new RoutedEventArgs(FrameworkElement.UnloadedEvent));
+            CompleteSettingsSave(session);
+            if (previewOwner is not null)
+            {
+                Assert.Equal(IntPtr.Zero, new System.Windows.Interop.WindowInteropHelper(previewOwner).Handle);
+                previewOwner.Close();
+            }
+        }
     }
 
     private static void VerifyReleaseNotes(UiSession session, Assembly assembly)
