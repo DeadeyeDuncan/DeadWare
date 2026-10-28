@@ -1,5 +1,15 @@
 # Release validation
 
+## Release note history browser (0.6.15, 2026-10-27)
+
+The Updates release-notes card has a **Show release note history** button. It loads normal published releases newest first, including current and older versions, independently of the update candidate or asset availability. Hide restores the usual current/missed-version notes. Each explicit Show refreshes online; startup and opening Updates retain their existing behavior. Loading uses the shared cancellable operation guard, with inline error/retry text and retained earlier history on refresh failure.
+
+The existing pinned GitHub pager/parser is shared: 30-second total deadline, ten pages of at most 100 rows, 2 MiB per page and 16,000 characters per body. Stable version filtering, deduplication, numeric descending order and immutable results remain. The bounded reader has no installed/latest dependency for full history; the missed-version reader retains its bounds and latest-note precedence.
+
+All 461 tests passed (372 core/update, 89 Windows app), and `scripts/publish.ps1 -Version 0.6.15` packaged the self-contained app/helper. New client/service APIs and the missing UI button first failed regression checks. Independent review identified an unconditional status-restore race; completion/cancellation regressions failed before the fix. History now acquires the shared guard without changing normal status, so newer messages survive while history loads. Focused service tests passed 28/28 before the final full gate.
+
+Service tests verify current installs, no latest check or update notification from history, candidate/missed-note/check-time preservation, failure/cancel retry, retained and empty history, and overlapping-operation guards. The real WPF fixture exercises Show/Hide and HTTP-failure Retry clicks, online refresh counts, restoration of ordinary notes, loaded-empty/error/busy states, and scrolling/wrapping at 420×720 and 900×900 in Midnight and Daylight. PNGs under ignored `artifacts/ui-release-history-0.6.15/` were visually inspected. Cancel behavior is covered at the service layer; native clicking and installation/restart/rollback were not tested. The offscreen fixture used synthetic HTTP and unshown windows without live hardware or user-profile settings I/O. Independent final review and whitespace checks passed. The live installation is left for the user's updater test.
+
 ## Joined CPU/GPU pop-outs (0.6.14, 2026-10-27)
 
 Settings now contains a saved, default-off **Join CPU and GPU graphs in pop-outs** option instead of redundant graph, battery and widget launch buttons. New overview usage requests resolve to one joined usage window; temperature requests resolve to one joined temperature window. Existing open windows and exact remembered types remain unchanged. Joined and individual types retain independent saved bounds and pin flags through the existing placement path.

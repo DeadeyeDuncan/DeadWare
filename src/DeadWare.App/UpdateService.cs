@@ -14,6 +14,9 @@ public sealed record UpdateState(string InstalledVersion)
     public ReleaseInfo? Release {get;init;}
     public IReadOnlyList<ReleaseNote> ReleaseNotes {get;init;}=[];
     public string ReleaseNotesStatus {get;init;}="";
+    public IReadOnlyList<ReleaseNote> ReleaseHistory {get;init;}=[];
+    public string ReleaseHistoryStatus {get;init;}="";
+    public bool ReleaseHistoryLoaded {get;init;}
     public BackupRecord? Previous {get;init;}
     public bool InstallationVerified {get;init;}
     public bool NeedsRecovery {get;init;}
@@ -45,11 +48,11 @@ public sealed class UpdateService
     private void Publish(Func<UpdateState,UpdateState> change)
     {lock(gate)Volatile.Write(ref state,change(state));Changed?.Invoke();}
     public void ReportFailure(Exception error)=>Publish(s=>s with {Status="Update could not continue: "+error.Message});
-    private bool Begin(string message,bool metadataCheck=false)
+    private bool Begin(string? message,bool metadataCheck=false)
     {
         if(Interlocked.CompareExchange(ref busy,1,0)!=0)return false;
         Volatile.Write(ref checking,metadataCheck?1:0);
-        Publish(s=>s with {Busy=true,CanCancel=true,Progress=0,Status=message});return true;
+        Publish(s=>s with {Busy=true,CanCancel=true,Progress=0,Status=message??s.Status});return true;
     }
     private void End(){Volatile.Write(ref checking,0);Interlocked.Exchange(ref busy,0);Publish(s=>s with {Busy=false,CanCancel=false});}
     public async Task ReadLocalAsync()
@@ -112,6 +115,24 @@ public sealed class UpdateService
         catch(HttpRequestException error) when(error.StatusCode is HttpStatusCode.Forbidden or HttpStatusCode.TooManyRequests)
         {Publish(s=>s with {Status="GitHub's request limit was reached. Try again later."});}
         catch(Exception error){ReportFailure(error);}
+        finally{End();}
+    }
+    public async Task ReadHistoryAsync(CancellationToken token)
+    {
+        if(!Begin(null,true))return;
+        try
+        {
+            Publish(s=>s with {ReleaseHistoryStatus="Loading release note history…"});
+            var history=await releases.ReadHistoryAsync(token);
+            token.ThrowIfCancellationRequested();
+            Publish(s=>s with {ReleaseHistory=history,ReleaseHistoryLoaded=true,ReleaseHistoryStatus=""});
+        }
+        catch(OperationCanceledException)
+        {Publish(s=>s with {ReleaseHistoryStatus=token.IsCancellationRequested?"Release note history cancelled. Retry when ready.":"GitHub did not respond in time. Retry later."});}
+        catch(HttpRequestException error) when(error.StatusCode is HttpStatusCode.Forbidden or HttpStatusCode.TooManyRequests)
+        {Publish(s=>s with {ReleaseHistoryStatus="GitHub's request limit was reached. Retry later."});}
+        catch(Exception)
+        {Publish(s=>s with {ReleaseHistoryStatus="Could not load release note history. Retry to try again."});}
         finally{End();}
     }
     public async Task<UpdateJob?> PrepareAsync(bool rollback,CancellationToken token)

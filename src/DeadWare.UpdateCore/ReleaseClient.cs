@@ -24,6 +24,12 @@ public sealed class ReleaseClient(HttpClient? client = null)
         var installed = ReleasePolicy.VersionOf(installedVersion);
         if (latest.Version <= installed) return Array.Empty<ReleaseNote>();
         var notes = new Dictionary<Version, ReleaseNote> { [latest.Version] = new(latest.Version, latest.Tag, latest.Notes) };
+        return await ReadNotesAsync(installed, latest.Version, notes, cancellationToken).ConfigureAwait(false);
+    }
+    public Task<IReadOnlyList<ReleaseNote>> ReadHistoryAsync(CancellationToken cancellationToken)
+        => ReadNotesAsync(null, null, new Dictionary<Version, ReleaseNote>(), cancellationToken);
+    private async Task<IReadOnlyList<ReleaseNote>> ReadNotesAsync(Version? installed, Version? latest, Dictionary<Version, ReleaseNote> notes, CancellationToken cancellationToken)
+    {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         deadline.CancelAfter(TimeSpan.FromSeconds(30));
         for (int page = 1; page <= 10; page++)
@@ -32,7 +38,7 @@ public sealed class ReleaseClient(HttpClient? client = null)
             using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, deadline.Token).ConfigureAwait(false);
             response.EnsureSuccessStatusCode();
             byte[] json = await ReadLimitedAsync(response.Content, 2 * 1024 * 1024, deadline.Token).ConfigureAwait(false);
-            int count = ReadNotesPage(json, installed, latest.Version, notes, deadline.Token);
+            int count = ReadNotesPage(json, installed, latest, notes, deadline.Token);
             if (count < 100)
             {
                 deadline.Token.ThrowIfCancellationRequested();
@@ -41,7 +47,7 @@ public sealed class ReleaseClient(HttpClient? client = null)
         }
         throw new InvalidDataException("Release note history exceeded its 1,000-release pagination limit.");
     }
-    private static int ReadNotesPage(byte[] json, Version installed, Version latest, Dictionary<Version, ReleaseNote> notes, CancellationToken token)
+    private static int ReadNotesPage(byte[] json, Version? installed, Version? latest, Dictionary<Version, ReleaseNote> notes, CancellationToken token)
     {
         try
         {
@@ -61,7 +67,7 @@ public sealed class ReleaseClient(HttpClient? client = null)
                 Version version;
                 try { version = ReleasePolicy.VersionOf(versionText); }
                 catch (InvalidDataException) { continue; }
-                if (version <= installed || version > latest || notes.ContainsKey(version)) continue;
+                if ((installed is not null && version <= installed) || (latest is not null && version > latest) || notes.ContainsKey(version)) continue;
                 if (release.GetProperty("draft").GetBoolean() || release.GetProperty("prerelease").GetBoolean()) continue;
                 string body = release.TryGetProperty("body", out var bodyValue) ? bodyValue.GetString() ?? "" : "";
                 notes.Add(version, new(version, tag, body[..Math.Min(16000, body.Length)]));

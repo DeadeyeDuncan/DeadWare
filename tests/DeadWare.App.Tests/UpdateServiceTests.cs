@@ -177,6 +177,97 @@ public class UpdateServiceTests
         }
         finally{cancellation.Cancel();await check;Directory.Delete(root,true);}
     }
+    [Fact] public async Task History_can_be_requested_when_current_without_checking_latest_or_announcing()
+    {
+        var handler=new Handler{NotesContent=JsonSerializer.Serialize(new[]{
+            new{tag_name="v0.1.0",draft=false,prerelease=false,body="First release"},
+            new{tag_name="v0.6.5",draft=false,prerelease=false,body="Current release"}})};
+        using var http=new HttpClient(handler);var service=new UpdateService("0.6.5",http:http);
+        var notices=new List<ReleaseInfo>();Subscribe(service,notices.Add);string status=service.State.Status;
+        Assert.False(service.State.ReleaseHistoryLoaded);
+        await service.ReadHistoryAsync(CancellationToken.None);
+        Assert.True(service.State.ReleaseHistoryLoaded);Assert.Equal("",service.State.ReleaseHistoryStatus);
+        Assert.Equal(new[]{"v0.6.5","v0.1.0"},service.State.ReleaseHistory.Select(note=>note.Tag));
+        Assert.Equal(0,handler.Calls);Assert.Equal(1,handler.NotesCalls);Assert.Empty(notices);
+        Assert.Null(service.State.Release);Assert.Empty(service.State.ReleaseNotes);Assert.Null(service.State.LastChecked);
+        Assert.Equal(status,service.State.Status);Assert.False(service.State.Busy);Assert.False(service.State.CanCancel);
+    }
+    [Fact] public async Task History_preserves_available_update_missed_notes_and_last_checked()
+    {
+        var handler=new Handler{Content=Release("0.6.5","Latest notes"),NotesContent=JsonSerializer.Serialize(new[]{
+            new{tag_name="v0.6.4",draft=false,prerelease=false,body="Missed release"},
+            new{tag_name="v0.6.1",draft=false,prerelease=false,body="Older release"}})};
+        using var http=new HttpClient(handler);var service=new UpdateService("0.6.2",http:http);
+        var notices=new List<ReleaseInfo>();Subscribe(service,notices.Add);
+        typeof(UpdateService).GetField("state",System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Instance)!
+            .SetValue(service,service.State with {InstallationVerified=true});
+        await service.CheckAsync(CancellationToken.None);var before=service.State;
+        await service.ReadHistoryAsync(CancellationToken.None);
+        Assert.Same(before.Release,service.State.Release);Assert.Same(before.ReleaseNotes,service.State.ReleaseNotes);
+        Assert.Equal(before.ReleaseNotesStatus,service.State.ReleaseNotesStatus);Assert.Equal(before.LastChecked,service.State.LastChecked);
+        Assert.Equal(before.Status,service.State.Status);Assert.True(service.State.CanUpdate);Assert.Single(notices);
+        Assert.Equal(new[]{"v0.6.4","v0.6.1"},service.State.ReleaseHistory.Select(note=>note.Tag));
+    }
+    [Theory] [InlineData(HttpStatusCode.ServiceUnavailable)] [InlineData(HttpStatusCode.Forbidden)] [InlineData(HttpStatusCode.TooManyRequests)]
+    public async Task Failed_history_refresh_keeps_previous_notes_and_can_be_retried(HttpStatusCode status)
+    {
+        var handler=new Handler{NotesContent="[{\"tag_name\":\"v0.6.1\",\"draft\":false,\"prerelease\":false,\"body\":\"Earlier notes\"}]"};
+        using var http=new HttpClient(handler);var service=new UpdateService("0.6.5",http:http);
+        await service.ReadHistoryAsync(CancellationToken.None);var before=service.State;
+        handler.NotesStatus=status;await service.ReadHistoryAsync(CancellationToken.None);
+        Assert.Same(before.ReleaseHistory,service.State.ReleaseHistory);Assert.True(service.State.ReleaseHistoryLoaded);
+        Assert.Equal(before.Status,service.State.Status);Assert.False(service.State.Busy);Assert.False(service.State.CanCancel);
+        Assert.Contains("retry",service.State.ReleaseHistoryStatus,StringComparison.OrdinalIgnoreCase);
+        if(status is HttpStatusCode.Forbidden or HttpStatusCode.TooManyRequests)Assert.Contains("limit",service.State.ReleaseHistoryStatus,StringComparison.OrdinalIgnoreCase);
+        handler.NotesStatus=HttpStatusCode.OK;handler.NotesContent="[]";await service.ReadHistoryAsync(CancellationToken.None);
+        Assert.True(service.State.ReleaseHistoryLoaded);Assert.Empty(service.State.ReleaseHistory);Assert.Equal("",service.State.ReleaseHistoryStatus);
+        Assert.Equal(3,handler.NotesCalls);Assert.Equal(0,handler.Calls);
+    }
+    [Fact] public async Task History_loading_is_cancellable_blocks_overlapping_operations_and_can_be_retried()
+    {
+        var handler=new HistoryWaitingHandler();using var http=new HttpClient(handler);using var cancellation=new CancellationTokenSource();
+        var service=new UpdateService("0.6.5",http:http);string status=service.State.Status;
+        var loading=service.ReadHistoryAsync(cancellation.Token);await handler.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.True(service.State.Busy);Assert.True(service.State.CanCancel);Assert.Contains("Loading",service.State.ReleaseHistoryStatus);
+        await service.ReadHistoryAsync(CancellationToken.None);await service.CheckAsync(CancellationToken.None);
+        Assert.Equal(1,handler.Calls);
+        cancellation.Cancel();await loading.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.False(service.State.ReleaseHistoryLoaded);Assert.Empty(service.State.ReleaseHistory);
+        Assert.Contains("cancelled",service.State.ReleaseHistoryStatus,StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(status,service.State.Status);Assert.False(service.State.Busy);Assert.False(service.State.CanCancel);
+        handler.Continue.TrySetResult();await service.ReadHistoryAsync(CancellationToken.None);
+        Assert.True(service.State.ReleaseHistoryLoaded);Assert.Empty(service.State.ReleaseHistory);Assert.Equal("",service.State.ReleaseHistoryStatus);
+        Assert.Equal(2,handler.Calls);
+    }
+    [Theory] [InlineData(false)] [InlineData(true)]
+    public async Task Status_reported_while_history_is_loading_survives_completion_or_cancellation(bool cancel)
+    {
+        var handler=new HistoryWaitingHandler();using var http=new HttpClient(handler);using var cancellation=new CancellationTokenSource();
+        var service=new UpdateService("0.6.5",http:http);
+        var loading=service.ReadHistoryAsync(cancellation.Token);await handler.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        service.ReportFailure(new IOException("Newer operation status"));string reported=service.State.Status;
+        if(cancel)cancellation.Cancel();else handler.Continue.TrySetResult();
+        await loading.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(reported,service.State.Status);Assert.False(service.State.Busy);
+    }
+    [Fact] public async Task Empty_history_is_successful_and_explicit_requests_refresh_it()
+    {
+        var handler=new Handler();using var http=new HttpClient(handler);var service=new UpdateService("0.6.5",http:http);
+        await service.ReadHistoryAsync(CancellationToken.None);await service.ReadHistoryAsync(CancellationToken.None);
+        Assert.True(service.State.ReleaseHistoryLoaded);Assert.Empty(service.State.ReleaseHistory);Assert.Equal("",service.State.ReleaseHistoryStatus);
+        Assert.Equal(2,handler.NotesCalls);Assert.Equal(0,handler.Calls);
+    }
+    private sealed class HistoryWaitingHandler:HttpMessageHandler
+    {
+        public TaskCompletionSource Started {get;}=new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Continue {get;}=new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public int Calls;
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,CancellationToken token)
+        {
+            Assert.EndsWith("/releases",request.RequestUri!.AbsolutePath);Calls++;Started.TrySetResult();
+            await Continue.Task.WaitAsync(token);return new(HttpStatusCode.OK){Content=new StringContent("[]")};
+        }
+    }
     private sealed class NotesWaitingHandler:HttpMessageHandler
     {
         public TaskCompletionSource Started {get;}=new(TaskCreationOptions.RunContinuationsAsynchronously);

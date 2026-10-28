@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.15 — Browse release note history
+
+- Add Show release note history in Updates to browse all normal published versions, including current and older releases, newest first.
+- Refresh history on each explicit opening and return to current or missed-version notes with Hide release note history.
+- Support cancellation and readable retry states without changing update, download or rollback behavior.
+
 ## 0.6.14 — Joined CPU/GPU pop-outs
 
 - Add a saved Settings option to join CPU/GPU usage on one pop-out and both temperatures on another, using consistent device colors and line styles.
