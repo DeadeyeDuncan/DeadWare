@@ -223,22 +223,22 @@ internal sealed class GraphWindow : Window
 internal sealed class WidgetWindow : Window
 {
     private readonly UiSession session;
-    private readonly WidgetGraph usage,temperature;
-    private readonly TextBlock memory=Ui.Text("—",12,"Muted"),network=Ui.Text("—",12),status=Ui.Text("",10,"Muted");
+    private readonly WidgetGraph usage,temperature,network;
+    private readonly TextBlock memory=Ui.Text("—",12,"Muted"),status=Ui.Text("",10,"Muted");
     public WidgetWindow(UiSession session)
     {
-        this.session=session;Title="DeadWare · Quick glance";MinWidth=300;MinHeight=320;Ui.Icon(this);Topmost=true;session.Place(this,"widget",340,390);
-        var grid=new Grid {Margin=new Thickness(8)};grid.RowDefinitions.Add(new(){Height=GridLength.Auto});grid.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});grid.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});grid.RowDefinitions.Add(new(){Height=GridLength.Auto});
+        this.session=session;Title="DeadWare · Quick glance";MinWidth=300;MinHeight=400;Ui.Icon(this);Topmost=true;session.Place(this,"widget",340,480);
+        var grid=new Grid {Margin=new Thickness(8)};grid.RowDefinitions.Add(new(){Height=GridLength.Auto});grid.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});grid.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});grid.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});grid.RowDefinitions.Add(new(){Height=GridLength.Auto});
         var pin=new CheckBox {Content="Always on top",IsChecked=Topmost};pin.Checked+=(_,_)=>Topmost=true;pin.Unchecked+=(_,_)=>Topmost=false;grid.Children.Add(pin);
-        usage=new(session,"cpu");temperature=new(session,"cputemp");Grid.SetRow(usage,1);grid.Children.Add(usage);Grid.SetRow(temperature,2);grid.Children.Add(temperature);
-        var summary=new StackPanel {Margin=new Thickness(0,6,0,0)};summary.Children.Add(memory);summary.Children.Add(network);status.TextWrapping=TextWrapping.NoWrap;status.TextTrimming=TextTrimming.CharacterEllipsis;summary.Children.Add(status);Grid.SetRow(summary,3);grid.Children.Add(summary);Content=grid;
+        usage=new(session,"cpu");temperature=new(session,"cputemp");network=new(session,"network");Grid.SetRow(usage,1);grid.Children.Add(usage);Grid.SetRow(temperature,2);grid.Children.Add(temperature);Grid.SetRow(network,3);grid.Children.Add(network);
+        var summary=new StackPanel {Margin=new Thickness(0,6,0,0)};summary.Children.Add(memory);status.TextWrapping=TextWrapping.NoWrap;status.TextTrimming=TextTrimming.CharacterEllipsis;summary.Children.Add(status);Grid.SetRow(summary,4);grid.Children.Add(summary);Content=grid;
         session.Changed+=Refresh;Closed+=(_,_)=>session.Changed-=Refresh;Refresh();
     }
     private void Refresh()
     {
         double? V(string id)=>session.Stale?null:session.Value(id);
-        usage.Refresh();temperature.Refresh();
-        memory.Text=$"Memory  {Ui.Bytes(V("memory/used"))} / {Ui.Bytes(V("memory/total"))}";network.Text=$"↓ {Ui.Bytes(V("network/download"),true)}    ↑ {Ui.Bytes(V("network/upload"),true)}";
+        usage.Refresh();temperature.Refresh();network.Refresh();
+        memory.Text=$"Memory  {Ui.Bytes(V("memory/used"))} / {Ui.Bytes(V("memory/total"))}";
         status.Text=session.Current is null?"Discovering hardware…":session.Stale?"Readings stale · open main window for status":"Shared collector · — means unavailable";status.ToolTip=status.Text;
     }
 }

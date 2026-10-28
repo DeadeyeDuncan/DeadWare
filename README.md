@@ -16,7 +16,7 @@ DeadWare is a Windows desktop monitor for watching CPU/GPU usage and temperature
 - Per-application network rates when Windows permits ETW capture.
 - Searchable sensor readings with minimum, maximum and average values.
 - Selectable graphics adapters on multi-GPU systems.
-- Separate graph windows and a compact widget with CPU/GPU usage and temperature charts and always-on-top controls.
+- Separate graph windows and a compact widget with CPU/GPU usage, temperature and network charts and always-on-top controls.
 - Compact pop-out graphs prioritize the current reading and chart; their options menu holds history range, Always on top and sensor statistics.
 - Close the dashboard to the system tray and keep graphs, the widget and monitoring running independently.
 - Restore the graphs and widget left open, including their saved positions and sizes.
@@ -70,7 +70,7 @@ Startup points to the executable's current location. Keep the extracted folder i
 
 ## Desktop widget
 
-The compact widget has a **Usage** graph with CPU and selected-GPU utilization together, followed by a **Temperature** graph with both devices' temperatures together. CPU uses the CPU theme color and a solid line in both graphs; GPU uses the GPU theme color and a dashed line in both. Small CPU/GPU legends show the current readings. Usage shares a 0–100% scale; temperature shares a °C scale that expands above 100°C when needed. The widget follows the shared history range and GPU selection, uses saved graph history, and keeps unavailable readings and downtime as gaps. Memory and network summaries remain below the graphs.
+The compact widget has a **Usage** graph with CPU and selected-GPU utilization together, followed by a **Temperature** graph with both devices' temperatures together. CPU uses the CPU theme color and a solid line in both graphs; GPU uses the GPU theme color and a dashed line in both. Small CPU/GPU legends show the current readings. Usage shares a 0–100% scale; temperature shares a °C scale that expands above 100°C when needed. A third **Network** graph shows download as a solid blue line and upload as a dashed green line on one bytes-per-second scale, with current rates in its legend. The widget follows the shared history range and GPU selection, uses saved graph history, and keeps unavailable readings and downtime as gaps. Memory and status remain below the graphs. The widget is taller to fit all three charts; older saved sizes expand to the new minimum while staying within the available work area.
 
 ## Hardware compatibility
 
@@ -129,7 +129,7 @@ dotnet run --project src/DeadWare.App/DeadWare.App.csproj
 Create a self-contained portable ZIP and SHA-256 checksum:
 
 ```powershell
-pwsh -File scripts/publish.ps1 -Version 0.6.6
+pwsh -File scripts/publish.ps1 -Version 0.6.7
 ```
 
 The packaging script runs tests before publishing, bundles the independent self-contained update helper, and records all managed file hashes in `deadware-package.json`. Output goes under `artifacts/`. GitHub Actions runs the same script. Pushing a normal three-part version tag such as `v0.6.0` builds and publishes a normal release after tests pass, using the matching `docs/releases/v0.6.0.md` notes. Workflows use pinned action commits.

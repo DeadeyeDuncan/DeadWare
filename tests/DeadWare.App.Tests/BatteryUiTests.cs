@@ -352,7 +352,9 @@ public class BatteryUiTests
                 ["cpu/usage"] = seconds == -40 ? null : 35 + 15 * Math.Sin(seconds / 5.0), ["cpu/temperature"] = seconds == -30 ? null : seconds == -3 ? 125 : 60 + 5 * Math.Sin(seconds / 7.0),
                 ["gpu-a/usage"] = 5, ["gpu-a/temperature"] = 40,
                 ["gpu-b/usage"] = 75 + 10 * Math.Sin(seconds / 4.0), ["gpu-b/temperature"] = seconds == -25 ? null : seconds == -4 ? 145 : 90 + 5 * Math.Sin(seconds / 6.0),
-                ["memory/used"] = 8e9, ["memory/total"] = 32e9, ["network/download"] = 12345, ["network/upload"] = 3456
+                ["memory/used"] = 8e9, ["memory/total"] = 32e9,
+                ["network/download"] = seconds == -36 ? null : 12345678 + 2e6 * Math.Sin(seconds / 5.0),
+                ["network/upload"] = seconds == -32 ? null : 34567890 + 6e6 * Math.Sin(seconds / 4.0)
             }) { SessionId = seconds >= -10 ? "restart" : "fixture" });
         }
         Set(collector, "<History>k__BackingField", history);
@@ -360,8 +362,8 @@ public class BatteryUiTests
         Set(collector, "latest", reading); session.Settings.HistorySeconds = 60; session.Settings.SelectedGpuId = "gpu-b";
         var widgetType = assembly.GetType("DeadWare.App.WidgetWindow")!;
         var widget = (Window)Activator.CreateInstance(widgetType, All, null, [session], null)!;
-        Assert.Equal(300, widget.MinWidth); Assert.Equal(320, widget.MinHeight);
-        Assert.Equal(340, widget.Width); Assert.Equal(390, widget.Height);
+        Assert.Equal(300, widget.MinWidth); Assert.Equal(400, widget.MinHeight);
+        Assert.Equal(340, widget.Width); Assert.Equal(480, widget.Height);
         var content = (FrameworkElement)widget.Content;
         // Capture the viewport parent: rendering the Margin-bearing child directly
         // shifts its drawing but clips it at the unshifted child size.
@@ -374,13 +376,13 @@ public class BatteryUiTests
         foreach (string theme in new[] { "Midnight", "Daylight" })
         {
             assembly.GetType("DeadWare.App.Theme")!.GetMethod("Apply", All)!.Invoke(null, [theme]); Changed();
-            foreach (var size in new[] { new Size(284, 281), new Size(324, 351), new Size(620, 550) })
+            foreach (var size in new[] { new Size(284, 361), new Size(324, 441), new Size(620, 650) })
             {
                 viewport.SetResourceReference(Border.BackgroundProperty, "Background");
                 viewport.Measure(size); viewport.Arrange(new Rect(new Point(), size)); viewport.UpdateLayout();
                 var charts = Descendants(content).OfType<FrameworkElement>().Where(element => element.GetType().Name == "HistoryChart").ToArray();
-                Assert.Equal(2, charts.Length);
-                Assert.Equal(new[] { "cpu", "cputemp" }, charts.Select(chart => (string)chart.GetType().GetField("kind", All)!.GetValue(chart)!));
+                Assert.Equal(3, charts.Length);
+                Assert.Equal(new[] { "cpu", "cputemp", "network" }, charts.Select(chart => (string)chart.GetType().GetField("kind", All)!.GetValue(chart)!));
                 foreach (var chart in charts)
                 {
                     Assert.True(chart.ActualHeight >= 48, $"Chart clipped at {size}: {chart.ActualHeight}");
@@ -389,17 +391,18 @@ public class BatteryUiTests
                     Assert.Equal(2, series.Length);
                     string kind = (string)chart.GetType().GetField("kind", All)!.GetValue(chart)!;
                     Color ColorOf(string name) => ((SolidColorBrush)Application.Current.Resources[name]).Color;
-                    Assert.Equal(ColorOf("Cpu"), ((SolidColorBrush)series[0].Pen.Brush).Color);
-                    Assert.Equal(ColorOf("Gpu"), ((SolidColorBrush)series[1].Pen.Brush).Color);
+                    Assert.Equal(ColorOf(kind == "network" ? "Download" : "Cpu"), ((SolidColorBrush)series[0].Pen.Brush).Color);
+                    Assert.Equal(ColorOf(kind == "network" ? "Cpu" : "Gpu"), ((SolidColorBrush)series[1].Pen.Brush).Color);
                     Assert.Empty(series[0].Pen.DashStyle.Dashes); Assert.NotEmpty(series[1].Pen.DashStyle.Dashes);
                     Assert.Equal(4, PathGeometry.CreateFromGeometry(series[0].Geometry).Figures.Count);
                     Assert.Equal(kind == "cpu" ? 3 : 4, PathGeometry.CreateFromGeometry(series[1].Geometry).Figures.Count);
                     var grid = Drawings(drawing).Select(item => item.Geometry).OfType<LineGeometry>().Where(line => line.StartPoint.Y == line.EndPoint.Y).OrderBy(line => line.StartPoint.Y).ToArray();
                     double top = grid[0].StartPoint.Y, height = grid[^1].StartPoint.Y - top;
-                    string metric = kind == "cpu" ? "usage" : "temperature"; double maximum = kind == "cpu" ? 100 : 160;
+                    string metric = kind == "cpu" ? "usage" : "temperature";
+                    double maximum = kind == "cpu" ? 100 : kind == "network" ? history.Read().SelectMany(sample => new[] { sample.Values["network/download"], sample.Values["network/upload"] }).Max()!.Value * 1.15 : 160;
                     for (int i = 0; i < 2; i++)
                     {
-                        string id = (i == 0 ? "cpu" : "gpu-b") + "/" + metric;
+                        string id = kind == "network" ? "network/" + (i == 0 ? "download" : "upload") : (i == 0 ? "cpu" : "gpu-b") + "/" + metric;
                         double peak = history.Read().Select(sample => sample.Values[id]).Where(value => value.HasValue).Max()!.Value;
                         Assert.Equal(top + height * (1 - peak / maximum), series[i].Geometry.Bounds.Top, 3);
                     }
@@ -412,6 +415,7 @@ public class BatteryUiTests
                 Assert.Equal(2, Descendants(content).OfType<TextBlock>().Count(block => block.Text.StartsWith("GPU ") && block.ToolTip?.ToString() == "Selected GPU"));
                 Assert.Contains("CPU 35.0 %", text); Assert.Contains("GPU 75.0 %", text);
                 Assert.Contains("CPU 60.0 °C", text); Assert.Contains("GPU 90.0 °C", text);
+                Assert.Contains("Network", text); Assert.Contains("↓ 12.3 MB/s", text); Assert.Contains("↑ 34.6 MB/s", text);
                 Assert.DoesNotContain("First GPU", text); Assert.Contains("Memory", text); Assert.Contains("Shared collector", text);
                 if (output is not null)
                 {
@@ -421,7 +425,7 @@ public class BatteryUiTests
                 }
             }
         }
-        var comparisonCharts = Descendants(content).OfType<FrameworkElement>().Where(element => element.GetType().Name == "HistoryChart").ToArray();
+        var comparisonCharts = Descendants(content).OfType<FrameworkElement>().Where(element => element.GetType().Name == "HistoryChart" && (string)element.GetType().GetField("kind", All)!.GetValue(element)! != "network").ToArray();
         string[] selectedTraces = comparisonCharts.Select(chart => Drawings(VisualTreeHelper.GetDrawing(chart)!).Where(item => item.Geometry is StreamGeometry).Last().Geometry.ToString()).ToArray();
         session.Settings.SelectedGpuId = "gpu-a"; Changed(); content.UpdateLayout();
         string switched = string.Join("\n", Descendants(content).OfType<TextBlock>().Select(block => block.Text));
@@ -435,20 +439,54 @@ public class BatteryUiTests
         Assert.Equal(thermalTop + thermalHeight * (1 - 125.0 / 140), Drawings(thermalDrawing).First(item => item.Geometry is StreamGeometry).Geometry.Bounds.Top, 3);
         session.Settings.HistorySeconds = 3600; Changed(); content.UpdateLayout();
         Assert.All(Descendants(content).OfType<FrameworkElement>().Where(element => element.GetType().Name == "HistoryChart"), chart =>
-            Assert.All(Drawings(VisualTreeHelper.GetDrawing(chart)!).Where(item => item.Geometry is StreamGeometry), item => Assert.Equal(1, item.Pen.Thickness)));
+            Assert.All(Drawings(VisualTreeHelper.GetDrawing(chart)!).Where(item => item.Geometry is StreamGeometry), item => Assert.Equal((string)chart.GetType().GetField("kind", All)!.GetValue(chart)! == "network" ? 2 : 1, item.Pen.Thickness)));
         session.Settings.HistorySeconds = 60;
         Set(collector, "latest", reading with { Sample = reading.Sample with { MonotonicSeconds = -10 } }); Changed();
         string stale = string.Join("\n", Descendants(content).OfType<TextBlock>().Select(block => block.Text));
         Assert.Contains("Readings stale", stale); Assert.Contains("CPU — %", stale); Assert.Contains("GPU — %", stale); Assert.Contains("CPU — °C", stale); Assert.Contains("GPU — °C", stale);
+        Assert.Contains("↓ —", stale); Assert.Contains("↑ —", stale); Assert.DoesNotContain("34.6 MB/s", stale);
         Assert.DoesNotContain("GPU 5.0 %", stale);
         Set(collector, "latest", reading with { Sample = reading.Sample with { Values = new Dictionary<string, double?>() } }); Changed();
         Assert.Contains("GPU — °C", string.Join("\n", Descendants(content).OfType<TextBlock>().Select(block => block.Text)));
+        VerifyWidgetNetwork(session, collector, reading, content, viewport, history);
         var subscribed = (Action)typeof(UiSession).GetField("Changed", All)!.GetValue(session)!;
         viewport.Child = null; widget.Content = content;
         widget.Close();
         var remaining = (Action?)typeof(UiSession).GetField("Changed", All)!.GetValue(session);
         Assert.DoesNotContain(remaining?.GetInvocationList() ?? [], handler => handler.Target == widget);
         Assert.Contains(subscribed.GetInvocationList(), handler => handler.Target == widget);
+        var savedWidget = new WindowPlacement(100, 200, 340, 390, false);
+        session.Settings.Windows["widget"] = savedWidget;
+        var restored = (Window)Activator.CreateInstance(widgetType, All, null, [session], null)!;
+        Assert.False(restored.Topmost); Assert.Equal(WindowStartupLocation.Manual, restored.WindowStartupLocation);
+        Assert.Equal(savedWidget, session.Settings.Windows["widget"]); Assert.Equal(400, restored.MinHeight);
+        restored.Close(); session.Settings.Windows.Remove("widget");
+    }
+
+    private static void VerifyWidgetNetwork(UiSession session, Collector collector, Reading reading, FrameworkElement content, Border viewport, SampleHistory history)
+    {
+        void Set(object target, string name, object value) => target.GetType().GetField(name, All)!.SetValue(target, value);
+        void Changed() { ((Action)typeof(UiSession).GetField("Changed", All)!.GetValue(session)!).Invoke(); content.UpdateLayout(); }
+        var chart = Descendants(content).OfType<FrameworkElement>().Single(element => element.GetType().Name == "HistoryChart" && (string)element.GetType().GetField("kind", All)!.GetValue(element)! == "network");
+        var uploadOnly = new SampleHistory();
+        foreach (var sample in history.Read()) uploadOnly.Add(sample with { Values = sample.Values.Where(pair => pair.Key != "network/download").ToDictionary() });
+        Set(collector, "<History>k__BackingField", uploadOnly);
+        Set(collector, "latest", reading with { Sample = reading.Sample with { Values = reading.Sample.Values.Where(pair => pair.Key != "network/download").ToDictionary() } }); Changed();
+        var series = Drawings(VisualTreeHelper.GetDrawing(chart)!).Where(item => item.Geometry is StreamGeometry).ToArray();
+        Assert.True(series[0].Geometry.IsEmpty()); Assert.False(series[1].Geometry.IsEmpty());
+        string text = string.Join("\n", Descendants(content).OfType<TextBlock>().Select(block => block.Text));
+        Assert.Contains("↓ —", text); Assert.Contains("↑ 34.6 MB/s", text);
+        var highThroughput = new SampleHistory();
+        foreach (var sample in history.Read()) highThroughput.Add(sample with { Values = sample.Values.ToDictionary(pair => pair.Key, pair => pair.Key.StartsWith("network/") ? pair.Value * 10000 : pair.Value) });
+        Set(collector, "<History>k__BackingField", highThroughput);
+        Set(collector, "latest", reading with { Sample = highThroughput.Read()[^1] }); Changed();
+        viewport.Measure(new Size(284, 361)); viewport.Arrange(new Rect(0, 0, 284, 361)); viewport.UpdateLayout();
+        Assert.True(VisualTreeHelper.GetDrawing(chart)!.Bounds.Right <= chart.ActualWidth + .01, "High-throughput axis label clipped at minimum width.");
+        foreach (var label in Descendants(content).OfType<TextBlock>().Where(block => block.ToolTip?.ToString() is "Download rate" or "Upload rate"))
+            Assert.True(label.TransformToAncestor(content).TransformBounds(new Rect(label.RenderSize)).Right <= content.ActualWidth + .01);
+        Set(collector, "<History>k__BackingField", new SampleHistory());
+        Set(collector, "latest", reading with { Sample = reading.Sample with { Values = new Dictionary<string, double?>() } }); Changed();
+        Assert.All(Drawings(VisualTreeHelper.GetDrawing(chart)!).Where(item => item.Geometry is StreamGeometry), item => Assert.True(item.Geometry.IsEmpty()));
     }
 
     private static IEnumerable<DependencyObject> Descendants(DependencyObject root)
