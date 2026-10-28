@@ -84,7 +84,7 @@ The widget's pin control is in **Settings → Widget always on top**. Changes up
 
 Choose the displayed graphs in **Settings → Widget graphs**: CPU/GPU usage, CPU/GPU temperature, RAM usage and Network activity. All four are enabled by default. Choices are saved and apply immediately to an open widget. Hidden graphs keep collecting history. Turning graphs off lowers the minimum height while keeping your current size and pin choice; resize the widget to your preferred height. If all graphs are off, the widget shows a hint to choose graphs in Settings.
 
-The compact widget has a **Usage** graph with CPU and selected-GPU utilization together, followed by a **Temperature** graph with both devices' temperatures together. CPU uses the CPU theme color and a solid line in both graphs; GPU uses the GPU theme color and a dashed line in both. Small CPU/GPU legends show the current readings. Usage shares a 0–100% scale; temperature shares a °C scale that expands above 100°C when needed. A third **RAM** graph shows physical memory usage on a 0–100% scale, with current percent and used/total memory in its legend. A fourth **Network** graph shows download as a solid blue line and upload as a dashed green line on one bytes-per-second scale, with current rates in its legend. The widget follows the shared history range and GPU selection, uses saved graph history, and keeps unavailable readings and downtime as gaps. Status remains below the graphs. Its minimum height follows the selected graph count; older saved sizes expand when needed while staying within the available work area.
+The compact widget has a **Usage** graph with CPU and selected-GPU utilization together, followed by a **Temperature** graph with both devices' temperatures together. CPU uses the CPU theme color and a solid line in both graphs; GPU uses the GPU theme color and a dashed line in both. Small CPU/GPU legends show the current readings. Usage shares a 0–100% scale; temperature shares a °C scale that expands above 100°C when needed. A third **RAM** graph shows physical memory usage on a 0–100% scale, with current percent and used/total memory in its legend. A fourth **Network** graph shows download as a solid blue line and upload as a dashed green line on one bytes-per-second scale, with current rates in its legend. The widget follows the shared history range and GPU selection, uses saved graph history, and keeps unavailable readings and downtime as gaps. Its minimum height follows the selected graph count; older saved sizes expand when needed while staying within the available work area.
 
 ## Hardware compatibility
 
@@ -143,7 +143,7 @@ dotnet run --project src/DeadWare.App/DeadWare.App.csproj
 Create a self-contained portable ZIP and SHA-256 checksum:
 
 ```powershell
-pwsh -File scripts/publish.ps1 -Version 0.6.16
+pwsh -File scripts/publish.ps1 -Version 0.6.17
 ```
 
 The packaging script runs tests before publishing, bundles the independent self-contained update helper, and records all managed file hashes in `deadware-package.json`. Output goes under `artifacts/`. GitHub Actions runs the same script. Pushing a normal three-part version tag such as `v0.6.0` builds and publishes a normal release after tests pass, using the matching `docs/releases/v0.6.0.md` notes. Workflows use pinned action commits.

@@ -1,5 +1,11 @@
 # Release validation
 
+## Remove widget footer (0.6.17, 2026-10-27)
+
+Removed the widget's bottom status text and its reserved Auto row. The graph area fills the freed space; the existing size/minimum policy, selections, pins and placement remain. Per-graph missing/stale values still use em dashes, and the empty-selection hint remains. Other windows' status controls are unchanged.
+
+All 461 tests passed (372 core/update, 89 Windows app), and `scripts/publish.ps1 -Version 0.6.17` packaged the self-contained app/helper. Existing widget assertions were updated for footer absence; that assertion failed with the old footer and passed after removal. Stale CPU/GPU/RAM/network values, graph geometry, minimum/default/large layouts, all 16 graph selections, pins and saved selection remain covered. Midnight minimum-size and Daylight empty-selection PNGs under ignored `artifacts/ui-widget-footer-0.6.17/` were visually inspected. Independent review and whitespace checks passed. Checks use offscreen WPF and temporary settings; no live collection, user-profile settings I/O, installation, restart or rollback was tested. The installed app is left for the user's updater test.
+
 ## Themed graph range dropdown (0.6.16, 2026-10-27)
 
 The dashboard and compact graph options share a 140-DIP dropdown instead of the six range buttons. The existing six values and labels, saved history range and cross-window notification path remain. The selector reuses the app's implicit ComboBox style and its dynamic theme resources. Compact graph options focus the dropdown; Escape is left to an open dropdown before the outer options menu closes.

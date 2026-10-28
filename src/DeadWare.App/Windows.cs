@@ -273,21 +273,20 @@ internal sealed class WidgetWindow : Window
     private readonly Dictionary<string,WidgetGraph> graphs=new(StringComparer.Ordinal);
     private readonly Grid cards=new();
     private readonly TextBlock empty=Ui.Text("No graphs selected. Choose graphs in Settings.",12,"Muted");
-    private readonly TextBlock status=Ui.Text("",10,"Muted");
     private string? appliedSelection;
     public WidgetWindow(UiSession session)
     {
         this.session=session;Title="DeadWare · Quick glance";MinWidth=300;
         int count=WidgetGraphSelection.Normalize(session.Settings.WidgetGraphs).Count;
         MinHeight=WidgetGraphSelection.MinimumHeight(count);Ui.Icon(this);session.Place(this,"widget",340,WidgetGraphSelection.DefaultHeight(count));
-        var grid=new Grid {Margin=new Thickness(8)};grid.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});grid.RowDefinitions.Add(new(){Height=GridLength.Auto});
+        var grid=new Grid {Margin=new Thickness(8)};grid.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});
         foreach(string kind in WidgetGraphSelection.Kinds)
         {
             int row=cards.RowDefinitions.Count;cards.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});
             var graph=new WidgetGraph(session,kind);graphs.Add(kind,graph);Grid.SetRow(graph,row);cards.Children.Add(graph);
         }
         var area=new Grid();area.Children.Add(cards);empty.TextAlignment=TextAlignment.Center;empty.HorizontalAlignment=HorizontalAlignment.Center;empty.VerticalAlignment=VerticalAlignment.Center;empty.Margin=new(12);area.Children.Add(empty);grid.Children.Add(area);
-        var summary=new StackPanel {Margin=new Thickness(0,6,0,0)};status.TextWrapping=TextWrapping.NoWrap;status.TextTrimming=TextTrimming.CharacterEllipsis;summary.Children.Add(status);Grid.SetRow(summary,1);grid.Children.Add(summary);Content=grid;
+        Content=grid;
         session.Changed+=Refresh;Closed+=(_,_)=>session.Changed-=Refresh;Refresh();
     }
     private void Refresh()
@@ -311,6 +310,5 @@ internal sealed class WidgetWindow : Window
             if(before is not null)NativePlacement.Restore(this,before,340,WidgetGraphSelection.DefaultHeight(selected.Count));
         }
         foreach(var graph in graphs.Values)if(graph.Visibility==Visibility.Visible)graph.Refresh();
-        status.Text=session.Current is null?"Discovering hardware…":session.Stale?"Readings stale · open main window for status":"Shared collector · — means unavailable";status.ToolTip=status.Text;
     }
 }

@@ -621,15 +621,12 @@ public class BatteryUiTests
                     }
                 }
                 string text = string.Join("\n", Descendants(content).OfType<TextBlock>().Select(block => block.Text));
-                var status = Descendants(content).OfType<TextBlock>().Single(block => block.Text.StartsWith("Shared collector"));
-                var statusBounds = status.TransformToAncestor(content).TransformBounds(new Rect(status.RenderSize));
-                Assert.True(statusBounds.Bottom <= content.ActualHeight + .01, $"Status extends below widget: {statusBounds} / {content.RenderSize}");
-                Assert.True(statusBounds.Right <= content.ActualWidth + .01, $"Status extends outside widget: {statusBounds} / {content.RenderSize}");
+                Assert.DoesNotContain("Shared collector", text);
                 Assert.Equal(2, Descendants(content).OfType<TextBlock>().Count(block => block.Text.StartsWith("GPU ") && block.ToolTip?.ToString() == "Selected GPU"));
                 Assert.Contains("CPU 35.0 %", text); Assert.Contains("GPU 75.0 %", text);
                 Assert.Contains("CPU 60.0 °C", text); Assert.Contains("GPU 90.0 °C", text);
                 Assert.Contains("Network", text); Assert.Contains("↓ 12.3 MB/s", text); Assert.Contains("↑ 34.6 MB/s", text);
-                Assert.DoesNotContain("First GPU", text); Assert.Contains("RAM", text); Assert.Contains("25.0", text); Assert.Contains("8.0 GB", text); Assert.Contains("32.0 GB", text); Assert.Contains("Shared collector", text);
+                Assert.DoesNotContain("First GPU", text); Assert.Contains("RAM", text); Assert.Contains("25.0", text); Assert.Contains("8.0 GB", text); Assert.Contains("32.0 GB", text);
                 if (output is not null)
                 {
                     var bitmap = new RenderTargetBitmap((int)size.Width, (int)size.Height, 96, 96, PixelFormats.Pbgra32); bitmap.Render(viewport);
@@ -656,7 +653,7 @@ public class BatteryUiTests
         session.Settings.HistorySeconds = 60;
         Set(collector, "latest", reading with { Sample = reading.Sample with { MonotonicSeconds = -10 } }); Changed();
         string stale = string.Join("\n", Descendants(content).OfType<TextBlock>().Select(block => block.Text));
-        Assert.Contains("Readings stale", stale); Assert.Contains("CPU — %", stale); Assert.Contains("GPU — %", stale); Assert.Contains("CPU — °C", stale); Assert.Contains("GPU — °C", stale);
+        Assert.Contains("CPU — %", stale); Assert.Contains("GPU — %", stale); Assert.Contains("CPU — °C", stale); Assert.Contains("GPU — °C", stale);
         Assert.Contains("↓ —", stale); Assert.Contains("↑ —", stale); Assert.DoesNotContain("34.6 MB/s", stale);
         var ramGraph = Descendants(content).OfType<FrameworkElement>().Single(element => element.GetType().Name == "WidgetGraph" && (string)element.GetType().GetField("kind", All)!.GetValue(element)! == "memory");
         var ramValue = (TextBlock)ramGraph.GetType().GetField("primary", All)!.GetValue(ramGraph)!;
@@ -817,7 +814,6 @@ public class BatteryUiTests
         double[] minima = [180, 200, 280, 400, 520];
         var graphs = Descendants(content).OfType<FrameworkElement>().Where(element => element.GetType().Name == "WidgetGraph").ToArray();
         var empty = Descendants(content).OfType<TextBlock>().Single(block => block.Text.StartsWith("No graphs selected"));
-        var status = Descendants(content).OfType<TextBlock>().Single(block => block.Text.StartsWith("Shared collector"));
         Assert.Empty(Descendants(content).OfType<CheckBox>());
         double width = widget.Width, height = widget.Height;
         bool topmost = widget.Topmost;
@@ -855,8 +851,6 @@ public class BatteryUiTests
                     Assert.True(chart.ActualHeight >= 48, $"Selected chart clipped for mask {mask}: {chart.ActualHeight}");
                     Assert.NotNull(VisualTreeHelper.GetDrawing(chart));
                 }
-                var bounds = status.TransformToAncestor(content).TransformBounds(new Rect(status.RenderSize));
-                Assert.True(bounds.Bottom <= content.ActualHeight + .01); Assert.True(bounds.Right <= content.ActualWidth + .01);
                 if (selected.Length == 0)
                 {
                     var hint = empty.TransformToAncestor(content).TransformBounds(new Rect(empty.RenderSize));

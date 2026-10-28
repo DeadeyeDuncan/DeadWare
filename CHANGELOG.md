@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.6.17 — Remove widget footer
+
+- Remove the text footer beneath the widget graphs.
+- Give the graphs the space previously reserved for that row.
+
 ## 0.6.16 — Themed graph range dropdown
 
 - Replace the six graph range buttons with a compact dropdown on the dashboard and in pop-out options.
