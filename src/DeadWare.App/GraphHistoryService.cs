@@ -92,7 +92,7 @@ public sealed class GraphHistoryService
                             if(record.Values.TryGetValue(pair.Key,out var value))values[pair.Value]=value;
                         if(values.Count==0)continue;
                         restored.Add(new(record.Timestamp,anchor.MonotonicSeconds+(record.Timestamp-anchor.Timestamp).TotalSeconds,values)
-                            {SessionId=record.SessionId});
+                            {SessionId=record.SessionId,PollingIntervalSeconds=record.PollingIntervalSeconds});
                     }
                     history.Restore(restored,sample.MonotonicSeconds);
                     foreach(string key in newMappings.Keys)restoredKeys.Add(key);
@@ -101,7 +101,8 @@ public sealed class GraphHistoryService
                     (sample.MonotonicSeconds-previous.MonotonicSeconds))>3||seenDrops!=queued.DropGeneration||skippedFrame))segment=Guid.NewGuid().ToString("N");
                 previous=sample;seenDrops=queued.DropGeneration;skippedFrame=false;
                 var projected=mappings.ToDictionary(p=>p.Key,p=>SampleHistory.Finite(sample.Values.GetValueOrDefault(p.Value)),StringComparer.Ordinal);
-                pending.Add(new(segment,sample.Timestamp.ToUniversalTime(),sample.MonotonicSeconds,projected));
+                pending.Add(new(segment,sample.Timestamp.ToUniversalTime(),sample.MonotonicSeconds,projected)
+                    {PollingIntervalSeconds=sample.PollingIntervalSeconds});
                 if(pending.Count==120)Flush();
             }
             Volatile.Write(ref status,"Saving graph history locally · last 6 hours");

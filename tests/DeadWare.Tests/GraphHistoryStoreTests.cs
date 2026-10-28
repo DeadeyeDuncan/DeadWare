@@ -2,10 +2,11 @@ using System.Diagnostics;
 using DeadWare.Core;
 using Microsoft.Data.Sqlite;
 using Xunit;
+using Xunit.Abstractions;
 
 namespace DeadWare.Tests;
 
-public sealed class GraphHistoryStoreTests : IDisposable
+public sealed class GraphHistoryStoreTests(ITestOutputHelper output) : IDisposable
 {
     private readonly string directory = Path.Combine(Path.GetTempPath(), "DeadWare-graph-store-" + Guid.NewGuid().ToString("N"));
     private static readonly DateTimeOffset Epoch = new(2026, 10, 25, 12, 0, 0, TimeSpan.Zero);
@@ -29,6 +30,17 @@ public sealed class GraphHistoryStoreTests : IDisposable
     {
         _ = new GraphHistoryStore(Database);
         Assert.False(Directory.Exists(directory));
+    }
+
+    [Fact] public void Cadence_roundtrips_without_changing_the_legacy_payload_schema_or_metric_keys()
+    {
+        var store = Store();
+        store.Append([Row(0), Row(10) with { PollingIntervalSeconds = 10 }], Epoch.AddSeconds(20));
+        var rows = Store().Read(Epoch.AddSeconds(20));
+        Assert.Equal(new double[] { 1, 10 }, rows.Select(row => row.PollingIntervalSeconds));
+        Assert.All(rows, row => Assert.Equal(new[] { "metric" }, row.Values.Keys));
+        using var db = Connect(); using var command = db.CreateCommand(); command.CommandText = "PRAGMA user_version";
+        Assert.Equal(1L, command.ExecuteScalar());
     }
 
     [Fact] public void ReopenPreservesExactTimesSessionIdentityUnknownAndZero()
@@ -62,13 +74,38 @@ public sealed class GraphHistoryStoreTests : IDisposable
         Assert.Empty(store.Read(Epoch.AddHours(7)));
     }
 
-    [Fact] public void CountCapKeepsNewest21601RowsEvenWhenSamplesArriveFasterThanOnePerSecond()
+    [Fact] public void CountCapKeepsNewest43201RowsEvenWhenSamplesArriveFasterThanTheSupportedMinimum()
     {
         var store = Store();
-        var rows = Enumerable.Range(0, 22000).Select(i => Row(i / 10d)).ToArray();
-        foreach (var batch in rows.Chunk(120)) store.Append(batch, Epoch.AddSeconds(2200));
-        var read = Store().Read(Epoch.AddSeconds(2200));
-        Assert.Equal(21601, read.Count); Assert.Equal(39.9, read[0].MonotonicSeconds); Assert.Equal(2199.9, read[^1].MonotonicSeconds);
+        var rows = Enumerable.Range(0, 44000).Select(i => Row(i / 10d)).ToArray();
+        foreach (var batch in rows.Chunk(120)) store.Append(batch, Epoch.AddSeconds(4400));
+        var read = Store().Read(Epoch.AddSeconds(4400));
+        Assert.Equal(43201, read.Count); Assert.Equal(79.9, read[0].MonotonicSeconds); Assert.Equal(4399.9, read[^1].MonotonicSeconds);
+    }
+
+    [Fact] public void Half_second_polling_preserves_six_hours_including_ram_within_the_unchanged_storage_limit()
+    {
+        var store = Store();
+        var values = new Dictionary<string,double?>
+        {
+            [new string('a',64)+"/usage"] = 50.123456789,
+            [new string('a',64)+"/temperature"] = 62.25,
+            [new string('b',64)+"/usage"] = 21.9733,
+            [new string('b',64)+"/temperature"] = 44.2,
+            [new string('c',64)+"/download"] = 1234567.89012345,
+            [new string('c',64)+"/upload"] = 987654.32,
+            [new string('d',64)+"/usage"] = 49.55
+        };
+        var rows = Enumerable.Range(0, 43201).Select(index => Row(index / 2d,session:new string('s',32)) with
+            { Values = values, PollingIntervalSeconds = 0.5 }).ToArray();
+        foreach (var batch in rows.Chunk(120)) store.Append(batch, Epoch.AddHours(6));
+        var restored = Store().Read(Epoch.AddHours(6));
+        Assert.Equal(43201, restored.Count);
+        Assert.Equal(0, restored[0].MonotonicSeconds); Assert.Equal(21600, restored[^1].MonotonicSeconds);
+        Assert.All(restored, row => Assert.Equal(0.5, row.PollingIntervalSeconds));
+        Assert.All(restored, row => Assert.Equal(7,row.Values.Count));
+        Assert.InRange(store.StorageBytes, 1, GraphHistoryStore.MaximumDatabaseBytes);
+        output.WriteLine($"43,201 half-second samples with seven graph metrics including RAM: {store.StorageBytes:N0} bytes / {GraphHistoryStore.MaximumDatabaseBytes:N0} byte limit.");
     }
 
     [Fact] public void InvalidInputIsRejectedBeforeChangingPreviouslySavedHistory()
@@ -78,6 +115,7 @@ public sealed class GraphHistoryStoreTests : IDisposable
             Row(1) with { SessionId = "" }, Row(1) with { SessionId = new string('s', 129) },
             Row(1) with { MonotonicSeconds = double.NaN }, Row(1) with { MonotonicSeconds = double.PositiveInfinity },
             Row(1, double.NaN), Row(1, double.NegativeInfinity),
+            Row(1) with { PollingIntervalSeconds = 3 },
             Row(1) with { Values = new Dictionary<string,double?> { [new string('k', 257)] = 1 } },
             Row(1) with { Values = Enumerable.Range(0,65).ToDictionary(i => i.ToString(), _ => (double?)1) }
         };

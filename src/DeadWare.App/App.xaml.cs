@@ -10,6 +10,7 @@ public partial class App : Application
     private UiSession? session;
     private TrayIcon? tray;
     private readonly ApplicationLifetime lifetime=new();
+    private readonly CancellationTokenSource updateChecks=new();
     protected override async void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
@@ -32,7 +33,7 @@ public partial class App : Application
             session=new UiSession(LayoutDiagnostics.RequestedPath(e.Args));
             Theme.Apply(session.Settings.Theme);
             var main=new MainWindow(session,lifetime,()=>tray is not null,RequestQuit);MainWindow=main;
-            try {tray=new TrayIcon(Dispatcher,ShowDashboard,RequestQuit);}
+            try {tray=new TrayIcon(Dispatcher,ShowDashboard,RequestQuit,ShowUpdates);}
             catch(Exception) {main.SetTrayUnavailable();}
             session.Cooling.WarningRaised+=warning=>
             {
@@ -42,10 +43,19 @@ public partial class App : Application
                     if(!lifetime.IsEnding&&session.Settings.CoolingNotifications)tray?.ShowCoolingWarning(warning.Message);
                 });
             };
+            session.Updates.UpdateAvailable+=release=>
+            {
+                if(lifetime.IsEnding||Dispatcher.HasShutdownStarted)return;
+                Dispatcher.BeginInvoke(()=>
+                {
+                    if(!lifetime.IsEnding)tray?.ShowUpdateAvailable(release.Version.ToString());
+                });
+            };
             bool windowsStartup=e.Args.Contains("--startup")&&!e.Args.Contains("--restart-from");
             if(ApplicationLifetime.ShouldShowDashboardOnLaunch(windowsStartup,session.Settings.StartInTray,tray is not null))main.Show();
             session.Start();
             UpdateService.AcknowledgeStartup(e.Args,AppContext.BaseDirectory,BuildInfo.Version);
+            _=session.Updates.CheckAtStartupAsync(updateChecks.Token);
         }
         catch(Exception ex) {MessageBox.Show($"DeadWare could not start: {ex.Message}","DeadWare",MessageBoxButton.OK,MessageBoxImage.Error);await QuitAsync(1);}
     }
@@ -55,8 +65,14 @@ public partial class App : Application
         main.Show();if(main.WindowState==WindowState.Minimized)main.WindowState=WindowState.Normal;main.Activate();
     }
     private async void RequestQuit()=>await QuitAsync();
+    private void ShowUpdates()
+    {
+        ShowDashboard();
+        if(!lifetime.IsEnding&&MainWindow is MainWindow main)main.ShowUpdates();
+    }
     internal Task QuitAsync(int exitCode=0)=>lifetime.QuitAsync(async ()=>
     {
+        updateChecks.Cancel();
         if(MainWindow is not null)MainWindow.IsEnabled=false;
         try {if(session is not null)await session.ShutdownAsync();}
         catch(Exception ex) {MessageBox.Show($"DeadWare reported a shutdown error: {ex.Message}","DeadWare",MessageBoxButton.OK,MessageBoxImage.Warning);}
@@ -65,6 +81,7 @@ public partial class App : Application
     protected override void OnSessionEnding(SessionEndingCancelEventArgs e)
     {
         lifetime.BeginSessionEnding();
+        updateChecks.Cancel();
         try {session?.SaveForSessionEnding();}
         finally
         {
@@ -75,6 +92,7 @@ public partial class App : Application
     protected override void OnExit(ExitEventArgs e)
     {
         lifetime.BeginSessionEnding();
+        updateChecks.Cancel();updateChecks.Dispose();
         try {DisposeTray();}finally {try {instance?.Dispose();}finally {base.OnExit(e);}}
     }
     private static async Task<int> DiagnoseAsync(string[] args)

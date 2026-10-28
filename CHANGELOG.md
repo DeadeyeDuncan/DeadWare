@@ -1,5 +1,104 @@
 # Changelog
 
+## 0.6.17 — Remove widget footer
+
+- Remove the text footer beneath the widget graphs.
+- Give the graphs the space previously reserved for that row.
+
+## 0.6.16 — Themed graph range dropdown
+
+- Replace the six graph range buttons with a compact dropdown on the dashboard and in pop-out options.
+- Keep the same 1-, 5- and 15-minute plus 1-, 3- and 6-hour choices, with one saved selection shared across windows.
+- Match the dropdown to the selected app theme.
+
+## 0.6.15 — Browse release note history
+
+- Add Show release note history in Updates to browse all normal published versions, including current and older releases, newest first.
+- Refresh history on each explicit opening and return to current or missed-version notes with Hide release note history.
+- Support cancellation and readable retry states without changing update, download or rollback behavior.
+
+## 0.6.14 — Joined CPU/GPU pop-outs
+
+- Add a saved Settings option to join CPU/GPU usage on one pop-out and both temperatures on another, using consistent device colors and line styles.
+- Show both devices' current readings and statistics, with shared usage and temperature scales.
+- Apply the option to new pop-outs while retaining existing open windows and remembered layouts.
+- Remove the redundant graph, Battery history and widget launch buttons from Settings; keep the overview and dashboard launch controls.
+
+## 0.6.13 — Widget pin control in Settings
+
+- Move the widget's Always on top checkbox into Settings and use the freed space for graphs.
+- Apply pin changes immediately and save them even when the widget is closed.
+- Carry over the previous widget pin choice while keeping other windows' pin controls unchanged.
+
+## 0.6.12 — Choose widget graphs
+
+- Add saved Settings checkboxes for CPU/GPU usage, CPU/GPU temperature, RAM and Network, applying changes to an open widget.
+- Collapse hidden graph rows and show a helpful empty state when all graphs are off; collection and history continue.
+- Adjust minimum/default widget heights to the selected count while retaining current size and pin when hiding graphs.
+
+## 0.6.11 — RAM usage graphs
+
+- Add a RAM usage graph beside Network on the overview and as the widget's fourth graph, showing percent and current used/total memory.
+- Save RAM's six-hour percentage history using the shared polling interval, range and gap handling; earlier versions have no RAM history to restore.
+- Support a remembered RAM pop-out and grow older saved widget sizes to fit four graphs.
+
+## 0.6.10 — Network rate colors
+
+- Match the current upload rate color to the upload graph line while keeping download in its own graph color.
+- Keep the rate colors in sync when switching themes.
+
+## 0.6.9 — Adjustable data polling
+
+- Choose 0.5, 1, 2, 5 or 10 seconds in Settings; keep the one-second default and save the choice across launches.
+- Apply changes after the current wait or reading finishes, without restarting or overlapping hardware scans.
+- Adjust display freshness, graph gaps and battery/Cooling Health history for the selected cadence, preserving six hours of graphs at the fastest setting.
+- Keep Cooling Health's reference comparison quality requirements; 5- and 10-second polling still records history but has too few samples for comparisons.
+
+## 0.6.8 — Cooling Health navigation order
+
+- Move Cooling Health immediately after Sensors in the dashboard sidebar.
+
+## 0.6.7 — Network graph in the widget
+
+- Add a third widget graph for download and upload, sharing a bytes-per-second scale and the existing history range.
+- Show current rates in the network legend while retaining CPU/GPU usage and temperature graphs, memory and status.
+- Make room for all three charts and grow older saved sizes to the window minimum before clamping their on-screen position.
+
+## 0.6.6 — Release notes for every missed version
+
+- Show notes for every normal release newer than the installed version through the offered update, with separate version sections ordered newest first.
+- Exclude installed/older versions and previews, and retrieve intervening notes across release-history pages.
+- Keep the latest notes and update available if earlier notes cannot be loaded; explain the fallback and support cancellation.
+
+## 0.6.5 — Group widget graphs by metric
+
+- Put CPU and selected-GPU usage together on the first widget graph, and both temperatures together on the second.
+- Keep CPU's color and solid line consistent across both graphs, and GPU's color and dashed line consistent across both.
+- Use one shared percent scale for usage and one shared °C scale for temperatures, expanding the latter for either device above 100°C.
+
+## 0.6.4 — Hide the update banner on Updates
+
+- Hide the update-available banner while the Updates page is open, including during background status changes.
+- Restore the banner on other pages when a newer release remains available.
+
+## 0.6.3 — Widget graphs
+
+- Show stacked CPU and selected-GPU history graphs in the compact widget, each combining solid usage and dashed temperature lines in different colors.
+- Label percent and °C scales separately, expand the temperature scale above 100°C, and retain small current readings plus memory/network summaries.
+- Reuse the shared history range, GPU selection and saved graph history, preserving missing-data gaps and stale-reading status.
+
+## 0.6.2 — Desktop-aware navigation
+
+- Hide Battery history in the sidebar and its Settings window button when Windows reports no battery; restore them when a battery is detected or its status is unknown.
+- Return to Overview if the open Battery history page becomes unavailable, while retaining saved history and existing detached windows.
+- Rename Desktop layout to Settings.
+
+## 0.6.1 — Startup update notices
+
+- Check for the latest normal GitHub release once per app launch, after monitoring starts.
+- Show a persistent dashboard notice and system-tray notification when a newer version is available; Review update opens Updates.
+- Keep downloads, installation, restart and rollback explicit. Handle offline checks quietly and cancel pending checks on shutdown.
+
 ## 0.6.0 — Manual updates and rollback
 
 - Show battery saver directly on the charge trace with a different color and dashed line, a graph legend and distinct unknown/mixed states; remove saver text from the current-status card.

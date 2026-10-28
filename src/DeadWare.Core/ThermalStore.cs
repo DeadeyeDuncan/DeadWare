@@ -282,15 +282,19 @@ public sealed class ThermalStore
     }
 
     private static bool Contiguous(ThermalWindow a, ThermalWindow b) => a.Device.Id == b.Device.Id && a.Device.ConfigurationId == b.Device.ConfigurationId &&
-        a.SessionId == b.SessionId && b.Start > a.Start && (b.Start - a.End).TotalSeconds is >= 0 and <= 4 &&
-        b.StartMonotonic - (a.StartMonotonic + a.DurationSeconds) is >= 0 and <= 4;
+        a.SessionId == b.SessionId && b.Start > a.Start && (b.Start - a.End).TotalSeconds >= 0 &&
+        (b.Start - a.End).TotalSeconds <= Math.Max(4,Math.Max(a.PollingIntervalSeconds,b.PollingIntervalSeconds)+3) &&
+        b.StartMonotonic - (a.StartMonotonic + a.DurationSeconds) >= 0 &&
+        b.StartMonotonic - (a.StartMonotonic + a.DurationSeconds) <= Math.Max(4,Math.Max(a.PollingIntervalSeconds,b.PollingIntervalSeconds)+3) &&
+        Math.Abs((b.Start-a.End).TotalSeconds-(b.StartMonotonic-a.StartMonotonic-a.DurationSeconds))<=3;
 
     private static ThermalWindow Merge(ThermalWindow a, ThermalWindow b, int resolution, string quality) => a with
     {
         End = b.End, DurationSeconds = b.StartMonotonic + b.DurationSeconds - a.StartMonotonic,
         SampleCount = checked(a.SampleCount + b.SampleCount), Temperature = Combine(a.Temperature, b.Temperature),
         Load = Combine(a.Load, b.Load), Power = Combine(a.Power, b.Power), Clock = Combine(a.Clock, b.Clock), FanRpm = Combine(a.FanRpm, b.FanRpm),
-        Eligible = false, Quality = quality, ResolutionSeconds = resolution
+        Eligible = false, Quality = quality, ResolutionSeconds = resolution,
+        PollingIntervalSeconds = Math.Max(a.PollingIntervalSeconds,b.PollingIntervalSeconds)
     };
     private static MetricAggregate Combine(MetricAggregate a, MetricAggregate b)
     {
@@ -312,7 +316,8 @@ public sealed class ThermalStore
     private static void ValidateWindow(ThermalWindow window)
     {
         if (window.ResolutionSeconds != 60 || string.IsNullOrWhiteSpace(window.Device.Id) || string.IsNullOrWhiteSpace(window.Device.ConfigurationId) || string.IsNullOrWhiteSpace(window.SessionId) ||
-            !double.IsFinite(window.StartMonotonic) || !double.IsFinite(window.DurationSeconds) || window.DurationSeconds < 0 || window.DurationSeconds > 65 || window.End < window.Start || window.SampleCount is < 1 or > 10_000)
+            !double.IsFinite(window.StartMonotonic) || !double.IsFinite(window.DurationSeconds) || window.DurationSeconds < 0 || window.DurationSeconds > 65 || window.End < window.Start || window.SampleCount is < 1 or > 10_000 ||
+            PollingPolicy.Normalize(window.PollingIntervalSeconds) != window.PollingIntervalSeconds)
             throw new ArgumentException("Invalid detailed thermal window.", nameof(window));
         foreach (var metric in new[] { window.Temperature, window.Load, window.Power, window.Clock, window.FanRpm })
         {

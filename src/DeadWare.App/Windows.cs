@@ -7,6 +7,10 @@ using DeadWare.Core;
 namespace DeadWare.App;
 public sealed class MainWindow : Window
 {
+    private sealed record PollingChoice(double Seconds,string Label)
+    {
+        public override string ToString()=>Label;
+    }
     private readonly UiSession session;
     private readonly ApplicationLifetime lifetime;
     private readonly Func<bool> trayAvailable;
@@ -15,17 +19,22 @@ public sealed class MainWindow : Window
     private readonly ComboBox gpu=new(){MaxWidth=340,VerticalAlignment=VerticalAlignment.Center,DisplayMemberPath="Name",SelectedValuePath="Id"};
     private readonly StackPanel gpuControls;
     private readonly DockPanel liveToolbar;
+    private readonly UpdateNotice updateNotice;
     private readonly TextBox appSearch=new(){Width=250},sensorSearch=new(){Width=280};
     private readonly DataGrid apps=new(),sensors=new();
     private readonly Dictionary<string,FrameworkElement> pages=new();
+    private readonly Dictionary<string,CheckBox> widgetGraphChoices=new(StringComparer.Ordinal);
+    private readonly CheckBox widgetAlwaysOnTop=new() {Content="Widget always on top",Margin=new Thickness(0,0,0,12)};
+    private readonly CheckBox joinedPopouts=new() {Content="Join CPU and GPU graphs in pop-outs",Margin=new Thickness(0,0,0,8)};
     private readonly CheckBox startup=new() {Content="Start with Windows (administrator)",Margin=new Thickness(0,22,0,8)};
     private readonly TextBlock startupStatus=Ui.Text("Startup status is checked when this page opens.",12,"Muted"),startupResult=Ui.Text("",12,"Warning");
-    private Button startupRepair=null!,startupDisable=null!,startupRefresh=null!;
+    private Button startupRepair=null!,startupDisable=null!,startupRefresh=null!,batteryNavigation=null!;
     private string page="overview",gpuSignature="";
     private bool syncingGpu;
     private bool refreshingSensors;
-    private bool syncingStartup,startupBusy;
+    private bool syncingStartup,startupBusy,syncingWidgetGraphs;
     private readonly TextBlock trayNotice=Ui.Text("Close hides to the system tray.\nQuit stops monitoring.",10,"Muted");
+    private readonly TextBlock monitoringInfo=Ui.Text("",10,"Muted");
     public MainWindow(UiSession session,ApplicationLifetime lifetime,Func<bool> trayAvailable,Action quit)
     {
         this.session=session;this.lifetime=lifetime;this.trayAvailable=trayAvailable;Title="DeadWare";MinWidth=900;MinHeight=640;Ui.Icon(this);session.Place(this,"main",1220,900);
@@ -36,26 +45,30 @@ public sealed class MainWindow : Window
         sideBottom.Children.Add(Ui.Text("COLOR THEME",10,"Muted"));var theme=new ComboBox {ItemsSource=Theme.Names,SelectedItem=session.Settings.Theme,Margin=new Thickness(0,8,0,15)};theme.SelectionChanged+=(_,_)=>{if(theme.SelectedItem is string name)session.SetTheme(name);};sideBottom.Children.Add(theme);
         var elevate=Ui.Button("Restart as administrator",session.RestartElevated);elevate.FontSize=10;sideBottom.Children.Add(elevate);
         var quitButton=Ui.Button("Quit DeadWare",quit);quitButton.FontSize=11;sideBottom.Children.Add(quitButton);trayNotice.Margin=new Thickness(3,5,3,8);sideBottom.Children.Add(trayNotice);
-        sideBottom.Children.Add(Ui.Text($"Local monitoring\n1 second samples · 6 h saved graphs\nv{BuildInfo.Version}",10,"Muted"));
+        sideBottom.Children.Add(monitoringInfo);
         var nav=new StackPanel();sidebar.Children.Add(new ScrollViewer{Content=nav,VerticalScrollBarVisibility=ScrollBarVisibility.Auto,HorizontalScrollBarVisibility=ScrollBarVisibility.Disabled});
-        foreach(var item in new[]{("overview","▦  Overview"),("network","⇄  Network"),("cooling","◷  Cooling Health"),("battery","▤  Battery history"),("sensors","≡  Sensors"),("desktop","▱  Desktop layout"),("updates","↓  Updates")})
-        {var key=item.Item1;var button=Ui.Button(item.Item2,()=>Navigate(key));button.HorizontalContentAlignment=HorizontalAlignment.Left;button.Margin=new(0,3,0,3);button.Padding=new(10,13,10,13);nav.Children.Add(button);}
+        foreach(var item in new[]{("overview","▦  Overview"),("network","⇄  Network"),("battery","▤  Battery history"),("sensors","≡  Sensors"),("cooling","◷  Cooling Health"),("desktop","▱  Settings"),("updates","↓  Updates")})
+        {var key=item.Item1;var button=Ui.Button(item.Item2,()=>Navigate(key));button.HorizontalContentAlignment=HorizontalAlignment.Left;button.Margin=new(0,3,0,3);button.Padding=new(10,13,10,13);nav.Children.Add(button);if(key=="battery")batteryNavigation=button;}
         var main=new DockPanel {Margin=new Thickness(18,25,26,16)};Grid.SetColumn(main,1);shell.Children.Add(main);
         var footer=new StackPanel {Margin=new Thickness(4,10,4,0)};footer.Children.Add(status);DockPanel.SetDock(footer,Dock.Bottom);main.Children.Add(footer);
         var header=new StackPanel();DockPanel.SetDock(header,Dock.Top);main.Children.Add(header);
         var titleRow=new DockPanel();var widget=Ui.Button("↗ Open widget",()=>session.OpenDetached("widget"));widget.HorizontalAlignment=HorizontalAlignment.Right;DockPanel.SetDock(widget,Dock.Right);titleRow.Children.Add(widget);titleRow.Children.Add(heading);header.Children.Add(titleRow);subtitle.Margin=new(0,8,0,0);header.Children.Add(subtitle);
+        updateNotice=new(ShowUpdates);header.Children.Add(updateNotice);
         liveToolbar=new DockPanel {Margin=new Thickness(0,18,0,12)};var ranges=Ui.Range(session);DockPanel.SetDock(ranges,Dock.Right);liveToolbar.Children.Add(ranges);var gpuLabel=Ui.Text("GPU",12,"Muted");gpuLabel.Margin=new(0,0,8,0);gpuControls=Ui.Row(gpuLabel,gpu);liveToolbar.Children.Add(gpuControls);header.Children.Add(liveToolbar);
         gpu.SelectionChanged+=(_,_)=>{if(!syncingGpu)session.SetGpu((gpu.SelectedItem as Device)?.Id);};
         main.Children.Add(content);
         pages["overview"]=Overview();pages["network"]=Network();pages["cooling"]=new CoolingHealthPage(session);pages["battery"]=new BatteryHistoryPage(session);pages["sensors"]=Sensors();pages["desktop"]=Desktop();pages["updates"]=new UpdatesPage(session);Navigate("overview");
-        session.Changed+=Refresh;Closed+=(_,_)=>session.Changed-=Refresh;Closing+=OnClosing;
+        session.Changed+=Refresh;session.Updates.Changed+=RefreshUpdateNotice;
+        Closed+=(_,_)=>{session.Changed-=Refresh;session.Updates.Changed-=RefreshUpdateNotice;};Closing+=OnClosing;
+        RefreshUpdateNotice();
         IsVisibleChanged+=(_,_)=>{if(IsVisible)Refresh();};
     }
     private FrameworkElement Overview()
     {
         var stack=new StackPanel();var charts=new UniformGrid {Columns=2,Rows=2,Height=530};
         foreach(var kind in new[]{"cpu","gpu","cputemp","gputemp"})charts.Children.Add(new ChartCard(session,kind));stack.Children.Add(charts);
-        memory.Margin=new(8,8,8,8);stack.Children.Add(memory);stack.Children.Add(new ChartCard(session,"network"){Height=265});
+        memory.Margin=new(8,8,8,8);stack.Children.Add(memory);
+        var bottom=new UniformGrid {Columns=2,Rows=1,Height=265};bottom.Children.Add(new ChartCard(session,"memory"));bottom.Children.Add(new ChartCard(session,"network"));stack.Children.Add(bottom);
         var note=Ui.Text("One collector feeds every window. Unknown readings stay blank; no synthetic data is shown.",11,"Muted");note.Margin=new(8);stack.Children.Add(note);
         return new ScrollViewer {Content=stack,VerticalScrollBarVisibility=ScrollBarVisibility.Auto,HorizontalScrollBarVisibility=ScrollBarVisibility.Disabled};
     }
@@ -79,9 +92,37 @@ public sealed class MainWindow : Window
     {
         var stack=new StackPanel {Margin=new Thickness(8)};
         stack.Children.Add(Ui.Text("Your readings, wherever you need them",20));var intro=Ui.Text("Open any graph in its own resizable native window. Choose Always on top to keep it visible while you work. All windows share the same readings, selected GPU, history range and theme.",14,"Muted");intro.Margin=new(0,12,0,24);stack.Children.Add(intro);
-        foreach(var kind in new[]{"cpu","gpu","cputemp","gputemp","network"}){var key=kind;var button=Ui.Button("↗  "+Ui.Title(kind),()=>session.OpenDetached(key));button.HorizontalAlignment=HorizontalAlignment.Left;button.MinWidth=240;button.Margin=new(0,4,0,4);stack.Children.Add(button);}
-        var batteryWindow=Ui.Button("↗  Battery history",()=>session.OpenDetached("batteryhistory"));batteryWindow.HorizontalAlignment=HorizontalAlignment.Left;batteryWindow.MinWidth=240;batteryWindow.Margin=new(0,4,0,4);stack.Children.Add(batteryWindow);
-        var open=Ui.Button("↗  Compact desktop widget",()=>session.OpenDetached("widget"));open.HorizontalAlignment=HorizontalAlignment.Left;open.MinWidth=240;open.Margin=new(0,20,0,4);stack.Children.Add(open);
+        var polling=new ComboBox {ItemsSource=PollingPolicy.Intervals.Select(seconds=>new PollingChoice(seconds,seconds==1?"1 second (default)":$"{seconds:0.#} seconds")).ToArray(),DisplayMemberPath="Label",SelectedValuePath="Seconds",SelectedValue=session.Settings.PollingIntervalSeconds,MinWidth=160};
+        System.Windows.Automation.AutomationProperties.SetName(polling,"Data polling interval");
+        polling.SelectionChanged+=(_,_)=>{if(polling.SelectedValue is double seconds)session.SetPollingInterval(seconds);};
+        var pollingLabel=Ui.Text("Data polling interval",14);pollingLabel.Margin=new(0,0,12,0);
+        var pollingRow=Ui.Row(pollingLabel,polling);pollingRow.Margin=new(0,0,0,8);stack.Children.Add(pollingRow);
+        var pollingHelp=Ui.Text("Applies without restarting after the current wait or reading finishes. Faster polling uses more resources; slow hardware may take longer than the selected interval. At 5 or 10 seconds, Cooling Health records history but does not gather enough samples for reference comparisons.",12,"Muted");pollingHelp.Margin=new(0,0,0,20);stack.Children.Add(pollingHelp);
+        var widgetLabel=Ui.Text("Widget graphs",14);widgetLabel.Margin=new(0,0,0,8);stack.Children.Add(widgetLabel);
+        var widgetOptions=new WrapPanel {Margin=new Thickness(0,0,0,6)};
+        var selectedGraphs=WidgetGraphSelection.Normalize(session.Settings.WidgetGraphs);
+        foreach(var item in new[]{("cpu","CPU / GPU usage"),("cputemp","CPU / GPU temperature"),("memory","RAM usage"),("network","Network activity")})
+        {
+            var key=item.Item1;
+            var choice=new CheckBox {Content=item.Item2,Tag=key,IsChecked=selectedGraphs.Contains(key),Margin=new Thickness(0,0,20,8)};
+            System.Windows.Automation.AutomationProperties.SetName(choice,"Show "+item.Item2+" in widget");
+            choice.Checked+=(_,_)=>{if(!syncingWidgetGraphs)session.SetWidgetGraph(key,true);};
+            choice.Unchecked+=(_,_)=>{if(!syncingWidgetGraphs)session.SetWidgetGraph(key,false);};
+            widgetGraphChoices.Add(key,choice);widgetOptions.Children.Add(choice);
+        }
+        stack.Children.Add(widgetOptions);
+        widgetAlwaysOnTop.IsChecked=session.Settings.WidgetAlwaysOnTop;
+        System.Windows.Automation.AutomationProperties.SetName(widgetAlwaysOnTop,"Widget always on top");
+        widgetAlwaysOnTop.Checked+=(_,_)=>{if(!syncingWidgetGraphs)session.SetWidgetAlwaysOnTop(true);};
+        widgetAlwaysOnTop.Unchecked+=(_,_)=>{if(!syncingWidgetGraphs)session.SetWidgetAlwaysOnTop(false);};
+        stack.Children.Add(widgetAlwaysOnTop);
+        var widgetHelp=Ui.Text("Choose the graphs shown in the widget. Changes apply immediately; resize the widget to your preferred height.",12,"Muted");widgetHelp.Margin=new(0,0,0,20);stack.Children.Add(widgetHelp);
+        var popoutLabel=Ui.Text("Graph pop-outs",14);popoutLabel.Margin=new(0,0,0,8);stack.Children.Add(popoutLabel);
+        joinedPopouts.IsChecked=session.Settings.JoinCpuGpuPopouts;
+        System.Windows.Automation.AutomationProperties.SetName(joinedPopouts,"Join CPU and GPU graphs in pop-outs");
+        joinedPopouts.Checked+=(_,_)=>{if(!syncingWidgetGraphs)session.SetJoinedPopouts(true);};
+        joinedPopouts.Unchecked+=(_,_)=>{if(!syncingWidgetGraphs)session.SetJoinedPopouts(false);};stack.Children.Add(joinedPopouts);
+        var popoutHelp=Ui.Text("Use the overview's Pop out buttons. Joined mode puts CPU and GPU usage on one chart and both temperatures on another. Applies to new pop-outs; existing windows and remembered layouts keep their current form.",12,"Muted");popoutHelp.Margin=new(0,0,0,20);stack.Children.Add(popoutHelp);
         var saved=Ui.Text("Positions, sizes and Always on top choices are saved as you work. Closing the dashboard hides it to the system tray while graphs and the widget keep monitoring. Choose Quit DeadWare to save the windows left open for next time and stop collection. Close an individual graph or widget to leave it closed next time.",12,"Muted");saved.Margin=new(0,20,0,0);stack.Children.Add(saved);
         var restore=new CheckBox {Content="Reopen graphs and widget from the previous session",IsChecked=session.Settings.RestoreOpenWindows,Margin=new Thickness(0,18,0,8)};
         restore.Checked+=(_,_)=>session.SetRestoreOpenWindows(true);restore.Unchecked+=(_,_)=>session.SetRestoreOpenWindows(false);stack.Children.Add(restore);
@@ -123,17 +164,38 @@ public sealed class MainWindow : Window
         var result=await StartupRegistration.ConfigureAsync(enabled);SetStartupBusy(false);ShowStartupStatus(result.Registration);startupResult.Text=result.Message;
     }
     private static void Column(DataGrid table,string title,string binding,double weight)=>table.Columns.Add(new DataGridTextColumn {Header=title,Binding=new Binding(binding),Width=new DataGridLength(weight,DataGridLengthUnitType.Star)});
+    public void ShowUpdates()=>Navigate("updates");
+    private void RefreshUpdateNotice()
+    {
+        if(lifetime.IsEnding||Dispatcher.HasShutdownStarted)return;
+        if(!Dispatcher.CheckAccess()){Dispatcher.InvokeAsync(RefreshUpdateNotice);return;}
+        updateNotice.ApplyState(session.Updates.State);
+        if(page=="updates")updateNotice.Visibility=Visibility.Collapsed;
+    }
     private void Navigate(string destination)
     {
         gpuControls.Visibility=destination=="overview"?Visibility.Visible:Visibility.Collapsed;
         liveToolbar.Visibility=destination is "cooling" or "battery" or "updates"?Visibility.Collapsed:Visibility.Visible;
-        page=destination;content.Content=pages[destination];heading.Text=destination switch {"network"=>"Your network, explained","cooling"=>"Cooling Health","battery"=>"Battery history","updates"=>"Keep DeadWare current","sensors"=>"Hardware sensors","desktop"=>"Make room for your work",_=>"System overview"};
-        subtitle.Text=destination switch {"network"=>"See which applications are sending and receiving data.","cooling"=>"Learn your usual temperatures. Notice sustained changes.","battery"=>"See charge fall and recover. Keep the history for years.","updates"=>"Update when you are ready. Keep the previous installation within reach.","sensors"=>"Current-session values and statistics over the selected range.","desktop"=>"A few useful numbers, wherever you need them.",_=>"The numbers you care about. Room to breathe."};Refresh();
+        page=destination;content.Content=pages[destination];heading.Text=destination switch {"network"=>"Your network, explained","cooling"=>"Cooling Health","battery"=>"Battery history","updates"=>"Keep DeadWare current","sensors"=>"Hardware sensors","desktop"=>"Settings",_=>"System overview"};
+        subtitle.Text=destination switch {"network"=>"See which applications are sending and receiving data.","cooling"=>"Learn your usual temperatures. Notice sustained changes.","battery"=>"See charge fall and recover. Keep the history for years.","updates"=>"Update when you are ready. Keep the previous installation within reach.","sensors"=>"Current-session values and statistics over the selected range.","desktop"=>"Manage windows, startup and monitoring options.",_=>"The numbers you care about. Room to breathe."};RefreshUpdateNotice();Refresh();
         if(destination=="desktop")_ = RefreshStartupAsync();
     }
     private void Refresh()
     {
-        var r=session.Current;if(r is null){status.Text="Discovering hardware and starting the shared collector…\n"+session.GraphHistory.Status;return;}
+        monitoringInfo.Text=$"Local monitoring\n{session.Settings.PollingIntervalSeconds:0.#} s polling · 6 h saved graphs\nv{BuildInfo.Version}";
+        syncingWidgetGraphs=true;
+        try
+        {
+            var selectedGraphs=WidgetGraphSelection.Normalize(session.Settings.WidgetGraphs);
+            foreach(var choice in widgetGraphChoices)choice.Value.IsChecked=selectedGraphs.Contains(choice.Key);
+            widgetAlwaysOnTop.IsChecked=session.Settings.WidgetAlwaysOnTop;
+            joinedPopouts.IsChecked=session.Settings.JoinCpuGpuPopouts;
+        }
+        finally {syncingWidgetGraphs=false;}
+        var r=session.Current;bool noBattery=r?.Battery.PowerState==BatteryPowerState.NoBattery;
+        batteryNavigation.Visibility=noBattery?Visibility.Collapsed:Visibility.Visible;
+        if(noBattery&&page=="battery"){Navigate("overview");return;}
+        if(r is null){status.Text="Discovering hardware and starting the shared collector…\n"+session.GraphHistory.Status;return;}
         var signature=string.Join('|',r.Gpus.Select(d=>d.Id+":"+d.Name));
         if(signature!=gpuSignature)
         {
@@ -208,20 +270,45 @@ internal sealed class GraphWindow : Window
 internal sealed class WidgetWindow : Window
 {
     private readonly UiSession session;
-    private readonly TextBlock cpu=Ui.Text("—",22,"Cpu"),gpu=Ui.Text("—",22,"Gpu"),memory=Ui.Text("—",12,"Muted"),network=Ui.Text("—",13),status=Ui.Text("",10,"Muted");
+    private readonly Dictionary<string,WidgetGraph> graphs=new(StringComparer.Ordinal);
+    private readonly Grid cards=new();
+    private readonly TextBlock empty=Ui.Text("No graphs selected. Choose graphs in Settings.",12,"Muted");
+    private string? appliedSelection;
     public WidgetWindow(UiSession session)
     {
-        this.session=session;Title="DeadWare · Quick glance";MinWidth=300;MinHeight=320;Ui.Icon(this);Topmost=true;session.Place(this,"widget",340,390);
-        var stack=new StackPanel {Margin=new Thickness(18)};var pin=new CheckBox {Content="Always on top",IsChecked=Topmost};pin.Checked+=(_,_)=>Topmost=true;pin.Unchecked+=(_,_)=>Topmost=false;stack.Children.Add(pin);
-        stack.Children.Add(Ui.Text("CPU",11,"Muted"));cpu.Margin=new(0,3,0,18);stack.Children.Add(cpu);stack.Children.Add(Ui.Text("GPU",11,"Muted"));gpu.Margin=new(0,3,0,18);stack.Children.Add(gpu);memory.Margin=new(0,0,0,15);stack.Children.Add(memory);network.Margin=new(0,0,0,15);stack.Children.Add(network);stack.Children.Add(status);Content=stack;
+        this.session=session;Title="DeadWare · Quick glance";MinWidth=300;
+        int count=WidgetGraphSelection.Normalize(session.Settings.WidgetGraphs).Count;
+        MinHeight=WidgetGraphSelection.MinimumHeight(count);Ui.Icon(this);session.Place(this,"widget",340,WidgetGraphSelection.DefaultHeight(count));
+        var grid=new Grid {Margin=new Thickness(8)};grid.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});
+        foreach(string kind in WidgetGraphSelection.Kinds)
+        {
+            int row=cards.RowDefinitions.Count;cards.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});
+            var graph=new WidgetGraph(session,kind);graphs.Add(kind,graph);Grid.SetRow(graph,row);cards.Children.Add(graph);
+        }
+        var area=new Grid();area.Children.Add(cards);empty.TextAlignment=TextAlignment.Center;empty.HorizontalAlignment=HorizontalAlignment.Center;empty.VerticalAlignment=VerticalAlignment.Center;empty.Margin=new(12);area.Children.Add(empty);grid.Children.Add(area);
+        Content=grid;
         session.Changed+=Refresh;Closed+=(_,_)=>session.Changed-=Refresh;Refresh();
     }
     private void Refresh()
     {
-        double? V(string id)=>session.Stale?null:session.Value(id);
-        cpu.Text=$"{Ui.Number(V("cpu/usage")," %")}   {Ui.Number(V("cpu/temperature")," °C")}";
-        gpu.Text=$"{Ui.Number(V(session.MetricId("gpu"))," %")}   {Ui.Number(V(session.MetricId("gputemp"))," °C")}";
-        memory.Text=$"Memory  {Ui.Bytes(V("memory/used"))} / {Ui.Bytes(V("memory/total"))}";network.Text=$"↓ {Ui.Bytes(V("network/download"),true)}    ↑ {Ui.Bytes(V("network/upload"),true)}";
-        status.Text=session.Current is null?"Discovering hardware…":session.Stale?"Readings stale · open main window for status":"Shared collector · — means unavailable\n"+session.GpuName;
+        Topmost=session.Settings.WidgetAlwaysOnTop;
+        var selected=WidgetGraphSelection.Normalize(session.Settings.WidgetGraphs);
+        string signature=string.Join('|',selected);
+        if(signature!=appliedSelection)
+        {
+            double minimum=WidgetGraphSelection.MinimumHeight(selected.Count);
+            var before=minimum>MinHeight?NativePlacement.CaptureNormal(this):null;
+            MinHeight=minimum;
+            foreach(var graph in graphs)
+            {
+                bool visible=selected.Contains(graph.Key);
+                graph.Value.Visibility=visible?Visibility.Visible:Visibility.Collapsed;
+                cards.RowDefinitions[Grid.GetRow(graph.Value)].Height=visible?new GridLength(1,GridUnitType.Star):new GridLength(0);
+            }
+            empty.Visibility=selected.Count==0?Visibility.Visible:Visibility.Collapsed;
+            appliedSelection=signature;
+            if(before is not null)NativePlacement.Restore(this,before,340,WidgetGraphSelection.DefaultHeight(selected.Count));
+        }
+        foreach(var graph in graphs.Values)if(graph.Visibility==Visibility.Visible)graph.Refresh();
     }
 }

@@ -1,15 +1,15 @@
 # Manual GitHub updates and rollback
 
-Status: approved by the user on 2026-10-27: manual checks, normal releases only, update and previous-version rollback preserving history.
+Status: approved by the user on 2026-10-27: normal releases, explicit install/rollback preserving history. A follow-up requests an automatic startup check and availability notice while installation remains a user choice.
 
 ## Intent
 
-The user wants the ability to update or roll back DeadWare from within the app and expects normal releases rather than preview channels. The revised proposal uses manual checks and explicit update/rollback actions. This follows the requirement to keep development work on GitHub so different computers can continue from the same source. Published, versioned packages supply application updates; source commits and open pull requests remain development work.
+The user wants the ability to update or roll back DeadWare from within the app and expects normal releases rather than preview channels. The follow-up adds one asynchronous metadata check after each normal GUI startup, a persistent dashboard notice and a tray notification for a newer version. Manual checks and explicit update/rollback remain available. This follows the requirement to keep development work on GitHub so different computers can continue from the same source. Published, versioned packages supply application updates; source commits and open pull requests remain development work.
 
 ## Proposed experience
 
 - Add an **Updates** view showing the installed version, latest eligible published version, last check result, release notes and **Check now**.
-- **Check for updates** runs on demand in this view. There is no automatic polling, background download or automatic installation in this simpler proposal. Offline/rate-limit errors are readable here and must not interrupt monitoring.
+- **Check for updates** runs on demand in this view, alongside the once-per-launch startup check. There is no recurring polling, background package download or automatic installation. Announce each newer version at most once per process. Offline/rate-limit errors are readable here and must not interrupt monitoring; shutdown cancels a pending check. Review actions open Updates without installing anything.
 - Show an update result when a newer eligible release exists. **Update & restart** is an explicit user action.
 - Use normal published releases only, with no preview-channel setting. Drafts and prereleases are excluded. An installed newer build never automatically downgrades to an older published version.
 - Show download progress and permit cancellation before installation starts. Check the package before quitting. Flush settings and all history stores through the existing normal-Quit path, apply the update, and reopen the app and remembered windows at the same installed path.
@@ -26,7 +26,7 @@ The user wants the ability to update or roll back DeadWare from within the app a
 
 ## Implementation boundaries and choices
 
-These are the revised proposed defaults: manual checks, normal releases only, an Updates view, explicit update and rollback buttons, progress/cancellation before apply and one previous-version rollback. The user requested update/rollback and no preview-release workflow; the interpretation that checking should also be manual is stated for confirmation.
+The current scope is a once-per-launch startup check plus manual checks, normal releases only, an Updates view, explicit update and rollback buttons, progress/cancellation before apply and one previous-version rollback. The user explicitly requested startup detection and notification while retaining control over installation. Checking only reads release metadata; availability notices never start preparation or restart the app.
 
 Use the existing .NET 10/WPF application and release packaging. Prefer built-in HTTP, JSON, hashing and ZIP APIs over a new updater framework. Windows holds running executables open, so a small separately staged helper must apply files only after the original process has exited. The helper must run independently of files it replaces, preserve the install path used by shortcuts/startup registration, and report a recoverable failure.
 

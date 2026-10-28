@@ -7,7 +7,7 @@
 [![Windows build](https://github.com/DeadeyeDuncan/DeadWare/actions/workflows/build.yml/badge.svg)](https://github.com/DeadeyeDuncan/DeadWare/actions/workflows/build.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-DeadWare is a Windows desktop monitor for watching CPU/GPU usage and temperatures alongside application network activity. Keep the dashboard open, detach a graph, or use the compact desktop widget.
+DeadWare is a Windows desktop monitor for watching CPU/GPU usage and temperatures, RAM usage and application network activity. Keep the dashboard open, detach a graph, or use the compact desktop widget.
 
 ## Features
 
@@ -16,15 +16,15 @@ DeadWare is a Windows desktop monitor for watching CPU/GPU usage and temperature
 - Per-application network rates when Windows permits ETW capture.
 - Searchable sensor readings with minimum, maximum and average values.
 - Selectable graphics adapters on multi-GPU systems.
-- Separate graph windows and a compact widget with always-on-top controls.
+- Separate or joined CPU/GPU graph windows and a compact widget with usage, temperature, RAM and network charts and always-on-top controls.
 - Compact pop-out graphs prioritize the current reading and chart; their options menu holds history range, Always on top and sensor statistics.
 - Close the dashboard to the system tray and keep graphs, the widget and monitoring running independently.
 - Restore the graphs and widget left open, including their saved positions and sizes.
 - Optional administrator startup at your Windows sign-in.
-- Shared 1-, 5- and 15-minute plus 1-, 3- and 6-hour graph ranges; all windows use one collector. Choose a range above the dashboard or in a pop-out's **⋯** menu. The choice and recent CPU/GPU/network traces are saved locally across quits and computer restarts. Cooling Health's longer saved history is separate.
+- Shared 1-, 5- and 15-minute plus 1-, 3- and 6-hour graph ranges; all windows use one collector. Choose a range from the dropdown above the dashboard or in a pop-out's **⋯** menu. The dropdown follows the selected app theme, and its selected range stays synchronized across windows. The choice and recent CPU/GPU/RAM/network traces are saved locally across quits and computer restarts. Cooling Health's longer saved history is separate.
 - Local Cooling Health history, fixed reference comparisons, CSV export and optional sustained-change warnings.
 - Lifetime battery-percentage history with recorded charging and Windows battery-saver periods, Day/Week/Month/Year/All views, CSV export and a separate remembered window.
-- Manual GitHub release checks, verified in-app updates and rollback to the previous installed version.
+- Startup and manual GitHub release checks, update-available notices, verified user-initiated updates and rollback to the previous installed version.
 - Five saved themes: **Midnight**, **Ember**, **Glacier**, **Amethyst**, and **Daylight**.
 - Scrollbars follow the selected theme across all windows, with matching native title bars on Windows 11.
 
@@ -38,7 +38,11 @@ Start as a normal user. If a capability needs additional permissions, the app sh
 
 ## Updates and rollback
 
-Open **Updates** and choose **Check for updates**. DeadWare checks the normal published release in `DeadeyeDuncan/DeadWare`; draft/preview releases and source commits are excluded. There is no automatic polling or unattended installation. An installed build newer than the published release stays on its current version.
+DeadWare checks the latest normal release in `DeadeyeDuncan/DeadWare` once after starting, without delaying monitoring. When a newer version is available, a dashboard banner appears outside the Updates page and a system-tray notification lets you know; **Review update** opens Updates. You choose when to download and install it with **Update & restart**. You can also choose **Check for updates** on that page at any time. Checks do not download app packages or install anything. Draft/preview releases and source commits are excluded, and an installed newer build stays on its current version. Offline or rate-limit errors appear on Updates without interrupting startup. There is no recurring polling while the app remains open.
+
+Release notes include every normal release newer than the installed version through the offered update, newest first, with separate version headings. If earlier notes cannot be loaded, the page keeps the latest notes and explains the missing history. Installation still uses the latest eligible package.
+
+Choose **Show release note history** in Updates to browse all normal published versions, including the installed version and older releases, newest first. Each explicit opening refreshes the history from GitHub; it is not fetched at startup. **Hide release note history** returns to the usual current or missed-version notes. Loading can be cancelled, and a failed history request can be retried without changing the offered update.
 
 When an eligible update is available, **Update & restart** downloads the complete Windows x64 ZIP, checks its SHA-256 digest/checksum and validates the package's file manifest. Download/preparation can be cancelled. Once the installer is ready, DeadWare performs its normal Quit to save settings and drain history, replaces only managed app files, and restarts at the same path with remembered windows. Settings and battery/Cooling Health/live graph databases stay in `%LOCALAPPDATA%\DeadWare`.
 
@@ -50,7 +54,9 @@ New tagged versions are published as normal GitHub releases with ZIP/checksum as
 
 ## Startup and saved workspace
 
-In **Desktop layout**, enable **Start with Windows** to launch DeadWare as administrator when you sign in. Windows approval is needed to configure this option. It creates a task for your Windows account, runs only in your signed-in session, and stores no password. You can turn it off from the same page. Only one monitoring instance runs at a time.
+In **Settings → Data polling interval**, choose 0.5, 1, 2, 5 or 10 seconds. One second is the default. Changes are saved and apply after the current wait or reading finishes, without restarting. Faster polling uses more resources; slow hardware may take longer than requested. Every window shares this collector, and the display refreshes twice per second at the fastest setting. The six-hour graph range is retained. Cooling Health records at every setting, but 5- and 10-second polling has too few samples per minute for its reference comparisons.
+
+In **Settings**, enable **Start with Windows** to launch DeadWare as administrator when you sign in. Windows approval is needed to configure this option. It creates a task for your Windows account, runs only in your signed-in session, and stores no password. You can turn it off from the same page. Only one monitoring instance runs at a time.
 
 For a quiet sign-in, also enable **Start in the system tray**. This hides the dashboard only for Windows startup launches. Remembered graphs and the widget still reopen when restoration is enabled; turn restoration off too if you want only the tray icon. A fresh manual launch still shows the dashboard. If the tray icon cannot be created, the dashboard stays accessible.
 
@@ -58,13 +64,27 @@ Closing the dashboard with its X or Alt+F4 hides it in the system tray. Pop-out 
 
 To fully stop monitoring, choose **Quit DeadWare** from the tray menu or dashboard. Keep window restoration enabled and leave your desired graphs and widget open when you quit: they will reopen with their saved positions, sizes and always-on-top choices. Closing a graph or widget individually keeps it closed next time. Positions are kept within available monitors if your display setup changes. Recent graph history and saved Cooling Health history remain available after quitting. Hiding the dashboard resets neither.
 
-Graph history is saved automatically in `%LOCALAPPDATA%\DeadWare\live-graph-history.db`, independently of Cooling Health recording. It retains the last six elapsed hours of CPU/GPU usage and temperature plus combined download/upload rates. Time while DeadWare was stopped remains a gap; after more than six hours away, the old readings fall outside the available range. Current values always come from fresh readings. Writes run in the background every 15 seconds and flush on normal quit; a crash or abrupt power loss can lose the latest unsaved batch. The database is capped at 64 MiB with a bounded journal. A save error is shown in the dashboard status while live monitoring continues.
+Graph history is saved automatically in `%LOCALAPPDATA%\DeadWare\live-graph-history.db`, independently of Cooling Health recording. It retains the last six elapsed hours of CPU/GPU usage and temperature, RAM usage percentage and combined download/upload rates. RAM uses a 0–100% scale with current used/total memory shown beside it; its history begins with readings collected in version 0.6.11 or later. Time while DeadWare was stopped remains a gap; after more than six hours away, the old readings fall outside the available range. Current values always come from fresh readings. Writes run in the background every 15 seconds and flush on normal quit; a crash or abrupt power loss can lose the latest unsaved batch. The database is capped at 64 MiB with a bounded journal. A save error is shown in the dashboard status while live monitoring continues.
 
 Restoration matches local machine and hardware metadata, including GPU model/type rather than enumeration order. Ambiguous identical-model GPUs are not restored; an indistinguishable same-model physical replacement cannot always be detected. Full sensor-table statistics and per-application traffic totals remain current-session data. The first upgrade from a version without graph persistence cannot recover its earlier in-memory traces.
 
 Version 0.1.0 saved window positions but did not record which windows were open. After upgrading, arrange your desired windows once to establish the saved workspace.
 
 Startup points to the executable's current location. Keep the extracted folder in a permanent location. If you move it, enable startup again from the new location; disable startup before removing the app. Choose **Quit DeadWare** before replacing files during an upgrade; closing the dashboard alone leaves it running.
+
+## Graph pop-outs
+
+Use the overview cards' **Pop out** buttons to open graphs. In **Settings → Graph pop-outs**, enable **Join CPU and GPU graphs in pop-outs** to put CPU and selected-GPU usage together on one chart, and both temperatures together on another. The option is off by default. CPU keeps its theme color and solid line in both charts; GPU keeps its own color and dashed line. Both current readings and device statistics are available, with a shared 0–100% usage scale and a shared temperature scale that expands above 100°C when needed.
+
+The choice applies to new pop-outs. Existing open windows and remembered layouts keep their current form, and joined and separate windows remember their own positions, sizes and pin choices. RAM, Network and Battery history windows keep their existing behavior. Open the widget from the dashboard's **Open widget** button.
+
+## Desktop widget
+
+The widget's pin control is in **Settings → Widget always on top**. Changes update an open widget immediately and are saved even when it is closed. Earlier saved widget pin choices carry over. Other graph windows keep their existing Always on top controls.
+
+Choose the displayed graphs in **Settings → Widget graphs**: CPU/GPU usage, CPU/GPU temperature, RAM usage and Network activity. All four are enabled by default. Choices are saved and apply immediately to an open widget. Hidden graphs keep collecting history. Turning graphs off lowers the minimum height while keeping your current size and pin choice; resize the widget to your preferred height. If all graphs are off, the widget shows a hint to choose graphs in Settings.
+
+The compact widget has a **Usage** graph with CPU and selected-GPU utilization together, followed by a **Temperature** graph with both devices' temperatures together. CPU uses the CPU theme color and a solid line in both graphs; GPU uses the GPU theme color and a dashed line in both. Small CPU/GPU legends show the current readings. Usage shares a 0–100% scale; temperature shares a °C scale that expands above 100°C when needed. A third **RAM** graph shows physical memory usage on a 0–100% scale, with current percent and used/total memory in its legend. A fourth **Network** graph shows download as a solid blue line and upload as a dashed green line on one bytes-per-second scale, with current rates in its legend. The widget follows the shared history range and GPU selection, uses saved graph history, and keeps unavailable readings and downtime as gaps. Its minimum height follows the selected graph count; older saved sizes expand when needed while staying within the available work area.
 
 ## Hardware compatibility
 
@@ -76,7 +96,7 @@ This first release is **not complete HWiNFO sensor parity**. A successful launch
 
 ## Battery history
 
-Open **Battery history** in the sidebar to see how charge drops and recovers, along with current charging status. The charge line shows Windows battery-saver periods: the normal solid line means saver off, dashed amber means saver on, and dotted gray means unknown state. A legend identifies each style. Choose **Open in window** for a separate resizable window; its position, size and Always on top choice are remembered. The Day/Week/Month/Year/All history selector is independent of the live graph range. Desktop layout can also open the battery window.
+Open **Battery history** in the sidebar to see how charge drops and recovers, along with current charging status. The charge line shows Windows battery-saver periods: the normal solid line means saver off, dashed amber means saver on, and dotted gray means unknown state. A legend identifies each style. Choose **Open in window** for a separate resizable window; its position, size and Always on top choice are remembered. The Day/Week/Month/Year/All history selector is independent of the live graph range. When Windows reports no battery, the sidebar entry hides automatically; it returns if a battery is detected or its status is unknown. Saved battery history is kept.
 
 DeadWare records the system battery total once per minute plus observed charging/power and battery-saver state changes. Recording starts automatically on a battery-equipped device and can be paused without deleting saved history. Windows supplies these readings without administrator access. Unknown readings stay unavailable; a desktop with no battery says so. Multiple physical batteries appear as the combined system charge.
 
@@ -123,7 +143,7 @@ dotnet run --project src/DeadWare.App/DeadWare.App.csproj
 Create a self-contained portable ZIP and SHA-256 checksum:
 
 ```powershell
-pwsh -File scripts/publish.ps1 -Version 0.6.0
+pwsh -File scripts/publish.ps1 -Version 0.6.17
 ```
 
 The packaging script runs tests before publishing, bundles the independent self-contained update helper, and records all managed file hashes in `deadware-package.json`. Output goes under `artifacts/`. GitHub Actions runs the same script. Pushing a normal three-part version tag such as `v0.6.0` builds and publishes a normal release after tests pass, using the matching `docs/releases/v0.6.0.md` notes. Workflows use pinned action commits.

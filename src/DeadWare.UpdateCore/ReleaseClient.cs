@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
+using System.Text.Json;
 
 namespace DeadWare.UpdateCore;
 
@@ -17,6 +18,64 @@ public sealed class ReleaseClient(HttpClient? client = null)
         if (response.StatusCode == HttpStatusCode.NotFound) return null;
         response.EnsureSuccessStatusCode();
         return ReleasePolicy.Parse(Encoding.UTF8.GetString(await ReadLimitedAsync(response.Content, 2 * 1024 * 1024, deadline.Token).ConfigureAwait(false)));
+    }
+    public async Task<IReadOnlyList<ReleaseNote>> ReadNotesAsync(string installedVersion, ReleaseInfo latest, CancellationToken cancellationToken)
+    {
+        var installed = ReleasePolicy.VersionOf(installedVersion);
+        if (latest.Version <= installed) return Array.Empty<ReleaseNote>();
+        var notes = new Dictionary<Version, ReleaseNote> { [latest.Version] = new(latest.Version, latest.Tag, latest.Notes) };
+        return await ReadNotesAsync(installed, latest.Version, notes, cancellationToken).ConfigureAwait(false);
+    }
+    public Task<IReadOnlyList<ReleaseNote>> ReadHistoryAsync(CancellationToken cancellationToken)
+        => ReadNotesAsync(null, null, new Dictionary<Version, ReleaseNote>(), cancellationToken);
+    private async Task<IReadOnlyList<ReleaseNote>> ReadNotesAsync(Version? installed, Version? latest, Dictionary<Version, ReleaseNote> notes, CancellationToken cancellationToken)
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(30));
+        for (int page = 1; page <= 10; page++)
+        {
+            using var request = Request(new Uri($"https://api.github.com/repos/DeadeyeDuncan/DeadWare/releases?per_page=100&page={page}"));
+            using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, deadline.Token).ConfigureAwait(false);
+            response.EnsureSuccessStatusCode();
+            byte[] json = await ReadLimitedAsync(response.Content, 2 * 1024 * 1024, deadline.Token).ConfigureAwait(false);
+            int count = ReadNotesPage(json, installed, latest, notes, deadline.Token);
+            if (count < 100)
+            {
+                deadline.Token.ThrowIfCancellationRequested();
+                return Array.AsReadOnly(notes.Values.OrderByDescending(note => note.Version).ToArray());
+            }
+        }
+        throw new InvalidDataException("Release note history exceeded its 1,000-release pagination limit.");
+    }
+    private static int ReadNotesPage(byte[] json, Version? installed, Version? latest, Dictionary<Version, ReleaseNote> notes, CancellationToken token)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Array || root.GetArrayLength() > 100)
+                throw new InvalidDataException("GitHub returned an invalid release history page.");
+            foreach (var release in root.EnumerateArray())
+            {
+                token.ThrowIfCancellationRequested();
+                if (release.ValueKind != JsonValueKind.Object)
+                    throw new InvalidDataException("GitHub returned incomplete release history metadata.");
+                if (!release.TryGetProperty("tag_name", out var tagValue) || tagValue.ValueKind != JsonValueKind.String) continue;
+                string tag = tagValue.GetString()!;
+                string versionText = tag.StartsWith('v') ? tag[1..] : tag;
+                if (versionText.Contains('+')) continue;
+                Version version;
+                try { version = ReleasePolicy.VersionOf(versionText); }
+                catch (InvalidDataException) { continue; }
+                if ((installed is not null && version <= installed) || (latest is not null && version > latest) || notes.ContainsKey(version)) continue;
+                if (release.GetProperty("draft").GetBoolean() || release.GetProperty("prerelease").GetBoolean()) continue;
+                string body = release.TryGetProperty("body", out var bodyValue) ? bodyValue.GetString() ?? "" : "";
+                notes.Add(version, new(version, tag, body[..Math.Min(16000, body.Length)]));
+            }
+            return root.GetArrayLength();
+        }
+        catch (Exception error) when (error is JsonException or KeyNotFoundException or InvalidOperationException or FormatException)
+        { throw new InvalidDataException("GitHub returned incomplete release history metadata.", error); }
     }
     public async Task DownloadAsync(ReleaseInfo release, string destination, IProgress<int>? progress, CancellationToken cancellationToken)
     {

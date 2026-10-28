@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
+using System.Windows.Documents;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using DeadWare.Core;
@@ -34,13 +35,19 @@ internal static class Ui
     }
     public static Image Logo()
     {var image=new Image {Width=38,Height=38,Margin=new Thickness(0,0,9,0)};try{image.Source=new BitmapImage(new Uri("pack://application:,,,/Assets/deadware.png"));}catch(System.IO.IOException){}return image;}
-    public static string Title(string kind)=>kind switch {"cpu"=>"CPU usage","cputemp"=>"CPU temperature","gpu"=>"GPU usage","gputemp"=>"GPU temperature",_=>"Network activity"};
-    public static UniformGrid Range(UiSession session)
+    public static string Title(string kind)=>kind switch {"cpu"=>"CPU usage","cputemp"=>"CPU temperature","gpu"=>"GPU usage","gputemp"=>"GPU temperature","usage"=>"CPU / GPU usage","temperature"=>"CPU / GPU temperature","memory"=>"RAM usage",_=>"Network activity"};
+    private sealed record RangeChoice(int Seconds,string Label)
+    {public override string ToString()=>Label;}
+    public static ComboBox Range(UiSession session)
     {
-        var row=new UniformGrid {Columns=3,Width=216};foreach(int seconds in HistoryRanges.Seconds)
-        {int n=seconds;var button=Button(HistoryRanges.Label(seconds),()=>session.SetRange(n));button.Tag=seconds;button.ToolTip="Show the last "+HistoryRanges.Label(seconds)+" of graph history";row.Children.Add(button);}
-        void Refresh(){foreach(Button b in row.Children){b.FontWeight=(int)b.Tag==session.HistorySeconds?FontWeights.Bold:FontWeights.Normal;b.SetResourceReference(Control.ForegroundProperty,(int)b.Tag==session.HistorySeconds?"Accent":"Muted");}}
-        row.Loaded+=(_,_)=>{session.Changed+=Refresh;Refresh();};row.Unloaded+=(_,_)=>session.Changed-=Refresh;return row;
+        var range=new ComboBox {Width=140,VerticalAlignment=VerticalAlignment.Center,
+            ItemsSource=HistoryRanges.Seconds.Select(seconds=>new RangeChoice(seconds,HistoryRanges.Label(seconds))).ToArray(),
+            DisplayMemberPath=nameof(RangeChoice.Label),SelectedValuePath=nameof(RangeChoice.Seconds),SelectedValue=session.HistorySeconds,
+            ToolTip="Choose how much graph history to show"};
+        System.Windows.Automation.AutomationProperties.SetName(range,"Graph history range");
+        range.SelectionChanged+=(_,_)=>{if(range.SelectedValue is int seconds&&seconds!=session.HistorySeconds)session.SetRange(seconds);};
+        void Refresh()=>range.SelectedValue=session.HistorySeconds;
+        range.Loaded+=(_,_)=>{session.Changed+=Refresh;Refresh();};range.Unloaded+=(_,_)=>session.Changed-=Refresh;return range;
     }
 }
 
@@ -49,6 +56,7 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
 {
     private readonly UiSession session=session;
     private readonly string kind=kind;
+    public bool CompareDevices {get;init;}
     public void Refresh()=>InvalidateVisual();
     protected override void OnRender(DrawingContext dc)
     {
@@ -58,9 +66,11 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
         var sample=session.Current?.Sample;
         double now=session.Collector.ElapsedSeconds;
         var points=session.Collector.History.Series(session.MetricId(kind),now,session.HistorySeconds);
-        var up=kind=="network"?session.Collector.History.Series("network/upload",now,session.HistorySeconds):[];
-        double maximum=kind is "cpu" or "gpu"?100:kind=="network"?Math.Max(1000,points.Concat(up).Where(p=>p.Value.HasValue).Select(p=>p.Value!.Value).DefaultIfEmpty(0).Max()*1.15):Math.Max(100,points.Where(p=>p.Value.HasValue).Select(p=>p.Value!.Value).DefaultIfEmpty(0).Max()*1.1);
-        string Axis(double value)=>kind=="network"?Ui.Bytes(value,true):$"{value:0}{(kind.Contains("temp")?"°":"%")}";
+        bool compare=CompareDevices&&kind is "cpu" or "cputemp";
+        var secondary=kind=="network"?session.Collector.History.Series("network/upload",now,session.HistorySeconds):compare?session.Collector.History.Series(session.MetricId(kind=="cpu"?"gpu":"gputemp"),now,session.HistorySeconds):[];
+        double maximum=kind is "cpu" or "gpu" or "memory"?100:kind=="network"?Math.Max(1000,points.Concat(secondary).Where(p=>p.Value.HasValue).Select(p=>p.Value!.Value).DefaultIfEmpty(0).Max()*1.15):Math.Max(100,points.Concat(secondary).Where(p=>p.Value.HasValue).Select(p=>p.Value!.Value).DefaultIfEmpty(0).Max()*1.1);
+        if(compare&&kind=="cputemp")maximum=Math.Ceiling(maximum/20)*20;
+        string Axis(double value)=>kind=="network"?Ui.Bytes(value,true):$"{value:0}{(kind.Contains("temp")?(compare?"°C":"°"):"%")}";
         double left=compact?3:12,top=compact?8:18;
         double right=compact?Enumerable.Range(0,3).Max(i=>Formatted(Axis(maximum*i/2)).Width)+10:74;
         double bottom=axisLabel.Height+(compact?10:18),pw=w-left-right,ph=h-top-bottom;
@@ -73,9 +83,10 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
         }
         double timeLabelY=h-axisLabel.Height-(compact?2:6);
         Label(dc,$"{HistoryRanges.Label(session.HistorySeconds)} ago",left,timeLabelY);Label(dc,"Now",left+pw-axisLabel.Width,timeLabelY);
-        DrawSeries(dc,points,now,maximum,left,top,pw,ph,kind=="network"?"Download":kind.StartsWith("gpu")?"Gpu":"Cpu",false);
-        if(kind=="network") DrawSeries(dc,up,now,maximum,left,top,pw,ph,"Cpu",true);
-        if(!points.Concat(up).Any(p=>p.Value.HasValue)) Label(dc,sample is null?(compact?"Waiting for data…":"Waiting for first sample…"):(compact?"No readings in this range":"No available readings in this range"),left+(compact?4:15),top+ph/2);
+        DrawSeries(dc,points,now,maximum,left,top,pw,ph,kind=="network"?"Download":kind=="memory"?"Accent":kind.StartsWith("gpu")?"Gpu":"Cpu",false);
+        if(kind=="network") DrawSeries(dc,secondary,now,maximum,left,top,pw,ph,"Cpu",true);
+        else if(compare) DrawSeries(dc,secondary,now,maximum,left,top,pw,ph,"Gpu",true);
+        if(!points.Concat(secondary).Any(p=>p.Value.HasValue)) Label(dc,sample is null?(compact?"Waiting for data…":"Waiting for first sample…"):(compact?"No readings in this range":"No available readings in this range"),left+(compact?4:15),top+ph/2);
     }
     private void DrawSeries(DrawingContext dc,IReadOnlyList<SamplePoint> points,double now,double maximum,double left,double top,double width,double height,string color,bool dashed)
     {
@@ -90,8 +101,10 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
                 lastPoint=p;
             }
         }
-        geometry.Freeze();var pen=new Pen(Theme.Brush(color),2);if(dashed)pen.DashStyle=new DashStyle([4,3],0);dc.DrawGeometry(null,pen,geometry);
-        if(lastPoint.HasValue) dc.DrawEllipse(Theme.Brush(color),null,lastPoint.Value,2.5,2.5);
+        bool dense=CompareDevices&&session.HistorySeconds>=3600;
+        geometry.Freeze();var pen=new Pen(Theme.Brush(color),dense?1:2);if(dashed)pen.DashStyle=new DashStyle([4,3],0);dc.DrawGeometry(null,pen,geometry);
+        double markerRadius=dense?1.5:2.5;
+        if(lastPoint.HasValue) dc.DrawEllipse(Theme.Brush(color),null,lastPoint.Value,markerRadius,markerRadius);
     }
     private void Label(DrawingContext dc,string text,double x,double y)
     {dc.DrawText(Formatted(text),new(x,y));}
@@ -102,10 +115,16 @@ internal sealed class ChartCard : Border
     private readonly UiSession session;
     private readonly string kind;
     private readonly TextBlock value=Ui.Text("—",30),subtitle=Ui.Text("Waiting for hardware…",11,"Muted"),stats=Ui.Text("",11,"Muted");
+    private readonly Run downloadValue=new(),uploadValue=new();
     private readonly HistoryChart chart;
     public ChartCard(UiSession session,string kind,bool popButton=true)
     {
         this.session=session;this.kind=kind;CornerRadius=new(10);BorderThickness=new(1);Padding=new(16,12,16,10);Margin=new(6);SetResourceReference(BackgroundProperty,"Panel");SetResourceReference(BorderBrushProperty,"Line");
+        if(kind=="network")
+        {
+            value.FontSize=24;value.Inlines.Clear();value.Inlines.Add(downloadValue);value.Inlines.Add(uploadValue);
+            downloadValue.SetResourceReference(TextElement.ForegroundProperty,"Download");uploadValue.SetResourceReference(TextElement.ForegroundProperty,"Cpu");
+        }
         // A forced MinHeight larger than the grid's remaining row caused WPF to clip axis labels.
         chart=new(session,kind){ClipToBounds=true};
         var grid=new Grid();grid.RowDefinitions.Add(new(){Height=GridLength.Auto});grid.RowDefinitions.Add(new(){Height=GridLength.Auto});grid.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});grid.RowDefinitions.Add(new(){Height=GridLength.Auto});
@@ -121,11 +140,16 @@ internal sealed class ChartCard : Border
     {
         if(!IsVisible)return;
         string id=session.MetricId(kind);double? current=session.Stale?null:session.Value(id);var data=session.Current;
-        value.SetResourceReference(TextBlock.ForegroundProperty,kind=="network"?"Download":kind.StartsWith("gpu")?"Gpu":"Cpu");
+        value.SetResourceReference(TextBlock.ForegroundProperty,kind=="network"?"Download":kind=="memory"?"Accent":kind.StartsWith("gpu")?"Gpu":"Cpu");
         if(kind=="network")
         {
-            value.FontSize=24;value.Text=$"↓ {Ui.Bytes(current,true)}    ↑ {Ui.Bytes(session.Stale?null:session.Value("network/upload"),true)}";
+            downloadValue.Text=$"↓ {Ui.Bytes(current,true)}    ";uploadValue.Text=$"↑ {Ui.Bytes(session.Stale?null:session.Value("network/upload"),true)}";
             subtitle.Text="Blue: download    ·    Dashed green: upload    ·    Shared scale";
+        }
+        else if(kind=="memory")
+        {
+            value.Text=Ui.Number(current," %");
+            subtitle.Text=data is null?"Discovering memory…":session.Stale?"RAM readings stale":current is null?"RAM usage unavailable":$"{Ui.Bytes(session.Value("memory/used"))} / {Ui.Bytes(session.Value("memory/total"))} in use";
         }
         else
         {

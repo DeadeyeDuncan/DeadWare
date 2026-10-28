@@ -7,7 +7,7 @@ public sealed class DetachedWindowState(IEnumerable<string>? remembered)
     private readonly List<string> open=Normalize(remembered);
     public bool Ending {get;private set;}
     public IReadOnlyList<string> Remembered=>open.ToArray();
-    public static bool IsAllowed(string? key)=>key is "cpu" or "cputemp" or "gpu" or "gputemp" or "network" or "widget" or "batteryhistory";
+    public static bool IsAllowed(string? key)=>key is "cpu" or "cputemp" or "gpu" or "gputemp" or "usage" or "temperature" or "memory" or "network" or "widget" or "batteryhistory";
     public static List<string> Normalize(IEnumerable<string>? keys)=>(keys??[]).Where(IsAllowed).Distinct(StringComparer.Ordinal).ToList();
     public void Open(string key) {if(!Ending&&IsAllowed(key)&&!open.Contains(key))open.Add(key);}
     public void Close(string key) {if(!Ending)open.Remove(key);}

@@ -8,10 +8,15 @@ namespace DeadWare.App;
 
 public sealed record UpdateState(string InstalledVersion)
 {
-    public string Status {get;init;}="Check GitHub for a newer normal release when you are ready.";
+    public string Status {get;init;}="Checks for updates once at startup. Install when you are ready.";
     public string LocalStatus {get;init;}="";
     public string LastOperation {get;init;}="";
     public ReleaseInfo? Release {get;init;}
+    public IReadOnlyList<ReleaseNote> ReleaseNotes {get;init;}=[];
+    public string ReleaseNotesStatus {get;init;}="";
+    public IReadOnlyList<ReleaseNote> ReleaseHistory {get;init;}=[];
+    public string ReleaseHistoryStatus {get;init;}="";
+    public bool ReleaseHistoryLoaded {get;init;}
     public BackupRecord? Previous {get;init;}
     public bool InstallationVerified {get;init;}
     public bool NeedsRecovery {get;init;}
@@ -19,34 +24,40 @@ public sealed record UpdateState(string InstalledVersion)
     public bool CanCancel {get;init;}
     public int Progress {get;init;}
     public DateTimeOffset? LastChecked {get;init;}
-    public bool CanUpdate=>!Busy&&!NeedsRecovery&&InstallationVerified&&Release is not null&&ReleasePolicy.IsNewer(Release,InstalledVersion);
+    public bool HasNewerRelease=>Release is not null&&ReleasePolicy.IsNewer(Release,InstalledVersion);
+    public bool CanUpdate=>!Busy&&!NeedsRecovery&&InstallationVerified&&HasNewerRelease;
     public bool CanRollback=>!Busy&&InstallationVerified&&Previous is not null;
 }
 
-/// <summary>On-demand updates only. File and network work never runs on the collector.</summary>
+/// <summary>Startup/manual checks; installation always requires an explicit action. Independent of the collector.</summary>
 public sealed class UpdateService
 {
     private readonly UpdatePaths paths;
     private readonly ReleaseClient releases;
     private readonly object gate=new();
+    private readonly HashSet<Version> announced=new();
     private UpdateState state;
     private int busy;
+    private int checking;
+    private int startupChecked;
     public UpdateState State=>Volatile.Read(ref state);
     public event Action? Changed;
+    public event Action<ReleaseInfo>? UpdateAvailable;
     public UpdateService(string version,string? install=null,HttpClient? http=null,string? cacheBase=null)
     {state=new(version);paths=new(install??AppContext.BaseDirectory,cacheBase);releases=new(http);}
     private void Publish(Func<UpdateState,UpdateState> change)
     {lock(gate)Volatile.Write(ref state,change(state));Changed?.Invoke();}
     public void ReportFailure(Exception error)=>Publish(s=>s with {Status="Update could not continue: "+error.Message});
-    private bool Begin(string message)
+    private bool Begin(string? message,bool metadataCheck=false)
     {
         if(Interlocked.CompareExchange(ref busy,1,0)!=0)return false;
-        Publish(s=>s with {Busy=true,CanCancel=true,Progress=0,Status=message});return true;
+        Volatile.Write(ref checking,metadataCheck?1:0);
+        Publish(s=>s with {Busy=true,CanCancel=true,Progress=0,Status=message??s.Status});return true;
     }
-    private void End(){Interlocked.Exchange(ref busy,0);Publish(s=>s with {Busy=false,CanCancel=false});}
+    private void End(){Volatile.Write(ref checking,0);Interlocked.Exchange(ref busy,0);Publish(s=>s with {Busy=false,CanCancel=false});}
     public async Task ReadLocalAsync()
     {
-        if(Volatile.Read(ref busy)!=0)return;
+        if(Volatile.Read(ref busy)!=0&&Volatile.Read(ref checking)==0)return;
         try
         {
             var result=await Task.Run(()=>
@@ -65,19 +76,63 @@ public sealed class UpdateService
         catch(Exception error) when(error is IOException or UnauthorizedAccessException or ArgumentException)
         {Publish(s=>s with {InstallationVerified=false,Previous=null,LocalStatus="Install the complete updater-enabled package before updating from this folder. "+error.Message});}
     }
+    public Task CheckAtStartupAsync(CancellationToken token)
+    {
+        if(token.IsCancellationRequested||Interlocked.Exchange(ref startupChecked,1)!=0)return Task.CompletedTask;
+        return CheckAsync(token);
+    }
     public async Task CheckAsync(CancellationToken token)
     {
-        if(!Begin("Checking GitHub…"))return;
+        if(!Begin("Checking GitHub…",true))return;
         try
         {
             var release=await releases.CheckAsync(token);
-            Publish(s=>s with {Release=release,LastChecked=DateTimeOffset.Now,Status=release is null?"No normal release has been published yet.":
+            token.ThrowIfCancellationRequested();
+            bool newer=release is not null&&ReleasePolicy.IsNewer(release,State.InstalledVersion);
+            IReadOnlyList<ReleaseNote> notes=release is null?[]:Array.AsReadOnly(new[]{new ReleaseNote(release.Version,release.Tag,release.Notes)});
+            Publish(s=>s with {Release=release,ReleaseNotes=notes,ReleaseNotesStatus=newer?"Loading release notes for newer versions…":"",LastChecked=DateTimeOffset.Now,Status=release is null?"No normal release has been published yet.":
                 ReleasePolicy.IsNewer(release,s.InstalledVersion)?$"Version {release.Version} is available.":$"No newer release. GitHub has {release.Version}; installed {s.InstalledVersion}."});
+            if(release is not null&&newer)
+            {
+                bool first;lock(gate)first=announced.Add(release.Version);
+                if(first)UpdateAvailable?.Invoke(release);
+                try
+                {
+                    var history=await releases.ReadNotesAsync(State.InstalledVersion,release,token);
+                    token.ThrowIfCancellationRequested();
+                    Publish(s=>s with {ReleaseNotes=history,ReleaseNotesStatus=""});
+                }
+                catch(OperationCanceledException) when(token.IsCancellationRequested)
+                {
+                    Publish(s=>s with {ReleaseNotesStatus="Release note history check cancelled. Showing the latest release only."});
+                    throw;
+                }
+                catch(Exception)
+                {Publish(s=>s with {ReleaseNotesStatus="Could not load earlier release notes. Showing the latest release only; Check for updates to retry."});}
+            }
         }
         catch(OperationCanceledException){Publish(s=>s with {Status=token.IsCancellationRequested?"Check cancelled.":"GitHub did not respond in time. Try again later."});}
         catch(HttpRequestException error) when(error.StatusCode is HttpStatusCode.Forbidden or HttpStatusCode.TooManyRequests)
         {Publish(s=>s with {Status="GitHub's request limit was reached. Try again later."});}
         catch(Exception error){ReportFailure(error);}
+        finally{End();}
+    }
+    public async Task ReadHistoryAsync(CancellationToken token)
+    {
+        if(!Begin(null,true))return;
+        try
+        {
+            Publish(s=>s with {ReleaseHistoryStatus="Loading release note history…"});
+            var history=await releases.ReadHistoryAsync(token);
+            token.ThrowIfCancellationRequested();
+            Publish(s=>s with {ReleaseHistory=history,ReleaseHistoryLoaded=true,ReleaseHistoryStatus=""});
+        }
+        catch(OperationCanceledException)
+        {Publish(s=>s with {ReleaseHistoryStatus=token.IsCancellationRequested?"Release note history cancelled. Retry when ready.":"GitHub did not respond in time. Retry later."});}
+        catch(HttpRequestException error) when(error.StatusCode is HttpStatusCode.Forbidden or HttpStatusCode.TooManyRequests)
+        {Publish(s=>s with {ReleaseHistoryStatus="GitHub's request limit was reached. Retry later."});}
+        catch(Exception)
+        {Publish(s=>s with {ReleaseHistoryStatus="Could not load release note history. Retry to try again."});}
         finally{End();}
     }
     public async Task<UpdateJob?> PrepareAsync(bool rollback,CancellationToken token)

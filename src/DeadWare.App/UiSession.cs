@@ -31,7 +31,8 @@ public sealed class UiSession
     public string? SelectedGpuId=>Current is null?null:DeviceSelection.Resolve(Settings.SelectedGpuId,Current.Gpus);
     public string GpuName=>Current?.Gpus.FirstOrDefault(d=>d.Id==SelectedGpuId)?.Name??"GPU unavailable";
     public double? Value(string id)=>Current?.Sample.Values.GetValueOrDefault(id);
-    public bool Stale=>Current is not null && Collector.ElapsedSeconds-Current.Sample.MonotonicSeconds>4;
+    public bool Stale=>Current is not null && Collector.ElapsedSeconds-Current.Sample.MonotonicSeconds>
+        PollingPolicy.FreshnessSeconds(Math.Max(Settings.PollingIntervalSeconds,Current.Sample.PollingIntervalSeconds));
     public UiSession(string? layoutDiagnosticPath=null)
     {
         diagnostics=layoutDiagnosticPath is null?null:new LayoutDiagnostics(layoutDiagnosticPath,settingsPath);
@@ -46,7 +47,8 @@ public sealed class UiSession
         layout=new(Settings.RestoreOpenWindows?Settings.OpenWindows:[]);
         diagnostics?.Record("settings_loaded",new {Status=SettingsStatus,Settings.RestoreOpenWindows,OpenWindows=layout.Remembered,Settings.SelectedGpuId,Disk=LayoutDiagnostics.ReadSettingsState(settingsPath)});
         saveTimer.Tick+=async (_,_)=>{saveTimer.Stop();await SaveAsync();};
-        Collector=new(new CollectorOptions(ExtendedSensors:Settings.ExtendedSensors));
+        timer.Interval=TimeSpan.FromSeconds(Math.Min(1,Settings.PollingIntervalSeconds));
+        Collector=new(new CollectorOptions(ExtendedSensors:Settings.ExtendedSensors,PollingIntervalSeconds:Settings.PollingIntervalSeconds));
         GraphHistory=new(Path.Combine(Path.GetDirectoryName(settingsPath)!,"live-graph-history.db"),Environment.MachineName,Collector.History);
         Collector.SampleAvailable+=GraphHistory.TryRecord;
         Cooling=new(Path.Combine(Path.GetDirectoryName(settingsPath)!,"cooling-history.db"),Environment.MachineName,Settings.CoolingConfigurationId);
@@ -64,13 +66,43 @@ public sealed class UiSession
     }
     public void Start()
     {
-        foreach(string key in layout.Remembered)OpenDetached(key);
+        // Restore the saved window types exactly; the launch preference only affects new requests.
+        foreach(string key in layout.Remembered)OpenDetachedCore(key);
         GraphHistory.Start();Cooling.Start();Battery.Start();_ = SaveAsync();Collector.Start();timer.Start();
     }
     public void SetRange(int seconds) {Settings.HistorySeconds=seconds;Changed?.Invoke();_ = SaveAsync();}
     public void SetGpu(string? id) {Settings.SelectedGpuId=id;Changed?.Invoke();_ = SaveAsync();}
     public void SetTheme(string theme) {Settings.Theme=theme;Theme.Apply(theme);Changed?.Invoke();_ = SaveAsync();}
     public void SetExtendedSensors(bool enabled) {Settings.ExtendedSensors=enabled;_ = SaveAsync();}
+    public void SetJoinedPopouts(bool enabled)
+    {
+        if(Settings.JoinCpuGpuPopouts==enabled)return;
+        Settings.JoinCpuGpuPopouts=enabled;Changed?.Invoke();_ = SaveAsync();
+    }
+    public void SetWidgetAlwaysOnTop(bool enabled)
+    {
+        bool changed=Settings.WidgetAlwaysOnTop!=enabled;
+        if(Settings.Windows.TryGetValue("widget",out var saved)&&saved is not null&&saved.Topmost!=enabled)
+        {Settings.Windows["widget"]=saved with {Topmost=enabled};changed=true;}
+        if(!changed)return;
+        Settings.WidgetAlwaysOnTop=enabled;Changed?.Invoke();_ = SaveAsync();
+    }
+    public void SetWidgetGraph(string kind,bool enabled)
+    {
+        if(!WidgetGraphSelection.Kinds.Contains(kind,StringComparer.Ordinal))return;
+        var selected=new HashSet<string>(WidgetGraphSelection.Normalize(Settings.WidgetGraphs),StringComparer.Ordinal);
+        if(enabled)selected.Add(kind);else selected.Remove(kind);
+        var next=WidgetGraphSelection.Normalize(selected);
+        if(Settings.WidgetGraphs is not null&&Settings.WidgetGraphs.SequenceEqual(next,StringComparer.Ordinal))return;
+        Settings.WidgetGraphs=next;Changed?.Invoke();_ = SaveAsync();
+    }
+    public void SetPollingInterval(double seconds)
+    {
+        Settings.PollingIntervalSeconds=PollingPolicy.Normalize(seconds);
+        Collector.SetPollingInterval(Settings.PollingIntervalSeconds);
+        timer.Interval=TimeSpan.FromSeconds(Math.Min(1,Settings.PollingIntervalSeconds));
+        Changed?.Invoke();_ = SaveAsync();
+    }
     public void SetRestoreOpenWindows(bool enabled) {Settings.RestoreOpenWindows=enabled;_ = SaveAsync();}
     public void SetStartInTray(bool enabled) {Settings.StartInTray=enabled;_ = SaveAsync();}
     public void SetBatteryRecording(bool enabled) {Settings.BatteryRecording=enabled;Battery.Configure(enabled);Changed?.Invoke();_ = SaveAsync();}
@@ -87,7 +119,7 @@ public sealed class UiSession
         Cooling.Configure(Settings.CoolingRecording,Settings.CoolingNotifications,Settings.CoolingDetailedDays,Settings.CoolingSummaryDays,Settings.CoolingConfigurationId);
         _ = SaveAsync();
     }
-    public string MetricId(string kind)=>kind switch {"cpu"=>"cpu/usage","cputemp"=>"cpu/temperature","gpu"=>(SelectedGpuId??"unavailable")+"/usage","gputemp"=>(SelectedGpuId??"unavailable")+"/temperature",_=>"network/download"};
+    public string MetricId(string kind)=>kind switch {"cpu"=>"cpu/usage","cputemp"=>"cpu/temperature","gpu"=>(SelectedGpuId??"unavailable")+"/usage","gputemp"=>(SelectedGpuId??"unavailable")+"/temperature","memory"=>"memory/usage",_=>"network/download"};
     public async Task SaveAsync()
     {
         Settings.OpenWindows=layout.Remembered.ToList();
@@ -149,7 +181,8 @@ public sealed class UiSession
     {
         window.Width=width;window.Height=height;
         Settings.Windows.TryGetValue(key,out var saved);
-        if(saved is not null)window.Topmost=saved.Topmost;
+        if(key=="widget")window.Topmost=Settings.WidgetAlwaysOnTop;
+        else if(saved is not null)window.Topmost=saved.Topmost;
         window.WindowStartupLocation=saved is null?WindowStartupLocation.CenterScreen:WindowStartupLocation.Manual;
         WindowPlacement? lastNormal=null;
         void Capture()
@@ -172,7 +205,8 @@ public sealed class UiSession
             topmost.RemoveValueChanged(window,pinChanged);captureWindows.Remove(window);
         };
     }
-    public void OpenDetached(string kind)
+    public void OpenDetached(string kind)=>OpenDetachedCore(PopoutGraphMode.Resolve(kind,Settings.JoinCpuGpuPopouts));
+    private void OpenDetachedCore(string kind)
     {
         if(layout.Ending||!DetachedWindowState.IsAllowed(kind))return;
         if(detached.TryGetValue(kind,out var existing)) {existing.WindowState=WindowState.Normal;existing.Activate();return;}

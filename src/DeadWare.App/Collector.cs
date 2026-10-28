@@ -20,7 +20,10 @@ public sealed class Collector : IAsyncDisposable
     private volatile string stage="Not started";
     public string Stage=>stage;
     public Task Completion=>worker??Task.CompletedTask;
-    public Collector(CollectorOptions? options=null) {this.options=options??new();etw=new(this.options.DiagnosticTimings);}
+    public Collector(CollectorOptions? options=null) {this.options=options??new();SetPollingInterval(this.options.PollingIntervalSeconds);etw=new(this.options.DiagnosticTimings);}
+    private double pollingIntervalSeconds=1;
+    public double PollingIntervalSeconds=>Volatile.Read(ref pollingIntervalSeconds);
+    public void SetPollingInterval(double intervalSeconds)=>Volatile.Write(ref pollingIntervalSeconds,PollingPolicy.Normalize(intervalSeconds));
     private readonly CancellationTokenSource cancellation=new();
     private readonly Stopwatch clock=Stopwatch.StartNew();
     private readonly WindowsCounters windows=new();
@@ -41,6 +44,7 @@ public sealed class Collector : IAsyncDisposable
         Computer? computer=null;
         string initialization="";
         double hardwareOpenMilliseconds=0,etwOpenMilliseconds=0;
+        double intervalSeconds=PollingIntervalSeconds;
         try
         {
             long initializationStarted=Stopwatch.GetTimestamp();
@@ -58,6 +62,7 @@ public sealed class Collector : IAsyncDisposable
             }
             while(!cancellation.IsCancellationRequested)
             {
+                intervalSeconds=PollingIntervalSeconds;
                 double started=clock.Elapsed.TotalSeconds;
                 try
                 {
@@ -93,13 +98,14 @@ public sealed class Collector : IAsyncDisposable
                     values["cpu/usage"]=cpuLoad??fallbackCpu;
                     values["cpu/temperature"]=cpuTemp;
                     providerStarted=Stopwatch.GetTimestamp();var memory=windows.Memory();values["memory/used"]=memory.Used;values["memory/total"]=memory.Total;
+                    values["memory/usage"]=MemoryUsage.Percentage(memory.Used,memory.Total);
                     if(timings is not null)timings["windows/memory"]=Stopwatch.GetElapsedTime(providerStarted).TotalMilliseconds;
                     providerStarted=Stopwatch.GetTimestamp();var network=windows.Network(clock.Elapsed.TotalSeconds);
                     if(timings is not null)timings["windows/network"]=Stopwatch.GetElapsedTime(providerStarted).TotalMilliseconds;
                     values["network/download"]=network.Down;values["network/upload"]=network.Up;
                     foreach(var sensor in sensors) values[sensor.Id]=sensor.Value;
                     var now=clock.Elapsed.TotalSeconds;
-                    var sample=new Snapshot(DateTimeOffset.Now,now,new System.Collections.ObjectModel.ReadOnlyDictionary<string,double?>(values));
+                    var sample=new Snapshot(DateTimeOffset.Now,now,new System.Collections.ObjectModel.ReadOnlyDictionary<string,double?>(values)) {PollingIntervalSeconds=intervalSeconds};
                     string hardwareStatus=initialization.Length>0?initialization:!options.HardwareEnabled?"Hardware collection disabled for diagnostic isolation":$"{sensors.Count} sensors · {(IsElevated?"Administrator":"Standard user")} · {(options.ExtendedSensors?"Extended sensors enabled":"CPU/GPU sensors")}";
                     if(cpuTemp is null) hardwareStatus+=" · CPU temperature unavailable (hardware support, elevation or PawnIO may be required).";
                     if(gpus.Count==0&&options.HardwareEnabled) hardwareStatus+=" · No supported GPU discovered.";
@@ -108,24 +114,24 @@ public sealed class Collector : IAsyncDisposable
                     var processes=options.EtwEnabled?etw.Take(now):[];
                     if(timings is not null){timings["etw/snapshot"]=Stopwatch.GetElapsedTime(providerStarted).TotalMilliseconds;timings["poll/total"]=(clock.Elapsed.TotalSeconds-started)*1000;}
                     double elapsed=clock.Elapsed.TotalSeconds-started;
-                    if(elapsed>=1)hardwareStatus+=$" · Slow sample ({elapsed:0.0}s); pausing before the next poll.";
+                    if(elapsed>=intervalSeconds)hardwareStatus+=$" · Slow sample ({elapsed:0.0}s); pausing before the next poll.";
                     var reading=new Reading(sample,gpus.AsReadOnly(),sensors.AsReadOnly(),processes,cpuName,hardwareStatus,network.Status,EtwStatus,IsElevated,timings,etw.Failure) {Battery=WindowsBattery.Read()};
                     History.Add(sample);Volatile.Write(ref latest,reading);SampleAvailable?.Invoke(reading);
                 }
                 catch(Exception e)
                 {
-                    var sample=new Snapshot(DateTimeOffset.Now,clock.Elapsed.TotalSeconds,new Dictionary<string,double?>());
-                    var failed=new Reading(sample,Latest?.Gpus??[],[],[],Latest?.CpuName??"Processor",$"Collection failed ({e.GetType().Name}); retrying next second.","Interface readings unavailable",EtwStatus,IsElevated,EtwFailure:etw.Failure);
+                    var sample=new Snapshot(DateTimeOffset.Now,clock.Elapsed.TotalSeconds,new Dictionary<string,double?>()) {PollingIntervalSeconds=intervalSeconds};
+                    var failed=new Reading(sample,Latest?.Gpus??[],[],[],Latest?.CpuName??"Processor",$"Collection failed ({e.GetType().Name}); retrying at the selected polling interval.","Interface readings unavailable",EtwStatus,IsElevated,EtwFailure:etw.Failure);
                     History.Add(sample);Volatile.Write(ref latest,failed);SampleAvailable?.Invoke(failed);
                 }
                 stage="Idle between samples";
-                await Task.Delay(PollingPolicy.DelayAfter(clock.Elapsed.TotalSeconds-started),cancellation.Token).ConfigureAwait(false);
+                await Task.Delay(PollingPolicy.DelayAfter(clock.Elapsed.TotalSeconds-started,PollingIntervalSeconds),cancellation.Token).ConfigureAwait(false);
             }
         }
         catch(OperationCanceledException) when(cancellation.IsCancellationRequested) { }
         catch(Exception e)
         {
-            var sample=new Snapshot(DateTimeOffset.Now,clock.Elapsed.TotalSeconds,new Dictionary<string,double?>());
+            var sample=new Snapshot(DateTimeOffset.Now,clock.Elapsed.TotalSeconds,new Dictionary<string,double?>()) {PollingIntervalSeconds=intervalSeconds};
             var failed=new Reading(sample,[],[],[],"Processor",$"Collector stopped ({e.GetType().Name}). Restart DeadWare to retry.","Interface readings unavailable",EtwStatus,IsElevated,EtwFailure:etw.Failure);
             History.Add(sample);Volatile.Write(ref latest,failed);SampleAvailable?.Invoke(failed);
         }
