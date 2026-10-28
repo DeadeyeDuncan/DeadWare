@@ -9,8 +9,9 @@ using DeadWare.Core;
 namespace DeadWare.App;
 internal static class Ui
 {
-    public static TextBlock Text(string value,double size=13,string color="Ink")
-    {var t=new TextBlock {Text=value,FontSize=size,TextWrapping=TextWrapping.Wrap,VerticalAlignment=VerticalAlignment.Center};t.SetResourceReference(TextBlock.ForegroundProperty,color);return t;}
+    public static TextBlock Text(string value,double size=13,string color="Ink",string font="BodyFont")
+    {var t=new TextBlock {Text=value,FontSize=size,TextWrapping=TextWrapping.Wrap,VerticalAlignment=VerticalAlignment.Center};t.SetResourceReference(TextBlock.ForegroundProperty,color);t.SetResourceReference(TextBlock.FontFamilyProperty,font);return t;}
+    public static TextBlock Heading(string value,double size=16)=>Text(value,size,"Heading","HeadingFont");
     public static Button Button(string value,Action action)
     {var b=new Button {Content=value};b.Click+=(_,_)=>action();return b;}
     public static StackPanel Row(params UIElement[] children)
@@ -30,7 +31,7 @@ internal static class Ui
         NativeTheme.Attach(w);
         // An implicit Window style does not automatically style our derived Window types.
         w.SetResourceReference(Control.BackgroundProperty,"Background");w.SetResourceReference(Control.ForegroundProperty,"Ink");
-        w.FontFamily=new FontFamily("Segoe UI");w.FontSize=13;
+        w.SetResourceReference(Control.FontFamilyProperty,"BodyFont");w.FontSize=13;
         try {w.Icon=new BitmapImage(new Uri("pack://application:,,,/Assets/deadware.ico"));}catch(System.IO.IOException) {}
     }
     public static Image Logo()
@@ -83,9 +84,9 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
         }
         double timeLabelY=h-axisLabel.Height-(compact?2:6);
         Label(dc,$"{HistoryRanges.Label(session.HistorySeconds)} ago",left,timeLabelY);Label(dc,"Now",left+pw-axisLabel.Width,timeLabelY);
-        DrawSeries(dc,points,now,maximum,left,top,pw,ph,kind=="network"?"Download":kind=="memory"?"Accent":kind.StartsWith("gpu")?"Gpu":"Cpu",false);
-        if(kind=="network") DrawSeries(dc,secondary,now,maximum,left,top,pw,ph,"Cpu",true);
-        else if(compare) DrawSeries(dc,secondary,now,maximum,left,top,pw,ph,"Gpu",true);
+        DrawSeries(dc,points,now,maximum,left,top,pw,ph,Theme.GraphKey(kind),false);
+        if(kind=="network") DrawSeries(dc,secondary,now,maximum,left,top,pw,ph,Theme.GraphKey("upload"),true);
+        else if(compare) DrawSeries(dc,secondary,now,maximum,left,top,pw,ph,Theme.GraphKey(kind=="cpu"?"gpu":"gputemp"),true);
         if(!points.Concat(secondary).Any(p=>p.Value.HasValue)) Label(dc,sample is null?(compact?"Waiting for data…":"Waiting for first sample…"):(compact?"No readings in this range":"No available readings in this range"),left+(compact?4:15),top+ph/2);
     }
     private void DrawSeries(DrawingContext dc,IReadOnlyList<SamplePoint> points,double now,double maximum,double left,double top,double width,double height,string color,bool dashed)
@@ -108,28 +109,30 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
     }
     private void Label(DrawingContext dc,string text,double x,double y)
     {dc.DrawText(Formatted(text),new(x,y));}
-    private FormattedText Formatted(string text)=>new(text,CultureInfo.CurrentCulture,FlowDirection.LeftToRight,new Typeface("Segoe UI"),11,Theme.Brush("Muted"),VisualTreeHelper.GetDpi(this).PixelsPerDip);
+    private FormattedText Formatted(string text)=>new(text,CultureInfo.CurrentCulture,FlowDirection.LeftToRight,Theme.ChartTypeface,11,Theme.Brush("Muted"),VisualTreeHelper.GetDpi(this).PixelsPerDip);
 }
 internal sealed class ChartCard : Border
 {
     private readonly UiSession session;
     private readonly string kind;
-    private readonly TextBlock value=Ui.Text("—",30),subtitle=Ui.Text("Waiting for hardware…",11,"Muted"),stats=Ui.Text("",11,"Muted");
+    private readonly TextBlock value=Ui.Text("—",30,font:"MetricFont"),subtitle=Ui.Text("Waiting for hardware…",11,"Muted"),stats=Ui.Text("",11,"Muted",font:"MetricFont");
     private readonly Run downloadValue=new(),uploadValue=new();
     private readonly HistoryChart chart;
     public ChartCard(UiSession session,string kind,bool popButton=true)
     {
         this.session=session;this.kind=kind;CornerRadius=new(10);BorderThickness=new(1);Padding=new(16,12,16,10);Margin=new(6);SetResourceReference(BackgroundProperty,"Panel");SetResourceReference(BorderBrushProperty,"Line");
+        value.SetResourceReference(TextBlock.ForegroundProperty,Theme.GraphKey(kind));
         if(kind=="network")
         {
             value.FontSize=24;value.Inlines.Clear();value.Inlines.Add(downloadValue);value.Inlines.Add(uploadValue);
-            downloadValue.SetResourceReference(TextElement.ForegroundProperty,"Download");uploadValue.SetResourceReference(TextElement.ForegroundProperty,"Cpu");
+            downloadValue.SetResourceReference(TextElement.ForegroundProperty,Theme.GraphKey("download"));uploadValue.SetResourceReference(TextElement.ForegroundProperty,Theme.GraphKey("upload"));
         }
         // A forced MinHeight larger than the grid's remaining row caused WPF to clip axis labels.
         chart=new(session,kind){ClipToBounds=true};
         var grid=new Grid();grid.RowDefinitions.Add(new(){Height=GridLength.Auto});grid.RowDefinitions.Add(new(){Height=GridLength.Auto});grid.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});grid.RowDefinitions.Add(new(){Height=GridLength.Auto});
-        var header=new DockPanel();var title=Ui.Text(Ui.Title(kind),14);title.FontWeight=FontWeights.SemiBold;header.Children.Add(title);
+        var header=new DockPanel();var title=Ui.Heading(Ui.Title(kind),14);title.FontWeight=FontWeights.SemiBold;header.Children.Add(title);
         if(popButton){var pop=Ui.Button("Pop out ↗",()=>session.OpenDetached(kind));pop.HorizontalAlignment=HorizontalAlignment.Right;DockPanel.SetDock(pop,Dock.Right);header.Children.Insert(0,pop);}
+        var colors=GraphColorPicker.Create(session,kind);DockPanel.SetDock(colors,Dock.Right);header.Children.Insert(0,colors);
         grid.Children.Add(header);
         var metric=new StackPanel {Margin=new Thickness(0,5,0,5)};metric.Children.Add(value);metric.Children.Add(subtitle);Grid.SetRow(metric,1);grid.Children.Add(metric);
         Grid.SetRow(chart,2);grid.Children.Add(chart);Grid.SetRow(stats,3);grid.Children.Add(stats);Child=grid;
@@ -140,11 +143,11 @@ internal sealed class ChartCard : Border
     {
         if(!IsVisible)return;
         string id=session.MetricId(kind);double? current=session.Stale?null:session.Value(id);var data=session.Current;
-        value.SetResourceReference(TextBlock.ForegroundProperty,kind=="network"?"Download":kind=="memory"?"Accent":kind.StartsWith("gpu")?"Gpu":"Cpu");
+        value.SetResourceReference(TextBlock.ForegroundProperty,Theme.GraphKey(kind));
         if(kind=="network")
         {
             downloadValue.Text=$"↓ {Ui.Bytes(current,true)}    ";uploadValue.Text=$"↑ {Ui.Bytes(session.Stale?null:session.Value("network/upload"),true)}";
-            subtitle.Text="Blue: download    ·    Dashed green: upload    ·    Shared scale";
+            subtitle.Text="Solid: download    ·    Dashed: upload    ·    Shared scale";
         }
         else if(kind=="memory")
         {

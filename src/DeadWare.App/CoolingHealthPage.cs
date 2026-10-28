@@ -23,8 +23,8 @@ internal sealed class CoolingHealthPage : ScrollViewer
     private readonly TextBox referenceFrom = new() { Width = 170 }, referenceTo = new() { Width = 170 }, referenceLabel = new() { Width = 230, MaxLength = 80 };
     private readonly CheckBox recording = new() { Content = "Record thermal history on this PC" }, notifications = new() { Content = "Notify me about sustained cooling changes" };
     private readonly TextBlock recordingStatus = Ui.Text("History starts when monitoring begins.", 12, "Muted"), storage = Ui.Text("", 11, "Muted");
-    private readonly TextBlock assessmentHeading = Ui.Text("Learning", 21, "Accent"), assessmentText = Ui.Text("Save a reference period before comparing cooling performance.", 13);
-    private readonly TextBlock comparison = Ui.Text("", 15), coverage = Ui.Text("", 11, "Muted"), chartSummary = Ui.Text("", 11, "Muted"), referenceStatus = Ui.Text("No reference saved yet.", 12, "Muted");
+    private readonly TextBlock assessmentHeading = Ui.Heading("Learning", 21), assessmentText = Ui.Text("Save a reference period before comparing cooling performance.", 13);
+    private readonly TextBlock comparison = Ui.Text("", 15, font:"MetricFont"), coverage = Ui.Text("", 11, "Muted"), chartSummary = Ui.Text("", 11, "Muted"), referenceStatus = Ui.Text("No reference saved yet.", 12, "Muted");
     private readonly TextBlock actionStatus = Ui.Text("", 12, "Warning");
     private readonly StackPanel warningRows = new();
     private readonly Expander warningSection = new() { Header = "Warnings", IsExpanded = false };
@@ -53,7 +53,7 @@ internal sealed class CoolingHealthPage : ScrollViewer
         historyButtons.Children.Add(range); historyButtons.Children.Add(metric);
         historyButtons.Children.Add(Ui.Button("Refresh", () => _ = RefreshAsync()));
         export = Ui.Button("Export CSV…", () => _ = ExportAsync()); historyButtons.Children.Add(export); body.Children.Add(historyButtons);
-        var history = new StackPanel(); history.Children.Add(Ui.Text("Thermal history", 16)); history.Children.Add(chart); history.Children.Add(chartSummary);
+        var history = new StackPanel(); history.Children.Add(Ui.Heading("Thermal history", 16)); history.Children.Add(chart); history.Children.Add(chartSummary);
         var chartNote = Ui.Text("Dots show recorded averages; faint vertical lines show min–max. Gaps stay unconnected. Dates and times use this PC's local time.", 11, "Muted"); chartNote.Margin = new(0, 8, 0, 0); history.Children.Add(chartNote);
         body.Children.Add(Card(history));
 
@@ -61,7 +61,7 @@ internal sealed class CoolingHealthPage : ScrollViewer
         comparison.Margin = new(0, 3, 0, 9); assessment.Children.Add(comparison); assessment.Children.Add(coverage);
         var limit = Ui.Text("This compares cooling behavior, not hardware life expectancy. Room temperature, workload, mounting, dust and fan settings can explain a change. Pump, coolant and flow diagnosis requires confirmed sensors.", 11, "Muted"); limit.Margin = new(0, 12, 0, 0); assessment.Children.Add(limit); body.Children.Add(Card(assessment));
 
-        var reference = new StackPanel(); reference.Children.Add(Ui.Text("Your fixed reference", 16)); referenceStatus.Margin = new(0, 8, 0, 8); reference.Children.Add(referenceStatus);
+        var reference = new StackPanel(); reference.Children.Add(Ui.Heading("Your fixed reference", 16)); referenceStatus.Margin = new(0, 8, 0, 8); reference.Children.Add(referenceStatus);
         SetAccessibleName(references, "Saved cooling reference");
         useReference = Ui.Button("Use reference", () => _ = UseReferenceAsync());
         var savedReferences = new WrapPanel(); savedReferences.Children.Add(references); savedReferences.Children.Add(useReference); reference.Children.Add(savedReferences);
@@ -77,7 +77,7 @@ internal sealed class CoolingHealthPage : ScrollViewer
         saveReference = Ui.Button("Save this period as a reference", () => _ = SaveReferenceAsync()); saveReference.HorizontalAlignment = HorizontalAlignment.Left; saveReference.Margin = new(0, 12, 0, 2); referenceEditor.Children.Add(saveReference);
         var referenceExpander = new Expander { Header = "Save a new reference", Content = referenceEditor, IsExpanded = true, Margin = new Thickness(0, 10, 0, 0) }; reference.Children.Add(referenceExpander); body.Children.Add(Card(reference));
 
-        var settings = new StackPanel(); settings.Children.Add(Ui.Text("Recording & setup", 16));
+        var settings = new StackPanel(); settings.Children.Add(Ui.Heading("Recording & setup", 16));
         recording.Margin = new(0, 12, 0, 8); notifications.Margin = new(0, 8, 0, 8); settings.Children.Add(recording); settings.Children.Add(recordingStatus); settings.Children.Add(notifications);
         settings.Children.Add(Ui.Text("Notifications require ten consecutive comparable minutes. A warning needs at least a 5°C rise above the matched mean and 3°C above its 95th percentile. Acknowledgment and a 24-hour cooldown prevent repeated alerts. These are conservative comparison rules, not manufacturer limits.", 11, "Muted"));
         detailDays.ItemsSource = new[] { new Choice<int>("7 days", 7), new("30 days", 30) }; summaryDays.ItemsSource = new[] { new Choice<int>("30 days", 30), new("90 days", 90) };

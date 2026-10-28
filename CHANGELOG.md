@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.6.19 — Graph colors and themed text
+
+- Add filled-circle color pickers to Overview graphs, with presets, custom colors and a theme-default reset.
+- Save independent CPU/GPU usage and temperature, RAM, download and upload colors across graph windows, widget traces, readings and legends.
+- Match headings, body text, controls, tables, tooltips and graph labels to the selected theme's colors and fonts.
+- Remove page-header subtitles and their spacing, and simplify the Network page title to Network.
+
 ## 0.6.18 — Neon color theme
 
 - Add Neon to the sidebar's Color theme selector, with dark surfaces, a cyan accent, green CPU readings, magenta GPU readings and blue downloads.

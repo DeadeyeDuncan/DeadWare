@@ -120,5 +120,5 @@ internal sealed class ThermalHistoryChart : FrameworkElement
     }
 
     private FormattedText Text(string value) => new(value, CultureInfo.CurrentCulture, FlowDirection.LeftToRight,
-        new Typeface("Segoe UI"), 11, Theme.Brush("Muted"), VisualTreeHelper.GetDpi(this).PixelsPerDip);
+        Theme.ChartTypeface, 11, Theme.Brush("Muted"), VisualTreeHelper.GetDpi(this).PixelsPerDip);
 }

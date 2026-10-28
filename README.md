@@ -27,6 +27,8 @@ DeadWare is a Windows desktop monitor for watching CPU/GPU usage and temperature
 - Startup and manual GitHub release checks, update-available notices, verified user-initiated updates and rollback to the previous installed version.
 - Six saved themes: **Midnight**, **Ember**, **Glacier**, **Amethyst**, **Neon**, and **Daylight**. Choose **Neon** in the sidebar's **Color theme** menu for near-black surfaces, electric cyan accents, and vivid green, magenta and blue graphs.
 - Scrollbars follow the selected theme across all windows, with matching native title bars on Windows 11.
+- Themes coordinate text colors and fonts across headings, controls, tables, graph labels and tooltips, and update open windows immediately.
+- Use the filled circles in each Overview graph's corner to choose its line color. Choices are saved and shared with pop-outs, widget traces and legends; download and upload have separate colors. Choose **Theme default** to clear a custom color.
 
 ## Download and run
 
@@ -143,7 +145,7 @@ dotnet run --project src/DeadWare.App/DeadWare.App.csproj
 Create a self-contained portable ZIP and SHA-256 checksum:
 
 ```powershell
-pwsh -File scripts/publish.ps1 -Version 0.6.18
+pwsh -File scripts/publish.ps1 -Version 0.6.19
 ```
 
 The packaging script runs tests before publishing, bundles the independent self-contained update helper, and records all managed file hashes in `deadware-package.json`. Output goes under `artifacts/`. GitHub Actions runs the same script. Pushing a normal three-part version tag such as `v0.6.0` builds and publishes a normal release after tests pass, using the matching `docs/releases/v0.6.0.md` notes. Workflows use pinned action commits.

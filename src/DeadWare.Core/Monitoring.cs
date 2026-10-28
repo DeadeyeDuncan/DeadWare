@@ -271,6 +271,7 @@ public sealed class UserSettings
     public string WindowPlacementFormat {get;set;}=WindowCoordinates.Format;
     public bool ExtendedSensors {get;set;}
     public string Theme {get;set;}="Midnight";
+    public Dictionary<string,string> GraphColors {get;set;}=new();
     public int HistorySeconds {get;set;}=60;
     public string? SelectedGpuId {get;set;}
     public Dictionary<string,WindowPlacement> Windows {get;set;}=new();
@@ -285,6 +286,7 @@ public static class SettingsCodec
             var s=JsonSerializer.Deserialize<UserSettings>(json);
             if(s is null) return new(new(),"Settings were empty; defaults restored.");
             if(s.Theme is not ("Midnight" or "Ember" or "Glacier" or "Amethyst" or "Neon" or "Daylight")) s.Theme="Midnight";
+            s.GraphColors=GraphColorSettings.Normalize(s.GraphColors);
             bool invalid=!HistoryRanges.IsSupported(s.HistorySeconds) || s.Windows is null || PollingPolicy.Normalize(s.PollingIntervalSeconds)!=s.PollingIntervalSeconds;
             var widgetGraphs=WidgetGraphSelection.Normalize(s.WidgetGraphs);
             invalid|=s.WidgetGraphs is null||!s.WidgetGraphs.SequenceEqual(widgetGraphs,StringComparer.Ordinal);

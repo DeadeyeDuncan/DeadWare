@@ -15,7 +15,7 @@ public sealed class MainWindow : Window
     private readonly ApplicationLifetime lifetime;
     private readonly Func<bool> trayAvailable;
     private readonly ContentControl content=new();
-    private readonly TextBlock heading=Ui.Text("System overview",28),subtitle=Ui.Text("The numbers you care about. Room to breathe.",13,"Muted"),status=Ui.Text("Starting the shared collector…",11,"Muted"),memory=Ui.Text("Memory —",12,"Muted"),networkStatus=Ui.Text("",12,"Warning"),networkEmpty=Ui.Text("",13,"Muted"),sensorCount=Ui.Text("",12,"Muted");
+    private readonly TextBlock heading=Ui.Heading("System overview",28),status=Ui.Text("Starting the shared collector…",11,"Muted"),memory=Ui.Text("Memory —",12,"Muted"),networkStatus=Ui.Text("",12,"Warning"),networkEmpty=Ui.Text("",13,"Muted"),sensorCount=Ui.Text("",12,"Muted");
     private readonly ComboBox gpu=new(){MaxWidth=340,VerticalAlignment=VerticalAlignment.Center,DisplayMemberPath="Name",SelectedValuePath="Id"};
     private readonly StackPanel gpuControls;
     private readonly DockPanel liveToolbar;
@@ -40,7 +40,7 @@ public sealed class MainWindow : Window
         this.session=session;this.lifetime=lifetime;this.trayAvailable=trayAvailable;Title="DeadWare";MinWidth=900;MinHeight=640;Ui.Icon(this);session.Place(this,"main",1220,900);
         var shell=new Grid();shell.ColumnDefinitions.Add(new(){Width=new GridLength(185)});shell.ColumnDefinitions.Add(new(){Width=new GridLength(1,GridUnitType.Star)});Content=shell;
         var sidebar=new DockPanel {Margin=new Thickness(14,24,14,16)};Grid.SetColumn(sidebar,0);shell.Children.Add(sidebar);
-        var brand=Ui.Row(Ui.Logo(),Ui.Text("DeadWare",21));brand.Margin=new(0,0,0,27);DockPanel.SetDock(brand,Dock.Top);sidebar.Children.Add(brand);
+        var brand=Ui.Row(Ui.Logo(),Ui.Heading("DeadWare",21));brand.Margin=new(0,0,0,27);DockPanel.SetDock(brand,Dock.Top);sidebar.Children.Add(brand);
         var sideBottom=new StackPanel();DockPanel.SetDock(sideBottom,Dock.Bottom);sidebar.Children.Add(sideBottom);
         sideBottom.Children.Add(Ui.Text("COLOR THEME",10,"Muted"));var theme=new ComboBox {ItemsSource=Theme.Names,SelectedItem=session.Settings.Theme,Margin=new Thickness(0,8,0,15)};theme.SelectionChanged+=(_,_)=>{if(theme.SelectedItem is string name)session.SetTheme(name);};sideBottom.Children.Add(theme);
         var elevate=Ui.Button("Restart as administrator",session.RestartElevated);elevate.FontSize=10;sideBottom.Children.Add(elevate);
@@ -52,7 +52,7 @@ public sealed class MainWindow : Window
         var main=new DockPanel {Margin=new Thickness(18,25,26,16)};Grid.SetColumn(main,1);shell.Children.Add(main);
         var footer=new StackPanel {Margin=new Thickness(4,10,4,0)};footer.Children.Add(status);DockPanel.SetDock(footer,Dock.Bottom);main.Children.Add(footer);
         var header=new StackPanel();DockPanel.SetDock(header,Dock.Top);main.Children.Add(header);
-        var titleRow=new DockPanel();var widget=Ui.Button("↗ Open widget",()=>session.OpenDetached("widget"));widget.HorizontalAlignment=HorizontalAlignment.Right;DockPanel.SetDock(widget,Dock.Right);titleRow.Children.Add(widget);titleRow.Children.Add(heading);header.Children.Add(titleRow);subtitle.Margin=new(0,8,0,0);header.Children.Add(subtitle);
+        var titleRow=new DockPanel();var widget=Ui.Button("↗ Open widget",()=>session.OpenDetached("widget"));widget.HorizontalAlignment=HorizontalAlignment.Right;DockPanel.SetDock(widget,Dock.Right);titleRow.Children.Add(widget);titleRow.Children.Add(heading);header.Children.Add(titleRow);
         updateNotice=new(ShowUpdates);header.Children.Add(updateNotice);
         liveToolbar=new DockPanel {Margin=new Thickness(0,18,0,12)};var ranges=Ui.Range(session);DockPanel.SetDock(ranges,Dock.Right);liveToolbar.Children.Add(ranges);var gpuLabel=Ui.Text("GPU",12,"Muted");gpuLabel.Margin=new(0,0,8,0);gpuControls=Ui.Row(gpuLabel,gpu);liveToolbar.Children.Add(gpuControls);header.Children.Add(liveToolbar);
         gpu.SelectionChanged+=(_,_)=>{if(!syncingGpu)session.SetGpu((gpu.SelectedItem as Device)?.Id);};
@@ -91,7 +91,7 @@ public sealed class MainWindow : Window
     private FrameworkElement Desktop()
     {
         var stack=new StackPanel {Margin=new Thickness(8)};
-        stack.Children.Add(Ui.Text("Your readings, wherever you need them",20));var intro=Ui.Text("Open any graph in its own resizable native window. Choose Always on top to keep it visible while you work. All windows share the same readings, selected GPU, history range and theme.",14,"Muted");intro.Margin=new(0,12,0,24);stack.Children.Add(intro);
+        stack.Children.Add(Ui.Heading("Your readings, wherever you need them",20));var intro=Ui.Text("Open any graph in its own resizable native window. Choose Always on top to keep it visible while you work. All windows share the same readings, selected GPU, history range and theme.",14,"Muted");intro.Margin=new(0,12,0,24);stack.Children.Add(intro);
         var polling=new ComboBox {ItemsSource=PollingPolicy.Intervals.Select(seconds=>new PollingChoice(seconds,seconds==1?"1 second (default)":$"{seconds:0.#} seconds")).ToArray(),DisplayMemberPath="Label",SelectedValuePath="Seconds",SelectedValue=session.Settings.PollingIntervalSeconds,MinWidth=160};
         System.Windows.Automation.AutomationProperties.SetName(polling,"Data polling interval");
         polling.SelectionChanged+=(_,_)=>{if(polling.SelectedValue is double seconds)session.SetPollingInterval(seconds);};
@@ -176,8 +176,8 @@ public sealed class MainWindow : Window
     {
         gpuControls.Visibility=destination=="overview"?Visibility.Visible:Visibility.Collapsed;
         liveToolbar.Visibility=destination is "cooling" or "battery" or "updates"?Visibility.Collapsed:Visibility.Visible;
-        page=destination;content.Content=pages[destination];heading.Text=destination switch {"network"=>"Your network, explained","cooling"=>"Cooling Health","battery"=>"Battery history","updates"=>"Keep DeadWare current","sensors"=>"Hardware sensors","desktop"=>"Settings",_=>"System overview"};
-        subtitle.Text=destination switch {"network"=>"See which applications are sending and receiving data.","cooling"=>"Learn your usual temperatures. Notice sustained changes.","battery"=>"See charge fall and recover. Keep the history for years.","updates"=>"Update when you are ready. Keep the previous installation within reach.","sensors"=>"Current-session values and statistics over the selected range.","desktop"=>"Manage windows, startup and monitoring options.",_=>"The numbers you care about. Room to breathe."};RefreshUpdateNotice();Refresh();
+        page=destination;content.Content=pages[destination];heading.Text=destination switch {"network"=>"Network","cooling"=>"Cooling Health","battery"=>"Battery history","updates"=>"Keep DeadWare current","sensors"=>"Hardware sensors","desktop"=>"Settings",_=>"System overview"};
+        RefreshUpdateNotice();Refresh();
         if(destination=="desktop")_ = RefreshStartupAsync();
     }
     private void Refresh()
@@ -255,7 +255,7 @@ internal sealed class BatteryHistoryWindow : Window
         var header=new DockPanel {Margin=new Thickness(6,0,6,8)};
         var pin=new CheckBox {Content="Always on top",VerticalAlignment=VerticalAlignment.Center,IsChecked=Topmost};
         pin.Checked+=(_,_)=>Topmost=true;pin.Unchecked+=(_,_)=>Topmost=false;DockPanel.SetDock(pin,Dock.Right);header.Children.Add(pin);
-        header.Children.Add(Ui.Text("Battery history",24));DockPanel.SetDock(header,Dock.Top);panel.Children.Add(header);
+        header.Children.Add(Ui.Heading("Battery history",24));DockPanel.SetDock(header,Dock.Top);panel.Children.Add(header);
         panel.Children.Add(new BatteryHistoryPage(session,false));Content=panel;
     }
 }

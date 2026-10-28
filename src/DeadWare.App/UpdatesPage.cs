@@ -7,9 +7,9 @@ namespace DeadWare.App;
 internal sealed class UpdatesPage : ScrollViewer
 {
     private readonly UpdateService service;
-    private readonly TextBlock installed=Ui.Text("",24,"Accent"),latest=Ui.Text("",16),status=Ui.Text("",13),local=Ui.Text("",12,"Muted"),notesStatus=Ui.Text("",12,"Warning"),last=Ui.Text("",12,"Muted");
+    private readonly TextBlock installed=Ui.Text("",24,"Accent",font:"MetricFont"),latest=Ui.Text("",16),status=Ui.Text("",13),local=Ui.Text("",12,"Muted"),notesStatus=Ui.Text("",12,"Warning"),last=Ui.Text("",12,"Muted");
     private readonly StackPanel noteSections=new();
-    private readonly TextBlock notesHeading=Ui.Text("Release notes",16);
+    private readonly TextBlock notesHeading=Ui.Heading("Release notes",16);
     private readonly Button history,retryHistory;
     private bool showHistory,displayedHistory,displayedHistoryLoaded;
     private IReadOnlyList<ReleaseNote>? displayedNotes;
@@ -28,7 +28,7 @@ internal sealed class UpdatesPage : ScrollViewer
         cancel=Ui.Button("Cancel",()=>operation?.Cancel());
         var buttons=new WrapPanel{Margin=new(0,0,0,10)};foreach(var button in new[]{check,update,rollback,cancel})buttons.Children.Add(button);body.Children.Add(buttons);
         body.Children.Add(progress);status.Margin=new(3,6,3,12);body.Children.Add(status);local.Margin=new(3,0,3,16);body.Children.Add(local);
-        var information=new StackPanel();information.Children.Add(Ui.Text("Your history stays with you",16));
+        var information=new StackPanel();information.Children.Add(Ui.Heading("Your history stays with you",16));
         var explanation=Ui.Text("DeadWare checks normal GitHub releases once at startup. A notice lets you know when a newer version is available; you choose when to download and install it. Update & restart saves your workspace and history, installs the verified package, then reopens DeadWare. Rollback restores the previous app files while keeping current settings and recordings.",13,"Muted");explanation.Margin=new(0,8,0,8);information.Children.Add(explanation);
         information.Children.Add(Ui.Text("The first updater-enabled installation may have no earlier version to restore. A previous version becomes available after an in-app update.",12,"Muted"));body.Children.Add(Card(information));
         var releaseNotes=new StackPanel();
@@ -76,7 +76,7 @@ internal sealed class UpdatesPage : ScrollViewer
         foreach(var entry in entries)
         {
             var section=new StackPanel {Margin=new Thickness(0,12,0,0)};
-            var heading=Ui.Text(entry.Tag,14,"Accent");heading.FontWeight=FontWeights.SemiBold;section.Children.Add(heading);
+            var heading=Ui.Heading(entry.Tag,14);heading.FontWeight=FontWeights.SemiBold;section.Children.Add(heading);
             var text=Ui.Text(string.IsNullOrWhiteSpace(entry.Notes)?"No release notes provided.":entry.Notes,12);text.Margin=new(0,6,0,0);section.Children.Add(text);noteSections.Children.Add(section);
         }
     }

@@ -16,7 +16,7 @@ internal sealed class CompactGraph : Border
     private readonly string chartKind;
     private readonly bool joined;
     private readonly HistoryChart chart;
-    private readonly TextBlock value=Ui.Text("—",26),upload=Ui.Text("—",18,"Cpu"),status=Ui.Text("",10,"Warning");
+    private readonly TextBlock value=Ui.Text("—",26,font:"MetricFont"),upload=Ui.Text("—",18,"Cpu",font:"MetricFont"),status=Ui.Text("",10,"Warning");
     private readonly TextBlock details=Ui.Text("Discovering hardware…",12,"Muted"),stats=Ui.Text("",12,"Muted");
     private readonly Button options;
     private readonly Popup popup;
@@ -30,7 +30,7 @@ internal sealed class CompactGraph : Border
         SetResourceReference(BackgroundProperty,"Panel");SetResourceReference(BorderBrushProperty,"Line");
         var grid=new Grid();grid.RowDefinitions.Add(new(){Height=GridLength.Auto});grid.RowDefinitions.Add(new(){Height=GridLength.Auto});grid.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});Child=grid;
         var header=new Grid();header.ColumnDefinitions.Add(new(){Width=new GridLength(1,GridUnitType.Star)});header.ColumnDefinitions.Add(new(){Width=GridLength.Auto});header.ColumnDefinitions.Add(new(){Width=GridLength.Auto});grid.Children.Add(header);
-        var title=Ui.Text(kind switch {"usage"=>"Usage","temperature"=>"Temp","cputemp"=>"CPU temp","gputemp"=>"GPU temp","network"=>"Network",_=>Ui.Title(kind)},12);
+        var title=Ui.Text(kind switch {"usage"=>"Usage","temperature"=>"Temp","cputemp"=>"CPU temp","gputemp"=>"GPU temp","network"=>"Network",_=>Ui.Title(kind)},12,"Heading",font:"HeadingFont");
         title.FontWeight=FontWeights.SemiBold;title.TextWrapping=TextWrapping.NoWrap;title.TextTrimming=TextTrimming.CharacterEllipsis;title.Margin=new Thickness(0,0,6,0);header.Children.Add(title);
         AutomationProperties.SetName(title,Ui.Title(kind));
         value.TextWrapping=TextWrapping.NoWrap;upload.TextWrapping=TextWrapping.NoWrap;
@@ -64,8 +64,8 @@ internal sealed class CompactGraph : Border
         string id=session.MetricId(chartKind);double? current=session.Stale?null:session.Value(id);
         double? other=joined?(session.Stale?null:session.Value(session.MetricId(chartKind=="cpu"?"gpu":"gputemp"))):null;
         var data=session.Current;
-        value.SetResourceReference(TextBlock.ForegroundProperty,kind=="network"?"Download":kind=="memory"?"Accent":kind.StartsWith("gpu")?"Gpu":"Cpu");
-        upload.SetResourceReference(TextBlock.ForegroundProperty,joined?"Gpu":"Cpu");
+        value.SetResourceReference(TextBlock.ForegroundProperty,Theme.GraphKey(chartKind));
+        upload.SetResourceReference(TextBlock.ForegroundProperty,Theme.GraphKey(joined?(chartKind=="cpu"?"gpu":"gputemp"):"upload"));
         if(joined)
         {
             string unit=chartKind=="cputemp"?" °C":" %";

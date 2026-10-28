@@ -8,7 +8,7 @@ internal sealed class WidgetGraph : Border
 {
     private readonly UiSession session;
     private readonly string kind;
-    private readonly TextBlock title=Ui.Text("",12,"Muted"),primary=Ui.Text("",11),secondary=Ui.Text("",11);
+    private readonly TextBlock title=Ui.Text("",12,"Heading",font:"HeadingFont"),primary=Ui.Text("",11,font:"MetricFont"),secondary=Ui.Text("",11,font:"MetricFont");
     private readonly HistoryChart chart;
     public WidgetGraph(UiSession session,string kind)
     {
@@ -19,7 +19,7 @@ internal sealed class WidgetGraph : Border
         chart=new(session,kind,true){CompareDevices=kind is "cpu" or "cputemp",ClipToBounds=true};
         var grid=new Grid();grid.RowDefinitions.Add(new(){Height=GridLength.Auto});grid.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});
         title.TextWrapping=TextWrapping.NoWrap;title.TextTrimming=TextTrimming.CharacterEllipsis;
-        string firstColor=network?"Download":memory?"Accent":"Cpu",secondColor=network?"Cpu":"Gpu";
+        string firstColor=Theme.GraphKey(kind),secondColor=Theme.GraphKey(network?"upload":kind=="cputemp"?"gputemp":"gpu");
         primary.SetResourceReference(TextBlock.ForegroundProperty,firstColor);secondary.SetResourceReference(TextBlock.ForegroundProperty,secondColor);
         var legend=memory?Ui.Row(Legend(primary,firstColor,false)):Ui.Row(Legend(primary,firstColor,false),Legend(secondary,secondColor,true));
         var header=new DockPanel();DockPanel.SetDock(legend,Dock.Right);header.Children.Add(legend);header.Children.Add(title);grid.Children.Add(header);

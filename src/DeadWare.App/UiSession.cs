@@ -43,6 +43,7 @@ public sealed class UiSession
             Settings=loaded.Settings;SettingsStatus=loaded.Error??"";
         }
         catch(Exception e) when(e is IOException or UnauthorizedAccessException) {Settings=new();SettingsStatus="Settings unavailable; using defaults.";diagnostics?.Record("settings_load_failed",error:e);}
+        Theme.SetGraphColors(Settings.GraphColors);
         writer=new(settingsPath);
         layout=new(Settings.RestoreOpenWindows?Settings.OpenWindows:[]);
         diagnostics?.Record("settings_loaded",new {Status=SettingsStatus,Settings.RestoreOpenWindows,OpenWindows=layout.Remembered,Settings.SelectedGpuId,Disk=LayoutDiagnostics.ReadSettingsState(settingsPath)});
@@ -73,6 +74,19 @@ public sealed class UiSession
     public void SetRange(int seconds) {Settings.HistorySeconds=seconds;Changed?.Invoke();_ = SaveAsync();}
     public void SetGpu(string? id) {Settings.SelectedGpuId=id;Changed?.Invoke();_ = SaveAsync();}
     public void SetTheme(string theme) {Settings.Theme=theme;Theme.Apply(theme);Changed?.Invoke();_ = SaveAsync();}
+    public void SetGraphColor(string kind,string? color)
+    {
+        if(kind=="network")kind="download";
+        if(!GraphColorSettings.Kinds.Contains(kind)||color is not null&&!GraphColorSettings.IsColor(color))return;
+        if(color is null) {if(!Settings.GraphColors.Remove(kind))return;}
+        else
+        {
+            color=color.ToUpperInvariant();
+            if(Settings.GraphColors.GetValueOrDefault(kind)==color)return;
+            Settings.GraphColors[kind]=color;
+        }
+        Theme.SetGraphColors(Settings.GraphColors);Changed?.Invoke();_ = SaveAsync();
+    }
     public void SetExtendedSensors(bool enabled) {Settings.ExtendedSensors=enabled;_ = SaveAsync();}
     public void SetJoinedPopouts(bool enabled)
     {
