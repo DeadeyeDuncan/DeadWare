@@ -1,6 +1,6 @@
 # Release validation
 
-## Network graph in the widget candidate (0.6.7, 2026-10-27)
+## Network graph in the widget (0.6.7, 2026-10-27)
 
 The widget adds a third Network card below the existing Usage and Temperature cards. It reuses the unchanged HistoryChart network renderer: solid Download blue and dashed Cpu green for upload, sharing a dynamic bytes-per-second scale that includes both directions. Current rates move into the Network legend; memory/status, pinning, shared history/range and CPU/GPU grouping/colors remain. The minimum is now 300×400 and the default 340×480 so all three charts remain readable.
 
@@ -9,6 +9,10 @@ All 299 automated tests passed (239 core/update, 60 Windows app), and self-conta
 Older physical saved sizes are enlarged to target-monitor WPF minima before final work-area clamping. Eight pure placement cases cover 320/390-pixel legacy heights at 96/144/192 DPI, negative monitor coordinates, pin choice, unchanged larger bounds, and adjacent monitors. Review caught a first-draft regression where enlargement could select a neighboring monitor and apply the original DPI there; the exact two-monitor case failed before correction, then passed after selecting the work area from the original bounded rectangle. Final independent review found no actionable issues; whitespace checks passed.
 
 These are synthetic/offscreen rendering and pure placement-policy checks, not actual HWND restoration or real mixed-DPI monitor tests. No native test windows, hardware collector or user-settings writes were used. The inspected installed package reported 0.6.6 before publication; live installation remains the user's choice.
+
+[PR #11](https://github.com/DeadeyeDuncan/DeadWare/pull/11) merged Dev into main. Tag `v0.6.7` points to `f9358e64f62435460d9b0422cd3274487a6f7959`, whose tree matches tested Dev commit `ce87253`. The [Dev build](https://github.com/DeadeyeDuncan/DeadWare/actions/runs/40610550820), [PR build](https://github.com/DeadeyeDuncan/DeadWare/actions/runs/40610556439), [main build](https://github.com/DeadeyeDuncan/DeadWare/actions/runs/40610927890) and [release workflow](https://github.com/DeadeyeDuncan/DeadWare/actions/runs/40610963056) all passed.
+
+The production `ReleaseClient` fetched latest normal [v0.6.7](https://github.com/DeadeyeDuncan/DeadWare/releases/tag/v0.6.7), confirmed it is newer than 0.6.6, and verified its public download/checksum/digest. The ZIP is 117,515,710 bytes; SHA-256 `ddda0354e90f921ce7f00eda23ddc561effe9660063d18bcc8cd02eef3e8e243`. Production extraction validated 575 managed files in 576 entries, with no local settings, databases, journals or restore cache included. ProductVersion is `0.6.7+f9358e64f62435460d9b0422cd3274487a6f7959`; evidence is under ignored `artifacts/public-release-v0.6.7/verified.json`. Read-only executable/manifest hashes confirm the inspected 0.6.6 package stayed unchanged. No live installation, rollback or restart was performed.
 
 ## Release notes for every missed version (0.6.6, 2026-10-27)
 
