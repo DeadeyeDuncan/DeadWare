@@ -6,6 +6,15 @@ namespace DeadWare.App.Tests;
 
 public class ThermalProjectionTests
 {
+    [Theory]
+    [InlineData(0.5)] [InlineData(10)]
+    public void Projection_keeps_the_cadence_captured_with_the_publication(double interval)
+    {
+        var reading=Reading(Sensor("t","CPU Package","Temperature",60));
+        reading=reading with {Sample=reading.Sample with {PollingIntervalSeconds=interval}};
+        Assert.Equal(interval,Assert.Single(ThermalProjection.Project(reading,"session","machine","setup")).PollingIntervalSeconds);
+    }
+
     [Fact]
     public void Identical_devices_do_not_reuse_references_after_enumeration_changes()
     {

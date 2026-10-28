@@ -191,6 +191,35 @@ public class BatteryUiTests
                 var batteryNavigation = navigation.Children.OfType<Button>().Single(b => b.Content?.ToString()?.Contains("Battery history") == true);
                 var pages = (Dictionary<string, FrameworkElement>)typeof(MainWindow).GetField("pages", All)!.GetValue(dashboard)!;
                 var settings = (StackPanel)((ScrollViewer)pages["desktop"]).Content;
+                var polling = Assert.Single(settings.Children.OfType<StackPanel>().SelectMany(panel => panel.Children.OfType<ComboBox>()),
+                    combo => System.Windows.Automation.AutomationProperties.GetName(combo) == "Data polling interval");
+                Assert.Equal(new[] { "0.5 seconds", "1 second (default)", "2 seconds", "5 seconds", "10 seconds" }, polling.Items.Cast<object>().Select(item => item.ToString()));
+                Assert.Equal(1d, polling.SelectedValue);
+                var pollingSettingsPath = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + "-polling-settings.json");
+                var uiTimer = new System.Windows.Threading.DispatcherTimer();
+                Set(session, "timer", uiTimer);
+                Set(session, "writer", new SettingsSnapshotWriter(pollingSettingsPath));
+                foreach (double seconds in new double[] { 10, .5, 1 })
+                {
+                    polling.SelectedValue = seconds;
+                    Assert.Equal(seconds, session.Settings.PollingIntervalSeconds);
+                    Assert.Equal(seconds, collector.PollingIntervalSeconds);
+                    Assert.Equal(Math.Min(1, seconds), uiTimer.Interval.TotalSeconds);
+                    Assert.Contains(Descendants(sidebar).OfType<TextBlock>(), text => text.Text.Contains($"{seconds:0.#} s polling"));
+                }
+                var finalSave = session.SaveAsync();
+                var saveFrame = new System.Windows.Threading.DispatcherFrame();
+                var fixtureDispatcher = System.Windows.Threading.Dispatcher.CurrentDispatcher;
+                _ = finalSave.ContinueWith(_ => fixtureDispatcher.BeginInvoke(new Action(() => saveFrame.Continue = false)), TaskScheduler.Default);
+                System.Windows.Threading.Dispatcher.PushFrame(saveFrame);
+                finalSave.GetAwaiter().GetResult();
+                Assert.Equal(1, SettingsCodec.Read(File.ReadAllText(pollingSettingsPath)).Settings.PollingIntervalSeconds);
+                File.Delete(pollingSettingsPath);
+                Set(collector, "latest", current with { Sample = current.Sample with { MonotonicSeconds = -11, PollingIntervalSeconds = 10 } });
+                Assert.False(session.Stale);
+                Set(collector, "latest", current with { Sample = current.Sample with { MonotonicSeconds = -14, PollingIntervalSeconds = 10 } });
+                Assert.True(session.Stale);
+                Set(collector, "latest", current);
                 var batteryWindow = settings.Children.OfType<Button>().Single(b => b.Content?.ToString()?.Contains("Battery history") == true);
                 void RefreshDashboard() => ((Action)typeof(UiSession).GetField("Changed", All)!.GetValue(session)!).Invoke();
                 void Navigate(string destination) => typeof(MainWindow).GetMethod("Navigate", All)!.Invoke(dashboard, [destination]);

@@ -5,15 +5,18 @@ namespace DeadWare.Core;
 public record Snapshot(DateTimeOffset Timestamp,double MonotonicSeconds,IReadOnlyDictionary<string,double?> Values)
 {
     public string? SessionId {get;init;}
+    public double PollingIntervalSeconds {get;init;}=1;
 }
 public record SamplePoint(DateTimeOffset Timestamp,double MonotonicSeconds,double? Value)
 {
     public bool BreakBefore {get;init;}
+    public double PollingIntervalSeconds {get;init;}=1;
 }
 public record Summary(double? Minimum,double? Maximum,double? Average);
 public static class HistoryRanges
 {
     public const int MaximumSeconds=21600;
+    public const int MaximumSamples=43201;
     public static IReadOnlyList<int> Seconds {get;}=Array.AsReadOnly(new[]{60,300,900,3600,10800,MaximumSeconds});
     public static bool IsSupported(int seconds)=>Seconds.Contains(seconds);
     public static string Label(int seconds)=>seconds<3600?$"{seconds/60} min":$"{seconds/3600} h";
@@ -32,7 +35,7 @@ public sealed class SampleHistory
             if(s.MonotonicSeconds<=lastSeconds) return;
             samples.Enqueue(Copy(s));
             lastSeconds=s.MonotonicSeconds;
-            while(samples.Count>HistoryRanges.MaximumSeconds+1 || (samples.Count>0 && samples.Peek().MonotonicSeconds<s.MonotonicSeconds-HistoryRanges.MaximumSeconds)) samples.Dequeue();
+            while(samples.Count>HistoryRanges.MaximumSamples || (samples.Count>0 && samples.Peek().MonotonicSeconds<s.MonotonicSeconds-HistoryRanges.MaximumSeconds)) samples.Dequeue();
         }
     }
     public static double? Finite(double? value)=>value.HasValue && double.IsFinite(value.Value)?value:null;
@@ -60,7 +63,7 @@ public sealed class SampleHistory
                 }
                 else merged[time]=Copy(sample);
             }
-            var ordered=merged.Values.Where(s=>s.MonotonicSeconds>=cutoff).OrderBy(s=>s.MonotonicSeconds).TakeLast(HistoryRanges.MaximumSeconds+1).ToArray();
+            var ordered=merged.Values.Where(s=>s.MonotonicSeconds>=cutoff).OrderBy(s=>s.MonotonicSeconds).TakeLast(HistoryRanges.MaximumSamples).ToArray();
             samples.Clear();foreach(var sample in ordered)samples.Enqueue(sample);
             if(ordered.Length>0)lastSeconds=ordered[^1].MonotonicSeconds;
         }
@@ -89,7 +92,8 @@ public sealed class SampleHistory
             {
                 if(sample.MonotonicSeconds<now-seconds||sample.MonotonicSeconds>now)continue;
                 points.Add(new(sample.Timestamp,sample.MonotonicSeconds,sample.Values.GetValueOrDefault(id))
-                    {BreakBefore=previous is not null&&previous.SessionId!=sample.SessionId});
+                    {BreakBefore=previous is not null&&previous.SessionId!=sample.SessionId,
+                     PollingIntervalSeconds=PollingPolicy.Normalize(sample.PollingIntervalSeconds)});
                 previous=sample;
             }
             return points;
@@ -139,7 +143,7 @@ public sealed class SampleHistory
         if(pixelWidth<=0)throw new ArgumentOutOfRangeException(nameof(pixelWidth));
         var result=new List<SamplePoint>();
         int bucket=-1,first=-1,minimum=-1,maximum=-1,last=-1;
-        double previous=double.NaN;
+        double previous=double.NaN,previousInterval=1;
         void Flush()
         {
             if(first<0)return;
@@ -158,8 +162,9 @@ public sealed class SampleHistory
             var point=points[i];double time=point.MonotonicSeconds;
             if(!double.IsFinite(time)||time<now-seconds||time>now)continue;
             if(point.BreakBefore)Gap(point);
-            if(Finite(point.Value) is not { } value){Gap(point);previous=time;continue;}
-            if(time-previous>2.5)Gap(point);
+            double interval=PollingPolicy.Normalize(point.PollingIntervalSeconds);
+            if(Finite(point.Value) is not { } value){Gap(point);previous=time;previousInterval=interval;continue;}
+            if(time-previous>Math.Max(previousInterval,interval)+1.5)Gap(point);
             int column=(int)Math.Clamp((time-(now-seconds))*pixelWidth/seconds,0,pixelWidth-1);
             if(column!=bucket){Flush();bucket=column;}
             if(first<0)first=minimum=maximum=i;
@@ -168,7 +173,7 @@ public sealed class SampleHistory
                 if(value<points[minimum].Value)minimum=i;
                 if(value>points[maximum].Value)maximum=i;
             }
-            last=i;previous=time;
+            last=i;previous=time;previousInterval=interval;
         }
         Flush();return result;
     }
@@ -250,6 +255,7 @@ public record WindowPlacement(double Left,double Top,double Width,double Height,
 }
 public sealed class UserSettings
 {
+    public double PollingIntervalSeconds {get;set;}=1;
     public bool BatteryRecording {get;set;}=true;
     public bool RestoreOpenWindows {get;set;}=true;
     public bool StartInTray {get;set;}
@@ -276,7 +282,8 @@ public static class SettingsCodec
             var s=JsonSerializer.Deserialize<UserSettings>(json);
             if(s is null) return new(new(),"Settings were empty; defaults restored.");
             if(s.Theme is not ("Midnight" or "Ember" or "Glacier" or "Amethyst" or "Daylight")) s.Theme="Midnight";
-            bool invalid=!HistoryRanges.IsSupported(s.HistorySeconds) || s.Windows is null;
+            bool invalid=!HistoryRanges.IsSupported(s.HistorySeconds) || s.Windows is null || PollingPolicy.Normalize(s.PollingIntervalSeconds)!=s.PollingIntervalSeconds;
+            s.PollingIntervalSeconds=PollingPolicy.Normalize(s.PollingIntervalSeconds);
             if(!HistoryRanges.IsSupported(s.HistorySeconds)) s.HistorySeconds=60;
             s.Windows??=new();
             if(s.CoolingDetailedDays is not (7 or 30))s.CoolingDetailedDays=30;

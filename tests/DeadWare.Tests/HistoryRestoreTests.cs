@@ -52,10 +52,14 @@ public class HistoryRestoreTests
     [Fact] public void RestoreCountIsBoundedAndAcceptsNewLiveReadingsAfterRestoreOnlyStartup()
     {
         var history=new SampleHistory();
-        history.Restore(Enumerable.Range(0,30000).Select(i=>S(i/2d,"old",i)).ToArray(),15000);
-        Assert.Equal(21601,history.Read().Count);
-        history.Add(S(15000,null,100));
-        Assert.Equal(21601,history.Read().Count);
+        history.Restore(Enumerable.Range(0,50000).Select(i=>S(i/4d,"old",i)).ToArray(),12500);
+        Assert.Equal(43201,history.Read().Count);
+        Assert.Equal(1699.75,history.Read()[0].MonotonicSeconds);
+        history.Add(S(12500,null,100));
+        Assert.Equal(43201,history.Read().Count);
+        Assert.Equal(1700,history.Read()[0].MonotonicSeconds);
+        Assert.Equal(12500,history.Read()[^1].MonotonicSeconds);
+        Assert.Null(history.Read()[^1].SessionId);
         Assert.Equal(100,history.Read()[^1].Values["cpu"]);
     }
 }

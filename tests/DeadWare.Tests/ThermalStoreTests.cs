@@ -37,6 +37,22 @@ public sealed class ThermalStoreTests : IDisposable
         Assert.True(reopened.StorageBytes > 0);
     }
 
+    [Fact] public void Sparse_cadence_roundtrips_and_rollups_preserve_intended_intervals_and_real_gaps()
+    {
+        ThermalWindow Sparse(int minute)=>Window(minute,count:6) with
+        {
+            End=epoch.AddMinutes(minute).AddSeconds(50),DurationSeconds=50,
+            PollingIntervalSeconds=10,Eligible=false,Quality="Insufficient sample coverage"
+        };
+        var store=Store();store.Append([Sparse(0),Sparse(1),Sparse(3)],epoch.AddHours(1));
+        Assert.All(Store().Read(Device.Id,Device.ConfigurationId,epoch,epoch.AddHours(1)),row=>Assert.Equal(10,row.PollingIntervalSeconds));
+        store.Append([],epoch.AddDays(31));
+        var summaries=store.Read(Device.Id,Device.ConfigurationId,epoch,epoch.AddHours(1));
+        Assert.Equal(2,summaries.Count);
+        Assert.Equal(new[]{12,6},summaries.Select(row=>row.SampleCount));
+        Assert.All(summaries,row=>{Assert.Equal(10,row.PollingIntervalSeconds);Assert.False(row.Eligible);});
+    }
+
     [Fact] public void DuplicateInsertDoesNotDoubleCountRollup()
     {
         var store = Store(); store.Append([Window(0)], epoch.AddMinutes(1)); store.Append([Window(0)], epoch.AddMinutes(1));

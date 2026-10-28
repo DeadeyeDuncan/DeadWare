@@ -24,20 +24,23 @@ public sealed record BatterySample(DateTimeOffset Timestamp, double MonotonicSec
 public sealed class BatteryRecorder
 {
     private BatterySample? previous, saved;
+    private double previousInterval=1;
     private string segment = Guid.NewGuid().ToString("N");
 
     public void Break() { previous = saved = null; segment = Guid.NewGuid().ToString("N"); }
 
-    public BatterySample? Observe(DateTimeOffset timestamp, double seconds, BatteryReading reading)
+    public BatterySample? Observe(DateTimeOffset timestamp, double seconds, BatteryReading reading, double pollingIntervalSeconds=1)
     {
         if (!double.IsFinite(seconds)) { Break(); return null; }
         if (previous is not null && seconds <= previous.MonotonicSeconds) return null;
         if (reading.Percentage is { } percent && (!double.IsFinite(percent) || percent < 0 || percent > 100))
             reading = reading with { Percentage = null };
-        if (previous is not null && (seconds - previous.MonotonicSeconds > 5 ||
+        double interval=PollingPolicy.Normalize(pollingIntervalSeconds);
+        if (previous is not null && (seconds - previous.MonotonicSeconds > Math.Max(5,Math.Max(previousInterval,interval)+3) ||
             Math.Abs((timestamp - previous.Timestamp).TotalSeconds - (seconds - previous.MonotonicSeconds)) > 3)) Break();
         var observation = new BatterySample(timestamp, seconds, reading, segment);
         previous = observation;
+        previousInterval=interval;
         bool available = reading.Percentage.HasValue || reading.PowerState is BatteryPowerState.Charging or BatteryPowerState.OnBattery or BatteryPowerState.PluggedIn;
         bool wasAvailable = saved is not null && (saved.Reading.Percentage.HasValue ||
             saved.Reading.PowerState is BatteryPowerState.Charging or BatteryPowerState.OnBattery or BatteryPowerState.PluggedIn);

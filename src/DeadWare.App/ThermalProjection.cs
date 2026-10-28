@@ -52,7 +52,8 @@ public static class ThermalProjection
             string? unavailable = new[] { temperature, power }.Any(s => s?.Value is null) || utilization is null
                 ? "Temperature, package power or load unavailable; check supported sensors and administrator access." : null;
             result.Add(new(device, sessionId, reading.Sample.Timestamp.ToUniversalTime(), reading.Sample.MonotonicSeconds,
-                Valid(temperature), utilization, Valid(power), Valid(clock), Valid(fan), throttled, unavailable));
+                Valid(temperature), utilization, Valid(power), Valid(clock), Valid(fan), throttled, unavailable)
+                { PollingIntervalSeconds = reading.Sample.PollingIntervalSeconds });
         }
         return result;
     }
