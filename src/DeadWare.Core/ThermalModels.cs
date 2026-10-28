@@ -10,7 +10,10 @@ public sealed record ThermalDevice(string Id, string Name, string Kind, string C
 public sealed record ThermalSample(
     ThermalDevice Device, string SessionId, DateTimeOffset Timestamp, double MonotonicSeconds,
     double? Temperature, double? Load, double? Power, double? Clock, double? FanRpm,
-    bool Throttled = false, string? UnavailableReason = null);
+    bool Throttled = false, string? UnavailableReason = null)
+{
+    public double PollingIntervalSeconds { get; init; } = 1;
+}
 
 public sealed record MetricAggregate(int Count, double? Minimum, double? Maximum, double? Average);
 
@@ -20,7 +23,10 @@ public sealed record ThermalWindow(
     double StartMonotonic, double DurationSeconds, int SampleCount,
     MetricAggregate Temperature, MetricAggregate Load, MetricAggregate Power,
     MetricAggregate Clock, MetricAggregate FanRpm, bool Eligible, string Quality,
-    int ResolutionSeconds = 60);
+    int ResolutionSeconds = 60)
+{
+    public double PollingIntervalSeconds { get; init; } = 1;
+}
 
 public sealed record ThermalReference(
     string Id, string DeviceId, string ConfigurationId, string Label, DateTimeOffset Created,

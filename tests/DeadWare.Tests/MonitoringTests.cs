@@ -22,12 +22,12 @@ public class MonitoringTests
     {
         var h=new SampleHistory();
         var values=new Dictionary<string,double?> { ["cpu"]=12 };
-        for(int i=0;i<22000;i++)h.Add(new Snapshot(Epoch.AddMilliseconds(i),i/1000d,values));
+        for(int i=0;i<44000;i++)h.Add(new Snapshot(Epoch.AddMilliseconds(i),i/1000d,values));
         values["cpu"]=99;
-        var points=h.Series("cpu",22,60);
-        Assert.Equal(21601,points.Count);
+        var points=h.Series("cpu",44,60);
+        Assert.Equal(43201,points.Count);
         Assert.All(points,p=>Assert.Equal(12,p.Value));
-        Assert.Equal(0.399,points[0].MonotonicSeconds,5);
+        Assert.Equal(0.799,points[0].MonotonicSeconds,5);
     }
     [Fact] public void UnknownAndNonFiniteAreGapsWhileZeroIsValid()
     {

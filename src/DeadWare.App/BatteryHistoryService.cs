@@ -86,7 +86,8 @@ public sealed class BatteryHistoryService
             {
                 if (item.Generation != previousGeneration || item.Drops != previousDrops) recorder.Break();
                 previousGeneration = item.Generation; previousDrops = item.Drops;
-                if (recorder.Observe(item.Reading.Sample.Timestamp, item.Reading.Sample.MonotonicSeconds, item.Reading.Battery) is { } sample)
+                if (recorder.Observe(item.Reading.Sample.Timestamp, item.Reading.Sample.MonotonicSeconds, item.Reading.Battery,
+                    item.Reading.Sample.PollingIntervalSeconds) is { } sample)
                     pending.Add(sample);
                 if (pending.Count >= 120) Flush();
             }

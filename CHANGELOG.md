@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.6.9 — Adjustable data polling
+
+- Choose 0.5, 1, 2, 5 or 10 seconds in Settings; keep the one-second default and save the choice across launches.
+- Apply changes after the current wait or reading finishes, without restarting or overlapping hardware scans.
+- Adjust display freshness, graph gaps and battery/Cooling Health history for the selected cadence, preserving six hours of graphs at the fastest setting.
+- Keep Cooling Health's reference comparison quality requirements; 5- and 10-second polling still records history but has too few samples for comparisons.
+
 ## 0.6.8 — Cooling Health navigation order
 
 - Move Cooling Health immediately after Sensors in the dashboard sidebar.

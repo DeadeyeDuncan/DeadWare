@@ -6,13 +6,18 @@ using Microsoft.Data.Sqlite;
 namespace DeadWare.Core;
 
 public sealed record GraphHistoryRecord(string SessionId, DateTimeOffset Timestamp, double MonotonicSeconds,
-    IReadOnlyDictionary<string, double?> Values);
+    IReadOnlyDictionary<string, double?> Values)
+{
+    public double PollingIntervalSeconds { get; init; } = 1;
+}
 
 /// <summary>Six-hour graph cache. Synchronous calls belong to a single background owner.</summary>
 public sealed class GraphHistoryStore
 {
     public const long MaximumDatabaseBytes = 64L * 1024 * 1024;
-    public const int MaximumRows = 21601;
+    public const int MaximumRows = HistoryRanges.MaximumSamples;
+    // Remain a dictionary payload so previous builds can read the same schema.
+    private const string PollingIntervalKey = "$deadware-polling-interval-seconds";
     private const int MaximumPayloadLength = 32768;
     private const long MaximumJournalBytes = 8L * 1024 * 1024;
     private readonly string path;
@@ -59,7 +64,9 @@ public sealed class GraphHistoryStore
         var prepared = records.Select(record =>
         {
             Validate(record);
-            string payload = JsonSerializer.Serialize(record.Values);
+            var values = record.Values.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal);
+            if (record.PollingIntervalSeconds != 1) values.Add(PollingIntervalKey, record.PollingIntervalSeconds);
+            string payload = JsonSerializer.Serialize(values);
             if (payload.Length > MaximumPayloadLength) throw new ArgumentException("Graph history values exceed the per-record limit.", nameof(records));
             return (Record: record, Payload: payload);
         }).ToArray();
@@ -96,9 +103,9 @@ public sealed class GraphHistoryStore
         using var command = Command(db, """
             SELECT session,monotonic,stamp,payload,length(payload) FROM
             (SELECT id,session,monotonic,stamp,payload FROM graph_samples
-             WHERE stamp >= $cutoff AND stamp <= $now ORDER BY stamp DESC,id DESC LIMIT 21601)
+             WHERE stamp >= $cutoff AND stamp <= $now ORDER BY stamp DESC,id DESC LIMIT $limit)
             ORDER BY stamp,id
-            """, null, ("$cutoff", Cutoff(now)), ("$now", now.UtcTicks));
+            """, null, ("$cutoff", Cutoff(now)), ("$now", now.UtcTicks), ("$limit", MaximumRows));
         using var reader = command.ExecuteReader();
         var result = new List<GraphHistoryRecord>();
         while (reader.Read())
@@ -108,8 +115,9 @@ public sealed class GraphHistoryStore
                 if (reader.GetInt64(4) > MaximumPayloadLength) throw new InvalidDataException("Graph cache contains an oversized record.");
                 var values = JsonSerializer.Deserialize<Dictionary<string, double?>>(reader.GetString(3))
                     ?? throw new InvalidDataException("Graph cache contains an empty record.");
+                double interval = values.Remove(PollingIntervalKey, out var storedInterval) ? storedInterval ?? double.NaN : 1;
                 var record = new GraphHistoryRecord(reader.GetString(0), new DateTimeOffset(reader.GetInt64(2), TimeSpan.Zero), reader.GetDouble(1),
-                    new ReadOnlyDictionary<string, double?>(values));
+                    new ReadOnlyDictionary<string, double?>(values)) { PollingIntervalSeconds = interval };
                 Validate(record); result.Add(record);
             }
             catch (Exception error) when (error is JsonException or ArgumentException or InvalidOperationException or InvalidCastException or FormatException or OverflowException)
@@ -121,7 +129,8 @@ public sealed class GraphHistoryStore
     private static void Validate(GraphHistoryRecord record)
     {
         if (record is null || string.IsNullOrWhiteSpace(record.SessionId) || record.SessionId.Length > 128 ||
-            !double.IsFinite(record.MonotonicSeconds) || record.Values is null || record.Values.Count > 64 ||
+            !double.IsFinite(record.MonotonicSeconds) || PollingPolicy.Normalize(record.PollingIntervalSeconds) != record.PollingIntervalSeconds ||
+            record.Values is null || record.Values.Count > 64 || record.Values.ContainsKey(PollingIntervalKey) ||
             record.Values.Any(pair => string.IsNullOrWhiteSpace(pair.Key) || pair.Key.Length > 256 ||
                 pair.Value.HasValue && !double.IsFinite(pair.Value.Value)))
             throw new ArgumentException("Graph history record has invalid identifiers, time or values.", nameof(record));
@@ -130,7 +139,7 @@ public sealed class GraphHistoryStore
     private static void Prune(SqliteConnection db, SqliteTransaction transaction, long cutoff, long now)
     {
         Execute(db, "DELETE FROM graph_samples WHERE stamp < $cutoff OR stamp > $now", transaction, ("$cutoff", cutoff), ("$now", now));
-        Execute(db, "DELETE FROM graph_samples WHERE id IN (SELECT id FROM graph_samples ORDER BY stamp DESC,id DESC LIMIT -1 OFFSET 21601)", transaction);
+        Execute(db, "DELETE FROM graph_samples WHERE id IN (SELECT id FROM graph_samples ORDER BY stamp DESC,id DESC LIMIT -1 OFFSET $limit)", transaction, ("$limit", MaximumRows));
     }
     private void EnsureInitialized()
     { if (!initialized) throw new InvalidOperationException("Graph history storage has not been initialized."); }

@@ -31,6 +31,17 @@ public sealed class GraphHistoryStoreTests : IDisposable
         Assert.False(Directory.Exists(directory));
     }
 
+    [Fact] public void Cadence_roundtrips_without_changing_the_legacy_payload_schema_or_metric_keys()
+    {
+        var store = Store();
+        store.Append([Row(0), Row(10) with { PollingIntervalSeconds = 10 }], Epoch.AddSeconds(20));
+        var rows = Store().Read(Epoch.AddSeconds(20));
+        Assert.Equal(new double[] { 1, 10 }, rows.Select(row => row.PollingIntervalSeconds));
+        Assert.All(rows, row => Assert.Equal(new[] { "metric" }, row.Values.Keys));
+        using var db = Connect(); using var command = db.CreateCommand(); command.CommandText = "PRAGMA user_version";
+        Assert.Equal(1L, command.ExecuteScalar());
+    }
+
     [Fact] public void ReopenPreservesExactTimesSessionIdentityUnknownAndZero()
     {
         var time = Epoch.AddTicks(1234567).ToOffset(TimeSpan.FromHours(-5));
@@ -62,13 +73,27 @@ public sealed class GraphHistoryStoreTests : IDisposable
         Assert.Empty(store.Read(Epoch.AddHours(7)));
     }
 
-    [Fact] public void CountCapKeepsNewest21601RowsEvenWhenSamplesArriveFasterThanOnePerSecond()
+    [Fact] public void CountCapKeepsNewest43201RowsEvenWhenSamplesArriveFasterThanTheSupportedMinimum()
     {
         var store = Store();
-        var rows = Enumerable.Range(0, 22000).Select(i => Row(i / 10d)).ToArray();
-        foreach (var batch in rows.Chunk(120)) store.Append(batch, Epoch.AddSeconds(2200));
-        var read = Store().Read(Epoch.AddSeconds(2200));
-        Assert.Equal(21601, read.Count); Assert.Equal(39.9, read[0].MonotonicSeconds); Assert.Equal(2199.9, read[^1].MonotonicSeconds);
+        var rows = Enumerable.Range(0, 44000).Select(i => Row(i / 10d)).ToArray();
+        foreach (var batch in rows.Chunk(120)) store.Append(batch, Epoch.AddSeconds(4400));
+        var read = Store().Read(Epoch.AddSeconds(4400));
+        Assert.Equal(43201, read.Count); Assert.Equal(79.9, read[0].MonotonicSeconds); Assert.Equal(4399.9, read[^1].MonotonicSeconds);
+    }
+
+    [Fact] public void Half_second_polling_preserves_six_hours_within_the_unchanged_storage_limit()
+    {
+        var store = Store();
+        var values = Enumerable.Range(0, 6).ToDictionary(index => new string('a', 64) + "/metric-" + index, _ => (double?)50);
+        var rows = Enumerable.Range(0, 43201).Select(index => Row(index / 2d) with
+            { Values = values, PollingIntervalSeconds = 0.5 }).ToArray();
+        foreach (var batch in rows.Chunk(120)) store.Append(batch, Epoch.AddHours(6));
+        var restored = Store().Read(Epoch.AddHours(6));
+        Assert.Equal(43201, restored.Count);
+        Assert.Equal(0, restored[0].MonotonicSeconds); Assert.Equal(21600, restored[^1].MonotonicSeconds);
+        Assert.All(restored, row => Assert.Equal(0.5, row.PollingIntervalSeconds));
+        Assert.InRange(store.StorageBytes, 1, GraphHistoryStore.MaximumDatabaseBytes);
     }
 
     [Fact] public void InvalidInputIsRejectedBeforeChangingPreviouslySavedHistory()
@@ -78,6 +103,7 @@ public sealed class GraphHistoryStoreTests : IDisposable
             Row(1) with { SessionId = "" }, Row(1) with { SessionId = new string('s', 129) },
             Row(1) with { MonotonicSeconds = double.NaN }, Row(1) with { MonotonicSeconds = double.PositiveInfinity },
             Row(1, double.NaN), Row(1, double.NegativeInfinity),
+            Row(1) with { PollingIntervalSeconds = 3 },
             Row(1) with { Values = new Dictionary<string,double?> { [new string('k', 257)] = 1 } },
             Row(1) with { Values = Enumerable.Range(0,65).ToDictionary(i => i.ToString(), _ => (double?)1) }
         };

@@ -7,6 +7,10 @@ using DeadWare.Core;
 namespace DeadWare.App;
 public sealed class MainWindow : Window
 {
+    private sealed record PollingChoice(double Seconds,string Label)
+    {
+        public override string ToString()=>Label;
+    }
     private readonly UiSession session;
     private readonly ApplicationLifetime lifetime;
     private readonly Func<bool> trayAvailable;
@@ -27,6 +31,7 @@ public sealed class MainWindow : Window
     private bool refreshingSensors;
     private bool syncingStartup,startupBusy;
     private readonly TextBlock trayNotice=Ui.Text("Close hides to the system tray.\nQuit stops monitoring.",10,"Muted");
+    private readonly TextBlock monitoringInfo=Ui.Text("",10,"Muted");
     public MainWindow(UiSession session,ApplicationLifetime lifetime,Func<bool> trayAvailable,Action quit)
     {
         this.session=session;this.lifetime=lifetime;this.trayAvailable=trayAvailable;Title="DeadWare";MinWidth=900;MinHeight=640;Ui.Icon(this);session.Place(this,"main",1220,900);
@@ -37,7 +42,7 @@ public sealed class MainWindow : Window
         sideBottom.Children.Add(Ui.Text("COLOR THEME",10,"Muted"));var theme=new ComboBox {ItemsSource=Theme.Names,SelectedItem=session.Settings.Theme,Margin=new Thickness(0,8,0,15)};theme.SelectionChanged+=(_,_)=>{if(theme.SelectedItem is string name)session.SetTheme(name);};sideBottom.Children.Add(theme);
         var elevate=Ui.Button("Restart as administrator",session.RestartElevated);elevate.FontSize=10;sideBottom.Children.Add(elevate);
         var quitButton=Ui.Button("Quit DeadWare",quit);quitButton.FontSize=11;sideBottom.Children.Add(quitButton);trayNotice.Margin=new Thickness(3,5,3,8);sideBottom.Children.Add(trayNotice);
-        sideBottom.Children.Add(Ui.Text($"Local monitoring\n1 second samples · 6 h saved graphs\nv{BuildInfo.Version}",10,"Muted"));
+        sideBottom.Children.Add(monitoringInfo);
         var nav=new StackPanel();sidebar.Children.Add(new ScrollViewer{Content=nav,VerticalScrollBarVisibility=ScrollBarVisibility.Auto,HorizontalScrollBarVisibility=ScrollBarVisibility.Disabled});
         foreach(var item in new[]{("overview","▦  Overview"),("network","⇄  Network"),("battery","▤  Battery history"),("sensors","≡  Sensors"),("cooling","◷  Cooling Health"),("desktop","▱  Settings"),("updates","↓  Updates")})
         {var key=item.Item1;var button=Ui.Button(item.Item2,()=>Navigate(key));button.HorizontalContentAlignment=HorizontalAlignment.Left;button.Margin=new(0,3,0,3);button.Padding=new(10,13,10,13);nav.Children.Add(button);if(key=="battery")batteryNavigation=button;}
@@ -83,6 +88,12 @@ public sealed class MainWindow : Window
     {
         var stack=new StackPanel {Margin=new Thickness(8)};
         stack.Children.Add(Ui.Text("Your readings, wherever you need them",20));var intro=Ui.Text("Open any graph in its own resizable native window. Choose Always on top to keep it visible while you work. All windows share the same readings, selected GPU, history range and theme.",14,"Muted");intro.Margin=new(0,12,0,24);stack.Children.Add(intro);
+        var polling=new ComboBox {ItemsSource=PollingPolicy.Intervals.Select(seconds=>new PollingChoice(seconds,seconds==1?"1 second (default)":$"{seconds:0.#} seconds")).ToArray(),DisplayMemberPath="Label",SelectedValuePath="Seconds",SelectedValue=session.Settings.PollingIntervalSeconds,MinWidth=160};
+        System.Windows.Automation.AutomationProperties.SetName(polling,"Data polling interval");
+        polling.SelectionChanged+=(_,_)=>{if(polling.SelectedValue is double seconds)session.SetPollingInterval(seconds);};
+        var pollingLabel=Ui.Text("Data polling interval",14);pollingLabel.Margin=new(0,0,12,0);
+        var pollingRow=Ui.Row(pollingLabel,polling);pollingRow.Margin=new(0,0,0,8);stack.Children.Add(pollingRow);
+        var pollingHelp=Ui.Text("Applies without restarting after the current wait or reading finishes. Faster polling uses more resources; slow hardware may take longer than the selected interval. At 5 or 10 seconds, Cooling Health records history but does not gather enough samples for reference comparisons.",12,"Muted");pollingHelp.Margin=new(0,0,0,20);stack.Children.Add(pollingHelp);
         foreach(var kind in new[]{"cpu","gpu","cputemp","gputemp","network"}){var key=kind;var button=Ui.Button("↗  "+Ui.Title(kind),()=>session.OpenDetached(key));button.HorizontalAlignment=HorizontalAlignment.Left;button.MinWidth=240;button.Margin=new(0,4,0,4);stack.Children.Add(button);}
         batteryWindow=Ui.Button("↗  Battery history",()=>session.OpenDetached("batteryhistory"));batteryWindow.HorizontalAlignment=HorizontalAlignment.Left;batteryWindow.MinWidth=240;batteryWindow.Margin=new(0,4,0,4);stack.Children.Add(batteryWindow);
         var open=Ui.Button("↗  Compact desktop widget",()=>session.OpenDetached("widget"));open.HorizontalAlignment=HorizontalAlignment.Left;open.MinWidth=240;open.Margin=new(0,20,0,4);stack.Children.Add(open);
@@ -145,6 +156,7 @@ public sealed class MainWindow : Window
     }
     private void Refresh()
     {
+        monitoringInfo.Text=$"Local monitoring\n{session.Settings.PollingIntervalSeconds:0.#} s polling · 6 h saved graphs\nv{BuildInfo.Version}";
         var r=session.Current;bool noBattery=r?.Battery.PowerState==BatteryPowerState.NoBattery;
         batteryNavigation.Visibility=batteryWindow.Visibility=noBattery?Visibility.Collapsed:Visibility.Visible;
         if(noBattery&&page=="battery"){Navigate("overview");return;}

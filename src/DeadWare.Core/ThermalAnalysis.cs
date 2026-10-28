@@ -4,7 +4,6 @@ public sealed class ThermalAggregator
 {
     private const double WindowSeconds = 60;
     private const double WarmupSeconds = 300;
-    private const double MaximumGapSeconds = 4;
     private const int MaximumActiveDevices = 32;
     private readonly Dictionary<(string Id, string Configuration, string Map), DeviceState> states = new();
     private long sequence;
@@ -32,11 +31,13 @@ public sealed class ThermalAggregator
         double elapsed = sample.MonotonicSeconds - state.Last.MonotonicSeconds;
         if (sample.SessionId == state.Last.SessionId && elapsed <= 0) return [];
         double wallElapsed = (sample.Timestamp - state.Last.Timestamp).TotalSeconds;
-        bool discontinuity = sample.SessionId != state.Last.SessionId || elapsed > MaximumGapSeconds ||
+        bool cadenceChanged=sample.PollingIntervalSeconds!=state.Last.PollingIntervalSeconds;
+        double maximumGap=Math.Max(4,Math.Max(sample.PollingIntervalSeconds,state.Last.PollingIntervalSeconds)+3);
+        bool discontinuity = sample.SessionId != state.Last.SessionId || elapsed > maximumGap ||
             Math.Abs(wallElapsed - elapsed) > 3;
-        if (discontinuity)
+        if (discontinuity||cadenceChanged)
         {
-            result.Add(state.Window.Finish(state.StableSince, "Gap, clock change or session restart"));
+            result.Add(state.Window.Finish(state.StableSince, discontinuity?"Gap, clock change or session restart":"Partial window: polling cadence changed"));
             states[key] = new DeviceState(sample, ++sequence);
             return result;
         }
@@ -76,6 +77,7 @@ public sealed class ThermalAggregator
     private static ThermalSample Normalize(ThermalSample sample) => sample with
     {
         Timestamp = sample.Timestamp.ToUniversalTime(),
+        PollingIntervalSeconds = PollingPolicy.Normalize(sample.PollingIntervalSeconds),
         Temperature = FiniteRange(sample.Temperature, -100, 200),
         Load = FiniteRange(sample.Load, 0, 100),
         Power = FiniteRange(sample.Power, 0),
@@ -161,7 +163,8 @@ public sealed class ThermalAggregator
                 First.MonotonicSeconds - stableSince < WarmupSeconds ? "Learning: waiting for five minutes of steady operation" :
                 "Stable");
             return new(First.Device, First.SessionId, First.Timestamp, last.Timestamp, First.MonotonicSeconds,
-                duration, count, t, l, p, clock.Finish(), fan.Finish(), reason == "Stable", reason);
+                duration, count, t, l, p, clock.Finish(), fan.Finish(), reason == "Stable", reason)
+                { PollingIntervalSeconds = First.PollingIntervalSeconds };
         }
     }
 }

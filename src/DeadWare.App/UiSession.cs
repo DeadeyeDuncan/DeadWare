@@ -31,7 +31,8 @@ public sealed class UiSession
     public string? SelectedGpuId=>Current is null?null:DeviceSelection.Resolve(Settings.SelectedGpuId,Current.Gpus);
     public string GpuName=>Current?.Gpus.FirstOrDefault(d=>d.Id==SelectedGpuId)?.Name??"GPU unavailable";
     public double? Value(string id)=>Current?.Sample.Values.GetValueOrDefault(id);
-    public bool Stale=>Current is not null && Collector.ElapsedSeconds-Current.Sample.MonotonicSeconds>4;
+    public bool Stale=>Current is not null && Collector.ElapsedSeconds-Current.Sample.MonotonicSeconds>
+        PollingPolicy.FreshnessSeconds(Math.Max(Settings.PollingIntervalSeconds,Current.Sample.PollingIntervalSeconds));
     public UiSession(string? layoutDiagnosticPath=null)
     {
         diagnostics=layoutDiagnosticPath is null?null:new LayoutDiagnostics(layoutDiagnosticPath,settingsPath);
@@ -46,7 +47,8 @@ public sealed class UiSession
         layout=new(Settings.RestoreOpenWindows?Settings.OpenWindows:[]);
         diagnostics?.Record("settings_loaded",new {Status=SettingsStatus,Settings.RestoreOpenWindows,OpenWindows=layout.Remembered,Settings.SelectedGpuId,Disk=LayoutDiagnostics.ReadSettingsState(settingsPath)});
         saveTimer.Tick+=async (_,_)=>{saveTimer.Stop();await SaveAsync();};
-        Collector=new(new CollectorOptions(ExtendedSensors:Settings.ExtendedSensors));
+        timer.Interval=TimeSpan.FromSeconds(Math.Min(1,Settings.PollingIntervalSeconds));
+        Collector=new(new CollectorOptions(ExtendedSensors:Settings.ExtendedSensors,PollingIntervalSeconds:Settings.PollingIntervalSeconds));
         GraphHistory=new(Path.Combine(Path.GetDirectoryName(settingsPath)!,"live-graph-history.db"),Environment.MachineName,Collector.History);
         Collector.SampleAvailable+=GraphHistory.TryRecord;
         Cooling=new(Path.Combine(Path.GetDirectoryName(settingsPath)!,"cooling-history.db"),Environment.MachineName,Settings.CoolingConfigurationId);
@@ -71,6 +73,13 @@ public sealed class UiSession
     public void SetGpu(string? id) {Settings.SelectedGpuId=id;Changed?.Invoke();_ = SaveAsync();}
     public void SetTheme(string theme) {Settings.Theme=theme;Theme.Apply(theme);Changed?.Invoke();_ = SaveAsync();}
     public void SetExtendedSensors(bool enabled) {Settings.ExtendedSensors=enabled;_ = SaveAsync();}
+    public void SetPollingInterval(double seconds)
+    {
+        Settings.PollingIntervalSeconds=PollingPolicy.Normalize(seconds);
+        Collector.SetPollingInterval(Settings.PollingIntervalSeconds);
+        timer.Interval=TimeSpan.FromSeconds(Math.Min(1,Settings.PollingIntervalSeconds));
+        Changed?.Invoke();_ = SaveAsync();
+    }
     public void SetRestoreOpenWindows(bool enabled) {Settings.RestoreOpenWindows=enabled;_ = SaveAsync();}
     public void SetStartInTray(bool enabled) {Settings.StartInTray=enabled;_ = SaveAsync();}
     public void SetBatteryRecording(bool enabled) {Settings.BatteryRecording=enabled;Battery.Configure(enabled);Changed?.Invoke();_ = SaveAsync();}

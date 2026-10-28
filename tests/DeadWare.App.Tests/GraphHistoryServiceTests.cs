@@ -16,8 +16,10 @@ public class GraphHistoryServiceTests
         var origin=DateTimeOffset.UtcNow.AddMinutes(-2);
         var old=new GraphHistoryService(fixture.Path,"machine",new SampleHistory());
         Assert.False(Directory.Exists(fixture.Root));
-        old.Start();old.TryRecord(Reading(origin,50,0,60,1000,20));
-        old.TryRecord(Reading(origin.AddSeconds(1),51,null,61,2000,0));
+        var first=Reading(origin,50,0,60,1000,20);
+        var second=Reading(origin.AddSeconds(1),51,null,61,2000,0);
+        old.Start();old.TryRecord(first with {Sample=first.Sample with {PollingIntervalSeconds=10}});
+        old.TryRecord(second with {Sample=second.Sample with {PollingIntervalSeconds=0.5}});
         await old.StopAsync();
         var history=new SampleHistory();var current=Reading(DateTimeOffset.UtcNow,2,40,65,3000,30);
         history.Add(current.Sample);
@@ -29,6 +31,7 @@ public class GraphHistoryServiceTests
         Assert.Equal(new double?[]{20,0,30},history.Series("network/upload",2,21600).Select(p=>p.Value));
         Assert.True(cpu[^1].BreakBefore);
         Assert.Null(history.Read()[^1].SessionId);
+        Assert.Equal(new double[]{10,0.5,1},history.Read().Select(sample=>sample.PollingIntervalSeconds));
         Assert.DoesNotContain("private-process",File.ReadAllText(fixture.Path));
     }
 

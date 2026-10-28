@@ -55,12 +55,14 @@ internal sealed class ThermalHistoryChart : FrameworkElement
                 value.Average is double average && double.IsFinite(average) &&
                 window.DurationSeconds >= Math.Max(1, (window.End - window.Start).TotalSeconds * .9);
         }
+        double maximumGap=Math.Max(4,Math.Max(PollingPolicy.Normalize(previous.PollingIntervalSeconds),PollingPolicy.Normalize(next.PollingIntervalSeconds))+3);
         return Covered(previous) && Covered(next) &&
             previous.Device.Id == next.Device.Id && previous.Device.ConfigurationId == next.Device.ConfigurationId &&
             previous.SessionId == next.SessionId && previous.ResolutionSeconds == next.ResolutionSeconds &&
-            next.Start >= previous.End && (next.Start - previous.End).TotalSeconds <= 4 &&
+            next.Start >= previous.End && (next.Start - previous.End).TotalSeconds <= maximumGap &&
             next.StartMonotonic >= previous.StartMonotonic + previous.DurationSeconds &&
-            next.StartMonotonic - previous.StartMonotonic - previous.DurationSeconds <= 4;
+            next.StartMonotonic - previous.StartMonotonic - previous.DurationSeconds <= maximumGap &&
+            Math.Abs((next.Start-previous.End).TotalSeconds-(next.StartMonotonic-previous.StartMonotonic-previous.DurationSeconds))<=3;
     }
 
     protected override void OnRender(DrawingContext drawing)

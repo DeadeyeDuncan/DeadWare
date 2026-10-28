@@ -52,6 +52,8 @@ New tagged versions are published as normal GitHub releases with ZIP/checksum as
 
 ## Startup and saved workspace
 
+In **Settings → Data polling interval**, choose 0.5, 1, 2, 5 or 10 seconds. One second is the default. Changes are saved and apply after the current wait or reading finishes, without restarting. Faster polling uses more resources; slow hardware may take longer than requested. Every window shares this collector, and the display refreshes twice per second at the fastest setting. The six-hour graph range is retained. Cooling Health records at every setting, but 5- and 10-second polling has too few samples per minute for its reference comparisons.
+
 In **Settings**, enable **Start with Windows** to launch DeadWare as administrator when you sign in. Windows approval is needed to configure this option. It creates a task for your Windows account, runs only in your signed-in session, and stores no password. You can turn it off from the same page. Only one monitoring instance runs at a time.
 
 For a quiet sign-in, also enable **Start in the system tray**. This hides the dashboard only for Windows startup launches. Remembered graphs and the widget still reopen when restoration is enabled; turn restoration off too if you want only the tray icon. A fresh manual launch still shows the dashboard. If the tray icon cannot be created, the dashboard stays accessible.
@@ -129,7 +131,7 @@ dotnet run --project src/DeadWare.App/DeadWare.App.csproj
 Create a self-contained portable ZIP and SHA-256 checksum:
 
 ```powershell
-pwsh -File scripts/publish.ps1 -Version 0.6.8
+pwsh -File scripts/publish.ps1 -Version 0.6.9
 ```
 
 The packaging script runs tests before publishing, bundles the independent self-contained update helper, and records all managed file hashes in `deadware-package.json`. Output goes under `artifacts/`. GitHub Actions runs the same script. Pushing a normal three-part version tag such as `v0.6.0` builds and publishes a normal release after tests pass, using the matching `docs/releases/v0.6.0.md` notes. Workflows use pinned action commits.
