@@ -64,8 +64,8 @@ internal sealed class CompactGraph : Border
         string id=session.MetricId(chartKind);double? current=session.Stale?null:session.Value(id);
         double? other=joined?(session.Stale?null:session.Value(session.MetricId(chartKind=="cpu"?"gpu":"gputemp"))):null;
         var data=session.Current;
-        value.SetResourceReference(TextBlock.ForegroundProperty,kind=="network"?"Download":kind=="memory"?"Accent":kind.StartsWith("gpu")?"Gpu":"Cpu");
-        upload.SetResourceReference(TextBlock.ForegroundProperty,joined?"Gpu":"Cpu");
+        value.SetResourceReference(TextBlock.ForegroundProperty,Theme.GraphKey(chartKind));
+        upload.SetResourceReference(TextBlock.ForegroundProperty,Theme.GraphKey(joined?(chartKind=="cpu"?"gpu":"gputemp"):"upload"));
         if(joined)
         {
             string unit=chartKind=="cputemp"?" °C":" %";

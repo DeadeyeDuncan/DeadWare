@@ -635,6 +635,7 @@ public class BatteryUiTests
                 }
             }
         }
+        VerifyGraphColors(session, assembly, content, settingsPath);
         var comparisonCharts = Descendants(content).OfType<FrameworkElement>().Where(element => element.GetType().Name == "HistoryChart" && (string)element.GetType().GetField("kind", All)!.GetValue(element)! is "cpu" or "cputemp").ToArray();
         string[] selectedTraces = comparisonCharts.Select(chart => Drawings(VisualTreeHelper.GetDrawing(chart)!).Where(item => item.Geometry is StreamGeometry).Last().Geometry.ToString()).ToArray();
         session.Settings.SelectedGpuId = "gpu-a"; Changed(); content.UpdateLayout();
@@ -698,6 +699,161 @@ public class BatteryUiTests
         Assert.Equal(otherPlacement, session.Settings.Windows["cpu"]);
         CompleteSettingsSave(session); File.Delete(settingsPath);
         Set(session, "<Settings>k__BackingField", originalSettings);
+    }
+
+    private static void VerifyGraphColors(UiSession session, Assembly assembly, FrameworkElement widget, string settingsPath)
+    {
+        // Separate temperature, GPU, and upload choices catch accidental reuse of
+        // the CPU / GPU usage colors in shared and comparison charts.
+        var colors = new Dictionary<string, string>
+        {
+            ["cpu"] = "#FF6655", ["cputemp"] = "#DD88EE", ["gpu"] = "#FFCC44", ["gputemp"] = "#66CCBB",
+            ["memory"] = "#99AAEE", ["download"] = "#EEAA77", ["upload"] = "#CC99AA"
+        };
+        var setter = typeof(UiSession).GetMethod("SetGraphColor", All);
+        Assert.NotNull(setter);
+        void SetColor(string kind, string? hex) => setter.Invoke(session, [kind, hex]);
+        Color Expected(string kind) => (Color)ColorConverter.ConvertFromString(colors[kind]);
+        Color BrushColor(Brush brush) => Assert.IsType<SolidColorBrush>(brush).Color;
+        GeometryDrawing[] Traces(FrameworkElement chart) => Drawings(VisualTreeHelper.GetDrawing(chart)!).Where(item => item.Geometry is StreamGeometry).ToArray();
+        FrameworkElement Field(FrameworkElement graph, string name) => (FrameworkElement)graph.GetType().GetField(name, All)!.GetValue(graph)!;
+        var views = new List<(FrameworkElement View, string[] Kinds, string[] Values)>();
+        var owner = new Window();
+        foreach (string kind in new[] { "cpu", "cputemp", "gpu", "gputemp", "memory", "network" })
+        {
+            string[] kinds = kind == "network" ? ["download", "upload"] : [kind];
+            var card = (FrameworkElement)Activator.CreateInstance(assembly.GetType("DeadWare.App.ChartCard")!, All, null, [session, kind, true], null)!;
+            owner.Content = card;
+            card.Measure(new Size(460, 240)); card.Arrange(new Rect(0, 0, 460, 240)); card.UpdateLayout();
+            var pickers = Descendants(card).OfType<Button>().Where(button => button.GetType().Name == "GraphColorPicker").ToArray();
+            Assert.Equal(kinds.Length, pickers.Length);
+            for (int index = 0; index < kinds.Length; index++)
+            {
+                var picker = pickers[index];
+                var dot = Assert.IsType<System.Windows.Shapes.Ellipse>(picker.Content);
+                Assert.InRange(picker.Width, 16, 28); Assert.InRange(picker.Height, 16, 28);
+                Assert.InRange(dot.Width, 6, 16); Assert.Equal(dot.Width, dot.Height);
+                Assert.Contains("color", System.Windows.Automation.AutomationProperties.GetName(picker));
+                Assert.Equal(picker.ToolTip, System.Windows.Automation.AutomationProperties.GetName(picker));
+                var popup = (System.Windows.Controls.Primitives.Popup)picker.GetType().GetField("popup", All)!.GetValue(picker)!;
+                Assert.Same(picker, popup.PlacementTarget); Assert.False(popup.IsOpen);
+                var actions = Descendants(popup.Child).OfType<Button>().ToArray();
+                var preset = actions.First(button => button.Content is System.Windows.Shapes.Ellipse);
+                preset.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                card.UpdateLayout();
+                var chosen = ((SolidColorBrush)((System.Windows.Shapes.Ellipse)preset.Content).Fill).Color;
+                Assert.Equal($"#{chosen.R:X2}{chosen.G:X2}{chosen.B:X2}", session.Settings.GraphColors[kinds[index]]);
+                Assert.Equal(chosen, BrushColor(dot.Fill));
+                actions.Single(button => button.Content?.ToString() == "Theme default").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                Assert.False(session.Settings.GraphColors.ContainsKey(kinds[index]));
+                string? paletteOutput = Environment.GetEnvironmentVariable("DEADWARE_UI_OUTPUT");
+                if (paletteOutput is not null && kind == "cpu")
+                {
+                    var palette = (FrameworkElement)popup.Child;
+                    palette.Measure(new Size(260, double.PositiveInfinity));
+                    var size = new Size(Math.Ceiling(palette.DesiredSize.Width), Math.Ceiling(palette.DesiredSize.Height));
+                    palette.Arrange(new Rect(new Point(), size)); palette.UpdateLayout();
+                    var bitmap = new RenderTargetBitmap((int)size.Width, (int)size.Height, 96, 96, PixelFormats.Pbgra32); bitmap.Render(palette);
+                    using var file = File.Create(Path.Combine(paletteOutput, "graph-color-palette.png"));
+                    var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap)); encoder.Save(file);
+                }
+            }
+            owner.Content = null;
+            views.Add((card, kinds, kind == "network" ? [] : ["value"]));
+            var compact = (FrameworkElement)Activator.CreateInstance(assembly.GetType("DeadWare.App.CompactGraph")!, All, null, [session, kind, owner], null)!;
+            views.Add((compact, kinds, kind == "network" ? ["value", "upload"] : ["value"]));
+        }
+        foreach (var (kind, kinds) in new[] { ("usage", new[] { "cpu", "gpu" }), ("temperature", new[] { "cputemp", "gputemp" }) })
+            views.Add(((FrameworkElement)Activator.CreateInstance(assembly.GetType("DeadWare.App.CompactGraph")!, All, null, [session, kind, owner], null)!, kinds, ["value", "upload"]));
+        try
+        {
+            foreach (var (kind, hex) in colors) SetColor(kind, hex);
+            CompleteSettingsSave(session);
+            var saved = SettingsCodec.Read(File.ReadAllText(settingsPath)).Settings;
+            var savedColors = (IReadOnlyDictionary<string, string>)typeof(UserSettings).GetProperty("GraphColors")!.GetValue(saved)!;
+            Assert.Equal(colors.OrderBy(pair => pair.Key), savedColors.OrderBy(pair => pair.Key));
+            foreach (string theme in new[] { "Midnight", "Daylight" })
+            {
+                assembly.GetType("DeadWare.App.Theme")!.GetMethod("Apply", All)!.Invoke(null, [theme]);
+                foreach (var (view, kinds, values) in views)
+                {
+                    var viewport = new Border { Child = view }; owner.Content = viewport;
+                    view.GetType().GetMethod("Refresh", All)!.Invoke(view, null);
+                    viewport.Measure(new Size(460, 240)); viewport.Arrange(new Rect(0, 0, 460, 240)); viewport.UpdateLayout();
+                    var traces = Traces(Field(view, "chart")); Assert.Equal(kinds.Length, traces.Length);
+                    Assert.Equal(kinds.Select(Expected), traces.Select(trace => BrushColor(trace.Pen.Brush)));
+                    Assert.Empty(traces[0].Pen.DashStyle.Dashes);
+                    if (kinds.Length == 2) Assert.NotEmpty(traces[1].Pen.DashStyle.Dashes);
+                    for (int index = 0; index < values.Length; index++)
+                        Assert.Equal(Expected(kinds[index]), BrushColor(((TextBlock)Field(view, values[index])).Foreground));
+                    if (view.GetType().Name == "ChartCard" && kinds.Length == 2)
+                    {
+                        foreach (var (field, kind) in new[] { ("downloadValue", "download"), ("uploadValue", "upload") })
+                        {
+                            var run = (System.Windows.Documents.Run)view.GetType().GetField(field, All)!.GetValue(view)!;
+                            Assert.Equal(Expected(kind), BrushColor(run.Foreground));
+                        }
+                    }
+                    if (view.GetType().Name == "ChartCard")
+                        Assert.Equal(kinds.Select(Expected), Descendants(view).OfType<Button>().Where(button => button.GetType().Name == "GraphColorPicker")
+                            .Select(button => BrushColor(((System.Windows.Shapes.Ellipse)button.Content).Fill)));
+                    string[] geometry = traces.Select(trace => trace.Geometry.ToString()).ToArray();
+                    foreach (string kind in kinds) SetColor(kind, "#789ABC");
+                    // This fixture has no native window/render loop; explicitly
+                    // request the next offscreen draw after changing live settings.
+                    var chart = Field(view, "chart"); chart.GetType().GetMethod("Refresh", All)!.Invoke(chart, null); viewport.UpdateLayout();
+                    Assert.All(Traces(chart), trace => Assert.Equal(Color.FromRgb(0x78, 0x9A, 0xBC), BrushColor(trace.Pen.Brush)));
+                    Assert.Equal(geometry, Traces(chart).Select(trace => trace.Geometry.ToString()));
+                    foreach (string name in values) Assert.Equal(Color.FromRgb(0x78, 0x9A, 0xBC), BrushColor(((TextBlock)Field(view, name)).Foreground));
+                    foreach (string kind in kinds) SetColor(kind, colors[kind]);
+                    chart.GetType().GetMethod("Refresh", All)!.Invoke(chart, null); viewport.UpdateLayout();
+                    string? output = Environment.GetEnvironmentVariable("DEADWARE_UI_OUTPUT");
+                    if (output is not null)
+                    {
+                        viewport.SetResourceReference(Border.BackgroundProperty, "Background");
+                        var bitmap = new RenderTargetBitmap(460, 240, 96, 96, PixelFormats.Pbgra32); bitmap.Render(viewport);
+                        using var file = File.Create(Path.Combine(output, $"graph-colors-{view.GetType().Name}-{string.Join("-", kinds)}-{theme}.png"));
+                        var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap)); encoder.Save(file);
+                    }
+                    viewport.Child = null; owner.Content = null;
+                }
+                foreach (var graph in Descendants(widget).OfType<FrameworkElement>().Where(element => element.GetType().Name == "WidgetGraph"))
+                {
+                    graph.GetType().GetMethod("Refresh", All)!.Invoke(graph, null); graph.UpdateLayout();
+                    string kind = (string)graph.GetType().GetField("kind", All)!.GetValue(graph)!;
+                    string[] kinds = kind switch { "cpu" => ["cpu", "gpu"], "cputemp" => ["cputemp", "gputemp"], "network" => ["download", "upload"], _ => ["memory"] };
+                    Assert.Equal(kinds.Select(Expected), Traces(Field(graph, "chart")).Select(trace => BrushColor(trace.Pen.Brush)));
+                    Assert.Equal(kinds.Select(Expected), Descendants(graph).OfType<System.Windows.Shapes.Line>().Select(line => BrushColor(line.Stroke)));
+                    Assert.Equal(Expected(kinds[0]), BrushColor(((TextBlock)Field(graph, "primary")).Foreground));
+                    if (kinds.Length == 2) Assert.Equal(Expected(kinds[1]), BrushColor(((TextBlock)Field(graph, "secondary")).Foreground));
+                }
+                string? widgetOutput = Environment.GetEnvironmentVariable("DEADWARE_UI_OUTPUT");
+                if (widgetOutput is not null)
+                {
+                    var bitmap = new RenderTargetBitmap((int)Math.Ceiling(widget.ActualWidth), (int)Math.Ceiling(widget.ActualHeight), 96, 96, PixelFormats.Pbgra32); bitmap.Render(widget);
+                    using var file = File.Create(Path.Combine(widgetOutput, $"graph-colors-widget-{theme}.png"));
+                    var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap)); encoder.Save(file);
+                }
+            }
+        }
+        finally
+        {
+            owner.Content = null;
+            Assert.Equal(IntPtr.Zero, new System.Windows.Interop.WindowInteropHelper(owner).Handle); owner.Close();
+            foreach (string kind in colors.Keys) SetColor(kind, null);
+            CompleteSettingsSave(session);
+        }
+        var reset = SettingsCodec.Read(File.ReadAllText(settingsPath)).Settings;
+        Assert.Empty((IReadOnlyDictionary<string, string>)typeof(UserSettings).GetProperty("GraphColors")!.GetValue(reset)!);
+        // Reset restores the currently applied palette, including existing widget
+        // legends and chart traces after the setting notification.
+        widget.UpdateLayout();
+        foreach (var graph in Descendants(widget).OfType<FrameworkElement>().Where(element => element.GetType().Name == "WidgetGraph"))
+        {
+            string kind = (string)graph.GetType().GetField("kind", All)!.GetValue(graph)!;
+            string[] defaults = kind == "network" ? ["Download", "Cpu"] : kind == "memory" ? ["Accent"] : ["Cpu", "Gpu"];
+            Assert.Equal(defaults.Select(key => BrushColor((Brush)Application.Current.Resources[key])), Traces(Field(graph, "chart")).Select(trace => BrushColor(trace.Pen.Brush)));
+        }
     }
 
     private static void VerifyJoinedPopouts(UiSession session, Collector collector, Reading reading, Assembly assembly, SampleHistory history)

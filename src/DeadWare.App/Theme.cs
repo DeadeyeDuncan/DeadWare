@@ -1,10 +1,24 @@
 using System.Windows;
 using System.Windows.Media;
+using DeadWare.Core;
 namespace DeadWare.App;
 internal static class Theme
 {
     public static string CurrentName {get;private set;}="Midnight";
     public static bool IsDark=>CurrentName!="Daylight";
+    private static IReadOnlyDictionary<string,string> graphColors=new Dictionary<string,string>();
+    public static string GraphKey(string kind)=>"Graph/"+(kind=="network"?"download":kind);
+    public static void SetGraphColors(IReadOnlyDictionary<string,string> colors)
+    {graphColors=GraphColorSettings.Normalize(colors);ApplyGraphColors();}
+    private static void ApplyGraphColors()
+    {
+        foreach(string kind in GraphColorSettings.Kinds)
+        {
+            string role=kind switch {"gpu" or "gputemp"=>"Gpu","memory"=>"Accent","download"=>"Download",_=>"Cpu"};
+            Application.Current.Resources[GraphKey(kind)]=!SystemParameters.HighContrast&&graphColors.TryGetValue(kind,out var color)
+                ?new SolidColorBrush((Color)ColorConverter.ConvertFromString(color)):Brush(role);
+        }
+    }
     // Binding source for the stock ScrollViewer corner; shared Style resources do not
     // reliably inherit application DynamicResource invalidation after a palette switch.
     public static SolidColorBrush ScrollCorner {get;}=new();
@@ -47,6 +61,7 @@ internal static class Theme
         }
         Application.Current.Resources["ScrollThumbHover"]=SystemParameters.HighContrast?SystemColors.HighlightBrush:Brush("Muted");
         ScrollCorner.Color=((SolidColorBrush)Brush("Panel")).Color;
+        ApplyGraphColors();
         NativeTheme.RefreshOpenWindows();
     }
     public static Brush Brush(string name)=>(Brush)Application.Current.Resources[name];
