@@ -1,5 +1,15 @@
 # Release validation
 
+## Widget pin control in Settings (0.6.13, 2026-10-27)
+
+The widget's Always on top checkbox is now in Settings beside the widget graph choices. The widget checkbox and reserved header row are removed; existing sizes and graph-selection height policy remain. The dedicated saved preference applies to open widgets through the existing session notification, and can be changed while the widget is closed without inventing window coordinates. Existing saved widget-placement pin flags are synchronized when present.
+
+Settings without the new preference migrate the previous widget pin before legacy coordinate reset or filtering. Explicit preferences override stale placement pins. Only widget placement uses this preference; other windows retain their existing pin controls and saved flags. New profiles retain the previous pinned-by-default behavior.
+
+All 428 tests passed (348 core/update, 80 Windows app), and `scripts/publish.ps1 -Version 0.6.13` built the self-contained app/helper package. Core pin tests first failed on the missing property, then passed 14 migration/default/round-trip cases. The real Settings regression first failed on the missing checkbox. It now verifies closed-widget persistence without fake bounds, guarded programmatic checkbox synchronization, live widget pin changes across all 16 graph selections, absence of widget checkboxes, legacy unpinned settings, explicit preference precedence, and unchanged CPU-window pin behavior. Existing graph layouts and close cleanup remain covered.
+
+Midnight/Daylight Settings and widget previews were visually inspected under ignored `artifacts/ui-widget-pin-0.6.13/`. Independent reviews and whitespace checks passed. Test settings writes used a temporary writer and unshown windows; no native window stacking, live collection, user-profile settings I/O, live installation, restart or rollback was tested. Release notes describe the control move without generic installation instructions.
+
 ## Choose widget graphs (0.6.12, 2026-10-27)
 
 Settings has four saved checkboxes for combined CPU/GPU usage, combined CPU/GPU temperature, RAM and Network. Changes update an open widget immediately. Legacy settings default to all four; explicit empty lists remain empty, and null/unsupported/duplicate entries normalize to a canonical supported selection. All-off shows a Settings hint while pin and status remain available. Hiding cards collapses their grid rows and skips their UI refresh; the shared collector and history continue.

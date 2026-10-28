@@ -73,6 +73,14 @@ public sealed class UiSession
     public void SetGpu(string? id) {Settings.SelectedGpuId=id;Changed?.Invoke();_ = SaveAsync();}
     public void SetTheme(string theme) {Settings.Theme=theme;Theme.Apply(theme);Changed?.Invoke();_ = SaveAsync();}
     public void SetExtendedSensors(bool enabled) {Settings.ExtendedSensors=enabled;_ = SaveAsync();}
+    public void SetWidgetAlwaysOnTop(bool enabled)
+    {
+        bool changed=Settings.WidgetAlwaysOnTop!=enabled;
+        if(Settings.Windows.TryGetValue("widget",out var saved)&&saved is not null&&saved.Topmost!=enabled)
+        {Settings.Windows["widget"]=saved with {Topmost=enabled};changed=true;}
+        if(!changed)return;
+        Settings.WidgetAlwaysOnTop=enabled;Changed?.Invoke();_ = SaveAsync();
+    }
     public void SetWidgetGraph(string kind,bool enabled)
     {
         if(!WidgetGraphSelection.Kinds.Contains(kind,StringComparer.Ordinal))return;
@@ -167,7 +175,8 @@ public sealed class UiSession
     {
         window.Width=width;window.Height=height;
         Settings.Windows.TryGetValue(key,out var saved);
-        if(saved is not null)window.Topmost=saved.Topmost;
+        if(key=="widget")window.Topmost=Settings.WidgetAlwaysOnTop;
+        else if(saved is not null)window.Topmost=saved.Topmost;
         window.WindowStartupLocation=saved is null?WindowStartupLocation.CenterScreen:WindowStartupLocation.Manual;
         WindowPlacement? lastNormal=null;
         void Capture()

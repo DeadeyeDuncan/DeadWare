@@ -24,6 +24,7 @@ public sealed class MainWindow : Window
     private readonly DataGrid apps=new(),sensors=new();
     private readonly Dictionary<string,FrameworkElement> pages=new();
     private readonly Dictionary<string,CheckBox> widgetGraphChoices=new(StringComparer.Ordinal);
+    private readonly CheckBox widgetAlwaysOnTop=new() {Content="Widget always on top",Margin=new Thickness(0,0,0,12)};
     private readonly CheckBox startup=new() {Content="Start with Windows (administrator)",Margin=new Thickness(0,22,0,8)};
     private readonly TextBlock startupStatus=Ui.Text("Startup status is checked when this page opens.",12,"Muted"),startupResult=Ui.Text("",12,"Warning");
     private Button startupRepair=null!,startupDisable=null!,startupRefresh=null!,batteryNavigation=null!,batteryWindow=null!;
@@ -109,6 +110,11 @@ public sealed class MainWindow : Window
             widgetGraphChoices.Add(key,choice);widgetOptions.Children.Add(choice);
         }
         stack.Children.Add(widgetOptions);
+        widgetAlwaysOnTop.IsChecked=session.Settings.WidgetAlwaysOnTop;
+        System.Windows.Automation.AutomationProperties.SetName(widgetAlwaysOnTop,"Widget always on top");
+        widgetAlwaysOnTop.Checked+=(_,_)=>{if(!syncingWidgetGraphs)session.SetWidgetAlwaysOnTop(true);};
+        widgetAlwaysOnTop.Unchecked+=(_,_)=>{if(!syncingWidgetGraphs)session.SetWidgetAlwaysOnTop(false);};
+        stack.Children.Add(widgetAlwaysOnTop);
         var widgetHelp=Ui.Text("Choose the graphs shown in the widget. Changes apply immediately; resize the widget to your preferred height.",12,"Muted");widgetHelp.Margin=new(0,0,0,20);stack.Children.Add(widgetHelp);
         foreach(var kind in new[]{"cpu","gpu","cputemp","gputemp","memory","network"}){var key=kind;var button=Ui.Button("↗  "+Ui.Title(kind),()=>session.OpenDetached(key));button.HorizontalAlignment=HorizontalAlignment.Left;button.MinWidth=240;button.Margin=new(0,4,0,4);stack.Children.Add(button);}
         batteryWindow=Ui.Button("↗  Battery history",()=>session.OpenDetached("batteryhistory"));batteryWindow.HorizontalAlignment=HorizontalAlignment.Left;batteryWindow.MinWidth=240;batteryWindow.Margin=new(0,4,0,4);stack.Children.Add(batteryWindow);
@@ -178,6 +184,7 @@ public sealed class MainWindow : Window
         {
             var selectedGraphs=WidgetGraphSelection.Normalize(session.Settings.WidgetGraphs);
             foreach(var choice in widgetGraphChoices)choice.Value.IsChecked=selectedGraphs.Contains(choice.Key);
+            widgetAlwaysOnTop.IsChecked=session.Settings.WidgetAlwaysOnTop;
         }
         finally {syncingWidgetGraphs=false;}
         var r=session.Current;bool noBattery=r?.Battery.PowerState==BatteryPowerState.NoBattery;
@@ -267,20 +274,20 @@ internal sealed class WidgetWindow : Window
     {
         this.session=session;Title="DeadWare · Quick glance";MinWidth=300;
         int count=WidgetGraphSelection.Normalize(session.Settings.WidgetGraphs).Count;
-        MinHeight=WidgetGraphSelection.MinimumHeight(count);Ui.Icon(this);Topmost=true;session.Place(this,"widget",340,WidgetGraphSelection.DefaultHeight(count));
-        var grid=new Grid {Margin=new Thickness(8)};grid.RowDefinitions.Add(new(){Height=GridLength.Auto});grid.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});grid.RowDefinitions.Add(new(){Height=GridLength.Auto});
-        var pin=new CheckBox {Content="Always on top",IsChecked=Topmost};pin.Checked+=(_,_)=>Topmost=true;pin.Unchecked+=(_,_)=>Topmost=false;grid.Children.Add(pin);
+        MinHeight=WidgetGraphSelection.MinimumHeight(count);Ui.Icon(this);session.Place(this,"widget",340,WidgetGraphSelection.DefaultHeight(count));
+        var grid=new Grid {Margin=new Thickness(8)};grid.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});grid.RowDefinitions.Add(new(){Height=GridLength.Auto});
         foreach(string kind in WidgetGraphSelection.Kinds)
         {
             int row=cards.RowDefinitions.Count;cards.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});
             var graph=new WidgetGraph(session,kind);graphs.Add(kind,graph);Grid.SetRow(graph,row);cards.Children.Add(graph);
         }
-        var area=new Grid();area.Children.Add(cards);empty.TextAlignment=TextAlignment.Center;empty.HorizontalAlignment=HorizontalAlignment.Center;empty.VerticalAlignment=VerticalAlignment.Center;empty.Margin=new(12);area.Children.Add(empty);Grid.SetRow(area,1);grid.Children.Add(area);
-        var summary=new StackPanel {Margin=new Thickness(0,6,0,0)};status.TextWrapping=TextWrapping.NoWrap;status.TextTrimming=TextTrimming.CharacterEllipsis;summary.Children.Add(status);Grid.SetRow(summary,2);grid.Children.Add(summary);Content=grid;
+        var area=new Grid();area.Children.Add(cards);empty.TextAlignment=TextAlignment.Center;empty.HorizontalAlignment=HorizontalAlignment.Center;empty.VerticalAlignment=VerticalAlignment.Center;empty.Margin=new(12);area.Children.Add(empty);grid.Children.Add(area);
+        var summary=new StackPanel {Margin=new Thickness(0,6,0,0)};status.TextWrapping=TextWrapping.NoWrap;status.TextTrimming=TextTrimming.CharacterEllipsis;summary.Children.Add(status);Grid.SetRow(summary,1);grid.Children.Add(summary);Content=grid;
         session.Changed+=Refresh;Closed+=(_,_)=>session.Changed-=Refresh;Refresh();
     }
     private void Refresh()
     {
+        Topmost=session.Settings.WidgetAlwaysOnTop;
         var selected=WidgetGraphSelection.Normalize(session.Settings.WidgetGraphs);
         string signature=string.Join('|',selected);
         if(signature!=appliedSelection)

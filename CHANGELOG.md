@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.13 — Widget pin control in Settings
+
+- Move the widget's Always on top checkbox into Settings and use the freed space for graphs.
+- Apply pin changes immediately and save them even when the widget is closed.
+- Carry over the previous widget pin choice while keeping other windows' pin controls unchanged.
+
 ## 0.6.12 — Choose widget graphs
 
 - Add saved Settings checkboxes for CPU/GPU usage, CPU/GPU temperature, RAM and Network, applying changes to an open widget.
