@@ -1,12 +1,16 @@
 using System.Windows;
 using System.Windows.Controls;
+using DeadWare.UpdateCore;
 
 namespace DeadWare.App;
 
 internal sealed class UpdatesPage : ScrollViewer
 {
     private readonly UpdateService service;
-    private readonly TextBlock installed=Ui.Text("",24,"Accent"),latest=Ui.Text("",16),status=Ui.Text("",13),local=Ui.Text("",12,"Muted"),notes=Ui.Text("",12),last=Ui.Text("",12,"Muted");
+    private readonly TextBlock installed=Ui.Text("",24,"Accent"),latest=Ui.Text("",16),status=Ui.Text("",13),local=Ui.Text("",12,"Muted"),notesStatus=Ui.Text("",12,"Warning"),last=Ui.Text("",12,"Muted");
+    private readonly StackPanel noteSections=new();
+    private IReadOnlyList<ReleaseNote>? displayedNotes;
+    private ReleaseInfo? displayedRelease;
     private readonly Button check,update,rollback,cancel;
     private readonly ProgressBar progress=new(){Minimum=0,Maximum=100,Height=6,Margin=new Thickness(0,8,0,12)};
     private CancellationTokenSource? operation;
@@ -24,7 +28,7 @@ internal sealed class UpdatesPage : ScrollViewer
         var information=new StackPanel();information.Children.Add(Ui.Text("Your history stays with you",16));
         var explanation=Ui.Text("DeadWare checks normal GitHub releases once at startup. A notice lets you know when a newer version is available; you choose when to download and install it. Update & restart saves your workspace and history, installs the verified package, then reopens DeadWare. Rollback restores the previous app files while keeping current settings and recordings.",13,"Muted");explanation.Margin=new(0,8,0,8);information.Children.Add(explanation);
         information.Children.Add(Ui.Text("The first updater-enabled installation may have no earlier version to restore. A previous version becomes available after an in-app update.",12,"Muted"));body.Children.Add(Card(information));
-        var releaseNotes=new StackPanel();releaseNotes.Children.Add(Ui.Text("Release notes",16));notes.Margin=new(0,10,0,0);releaseNotes.Children.Add(notes);body.Children.Add(Card(releaseNotes));
+        var releaseNotes=new StackPanel();releaseNotes.Children.Add(Ui.Text("Release notes",16));notesStatus.Margin=new(0,10,0,0);releaseNotes.Children.Add(notesStatus);releaseNotes.Children.Add(noteSections);body.Children.Add(Card(releaseNotes));
         Loaded+=async(_,_)=>{service.Changed+=Changed;ApplyState(service.State);await service.ReadLocalAsync();};
         Unloaded+=(_,_)=>service.Changed-=Changed;
         IsVisibleChanged+=async(_,_)=>{if(IsLoaded&&IsVisible)await service.ReadLocalAsync();};ApplyState(service.State);
@@ -37,11 +41,25 @@ internal sealed class UpdatesPage : ScrollViewer
         latest.Text=state.Release is null?"Normal GitHub releases":"Published version "+state.Release.Version;
         last.Text=state.LastChecked is { } checkedAt?$"Last checked {checkedAt:g}":"Checks once at startup. You can also check here.";
         status.Text=state.Status;local.Text=state.LocalStatus+(state.LastOperation.Length>0?"\nLast operation: "+state.LastOperation:"");
-        notes.Text=state.Release?.Notes??"Release notes appear after a published release is found.";
+        ApplyReleaseNotes(state);
         check.IsEnabled=!state.Busy;update.IsEnabled=state.CanUpdate;rollback.IsEnabled=state.CanRollback;
         rollback.Content=state.Previous is { } prior?$"Roll back to {prior.Version} & restart":"Roll back & restart";
         cancel.IsEnabled=state.CanCancel;cancel.Visibility=state.Busy?Visibility.Visible:Visibility.Collapsed;
         progress.Visibility=state.Busy?Visibility.Visible:Visibility.Collapsed;progress.Value=state.Progress;progress.IsIndeterminate=state.Busy&&state.Progress==0;
+    }
+    private void ApplyReleaseNotes(UpdateState state)
+    {
+        notesStatus.Text=state.ReleaseNotesStatus;notesStatus.Visibility=notesStatus.Text.Length>0?Visibility.Visible:Visibility.Collapsed;
+        if(ReferenceEquals(displayedNotes,state.ReleaseNotes)&&displayedRelease==state.Release)return;
+        displayedNotes=state.ReleaseNotes;displayedRelease=state.Release;noteSections.Children.Clear();
+        IReadOnlyList<ReleaseNote> entries=state.ReleaseNotes.Count>0?state.ReleaseNotes:state.Release is { } release?[new(release.Version,release.Tag,release.Notes)]:[];
+        if(entries.Count==0){noteSections.Children.Add(Ui.Text("Release notes appear after a published release is found.",12));return;}
+        foreach(var entry in entries)
+        {
+            var section=new StackPanel {Margin=new Thickness(0,12,0,0)};
+            var heading=Ui.Text(entry.Tag,14,"Accent");heading.FontWeight=FontWeights.SemiBold;section.Children.Add(heading);
+            var text=Ui.Text(string.IsNullOrWhiteSpace(entry.Notes)?"No release notes provided.":entry.Notes,12);text.Margin=new(0,6,0,0);section.Children.Add(text);noteSections.Children.Add(section);
+        }
     }
     private async Task RunAsync(Func<CancellationToken,Task> action)
     {

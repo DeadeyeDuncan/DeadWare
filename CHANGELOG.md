@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.6 — Release notes for every missed version
+
+- Show notes for every normal release newer than the installed version through the offered update, with separate version sections ordered newest first.
+- Exclude installed/older versions and previews, and retrieve intervening notes across release-history pages.
+- Keep the latest notes and update available if earlier notes cannot be loaded; explain the fallback and support cancellation.
+
 ## 0.6.5 — Group widget graphs by metric
 
 - Put CPU and selected-GPU usage together on the first widget graph, and both temperatures together on the second.
