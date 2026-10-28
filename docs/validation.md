@@ -1,5 +1,11 @@
 # Release validation
 
+## Cooling Health navigation order (0.6.8, 2026-10-27)
+
+Cooling Health now immediately follows Sensors in the dashboard sidebar. The tuple order is the only product-code change; navigation keeps its existing string keys and page instances, including Battery history visibility rules.
+
+All 299 tests passed (239 core/update, 60 Windows app), and `scripts/publish.ps1 -Version 0.6.8` built the self-contained app/helper package. The existing offscreen dashboard test also passed with image output; Midnight and Daylight Settings renders under ignored `artifacts/ui-navigation-0.6.8/` visibly show Sensors followed by Cooling Health. Independent review found no actionable issues, and `git diff --check` passed. No new tests were added for this simple reorder. Offscreen checks do not exercise a live installation; the installed app is left for the user's update test.
+
 ## Network graph in the widget (0.6.7, 2026-10-27)
 
 The widget adds a third Network card below the existing Usage and Temperature cards. It reuses the unchanged HistoryChart network renderer: solid Download blue and dashed Cpu green for upload, sharing a dynamic bytes-per-second scale that includes both directions. Current rates move into the Network legend; memory/status, pinning, shared history/range and CPU/GPU grouping/colors remain. The minimum is now 300×400 and the default 340×480 so all three charts remain readable.

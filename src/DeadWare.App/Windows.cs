@@ -39,7 +39,7 @@ public sealed class MainWindow : Window
         var quitButton=Ui.Button("Quit DeadWare",quit);quitButton.FontSize=11;sideBottom.Children.Add(quitButton);trayNotice.Margin=new Thickness(3,5,3,8);sideBottom.Children.Add(trayNotice);
         sideBottom.Children.Add(Ui.Text($"Local monitoring\n1 second samples · 6 h saved graphs\nv{BuildInfo.Version}",10,"Muted"));
         var nav=new StackPanel();sidebar.Children.Add(new ScrollViewer{Content=nav,VerticalScrollBarVisibility=ScrollBarVisibility.Auto,HorizontalScrollBarVisibility=ScrollBarVisibility.Disabled});
-        foreach(var item in new[]{("overview","▦  Overview"),("network","⇄  Network"),("cooling","◷  Cooling Health"),("battery","▤  Battery history"),("sensors","≡  Sensors"),("desktop","▱  Settings"),("updates","↓  Updates")})
+        foreach(var item in new[]{("overview","▦  Overview"),("network","⇄  Network"),("battery","▤  Battery history"),("sensors","≡  Sensors"),("cooling","◷  Cooling Health"),("desktop","▱  Settings"),("updates","↓  Updates")})
         {var key=item.Item1;var button=Ui.Button(item.Item2,()=>Navigate(key));button.HorizontalContentAlignment=HorizontalAlignment.Left;button.Margin=new(0,3,0,3);button.Padding=new(10,13,10,13);nav.Children.Add(button);if(key=="battery")batteryNavigation=button;}
         var main=new DockPanel {Margin=new Thickness(18,25,26,16)};Grid.SetColumn(main,1);shell.Children.Add(main);
         var footer=new StackPanel {Margin=new Thickness(4,10,4,0)};footer.Children.Add(status);DockPanel.SetDock(footer,Dock.Bottom);main.Children.Add(footer);
