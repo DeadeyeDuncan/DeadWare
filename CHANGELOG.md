@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.6.18 — Neon color theme
+
+- Add Neon to the sidebar's Color theme selector, with dark surfaces, a cyan accent, green CPU readings, magenta GPU readings and blue downloads.
+- Apply Neon across shared app windows and save the selection for the next session.
+
 ## 0.6.17 — Remove widget footer
 
 - Remove the text footer beneath the widget graphs.
