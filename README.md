@@ -25,7 +25,7 @@ DeadWare is a Windows desktop monitor for watching CPU/GPU usage and temperature
 - Local Cooling Health history, fixed reference comparisons, CSV export and optional sustained-change warnings.
 - Lifetime battery-percentage history with recorded charging and Windows battery-saver periods, Day/Week/Month/Year/All views, CSV export and a separate remembered window.
 - Startup and manual GitHub release checks, update-available notices, verified user-initiated updates and rollback to the previous installed version.
-- Five saved themes: **Midnight**, **Ember**, **Glacier**, **Amethyst**, and **Daylight**.
+- Six saved themes: **Midnight**, **Ember**, **Glacier**, **Amethyst**, **Neon**, and **Daylight**. Choose **Neon** in the sidebar's **Color theme** menu for near-black surfaces, electric cyan accents, and vivid green, magenta and blue graphs.
 - Scrollbars follow the selected theme across all windows, with matching native title bars on Windows 11.
 
 ## Download and run

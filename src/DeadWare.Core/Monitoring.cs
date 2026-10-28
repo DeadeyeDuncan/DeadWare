@@ -284,7 +284,7 @@ public static class SettingsCodec
         {
             var s=JsonSerializer.Deserialize<UserSettings>(json);
             if(s is null) return new(new(),"Settings were empty; defaults restored.");
-            if(s.Theme is not ("Midnight" or "Ember" or "Glacier" or "Amethyst" or "Daylight")) s.Theme="Midnight";
+            if(s.Theme is not ("Midnight" or "Ember" or "Glacier" or "Amethyst" or "Neon" or "Daylight")) s.Theme="Midnight";
             bool invalid=!HistoryRanges.IsSupported(s.HistorySeconds) || s.Windows is null || PollingPolicy.Normalize(s.PollingIntervalSeconds)!=s.PollingIntervalSeconds;
             var widgetGraphs=WidgetGraphSelection.Normalize(s.WidgetGraphs);
             invalid|=s.WidgetGraphs is null||!s.WidgetGraphs.SequenceEqual(widgetGraphs,StringComparer.Ordinal);
