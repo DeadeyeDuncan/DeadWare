@@ -80,5 +80,5 @@ internal sealed class BatteryHistoryChart : FrameworkElement
     }
     private void Label(DrawingContext dc, string text, double x, double y) => dc.DrawText(Formatted(text), new(x, y));
     private FormattedText Formatted(string text) => new(text, CultureInfo.CurrentCulture, FlowDirection.LeftToRight,
-        new Typeface("Segoe UI"), 11, Theme.Brush("Muted"), VisualTreeHelper.GetDpi(this).PixelsPerDip);
+        Theme.ChartTypeface, 11, Theme.Brush("Muted"), VisualTreeHelper.GetDpi(this).PixelsPerDip);
 }

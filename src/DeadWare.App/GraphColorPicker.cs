@@ -32,7 +32,7 @@ internal sealed class GraphColorPicker : Button
         var dot=new Ellipse {Width=12,Height=12};dot.SetResourceReference(Shape.FillProperty,Theme.GraphKey(kind));Content=dot;
         popup=new Popup {PlacementTarget=this,Placement=PlacementMode.Bottom,StaysOpen=false,AllowsTransparency=true};
         var menu=new StackPanel();KeyboardNavigation.SetTabNavigation(menu,KeyboardNavigationMode.Cycle);
-        menu.Children.Add(Ui.Text(title+" color",12,"Muted"));
+        menu.Children.Add(Ui.Heading(title+" color",12));
         var swatches=new UniformGrid {Columns=6,Margin=new(0,6,0,6)};
         foreach(string color in new[]{"#68E0BD","#52D6E8","#82ADFF","#B69CFF","#EF8FE0","#FF8899","#F0B76C","#F2D56B","#A9DE7A","#FFFFFF","#A6B4C6","#182A3B"})
         {

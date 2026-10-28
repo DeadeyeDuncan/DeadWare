@@ -13,7 +13,7 @@ internal sealed class BatteryHistoryPage : ScrollViewer
     private sealed record RangeChoice(string Label, int Days) { public override string ToString() => Label; }
     private readonly UiSession session;
     private readonly ComboBox range = new() { MinWidth = 120 };
-    private readonly TextBlock percentage = Ui.Text("—", 42, "Accent"), power = Ui.Text("Waiting for battery…", 17);
+    private readonly TextBlock percentage = Ui.Text("—", 42, "Accent", font:"MetricFont"), power = Ui.Text("Waiting for battery…", 17);
     private readonly TextBlock summary = Ui.Text("", 12, "Muted"), recordingStatus = Ui.Text("", 12, "Muted"), storage = Ui.Text("", 11, "Muted"), actionStatus = Ui.Text("", 12, "Warning");
     private readonly BatteryHistoryChart chart = new() { Height = 320, Margin = new(0, 12, 0, 6) };
     private readonly CheckBox recording = new() { Content = "Record battery history on this device" };
@@ -40,7 +40,7 @@ internal sealed class BatteryHistoryPage : ScrollViewer
         export = Ui.Button("Export CSV…", () => _ = ExportAsync()); controls.Children.Add(export);
         if (showOpenWindow) controls.Children.Add(Ui.Button("Open in window ↗", () => session.OpenDetached("batteryhistory")));
         body.Children.Add(controls);
-        var history = new StackPanel(); history.Children.Add(Ui.Text("Battery charge", 16)); history.Children.Add(chart);
+        var history = new StackPanel(); history.Children.Add(Ui.Heading("Battery charge", 16)); history.Children.Add(chart);
         var legend = new WrapPanel { Margin = new(0, 0, 0, 8) };
         legend.Children.Add(TraceLegend("Saver off", "Accent", DashStyles.Solid));
         legend.Children.Add(TraceLegend("Saver on", "Warning", DashStyles.Dash));
@@ -48,7 +48,7 @@ internal sealed class BatteryHistoryPage : ScrollViewer
         history.Children.Add(legend); history.Children.Add(summary);
         var hint = Ui.Text("The charge line changes color and style at recorded saver changes. Hollow dots mean mixed or unknown saver state in a summarized time bucket; vertical ranges show minimum–maximum charge. Green marks: charging. Amber marks: saver enabled; outlined marks: mixed states. Gaps remain unconnected. Dates use local time.", 11, "Muted");
         hint.Margin = new(0, 10, 0, 0); history.Children.Add(hint); body.Children.Add(Card(history));
-        var settings = new StackPanel(); settings.Children.Add(Ui.Text("Keep a lasting record", 16)); recording.Margin = new(0, 12, 0, 8); settings.Children.Add(recording);
+        var settings = new StackPanel(); settings.Children.Add(Ui.Heading("Keep a lasting record", 16)); recording.Margin = new(0, 12, 0, 8); settings.Children.Add(recording);
         settings.Children.Add(recordingStatus); storage.Margin = new(0, 8, 0, 8); settings.Children.Add(storage);
         settings.Children.Add(Ui.Text("One observation per minute, plus charging and battery-saver changes, retained indefinitely. Recording begins with this version while DeadWare runs; sleep and stopped monitoring leave gaps. Summarizing the chart keeps the original observations. Export the selected range as a new CSV file to keep a backup.", 12, "Muted"));
         var local = Ui.Text("History stays in this Windows profile and survives app upgrades. Copy battery-history.db while DeadWare is fully quit to back it up. A device reset or profile removal needs your own backup.", 11, "Muted"); local.Margin = new(0, 8, 0, 0); settings.Children.Add(local);

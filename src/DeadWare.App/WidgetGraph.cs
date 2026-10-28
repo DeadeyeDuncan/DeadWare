@@ -8,7 +8,7 @@ internal sealed class WidgetGraph : Border
 {
     private readonly UiSession session;
     private readonly string kind;
-    private readonly TextBlock title=Ui.Text("",12,"Muted"),primary=Ui.Text("",11),secondary=Ui.Text("",11);
+    private readonly TextBlock title=Ui.Text("",12,"Heading",font:"HeadingFont"),primary=Ui.Text("",11,font:"MetricFont"),secondary=Ui.Text("",11,font:"MetricFont");
     private readonly HistoryChart chart;
     public WidgetGraph(UiSession session,string kind)
     {
