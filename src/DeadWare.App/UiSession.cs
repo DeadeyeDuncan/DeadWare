@@ -88,6 +88,11 @@ public sealed class UiSession
         Theme.SetGraphColors(Settings.GraphColors);Changed?.Invoke();_ = SaveAsync();
     }
     public void SetExtendedSensors(bool enabled) {Settings.ExtendedSensors=enabled;_ = SaveAsync();}
+    public void SetGpuFanSpeed(bool enabled)
+    {
+        if(Settings.ShowGpuFanSpeed==enabled)return;
+        Settings.ShowGpuFanSpeed=enabled;Changed?.Invoke();_ = SaveAsync();
+    }
     public void SetJoinedPopouts(bool enabled)
     {
         if(Settings.JoinCpuGpuPopouts==enabled)return;
@@ -133,7 +138,7 @@ public sealed class UiSession
         Cooling.Configure(Settings.CoolingRecording,Settings.CoolingNotifications,Settings.CoolingDetailedDays,Settings.CoolingSummaryDays,Settings.CoolingConfigurationId);
         _ = SaveAsync();
     }
-    public string MetricId(string kind)=>kind switch {"cpu"=>"cpu/usage","cputemp"=>"cpu/temperature","gpu"=>(SelectedGpuId??"unavailable")+"/usage","gputemp"=>(SelectedGpuId??"unavailable")+"/temperature","memory"=>"memory/usage",_=>"network/download"};
+    public string MetricId(string kind)=>kind switch {"cpu"=>"cpu/usage","cputemp"=>"cpu/temperature","gpu"=>(SelectedGpuId??"unavailable")+"/usage","gputemp"=>(SelectedGpuId??"unavailable")+"/temperature","gpufan"=>(SelectedGpuId??"unavailable")+"/fan","memory"=>"memory/usage",_=>"network/download"};
     public async Task SaveAsync()
     {
         Settings.OpenWindows=layout.Remembered.ToList();

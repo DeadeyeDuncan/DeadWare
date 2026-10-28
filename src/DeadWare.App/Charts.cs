@@ -19,6 +19,11 @@ internal static class Ui
     public static Border Panel(UIElement child,Thickness? padding=null)
     {var b=new Border {Child=child,Padding=padding??new Thickness(18),CornerRadius=new CornerRadius(10),BorderThickness=new Thickness(1)};b.SetResourceReference(Border.BackgroundProperty,"Panel");b.SetResourceReference(Border.BorderBrushProperty,"Line");return b;}
     public static string Number(double? value,string unit="")=>value.HasValue&&double.IsFinite(value.Value)?$"{value.Value:0.0}{unit}":"—";
+    public static string GpuFanText(UiSession session)
+    {
+        double? rpm=session.Stale?null:session.Value(session.MetricId("gpufan"));
+        return "GPU fan · "+(session.Stale?"stale":rpm.HasValue&&double.IsFinite(rpm.Value)?$"{rpm.Value:0} RPM":"unavailable");
+    }
     public static string Bytes(double? bytes,bool rate=false)
     {
         if(!bytes.HasValue||!double.IsFinite(bytes.Value)) return "—";
@@ -69,10 +74,15 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
         var points=session.Collector.History.Series(session.MetricId(kind),now,session.HistorySeconds);
         bool compare=CompareDevices&&kind is "cpu" or "cputemp";
         var secondary=kind=="network"?session.Collector.History.Series("network/upload",now,session.HistorySeconds):compare?session.Collector.History.Series(session.MetricId(kind=="cpu"?"gpu":"gputemp"),now,session.HistorySeconds):[];
+        bool showFan=session.Settings.ShowGpuFanSpeed&&(kind=="gputemp"||kind=="cputemp"&&compare);
+        var fan=showFan?session.Collector.History.Series(session.MetricId("gpufan"),now,session.HistorySeconds):[];
         double maximum=kind is "cpu" or "gpu" or "memory"?100:kind=="network"?Math.Max(1000,points.Concat(secondary).Where(p=>p.Value.HasValue).Select(p=>p.Value!.Value).DefaultIfEmpty(0).Max()*1.15):Math.Max(100,points.Concat(secondary).Where(p=>p.Value.HasValue).Select(p=>p.Value!.Value).DefaultIfEmpty(0).Max()*1.1);
         if(compare&&kind=="cputemp")maximum=Math.Ceiling(maximum/20)*20;
         string Axis(double value)=>kind=="network"?Ui.Bytes(value,true):$"{value:0}{(kind.Contains("temp")?(compare?"°C":"°"):"%")}";
+        double fanMaximum=Math.Max(1000,Math.Ceiling(fan.Where(p=>p.Value.HasValue).Select(p=>p.Value!.Value).DefaultIfEmpty(0).Max()/1000)*1000);
+        string FanAxis(double value)=>$"{value:0} RPM";
         double left=compact?3:12,top=compact?8:18;
+        if(showFan)left=Enumerable.Range(0,3).Max(i=>Formatted(FanAxis(fanMaximum*i/2)).Width)+10;
         double right=compact?Enumerable.Range(0,3).Max(i=>Formatted(Axis(maximum*i/2)).Width)+10:74;
         double bottom=axisLabel.Height+(compact?10:18),pw=w-left-right,ph=h-top-bottom;
         if(pw<=0||ph<=0)return;
@@ -81,15 +91,21 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
             double value=maximum*i/2,y=top+ph*(1-value/maximum);
             dc.DrawLine(new Pen(Theme.Brush("Line"),1){DashStyle=new DashStyle([3,5],0)},new(left,y),new(left+pw,y));
             Label(dc,Axis(value),left+pw+7,y-7);
+            if(showFan)
+            {
+                string text=FanAxis(fanMaximum*i/2);
+                Label(dc,text,left-Formatted(text).Width-7,y-7);
+            }
         }
         double timeLabelY=h-axisLabel.Height-(compact?2:6);
         Label(dc,$"{HistoryRanges.Label(session.HistorySeconds)} ago",left,timeLabelY);Label(dc,"Now",left+pw-axisLabel.Width,timeLabelY);
         DrawSeries(dc,points,now,maximum,left,top,pw,ph,Theme.GraphKey(kind),false);
         if(kind=="network") DrawSeries(dc,secondary,now,maximum,left,top,pw,ph,Theme.GraphKey("upload"),true);
         else if(compare) DrawSeries(dc,secondary,now,maximum,left,top,pw,ph,Theme.GraphKey(kind=="cpu"?"gpu":"gputemp"),true);
-        if(!points.Concat(secondary).Any(p=>p.Value.HasValue)) Label(dc,sample is null?(compact?"Waiting for data…":"Waiting for first sample…"):(compact?"No readings in this range":"No available readings in this range"),left+(compact?4:15),top+ph/2);
+        if(showFan)DrawSeries(dc,fan,now,fanMaximum,left,top,pw,ph,"Warning",false,true);
+        if(!points.Concat(secondary).Concat(fan).Any(p=>p.Value.HasValue)) Label(dc,sample is null?(compact?"Waiting for data…":"Waiting for first sample…"):(compact?"No readings in this range":"No available readings in this range"),left+(compact?4:15),top+ph/2);
     }
-    private void DrawSeries(DrawingContext dc,IReadOnlyList<SamplePoint> points,double now,double maximum,double left,double top,double width,double height,string color,bool dashed)
+    private void DrawSeries(DrawingContext dc,IReadOnlyList<SamplePoint> points,double now,double maximum,double left,double top,double width,double height,string color,bool dashed,bool dotted=false)
     {
         var geometry=new StreamGeometry();bool open=false;Point? lastPoint=null;
         using(var context=geometry.Open())
@@ -103,7 +119,7 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
             }
         }
         bool dense=CompareDevices&&session.HistorySeconds>=3600;
-        geometry.Freeze();var pen=new Pen(Theme.Brush(color),dense?1:2);if(dashed)pen.DashStyle=new DashStyle([4,3],0);dc.DrawGeometry(null,pen,geometry);
+        geometry.Freeze();var pen=new Pen(Theme.Brush(color),dense?1:2);if(dotted)pen.DashStyle=new DashStyle([1,3],0);else if(dashed)pen.DashStyle=new DashStyle([4,3],0);dc.DrawGeometry(null,pen,geometry);
         double markerRadius=dense?1.5:2.5;
         if(lastPoint.HasValue) dc.DrawEllipse(Theme.Brush(color),null,lastPoint.Value,markerRadius,markerRadius);
     }
@@ -116,6 +132,7 @@ internal sealed class ChartCard : Border
     private readonly UiSession session;
     private readonly string kind;
     private readonly TextBlock value=Ui.Text("—",30,font:"MetricFont"),subtitle=Ui.Text("Waiting for hardware…",11,"Muted"),stats=Ui.Text("",11,"Muted",font:"MetricFont");
+    private readonly TextBlock fan=Ui.Text("",11,"Warning",font:"MetricFont");
     private readonly Run downloadValue=new(),uploadValue=new();
     private readonly HistoryChart chart;
     public ChartCard(UiSession session,string kind,bool popButton=true)
@@ -134,7 +151,8 @@ internal sealed class ChartCard : Border
         if(popButton){var pop=Ui.Button("Pop out ↗",()=>session.OpenDetached(kind));pop.HorizontalAlignment=HorizontalAlignment.Right;DockPanel.SetDock(pop,Dock.Right);header.Children.Insert(0,pop);}
         var colors=GraphColorPicker.Create(session,kind);DockPanel.SetDock(colors,Dock.Right);header.Children.Insert(0,colors);
         grid.Children.Add(header);
-        var metric=new StackPanel {Margin=new Thickness(0,5,0,5)};metric.Children.Add(value);metric.Children.Add(subtitle);Grid.SetRow(metric,1);grid.Children.Add(metric);
+        var metric=new StackPanel {Margin=new Thickness(0,5,0,5)};metric.Children.Add(value);metric.Children.Add(subtitle);
+        fan.Visibility=Visibility.Collapsed;fan.ToolTip="Selected GPU's first reported fan · dotted trace · separate left RPM scale";metric.Children.Add(fan);Grid.SetRow(metric,1);grid.Children.Add(metric);
         Grid.SetRow(chart,2);grid.Children.Add(chart);Grid.SetRow(stats,3);grid.Children.Add(stats);Child=grid;
         Loaded+=(_,_)=>{session.Changed+=Refresh;Refresh();};Unloaded+=(_,_)=>session.Changed-=Refresh;
         IsVisibleChanged+=(_,_)=>{if(IsVisible)Refresh();};
@@ -143,6 +161,9 @@ internal sealed class ChartCard : Border
     {
         if(!IsVisible)return;
         string id=session.MetricId(kind);double? current=session.Stale?null:session.Value(id);var data=session.Current;
+        bool showFan=kind=="gputemp"&&session.Settings.ShowGpuFanSpeed;
+        fan.Visibility=showFan?Visibility.Visible:Visibility.Collapsed;
+        if(showFan)fan.Text=Ui.GpuFanText(session)+" · dotted · left RPM";
         value.SetResourceReference(TextBlock.ForegroundProperty,Theme.GraphKey(kind));
         if(kind=="network")
         {

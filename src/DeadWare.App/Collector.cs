@@ -13,6 +13,27 @@ public record Reading(Snapshot Sample,IReadOnlyList<Device> Gpus,IReadOnlyList<S
     public BatteryReading Battery {get;init;}=BatteryReading.Unavailable;
 }
 
+/// <summary>Reads the first GPU RPM fan from existing publications and keeps its source through outages.</summary>
+public sealed class GpuFanSpeed
+{
+    private readonly Dictionary<string,string> sources=new(StringComparer.Ordinal);
+    public double? Read(string hardwareId,IReadOnlyList<SensorReading> sensors)
+    {
+        var fans=sensors.Where(s=>s.HardwareId==hardwareId&&s.SensorType=="Fan"&&s.Unit=="RPM"&&
+            s.HardwareType is "GpuAmd" or "GpuNvidia" or "GpuIntel").ToArray();
+        if(!sources.TryGetValue(hardwareId,out var source))
+        {
+            // Choose metadata rather than a live value, so an unavailable first fan
+            // never changes which physical fan the graph represents.
+            var first=fans.OrderBy(s=>s.Id,StringComparer.Ordinal).FirstOrDefault();
+            if(first is null)return null;
+            sources[hardwareId]=source=first.Id;
+        }
+        double? value=fans.FirstOrDefault(s=>s.Id==source)?.Value;
+        return value is >=0&&double.IsFinite(value.Value)?value:null;
+    }
+}
+
 /// <summary>One serial background loop owns all hardware updates; windows only read immutable publications.</summary>
 public sealed class Collector : IAsyncDisposable
 {
@@ -27,6 +48,7 @@ public sealed class Collector : IAsyncDisposable
     private readonly CancellationTokenSource cancellation=new();
     private readonly Stopwatch clock=Stopwatch.StartNew();
     private readonly WindowsCounters windows=new();
+    private readonly GpuFanSpeed gpuFanSpeed=new();
     private readonly EtwNetwork etw;
     private bool lowLevelAvailable;
     private Task? worker;
@@ -90,6 +112,7 @@ public sealed class Collector : IAsyncDisposable
                             var id=hardware.Identifier.ToString();gpus.Add(new(id,hardware.Name,hardwareSensors.Any(s=>s.Unit=="°C"&&s.Name is "GPU Core" or "GPU Temperature")));
                             values[id+"/usage"]=Choose(hardwareSensors,"%","GPU Core","GPU D3D 3D");
                             values[id+"/temperature"]=Choose(hardwareSensors,"°C","GPU Core","GPU Temperature");
+                            values[id+"/fan"]=gpuFanSpeed.Read(id,hardwareSensors);
                         }
                     }
                     stage="Reading Windows counters";
