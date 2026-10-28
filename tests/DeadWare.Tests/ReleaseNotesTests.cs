@@ -9,6 +9,34 @@ namespace DeadWare.Tests;
 public class ReleaseNotesTests
 {
     [Fact]
+    public async Task Full_history_includes_all_normal_versions_without_a_latest_release_or_assets()
+    {
+        using var http = new HttpClient(new Handler((request, _) =>
+        {
+            Assert.Equal("api.github.com", request.RequestUri!.Host);
+            Assert.Equal("/repos/DeadeyeDuncan/DeadWare/releases", request.RequestUri.AbsolutePath);
+            return Task.FromResult(Response(Page(
+                Row("v0.1.0", "Old"), Row("v0.6.2", "Installed"), Row("v0.10.0", "Newest"),
+                Row("v0.0.0", "First"), Row("0.6.2", "Duplicate"), Row("v0.11.0", draft: true),
+                Row("v0.12.0", prerelease: true), Row("v0.13.0-rc.1"), Row("latest"), Row("v0.13.0+build"))));
+        }));
+
+        var notes = await new ReleaseClient(http).ReadHistoryAsync(CancellationToken.None);
+
+        Assert.Equal(new[] { "v0.10.0", "v0.6.2", "v0.1.0", "v0.0.0" }, notes.Select(note => note.Tag));
+        Assert.Equal(new[] { "Newest", "Installed", "Old", "First" }, notes.Select(note => note.Notes));
+        Assert.Throws<NotSupportedException>((Action)(() => ((IList<ReleaseNote>)notes).Add(notes[0])));
+    }
+
+    [Fact]
+    public async Task Full_history_can_be_empty_without_seeding_a_latest_release()
+    {
+        using var http = Client("[]");
+
+        Assert.Empty(await new ReleaseClient(http).ReadHistoryAsync(CancellationToken.None));
+    }
+
+    [Fact]
     public async Task All_newer_published_versions_are_returned_newest_first_without_requiring_assets()
     {
         using var http = Client(Page(Row("v0.6.3", "Three"), Row("v0.6.4", "Four"), Row("v0.6.5", "List five")));

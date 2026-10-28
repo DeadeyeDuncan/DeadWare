@@ -302,6 +302,7 @@ public class BatteryUiTests
         string[] Versions() => Text().Where(block => block.Text.StartsWith("v0.6.")).Select(block => block.Text).ToArray();
         Apply(new UpdateState("0.6.2") { Release = release });
         page.Measure(new Size(620, 720)); page.Arrange(new Rect(0, 0, 620, 720)); page.UpdateLayout();
+        Assert.Single(Descendants(page).OfType<Button>(), button => button.Content?.ToString() == "Show release note history");
         Assert.Contains(Text(), block => block.Text == "v0.6.5");
         Assert.Contains(Text(), block => block.Text == "Newest changes");
         string longNotes = string.Join("\n", Enumerable.Range(1, 30).Select(index => $"Change {index}: detailed release notes wrap within the available page width and remain readable while scrolling."));
@@ -351,6 +352,91 @@ public class BatteryUiTests
         Assert.Contains(Text(), block => block.Text == "No release notes provided."); Assert.DoesNotContain(Text(), block => block.Text == "Loading release notes…");
         Apply(new UpdateState("0.6.2")); Assert.Empty(Versions());
         Assert.Contains(Text(), block => block.Text == "Release notes appear after a published release is found.");
+        VerifyReleaseHistory(session, assembly, release, longNotes);
+    }
+
+    private static void VerifyReleaseHistory(UiSession session, Assembly assembly, DeadWare.UpdateCore.ReleaseInfo release, string longNotes)
+    {
+        var original = session.Updates;
+        using var handler = new ReleaseHistoryUiHandler(longNotes);
+        using var http = new System.Net.Http.HttpClient(handler);
+        var service = new UpdateService("0.6.5", http: http);
+        var initial = new UpdateState("0.6.5") { Release = release, ReleaseNotes = [new(release.Version, release.Tag, release.Notes)] };
+        typeof(UpdateService).GetField("state", All)!.SetValue(service, initial);
+        typeof(UiSession).GetField("<Updates>k__BackingField", All)!.SetValue(session, service);
+        try
+        {
+            var type = assembly.GetType("DeadWare.App.UpdatesPage")!;
+            foreach (string theme in new[] { "Midnight", "Daylight" })
+            {
+                assembly.GetType("DeadWare.App.Theme")!.GetMethod("Apply", All)!.Invoke(null, [theme]);
+                var page = (ScrollViewer)Activator.CreateInstance(type, All, null, [session], null)!;
+                page.Measure(new Size(620, 720)); page.Arrange(new Rect(0, 0, 620, 720)); page.UpdateLayout();
+                void Apply(UpdateState state) => type.GetMethod("ApplyState", All)!.Invoke(page, [state]);
+                void Changed()
+                {
+                    if (page.Dispatcher.CheckAccess()) Apply(service.State);
+                    else page.Dispatcher.BeginInvoke(new Action(() => Apply(service.State)));
+                }
+                service.Changed += Changed;
+                try
+                {
+                    string[] Versions() => Descendants(page).OfType<TextBlock>().Where(block => block.Text.StartsWith("v0.")).Select(block => block.Text).ToArray();
+                    var button = Descendants(page).OfType<Button>().Single(item => item.Content?.ToString() == "Show release note history");
+                    var retry = Descendants(page).OfType<Button>().Single(item => item.Content?.ToString() == "Retry history");
+                    foreach (var size in new[] { new Size(420, 720), new Size(900, 900) })
+                    {
+                        int before = handler.Calls;
+                        button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                        page.Measure(size); page.Arrange(new Rect(new Point(), size)); page.UpdateLayout();
+                        Assert.Equal(before + 1, handler.Calls); Assert.Equal("Hide release note history", button.Content);
+                        Assert.Equal(new[] { "v0.6.5", "v0.6.4", "v0.6.2", "v0.5.0" }, Versions());
+                        Assert.Equal(Visibility.Collapsed, retry.Visibility); Assert.True(page.ExtentHeight > page.ViewportHeight);
+                        var text = Descendants(page).OfType<TextBlock>().Single(block => block.Text == longNotes);
+                        Assert.True(text.ActualWidth < size.Width); Assert.Equal(TextWrapping.Wrap, text.TextWrapping);
+                        Apply(service.State with { Busy = true }); Assert.False(button.IsEnabled);
+                        Apply(service.State with { ReleaseHistoryStatus = "Could not load release note history. Try again." }); Assert.Equal(Visibility.Visible, retry.Visibility);
+                        Apply(service.State); Assert.Equal(Visibility.Collapsed, retry.Visibility);
+                        string? output = Environment.GetEnvironmentVariable("DEADWARE_UI_OUTPUT");
+                        if (output is not null)
+                        {
+                            double top = Descendants(page).OfType<TextBlock>().Single(block => block.Text == "Release note history").TransformToAncestor(page).Transform(new Point()).Y + page.VerticalOffset;
+                            page.ScrollToVerticalOffset(Math.Max(0, top - 8)); page.UpdateLayout();
+                            var bitmap = new RenderTargetBitmap((int)size.Width, (int)size.Height, 96, 96, PixelFormats.Pbgra32); bitmap.Render(page);
+                            using var file = File.Create(Path.Combine(output, $"full-release-history-{theme}-{size.Width:0}.png"));
+                            var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap)); encoder.Save(file);
+                        }
+                        button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                        Assert.Equal(before + 1, handler.Calls); Assert.Equal("Show release note history", button.Content);
+                        Assert.Equal(new[] { "v0.6.5" }, Versions());
+                    }
+                    handler.Fail = true; button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                    Assert.Equal(Visibility.Visible, retry.Visibility);
+                    Assert.Contains("Could not load", string.Join(" ", Descendants(page).OfType<TextBlock>().Select(block => block.Text)));
+                    handler.Fail = false; int calls = handler.Calls;
+                    retry.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                    Assert.Equal(calls + 1, handler.Calls); Assert.Equal(Visibility.Collapsed, retry.Visibility);
+                    Assert.Equal(new[] { "v0.6.5", "v0.6.4", "v0.6.2", "v0.5.0" }, Versions());
+                    Apply(service.State with { ReleaseHistory = [], ReleaseHistoryLoaded = true });
+                    Assert.Contains(Descendants(page).OfType<TextBlock>(), block => block.Text == "No normal release notes have been published.");
+                }
+                finally { service.Changed -= Changed; }
+            }
+        }
+        finally { typeof(UiSession).GetField("<Updates>k__BackingField", All)!.SetValue(session, original); }
+    }
+    private sealed class ReleaseHistoryUiHandler(string longNotes) : System.Net.Http.HttpMessageHandler
+    {
+        public int Calls;
+        public bool Fail;
+        protected override Task<System.Net.Http.HttpResponseMessage> SendAsync(System.Net.Http.HttpRequestMessage request, CancellationToken token)
+        {
+            Assert.EndsWith("/releases", request.RequestUri!.AbsolutePath); Calls++;
+            if (Fail) return Task.FromResult(new System.Net.Http.HttpResponseMessage(System.Net.HttpStatusCode.ServiceUnavailable));
+            var json = System.Text.Json.JsonSerializer.Serialize(new[] { ("v0.6.5", "Newest changes"), ("v0.6.4", longNotes), ("v0.6.2", "Installed earlier"), ("v0.5.0", "Older changes") }
+                .Select(entry => new { tag_name = entry.Item1, body = entry.Item2, draft = false, prerelease = false }));
+            return Task.FromResult(new System.Net.Http.HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = new System.Net.Http.StringContent(json) });
+        }
     }
 
     private static void VerifyUpdateNotice(MainWindow dashboard, UpdateService updates, Dictionary<string, FrameworkElement> pages, StackPanel navigation, Grid shell)
