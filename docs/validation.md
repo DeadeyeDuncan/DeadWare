@@ -1,6 +1,6 @@
 # Release validation
 
-## Release notes for every missed version candidate (0.6.6, 2026-10-27)
+## Release notes for every missed version (0.6.6, 2026-10-27)
 
 Updates now lists each normal release newer than the installed version through the latest eligible update, sorted numerically newest first and labelled by version. The existing validated latest release remains the sole installation target. Notes for intermediate versions do not require old package assets. Drafts, previews, installed/older versions and releases beyond the offered target are excluded; duplicate versions are collapsed and validated latest notes take precedence. Failed or cancelled optional history retrieval preserves the latest notes and update availability with an explicit notes-area explanation.
 
@@ -11,6 +11,12 @@ The page-load timing regression also exposed skipped local package validation wh
 Before publication, a standalone probe called production ReleaseClient against public GitHub with installed-version fixture 0.6.2 and latest v0.6.5. It returned exactly 0.6.5, 0.6.4 and 0.6.3, with bodies of 894, 786 and 970 characters. Evidence is under ignored `artifacts/release-history-before-publication.json`; UI previews are under `artifacts/ui-release-notes/`. Metadata is bounded to ten 100-entry pages, 2 MiB per page and one 30-second history deadline; each body keeps the existing 16,000-character cap. A history-limit error falls back visibly to latest-only notes rather than claiming a complete history. Notes remain plain wrapped text and are not executed.
 
 The UI checks use synthetic state and an unstarted session, with no native windows, collector or user-settings writes. Package checks and real GitHub metadata retrieval do not establish a post-install live UI smoke check. The installed package snapshot reported 0.6.5 before publication; installation, rollback and restart remain user actions.
+
+[PR #10](https://github.com/DeadeyeDuncan/DeadWare/pull/10) merged Dev into main. Tag `v0.6.6` points to `8ce04c7a7e5da88c980e4fb98a178570093a83ae`, whose tree matches final tested Dev commit `2e364ba`. The [Dev build](https://github.com/DeadeyeDuncan/DeadWare/actions/runs/40608394179), [PR build](https://github.com/DeadeyeDuncan/DeadWare/actions/runs/40608398280), [main build](https://github.com/DeadeyeDuncan/DeadWare/actions/runs/40608696066) and [release workflow](https://github.com/DeadeyeDuncan/DeadWare/actions/runs/40608715281) all passed.
+
+The production `ReleaseClient` fetched latest normal [v0.6.6](https://github.com/DeadeyeDuncan/DeadWare/releases/tag/v0.6.6), confirmed it is newer than 0.6.5, and verified the public download/checksum/digest. The ZIP is 117,514,737 bytes, SHA-256 `da4e362086cab2474ceb009f3d1d0c59d89e08a829abc609a41ffb79de0c0a31`. Production extraction validated 575 managed files in 576 entries, with no local settings, databases, journals or restore cache included. ProductVersion is `0.6.6+8ce04c7a7e5da88c980e4fb98a178570093a83ae`; package evidence is under ignored `artifacts/public-release-v0.6.6/verified.json`.
+
+A second production history probe after publication returned exactly 0.6.6, 0.6.5, 0.6.4 and 0.6.3 for an installed-version fixture of 0.6.2, with note bodies of 814, 894, 786 and 970 characters. Evidence is under `artifacts/release-history-after-publication.json`. Read-only executable and manifest snapshots confirm the inspected installed 0.6.5 package stayed unchanged; no live install, rollback or restart was performed.
 
 ## Widget graphs grouped by metric (0.6.5, 2026-10-27)
 
