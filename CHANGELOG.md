@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.8 — Cooling Health navigation order
+
+- Move Cooling Health immediately after Sensors in the dashboard sidebar.
+
 ## 0.6.7 — Network graph in the widget
 
 - Add a third widget graph for download and upload, sharing a bytes-per-second scale and the existing history range.
