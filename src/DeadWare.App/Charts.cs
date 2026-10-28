@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
+using System.Windows.Documents;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using DeadWare.Core;
@@ -108,10 +109,16 @@ internal sealed class ChartCard : Border
     private readonly UiSession session;
     private readonly string kind;
     private readonly TextBlock value=Ui.Text("—",30),subtitle=Ui.Text("Waiting for hardware…",11,"Muted"),stats=Ui.Text("",11,"Muted");
+    private readonly Run downloadValue=new(),uploadValue=new();
     private readonly HistoryChart chart;
     public ChartCard(UiSession session,string kind,bool popButton=true)
     {
         this.session=session;this.kind=kind;CornerRadius=new(10);BorderThickness=new(1);Padding=new(16,12,16,10);Margin=new(6);SetResourceReference(BackgroundProperty,"Panel");SetResourceReference(BorderBrushProperty,"Line");
+        if(kind=="network")
+        {
+            value.FontSize=24;value.Inlines.Clear();value.Inlines.Add(downloadValue);value.Inlines.Add(uploadValue);
+            downloadValue.SetResourceReference(TextElement.ForegroundProperty,"Download");uploadValue.SetResourceReference(TextElement.ForegroundProperty,"Cpu");
+        }
         // A forced MinHeight larger than the grid's remaining row caused WPF to clip axis labels.
         chart=new(session,kind){ClipToBounds=true};
         var grid=new Grid();grid.RowDefinitions.Add(new(){Height=GridLength.Auto});grid.RowDefinitions.Add(new(){Height=GridLength.Auto});grid.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});grid.RowDefinitions.Add(new(){Height=GridLength.Auto});
@@ -130,7 +137,7 @@ internal sealed class ChartCard : Border
         value.SetResourceReference(TextBlock.ForegroundProperty,kind=="network"?"Download":kind.StartsWith("gpu")?"Gpu":"Cpu");
         if(kind=="network")
         {
-            value.FontSize=24;value.Text=$"↓ {Ui.Bytes(current,true)}    ↑ {Ui.Bytes(session.Stale?null:session.Value("network/upload"),true)}";
+            downloadValue.Text=$"↓ {Ui.Bytes(current,true)}    ";uploadValue.Text=$"↑ {Ui.Bytes(session.Stale?null:session.Value("network/upload"),true)}";
             subtitle.Text="Blue: download    ·    Dashed green: upload    ·    Shared scale";
         }
         else

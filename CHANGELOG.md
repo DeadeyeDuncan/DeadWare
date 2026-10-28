@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.6.10 — Network rate colors
+
+- Match the current upload rate color to the upload graph line while keeping download in its own graph color.
+- Keep the rate colors in sync when switching themes.
+
 ## 0.6.9 — Adjustable data polling
 
 - Choose 0.5, 1, 2, 5 or 10 seconds in Settings; keep the one-second default and save the choice across launches.
