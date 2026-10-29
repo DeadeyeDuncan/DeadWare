@@ -1,10 +1,11 @@
 using DeadWare.Core;
 using Microsoft.Data.Sqlite;
 using Xunit;
+using Xunit.Abstractions;
 
 namespace DeadWare.Tests;
 
-public sealed class ConnectionHistoryStoreTests : IDisposable
+public sealed class ConnectionHistoryStoreTests(ITestOutputHelper testOutput) : IDisposable
 {
     private readonly string directory = Path.Combine(Path.GetTempPath(), "DeadWare-connections-" + Guid.NewGuid().ToString("N"));
     private string Database => Path.Combine(directory, "connections.db");
@@ -263,22 +264,32 @@ public sealed class ConnectionHistoryStoreTests : IDisposable
     }
     [Fact] public void Near_capacity_expiry_with_pinned_reader_bounds_maintenance_wal_and_can_resume()
     {
-        var store=Store(); var place=Place with {Country=new string('n',160),Region=new string('r',160),City=new string('c',160),Source=new string('s',128)};
-        var rows=Enumerable.Range(0,32768).Select(i=>Row(0,"expiry",generation:i+1,name:new string('x',260)) with {Location=place}).ToArray();
+        Assert.Equal(256L*1024*1024,ConnectionHistoryStore.MaximumDatabaseBytes);
+        // Keep production WAL/transaction budgets; scale only fixture capacity and row count for CI.
+        // Explicit manual stress mode exercises the original ~235 MB database on this same Fact.
+        bool fullStress=Environment.GetEnvironmentVariable("DEADWARE_FULL_STORAGE_STRESS")=="1";
+        long cap=fullStress?ConnectionHistoryStore.MaximumDatabaseBytes:64L*1024*1024;
+        int rowCount=fullStress?32768:8192;
+        var store=Store(cap); var place=Place with {Country=new string('n',160),Region=new string('r',160),City=new string('c',160),Source=new string('s',128)};
+        var rows=Enumerable.Range(0,rowCount).Select(i=>Row(0,"expiry",generation:i+1,name:new string('x',260)) with {Location=place}).ToArray();
         for(int batch=0;batch<3;batch++) store.Append(rows.Select(x=>x with {BatchId="expiry"+batch}).ToArray(),[],Epoch.AddMinutes(1));
         store.Append([],[new("old-coverage","s",Epoch,Epoch.AddSeconds(15),true)],Epoch.AddMinutes(1));
-        Assert.InRange(new FileInfo(Database).Length,200*1024*1024,268435456);
+        long seededBytes=new FileInfo(Database).Length;
+        Assert.InRange(seededBytes,fullStress?200L*1024*1024:50L*1024*1024,cap);
+        testOutput.WriteLine($"Near-capacity expiry: mode={(fullStress?"full":"CI")}, cap={cap}, rows={3*rowCount}, database={seededBytes} bytes.");
         using(var pinned=Connect())
         using(var tx=pinned.BeginTransaction(deferred:true))
         {
             using var command=pinned.CreateCommand(); command.Transaction=tx; command.CommandText="SELECT count(*) FROM traffic"; _=command.ExecuteScalar();
             Assert.Throws<IOException>(()=>store.Append([],[],Epoch.AddDays(31)));
-            Assert.InRange(new FileInfo(Database+"-wal").Length,8*1024*1024,10*1024*1024);
+            long journalBytes=new FileInfo(Database+"-wal").Length;
+            Assert.InRange(journalBytes,8*1024*1024,10*1024*1024);
+            testOutput.WriteLine($"Pinned-reader maintenance stopped at WAL={journalBytes} bytes.");
             var hidden=store.Read(Query()); Assert.Empty(hidden.Rows); Assert.Equal(0,hidden.Summary.ReceivedBytes); Assert.Empty(hidden.Markers); Assert.Empty(hidden.Coverage); Assert.Single(hidden.Gaps); Assert.Null(hidden.EarliestRetainedTime);
             using var output=new StringWriter(); store.ExportCsv(output,Query()); Assert.Single(output.ToString().Split(Environment.NewLine,StringSplitOptions.RemoveEmptyEntries));
             using var inspect=Connect(); using var physical=inspect.CreateCommand(); physical.CommandText="SELECT count(*) FROM traffic"; Assert.True((long)physical.ExecuteScalar()!>0);
         }
-        store.Append(rows.Select(x=>x with {BatchId="expiry0"}).ToArray(),[],Epoch.AddDays(31)); Assert.Empty(Store().Read(Query()).Rows);
+        store.Append(rows.Select(x=>x with {BatchId="expiry0"}).ToArray(),[],Epoch.AddDays(31)); Assert.Empty(Store(cap).Read(Query()).Rows);
         using var db=Connect(); using var check=db.CreateCommand(); check.CommandText="SELECT (SELECT count(*) FROM traffic)+(SELECT count(*) FROM coverage)+(SELECT count(*) FROM dedup)+(SELECT count(*) FROM manifests)";
         Assert.Equal(0L,check.ExecuteScalar());
     }

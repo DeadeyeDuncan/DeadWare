@@ -37,6 +37,8 @@ public class BatteryUiTests
     public void Real_battery_page_renders_dark_light_empty_and_multi_year_without_native_windows()
     {
         Exception? failure = null;
+        string phase = "application resources";
+        void Phase(string value) => Volatile.Write(ref phase, value);
         var thread = new Thread(() =>
         {
             try
@@ -55,9 +57,13 @@ public class BatteryUiTests
                 foreach (var color in dictionary.Descendants().Attributes("Color").Where(a => a.Value.Contains("local:Theme.ScrollCorner")))
                     color.Value = "#151B24";
                 app.Resources = (ResourceDictionary)XamlReader.Parse(dictionary.ToString());
+                Phase("Connections map (all six themes)");
                 ConnectionMapUiChecks.Run(app);
+                Phase("Connections page (all six themes)");
                 ConnectionsPageUiChecks.Run(app);
+                Phase("Connections widget (all six themes)");
                 ConnectionsWidgetUiChecks.Run(app);
+                Phase("battery history");
                 var assembly = typeof(Collector).Assembly;
                 var pageType = assembly.GetType("DeadWare.App.BatteryHistoryPage"); Assert.NotNull(pageType);
                 var session = (UiSession)RuntimeHelpers.GetUninitializedObject(typeof(UiSession));
@@ -140,6 +146,7 @@ public class BatteryUiTests
                 stalePage.Measure(new Size(620, 760)); stalePage.Arrange(new Rect(0, 0, 620, 760)); stalePage.UpdateLayout();
                 var staleText = string.Join("\n", Descendants(stalePage).OfType<TextBlock>().Select(t => t.Text));
                 Assert.Contains("Waiting for a fresh reading", staleText); Assert.DoesNotContain("Battery saver unknown", staleText);
+                Phase("updates page and notice");
                 var updatesType=assembly.GetType("DeadWare.App.UpdatesPage"); Assert.NotNull(updatesType);
                 var updateService=new UpdateService("0.6.0",Path.Combine(Path.GetTempPath(),Guid.NewGuid().ToString("N")));
                 Set(session,"<Updates>k__BackingField",updateService);
@@ -178,7 +185,9 @@ public class BatteryUiTests
                         using var file=File.Create(Path.Combine(output,$"updates-{theme}.png"));var encoder=new PngBitmapEncoder();encoder.Frames.Add(BitmapFrame.Create(bitmap));encoder.Save(file);
                     }
                 }
+                Phase("release notes");
                 VerifyReleaseNotes(session, assembly);
+                Phase("dashboard and settings");
                 // Exercise the actual dashboard with an unstarted session: no hardware,
                 // database writes, native window or installed settings are involved.
                 Set(session, "captureWindows", new Dictionary<Window, Action>());
@@ -288,16 +297,21 @@ public class BatteryUiTests
                         var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap)); encoder.Save(file);
                     }
                 }
+                Phase("dashboard theme text");
                 VerifyThemeText(session, dashboard, assembly);
+                Phase("dashboard update notice");
                 VerifyUpdateNotice(dashboard, updateService, pages, navigation, shell);
                 lifetime.BeginSessionEnding(); dashboard.Close();
+                Phase("graph widgets");
                 VerifyWidget(session, collector, current, assembly, widgetChoices, widgetPin, pollingSettingsPath);
+                Phase("application shutdown");
                 app.Shutdown();
             }
             catch (Exception error) { failure = error; }
         });
         thread.SetApartmentState(ApartmentState.STA); thread.Start();
-        Assert.True(thread.Join(TimeSpan.FromSeconds(30)), "Offscreen rendering timed out.");
+        // One bounded deadline covers the expanded six-theme map/page/widget checks too.
+        Assert.True(thread.Join(TimeSpan.FromSeconds(120)), $"Offscreen rendering timed out during {Volatile.Read(ref phase)}.");
         if (failure is not null) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(failure).Throw();
     }
 
