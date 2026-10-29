@@ -9,12 +9,15 @@
 
 DeadWare is a Windows desktop monitor for watching CPU/GPU usage and temperatures, RAM usage and application network activity. Keep the dashboard open, detach a graph, or use the compact desktop widget.
 
+Connections is available starting with version 0.6.21.
+
 ## Features
 
 - CPU and GPU utilization and temperature graphs with detected device names.
 - Optional GPU fan RPM on temperature graphs, with a separate scale and saved history.
 - A combined download/upload graph with a shared scale and distinct line styles.
 - Per-application network rates when Windows permits ETW capture.
+- Connections: a native globe or 2D map, searchable application/peer table, local saved history and an optional live widget map.
 - Searchable sensor readings with minimum, maximum and average values.
 - Selectable graphics adapters on multi-GPU systems.
 - Separate or joined CPU/GPU graph windows and a compact widget with usage, temperature, RAM and network charts and always-on-top controls.
@@ -69,7 +72,7 @@ To fully stop monitoring, choose **Quit DeadWare** from the tray menu or dashboa
 
 Graph history is saved automatically in `%LOCALAPPDATA%\DeadWare\live-graph-history.db`, independently of Cooling Health recording. It retains the last six elapsed hours of CPU/GPU usage and temperature, GPU fan RPM, RAM usage percentage and combined download/upload rates. RAM uses a 0–100% scale with current used/total memory shown beside it; its history begins with readings collected in version 0.6.11 or later. GPU fan history begins with readings collected in version 0.6.20 or later; earlier samples remain unavailable. Time while DeadWare was stopped remains a gap; after more than six hours away, the old readings fall outside the available range. Current values always come from fresh readings. Writes run in the background every 15 seconds and flush on normal quit; a crash or abrupt power loss can lose the latest unsaved batch. The database is capped at 64 MiB with a bounded journal. A save error is shown in the dashboard status while live monitoring continues.
 
-Restoration matches local machine and hardware metadata, including GPU model/type rather than enumeration order. Ambiguous identical-model GPUs are not restored; an indistinguishable same-model physical replacement cannot always be detected. Full sensor-table statistics and per-application traffic totals remain current-session data. The first upgrade from a version without graph persistence cannot recover its earlier in-memory traces.
+Restoration matches local machine and hardware metadata, including GPU model/type rather than enumeration order. Ambiguous identical-model GPUs are not restored; an indistinguishable same-model physical replacement cannot always be detected. Full sensor-table statistics and the Network page's per-application traffic totals remain current-session data. Connections has its own optional saved endpoint history, described below. The first upgrade from a version without graph persistence cannot recover its earlier in-memory traces.
 
 Version 0.1.0 saved window positions but did not record which windows were open. After upgrading, arrange your desired windows once to establish the saved workspace.
 
@@ -87,9 +90,25 @@ In **Settings**, enable **Show GPU fan speed on temperature graphs** to add the 
 
 The widget's pin control is in **Settings → Widget always on top**. Changes update an open widget immediately and are saved even when it is closed. Earlier saved widget pin choices carry over. Other graph windows keep their existing Always on top controls.
 
-Choose the displayed graphs in **Settings → Widget graphs**: CPU/GPU usage, CPU/GPU temperature, RAM usage and Network activity. All four are enabled by default. Choices are saved and apply immediately to an open widget. Hidden graphs keep collecting history. Turning graphs off lowers the minimum height while keeping your current size and pin choice; resize the widget to your preferred height. If all graphs are off, the widget shows a hint to choose graphs in Settings.
+Choose the displayed graphs in **Settings → Widget graphs**: CPU/GPU usage, CPU/GPU temperature, RAM usage and Network activity. All four are enabled by default. **Connections map (live)** is a separate option, off by default. Use it alone or alongside any selected graphs. Choices are saved and apply immediately to an open widget. Hidden graphs keep collecting history. Turning graphs off lowers the minimum height while keeping your current size and pin choice; resize the widget to your preferred height. If all graphs and the map are off, the widget shows a hint to choose graphs in Settings.
 
-The compact widget has a **Usage** graph with CPU and selected-GPU utilization together, followed by a **Temperature** graph with both devices' temperatures together. CPU uses the CPU theme color and a solid line in both graphs; GPU uses the GPU theme color and a dashed line in both. Small CPU/GPU legends show the current readings. Usage shares a 0–100% scale; temperature shares a °C scale that expands above 100°C when needed. A third **RAM** graph shows physical memory usage on a 0–100% scale, with current percent and used/total memory in its legend. A fourth **Network** graph shows download as a solid blue line and upload as a dashed green line on one bytes-per-second scale, with current rates in its legend. The widget follows the shared history range and GPU selection, uses saved graph history, and keeps unavailable readings and downtime as gaps. Its minimum height follows the selected graph count; older saved sizes expand when needed while staying within the available work area.
+The compact widget has a **Usage** graph with CPU and selected-GPU utilization together, followed by a **Temperature** graph with both devices' temperatures together. CPU uses the CPU theme color and a solid line in both graphs; GPU uses the GPU theme color and a dashed line in both. Small CPU/GPU legends show the current readings. Usage shares a 0–100% scale; temperature shares a °C scale that expands above 100°C when needed. A third **RAM** graph shows physical memory usage on a 0–100% scale, with current percent and used/total memory in its legend. A fourth **Network** graph shows download as a solid blue line and upload as a dashed green line on one bytes-per-second scale, with current rates in its legend. These graphs follow the shared history range and GPU selection, use saved graph history, and keep unavailable readings and downtime as gaps. The Connections map always uses current live observations, independently of the main page's History selection or playback. Its compact 2D view has no history controls. The widget's minimum height follows the selected graphs and map; small work areas allow scrolling instead of clipping selected content.
+
+## Connections
+
+Open **Connections** beside Network for live observed destinations on a rotatable globe or a 2D world map. Drag, zoom, reset the view or pause animation; the searchable table remains available with animation stopped. Filter by application, country and traffic direction, and select an application or peer to highlight it. The table includes remote IP/port, TCP/UDP, approximate location, observed bytes, rates and last activity. Private/LAN, special and unknown public addresses remain visible in the table and relevant totals, even when they cannot appear on the map. This is observed traffic, so an idle socket need not appear.
+
+Download/upload colors and moving highlights show observed direction; bounded marker sizes and path widths indicate relative volume. Quiet or stale traffic stays static, and stopped History does not animate. Live totals cover currently active peers since their first retained observation, rather than all session traffic. The map draws at most 256 grouped locations and discloses omitted history groups; the filtered table and summaries remain available beyond that limit. Selecting a saved location opens the page containing its representative peer. IPv6 endpoints use `[address]:port` notation.
+
+**History** offers Today, 7 days, 30 days or a chosen interval, with a minute cursor and playback. Each saved row's rate is its recorded-minute bytes divided by 60 seconds, independent of the selected range. Incomplete minutes remain marked incomplete; the average does not imply continuous capture. Missing time, paused recording, capture loss, sleep and stopped capture remain gaps. Empty intervals do not invent traffic. The optional widget map continues showing live activity while this page shows history, and recording continues when the dashboard is hidden.
+
+Location lookups use a local [DB-IP City Lite database](https://db-ip.com/db/download/ip-to-city-lite), credited to [DB-IP.com](https://db-ip.com/) under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). The database is not bundled. **Download / update locations** explicitly contacts `download.db-ip.com` over HTTPS to fetch the monthly database; progress and cancellation are available, and a failed update keeps the previous valid database. There are no automatic database downloads or per-address online queries. Observed peer IPs are never submitted to a geolocation or DNS service. The download's own traffic may appear in Connections. Local lookups work offline afterward; IP/application traffic and the table work without a location database.
+
+Choose an optional approximate **Home city** from the offline list under **Recording, origin and storage**. Until then, the map says **Unknown origin** and assigns this computer no geographic position. DeadWare does not request precise Windows location or discover your public IP online. Geographic results can be wrong or incomplete, especially with VPNs, CDNs and proxies. Curves illustrate endpoint links, not measured routes. An endpoint's city/country does not establish final data storage, the ultimate service location, or whether traffic is safe or threatening.
+
+Connections recording is optional and **on by default**. Pause/resume it with the recording checkbox beside the location-database actions; rolling expiry continues while new recording is paused. Minute records in `%LOCALAPPDATA%\DeadWare\connections.db` retain application identity/name, remote IP/port, protocol, observed byte counts/times, completeness and the approximate location/origin available when recorded. A later location-database update does not relocate old records. History starts when this feature records; it cannot reconstruct earlier activity. Export the current filtered history to a new local CSV when needed.
+
+History normally retains 30 days, with a 256 MiB primary-database cap and a bounded journal. High traffic can evict older whole minutes earlier; the page shows the actual earliest retained time. Intended older-history eviction can remain in effect even if a later write fails. Background writes target a 15-second flush interval and drain on normal **Quit DeadWare**. A crash or power loss can lose the unflushed batch; delayed or failed storage can extend that interval and produces incomplete/unavailable recording status. Storage failures leave live monitoring available. History stays in this Windows profile and is not uploaded or copied by source synchronization. Back up databases only while DeadWare is fully quit.
 
 ## Hardware compatibility
 
@@ -125,9 +144,9 @@ Cooling Health flags changes worth investigating. It cannot diagnose a blocked c
 
 ## Network measurements and privacy
 
-Interface totals work independently of per-process attribution. Application traffic uses Windows ETW metadata, including TCP/UDP IPv4/IPv6 byte events. The app does not record packet payloads or send telemetry to a cloud service. No firewall management is included.
+Interface totals work independently of per-process attribution. Application traffic uses Windows ETW metadata, including TCP/UDP IPv4/IPv6 byte events. Connections optionally saves endpoint metadata locally as described above; recording starts enabled. The app never collects packet payloads, URLs, messages or file contents, and does not upload observed endpoints, application names or histories. No firewall management is included.
 
-Rates reflect observed traffic, not ISP billing totals. Adapter totals and attributed application traffic may differ due to virtual adapters, local traffic, protocol overhead or lost events. The combined network graph's last six hours are stored locally; per-application activity and names are not persisted in that cache. Long-term network usage totals are not included. Thermal history is stored separately as described above. Settings are kept in the user's local application-data directory.
+Rates reflect observed traffic, not ISP billing totals. Adapter totals and attributed application traffic may differ due to virtual adapters, local traffic, protocol overhead or lost events. The combined network graph's last six hours are stored locally; per-application activity and names are not persisted in that graph cache. Connections history is separate, optional and bounded. Thermal history is stored separately as described above. Settings are kept in the user's local application-data directory. Explicit location-database downloads contact DB-IP's download host; update checks/downloads contact GitHub.
 
 Diagnostic output is generated only when explicitly requested. It can include hardware names and running application information; redact it before attaching it to a public issue.
 
@@ -148,7 +167,7 @@ dotnet run --project src/DeadWare.App/DeadWare.App.csproj
 Create a self-contained portable ZIP and SHA-256 checksum:
 
 ```powershell
-pwsh -File scripts/publish.ps1 -Version 0.6.20
+pwsh -File scripts/publish.ps1 -Version 0.6.21
 ```
 
 The packaging script runs tests before publishing, bundles the independent self-contained update helper, and records all managed file hashes in `deadware-package.json`. Output goes under `artifacts/`. GitHub Actions runs the same script. Pushing a normal three-part version tag such as `v0.6.0` builds and publishes a normal release after tests pass, using the matching `docs/releases/v0.6.0.md` notes. Workflows use pinned action commits.

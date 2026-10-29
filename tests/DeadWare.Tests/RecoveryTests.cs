@@ -3,6 +3,19 @@ using Xunit;
 namespace DeadWare.Tests;
 public class RecoveryTests
 {
+    [Fact] public void AcceptedIdentityIsTheGenerationReceivingBytesAndRejectedEventsReturnNull()
+    {
+        var current=new ProcessIdentity(42,100,"old");
+        var tracker=new ProcessAttribution(_=>current);
+        Assert.True(tracker.Record(42,150,10,2,out var accepted));
+        Assert.Same(current,accepted);
+        current=new(42,200,"new");tracker.ObserveLoss(1);
+        Assert.False(tracker.Record(42,150,1000,0,out accepted));Assert.Null(accepted);
+        Assert.True(tracker.Record(42,250,30,5,out accepted));Assert.Same(current,accepted);
+        var row=Assert.Single(tracker.Take(1));
+        Assert.Equal(Assert.IsType<ProcessIdentity>(accepted).Generation,row.Generation);Assert.Equal(30,row.ReceivedBytes);
+        Assert.False(tracker.Record(42,250,-1,0,out accepted));Assert.Null(accepted);
+    }
     [Fact] public void LostLifecycleEventsRequireFreshIdentityAndDiscardOldTotals()
     {
         var live=new Dictionary<int,ProcessIdentity>{{42,new(42,100,"old")}};

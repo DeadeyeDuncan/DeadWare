@@ -10,6 +10,8 @@ public record SensorReading(string Id,string Hardware,string Name,string Unit,do
     string HardwareId="",string HardwareType="",string SensorType="",string Validity="Unknown");
 public record Reading(Snapshot Sample,IReadOnlyList<Device> Gpus,IReadOnlyList<SensorReading> Sensors,IReadOnlyList<ProcessTraffic> Processes,string CpuName,string HardwareStatus,string NetworkStatus,string EtwStatus,bool Elevated,IReadOnlyDictionary<string,double>? ProviderMilliseconds=null,DiagnosticFailure? EtwFailure=null)
 {
+    [System.Text.Json.Serialization.JsonIgnore]
+    public ConnectionSample? Connections {get;init;}
     public BatteryReading Battery {get;init;}=BatteryReading.Unavailable;
 }
 
@@ -57,6 +59,9 @@ public sealed class Collector : IAsyncDisposable
     public double ElapsedSeconds=>clock.Elapsed.TotalSeconds;
     public SampleHistory History {get;}=new();
     public event Action<Reading>? SampleAvailable;
+    public event Action<ConnectionSample>? FinalConnectionsAvailable;
+    private readonly object etwStopGate=new();
+    private Task? etwStop,disposal;
     public static bool IsElevated {get;}=CheckElevation();
     private string EtwStatus=>options.EtwEnabled?etw.Status:"Per-app accounting disabled for diagnostic isolation";
     private static bool CheckElevation() {using var identity=WindowsIdentity.GetCurrent();return new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator);}
@@ -134,17 +139,17 @@ public sealed class Collector : IAsyncDisposable
                     if(gpus.Count==0&&options.HardwareEnabled) hardwareStatus+=" · No supported GPU discovered.";
                     if(errors.Count>0) hardwareStatus+=" · "+string.Join("; ",errors.Distinct());
                     stage="Reading ETW counters";providerStarted=Stopwatch.GetTimestamp();
-                    var processes=options.EtwEnabled?etw.Take(now):[];
+                    var capture=etw.TakeSnapshot(sample.Timestamp,now,options.EtwEnabled);
                     if(timings is not null){timings["etw/snapshot"]=Stopwatch.GetElapsedTime(providerStarted).TotalMilliseconds;timings["poll/total"]=(clock.Elapsed.TotalSeconds-started)*1000;}
                     double elapsed=clock.Elapsed.TotalSeconds-started;
                     if(elapsed>=intervalSeconds)hardwareStatus+=$" · Slow sample ({elapsed:0.0}s); pausing before the next poll.";
-                    var reading=new Reading(sample,gpus.AsReadOnly(),sensors.AsReadOnly(),processes,cpuName,hardwareStatus,network.Status,EtwStatus,IsElevated,timings,etw.Failure) {Battery=WindowsBattery.Read()};
+                    var reading=new Reading(sample,gpus.AsReadOnly(),sensors.AsReadOnly(),capture.Processes,cpuName,hardwareStatus,network.Status,EtwStatus,IsElevated,timings,etw.Failure) {Battery=WindowsBattery.Read(),Connections=capture.Connections};
                     History.Add(sample);Volatile.Write(ref latest,reading);SampleAvailable?.Invoke(reading);
                 }
                 catch(Exception e)
                 {
                     var sample=new Snapshot(DateTimeOffset.Now,clock.Elapsed.TotalSeconds,new Dictionary<string,double?>()) {PollingIntervalSeconds=intervalSeconds};
-                    var failed=new Reading(sample,Latest?.Gpus??[],[],[],Latest?.CpuName??"Processor",$"Collection failed ({e.GetType().Name}); retrying at the selected polling interval.","Interface readings unavailable",EtwStatus,IsElevated,EtwFailure:etw.Failure);
+                    var failed=new Reading(sample,Latest?.Gpus??[],[],[],Latest?.CpuName??"Processor",$"Collection failed ({e.GetType().Name}); retrying at the selected polling interval.","Interface readings unavailable",EtwStatus,IsElevated,EtwFailure:etw.Failure) {Connections=etw.TakeSnapshot(sample.Timestamp,sample.MonotonicSeconds,available:false).Connections};
                     History.Add(sample);Volatile.Write(ref latest,failed);SampleAvailable?.Invoke(failed);
                 }
                 stage="Idle between samples";
@@ -155,13 +160,13 @@ public sealed class Collector : IAsyncDisposable
         catch(Exception e)
         {
             var sample=new Snapshot(DateTimeOffset.Now,clock.Elapsed.TotalSeconds,new Dictionary<string,double?>()) {PollingIntervalSeconds=intervalSeconds};
-            var failed=new Reading(sample,[],[],[],"Processor",$"Collector stopped ({e.GetType().Name}). Restart DeadWare to retry.","Interface readings unavailable",EtwStatus,IsElevated,EtwFailure:etw.Failure);
+            var failed=new Reading(sample,[],[],[],"Processor",$"Collector stopped ({e.GetType().Name}). Restart DeadWare to retry.","Interface readings unavailable",EtwStatus,IsElevated,EtwFailure:etw.Failure) {Connections=etw.TakeSnapshot(sample.Timestamp,sample.MonotonicSeconds,available:false).Connections};
             History.Add(sample);Volatile.Write(ref latest,failed);SampleAvailable?.Invoke(failed);
         }
         finally
         {
             stage="Stopping providers";
-            try {computer?.Close();} finally {await etw.DisposeAsync();}
+            try {computer?.Close();} finally {await StopEtwAsync();}
             stage="Stopped";
         }
     }
@@ -197,12 +202,37 @@ public sealed class Collector : IAsyncDisposable
         foreach(var sub in h.SubHardware) ReadHardware(sub,sensors,errors,lowLevelAvailable,timings);
     }
     private static string Unit(SensorType t)=>t switch {SensorType.Load=>"%",SensorType.Temperature=>"°C",SensorType.Clock=>"MHz",SensorType.Fan=>"RPM",SensorType.Voltage=>"V",SensorType.Current=>"A",SensorType.Power=>"W",SensorType.Data=>"GB",SensorType.SmallData=>"MB",SensorType.Throughput=>"B/s",SensorType.Control=>"%",SensorType.Frequency=>"Hz",_=>t.ToString()};
-    public async ValueTask DisposeAsync()
+    public ValueTask DisposeAsync()
     {
-        cancellation.Cancel();
         // Stop our trace even if a hardware provider is stuck. Native stop never runs on the UI thread.
-        await Task.Run(async()=>{await etw.DisposeAsync();if(worker is not null)await worker.ConfigureAwait(false);}).ConfigureAwait(false);
-        cancellation.Dispose();
+        lock(etwStopGate)return new(disposal??=Task.Run(DisposeCoreAsync));
+    }
+    private async Task DisposeCoreAsync()
+    {
+        try
+        {
+            cancellation.Cancel();
+            try {await etw.StopAsync().ConfigureAwait(false);}
+            finally
+            {
+                try {if(worker is not null)await worker.ConfigureAwait(false);}
+                finally {await StopEtwAsync().ConfigureAwait(false);}
+            }
+        }
+        finally {cancellation.Dispose();}
+    }
+    private Task StopEtwAsync()
+    {
+        lock(etwStopGate)return etwStop??=StopEtwCoreAsync();
+    }
+    private async Task StopEtwCoreAsync()
+    {
+        try
+        {
+            await etw.StopAsync().ConfigureAwait(false);
+            FinalConnectionsAvailable?.Invoke(etw.TakeSnapshot(DateTimeOffset.UtcNow,clock.Elapsed.TotalSeconds,options.EtwEnabled).Connections);
+        }
+        finally {await etw.DisposeAsync().ConfigureAwait(false);}
     }
 }
 

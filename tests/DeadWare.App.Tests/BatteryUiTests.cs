@@ -37,6 +37,8 @@ public class BatteryUiTests
     public void Real_battery_page_renders_dark_light_empty_and_multi_year_without_native_windows()
     {
         Exception? failure = null;
+        string phase = "application resources";
+        void Phase(string value) => Volatile.Write(ref phase, value);
         var thread = new Thread(() =>
         {
             try
@@ -55,6 +57,13 @@ public class BatteryUiTests
                 foreach (var color in dictionary.Descendants().Attributes("Color").Where(a => a.Value.Contains("local:Theme.ScrollCorner")))
                     color.Value = "#151B24";
                 app.Resources = (ResourceDictionary)XamlReader.Parse(dictionary.ToString());
+                Phase("Connections map (all six themes)");
+                ConnectionMapUiChecks.Run(app);
+                Phase("Connections page (all six themes)");
+                ConnectionsPageUiChecks.Run(app);
+                Phase("Connections widget (all six themes)");
+                ConnectionsWidgetUiChecks.Run(app);
+                Phase("battery history");
                 var assembly = typeof(Collector).Assembly;
                 var pageType = assembly.GetType("DeadWare.App.BatteryHistoryPage"); Assert.NotNull(pageType);
                 var session = (UiSession)RuntimeHelpers.GetUninitializedObject(typeof(UiSession));
@@ -137,6 +146,7 @@ public class BatteryUiTests
                 stalePage.Measure(new Size(620, 760)); stalePage.Arrange(new Rect(0, 0, 620, 760)); stalePage.UpdateLayout();
                 var staleText = string.Join("\n", Descendants(stalePage).OfType<TextBlock>().Select(t => t.Text));
                 Assert.Contains("Waiting for a fresh reading", staleText); Assert.DoesNotContain("Battery saver unknown", staleText);
+                Phase("updates page and notice");
                 var updatesType=assembly.GetType("DeadWare.App.UpdatesPage"); Assert.NotNull(updatesType);
                 var updateService=new UpdateService("0.6.0",Path.Combine(Path.GetTempPath(),Guid.NewGuid().ToString("N")));
                 Set(session,"<Updates>k__BackingField",updateService);
@@ -175,7 +185,9 @@ public class BatteryUiTests
                         using var file=File.Create(Path.Combine(output,$"updates-{theme}.png"));var encoder=new PngBitmapEncoder();encoder.Frames.Add(BitmapFrame.Create(bitmap));encoder.Save(file);
                     }
                 }
+                Phase("release notes");
                 VerifyReleaseNotes(session, assembly);
+                Phase("dashboard and settings");
                 // Exercise the actual dashboard with an unstarted session: no hardware,
                 // database writes, native window or installed settings are involved.
                 Set(session, "captureWindows", new Dictionary<Window, Action>());
@@ -186,6 +198,7 @@ public class BatteryUiTests
                 Set(collector, "latest", null!);
                 var lifetime = new ApplicationLifetime();
                 var dashboard = new MainWindow(session, lifetime, () => true, () => { });
+                ConnectionsPageUiChecks.CheckNavigation(dashboard);
                 var shell = (Grid)dashboard.Content;
                 var sidebar = (DockPanel)shell.Children[0];
                 var navigation = (StackPanel)sidebar.Children.OfType<ScrollViewer>().Single().Content;
@@ -212,6 +225,7 @@ public class BatteryUiTests
                 var uiTimer = new System.Windows.Threading.DispatcherTimer();
                 Set(session, "timer", uiTimer);
                 Set(session, "writer", new SettingsSnapshotWriter(pollingSettingsPath));
+                ConnectionsWidgetUiChecks.CheckSettings(session, settings, pollingSettingsPath);
                 VerifyGpuFanSpeed(session, collector, assembly, settings, pollingSettingsPath);
                 VerifyRangeDropdown(session, dashboard, assembly, pollingSettingsPath);
                 foreach (double seconds in new double[] { 10, .5, 1 })
@@ -283,16 +297,21 @@ public class BatteryUiTests
                         var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap)); encoder.Save(file);
                     }
                 }
+                Phase("dashboard theme text");
                 VerifyThemeText(session, dashboard, assembly);
+                Phase("dashboard update notice");
                 VerifyUpdateNotice(dashboard, updateService, pages, navigation, shell);
                 lifetime.BeginSessionEnding(); dashboard.Close();
+                Phase("graph widgets");
                 VerifyWidget(session, collector, current, assembly, widgetChoices, widgetPin, pollingSettingsPath);
+                Phase("application shutdown");
                 app.Shutdown();
             }
             catch (Exception error) { failure = error; }
         });
         thread.SetApartmentState(ApartmentState.STA); thread.Start();
-        Assert.True(thread.Join(TimeSpan.FromSeconds(30)), "Offscreen rendering timed out.");
+        // One bounded deadline covers the expanded six-theme map/page/widget checks too.
+        Assert.True(thread.Join(TimeSpan.FromSeconds(120)), $"Offscreen rendering timed out during {Volatile.Read(ref phase)}.");
         if (failure is not null) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(failure).Throw();
     }
 
@@ -1340,6 +1359,7 @@ public class BatteryUiTests
         var fresh = (Window)Activator.CreateInstance(assembly.GetType("DeadWare.App.WidgetWindow")!, All, null, [session], null)!;
         Assert.Equal(280, fresh.MinHeight); Assert.Equal(360, fresh.Height); Assert.Equal(340, fresh.Width);
         Assert.False(fresh.Topmost);
+        ((FrameworkElement)fresh.Content).Measure(new Size(340,321));((FrameworkElement)fresh.Content).Arrange(new Rect(0,0,340,321));fresh.UpdateLayout();
         Assert.Equal(2, Descendants((FrameworkElement)fresh.Content).OfType<FrameworkElement>().Count(element => element.GetType().Name == "WidgetGraph" && element.Visibility == Visibility.Visible));
         fresh.Close();
         if (hadPlacement) session.Settings.Windows["widget"] = savedPlacement!;

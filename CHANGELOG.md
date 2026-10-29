@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.21 — Connections map and history
+
+- Add Connections with a rotatable globe, 2D map, approximate country/city locations and a searchable application/peer table with traffic direction, bytes and rates.
+- Save optional device-local endpoint history, enabled by default, with pause/resume, up to 30 days of retention, minute playback, filters and CSV export.
+- Add **Connections map (live)** under **Settings → Widget graphs**, off by default. It can appear alone or with other graphs and stays live while Connections displays history.
+- Resolve public endpoints with an optional explicitly downloaded local DB-IP City Lite database and choose an approximate home city from an offline list.
+- Show local and unknown peers, capture gaps, incomplete intervals and omitted map locations without inventing routes or traffic.
+
 ## 0.6.20 — GPU fan speed on temperature graphs
 
 - Add the saved **Show GPU fan speed on temperature graphs** Settings option, off by default and applied immediately to the dashboard GPU temperature graph, GPU/joined temperature pop-outs and widget temperature graph.
