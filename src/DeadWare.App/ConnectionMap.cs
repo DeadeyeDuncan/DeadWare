@@ -70,6 +70,7 @@ public sealed class ConnectionMap : FrameworkElement
     }
 
     public void ResetView() => ChangeCamera(new(origin?.Longitude ?? -20, Flat ? 0 : origin?.Latitude ?? 20, 1, Flat));
+    public void SetView(GeoPoint center,double zoom) => ChangeCamera(new(center.Longitude,center.Latitude,zoom,Flat));
     public void ZoomBy(double factor)
     {
         if (double.IsFinite(factor) && factor > 0) ChangeCamera(camera with { Zoom = Math.Clamp(camera.Zoom * Math.Min(factor, 8), 1, 8) });

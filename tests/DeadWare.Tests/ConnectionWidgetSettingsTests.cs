@@ -1,4 +1,5 @@
 using DeadWare.Core;
+using System.Text.Json;
 using Xunit;
 
 namespace DeadWare.Tests;
@@ -13,6 +14,21 @@ public class ConnectionWidgetSettingsTests
         var settings=SettingsCodec.Read(json).Settings;
         Assert.Equal(WidgetGraphSelection.Kinds,settings.WidgetGraphs);
         Assert.False(settings.WidgetConnectionsMap);
+        using var saved=JsonDocument.Parse(SettingsCodec.Write(settings));
+        Assert.True(saved.RootElement.TryGetProperty("WidgetConnectionsNorthAmerica",out var region));
+        Assert.False(region.GetBoolean());
+    }
+
+    [Theory]
+    [InlineData(false,false)] [InlineData(false,true)] [InlineData(true,false)] [InlineData(true,true)]
+    public void Region_selection_roundtrips_independently_of_map_visibility(bool map,bool northAmerica)
+    {
+        var json=$"{{\"WidgetConnectionsMap\":{map.ToString().ToLowerInvariant()},\"WidgetConnectionsNorthAmerica\":{northAmerica.ToString().ToLowerInvariant()},\"WidgetGraphs\":[]}}";
+        var settings=SettingsCodec.Read(json).Settings;
+        using var saved=JsonDocument.Parse(SettingsCodec.Write(settings));
+        Assert.Equal(map,settings.WidgetConnectionsMap);Assert.Empty(settings.WidgetGraphs);
+        Assert.True(saved.RootElement.TryGetProperty("WidgetConnectionsNorthAmerica",out var region));
+        Assert.Equal(northAmerica,region.GetBoolean());
     }
 
     [Theory]

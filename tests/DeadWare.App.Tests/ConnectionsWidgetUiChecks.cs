@@ -8,6 +8,8 @@ using System.Windows.Media.Imaging;
 using System.IO;
 using System.Diagnostics;
 using System.Windows.Threading;
+using System.Windows.Input;
+using System.Text.Json;
 using DeadWare.App;
 using DeadWare.Core;
 using Xunit;
@@ -29,6 +31,7 @@ internal static class ConnectionsWidgetUiChecks
         app.Dispatcher.VerifyAccess();
         // Dynamic application resources must only be consumed on this fixture's STA.
         CheckLive();
+        CheckRegion();
         CheckLayout();
         var service=new ConnectionService(new Resolver(),()=>Epoch,(_,_)=>throw new InvalidOperationException("Widget must not record history."));
         service.Configure(false,new(41,-87));service.Start();
@@ -85,6 +88,116 @@ internal static class ConnectionsWidgetUiChecks
         finally {service.StopAsync().GetAwaiter().GetResult();Theme.SetGraphColors(new Dictionary<string,string>());Theme.Apply("Midnight");}
     }
 
+    private sealed class RegionalResolver:IConnectionGeolocation
+    {
+        internal static readonly GeoPoint[] Cities=[new(47.61,-122.33),new(37.77,-122.42),new(39.74,-104.99),new(41.88,-87.63),new(38.91,-77.04),new(40.71,-74.01),new(45.50,-73.57),new(19.43,-99.13)];
+        public ConnectionLocation? Lookup(string address)=>int.TryParse(address.Split('.')[^1],out int city)&&city is >=1 and <=8?new("NA","Fixture",null,"Synthetic city",Cities[city-1],"fixture"):null;
+    }
+
+    private static void CheckRegion()
+    {
+        string directory=Path.Combine(Path.GetTempPath(),"DeadWare-widget-region-"+Guid.NewGuid().ToString("N"));
+        string path=Path.Combine(directory,"settings.json");
+        var service=new ConnectionService(new RegionalResolver(),()=>Epoch,(_,_)=>throw new InvalidOperationException("Widget must not record history."));
+        service.Configure(false,new(41.88,-87.63));service.Start();
+        Window? owner=null;
+        try
+        {
+            var session=(UiSession)RuntimeHelpers.GetUninitializedObject(typeof(UiSession));
+            void Set(string name,object value)=>typeof(UiSession).GetField(name,All)!.SetValue(session,value);
+            Set("<Settings>k__BackingField",new UserSettings {ConnectionsAnimation=false,WidgetConnectionsMap=true});Set("<Connections>k__BackingField",service);
+            Set("layout",new DetachedWindowState([]));Set("writer",new SettingsSnapshotWriter(path));
+            var traffic=Enumerable.Range(1,8).Select(i=>new ConnectionTraffic(new(new(i,i,"Synthetic city"),"",0,"8.8.8."+i,443,ConnectionProtocol.Tcp),Epoch,Epoch,100,50,128,64)).ToArray();
+            void Publish(int sequence)=>service.TryRecord(new ConnectionSample(Epoch,0,sequence,"fixture",traffic,[],null,true,true,0,0,0,"Synthetic regional capture"));
+            Publish(1);PumpUntil(()=>service.Live.Connections.All(c=>c.Location is not null));
+            var widget=new ConnectionsWidget(session);
+            owner=new Window {Content=widget};
+            using var source=new OffscreenSource(widget);Pump();Layout(widget,284,150);
+            var map=Assert.Single(widget.Children.OfType<ConnectionMap>());
+            var button=Assert.Single(widget.Children.OfType<Button>());
+            Assert.Equal("NA",button.Content);Assert.True(button.Focusable);Assert.True(KeyboardNavigation.GetIsTabStop(button));
+            Assert.Contains("North America",AutomationProperties.GetName(button));Assert.Contains("North America",button.ToolTip!.ToString());
+            Assert.False(map.IsHitTestVisible);Assert.False(map.Focusable);
+            Assert.Equal(1,map.Camera.Zoom);
+            var mainPage=new ConnectionsPage(session);var mainMap=(ConnectionMap)typeof(ConnectionsPage).GetField("map",All)!.GetValue(mainPage)!;var mainCamera=mainMap.Camera;
+            GeoPoint[] points=RegionalResolver.Cities;
+            Point[] Centers()
+            {
+                Layout(widget,284,150);
+                var centers=Drawings(VisualTreeHelper.GetDrawing(map)!).Where(d=>d.Geometry is EllipseGeometry e&&e.RadiusX==6).Select(d=>((EllipseGeometry)d.Geometry).Center).ToArray();
+                Assert.Equal(points.Length,centers.Length);
+                return centers;
+            }
+            double Spread(bool horizontal)
+            {
+                var centers=Centers();
+                return horizontal?centers.Max(p=>p.X)-centers.Min(p=>p.X):centers.Max(p=>p.Y)-centers.Min(p=>p.Y);
+            }
+            double Separation()
+            {
+                var centers=Centers();
+                return centers.SelectMany((a,i)=>centers.Skip(i+1).Select(b=>(a-b).Length)).Min();
+            }
+            double worldWidth=Spread(true),worldHeight=Spread(false),worldSeparation=Separation();int changes=0;
+            session.Changed+=()=>{changes++;widget.Refresh();};
+            button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Assert.True(Region(session.Settings));Assert.Equal(1,changes);Assert.True(map.Camera.Zoom>1);
+            Assert.True(Spread(true)>worldWidth*2.4);Assert.True(Spread(false)>worldHeight*2.4);
+            Assert.True(Separation()>worldSeparation*2.4);
+            var regionalCamera=map.Camera;
+            Assert.All(points,p=>{var projected=ConnectionProjection.Project(p,regionalCamera);Assert.InRange(projected.X,-.95,.95);Assert.InRange(projected.Y,-.95,.95);});
+            PumpUntil(()=>File.Exists(path)&&Region(SettingsCodec.Read(File.ReadAllText(path)).Settings));
+            long revision=(long)typeof(UiSession).GetField("saveRevision",All)!.GetValue(session)!;
+            typeof(UiSession).GetMethod("SetWidgetConnectionsNorthAmerica")!.Invoke(session,[true]);
+            Assert.Equal(1,changes);Assert.Equal(revision,typeof(UiSession).GetField("saveRevision",All)!.GetValue(session));
+            Publish(2);widget.Refresh();Assert.Equal(regionalCamera,map.Camera);
+            var london=ConnectionAssets.Cities.First(c=>c.Name=="London");
+            session.SetConnectionsHomeCity(london.Id);Assert.Equal(london.Point,service.Live.Origin);Assert.Equal(regionalCamera,map.Camera);
+            widget.Visibility=Visibility.Collapsed;widget.Visibility=Visibility.Visible;widget.Refresh();Assert.Equal(regionalCamera,map.Camera);
+            CheckHistoryIsolation(session,service,widget,"Synthetic regional capture");Assert.Equal(regionalCamera,map.Camera);
+            foreach(string theme in Theme.Names)
+            foreach(var size in new[]{new Size(284,150),new Size(584,134),new Size(584,284)})
+            {
+                Theme.Apply(theme);Pump();widget.Refresh();Layout(widget,size.Width,size.Height);
+                Assert.Equal(regionalCamera,map.Camera);CheckRegionButton(widget,button);
+                Assert.Equal(((SolidColorBrush)Theme.Brush("Accent")).Color,((SolidColorBrush)button.BorderBrush).Color);
+                Assert.Equal(((SolidColorBrush)Theme.Brush("Ink")).Color,((SolidColorBrush)button.Foreground).Color);
+                Assert.Equal(((SolidColorBrush)Theme.Brush("Control")).Color,((SolidColorBrush)button.Background).Color);
+                Render(widget,(int)size.Width,(int)size.Height,$"widget-region-{theme}-{size.Width}x{size.Height}");
+                button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));Layout(widget,size.Width,size.Height);
+                Assert.Equal(1,map.Camera.Zoom);CheckMapOnly(widget,map);
+                Render(widget,(int)size.Width,(int)size.Height,$"widget-world-{theme}-{size.Width}x{size.Height}");
+                button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));Assert.Equal(regionalCamera,map.Camera);
+            }
+            PumpUntil(()=>Region(SettingsCodec.Read(File.ReadAllText(path)).Settings));
+            Set("<Settings>k__BackingField",SettingsCodec.Read(File.ReadAllText(path)).Settings);
+            var restored=new ConnectionsWidget(session);Assert.Equal(regionalCamera,Assert.Single(restored.Children.OfType<ConnectionMap>()).Camera);
+            Assert.Contains("World",Assert.Single(restored.Children.OfType<Button>()).ToolTip!.ToString());
+            button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));Assert.False(Region(session.Settings));Assert.Equal(1,map.Camera.Zoom);Assert.Equal(0,map.Camera.Latitude);
+            PumpUntil(()=>!Region(SettingsCodec.Read(File.ReadAllText(path)).Settings));
+            Assert.Equal(mainCamera,mainMap.Camera);
+        }
+        finally {owner?.Close();service.StopAsync().GetAwaiter().GetResult();Theme.Apply("Midnight");if(Directory.Exists(directory))Directory.Delete(directory,true);}
+    }
+
+    private static bool Region(UserSettings settings)
+    {
+        using var saved=JsonDocument.Parse(SettingsCodec.Write(settings));
+        return saved.RootElement.TryGetProperty("WidgetConnectionsNorthAmerica",out var region)&&region.GetBoolean();
+    }
+
+    private static void CheckRegionButton(ConnectionsWidget widget,Button button)
+    {
+        var bounds=Bounds(button,widget);Assert.InRange(bounds.Width,28,40);Assert.InRange(bounds.Height,22,30);
+        Assert.InRange(bounds.Right,widget.ActualWidth-10,widget.ActualWidth-3);Assert.InRange(bounds.Top,3,10);
+        Assert.InRange(bounds.Bottom,0,widget.ActualHeight);
+        Assert.Same(button,Assert.Single(widget.Children.OfType<UIElement>(),e=>e.IsHitTestVisible));
+        Assert.Null(widget.InputHitTest(new Point(10,widget.ActualHeight-10)));
+        Assert.Contains(Elements(button),e=>ReferenceEquals(e,widget.InputHitTest(new Point(bounds.Left+bounds.Width/2,bounds.Top+bounds.Height/2))));
+        FocusManager.SetIsFocusScope(widget,true);FocusManager.SetFocusedElement(widget,button);
+        Assert.Same(button,FocusManager.GetFocusedElement(widget));
+    }
+
     internal static void CheckSettings(UiSession session,Panel settings,string path)
     {
         var choice=Assert.Single(settings.Children.OfType<WrapPanel>().SelectMany(p=>p.Children.OfType<CheckBox>()),c=>c.Content?.ToString()=="Connections map (live)");
@@ -101,7 +214,7 @@ internal static class ConnectionsWidgetUiChecks
         service.Configure(false,null);service.Start();
         try
         {
-            var settings=new UserSettings {WidgetConnectionsMap=true,WidgetGraphs=[],ConnectionsAnimation=false,OpenWindows=["widget"],WidgetAlwaysOnTop=false};
+            var settings=new UserSettings {WidgetConnectionsMap=true,WidgetConnectionsNorthAmerica=true,WidgetGraphs=[],ConnectionsAnimation=false,OpenWindows=["widget"],WidgetAlwaysOnTop=false};
             var saved=new WindowPlacement(20,30,340,390,false);settings.Windows["widget"]=saved;
             var session=(UiSession)RuntimeHelpers.GetUninitializedObject(typeof(UiSession));
             void Set(object target,string name,object value)=>target.GetType().GetField(name,All)!.SetValue(target,value);
@@ -113,6 +226,7 @@ internal static class ConnectionsWidgetUiChecks
             var content=(FrameworkElement)window.Content;
             Layout(content,300,171);
             var map=Assert.Single(Elements(content).OfType<ConnectionsWidget>());
+            Assert.True(Assert.Single(map.Children.OfType<ConnectionMap>()).Camera.Zoom>1);
             Assert.Equal(210,window.MinHeight);Assert.Equal(240,window.Height);Assert.Equal(300,window.MinWidth);
             Assert.False(window.Topmost);Assert.Equal(saved,settings.Windows["widget"]);
             var viewport=new Border();viewport.SetResourceReference(Border.BackgroundProperty,"Background");window.Content=null;viewport.Child=content;window.Content=viewport;
@@ -181,12 +295,18 @@ internal static class ConnectionsWidgetUiChecks
             settings.WidgetGraphs=WidgetGraphSelection.Kinds.ToList();Changed(session);
             Assert.Equal(520,window.MinHeight);
             window.Close();
+            settings.WidgetConnectionsMap=true;
+            var reopened=new WidgetWindow(session);
+            Layout((FrameworkElement)reopened.Content,300,260);
+            Assert.True(Assert.Single(Elements((DependencyObject)reopened.Content).OfType<ConnectionMap>()).Camera.Zoom>1);
+            reopened.Close();
         }
         finally {service.StopAsync().GetAwaiter().GetResult();Theme.Apply("Midnight");}
     }
 
-    private static void CheckHistoryIsolation(UiSession session,ConnectionService service,ConnectionsWidget widget)
+    private static void CheckHistoryIsolation(UiSession session,ConnectionService service,ConnectionsWidget widget,string liveStatus="Widget-only live")
     {
+        var widgetMap=Assert.Single(widget.Children.OfType<ConnectionMap>());var camera=widgetMap.Camera;
         var page=new ConnectionsPage(session);
         T Field<T>(string name)=>(T)typeof(ConnectionsPage).GetField(name,All)!.GetValue(page)!;
         void Call(string name)=>typeof(ConnectionsPage).GetMethod(name,All)!.Invoke(page,null);
@@ -198,9 +318,10 @@ internal static class ConnectionsWidgetUiChecks
         Call("TogglePlayback");Call("AdvancePlayback");
         var live=service.Live;Changed(session);
         var map=Assert.Single(widget.Children.OfType<ConnectionMap>());
-        Assert.Contains("Widget-only live",map.StatusSummary);Assert.DoesNotContain("Historical",map.StatusSummary);
-        Assert.Contains("Widget-only live",AutomationProperties.GetName(widget));
-        Assert.Equal(7,live.Connections[0].Traffic.DownloadBytesPerSecond);
+        Assert.Contains(liveStatus,map.StatusSummary);Assert.DoesNotContain("Historical",map.StatusSummary);
+        Assert.Contains(liveStatus,AutomationProperties.GetName(widget));
+        Assert.Equal(liveStatus=="Widget-only live"?7:128,live.Connections[0].Traffic.DownloadBytesPerSecond);
+        Assert.Equal(camera,map.Camera);
         Assert.Equal(live,service.Live);Call("StopPlayback");
     }
 
@@ -240,9 +361,12 @@ internal static class ConnectionsWidgetUiChecks
     private static int GlyphRuns(Drawing drawing)=>drawing is GlyphRunDrawing?1:drawing is DrawingGroup group?group.Children.Sum(GlyphRuns):0;
     private static void CheckMapOnly(ConnectionsWidget widget,ConnectionMap map)
     {
-        Assert.Empty(Elements(widget).OfType<TextBlock>());
+        Assert.Empty(Elements(map).OfType<TextBlock>());
+        Assert.All(Elements(widget).OfType<TextBlock>(),text=>Assert.Equal("NA",text.Text));
+        CheckRegionButton(widget,Assert.Single(widget.Children.OfType<Button>()));
         var drawing=VisualTreeHelper.GetDrawing(map)!;
         Assert.Equal(0,GlyphRuns(drawing));
+        if(map.Camera.Zoom>1)return;
         var world=Assert.Single(Drawings(drawing),d=>d.Geometry is RectangleGeometry&&d.Pen is not null).Geometry.Bounds;
         Assert.InRange(world.Width,map.ActualWidth*.9,map.ActualWidth);
         Assert.InRange(world.Height,map.ActualHeight*.9,map.ActualHeight);
@@ -253,6 +377,7 @@ internal static class ConnectionsWidgetUiChecks
     {
         var bitmap=new RenderTargetBitmap(width,height,96,96,PixelFormats.Pbgra32);bitmap.Render(element);
         string? output=Environment.GetEnvironmentVariable("DEADWARE_UI_OUTPUT");
+        if(output is null&&name.StartsWith("widget-"))output=Environment.GetEnvironmentVariable("DEADWARE_WIDGET_REGION_OUTPUT");
         if(output is null&&(name.StartsWith("widget-layout-")||name.StartsWith("widget-viewport-")||name.StartsWith("widget-short-")))output=Environment.GetEnvironmentVariable("DEADWARE_WIDGET_LAYOUT_OUTPUT");
         if(output is null)return;
         Directory.CreateDirectory(output);using var stream=File.Create(Path.Combine(output,name+".png"));
@@ -283,7 +408,7 @@ internal static class ConnectionsWidgetUiChecks
             Assert.True(SpinWait.SpinUntil(()=>service.Live.Connections[0].Location is not null,TimeSpan.FromSeconds(3)));
             widget.Refresh();
             Assert.Equal(1,map.DisplayedPointCount);
-            Assert.Empty(Elements(widget).OfType<TextBlock>());
+            Assert.Empty(Elements(map).OfType<TextBlock>());
             string text=AutomationProperties.GetName(widget);
             Assert.Contains("live",text);Assert.DoesNotContain("B/s",text);
             Assert.Equal(129,service.Live.Connections.Sum(c=>c.Traffic.DownloadBytesPerSecond));
