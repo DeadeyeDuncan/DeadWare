@@ -16,6 +16,8 @@ internal static class ConnectionMapUiChecks
     {
         CheckIndependentAssetRecovery();
         Assert.Equal(333,ConnectionAssets.Borders.Count);
+        Assert.Equal(2173,ConnectionAssets.StateBorders.Count);
+        Assert.Equal(32584,ConnectionAssets.StateBorders.Sum(p=>p.Count));
         Assert.Contains(ConnectionAssets.Borders,p=>p[0]!=p[^1]);
         Assert.Equal(2,Assert.Single(ConnectionAssets.ParseBorders("[[[0,0],[1,1]]]" )).Count);
         foreach(string invalid in new[]{"{}","[[[0,0]]]","[[[181,0],[1,1]]]","[[[0,91],[1,1]]]","[[[0,0,0],[1,1]]]"})
@@ -67,6 +69,7 @@ internal static class ConnectionMapUiChecks
         CheckMapOnlyPresentationSwitch();
         CheckDirectionalFlowAndVolume();
         CheckFineConnectionLayers();
+        CheckStateBordersAndWidgetMarkers();
     }
 
     private static void CheckMapOnlyPresentationSwitch()
@@ -122,8 +125,8 @@ internal static class ConnectionMapUiChecks
             Render(map,new(1000,400),"connections-filaments-selected");
             return Shapes(VisualTreeHelper.GetDrawing(map)!).Where(s=>s.Geometry is StreamGeometry&&s.Pen?.Brush==Theme.Brush("Ink")&&s.Pen.Thickness<1).ToArray();
         }
-        phase.SetValue(map,1.01d);map.InvalidateVisual();var first=Filaments();Assert.Equal(3,first.Length);
-        phase.SetValue(map,1.09d);map.InvalidateVisual();var sameTick=Filaments();Assert.All(Enumerable.Range(0,3),i=>Assert.Same(first[i].Geometry,sameTick[i].Geometry));
+        phase.SetValue(map,1.01d);map.InvalidateVisual();var first=Filaments();Assert.Equal(2,first.Length);
+        phase.SetValue(map,1.02d);map.InvalidateVisual();var sameTick=Filaments();Assert.All(Enumerable.Range(0,2),i=>Assert.Same(first[i].Geometry,sameTick[i].Geometry));
         string geometry=string.Join(";",first.Select(s=>s.Geometry.ToString()));
         phase.SetValue(map,2d);map.InvalidateVisual();Assert.NotEqual(geometry,string.Join(";",Filaments().Select(s=>s.Geometry.ToString())));
         map.AnimationEnabled=false;var stopped=string.Join(";",Filaments().Select(s=>s.Geometry.ToString()));
@@ -140,6 +143,39 @@ internal static class ConnectionMapUiChecks
         }
         map.RaiseEvent(new RoutedEventArgs(FrameworkElement.UnloadedEvent));
         CheckDenseMapRendering();
+    }
+
+    private static void CheckStateBordersAndWidgetMarkers()
+    {
+        static IEnumerable<GeometryDrawing> Shapes(Drawing drawing)=>drawing is GeometryDrawing shape?[shape]:drawing is DrawingGroup group?group.Children.SelectMany(Shapes):[];
+        var map=new ConnectionMap {AnimationEnabled=false};
+        GeometryDrawing[] Draw(Size size,string name)
+        {
+            Render(map,size,name);return Shapes(VisualTreeHelper.GetDrawing(map)!).ToArray();
+        }
+        bool State(GeometryDrawing s)=>s.Geometry is StreamGeometry&&s.Pen?.Brush==Theme.Brush("Muted")&&s.Pen.Thickness==.5;
+        foreach(bool flat in new[]{false,true})
+        foreach(bool widget in new[]{false,true})
+        {
+            map.Flat=flat;map.MapOnly=widget;map.SetData([],null,true,"State borders fixture");map.SetView(new(43,-103),1);
+            var size=widget?new Size(600,300):new Size(1000,500);
+            Assert.DoesNotContain(Draw(size,"states-world"),State);
+            map.SetView(new(43,-103),2.5);
+            var first=Assert.Single(Draw(size,$"states-NA-{flat}-{widget}"),State).Geometry;Assert.False(first.IsEmpty());
+            map.InvalidateVisual();Assert.Same(first,Assert.Single(Draw(size,"states-cached"),State).Geometry);
+            Assert.NotSame(first,Assert.Single(Draw(new(size.Width-20,size.Height),"states-resized"),State).Geometry);
+            map.SetView(new(35,-100),3);Assert.NotSame(first,Assert.Single(Draw(size,"states-panned"),State).Geometry);
+            map.ResetView();Assert.DoesNotContain(Draw(size,"states-reset"),State);
+        }
+        map.Flat=true;map.MapOnly=false;map.SetData([new("wave",new(0,60),100,100,true)],new(0,-60),true,"Oscilloscope fixture");map.ResetView();
+        var main=Draw(new(1000,400),"oscilloscope-main");
+        var waves=main.Where(s=>s.Geometry is StreamGeometry&&s.Pen?.Brush==Theme.Brush("Ink")&&s.Pen.Thickness==.45).ToArray();
+        Assert.Equal(2,waves.Length);Assert.All(waves,w=>Assert.InRange(w.Geometry.Bounds.Height,1,8));
+        Assert.DoesNotContain(main,s=>s.Pen?.DashStyle.Dashes.Count>0);
+        double Marker(GeometryDrawing[] shapes)=>shapes.Where(s=>s.Geometry is EllipseGeometry&&s.Brush==Theme.Brush(Theme.GraphKey("download"))).Select(s=>((EllipseGeometry)s.Geometry).RadiusX).Single();
+        double full=Marker(main);map.MapOnly=true;
+        var compact=Draw(new(600,300),"oscilloscope-widget");Assert.Equal(full/2,Marker(compact));
+        map.SelectPoint(null);var unselected=Draw(new(300,171),"oscilloscope-widget-small");Assert.InRange(Marker(unselected),1.5,3);
     }
 
     private static void CheckDenseMapRendering()
@@ -173,12 +209,12 @@ internal static class ConnectionMapUiChecks
         const string validCities = "[{\"id\":\"fixture\",\"name\":\"Fixture city\",\"country\":\"Fixture country\",\"latitude\":1,\"longitude\":2}]";
         var load = typeof(ConnectionAssets).GetMethod("Load", BindingFlags.NonPublic | BindingFlags.Static)!;
         var failures = new List<Exception?>();
-        foreach (string rejected in new[] { "land", "borders", "cities" })
+        foreach (string rejected in new[] { "land", "borders", "states", "cities" })
         foreach (string failure in new[] { "malformed", "oversized", "missing" })
         {
             failures.Add(Record.Exception(() =>
             {
-                string Read(string name) => name != rejected ? name == "land" ? validLand : name == "borders" ? validBorders : validCities : failure switch
+                string Read(string name) => name != rejected ? name == "land" ? validLand : name is "borders" or "states" ? validBorders : validCities : failure switch
                 {
                     "malformed" => "{}",
                     "oversized" => new string(' ', 2_000_001),
@@ -189,7 +225,9 @@ internal static class ConnectionMapUiChecks
                 T Value<T>(string name) => (T)assets.GetType().GetProperty(name)!.GetValue(assets)!;
                 var land = Value<IReadOnlyList<IReadOnlyList<GeoPoint>>>("Land");
                 var cities = Value<IReadOnlyList<HomeCity>>("Cities");
-                Assert.Equal(rejected == "land" ? "Map geography unavailable" : rejected == "borders" ? "Country borders unavailable" : "Home city choices unavailable", Value<string>("Status"));
+                Assert.Equal(rejected == "land" ? "Map geography unavailable" : rejected == "borders" ? "Country borders unavailable" : rejected == "states" ? "State borders unavailable" : "Home city choices unavailable", Value<string>("Status"));
+                if(rejected=="states")Assert.Empty(Value<IReadOnlyList<IReadOnlyList<GeoPoint>>>("StateBorders"));
+                else Assert.Equal(new[]{new GeoPoint(0,0),new(1,1)},Assert.Single(Value<IReadOnlyList<IReadOnlyList<GeoPoint>>>("StateBorders")));
                 if(rejected=="borders")Assert.Empty(Value<IReadOnlyList<IReadOnlyList<GeoPoint>>>("Borders"));
                 else Assert.Equal(new[]{new GeoPoint(0,0),new(1,1)},Assert.Single(Value<IReadOnlyList<IReadOnlyList<GeoPoint>>>("Borders")));
                 if (rejected == "land")
