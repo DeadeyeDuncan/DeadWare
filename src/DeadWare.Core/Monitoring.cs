@@ -255,6 +255,10 @@ public record WindowPlacement(double Left,double Top,double Width,double Height,
 }
 public sealed class UserSettings
 {
+    public bool ConnectionsRecording {get;set;}=true;
+    public bool WidgetConnectionsMap {get;set;}
+    public string? ConnectionsHomeCityId {get;set;}
+    public bool ConnectionsAnimation {get;set;}=true;
     public List<string> WidgetGraphs {get;set;}=WidgetGraphSelection.Kinds.ToList();
     public bool WidgetAlwaysOnTop {get;set;}=true;
     public bool JoinCpuGpuPopouts {get;set;}
@@ -288,6 +292,7 @@ public static class SettingsCodec
             if(s is null) return new(new(),"Settings were empty; defaults restored.");
             if(s.Theme is not ("Midnight" or "Ember" or "Glacier" or "Amethyst" or "Neon" or "Daylight")) s.Theme="Midnight";
             s.GraphColors=GraphColorSettings.Normalize(s.GraphColors);
+            if(string.IsNullOrWhiteSpace(s.ConnectionsHomeCityId)||s.ConnectionsHomeCityId.Length>80||s.ConnectionsHomeCityId.Any(char.IsControl))s.ConnectionsHomeCityId=null;
             bool invalid=!HistoryRanges.IsSupported(s.HistorySeconds) || s.Windows is null || PollingPolicy.Normalize(s.PollingIntervalSeconds)!=s.PollingIntervalSeconds;
             var widgetGraphs=WidgetGraphSelection.Normalize(s.WidgetGraphs);
             invalid|=s.WidgetGraphs is null||!s.WidgetGraphs.SequenceEqual(widgetGraphs,StringComparer.Ordinal);

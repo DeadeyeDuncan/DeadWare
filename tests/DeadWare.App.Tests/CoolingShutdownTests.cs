@@ -24,6 +24,7 @@ public class CoolingShutdownTests
         // Never construct/start a hardware collector, Application or Window. Only exercise the stop path.
         var collector=(Collector)RuntimeHelpers.GetUninitializedObject(typeof(Collector));
         Set(collector,"cancellation",cancellation);Set(collector,"worker",blocked.Task);
+        Set(collector,"etwStopGate",new object());Set(collector,"clock",Stopwatch.StartNew());Set(collector,"options",new CollectorOptions(EtwEnabled:false));
         Set(collector,"etw",Activator.CreateInstance(typeof(Collector).Assembly.GetType("DeadWare.App.EtwNetwork")!,[false])!);
         var session=(UiSession)RuntimeHelpers.GetUninitializedObject(typeof(UiSession));
         Set(session,"<Collector>k__BackingField",collector);Set(session,"<Cooling>k__BackingField",history);Set(session,"<GraphHistory>k__BackingField",graphs);

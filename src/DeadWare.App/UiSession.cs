@@ -10,6 +10,7 @@ public sealed class UiSession
     public CoolingHistoryService Cooling {get;}
     public GraphHistoryService GraphHistory {get;}
     public BatteryHistoryService Battery {get;}
+    public ConnectionService Connections {get;}
     public UpdateService Updates {get;}=new(BuildInfo.Version);
     public UserSettings Settings {get;}
     public string SettingsStatus {get;private set;}="";
@@ -58,6 +59,12 @@ public sealed class UiSession
         Battery=new(Path.Combine(Path.GetDirectoryName(settingsPath)!,"battery-history.db"),Environment.MachineName);
         Battery.Configure(Settings.BatteryRecording);
         Collector.SampleAvailable+=Battery.TryRecord;
+        Connections=new(Path.Combine(Path.GetDirectoryName(settingsPath)!,"connections.db"));
+        var home=ConnectionAssets.Cities.FirstOrDefault(city=>city.Id==Settings.ConnectionsHomeCityId);
+        Settings.ConnectionsHomeCityId=home?.Id;
+        Connections.Configure(Settings.ConnectionsRecording,home?.Point);
+        Collector.SampleAvailable+=Connections.TryRecord;
+        Collector.FinalConnectionsAvailable+=Connections.TryRecord;
         timer.Tick+=(_,_)=>
         {
             if(Settings.SelectedGpuId is null && Current is {Gpus.Count:>0} reading)
@@ -69,7 +76,7 @@ public sealed class UiSession
     {
         // Restore the saved window types exactly; the launch preference only affects new requests.
         foreach(string key in layout.Remembered)OpenDetachedCore(key);
-        GraphHistory.Start();Cooling.Start();Battery.Start();_ = SaveAsync();Collector.Start();timer.Start();
+        GraphHistory.Start();Cooling.Start();Battery.Start();Connections.Start();_ = SaveAsync();Collector.Start();timer.Start();
     }
     public void SetRange(int seconds) {Settings.HistorySeconds=seconds;Changed?.Invoke();_ = SaveAsync();}
     public void SetGpu(string? id) {Settings.SelectedGpuId=id;Changed?.Invoke();_ = SaveAsync();}
@@ -125,6 +132,19 @@ public sealed class UiSession
     public void SetRestoreOpenWindows(bool enabled) {Settings.RestoreOpenWindows=enabled;_ = SaveAsync();}
     public void SetStartInTray(bool enabled) {Settings.StartInTray=enabled;_ = SaveAsync();}
     public void SetBatteryRecording(bool enabled) {Settings.BatteryRecording=enabled;Battery.Configure(enabled);Changed?.Invoke();_ = SaveAsync();}
+    public void SetConnectionsRecording(bool enabled)
+    {
+        Settings.ConnectionsRecording=enabled;
+        Connections.Configure(enabled,ConnectionAssets.Cities.FirstOrDefault(city=>city.Id==Settings.ConnectionsHomeCityId)?.Point);
+        Changed?.Invoke();_ = SaveAsync();
+    }
+    public void SetConnectionsHomeCity(string? id)
+    {
+        var home=ConnectionAssets.Cities.FirstOrDefault(city=>city.Id==id);
+        Settings.ConnectionsHomeCityId=home?.Id;Connections.Configure(Settings.ConnectionsRecording,home?.Point);
+        Changed?.Invoke();_ = SaveAsync();
+    }
+    public void SetConnectionsAnimation(bool enabled) {Settings.ConnectionsAnimation=enabled;Changed?.Invoke();_ = SaveAsync();}
     public void SetCoolingOptions(bool recording,bool notifications,int detailedDays,int summaryDays)
     {
         Settings.CoolingRecording=recording;Settings.CoolingNotifications=notifications;
@@ -182,7 +202,16 @@ public sealed class UiSession
         Collector.SampleAvailable-=Cooling.TryRecord;
         Collector.SampleAvailable-=GraphHistory.TryRecord;
         Collector.SampleAvailable-=Battery.TryRecord;
-        await Task.WhenAll(providerStop,Cooling.StopAsync(),GraphHistory.StopAsync(),Battery.StopAsync()).ConfigureAwait(false);
+        try {await Task.WhenAll(providerStop,Cooling.StopAsync(),GraphHistory.StopAsync(),Battery.StopAsync()).ConfigureAwait(false);}
+        finally
+        {
+            if(Connections is not null)
+            {
+                Collector.SampleAvailable-=Connections.TryRecord;
+                Collector.FinalConnectionsAvailable-=Connections.TryRecord;
+                await Connections.StopAsync().ConfigureAwait(false);
+            }
+        }
     });
     internal void StopCollectorForSessionEnding()
     {
