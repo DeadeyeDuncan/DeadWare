@@ -148,25 +148,32 @@ internal static class ConnectionsWidgetUiChecks
                     }
                     Layout(viewport,300,height);
                 }
-                if(count==4)
+                if(count>0)
                 {
+                    var mapBounds=Bounds(map,viewport);
+                    Assert.All(graphs,g=>Assert.True(Bounds(g,viewport).Bottom<=mapBounds.Top+.01,"The map must be below every selected graph."));
+                    foreach(var graph in graphs)ScrollToAndCheck(graph,scroll,viewport,300,height);
+                    if(count==4)Render(viewport,300,(int)height,$"widget-layout-{theme}-4-last-graph");
                     Assert.True(scroll.ScrollableHeight>0);scroll.ScrollToBottom();Pump();Layout(viewport,300,height);
-                    var bounds=graphs[^1].TransformToAncestor(viewport).TransformBounds(new Rect(graphs[^1].RenderSize));
-                    Assert.InRange(bounds.Bottom,0,height+.01);Render(viewport,300,(int)height,$"widget-layout-{theme}-4-bottom");scroll.ScrollToTop();Pump();
+                    CheckFullyVisible(map,scroll,viewport);
+                    Render(viewport,300,(int)height,$"widget-layout-{theme}-{count}-bottom");scroll.ScrollToTop();Pump();Layout(viewport,300,height);
                 }
                 Render(viewport,300,(int)height,$"widget-layout-{theme}-{count}");
             }
+            foreach(string theme in new[]{"Midnight","Ember","Glacier","Amethyst","Neon","Daylight"})
             foreach(uint dpi in new uint[]{96,144,192})
             {
+                Theme.Apply(theme);Pump();
                 typeof(NativePlacement).GetMethod("ApplyScrollableMinimum",BindingFlags.Static|BindingFlags.NonPublic)!.Invoke(null,[window,new WindowPlacement(10,10,340,390,false),new WorkArea[]{new(0,0,1600,480)},dpi]);
                 Assert.Equal(480/(dpi/96d),window.MinHeight);
                 double clientHeight=window.MinHeight-39;Layout(viewport,300,clientHeight);
                 var scroll=Assert.Single(Elements(content).OfType<ScrollViewer>());
-                Assert.True(scroll.ScrollableHeight>0);scroll.ScrollToBottom();Pump();Layout(viewport,300,clientHeight);
-                var last=Elements(content).OfType<WidgetGraph>().Last();
-                var bounds=last.TransformToAncestor(viewport).TransformBounds(new Rect(last.RenderSize));
-                Assert.True(bounds.Top>=0);Assert.InRange(bounds.Bottom,0,clientHeight+.01);
-                Render(viewport,300,(int)clientHeight,$"widget-short-{dpi}");
+                Assert.True(scroll.ScrollableHeight>0);
+                var graphs=Elements(content).OfType<WidgetGraph>().Where(g=>g.Visibility==Visibility.Visible).ToArray();
+                foreach(var graph in graphs)ScrollToAndCheck(graph,scroll,viewport,300,clientHeight);
+                Render(viewport,300,(int)clientHeight,$"widget-short-{theme}-{dpi}-last-graph");
+                scroll.ScrollToBottom();Pump();Layout(viewport,300,clientHeight);CheckFullyVisible(map,scroll,viewport);
+                Render(viewport,300,(int)clientHeight,$"widget-short-{theme}-{dpi}-map");
             }
             settings.WidgetConnectionsMap=false;settings.WidgetGraphs=[];Changed(session);Layout(viewport,300,171);
             Assert.Equal(Visibility.Collapsed,map.Visibility);
@@ -214,6 +221,18 @@ internal static class ConnectionsWidgetUiChecks
         for(int i=0;i<VisualTreeHelper.GetChildrenCount(element);i++)foreach(var child in Elements(VisualTreeHelper.GetChild(element,i)))yield return child;
     }
     private static void Layout(FrameworkElement element,double width,double height) {element.Measure(new(width,height));element.Arrange(new Rect(0,0,width,height));element.UpdateLayout();}
+    private static Rect Bounds(FrameworkElement element,Visual ancestor)=>element.TransformToAncestor(ancestor).TransformBounds(new Rect(element.RenderSize));
+    private static void CheckFullyVisible(FrameworkElement element,ScrollViewer scroll,FrameworkElement viewport)
+    {
+        var bounds=Bounds(element,viewport);var clip=Bounds(scroll,viewport);
+        Assert.InRange(bounds.Left,clip.Left-.01,clip.Right);Assert.InRange(bounds.Right,clip.Left,clip.Right+.01);
+        Assert.InRange(bounds.Top,clip.Top-.01,clip.Bottom);Assert.InRange(bounds.Bottom,clip.Top,clip.Bottom+.01);
+    }
+    private static void ScrollToAndCheck(FrameworkElement element,ScrollViewer scroll,FrameworkElement viewport,double width,double height)
+    {
+        scroll.ScrollToVerticalOffset(scroll.VerticalOffset+Bounds(element,viewport).Top-Bounds(scroll,viewport).Top);Pump();Layout(viewport,width,height);
+        CheckFullyVisible(element,scroll,viewport);
+    }
     private static void Pump() {var frame=new DispatcherFrame();Dispatcher.CurrentDispatcher.BeginInvoke(DispatcherPriority.Background,new Action(()=>frame.Continue=false));Dispatcher.PushFrame(frame);}
     private static void PumpUntil(Func<bool> done) {var timer=Stopwatch.StartNew();while(!done()&&timer.Elapsed<TimeSpan.FromSeconds(3)){Pump();Thread.Sleep(1);}Assert.True(done());}
 
@@ -233,7 +252,9 @@ internal static class ConnectionsWidgetUiChecks
     private static void Render(FrameworkElement element,int width,int height,string name)
     {
         var bitmap=new RenderTargetBitmap(width,height,96,96,PixelFormats.Pbgra32);bitmap.Render(element);
-        string? output=Environment.GetEnvironmentVariable("DEADWARE_UI_OUTPUT");if(output is null)return;
+        string? output=Environment.GetEnvironmentVariable("DEADWARE_UI_OUTPUT");
+        if(output is null&&(name.StartsWith("widget-layout-")||name.StartsWith("widget-viewport-")||name.StartsWith("widget-short-")))output=Environment.GetEnvironmentVariable("DEADWARE_WIDGET_LAYOUT_OUTPUT");
+        if(output is null)return;
         Directory.CreateDirectory(output);using var stream=File.Create(Path.Combine(output,name+".png"));
         var encoder=new PngBitmapEncoder();encoder.Frames.Add(BitmapFrame.Create(bitmap));encoder.Save(stream);
     }

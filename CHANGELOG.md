@@ -1,9 +1,10 @@
 # Changelog
 
-## Unreleased — Widget map layout
+## 0.6.22 — Map-only Connections widget
 
 - Show only the map in the Connections widget, without headings, legends, status text or transfer-rate readouts.
 - Fit the full world across the widget panel and use the available height when the map is the only selected widget item.
+- Place the map below the selected graphs and keep it fully reachable by scrolling on small displays.
 
 ## 0.6.21 — Connections map and history
 
