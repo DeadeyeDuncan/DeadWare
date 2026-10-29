@@ -9,7 +9,7 @@
 
 DeadWare is a Windows desktop monitor for watching CPU/GPU usage and temperatures, RAM usage and application network activity. Keep the dashboard open, detach a graph, or use the compact desktop widget.
 
-The Connections feature described below is being developed on [`codex/connections`](https://github.com/DeadeyeDuncan/DeadWare/pull/26). It is an unreleased source change; published 0.6.20 packages do not include it.
+Connections is available starting with version 0.6.21.
 
 ## Features
 
@@ -94,7 +94,7 @@ Choose the displayed graphs in **Settings → Widget graphs**: CPU/GPU usage, CP
 
 The compact widget has a **Usage** graph with CPU and selected-GPU utilization together, followed by a **Temperature** graph with both devices' temperatures together. CPU uses the CPU theme color and a solid line in both graphs; GPU uses the GPU theme color and a dashed line in both. Small CPU/GPU legends show the current readings. Usage shares a 0–100% scale; temperature shares a °C scale that expands above 100°C when needed. A third **RAM** graph shows physical memory usage on a 0–100% scale, with current percent and used/total memory in its legend. A fourth **Network** graph shows download as a solid blue line and upload as a dashed green line on one bytes-per-second scale, with current rates in its legend. These graphs follow the shared history range and GPU selection, use saved graph history, and keep unavailable readings and downtime as gaps. The Connections map always uses current live observations, independently of the main page's History selection or playback. Its compact 2D view has no history controls. The widget's minimum height follows the selected graphs and map; small work areas allow scrolling instead of clipping selected content.
 
-## Connections (unreleased)
+## Connections
 
 Open **Connections** beside Network for live observed destinations on a rotatable globe or a 2D world map. Drag, zoom, reset the view or pause animation; the searchable table remains available with animation stopped. Filter by application, country and traffic direction, and select an application or peer to highlight it. The table includes remote IP/port, TCP/UDP, approximate location, observed bytes, rates and last activity. Private/LAN, special and unknown public addresses remain visible in the table and relevant totals, even when they cannot appear on the map. This is observed traffic, so an idle socket need not appear.
 
@@ -167,7 +167,7 @@ dotnet run --project src/DeadWare.App/DeadWare.App.csproj
 Create a self-contained portable ZIP and SHA-256 checksum:
 
 ```powershell
-pwsh -File scripts/publish.ps1 -Version 0.6.20
+pwsh -File scripts/publish.ps1 -Version 0.6.21
 ```
 
 The packaging script runs tests before publishing, bundles the independent self-contained update helper, and records all managed file hashes in `deadware-package.json`. Output goes under `artifacts/`. GitHub Actions runs the same script. Pushing a normal three-part version tag such as `v0.6.0` builds and publishes a normal release after tests pass, using the matching `docs/releases/v0.6.0.md` notes. Workflows use pinned action commits.
