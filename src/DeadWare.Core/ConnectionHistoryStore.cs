@@ -13,6 +13,8 @@ public sealed class ConnectionHistoryStore
     private const long MaximumJournalBytes = 8 * 1024 * 1024;
     private const int ApplicationId = 0x44435748;
     private const int ChunkSize = 256;
+    private const int MaintenanceChunkSize = 64;
+    private const int MaximumTransactionCacheBytes = 1536 * 1024;
     private readonly string path;
     private readonly long maximumDatabaseBytes;
     private readonly object gate = new();
@@ -23,7 +25,8 @@ public sealed class ConnectionHistoryStore
           max(last_seen) last_seen,sat_sum(received) received,sat_sum(sent) sent,
           location,origin,min(complete) complete,country,kind
         FROM traffic
-        WHERE minute >= $from AND minute < $to
+        WHERE minute >= max($from,coalesce((SELECT value FROM metadata WHERE key='expiry'),0)) AND minute < $to
+          AND minute > (SELECT value FROM metadata WHERE key='floor')
           AND ($search='' OR instr(search,$search)>0)
           AND ($country='' OR country=$country)
         GROUP BY minute,pid,generation,name,remote,port,protocol,location,origin,country,kind
@@ -31,7 +34,7 @@ public sealed class ConnectionHistoryStore
         """;
     private const string Schema = """
         CREATE TABLE metadata(key TEXT PRIMARY KEY,value INTEGER NOT NULL);
-        INSERT INTO metadata VALUES('floor',0);
+        INSERT INTO metadata VALUES('floor',0),('expiry',0);
         CREATE TABLE manifests(batch TEXT NOT NULL,kind INTEGER NOT NULL,payload TEXT NOT NULL,
           PRIMARY KEY(batch,kind));
         CREATE TABLE dedup(batch TEXT NOT NULL,kind INTEGER NOT NULL,item TEXT NOT NULL,stamp INTEGER NOT NULL,
@@ -141,30 +144,40 @@ public sealed class ConnectionHistoryStore
                 if(interval is null || !Identifier(interval.BatchId,192)||!Identifier(interval.Segment,128)||interval.To<=interval.From||interval.To-interval.From>TimeSpan.FromSeconds(60)) throw Invalid();
             long cutoff=Math.Max(0,now.UtcTicks-TimeSpan.TicksPerDay*30L), latest=now.UtcTicks> DateTimeOffset.MaxValue.UtcTicks-TimeSpan.TicksPerSecond*2?DateTimeOffset.MaxValue.UtcTicks:now.UtcTicks+TimeSpan.TicksPerSecond*2;
             if(prepared.Any(x=>x.Record.Delta.LastSeen.UtcTicks>latest)||coverage.Any(x=>x.To.UtcTicks>latest)) throw Invalid();
-            var manifests=prepared.GroupBy(x=>x.Record.BatchId).Select(group=>new Manifest(group.Key,0,
-                Identity(group.OrderBy(x=>x.Item,StringComparer.Ordinal).Select(x=>new {x.Item,x.Record.Delta.ReceivedBytes,x.Record.Delta.SentBytes,first=x.Record.Delta.FirstSeen.UtcTicks,last=x.Record.Delta.LastSeen.UtcTicks,x.Record.Complete}).ToArray())))
-                .Concat(coverage.GroupBy(x=>x.BatchId).Select(group=>new Manifest(group.Key,1,Identity(group.Select(x=>new {x.Segment,from=x.From.UtcTicks,to=x.To.UtcTicks,x.Complete}).Distinct().OrderBy(x=>x.from).ThenBy(x=>x.to).ThenBy(x=>x.Segment,StringComparer.Ordinal).ThenBy(x=>x.Complete).ToArray())))).ToArray();
-            var manifestIndex=manifests.ToDictionary(x=>(x.Batch,x.Kind));
             var coveragePieces=coverage.SelectMany(c=>
             {
                 long boundary=Minute(c.From.UtcTicks)+TimeSpan.TicksPerMinute;
                 return c.To.UtcTicks<=boundary ? new[]{c} : new[]{c with {To=Stamp(boundary)},c with {From=Stamp(boundary)}};
-            }).ToArray();
+            }).GroupBy(c=>(c.BatchId,c.Segment,From:c.From.UtcTicks,To:c.To.UtcTicks))
+                .Select(group=>group.First() with {Complete=group.All(c=>c.Complete)})
+                .OrderBy(c=>c.From).ThenBy(c=>c.To).ThenBy(c=>c.Segment,StringComparer.Ordinal).ToArray();
+            var manifests=prepared.GroupBy(x=>x.Record.BatchId).Select(group=>new Manifest(group.Key,0,
+                Identity(group.OrderBy(x=>x.Item,StringComparer.Ordinal).Select(x=>new {x.Item,x.Record.Delta.ReceivedBytes,x.Record.Delta.SentBytes,first=x.Record.Delta.FirstSeen.UtcTicks,last=x.Record.Delta.LastSeen.UtcTicks,x.Record.Complete}).ToArray())))
+                .Concat(coveragePieces.GroupBy(x=>x.BatchId).Select(group=>new Manifest(group.Key,1,Identity(group.Select(x=>new {x.Segment,from=x.From.UtcTicks,to=x.To.UtcTicks,x.Complete}).ToArray())))).ToArray();
+            var manifestIndex=manifests.ToDictionary(x=>(x.Batch,x.Kind));
+            long protectedMinute=prepared.Select(x=>x.Record.Delta.Minute.UtcTicks).Concat(coveragePieces.Select(c=>Minute(c.From.UtcTicks))).DefaultIfEmpty(long.MaxValue).Min();
             using var db=Open();
             ValidateManifests(db,manifests);
+            GuardJournal(db);
+            using(var expiry=db.BeginTransaction())
+            {
+                Execute(db,"INSERT INTO metadata VALUES('expiry',$cutoff) ON CONFLICT(key) DO UPDATE SET value=max(value,excluded.value)",expiry,("$cutoff",cutoff));
+                CommitBounded(db,expiry);
+            }
+            Checkpoint(db); Cleanup(db);
             // Independent dedup keys let an exact retry finish after a later chunk failed, without duplicating earlier chunks.
             // Coverage is committed only after all traffic chunks succeed, so a failed traffic drain cannot claim coverage.
             for(int offset=0;offset<Math.Max(1,prepared.Length);offset+=ChunkSize)
             {
                 var chunk=prepared.Skip(offset).Take(ChunkSize).ToArray();
                 var chunkManifests=chunk.Select(x=>x.Record.BatchId).Distinct(StringComparer.Ordinal).Select(batch=>manifestIndex[(batch,0)]).ToArray();
-                GuardJournal(db); WriteChunk(db,chunk,[],cutoff,chunkManifests); Checkpoint(db);
+                GuardJournal(db); WriteChunk(db,chunk,[],cutoff,chunkManifests,protectedMinute); Checkpoint(db);
             }
             for(int offset=0;offset<coveragePieces.Length;offset+=ChunkSize)
             {
                 var chunk=coveragePieces.Skip(offset).Take(ChunkSize).ToArray();
                 var chunkManifests=chunk.Select(x=>x.BatchId).Distinct(StringComparer.Ordinal).Select(batch=>manifestIndex[(batch,1)]).ToArray();
-                GuardJournal(db); WriteChunk(db,[],chunk,cutoff,chunkManifests); Checkpoint(db);
+                GuardJournal(db); WriteChunk(db,[],chunk,cutoff,chunkManifests,protectedMinute); Checkpoint(db);
             }
             GuardJournal(db);
         }
@@ -183,27 +196,14 @@ public sealed class ConnectionHistoryStore
         using var reader=command.ExecuteReader(); var result=new List<string>();
         while(reader.Read()) result.Add(reader.GetString(0)); return result;
     }
-    private void WriteChunk(SqliteConnection db,Prepared[] records,ConnectionCoverage[] coverage,long cutoff,Manifest[] manifests)
+    private void WriteChunk(SqliteConnection db,Prepared[] records,ConnectionCoverage[] coverage,long cutoff,Manifest[] manifests,long protectedMinute)
     {
-        long? attemptedFloor=null;
-        for(int pruneCount=0;;pruneCount=pruneCount==0?1:pruneCount*2)
+        for(;;)
         {
             try
             {
                 using var tx=db.BeginTransaction();
                 ValidateManifests(db,manifests,tx);
-                Execute(db,"DELETE FROM traffic WHERE minute < $cutoff; DELETE FROM coverage WHERE finish <= $cutoff",tx,("$cutoff",cutoff));
-                Execute(db,"UPDATE coverage SET start=$cutoff,stamp=$stamp WHERE start<$cutoff",tx,("$cutoff",cutoff),("$stamp",Minute(cutoff)));
-                if(pruneCount>0)
-                {
-                    using var choose=Command(db,"SELECT max(stamp) FROM (SELECT stamp FROM (SELECT minute stamp FROM traffic UNION SELECT stamp FROM coverage) ORDER BY stamp LIMIT $count)",tx,("$count",pruneCount));
-                    object? value=choose.ExecuteScalar();
-                    if(value is null or DBNull) throw new IOException("A complete minute cannot fit in the connection history capacity; earlier committed chunks were preserved.");
-                    long floor=Convert.ToInt64(value,CultureInfo.InvariantCulture);
-                    if(attemptedFloor==floor) throw new IOException("A complete minute cannot fit in the connection history capacity; earlier committed chunks were preserved.");
-                    attemptedFloor=floor;
-                    Execute(db,"DELETE FROM traffic WHERE minute<=$floor; DELETE FROM coverage WHERE stamp<=$floor; DELETE FROM dedup WHERE stamp<=$floor; UPDATE metadata SET value=max(value,$floor) WHERE key='floor'",tx,("$floor",floor));
-                }
                 long retainedFloor=Convert.ToInt64(Scalar(db,"SELECT value FROM metadata WHERE key='floor'",tx),CultureInfo.InvariantCulture);
                 foreach(var item in records)
                 {
@@ -223,18 +223,110 @@ public sealed class ConnectionHistoryStore
                     if(Execute(db,"INSERT OR IGNORE INTO dedup VALUES($batch,1,$item,$stamp)",tx,("$batch",c.BatchId),("$item",identity),("$stamp",stamp))==0) continue;
                     Execute(db,"INSERT INTO coverage(batch,item,stamp,start,finish,complete) VALUES($batch,$item,$stamp,$from,$to,$complete)",tx,("$batch",c.BatchId),("$item",identity),("$stamp",stamp),("$from",start),("$to",finish),("$complete",c.Complete?1:0));
                 }
-                Execute(db,"""
-                    DELETE FROM dedup WHERE (kind=0 AND NOT EXISTS(SELECT 1 FROM traffic WHERE traffic.batch=dedup.batch AND traffic.item=dedup.item))
-                        OR (kind=1 AND NOT EXISTS(SELECT 1 FROM coverage WHERE coverage.batch=dedup.batch AND coverage.item=dedup.item));
-                    DELETE FROM manifests WHERE NOT EXISTS(SELECT 1 FROM dedup WHERE dedup.batch=manifests.batch AND dedup.kind=manifests.kind);
-                    """,tx);
                 foreach(var manifest in manifests)
                     Execute(db,"INSERT OR IGNORE INTO manifests SELECT $batch,$kind,$payload WHERE EXISTS(SELECT 1 FROM dedup WHERE batch=$batch AND kind=$kind)",tx,("$batch",manifest.Batch),("$kind",manifest.Kind),("$payload",manifest.Payload));
-                tx.Commit(); return;
+                CommitBounded(db,tx); return;
             }
-            catch(SqliteException error) when(error.SqliteErrorCode==13 && pruneCount<65536) { }
             catch(SqliteException error) when(error.SqliteErrorCode==13)
-            {throw new IOException("Connection history capacity was exhausted; earlier committed chunks were preserved.",error);}
+            {
+                if(!EvictOldestBucket(db,protectedMinute)) throw new IOException("The incoming minute cannot fit in connection history; its earlier committed chunks were preserved.",error);
+                Cleanup(db);
+            }
+            catch(TransactionBudgetException error)
+            {
+                if(records.Length+coverage.Length<=1) throw new IOException("A connection history item exceeds the bounded transaction budget.",error);
+                if(records.Length>0)
+                {
+                    int half=Math.Max(1,records.Length/2);
+                    WriteChunk(db,records[..half],[],cutoff,manifests,protectedMinute); Checkpoint(db); GuardJournal(db);
+                    WriteChunk(db,records[half..],[],cutoff,manifests,protectedMinute);
+                }
+                else
+                {
+                    int half=Math.Max(1,coverage.Length/2);
+                    WriteChunk(db,[],coverage[..half],cutoff,manifests,protectedMinute); Checkpoint(db); GuardJournal(db);
+                    WriteChunk(db,[],coverage[half..],cutoff,manifests,protectedMinute);
+                }
+                return;
+            }
+        }
+    }
+
+    private sealed class TransactionBudgetException : Exception;
+    private static void CommitBounded(SqliteConnection db,SqliteTransaction tx)
+    {
+        // With cache_spill disabled, dirty pages stay in this private cache until commit.
+        // Its total size bounds dirty page frames, including index/freelist maintenance.
+        int result=SQLitePCL.raw.sqlite3_db_status(db.Handle,SQLitePCL.raw.SQLITE_DBSTATUS_CACHE_USED,out int used,out _,0);
+        if(result!=SQLitePCL.raw.SQLITE_OK) throw new IOException("Could not verify the connection history transaction budget.");
+        if(used>MaximumTransactionCacheBytes) throw new TransactionBudgetException();
+        tx.Commit();
+    }
+    private bool EvictOldestBucket(SqliteConnection db,long protectedMinute)
+    {
+        GuardJournal(db);
+        using var tx=db.BeginTransaction();
+        using var choose=Command(db,"""
+            SELECT min(stamp) FROM (
+              SELECT min(minute) stamp FROM traffic
+                WHERE minute>(SELECT value FROM metadata WHERE key='floor') AND minute<$protected
+                  AND minute>=coalesce((SELECT value FROM metadata WHERE key='expiry'),0)
+              UNION ALL SELECT min(stamp) FROM coverage
+                WHERE start>=(SELECT value FROM metadata WHERE key='floor')+$minute AND start<$protected
+                  AND finish>coalesce((SELECT value FROM metadata WHERE key='expiry'),0)
+            )
+            """,tx,("$protected",protectedMinute),("$minute",TimeSpan.TicksPerMinute));
+        object? value=choose.ExecuteScalar(); if(value is null or DBNull) return false;
+        // Intentional old-bucket eviction is durable even when later physical reclamation is blocked.
+        Execute(db,"UPDATE metadata SET value=$floor WHERE key='floor'",tx,("$floor",Convert.ToInt64(value,CultureInfo.InvariantCulture)));
+        CommitBounded(db,tx); Checkpoint(db); GuardJournal(db); return true;
+    }
+    private sealed record Receipt(long Id,string Batch,string Item,int Kind);
+    private void Cleanup(SqliteConnection db)
+    {
+        int count=MaintenanceChunkSize;
+        for(;;)
+        {
+            GuardJournal(db);
+            try
+            {
+                using var tx=db.BeginTransaction();
+                var receipts=new List<Receipt>();
+                using(var select=Command(db,"""
+                    SELECT id,batch,item FROM traffic
+                    WHERE minute<max(coalesce((SELECT value FROM metadata WHERE key='expiry'),0),
+                        (SELECT value FROM metadata WHERE key='floor')+$minute)
+                    ORDER BY minute,id LIMIT $count
+                    """,tx,("$count",count),("$minute",TimeSpan.TicksPerMinute)))
+                using(var reader=select.ExecuteReader()) while(reader.Read()) receipts.Add(new(reader.GetInt64(0),reader.GetString(1),reader.GetString(2),0));
+                if(receipts.Count==0)
+                {
+                    using var select=Command(db,"""
+                        SELECT id,batch,item FROM coverage
+                        WHERE start<max(coalesce((SELECT value FROM metadata WHERE key='expiry'),0),
+                            (SELECT value FROM metadata WHERE key='floor')+$minute)
+                          AND (finish<=coalesce((SELECT value FROM metadata WHERE key='expiry'),0)
+                            OR stamp<=(SELECT value FROM metadata WHERE key='floor'))
+                        ORDER BY start,id LIMIT $count
+                        """,tx,("$count",count),("$minute",TimeSpan.TicksPerMinute));
+                    using var reader=select.ExecuteReader(); while(reader.Read()) receipts.Add(new(reader.GetInt64(0),reader.GetString(1),reader.GetString(2),1));
+                }
+                if(receipts.Count==0) return;
+                foreach(var receipt in receipts)
+                {
+                    Execute(db,receipt.Kind==0?"DELETE FROM traffic WHERE id=$id":"DELETE FROM coverage WHERE id=$id",tx,("$id",receipt.Id));
+                    Execute(db,"DELETE FROM dedup WHERE batch=$batch AND kind=$kind AND item=$item",tx,("$batch",receipt.Batch),("$kind",receipt.Kind),("$item",receipt.Item));
+                }
+                foreach(var key in receipts.Select(r=>(r.Batch,r.Kind)).Distinct())
+                    Execute(db,"DELETE FROM manifests WHERE batch=$batch AND kind=$kind AND NOT EXISTS(SELECT 1 FROM dedup WHERE batch=$batch AND kind=$kind)",tx,("$batch",key.Batch),("$kind",key.Kind));
+                CommitBounded(db,tx);
+            }
+            catch(TransactionBudgetException error)
+            {
+                if(count==1) throw new IOException("Connection history maintenance exceeds the bounded transaction budget.",error);
+                count=Math.Max(1,count/2); continue;
+            }
+            Checkpoint(db); GuardJournal(db);
         }
     }
 
@@ -255,7 +347,15 @@ public sealed class ConnectionHistoryStore
             using(var command=Command(db,"WITH filtered AS ("+Grouped+") SELECT location,origin,sat_sum(received) received,sat_sum(sent) sent FROM filtered WHERE location<>'null' AND json_extract(location,'$.Point') IS NOT NULL GROUP BY location,origin ORDER BY (cast(sat_sum(received) AS REAL)+cast(sat_sum(sent) AS REAL)) DESC,location,origin LIMIT 256",tx,args))
             using(var reader=command.ExecuteReader()) while(reader.Read()) markers.Add(new(JsonSerializer.Deserialize<ConnectionLocation>(reader.GetString(0))!,JsonSerializer.Deserialize<GeoPoint>(reader.GetString(1)),reader.GetInt64(2),reader.GetInt64(3)));
             var (coverage,gaps)=ReadCoverage(db,tx,query);
-            object? earliest=Scalar(db,"SELECT min(stamp) FROM (SELECT min(minute) stamp FROM traffic UNION ALL SELECT min(start) FROM coverage)",tx);
+            object? earliest=Scalar(db,"""
+                SELECT min(stamp) FROM (
+                  SELECT min(minute) stamp FROM traffic
+                    WHERE minute>=coalesce((SELECT value FROM metadata WHERE key='expiry'),0)
+                      AND minute>(SELECT value FROM metadata WHERE key='floor')
+                  UNION ALL SELECT min(max(start,coalesce((SELECT value FROM metadata WHERE key='expiry'),0))) FROM coverage
+                    WHERE finish>coalesce((SELECT value FROM metadata WHERE key='expiry'),0)
+                      AND stamp>(SELECT value FROM metadata WHERE key='floor'))
+                """,tx);
             long floor=Convert.ToInt64(Scalar(db,"SELECT value FROM metadata WHERE key='floor'",tx),CultureInfo.InvariantCulture);
             string status=floor>0?"Capacity shortened retention. ":"";
             if(gaps.Count>0||coverage.Any(x=>!x.Complete)) status+="History contains recording gaps.";
@@ -281,8 +381,12 @@ public sealed class ConnectionHistoryStore
         // Sweep interval edges in SQL order; memory is proportional to the published merged result, not raw samples.
         using var command=Command(db,"""
             SELECT tick,sum(active),sum(incomplete) FROM (
-              SELECT max(start,$from) tick,1 active,CASE WHEN complete=0 THEN 1 ELSE 0 END incomplete FROM coverage WHERE finish>$from AND start<$to
-              UNION ALL SELECT min(finish,$to),-1,CASE WHEN complete=0 THEN -1 ELSE 0 END FROM coverage WHERE finish>$from AND start<$to
+              SELECT max(start,$from,coalesce((SELECT value FROM metadata WHERE key='expiry'),0)) tick,1 active,CASE WHEN complete=0 THEN 1 ELSE 0 END incomplete
+                FROM coverage WHERE finish>max($from,coalesce((SELECT value FROM metadata WHERE key='expiry'),0)) AND start<$to
+                  AND $to>coalesce((SELECT value FROM metadata WHERE key='expiry'),0) AND stamp>(SELECT value FROM metadata WHERE key='floor')
+              UNION ALL SELECT min(finish,$to),-1,CASE WHEN complete=0 THEN -1 ELSE 0 END FROM coverage
+                WHERE finish>max($from,coalesce((SELECT value FROM metadata WHERE key='expiry'),0)) AND start<$to
+                  AND $to>coalesce((SELECT value FROM metadata WHERE key='expiry'),0) AND stamp>(SELECT value FROM metadata WHERE key='floor')
             ) GROUP BY tick ORDER BY tick
             """,tx,("$from",query.From.UtcTicks),("$to",query.To.UtcTicks));
         using var reader=command.ExecuteReader();
@@ -340,7 +444,7 @@ public sealed class ConnectionHistoryStore
     private SqliteConnection Open(bool readOnly=false,bool create=false)
     {
         if(File.Exists(path)&&new FileInfo(path).Length>maximumDatabaseBytes) throw new IOException("Connection history exceeds its size limit; the file was preserved.");
-        var db=new SqliteConnection(new SqliteConnectionStringBuilder {DataSource=path,Mode=readOnly?SqliteOpenMode.ReadOnly:create?SqliteOpenMode.ReadWriteCreate:SqliteOpenMode.ReadWrite,Pooling=false,DefaultTimeout=1}.ToString());
+        var db=new SqliteConnection(new SqliteConnectionStringBuilder {DataSource=path,Mode=readOnly?SqliteOpenMode.ReadOnly:create?SqliteOpenMode.ReadWriteCreate:SqliteOpenMode.ReadWrite,Cache=SqliteCacheMode.Private,Pooling=false,DefaultTimeout=1}.ToString());
         try
         {
             db.Open(); db.CreateAggregate<long,long>("sat_sum",0,(sum,value)=>Add(sum,value));
@@ -352,7 +456,8 @@ public sealed class ConnectionHistoryStore
                     if(File.Exists(path+"-wal")&&new FileInfo(path+"-wal").Length>MaximumJournalBytes) throw new IOException("Connection history journal is waiting for a reader; recording stopped to bound disk use.");
                 }
                 long pageSize=Number(db,"PRAGMA page_size");
-                Execute(db,"PRAGMA max_page_count="+(maximumDatabaseBytes/pageSize).ToString(CultureInfo.InvariantCulture)+"; PRAGMA journal_size_limit=8388608; PRAGMA wal_autocheckpoint=256; PRAGMA synchronous=FULL;");
+                Execute(db,"PRAGMA max_page_count="+(maximumDatabaseBytes/pageSize).ToString(CultureInfo.InvariantCulture)+"; PRAGMA journal_size_limit=8388608; PRAGMA wal_autocheckpoint=256; PRAGMA synchronous=FULL; PRAGMA cache_size=-256; PRAGMA cache_spill=OFF;");
+                if(Number(db,"PRAGMA cache_spill")!=0) throw new IOException("Connection history requires disabled transaction cache spilling.");
             }
             return db;
         }

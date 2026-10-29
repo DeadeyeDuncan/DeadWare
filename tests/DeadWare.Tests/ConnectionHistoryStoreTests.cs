@@ -170,12 +170,12 @@ public sealed class ConnectionHistoryStoreTests : IDisposable
         store.Append(rows,[coverage],Epoch.AddMinutes(302)); var complete=Store().Read(query);
         Assert.Equal(301,complete.TotalRows); Assert.Equal(3010,complete.Summary.ReceivedBytes); Assert.Single(complete.Coverage);
     }
-    [Fact] public void Impossible_capacity_write_rolls_back_pruning_and_does_not_lose_known_rows()
+    [Fact] public void Impossible_capacity_write_reports_failure_and_exposes_intentional_old_retention_eviction()
     {
         var store=Store(65536); store.Append([Row(-1,"old")],[],Epoch);
         var large=Enumerable.Range(0,256).Select(i=>Row(0,"large",address:"8.9.1."+(i%250+1),generation:i+10,name:new string('x',260)) with {Location=Place with {City=new string('c',160),Region=new string('r',160),Country=new string('n',160),Source=new string('s',128)}}).ToArray();
         Assert.ThrowsAny<IOException>(()=>store.Append(large,[],Epoch.AddMinutes(1)));
-        Assert.Equal(10,store.Read(new(Epoch.AddMinutes(-1),Epoch.AddMinutes(1))).Summary.ReceivedBytes);
+        var view=store.Read(new(Epoch.AddMinutes(-1),Epoch.AddMinutes(1))); Assert.Equal(0,view.Summary.ReceivedBytes); Assert.Contains("Capacity shortened",view.Status); Assert.Empty(view.Coverage);
     }
     [Fact] public void Pinned_reader_bounds_journal_and_failed_drain_replays_without_duplicate_traffic_or_false_coverage()
     {
@@ -195,5 +195,71 @@ public sealed class ConnectionHistoryStoreTests : IDisposable
         store.Append(rows,[coverage],Epoch.AddMinutes(30)); var complete=Store().Read(new(Epoch.AddMinutes(-1),Epoch.AddMinutes(30)));
         Assert.Equal(8193,complete.TotalRows); Assert.Equal(81930,complete.Summary.ReceivedBytes); Assert.Single(complete.Coverage);
         Assert.True(store.StorageBytes<268435456);
+    }
+    [Theory] [InlineData(262144)] [InlineData(524288)] [InlineData(1048576)]
+    public void Capacity_cannot_evict_an_earlier_committed_chunk_of_the_incoming_minute(long cap)
+    {
+        var store=Store(cap);
+        var rows=Enumerable.Range(0,1500).Select(i=>Row(0,"same-minute",generation:i+1,name:new string('x',100)) with {Location=null,Origin=null}).ToArray();
+        ConnectionCoverage coverage=new("same-minute","s",Epoch,Epoch.AddSeconds(15),true);
+        Assert.Throws<IOException>(()=>store.Append(rows,[coverage],Epoch.AddMinutes(1)));
+        var partial=store.Read(Query() with {Limit=500}); Assert.InRange(partial.TotalRows,256,1499); Assert.Empty(partial.Coverage);
+        Assert.Throws<IOException>(()=>store.Append(rows,[coverage],Epoch.AddMinutes(1)));
+        var replay=store.Read(Query() with {Limit=500}); Assert.Equal(partial.TotalRows,replay.TotalRows); Assert.Equal(partial.Summary,replay.Summary); Assert.Empty(replay.Coverage);
+    }
+    [Theory] [InlineData(false)] [InlineData(true)]
+    public void Duplicate_coverage_is_order_independent_and_incomplete_dominates(bool reverse)
+    {
+        var store=Store(); ConnectionCoverage complete=new("coverage","s",Epoch,Epoch.AddSeconds(15),true);
+        ConnectionCoverage[] intervals=[complete,complete with {Complete=false}]; if(reverse) Array.Reverse(intervals);
+        store.Append([],intervals,Epoch.AddMinutes(1));
+        Assert.False(Assert.Single(store.Read(Query()).Coverage).Complete);
+        Array.Reverse(intervals); store.Append([],intervals,Epoch.AddMinutes(1)); Assert.False(Assert.Single(store.Read(Query()).Coverage).Complete);
+    }
+    [Theory] [InlineData(false)] [InlineData(true)]
+    public void Coverage_piece_collision_after_minute_split_is_conservatively_incomplete(bool reverse)
+    {
+        var store=Store(); ConnectionCoverage complete=new("coverage","s",Epoch.AddSeconds(55),Epoch.AddSeconds(70),true);
+        ConnectionCoverage[] intervals=[complete,complete with {From=Epoch.AddMinutes(1),Complete=false}]; if(reverse) Array.Reverse(intervals);
+        store.Append([],intervals,Epoch.AddMinutes(2)); var coverage=store.Read(Query()).Coverage;
+        Assert.Equal(2,coverage.Count); Assert.Equal(new(Epoch.AddSeconds(55),Epoch.AddMinutes(1),true),coverage[0]);
+        Assert.Equal(new(Epoch.AddMinutes(1),Epoch.AddSeconds(70),false),coverage[1]);
+        Array.Reverse(intervals); store.Append([],intervals,Epoch.AddMinutes(2)); Assert.Equal(coverage,store.Read(Query()).Coverage);
+    }
+    [Fact] public void Near_capacity_expiry_with_pinned_reader_bounds_maintenance_wal_and_can_resume()
+    {
+        var store=Store(); var place=Place with {Country=new string('n',160),Region=new string('r',160),City=new string('c',160),Source=new string('s',128)};
+        var rows=Enumerable.Range(0,32768).Select(i=>Row(0,"expiry",generation:i+1,name:new string('x',260)) with {Location=place}).ToArray();
+        for(int batch=0;batch<3;batch++) store.Append(rows.Select(x=>x with {BatchId="expiry"+batch}).ToArray(),[],Epoch.AddMinutes(1));
+        store.Append([],[new("old-coverage","s",Epoch,Epoch.AddSeconds(15),true)],Epoch.AddMinutes(1));
+        Assert.InRange(new FileInfo(Database).Length,200*1024*1024,268435456);
+        using(var pinned=Connect())
+        using(var tx=pinned.BeginTransaction(deferred:true))
+        {
+            using var command=pinned.CreateCommand(); command.Transaction=tx; command.CommandText="SELECT count(*) FROM traffic"; _=command.ExecuteScalar();
+            Assert.Throws<IOException>(()=>store.Append([],[],Epoch.AddDays(31)));
+            Assert.InRange(new FileInfo(Database+"-wal").Length,8*1024*1024,10*1024*1024);
+            var hidden=store.Read(Query()); Assert.Empty(hidden.Rows); Assert.Equal(0,hidden.Summary.ReceivedBytes); Assert.Empty(hidden.Markers); Assert.Empty(hidden.Coverage); Assert.Single(hidden.Gaps); Assert.Null(hidden.EarliestRetainedTime);
+            using var output=new StringWriter(); store.ExportCsv(output,Query()); Assert.Single(output.ToString().Split(Environment.NewLine,StringSplitOptions.RemoveEmptyEntries));
+            using var inspect=Connect(); using var physical=inspect.CreateCommand(); physical.CommandText="SELECT count(*) FROM traffic"; Assert.True((long)physical.ExecuteScalar()!>0);
+        }
+        store.Append(rows.Select(x=>x with {BatchId="expiry0"}).ToArray(),[],Epoch.AddDays(31)); Assert.Empty(Store().Read(Query()).Rows);
+        using var db=Connect(); using var check=db.CreateCommand(); check.CommandText="SELECT (SELECT count(*) FROM traffic)+(SELECT count(*) FROM coverage)+(SELECT count(*) FROM dedup)+(SELECT count(*) FROM manifests)";
+        Assert.Equal(0L,check.ExecuteScalar());
+    }
+    [Fact] public void Logical_capacity_eviction_hides_every_result_path_before_physical_cleanup_finishes()
+    {
+        var store=Store(262144);
+        var old=Enumerable.Range(0,200).Select(i=>Row(0,"old",generation:i+1,name:new string('x',100)) with {Location=null,Origin=null}).ToArray();
+        store.Append(old,[new("old","s",Epoch,Epoch.AddSeconds(15),true)],Epoch.AddMinutes(1));
+        var incoming=old.Select(x=>x with {BatchId="new",Delta=x.Delta with {Minute=Epoch.AddMinutes(1),FirstSeen=Epoch.AddSeconds(61),LastSeen=Epoch.AddSeconds(62)}}).ToArray();
+        ConnectionCoverage coverage=new("new","s",Epoch.AddMinutes(1),Epoch.AddSeconds(75),true);
+        using(var db=Connect()) Sql(db,"CREATE TRIGGER fail_cleanup BEFORE DELETE ON traffic WHEN OLD.generation=151 BEGIN SELECT RAISE(ABORT,'cleanup failure'); END");
+        Assert.Throws<SqliteException>(()=>store.Append(incoming,[coverage],Epoch.AddMinutes(2)));
+        var hidden=store.Read(Query()); Assert.Empty(hidden.Rows); Assert.Equal(0,hidden.TotalRows); Assert.Equal(0,hidden.Summary.ReceivedBytes); Assert.Empty(hidden.Markers); Assert.Empty(hidden.Coverage); Assert.Single(hidden.Gaps); Assert.Null(hidden.EarliestRetainedTime);
+        using(var output=new StringWriter()) {store.ExportCsv(output,Query()); Assert.Single(output.ToString().Split(Environment.NewLine,StringSplitOptions.RemoveEmptyEntries));}
+        using(var db=Connect()) {using var command=db.CreateCommand(); command.CommandText="SELECT count(*) FROM traffic"; Assert.True((long)command.ExecuteScalar()!>0); Sql(db,"DROP TRIGGER fail_cleanup");}
+        store.Append(old,[],Epoch.AddMinutes(2)); Assert.Empty(store.Read(Query()).Rows);
+        store.Append(incoming,[coverage],Epoch.AddMinutes(2)); var complete=Store().Read(Query()); Assert.Equal(200,complete.TotalRows); Assert.Equal(Epoch.AddMinutes(1),complete.EarliestRetainedTime); Assert.Single(complete.Coverage);
     }
 }
