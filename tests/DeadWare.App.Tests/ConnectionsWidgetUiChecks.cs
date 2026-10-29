@@ -146,7 +146,7 @@ internal static class ConnectionsWidgetUiChecks
             Assert.True(Separation()>worldSeparation*2.4);
             var regionalCamera=map.Camera;
             Assert.All(points,p=>{var projected=ConnectionProjection.Project(p,regionalCamera);Assert.InRange(projected.X,-.95,.95);Assert.InRange(projected.Y,-.95,.95);});
-            PumpUntil(()=>File.Exists(path)&&Region(SettingsCodec.Read(File.ReadAllText(path)).Settings));
+            Assert.True(Region(ReadSavedSettings(session,path)));
             long revision=(long)typeof(UiSession).GetField("saveRevision",All)!.GetValue(session)!;
             typeof(UiSession).GetMethod("SetWidgetConnectionsNorthAmerica")!.Invoke(session,[true]);
             Assert.Equal(1,changes);Assert.Equal(revision,typeof(UiSession).GetField("saveRevision",All)!.GetValue(session));
@@ -169,12 +169,12 @@ internal static class ConnectionsWidgetUiChecks
                 Render(widget,(int)size.Width,(int)size.Height,$"widget-world-{theme}-{size.Width}x{size.Height}");
                 button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));Assert.Equal(regionalCamera,map.Camera);
             }
-            PumpUntil(()=>Region(SettingsCodec.Read(File.ReadAllText(path)).Settings));
-            Set("<Settings>k__BackingField",SettingsCodec.Read(File.ReadAllText(path)).Settings);
+            var savedSettings=ReadSavedSettings(session,path);Assert.True(Region(savedSettings));
+            Set("<Settings>k__BackingField",savedSettings);
             var restored=new ConnectionsWidget(session);Assert.Equal(regionalCamera,Assert.Single(restored.Children.OfType<ConnectionMap>()).Camera);
             Assert.Contains("World",Assert.Single(restored.Children.OfType<Button>()).ToolTip!.ToString());
             button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));Assert.False(Region(session.Settings));Assert.Equal(1,map.Camera.Zoom);Assert.Equal(0,map.Camera.Latitude);
-            PumpUntil(()=>!Region(SettingsCodec.Read(File.ReadAllText(path)).Settings));
+            Assert.False(Region(ReadSavedSettings(session,path)));
             Assert.Equal(mainCamera,mainMap.Camera);
         }
         finally {owner?.Close();service.StopAsync().GetAwaiter().GetResult();Theme.Apply("Midnight");if(Directory.Exists(directory))Directory.Delete(directory,true);}
@@ -184,6 +184,22 @@ internal static class ConnectionsWidgetUiChecks
     {
         using var saved=JsonDocument.Parse(SettingsCodec.Write(settings));
         return saved.RootElement.TryGetProperty("WidgetConnectionsNorthAmerica",out var region)&&region.GetBoolean();
+    }
+
+    private static UserSettings ReadSavedSettings(UiSession session,string path)
+    {
+        var writer=(SettingsSnapshotWriter)typeof(UiSession).GetField("writer",All)!.GetValue(session)!;
+        var gate=typeof(SettingsSnapshotWriter).GetField("gate",All)!.GetValue(writer)!;
+        var savedRevision=typeof(SettingsSnapshotWriter).GetField("savedRevision",All)!;
+        long requested=(long)typeof(UiSession).GetField("saveRevision",All)!.GetValue(session)!;
+        // A matching older snapshot is insufficient: the latest atomic replacement must finish.
+        PumpUntil(()=>
+        {
+            if(!Monitor.TryEnter(gate))return false;
+            try {return (long)savedRevision.GetValue(writer)!>=requested;}
+            finally {Monitor.Exit(gate);}
+        });
+        var saved=SettingsCodec.Read(File.ReadAllText(path));Assert.Null(saved.Error);return saved.Settings;
     }
 
     private static void CheckRegionButton(ConnectionsWidget widget,Button button)
@@ -203,9 +219,9 @@ internal static class ConnectionsWidgetUiChecks
         var choice=Assert.Single(settings.Children.OfType<WrapPanel>().SelectMany(p=>p.Children.OfType<CheckBox>()),c=>c.Content?.ToString()=="Connections map (live)");
         Assert.False(choice.IsChecked);Assert.False(session.Settings.WidgetConnectionsMap);
         choice.IsChecked=true;Assert.True(session.Settings.WidgetConnectionsMap);
-        PumpUntil(()=>File.Exists(path)&&SettingsCodec.Read(File.ReadAllText(path)).Settings.WidgetConnectionsMap);
+        Assert.True(ReadSavedSettings(session,path).WidgetConnectionsMap);
         session.SetWidgetConnectionsMap(false);Assert.False(choice.IsChecked);
-        PumpUntil(()=>!SettingsCodec.Read(File.ReadAllText(path)).Settings.WidgetConnectionsMap);
+        Assert.False(ReadSavedSettings(session,path).WidgetConnectionsMap);
     }
 
     private static void CheckLayout()
