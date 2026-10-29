@@ -127,6 +127,11 @@ public sealed class UiSession
         if(Settings.WidgetConnectionsMap==enabled)return;
         Settings.WidgetConnectionsMap=enabled;Changed?.Invoke();_ = SaveAsync();
     }
+    public void SetWidgetConnectionsNorthAmerica(bool enabled)
+    {
+        if(Settings.WidgetConnectionsNorthAmerica==enabled)return;
+        Settings.WidgetConnectionsNorthAmerica=enabled;Changed?.Invoke();_ = SaveAsync();
+    }
     public void SetPollingInterval(double seconds)
     {
         Settings.PollingIntervalSeconds=PollingPolicy.Normalize(seconds);

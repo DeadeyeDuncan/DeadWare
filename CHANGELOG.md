@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.6.23 — North America widget view
+
+- Add a small **NA** button on the widget map to switch between World and a closer North America view.
+- Save the view choice and keep it during live updates, origin changes and widget reopening.
+
 ## 0.6.22 — Map-only Connections widget
 
 - Show only the map in the Connections widget, without headings, legends, status text or transfer-rate readouts.

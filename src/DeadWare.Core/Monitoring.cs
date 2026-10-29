@@ -257,6 +257,7 @@ public sealed class UserSettings
 {
     public bool ConnectionsRecording {get;set;}=true;
     public bool WidgetConnectionsMap {get;set;}
+    public bool WidgetConnectionsNorthAmerica {get;set;}
     public string? ConnectionsHomeCityId {get;set;}
     public bool ConnectionsAnimation {get;set;}=true;
     public List<string> WidgetGraphs {get;set;}=WidgetGraphSelection.Kinds.ToList();
