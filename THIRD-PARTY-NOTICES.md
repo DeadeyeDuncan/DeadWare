@@ -18,6 +18,7 @@ DeadWare's MIT license applies to original DeadWare code. Included dependencies 
 
 ## Connections and offline geography
 
+- **DB-IP City Lite** — IP Geolocation by [DB-IP.com](https://db-ip.com/), licensed under [Creative Commons Attribution 4.0 International](https://creativecommons.org/licenses/by/4.0/). The monthly database is an optional user-initiated download from the [official DB-IP download page](https://db-ip.com/db/download/ip-to-city-lite); no DB-IP database is bundled in source or app packages. DeadWare reads the downloaded MMDB locally and displays approximate results; no upstream endorsement is implied.
 - **MaxMind.Db 5.2.0** — MaxMind and contributors, Apache License 2.0. Unmodified local database reader. Source revision `575c4b8517c91d99cf8071bd7a3f3327a64696d8`: https://github.com/maxmind/MaxMind-DB-Reader-dotnet. The upstream Apache license is preserved in `licenses/MAXMIND-DB-LICENSE.txt` and release `licenses/texts/`. No commercial MaxMind database is bundled.
 - **Natural Earth v5.1.2** — public-domain 1:110m land and 1:10m populated places, maintained by Nathaniel Vaughn Kelso, Tom Patterson and contributors. Embedded derivative coordinate/city JSON comes from pinned revision `f1890d9f152c896d250a77557a5751a93d494776`. Source URLs, SHA-256 hashes and reproducible transformations are in `assets/maps/README.md`. Terms: https://www.naturalearthdata.com/about/terms-of-use/. No upstream endorsement is implied.
 
