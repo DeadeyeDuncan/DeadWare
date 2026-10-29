@@ -29,3 +29,21 @@ public sealed record ConnectionCoverage(string BatchId, string Segment,
 public sealed record ConnectionHistoryQuery(DateTimeOffset From, DateTimeOffset To,
     string Search = "", string CountryCode = "", ConnectionDirection Direction = ConnectionDirection.Both,
     int Offset = 0, int Limit = 200);
+
+// Durable identity deliberately excludes the local interface and local port.
+public sealed record ConnectionHistoryRow(DateTimeOffset Minute, ProcessIdentity Process,
+    string RemoteAddress, int RemotePort, ConnectionProtocol Protocol,
+    DateTimeOffset FirstSeen, DateTimeOffset LastSeen, long ReceivedBytes, long SentBytes,
+    double DownloadBytesPerSecond, double UploadBytesPerSecond,
+    ConnectionLocation? Location, GeoPoint? Origin, bool Complete);
+public sealed record ConnectionHistorySummary(long ReceivedBytes, long SentBytes,
+    long Countries, long Destinations, long Unlocated, long Local);
+public sealed record ConnectionHistoryMarker(ConnectionLocation Location, GeoPoint? Origin,
+    long ReceivedBytes, long SentBytes);
+public sealed record ConnectionHistoryInterval(DateTimeOffset From, DateTimeOffset To, bool Complete);
+public sealed record ConnectionHistoryGap(DateTimeOffset From, DateTimeOffset To);
+public sealed record ConnectionHistoryView(ConnectionHistoryQuery Query,
+    IReadOnlyList<ConnectionHistoryRow> Rows, long TotalRows, ConnectionHistorySummary Summary,
+    IReadOnlyList<ConnectionHistoryMarker> Markers, IReadOnlyList<ConnectionHistoryInterval> Coverage,
+    IReadOnlyList<ConnectionHistoryGap> Gaps, DateTimeOffset? EarliestRetainedTime,
+    long StorageBytes, string Status);
