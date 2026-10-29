@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.24 — Connections map details
+
+- Replace the all-connections table with a compact list that follows visible map nodes in Live and History.
+- Open connection details beside a selected node, following map movement and clearing stale details across view changes.
+- Inspect saved map representatives directly, without table paging; distinguish connection traffic from grouped-location totals.
+
 ## 0.6.23 — North America widget view
 
 - Add a small **NA** button on the widget map to switch between World and a closer North America view.

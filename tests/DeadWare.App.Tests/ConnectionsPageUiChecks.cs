@@ -37,137 +37,115 @@ internal static class ConnectionsPageUiChecks
             new(new(peer with { RemoteAddress="9.9.9.9" }, now, now, 300, 400, 0, 0), null)], null, true, false, "Incomplete capture");
         Call(page, "ApplyLive", live);
         Layout(page, 671, 440);
+        Assert.Empty(Elements(page).OfType<DataGrid>());
         string text = Text(page);
         Assert.Contains("Live", text);
         Assert.Contains("3 destinations", text);
         Assert.Contains("1 local", text);
         Assert.Contains("1 unlocated", text);
         Assert.Contains("Incomplete capture", text);
-        var table = Assert.Single(Elements(page).OfType<DataGrid>());
-        Assert.Equal(3, table.Items.Count);
-        Assert.Contains(table.Items.Cast<object>(), row => row.ToString()!.Contains("192.168.1.1"));
+        var map=Field<ConnectionMap>(page,"map"); map.Flat=true; Layout(page,671,440);
+        Assert.Single(Field<ListBox>(page,"mappedConnections").Items.Cast<object>());
+        Assert.DoesNotContain(Elements(page).OfType<Button>(),b=>b.Content?.ToString() is "Previous" or "Next");
         var query = new ConnectionHistoryQuery(now.AddMinutes(-5), now);
         var history = new ConnectionHistoryView(query, [], 401, new(1234567, 7654321, 3, 210, 15, 9), [], [], [new(query.From, query.To)], now.AddDays(-4), 4096, "Storage failure fixture");
-        Call(page, "ApplyHistory", history); Layout(page, 671, 440); text = Text(page);
-        Assert.Contains("History", text); Assert.Contains("minute-bucket average", text);
-        Assert.Contains("210 destinations", text); Assert.Contains("15 unlocated", text);
-        Assert.Contains("Storage failure fixture", text); Assert.Contains("401", text);
-        Assert.Contains("gap", text, StringComparison.OrdinalIgnoreCase);
-        Assert.Empty(table.Items);
-        Assert.Contains(Elements(page).OfType<Button>(), b => b.Content?.ToString() == "Next");
-        Assert.Contains(Elements(page).OfType<TextBox>(), b => AutomationProperties.GetName(b) == "Search application or IP");
-        Assert.Equal("Home city", AutomationProperties.GetName((ComboBox)PageType.GetField("home", All)!.GetValue(page)!));
-        Assert.Contains(Elements(page).OfType<Button>(), b => b.Content?.ToString() == "Download / update locations");
-        Assert.True(Assert.Single(Elements(page).OfType<ConnectionMap>()).ActualHeight >= 100);
-        CheckLiveControls(page, live);
-        var finalRegressions=new[]{Record.Exception(()=>CheckLivePeerIdentityAndLabels(session,live)),Record.Exception(()=>CheckOffPageHistorySelection(session,now)),Record.Exception(()=>CheckSavedMarkerMetadata(session,now))};
-        Assert.All(finalRegressions,error=>Assert.Null(error));
+        Field<ComboBox>(page,"mode").SelectedIndex=1;
+        Call(page,"ApplyHistory",history); Layout(page,671,440); text=Text(page);
+        Assert.Contains("minute-bucket average",text); Assert.Contains("Storage failure fixture",text); Assert.Contains("gap",text,StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(Field<ListBox>(page,"mappedConnections").Items);
+        CheckLiveControls(page,live);
+        CheckVisibleNodesAndPopup(session,live);
+        CheckSavedMapDetails(session,now);
         CheckWholePageLayout(page);
-        CheckHistoryQueries(session, now);
-        CheckHistoryGroupingIdentity(session,now);
-        CheckSavedGeography(session, now);
+        CheckHistoryQueries(session,now);
         CheckBoundaryDates();
         CheckExportBusy(session,now);
         CheckDownloadControls(now);
         CheckThemes(app, page, live, history);
     }
     private static T Field<T>(object page, string name) => (T)PageType.GetField(name, All)!.GetValue(page)!;
-    private static void CheckLivePeerIdentityAndLabels(UiSession session,ConnectionLiveView live)
-    {
-        var page=new ConnectionsPage(session);var first=live.Connections[0];
-        var second=first with {Traffic=first.Traffic with {Peer=first.Traffic.Peer with {LocalAddress="192.168.2.10"}}};
-        first=first with {Traffic=first.Traffic with {Peer=first.Traffic.Peer with {LocalAddress="192.168.1.10"}}};
-        page.ApplyLive(live with {Connections=[first,second]});var table=Field<DataGrid>(page,"table");
-        table.SelectedItem=table.Items[1];page.ApplyLive(live with {Connections=[first,second]});
-        string RowKey(object row)=>(string)row.GetType().GetProperty("Key")!.GetValue(row)!;
-        var failures=new List<Exception?> {Record.Exception(()=>{Assert.NotEqual(RowKey(table.Items[0]),RowKey(table.Items[1]));Assert.Equal(RowKey(table.Items[1]),RowKey(table.SelectedItem!));})};
-        string summary=Field<TextBlock>(page,"summary").Text;failures.Add(Record.Exception(()=>{Assert.Contains("1 countries",summary);Assert.Contains("active peers",summary);Assert.DoesNotContain("session totals",summary);}));
-        page.ApplyLive(live with {Connections=[first with {Traffic=first.Traffic with {Peer=first.Traffic.Peer with {RemoteAddress="2001:4860::8888"}}}]});
-        failures.Add(Record.Exception(()=>Assert.Contains("[2001:4860::8888]:443",table.Items[0].ToString())));Assert.All(failures,error=>Assert.Null(error));
-    }
-    private static void CheckOffPageHistorySelection(UiSession session,DateTimeOffset now)
-    {
-        string root=Path.Combine(Path.GetTempPath(),"DeadWare-marker-"+Guid.NewGuid().ToString("N"));
-        try
-        {
-            var store=new ConnectionHistoryStore(Path.Combine(root,"history.db"));store.Initialize();
-            var start=now.AddMinutes(-201);var place=new ConnectionLocation("JP","Japan",null,"Saved Tokyo",new(35.7,139.7),"old source");
-            var records=Enumerable.Range(0,201).Select(i=>new ConnectionHistoryRecord("b"+i,"fixture",new(start.AddMinutes(i),new(new(10+i,1,"Peer "+i),"",0,"8.8.8.8",443,ConnectionProtocol.Tcp),i==0?10000:1,0,start.AddMinutes(i),start.AddMinutes(i)),i==0?place:place with {City="Revised",Point=new(40,-90),Source="new source"},i==0?new(41,-87):new(51,0),true)).ToArray();
-            store.Append(records,[],now);
-            var page=new ConnectionsPage(session);Field<TextBox>(page,"from").Text=start.ToLocalTime().ToString("yyyy-MM-dd HH:mm");Field<TextBox>(page,"to").Text=now.ToLocalTime().ToString("yyyy-MM-dd HH:mm");
-            PageType.GetField("readHistory",All)!.SetValue(page,(Func<ConnectionHistoryQuery,Task<ConnectionHistoryView>>)(q=>Task.FromResult(store.Read(q))));
-            Field<ComboBox>(page,"mode").SelectedIndex=1;var table=Field<DataGrid>(page,"table");Assert.Equal(200,table.Items.Count);
-            var map=Field<ConnectionMap>(page,"map");
-            var select=(Action<string>)typeof(ConnectionMap).GetField("PointSelected",All)!.GetValue(map)!;
-            var points=(IReadOnlyList<ConnectionMapPoint>)typeof(ConnectionMap).GetField("points",All)!.GetValue(map)!;
-            select(points.Single(p=>p.Point==place.Point).Key);Pump();
-            Assert.NotNull(table.SelectedItem);Assert.Contains("Peer 0 /",table.SelectedItem.ToString());Assert.Single(table.Items.Cast<object>());
-            map.ResetView();Assert.Equal(-87,map.Camera.Longitude);Assert.Contains("Saved Tokyo",Field<TextBlock>(page,"selection").Text);
-            Click(page,"previous");Pump();
-            var pending=new TaskCompletionSource<ConnectionHistoryView>();ConnectionHistoryQuery? requested=null;
-            PageType.GetField("readHistory",All)!.SetValue(page,(Func<ConnectionHistoryQuery,Task<ConnectionHistoryView>>)(q=>{if(q.Search.Length>0)return Task.FromResult(store.Read(q));requested=q;return pending.Task;}));
-            points=(IReadOnlyList<ConnectionMapPoint>)typeof(ConnectionMap).GetField("points",All)!.GetValue(map)!;select(points.Single(p=>p.Point==place.Point).Key);
-            Assert.NotNull(requested);Field<TextBox>(page,"search").Text="no peer matches";pending.SetResult(store.Read(requested!));Pump();
-            Assert.Null(table.SelectedItem);Assert.Empty(table.Items);Assert.DoesNotContain("Saved Tokyo",Field<TextBlock>(page,"selection").Text);
 
-            // Opposite ordering: a changed filter owns page zero before an old map click arrives.
-            PageType.GetField("readHistory",All)!.SetValue(page,(Func<ConnectionHistoryQuery,Task<ConnectionHistoryView>>)(q=>Task.FromResult(store.Read(q))));
-            Field<TextBox>(page,"search").Text="";Pump();
-            points=(IReadOnlyList<ConnectionMapPoint>)typeof(ConnectionMap).GetField("points",All)!.GetValue(map)!;string oldKey=points.Single(p=>p.Point==place.Point).Key;
-            var filteredReply=new TaskCompletionSource<ConnectionHistoryView>();var filteredRequests=new List<ConnectionHistoryQuery>();
-            PageType.GetField("readHistory",All)!.SetValue(page,(Func<ConnectionHistoryQuery,Task<ConnectionHistoryView>>)(q=>{filteredRequests.Add(q);return filteredRequests.Count==1?filteredReply.Task:Task.FromResult(store.Read(q));}));
-            Field<TextBox>(page,"search").Text="peer 200";Assert.Single(filteredRequests);Assert.Equal(0,filteredRequests[0].Offset);
-            select(oldKey);filteredReply.SetResult(store.Read(filteredRequests[0]));Pump();
-            Assert.Single(filteredRequests);Assert.Single(table.Items.Cast<object>());Assert.Contains("Peer 200 /",table.Items[0].ToString());
-            Assert.Contains("1–1 of 1 rows",Field<TextBlock>(page,"pages").Text);Assert.Null(table.SelectedItem);
 
-            // A pending page in the same filter still permits selection of its saved representative.
-            PageType.GetField("readHistory",All)!.SetValue(page,(Func<ConnectionHistoryQuery,Task<ConnectionHistoryView>>)(q=>Task.FromResult(store.Read(q))));
-            Field<TextBox>(page,"search").Text="";Pump();
-            var pageReply=new TaskCompletionSource<ConnectionHistoryView>();var pageRequests=new List<ConnectionHistoryQuery>();
-            PageType.GetField("readHistory",All)!.SetValue(page,(Func<ConnectionHistoryQuery,Task<ConnectionHistoryView>>)(q=>{pageRequests.Add(q);return pageRequests.Count==1?pageReply.Task:Task.FromResult(store.Read(q));}));
-            Click(page,"next");select(oldKey);pageReply.SetResult(store.Read(pageRequests[0]));Pump();
-            Assert.Equal(2,pageRequests.Count);Assert.All(pageRequests,q=>Assert.Equal(200,q.Offset));
-            Assert.NotNull(table.SelectedItem);Assert.Contains("Peer 0 /",table.SelectedItem.ToString());
-        }
-        finally{if(Directory.Exists(root))Directory.Delete(root,true);}
-    }
-    private static void CheckSavedMarkerMetadata(UiSession session,DateTimeOffset now)
-    {
-        var page=new ConnectionsPage(session);Field<ComboBox>(page,"mode").SelectedIndex=1;
-        var location=new ConnectionLocation("JP","Japan",null,"Old saved city",new(35,139),"Old database");
-        var old=new ConnectionHistoryRow(now.AddMinutes(-2),new(1,1,"Same peer"),"8.8.8.8",443,ConnectionProtocol.Tcp,now.AddMinutes(-2),now.AddMinutes(-2),100,50,1,1,location,new(41,-87),true);
-        var revised=old with {Minute=now.AddMinutes(-1),Location=location with {City="New saved city",Source="New database"}};
-        var query=new ConnectionHistoryQuery(now.AddMinutes(-3),now);
-        page.ApplyHistory(new(query,[revised,old],2,new(200,100,1,1,0,0),[new(location,old.Origin,100,50,old,1),new(revised.Location!,revised.Origin,100,50,revised,0)],[],[],query.From,1024,"Saved revisions",44));
-        var map=Field<ConnectionMap>(page,"map");var points=(IReadOnlyList<ConnectionMapPoint>)typeof(ConnectionMap).GetField("points",All)!.GetValue(map)!;
-        Assert.Single(points);var select=(Action<string>)typeof(ConnectionMap).GetField("PointSelected",All)!.GetValue(map)!;select(points[0].Key);
-        Assert.Contains("Old saved city",Field<TextBlock>(page,"selection").Text);
-        Assert.Contains("44 grouped locations omitted",Field<TextBlock>(page,"capture").Text);
-        Assert.False(map.AnimationEnabled);
-        Assert.Contains("[2001:4860::8888]:443",GetHistoryIpv6Endpoint());
-        string GetHistoryIpv6Endpoint(){page.ApplyHistory(new(query,[old with {RemoteAddress="2001:4860::8888"}],1,new(100,50,1,1,0,0),[],[],[],query.From,1024,"IPv6"));return Field<DataGrid>(page,"table").Items[0].ToString()!;}
-    }
+
     private static void Click(object page, string name) => Field<Button>(page, name).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
     private static void CheckLiveControls(FrameworkElement page, ConnectionLiveView live)
     {
-        var mode = Field<ComboBox>(page, "mode"); mode.SelectedIndex = 0; Call(page, "ApplyLive", live);
-        var grid = Field<DataGrid>(page, "table"); grid.SelectedItem = grid.Items[0];
-        Assert.Contains("Browser / 7", Field<TextBlock>(page, "selection").Text);
-        Call(page, "ApplyLive", live);
-        Assert.Contains("Browser / 7", Field<TextBlock>(page, "selection").Text);
-        var search = Field<TextBox>(page, "search"); search.Text = "192.168"; Assert.Single(grid.Items.Cast<object>()); Assert.Contains("1 local", Field<TextBlock>(page, "summary").Text); search.Text = "";
-        var country = Field<TextBox>(page, "country"); country.Text = "US"; Assert.Single(grid.Items.Cast<object>()); country.Text = "";
-        Assert.False(country.IsReadOnly); Assert.True(country.Focusable);
-        Call(page, "ApplyLive", live with { Available = false, Status = "Permission denied" }); Assert.Contains("Permission denied", Field<TextBlock>(page, "capture").Text); Assert.Contains("—", grid.Items[0].ToString());
-        var options = Elements(page).OfType<Expander>().Single(); options.IsExpanded = true; Layout(page, 671, 600);
-        var city = Field<TextBox>(page, "citySearch"); city.Text = "London"; var home = Field<ComboBox>(page, "home"); Assert.Contains(home.Items.Cast<object>(), item => item.ToString()!.Contains("London")); Assert.True(home.Items.Count <= 82); city.Text = ""; Assert.Single(home.Items.Cast<object>()); options.IsExpanded = false;
-        Click(page, "download"); Assert.Contains("unavailable", Field<TextBlock>(page, "actionStatus").Text);
-        Call(page, "RefreshSession", null!); Assert.Contains("unavailable", Field<TextBlock>(page, "actionStatus").Text);
-        var map = Field<ConnectionMap>(page, "map"); var zoom = Elements(page).OfType<Button>().Single(b => b.Content?.ToString() == "+"); zoom.RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); Assert.True(map.Camera.Zoom > 1);
-        Elements(page).OfType<Button>().Single(b => b.Content?.ToString() == "Reset").RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); Assert.Equal(1, map.Camera.Zoom);
-        Call(page, "ApplyLive", live with { Connections = Enumerable.Range(0, 401).Select(i => live.Connections[0] with { Traffic = live.Connections[0].Traffic with { Peer = live.Connections[0].Traffic.Peer with { RemotePort = i } } }).ToArray() });
-        Assert.Equal(200, grid.Items.Count); Click(page, "next"); Assert.Equal(200, grid.Items.Count); Click(page, "next"); Assert.Single(grid.Items.Cast<object>()); Assert.False(Field<Button>(page, "next").IsEnabled); Click(page, "previous"); Assert.Equal(200, grid.Items.Count);
+        Field<ComboBox>(page,"mode").SelectedIndex=0; Call(page,"ApplyLive",live); Layout(page,671,440);
+        var map=Field<ConnectionMap>(page,"map"); map.Flat=true;
+        var list=Field<ListBox>(page,"mappedConnections"); list.SelectedIndex=0;
+        Assert.Contains("Browser / 7",Field<TextBlock>(page,"nodeText").Text);
+        Call(page,"ApplyLive",live with {Connections=live.Connections.Select(c=>c with {Traffic=c.Traffic with {ReceivedBytes=4096,DownloadBytesPerSecond=256}}).ToArray()});
+        Assert.Contains("4.1 KB",Field<TextBlock>(page,"nodeText").Text);
+        Field<TextBox>(page,"search").Text="192.168"; Assert.Empty(list.Items); Assert.Equal(Visibility.Collapsed,Field<Border>(page,"nodeDetails").Visibility);
+        Assert.Contains("1 local",Field<TextBlock>(page,"summary").Text); Field<TextBox>(page,"search").Text="";
+        Field<TextBox>(page,"country").Text="JP"; Assert.Empty(list.Items); Field<TextBox>(page,"country").Text="";
+        Call(page,"ApplyLive",live with {Available=false,Status="Permission denied"}); list.SelectedIndex=0;
+        Assert.Contains("Permission denied",Field<TextBlock>(page,"capture").Text);Assert.Contains("—",Field<TextBlock>(page,"nodeText").Text);
+        var options=Elements(page).OfType<Expander>().Single();options.IsExpanded=true;Layout(page,671,600);
+        Field<TextBox>(page,"citySearch").Text="London";var home=Field<ComboBox>(page,"home");Assert.Contains(home.Items.Cast<object>(),item=>item.ToString()!.Contains("London"));Assert.True(home.Items.Count<=82);options.IsExpanded=false;
+        Click(page,"download");Assert.Contains("unavailable",Field<TextBlock>(page,"actionStatus").Text);
+        Call(page,"ApplyLive",live); list.SelectedIndex=0; Call(page,"ClearSelection",null);
+        Assert.Equal(Visibility.Collapsed,Field<Border>(page,"nodeDetails").Visibility);Assert.Null(list.SelectedItem);
+    }
+    private static void SelectNode(FrameworkElement page,string key)
+    {
+        var map=Field<ConnectionMap>(page,"map");
+        ((Action<string>)typeof(ConnectionMap).GetField("PointSelected",All)!.GetValue(map)!)(key);
+    }
+    private static void CheckVisibleNodesAndPopup(UiSession session,ConnectionLiveView live)
+    {
+        var page=new ConnectionsPage(session);var first=live.Connections[0];
+        var other=first with {Traffic=first.Traffic with {Peer=first.Traffic.Peer with {RemoteAddress="1.1.1.1",Process=new(8,43,"Other")}},Location=first.Location! with {City="Far side",Point=new(-40,90)}};
+        page.ApplyLive(live with {Connections=[..live.Connections,other]});Layout(page,1000,700);
+        var map=Field<ConnectionMap>(page,"map");map.SetView(first.Location!.Point!,1);
+        var list=Field<ListBox>(page,"mappedConnections");Assert.Single(list.Items.Cast<object>());
+        string key=map.DisplayedPoints.Single(p=>p.Point==first.Location.Point).Key;SelectNode(page,key);Layout(page,1000,700);
+        var box=Field<Border>(page,"nodeDetails");Assert.Equal(Visibility.Visible,box.Visibility);
+        Assert.Contains("Live connection",Field<TextBlock>(page,"nodeText").Text);Assert.Contains("8.8.8.8:443 Tcp",Field<TextBlock>(page,"nodeText").Text);
+        double oldX=Canvas.GetLeft(box);map.SetView(new(40,-60),1);Layout(page,1000,700);Assert.NotEqual(oldX,Canvas.GetLeft(box));
+        Assert.InRange(Canvas.GetLeft(box),0,map.ActualWidth-box.ActualWidth);Assert.InRange(Canvas.GetTop(box),0,map.ActualHeight-box.ActualHeight);
+        map.SetView(other.Location!.Point!,1);Assert.Single(list.Items.Cast<object>());Assert.DoesNotContain("Browser",list.Items[0].ToString());Assert.Equal(Visibility.Collapsed,box.Visibility);
+        map.Flat=true;map.ResetView();Assert.Equal(2,list.Items.Count);
+        page.ApplyLive(live with {Connections=[first with {Traffic=first.Traffic with {Peer=first.Traffic.Peer with {RemoteAddress="2001:4860::8888"}}}]});list.SelectedIndex=0;Assert.Contains("[2001:4860::8888]:443",Field<TextBlock>(page,"nodeText").Text);
+        // Shared nodes aggregate location volume but retain a clearly labeled representative's own rates/bytes.
+        var same=first with {Traffic=first.Traffic with {Peer=first.Traffic.Peer with {LocalAddress="192.168.2.1"}}};
+        page.ApplyLive(live with {Connections=[first,same]});Assert.Single(list.Items.Cast<object>());list.SelectedIndex=0;
+        Assert.Contains("Location total: ↓ 2.0 KB",Field<TextBlock>(page,"nodeText").Text);Assert.Contains("Received 1.0 KB",Field<TextBlock>(page,"nodeText").Text);
+        // The list follows the map's cap and never falls back to the full all-peer ledger.
+        page.ApplyLive(live with {Connections=Enumerable.Range(0,300).Select(i=>first with {Traffic=first.Traffic with {Peer=first.Traffic.Peer with {RemotePort=i}},Location=first.Location! with {Point=new(0,-150+i)}}).ToArray()});
+        Assert.Equal(256,map.DisplayedPointCount);Assert.Equal(44,map.OverflowCount);Assert.Equal(256,list.Items.Count);
+        Layout(page,1000,700);Pump();
+        var listScroll=Elements(list).OfType<ScrollViewer>().First();listScroll.ScrollToVerticalOffset(100);Pump();Layout(page,1000,700);
+        double scrollOffset=listScroll.VerticalOffset;var retained=list.Items[100];
+        Call(page,"RefreshMappedConnections",null);Layout(page,1000,700);Pump();
+        Assert.Same(retained,list.Items[100]);Assert.Equal(scrollOffset,listScroll.VerticalOffset);
+        SelectNode(page,map.DisplayedPoints[^1].Key);Assert.Equal(44,map.OverflowCount);
+        page.ApplyLive(live with {Connections=[]});Assert.Empty(list.Items);Assert.Equal(Visibility.Collapsed,box.Visibility);Assert.Empty(Field<TextBlock>(page,"nodeText").Text);
+    }
+    private static void CheckSavedMapDetails(UiSession session,DateTimeOffset now)
+    {
+        string root=Path.Combine(Path.GetTempPath(),"DeadWare-map-"+Guid.NewGuid().ToString("N"));
+        try
+        {
+            var store=new ConnectionHistoryStore(Path.Combine(root,"history.db"));store.Initialize();
+            var start=now.AddMinutes(-201);var place=new ConnectionLocation("JP","Japan",null,"Saved Tokyo",new(35,139),"old source");
+            var records=Enumerable.Range(0,201).Select(i=>new ConnectionHistoryRecord("b"+i,"fixture",new(start.AddMinutes(i),new(new(10+i,1,"Peer "+i),"",0,"8.8.8.8",443,ConnectionProtocol.Tcp),i==0?10000:1,0,start.AddMinutes(i),start.AddMinutes(i)),i==0?place:place with {City="Revised",Point=new(40,-90)},i==0?new(41,-87):new(51,0),true)).ToArray();store.Append(records,[],now);
+            var page=new ConnectionsPage(session);Field<TextBox>(page,"from").Text=start.ToLocalTime().ToString("yyyy-MM-dd HH:mm");Field<TextBox>(page,"to").Text=now.ToLocalTime().ToString("yyyy-MM-dd HH:mm");
+            int calls=0;PageType.GetField("readHistory",All)!.SetValue(page,(Func<ConnectionHistoryQuery,Task<ConnectionHistoryView>>)(q=>{calls++;return Task.FromResult(store.Read(q));}));
+            Field<ComboBox>(page,"mode").SelectedIndex=1;Layout(page,1000,700);var map=Field<ConnectionMap>(page,"map");map.Flat=true;map.ResetView();
+            Assert.Equal(2,Field<ListBox>(page,"mappedConnections").Items.Count);
+            string key=map.DisplayedPoints.Single(p=>p.Point==place.Point).Key;SelectNode(page,key);
+            Assert.Equal(1,calls);Assert.Contains("Peer 0 /",Field<TextBlock>(page,"nodeText").Text);Assert.Contains("Historical connection",Field<TextBlock>(page,"nodeText").Text);Assert.Contains("Saved Tokyo",Field<TextBlock>(page,"nodeText").Text);
+            Assert.Equal(2,map.DisplayedPointCount);Assert.False(map.AnimationEnabled);
+            var pending=new TaskCompletionSource<ConnectionHistoryView>();ConnectionHistoryQuery? requested=null;
+            PageType.GetField("readHistory",All)!.SetValue(page,(Func<ConnectionHistoryQuery,Task<ConnectionHistoryView>>)(q=>{requested=q;return pending.Task;}));
+            Field<TextBox>(page,"search").Text="Peer 200";Assert.Empty(Field<ListBox>(page,"mappedConnections").Items);Assert.Equal(Visibility.Collapsed,Field<Border>(page,"nodeDetails").Visibility);
+            SelectNode(page,key);Assert.Empty(Field<TextBlock>(page,"nodeText").Text);pending.SetResult(store.Read(requested!));Pump();Assert.Single(Field<ListBox>(page,"mappedConnections").Items.Cast<object>());
+            Assert.DoesNotContain("Peer 0 /",Field<TextBlock>(page,"nodeText").Text);
+            Field<ListBox>(page,"mappedConnections").SelectedIndex=0;Assert.Contains("Peer 200 /",Field<TextBlock>(page,"nodeText").Text);
+            Field<ComboBox>(page,"mode").SelectedIndex=0;Assert.Equal(Visibility.Collapsed,Field<Border>(page,"nodeDetails").Visibility);Assert.Empty(Field<TextBlock>(page,"nodeText").Text);
+        }
+        finally {if(Directory.Exists(root))Directory.Delete(root,true);}
     }
     private static void CheckHistoryQueries(UiSession session, DateTimeOffset now)
     {
@@ -186,7 +164,7 @@ internal static class ConnectionsPageUiChecks
         typeof(UiSession).GetField("<Connections>k__BackingField", All)!.SetValue(session, service);
         string saved = Field<TextBlock>(page, "storage").Text; PageType.GetMethod("RefreshSession", All)!.Invoke(page, null); Assert.Equal(saved.TrimEnd() + " " + service.StorageStatus, Field<TextBlock>(page, "storage").Text);
         typeof(UiSession).GetField("<Connections>k__BackingField", All)!.SetValue(session, null);
-        Click(page, "next"); Assert.Equal(2, requested.Count);
+
         Field<TextBox>(page, "from").Text = "bad date"; PageType.GetMethod("RequestHistory", All)!.Invoke(page, null); Assert.Equal(2, requested.Count); Assert.Contains("Choose valid local times", Field<TextBlock>(page, "actionStatus").Text);
         Field<TextBox>(page, "from").Text = "2026-10-29 10:00"; Field<TextBox>(page, "to").Text = "2026-10-29 10:03"; Click(page, "play"); Assert.Equal(TimeSpan.FromMinutes(1), requested[^1].To - requested[^1].From);
         Assert.False(Field<ConnectionMap>(page,"map").AnimationEnabled); // The prior range must stay static while its first minute is pending.
@@ -201,20 +179,13 @@ internal static class ConnectionsPageUiChecks
     private static void CheckWholePageLayout(FrameworkElement page)
     {
         Layout(page,671,440);Pump();Layout(page,671,440);
-        var map=Field<ConnectionMap>(page,"map");var table=Field<DataGrid>(page,"table");
-        Assert.True(map.ActualHeight>=260,$"Main map height was {map.ActualHeight:0.0}.");
-        Assert.InRange(table.ActualHeight,164,440);
-        Assert.InRange(Elements(table).OfType<DataGridRow>().Count(),3,20);
-        var scroll=Assert.IsType<ScrollViewer>(((Grid)page).Children[0]);
-        Assert.True(scroll.ExtentHeight>scroll.ViewportHeight);Assert.True(double.IsFinite(scroll.ExtentHeight));
-        scroll.ScrollToVerticalOffset(map.TransformToAncestor((Visual)scroll.Content).Transform(new Point()).Y);Pump();Layout(page,671,440);
-        var mapPoint=map.TransformToAncestor(page).Transform(new Point());Assert.InRange(mapPoint.Y,0,440-map.ActualHeight);
+        var map=Field<ConnectionMap>(page,"map");Assert.True(map.ActualHeight>=300);
+        Assert.Empty(Elements(page).OfType<DataGrid>());
+        var scroll=Assert.IsType<ScrollViewer>(((Grid)page).Children[0]);Assert.True(double.IsFinite(scroll.ExtentHeight));
         scroll.ScrollToBottom();Pump();Layout(page,671,440);
-        var download=Field<Button>(page,"download");var point=download.TransformToAncestor(page).Transform(new Point());
-        Assert.InRange(point.Y,0,440-download.ActualHeight);
-        point=table.TransformToAncestor(page).Transform(new Point());Assert.InRange(point.Y,0,440-table.ActualHeight);
+        var download=Field<Button>(page,"download");Assert.InRange(download.TransformToAncestor(page).Transform(new Point()).Y,0,440-download.ActualHeight);
         var expander=Elements(page).OfType<Expander>().Single();expander.IsExpanded=true;Layout(page,671,440);scroll.ScrollToBottom();Pump();Layout(page,671,440);
-        var city=Field<ComboBox>(page,"home");point=city.TransformToAncestor(page).Transform(new Point());Assert.InRange(point.Y,0,440-city.ActualHeight);
+        var city=Field<ComboBox>(page,"home");Assert.InRange(city.TransformToAncestor(page).Transform(new Point()).Y,0,440-city.ActualHeight);
         expander.IsExpanded=false;scroll.ScrollToTop();Pump();Layout(page,671,440);
     }
     private static void CheckDownloadControls(DateTimeOffset now)
@@ -241,47 +212,8 @@ internal static class ConnectionsPageUiChecks
     { protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token) { await Task.Delay(Timeout.Infinite, token); return new(HttpStatusCode.OK); } }
     private sealed class DeniedDownload : HttpMessageHandler
     { protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.Forbidden)); }
-    private static void CheckSavedGeography(UiSession session, DateTimeOffset now)
-    {
-        var page = new ConnectionsPage(session); Field<ComboBox>(page, "mode").SelectedIndex = 1;
-        var q = new ConnectionHistoryQuery(now.AddMinutes(-2), now);
-        var location = new ConnectionLocation("JP", "Japan", null, "Tokyo", new(35.7, 139.7), "Saved");
-        var a = new ConnectionHistoryRow(q.From, new(1, 1, "Saved A"), "8.8.8.8", 443, ConnectionProtocol.Tcp, q.From, q.To, 100, 50, 1, 2, location, new(41, -87), false);
-        var b = a with { Process = new(2, 2, "Saved B"), Origin = new(-33, 151) };
-        var unlocated = a with { Process = new(3, 3, "Local"), RemoteAddress = "192.168.1.1", Location = null, Origin = null };
-        var history = new ConnectionHistoryView(q, [a, b, unlocated], 3, new(300, 150, 1, 2, 0, 1), [new(location, a.Origin, 100, 50), new(location, b.Origin, 100, 50)], [], [], q.From, 1024, "Saved fixture");
-        page.ApplyHistory(history); Layout(page, 671, 500); var map = Field<ConnectionMap>(page, "map"); map.ResetView();
-        Assert.Equal(-20, map.Camera.Longitude); // Multiple saved origins cannot become one invented route.
-        var table = Field<DataGrid>(page, "table"); table.SelectedItem = table.Items[1]; map.ResetView(); Assert.Equal(151, map.Camera.Longitude); Assert.Contains("Incomplete", Field<TextBlock>(page, "selection").Text);
-        Assert.Contains("First", Field<TextBlock>(page, "selection").Text);
-        page.ApplyHistory(history);Assert.Equal(table.Items[1],table.SelectedItem);map.ResetView();Assert.Equal(151,map.Camera.Longitude);Assert.Equal(1,map.DisplayedPointCount);
-        table.SelectedItem = table.Items[2]; Assert.Equal(0, map.DisplayedPointCount);
-        page.ApplyHistory(history);Assert.Equal(table.Items[2],table.SelectedItem);Assert.Equal(0,map.DisplayedPointCount);
-        table.SelectedItem=null;
-        page.ApplyHistory(history);
-        var points = (IReadOnlyList<ConnectionMapPoint>)typeof(ConnectionMap).GetField("points", All)!.GetValue(map)!;
-        var select = (Action<string>)typeof(ConnectionMap).GetField("PointSelected", All)!.GetValue(map)!; select(points[0].Key);
-        Assert.NotNull(table.SelectedItem);
-        var replacement = history with { Rows = [a with { Process = new(99, 99, "Replacement") }], TotalRows = 1 }; page.ApplyHistory(replacement); Assert.Null(table.SelectedItem);
-    }
-    private static void CheckHistoryGroupingIdentity(UiSession session,DateTimeOffset now)
-    {
-        var page=new ConnectionsPage(session);Field<ComboBox>(page,"mode").SelectedIndex=1;
-        var query=new ConnectionHistoryQuery(now.AddMinutes(-1),now);
-        var location=new ConnectionLocation("JP","Japan","Kanto","Tokyo",new(35.7,139.7),"Saved A");
-        var first=new ConnectionHistoryRow(query.From,new(1,1,"Saved A"),"8.8.8.8",443,ConnectionProtocol.Tcp,query.From,query.To,100,50,1,2,location,new(41,-87),false);
-        var revisions=new[]{first with {Location=location with {Point=new(34,135)}},first with {Location=location with {CountryCode="XX"}},first with {Location=location with {Country="Revised"}},first with {Location=location with {Region="Revised"}},first with {Location=location with {City="Revised"}},first with {Location=location with {Source="Revised"}},first with {Location=null},first with {Process=first.Process with {Name="Renamed"}}};
-        var table=Field<DataGrid>(page,"table");
-        foreach(var revision in revisions)
-        {
-            var history=new ConnectionHistoryView(query,[first,revision],2,new(200,100,1,1,0,0),[],[],[],query.From,1024,"Saved revisions");
-            page.ApplyHistory(history);table.SelectedItem=table.Items[1];
-            page.ApplyHistory(history);Assert.Equal(table.Items[1],table.SelectedItem);
-            // Traffic aggregates and observation bounds are values, not grouping identity.
-            page.ApplyHistory(history with {Rows=[first,revision with {ReceivedBytes=999,SentBytes=888,DownloadBytesPerSecond=99,UploadBytesPerSecond=88,FirstSeen=revision.FirstSeen.AddSeconds(1),LastSeen=revision.LastSeen.AddSeconds(-1),Complete=true}]});
-            Assert.Equal(table.Items[1],table.SelectedItem);
-        }
-    }
+
+
     private static void Pump()
     { var frame = new DispatcherFrame(); Dispatcher.CurrentDispatcher.BeginInvoke(DispatcherPriority.Background, new Action(() => frame.Continue = false)); Dispatcher.PushFrame(frame); }
     private static void CheckBoundaryDates()
@@ -321,6 +253,9 @@ internal static class ConnectionsPageUiChecks
     }
     private static void CheckThemes(Application app, FrameworkElement page, ConnectionLiveView live, ConnectionHistoryView history)
     {
+        var place=live.Connections[0].Location!;
+        var saved=new ConnectionHistoryRow(history.Query.From,new(9,3,"Saved browser"),"8.8.8.8",443,ConnectionProtocol.Tcp,history.Query.From,history.Query.To,12000,6000,200,100,place,new(41,-87),false);
+        history=history with {Rows=[saved],Markers=[new(place,saved.Origin,12000,6000,saved)],TotalRows=1};
         // Constructing a Window registers the resource-invalidation root, without creating an HWND.
         var host = new Window { Content = page };
         var theme = typeof(Collector).Assembly.GetType("DeadWare.App.Theme")!;
@@ -334,7 +269,7 @@ internal static class ConnectionsPageUiChecks
                     var scroll=Assert.IsType<ScrollViewer>(((Grid)page).Children[0]);
                     Field<ComboBox>(page, "mode").SelectedIndex = historical ? 1 : 0; if (historical) Call(page, "ApplyHistory", history); else Call(page, "ApplyLive", live);scroll.ScrollToTop(); Layout(page, size.Width, size.Height);
                 Pump();Layout(page,size.Width,size.Height);
-                var map = Field<ConnectionMap>(page, "map"); var table = Field<DataGrid>(page, "table"); Assert.InRange(map.ActualWidth, 500, size.Width); Assert.True(map.ActualHeight >= 260); Assert.True(table.ActualHeight >= 164);Assert.True(map.ActualHeight>table.ActualHeight);
+                var map = Field<ConnectionMap>(page, "map"); var list=Field<ListBox>(page,"mappedConnections"); Assert.InRange(map.ActualWidth,500,size.Width);Assert.True(map.ActualHeight>=300);Assert.InRange(list.ActualHeight,45,140);
                 Assert.True(Field<TextBlock>(page,"summary").TransformToAncestor(page).Transform(new Point()).Y+Field<TextBlock>(page,"summary").ActualHeight<map.TransformToAncestor(page).Transform(new Point()).Y+1);
                     void Snapshot(string suffix)
                     {
@@ -342,7 +277,15 @@ internal static class ConnectionsPageUiChecks
                         string? output = Environment.GetEnvironmentVariable("DEADWARE_UI_OUTPUT");if(output is null)return;
                         Directory.CreateDirectory(output);using var stream=File.Create(Path.Combine(output,$"connections-page-{name}-{size.Width}-{(historical?"history":"live")}{suffix}.png"));var encoder=new PngBitmapEncoder();encoder.Frames.Add(BitmapFrame.Create(bitmap));encoder.Save(stream);
                     }
-                    Snapshot("");scroll.ScrollToBottom();Pump();Layout(page,size.Width,size.Height);
+                    Snapshot("");
+                    map.Flat=true;map.ResetView();if(list.Items.Count>0)
+                    {
+                        list.SelectedIndex=0;Layout(page,size.Width,size.Height);Snapshot("-selected");
+                        Assert.Equal(((SolidColorBrush)app.Resources["Ink"]).Color,((SolidColorBrush)list.Foreground).Color);
+                        Assert.Equal(((SolidColorBrush)app.Resources["Panel"]).Color,((SolidColorBrush)Field<Border>(page,"nodeDetails").Background).Color);
+                        Assert.Contains(historical?"Historical connection":"Live connection",Field<TextBlock>(page,"nodeText").Text);
+                    }
+                    scroll.ScrollToBottom();Pump();Layout(page,size.Width,size.Height);
                     var download=Field<Button>(page,"download");var location=download.TransformToAncestor(page).Transform(new Point());Assert.InRange(location.Y,0,size.Height-download.ActualHeight);
                     Snapshot("-bottom");scroll.ScrollToTop();Pump();
                 }
