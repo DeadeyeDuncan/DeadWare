@@ -14,6 +14,7 @@ internal static class ConnectionMapUiChecks
 {
     public static void Run(Application app)
     {
+        CheckIndependentAssetRecovery();
         Assert.True(ConnectionAssets.Land.Count > 100);
         Assert.Contains(ConnectionAssets.Cities, c => c.Name == "London");
         Assert.Throws<InvalidDataException>(() => ConnectionAssets.ParseLand("[[[200,0],[1,0],[2,0],[200,0]]]"));
@@ -57,6 +58,42 @@ internal static class ConnectionMapUiChecks
         map.AnimationEnabled = false; Assert.False(map.IsAnimating);
         map.AnimationEnabled = true; map.RaiseEvent(new RoutedEventArgs(FrameworkElement.UnloadedEvent)); Assert.False(map.IsAnimating);
         theme.GetMethod("Apply", BindingFlags.Public | BindingFlags.Static)!.Invoke(null, ["Midnight"]);
+    }
+
+    private static void CheckIndependentAssetRecovery()
+    {
+        const string validLand = "[[[0,0],[1,0],[0,1],[0,0]]]";
+        const string validCities = "[{\"id\":\"fixture\",\"name\":\"Fixture city\",\"country\":\"Fixture country\",\"latitude\":1,\"longitude\":2}]";
+        var load = typeof(ConnectionAssets).GetMethod("Load", BindingFlags.NonPublic | BindingFlags.Static)!;
+        var failures = new List<Exception?>();
+        foreach (string rejected in new[] { "land", "cities" })
+        foreach (string failure in new[] { "malformed", "oversized", "missing" })
+        {
+            failures.Add(Record.Exception(() =>
+            {
+                string Read(string name) => name != rejected ? name == "land" ? validLand : validCities : failure switch
+                {
+                    "malformed" => "{}",
+                    "oversized" => new string(' ', 2_000_001),
+                    _ => throw new InvalidDataException("Missing embedded geography.")
+                };
+                // Invoke the same boundary used by Lazy<Assets>; parsers and independent catches are real.
+                var assets = load.Invoke(null, [(Func<string, string>)Read])!;
+                T Value<T>(string name) => (T)assets.GetType().GetProperty(name)!.GetValue(assets)!;
+                var land = Value<IReadOnlyList<IReadOnlyList<GeoPoint>>>("Land");
+                var cities = Value<IReadOnlyList<HomeCity>>("Cities");
+                Assert.Equal(rejected == "land" ? "Map geography unavailable" : "Home city choices unavailable", Value<string>("Status"));
+                if (rejected == "land")
+                {
+                    Assert.Empty(land); Assert.Equal(new HomeCity("fixture", "Fixture city", "Fixture country", new(1, 2)), Assert.Single(cities));
+                }
+                else
+                {
+                    Assert.Empty(cities); Assert.Equal(new[] { new GeoPoint(0, 0), new(0, 1), new(1, 0), new(0, 0) }, Assert.Single(land));
+                }
+            }));
+        }
+        Assert.All(failures, failure => Assert.Null(failure));
     }
 
     private sealed class OffscreenSource : PresentationSource, IDisposable

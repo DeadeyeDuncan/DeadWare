@@ -8,17 +8,17 @@ public sealed record HomeCity(string Id, string Name, string Country, GeoPoint P
 public static class ConnectionAssets
 {
     private sealed record Assets(IReadOnlyList<IReadOnlyList<GeoPoint>> Land, IReadOnlyList<HomeCity> Cities, string Status);
-    private static readonly Lazy<Assets> Data = new(Load);
+    private static readonly Lazy<Assets> Data = new(() => Load(Read));
     public static IReadOnlyList<IReadOnlyList<GeoPoint>> Land => Data.Value.Land;
     public static IReadOnlyList<HomeCity> Cities => Data.Value.Cities;
     public static string Status => Data.Value.Status;
 
-    private static Assets Load()
+    private static Assets Load(Func<string, string> read)
     {
         IReadOnlyList<IReadOnlyList<GeoPoint>> land = []; IReadOnlyList<HomeCity> cities = [];
         var errors = new List<string>();
-        try { land = ParseLand(Read("land")); } catch (Exception e) when (e is IOException or InvalidOperationException or System.Resources.MissingManifestResourceException) { errors.Add("Map geography unavailable"); }
-        try { cities = ParseCities(Read("cities")); } catch (Exception e) when (e is IOException or InvalidOperationException or System.Resources.MissingManifestResourceException) { errors.Add("Home city choices unavailable"); }
+        try { land = ParseLand(read("land")); } catch (Exception e) when (e is InvalidDataException or IOException or InvalidOperationException or System.Resources.MissingManifestResourceException) { errors.Add("Map geography unavailable"); }
+        try { cities = ParseCities(read("cities")); } catch (Exception e) when (e is InvalidDataException or IOException or InvalidOperationException or System.Resources.MissingManifestResourceException) { errors.Add("Home city choices unavailable"); }
         return new(land, cities, string.Join(" · ", errors));
     }
 
