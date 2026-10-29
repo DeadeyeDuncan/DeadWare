@@ -8,6 +8,7 @@ REVISION = "f1890d9f152c896d250a77557a5751a93d494776"  # v5.1.2
 BASE = f"https://raw.githubusercontent.com/nvkelso/natural-earth-vector/{REVISION}/geojson/"
 HASHES = {
     "ne_110m_land": "9e0729ee253ca7d7a5c4ae9395fb1902264c5377c52e224d13dd85010e2835d9",
+    "ne_110m_admin_0_boundary_lines_land": "d42479fd79552cca4eec7f85fcdca717a790d29ff06be7676f1af0568c6d3f7c",
     "ne_10m_populated_places_simple": "fd3fa867a320cbd5c5b6bb5bc550afeec2939fb2cef688e508007282a55ac42f",
 }
 OUTPUT = Path(__file__).resolve().parents[1] / "assets" / "maps"
@@ -40,6 +41,20 @@ def main():
                     ring.append(pair)
             if len(ring) >= 4:
                 rings.append(ring)
+    borders = []
+    for feature in source("ne_110m_admin_0_boundary_lines_land"):
+        geometry = feature["geometry"]
+        if geometry["type"] not in ("LineString", "MultiLineString"):
+            raise ValueError("Unexpected country boundary geometry")
+        lines = [geometry["coordinates"]] if geometry["type"] == "LineString" else geometry["coordinates"]
+        for line in lines:
+            path = []
+            for longitude, latitude in line:
+                pair = [round(longitude, 2), round(latitude, 2)]
+                if not path or pair != path[-1]:
+                    path.append(pair)
+            if len(path) >= 2:
+                borders.append(path)
     cities = []
     for feature in source("ne_10m_populated_places_simple"):
         props = feature["properties"]
@@ -47,8 +62,9 @@ def main():
         cities.append({"id": str(props["ne_id"]), "name": props["name"], "country": props["adm0name"],
                        "latitude": round(lat, 4), "longitude": round(lon, 4)})
     write("land.json", rings)
+    write("borders.json", borders)
     write("cities.json", sorted(cities, key=lambda city: (city["country"], city["name"], city["id"])))
-    print(f"Wrote {len(rings)} land rings and {len(cities)} cities from Natural Earth v5.1.2 ({REVISION}).")
+    print(f"Wrote {len(rings)} land rings, {len(borders)} country boundaries and {len(cities)} cities from Natural Earth v5.1.2 ({REVISION}).")
 
 
 if __name__ == "__main__":

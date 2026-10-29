@@ -96,6 +96,8 @@ The compact widget has a **Usage** graph with CPU and selected-GPU utilization t
 
 ## Connections
 
+Both the main map and widget include subtle offline country borders. Connection arcs use fine layered filaments with restrained glow; selecting a connection highlights its strands. Active strands drift gently, while stopped animation, quiet traffic and unavailable capture remain static. Upload/download colors and direction markers remain distinct.
+
 Open **Connections** beside Network for live observed destinations on a rotatable globe or a 2D world map. Drag, zoom, reset the view or pause animation, and filter by application, country and traffic direction. The compact list shows only nodes visible in the current map view, following rotation, zoom and the selected Live or History mode. Click a node or its list entry to open a detail box beside it with application/PID, remote IP/port, TCP/UDP, approximate location, observed bytes, rates, coverage and observation times. The box follows the node, hides when it moves out of view, and closes with **Close** or **Escape**. Private/LAN, special and unlocated addresses remain in summary totals and saved-history CSV exports. This is observed traffic, so an idle socket need not appear.
 
 Download/upload colors and moving highlights show observed direction; bounded marker sizes and path widths indicate relative volume. Quiet or stale traffic stays static, and stopped History does not animate. Live totals cover currently active peers since their first retained observation, rather than all session traffic. The map draws at most 256 grouped locations and discloses omitted groups. List entries show grouped-location byte totals; detail boxes identify a representative connection with its own rates and bytes, separately from location totals. Selecting a saved node reads its representative directly, including observations beyond the former table's first page. IPv6 endpoints use `[address]:port` notation.
@@ -167,7 +169,7 @@ dotnet run --project src/DeadWare.App/DeadWare.App.csproj
 Create a self-contained portable ZIP and SHA-256 checksum:
 
 ```powershell
-pwsh -File scripts/publish.ps1 -Version 0.6.24
+pwsh -File scripts/publish.ps1 -Version 0.6.25
 ```
 
 The packaging script runs tests before publishing, bundles the independent self-contained update helper, and records all managed file hashes in `deadware-package.json`. Output goes under `artifacts/`. GitHub Actions runs the same script. Pushing a normal three-part version tag such as `v0.6.0` builds and publishes a normal release after tests pass, using the matching `docs/releases/v0.6.0.md` notes. Workflows use pinned action commits.

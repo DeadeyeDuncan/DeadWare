@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.25 — Fine connection lines and country borders
+
+- Restyle connection arcs with fine layered filaments, restrained glow and a brighter selected connection, inspired by DeadEye's node links.
+- Add subtle country borders to the main globe/2D map and the widget, using bundled offline geography.
+- Cache border geometry and strand shapes, and keep quiet/stopped traffic static.
+
 ## 0.6.24 — Connections map details
 
 - Replace the all-connections table with a compact list that follows visible map nodes in Live and History.
