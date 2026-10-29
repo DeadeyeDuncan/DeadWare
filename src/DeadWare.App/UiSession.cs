@@ -122,6 +122,11 @@ public sealed class UiSession
         if(Settings.WidgetGraphs is not null&&Settings.WidgetGraphs.SequenceEqual(next,StringComparer.Ordinal))return;
         Settings.WidgetGraphs=next;Changed?.Invoke();_ = SaveAsync();
     }
+    public void SetWidgetConnectionsMap(bool enabled)
+    {
+        if(Settings.WidgetConnectionsMap==enabled)return;
+        Settings.WidgetConnectionsMap=enabled;Changed?.Invoke();_ = SaveAsync();
+    }
     public void SetPollingInterval(double seconds)
     {
         Settings.PollingIntervalSeconds=PollingPolicy.Normalize(seconds);

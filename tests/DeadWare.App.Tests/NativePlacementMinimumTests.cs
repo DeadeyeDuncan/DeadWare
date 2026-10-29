@@ -8,6 +8,29 @@ namespace DeadWare.App.Tests;
 public class NativePlacementMinimumTests
 {
     [Theory]
+    [InlineData(96)] [InlineData(144)] [InlineData(192)]
+    public void Scrollable_widget_minimum_fits_a_short_target_work_area_at_actual_dpi(int dpi)
+    {
+        var saved=new WindowPlacement(1300,50,300,200,true);
+        WorkArea[] areas=[new(0,0,1600,480),new(1600,0,2560,1440)];
+        var type=typeof(Collector).Assembly.GetType("DeadWare.App.NativePlacement")!;
+        double minimum=(double)type.GetMethod("MinimumHeightForWorkArea",BindingFlags.Static|BindingFlags.Public)!.Invoke(null,[saved,areas,670d,(uint)dpi])!;
+        Assert.Equal(480/(dpi/96d),minimum);
+        var placement=Constrain(saved,areas,300,minimum,(uint)dpi);
+        Assert.Equal(480,placement.Height);Assert.True(placement.Top>=0);Assert.True(placement.Left+placement.Width<=1600);
+        Assert.True(placement.Topmost);
+    }
+
+    [Theory]
+    [InlineData(96)] [InlineData(144)] [InlineData(192)]
+    public void Scrollable_widget_retains_readable_requested_minimum_on_a_tall_work_area(int dpi)
+    {
+        var type=typeof(Collector).Assembly.GetType("DeadWare.App.NativePlacement")!;
+        double minimum=(double)type.GetMethod("MinimumHeightForWorkArea",BindingFlags.Static|BindingFlags.Public)!.Invoke(null,[new WindowPlacement(20,20,340,300,false),new WorkArea[]{new(0,0,3840,2160)},670d,(uint)dpi])!;
+        Assert.Equal(670,minimum);
+    }
+
+    [Theory]
     [InlineData(0,390,650)] [InlineData(1,400,640)] [InlineData(2,560,480)]
     [InlineData(3,800,240)] [InlineData(4,1040,0)]
     public void Selected_widget_count_keeps_live_minimum_growth_on_its_original_monitor(int count,double height,double top)

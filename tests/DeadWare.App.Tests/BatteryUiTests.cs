@@ -57,6 +57,7 @@ public class BatteryUiTests
                 app.Resources = (ResourceDictionary)XamlReader.Parse(dictionary.ToString());
                 ConnectionMapUiChecks.Run(app);
                 ConnectionsPageUiChecks.Run(app);
+                ConnectionsWidgetUiChecks.Run(app);
                 var assembly = typeof(Collector).Assembly;
                 var pageType = assembly.GetType("DeadWare.App.BatteryHistoryPage"); Assert.NotNull(pageType);
                 var session = (UiSession)RuntimeHelpers.GetUninitializedObject(typeof(UiSession));
@@ -215,6 +216,7 @@ public class BatteryUiTests
                 var uiTimer = new System.Windows.Threading.DispatcherTimer();
                 Set(session, "timer", uiTimer);
                 Set(session, "writer", new SettingsSnapshotWriter(pollingSettingsPath));
+                ConnectionsWidgetUiChecks.CheckSettings(session, settings, pollingSettingsPath);
                 VerifyGpuFanSpeed(session, collector, assembly, settings, pollingSettingsPath);
                 VerifyRangeDropdown(session, dashboard, assembly, pollingSettingsPath);
                 foreach (double seconds in new double[] { 10, .5, 1 })
@@ -1343,6 +1345,7 @@ public class BatteryUiTests
         var fresh = (Window)Activator.CreateInstance(assembly.GetType("DeadWare.App.WidgetWindow")!, All, null, [session], null)!;
         Assert.Equal(280, fresh.MinHeight); Assert.Equal(360, fresh.Height); Assert.Equal(340, fresh.Width);
         Assert.False(fresh.Topmost);
+        ((FrameworkElement)fresh.Content).Measure(new Size(340,321));((FrameworkElement)fresh.Content).Arrange(new Rect(0,0,340,321));fresh.UpdateLayout();
         Assert.Equal(2, Descendants((FrameworkElement)fresh.Content).OfType<FrameworkElement>().Count(element => element.GetType().Name == "WidgetGraph" && element.Visibility == Visibility.Visible));
         fresh.Close();
         if (hadPlacement) session.Settings.Windows["widget"] = savedPlacement!;

@@ -13,4 +13,6 @@ public static class WidgetGraphSelection
 
     public static double MinimumHeight(int count)=>count==1?200:Math.Max(180,40+120*Math.Clamp(count,0,Kinds.Count));
     public static double DefaultHeight(int count)=>Math.Max(180,120+120*Math.Clamp(count,0,Kinds.Count));
+    public static double MinimumHeight(int count,bool connectionsMap)=>!connectionsMap?MinimumHeight(count):count<=0?210:MinimumHeight(count)+150;
+    public static double DefaultHeight(int count,bool connectionsMap)=>!connectionsMap?DefaultHeight(count):count<=0?240:DefaultHeight(count)+150;
 }

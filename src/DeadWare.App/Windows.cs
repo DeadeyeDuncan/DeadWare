@@ -24,6 +24,7 @@ public sealed class MainWindow : Window
     private readonly DataGrid apps=new(),sensors=new();
     private readonly Dictionary<string,FrameworkElement> pages=new();
     private readonly Dictionary<string,CheckBox> widgetGraphChoices=new(StringComparer.Ordinal);
+    private readonly CheckBox widgetConnectionsMap=new() {Content="Connections map (live)",Margin=new Thickness(0,0,20,8)};
     private readonly CheckBox widgetAlwaysOnTop=new() {Content="Widget always on top",Margin=new Thickness(0,0,0,12)};
     private readonly CheckBox joinedPopouts=new() {Content="Join CPU and GPU graphs in pop-outs",Margin=new Thickness(0,0,0,8)};
     private readonly CheckBox gpuFanSpeed=new() {Content="Show GPU fan speed on temperature graphs",Margin=new Thickness(0,0,0,8)};
@@ -116,7 +117,11 @@ public sealed class MainWindow : Window
             choice.Unchecked+=(_,_)=>{if(!syncingWidgetGraphs)session.SetWidgetGraph(key,false);};
             widgetGraphChoices.Add(key,choice);widgetOptions.Children.Add(choice);
         }
-        stack.Children.Add(widgetOptions);
+        widgetConnectionsMap.IsChecked=session.Settings.WidgetConnectionsMap;
+        System.Windows.Automation.AutomationProperties.SetName(widgetConnectionsMap,"Show Connections map (live) in widget");
+        widgetConnectionsMap.Checked+=(_,_)=>{if(!syncingWidgetGraphs)session.SetWidgetConnectionsMap(true);};
+        widgetConnectionsMap.Unchecked+=(_,_)=>{if(!syncingWidgetGraphs)session.SetWidgetConnectionsMap(false);};
+        widgetOptions.Children.Add(widgetConnectionsMap);stack.Children.Add(widgetOptions);
         widgetAlwaysOnTop.IsChecked=session.Settings.WidgetAlwaysOnTop;
         System.Windows.Automation.AutomationProperties.SetName(widgetAlwaysOnTop,"Widget always on top");
         widgetAlwaysOnTop.Checked+=(_,_)=>{if(!syncingWidgetGraphs)session.SetWidgetAlwaysOnTop(true);};
@@ -197,6 +202,7 @@ public sealed class MainWindow : Window
         {
             var selectedGraphs=WidgetGraphSelection.Normalize(session.Settings.WidgetGraphs);
             foreach(var choice in widgetGraphChoices)choice.Value.IsChecked=selectedGraphs.Contains(choice.Key);
+            widgetConnectionsMap.IsChecked=session.Settings.WidgetConnectionsMap;
             widgetAlwaysOnTop.IsChecked=session.Settings.WidgetAlwaysOnTop;
             joinedPopouts.IsChecked=session.Settings.JoinCpuGpuPopouts;
             gpuFanSpeed.IsChecked=session.Settings.ShowGpuFanSpeed;
@@ -282,43 +288,59 @@ internal sealed class WidgetWindow : Window
     private readonly UiSession session;
     private readonly Dictionary<string,WidgetGraph> graphs=new(StringComparer.Ordinal);
     private readonly Grid cards=new();
+    private readonly ScrollViewer scroll=new() {HorizontalScrollBarVisibility=ScrollBarVisibility.Disabled,VerticalScrollBarVisibility=ScrollBarVisibility.Disabled};
+    private ConnectionsWidget? connections;
     private readonly TextBlock empty=Ui.Text("No graphs selected. Choose graphs in Settings.",12,"Muted");
     private string? appliedSelection;
     public WidgetWindow(UiSession session)
     {
         this.session=session;Title="DeadWare · Quick glance";MinWidth=300;
         int count=WidgetGraphSelection.Normalize(session.Settings.WidgetGraphs).Count;
-        MinHeight=WidgetGraphSelection.MinimumHeight(count);Ui.Icon(this);session.Place(this,"widget",340,WidgetGraphSelection.DefaultHeight(count));
+        bool showMap=session.Settings.WidgetConnectionsMap;
+        MinHeight=WidgetGraphSelection.MinimumHeight(count,showMap);Ui.Icon(this);session.Place(this,"widget",340,WidgetGraphSelection.DefaultHeight(count,showMap));
         var grid=new Grid {Margin=new Thickness(8)};grid.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});
+        cards.RowDefinitions.Add(new() {Height=new GridLength(0)});
         foreach(string kind in WidgetGraphSelection.Kinds)
         {
             int row=cards.RowDefinitions.Count;cards.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});
             var graph=new WidgetGraph(session,kind);graphs.Add(kind,graph);Grid.SetRow(graph,row);cards.Children.Add(graph);
         }
-        var area=new Grid();area.Children.Add(cards);empty.TextAlignment=TextAlignment.Center;empty.HorizontalAlignment=HorizontalAlignment.Center;empty.VerticalAlignment=VerticalAlignment.Center;empty.Margin=new(12);area.Children.Add(empty);grid.Children.Add(area);
+        scroll.Content=cards;
+        var area=new Grid();area.Children.Add(scroll);empty.TextAlignment=TextAlignment.Center;empty.HorizontalAlignment=HorizontalAlignment.Center;empty.VerticalAlignment=VerticalAlignment.Center;empty.Margin=new(12);area.Children.Add(empty);grid.Children.Add(area);
         Content=grid;
+        DpiChanged+=(_,_)=>{if(session.Settings.WidgetConnectionsMap)Dispatcher.BeginInvoke(new Action(()=>NativePlacement.Restore(this,null,340,WidgetGraphSelection.DefaultHeight(WidgetGraphSelection.Normalize(session.Settings.WidgetGraphs).Count,true))));};
         session.Changed+=Refresh;Closed+=(_,_)=>session.Changed-=Refresh;Refresh();
     }
     private void Refresh()
     {
         Topmost=session.Settings.WidgetAlwaysOnTop;
         var selected=WidgetGraphSelection.Normalize(session.Settings.WidgetGraphs);
-        string signature=string.Join('|',selected);
+        bool showMap=session.Settings.WidgetConnectionsMap;
+        string signature=string.Join('|',selected)+"|map="+showMap;
         if(signature!=appliedSelection)
         {
-            double minimum=WidgetGraphSelection.MinimumHeight(selected.Count);
+            double minimum=WidgetGraphSelection.MinimumHeight(selected.Count,showMap);
             var before=minimum>MinHeight?NativePlacement.CaptureNormal(this):null;
-            MinHeight=minimum;
+            if(showMap)NativePlacement.SetScrollableMinimumHeight(this,minimum,session.Settings.Windows.GetValueOrDefault("widget"));
+            else {NativePlacement.ClearScrollableMinimumHeight(this);MinHeight=minimum;}
+            if(showMap&&connections is null) {connections=new ConnectionsWidget(session);cards.Children.Add(connections);}
+            if(connections is not null)connections.Visibility=showMap?Visibility.Visible:Visibility.Collapsed;
+            cards.RowDefinitions[0].Height=new GridLength(showMap?150:0);
+            scroll.VerticalScrollBarVisibility=showMap?ScrollBarVisibility.Auto:ScrollBarVisibility.Disabled;
             foreach(var graph in graphs)
             {
                 bool visible=selected.Contains(graph.Key);
                 graph.Value.Visibility=visible?Visibility.Visible:Visibility.Collapsed;
-                cards.RowDefinitions[Grid.GetRow(graph.Value)].Height=visible?new GridLength(1,GridUnitType.Star):new GridLength(0);
+                graph.Value.MinHeight=showMap&&visible?120:0;
+                var row=cards.RowDefinitions[Grid.GetRow(graph.Value)];
+                row.MinHeight=showMap&&visible?120:0;
+                row.Height=visible?new GridLength(1,GridUnitType.Star):new GridLength(0);
             }
-            empty.Visibility=selected.Count==0?Visibility.Visible:Visibility.Collapsed;
+            empty.Visibility=selected.Count==0&&!showMap?Visibility.Visible:Visibility.Collapsed;
             appliedSelection=signature;
-            if(before is not null)NativePlacement.Restore(this,before,340,WidgetGraphSelection.DefaultHeight(selected.Count));
+            if(before is not null)NativePlacement.Restore(this,before,340,WidgetGraphSelection.DefaultHeight(selected.Count,showMap));
         }
         foreach(var graph in graphs.Values)if(graph.Visibility==Visibility.Visible)graph.Refresh();
+        if(showMap)connections!.Refresh();
     }
 }
