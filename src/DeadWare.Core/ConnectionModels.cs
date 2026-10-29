@@ -39,11 +39,11 @@ public sealed record ConnectionHistoryRow(DateTimeOffset Minute, ProcessIdentity
 public sealed record ConnectionHistorySummary(long ReceivedBytes, long SentBytes,
     long Countries, long Destinations, long Unlocated, long Local);
 public sealed record ConnectionHistoryMarker(ConnectionLocation Location, GeoPoint? Origin,
-    long ReceivedBytes, long SentBytes);
+    long ReceivedBytes, long SentBytes, ConnectionHistoryRow? Representative = null, long RowIndex = 0);
 public sealed record ConnectionHistoryInterval(DateTimeOffset From, DateTimeOffset To, bool Complete);
 public sealed record ConnectionHistoryGap(DateTimeOffset From, DateTimeOffset To);
 public sealed record ConnectionHistoryView(ConnectionHistoryQuery Query,
     IReadOnlyList<ConnectionHistoryRow> Rows, long TotalRows, ConnectionHistorySummary Summary,
     IReadOnlyList<ConnectionHistoryMarker> Markers, IReadOnlyList<ConnectionHistoryInterval> Coverage,
     IReadOnlyList<ConnectionHistoryGap> Gaps, DateTimeOffset? EarliestRetainedTime,
-    long StorageBytes, string Status);
+    long StorageBytes, string Status, long OmittedMarkers = 0);

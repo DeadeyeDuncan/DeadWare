@@ -49,7 +49,7 @@ internal static class ConnectionsPageUiChecks
         var query = new ConnectionHistoryQuery(now.AddMinutes(-5), now);
         var history = new ConnectionHistoryView(query, [], 401, new(1234567, 7654321, 3, 210, 15, 9), [], [], [new(query.From, query.To)], now.AddDays(-4), 4096, "Storage failure fixture");
         Call(page, "ApplyHistory", history); Layout(page, 671, 440); text = Text(page);
-        Assert.Contains("History", text); Assert.Contains("interval-average", text);
+        Assert.Contains("History", text); Assert.Contains("minute-bucket average", text);
         Assert.Contains("210 destinations", text); Assert.Contains("15 unlocated", text);
         Assert.Contains("Storage failure fixture", text); Assert.Contains("401", text);
         Assert.Contains("gap", text, StringComparison.OrdinalIgnoreCase);
@@ -60,6 +60,8 @@ internal static class ConnectionsPageUiChecks
         Assert.Contains(Elements(page).OfType<Button>(), b => b.Content?.ToString() == "Download / update locations");
         Assert.True(Assert.Single(Elements(page).OfType<ConnectionMap>()).ActualHeight >= 100);
         CheckLiveControls(page, live);
+        var finalRegressions=new[]{Record.Exception(()=>CheckLivePeerIdentityAndLabels(session,live)),Record.Exception(()=>CheckOffPageHistorySelection(session,now)),Record.Exception(()=>CheckSavedMarkerMetadata(session,now))};
+        Assert.All(finalRegressions,error=>Assert.Null(error));
         CheckWholePageLayout(page);
         CheckHistoryQueries(session, now);
         CheckHistoryGroupingIdentity(session,now);
@@ -70,6 +72,62 @@ internal static class ConnectionsPageUiChecks
         CheckThemes(app, page, live, history);
     }
     private static T Field<T>(object page, string name) => (T)PageType.GetField(name, All)!.GetValue(page)!;
+    private static void CheckLivePeerIdentityAndLabels(UiSession session,ConnectionLiveView live)
+    {
+        var page=new ConnectionsPage(session);var first=live.Connections[0];
+        var second=first with {Traffic=first.Traffic with {Peer=first.Traffic.Peer with {LocalAddress="192.168.2.10"}}};
+        first=first with {Traffic=first.Traffic with {Peer=first.Traffic.Peer with {LocalAddress="192.168.1.10"}}};
+        page.ApplyLive(live with {Connections=[first,second]});var table=Field<DataGrid>(page,"table");
+        table.SelectedItem=table.Items[1];page.ApplyLive(live with {Connections=[first,second]});
+        string RowKey(object row)=>(string)row.GetType().GetProperty("Key")!.GetValue(row)!;
+        var failures=new List<Exception?> {Record.Exception(()=>{Assert.NotEqual(RowKey(table.Items[0]),RowKey(table.Items[1]));Assert.Equal(RowKey(table.Items[1]),RowKey(table.SelectedItem!));})};
+        string summary=Field<TextBlock>(page,"summary").Text;failures.Add(Record.Exception(()=>{Assert.Contains("1 countries",summary);Assert.Contains("active peers",summary);Assert.DoesNotContain("session totals",summary);}));
+        page.ApplyLive(live with {Connections=[first with {Traffic=first.Traffic with {Peer=first.Traffic.Peer with {RemoteAddress="2001:4860::8888"}}}]});
+        failures.Add(Record.Exception(()=>Assert.Contains("[2001:4860::8888]:443",table.Items[0].ToString())));Assert.All(failures,error=>Assert.Null(error));
+    }
+    private static void CheckOffPageHistorySelection(UiSession session,DateTimeOffset now)
+    {
+        string root=Path.Combine(Path.GetTempPath(),"DeadWare-marker-"+Guid.NewGuid().ToString("N"));
+        try
+        {
+            var store=new ConnectionHistoryStore(Path.Combine(root,"history.db"));store.Initialize();
+            var start=now.AddMinutes(-201);var place=new ConnectionLocation("JP","Japan",null,"Saved Tokyo",new(35.7,139.7),"old source");
+            var records=Enumerable.Range(0,201).Select(i=>new ConnectionHistoryRecord("b"+i,"fixture",new(start.AddMinutes(i),new(new(10+i,1,"Peer "+i),"",0,"8.8.8.8",443,ConnectionProtocol.Tcp),i==0?10000:1,0,start.AddMinutes(i),start.AddMinutes(i)),i==0?place:place with {City="Revised",Point=new(40,-90),Source="new source"},i==0?new(41,-87):new(51,0),true)).ToArray();
+            store.Append(records,[],now);
+            var page=new ConnectionsPage(session);Field<TextBox>(page,"from").Text=start.ToLocalTime().ToString("yyyy-MM-dd HH:mm");Field<TextBox>(page,"to").Text=now.ToLocalTime().ToString("yyyy-MM-dd HH:mm");
+            PageType.GetField("readHistory",All)!.SetValue(page,(Func<ConnectionHistoryQuery,Task<ConnectionHistoryView>>)(q=>Task.FromResult(store.Read(q))));
+            Field<ComboBox>(page,"mode").SelectedIndex=1;var table=Field<DataGrid>(page,"table");Assert.Equal(200,table.Items.Count);
+            var map=Field<ConnectionMap>(page,"map");
+            var select=(Action<string>)typeof(ConnectionMap).GetField("PointSelected",All)!.GetValue(map)!;
+            var points=(IReadOnlyList<ConnectionMapPoint>)typeof(ConnectionMap).GetField("points",All)!.GetValue(map)!;
+            select(points.Single(p=>p.Point==place.Point).Key);Pump();
+            Assert.NotNull(table.SelectedItem);Assert.Contains("Peer 0 /",table.SelectedItem.ToString());Assert.Single(table.Items.Cast<object>());
+            map.ResetView();Assert.Equal(-87,map.Camera.Longitude);Assert.Contains("Saved Tokyo",Field<TextBlock>(page,"selection").Text);
+            Click(page,"previous");Pump();
+            var pending=new TaskCompletionSource<ConnectionHistoryView>();ConnectionHistoryQuery? requested=null;
+            PageType.GetField("readHistory",All)!.SetValue(page,(Func<ConnectionHistoryQuery,Task<ConnectionHistoryView>>)(q=>{if(q.Search.Length>0)return Task.FromResult(store.Read(q));requested=q;return pending.Task;}));
+            points=(IReadOnlyList<ConnectionMapPoint>)typeof(ConnectionMap).GetField("points",All)!.GetValue(map)!;select(points.Single(p=>p.Point==place.Point).Key);
+            Assert.NotNull(requested);Field<TextBox>(page,"search").Text="no peer matches";pending.SetResult(store.Read(requested!));Pump();
+            Assert.Null(table.SelectedItem);Assert.Empty(table.Items);Assert.DoesNotContain("Saved Tokyo",Field<TextBlock>(page,"selection").Text);
+        }
+        finally{if(Directory.Exists(root))Directory.Delete(root,true);}
+    }
+    private static void CheckSavedMarkerMetadata(UiSession session,DateTimeOffset now)
+    {
+        var page=new ConnectionsPage(session);Field<ComboBox>(page,"mode").SelectedIndex=1;
+        var location=new ConnectionLocation("JP","Japan",null,"Old saved city",new(35,139),"Old database");
+        var old=new ConnectionHistoryRow(now.AddMinutes(-2),new(1,1,"Same peer"),"8.8.8.8",443,ConnectionProtocol.Tcp,now.AddMinutes(-2),now.AddMinutes(-2),100,50,1,1,location,new(41,-87),true);
+        var revised=old with {Minute=now.AddMinutes(-1),Location=location with {City="New saved city",Source="New database"}};
+        var query=new ConnectionHistoryQuery(now.AddMinutes(-3),now);
+        page.ApplyHistory(new(query,[revised,old],2,new(200,100,1,1,0,0),[new(location,old.Origin,100,50,old,1),new(revised.Location!,revised.Origin,100,50,revised,0)],[],[],query.From,1024,"Saved revisions",44));
+        var map=Field<ConnectionMap>(page,"map");var points=(IReadOnlyList<ConnectionMapPoint>)typeof(ConnectionMap).GetField("points",All)!.GetValue(map)!;
+        Assert.Single(points);var select=(Action<string>)typeof(ConnectionMap).GetField("PointSelected",All)!.GetValue(map)!;select(points[0].Key);
+        Assert.Contains("Old saved city",Field<TextBlock>(page,"selection").Text);
+        Assert.Contains("44 grouped locations omitted",Field<TextBlock>(page,"capture").Text);
+        Assert.False(map.AnimationEnabled);
+        Assert.Contains("[2001:4860::8888]:443",GetHistoryIpv6Endpoint());
+        string GetHistoryIpv6Endpoint(){page.ApplyHistory(new(query,[old with {RemoteAddress="2001:4860::8888"}],1,new(100,50,1,1,0,0),[],[],[],query.From,1024,"IPv6"));return Field<DataGrid>(page,"table").Items[0].ToString()!;}
+    }
     private static void Click(object page, string name) => Field<Button>(page, name).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
     private static void CheckLiveControls(FrameworkElement page, ConnectionLiveView live)
     {
@@ -98,6 +156,7 @@ internal static class ConnectionsPageUiChecks
         Func<ConnectionHistoryQuery, Task<ConnectionHistoryView>> read = q => { requested.Add(q); var reply = new TaskCompletionSource<ConnectionHistoryView>(); replies.Enqueue(reply); return reply.Task; };
         PageType.GetField("readHistory", All)!.SetValue(page, read);
         var mode = Field<ComboBox>(page, "mode"); mode.SelectedIndex = 1; Assert.Single(requested);
+        Assert.False(Field<ConnectionMap>(page,"map").AnimationEnabled);
         var first = requested[0]; Assert.Equal(DateTime.Today, new DateTimeOffset(first.From.LocalDateTime).Date); Assert.Equal(DateTime.Today.AddDays(1), first.To.LocalDateTime);
         Field<TextBox>(page, "search").Text = "old"; Field<TextBox>(page, "search").Text = "new"; Assert.Single(requested);
         ConnectionHistoryView View(ConnectionHistoryQuery q, string status) => new(q, [], 0, new(0, 0, 0, 0, 0, 0), [], [], [], now.AddDays(-3), 1234, status);
@@ -110,10 +169,13 @@ internal static class ConnectionsPageUiChecks
         Click(page, "next"); Assert.Equal(2, requested.Count);
         Field<TextBox>(page, "from").Text = "bad date"; PageType.GetMethod("RequestHistory", All)!.Invoke(page, null); Assert.Equal(2, requested.Count); Assert.Contains("Choose valid local times", Field<TextBlock>(page, "actionStatus").Text);
         Field<TextBox>(page, "from").Text = "2026-10-29 10:00"; Field<TextBox>(page, "to").Text = "2026-10-29 10:03"; Click(page, "play"); Assert.Equal(TimeSpan.FromMinutes(1), requested[^1].To - requested[^1].From);
+        Assert.False(Field<ConnectionMap>(page,"map").AnimationEnabled); // The prior range must stay static while its first minute is pending.
         int before = requested.Count; PageType.GetMethod("AdvancePlayback", All)!.Invoke(page, null); Assert.Equal(before, requested.Count);
         replies.Dequeue().SetResult(View(requested[^1], "Minute zero")); Pump(); PageType.GetMethod("AdvancePlayback", All)!.Invoke(page, null); Assert.Equal(before + 1, requested.Count); Assert.Equal(TimeSpan.FromMinutes(1), requested[^1].From - requested[^2].From);
+        Assert.False(Field<ConnectionMap>(page,"map").AnimationEnabled); // Pending next minute cannot animate the prior minute.
         replies.Dequeue().SetResult(View(requested[^1], "Minute one")); Pump(); PageType.GetMethod("AdvancePlayback", All)!.Invoke(page, null); Assert.Equal(before + 2, requested.Count);
         replies.Dequeue().SetResult(View(requested[^1], "Minute two")); Pump(); PageType.GetMethod("AdvancePlayback", All)!.Invoke(page, null); Assert.Equal(before + 2, requested.Count); Assert.Equal("Play", Field<Button>(page, "play").Content);
+        Assert.False(Field<ConnectionMap>(page,"map").AnimationEnabled);
         Field<TextBox>(page, "search").Text = "pending"; mode.SelectedIndex = 0; replies.Dequeue().SetResult(View(requested[^1], "HISTORY LEAK")); Pump(); Assert.DoesNotContain("HISTORY LEAK", Field<TextBlock>(page, "capture").Text); Assert.False(Field<DispatcherTimer>(page, "playback").IsEnabled);
     }
     private static void CheckWholePageLayout(FrameworkElement page)

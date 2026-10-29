@@ -166,6 +166,31 @@ public class ConnectionServiceTests
         using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(5));
         while(!await predicate())await Task.Delay(10,timeout.Token);
     }
+    [Theory] [InlineData(false)] [InlineData(true)]
+    public async Task Paused_recording_expires_history_on_timer_and_paused_relaunch(bool relaunch)
+    {
+        string root=System.IO.Path.Combine(System.IO.Path.GetTempPath(),"DeadWare-paused-"+Guid.NewGuid().ToString("N"));string path=System.IO.Path.Combine(root,"history.db");
+        var old=Reading(1,1).Connections!;var store=new ConnectionHistoryStore(path);store.Initialize();
+        store.Append([new("old","old",old.Deltas[0],new("US","United States",null,"Saved",new(40,-90),"fixture"),null,true)],[new("coverage","old",Epoch,Epoch.AddSeconds(2),true)],Epoch.AddSeconds(2));
+        long days=relaunch?31:0;
+        var service=new ConnectionService(path,new Resolver(_=>null),()=>Epoch.AddDays(Volatile.Read(ref days)),new(FlushInterval:TimeSpan.FromMilliseconds(20)));
+        service.Configure(false,null);
+        try
+        {
+            if(!relaunch){service.Start();Assert.Equal(1,(await service.ReadViewAsync(new(Epoch,Epoch.AddMinutes(1)))).TotalRows);Volatile.Write(ref days,31);}
+            // Relaunch reads/exports must apply retention even before its first timer tick.
+            await UntilAsync(async()=>(await service.ReadViewAsync(new(Epoch,Epoch.AddMinutes(1)))).TotalRows==0);
+            if(relaunch)service.Start();
+            service.TryRecord(Reading(2,2,999));
+            var view=await service.ReadViewAsync(new(Epoch,Epoch.AddDays(32)));
+            Assert.Empty(view.Rows);Assert.Empty(view.Markers);Assert.Empty(view.Coverage);Assert.Null(view.EarliestRetainedTime);
+            string csv=System.IO.Path.Combine(root,"expired.csv");await service.ExportCsvAsync(csv,new(Epoch,Epoch.AddDays(32)));
+            Assert.Single((await System.IO.File.ReadAllLinesAsync(csv)));Assert.Contains("paused",service.StorageStatus);
+            await service.StopAsync();Assert.Empty(store.Read(new(Epoch,Epoch.AddDays(32))).Rows);
+            using var db=new Microsoft.Data.Sqlite.SqliteConnection("Data Source="+path+";Pooling=False");db.Open();using var command=db.CreateCommand();command.CommandText="SELECT count(*) FROM traffic";Assert.Equal(0L,(long)command.ExecuteScalar()!);
+        }
+        finally{await service.StopAsync();System.IO.Directory.Delete(root,true);}
+    }
     [Fact] public async Task Real_storage_failure_preserves_existing_bytes_and_live_capture()
     {
         string root=System.IO.Path.Combine(System.IO.Path.GetTempPath(),"DeadWare-connections-"+Guid.NewGuid().ToString("N"));System.IO.Directory.CreateDirectory(root);

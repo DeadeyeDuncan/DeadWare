@@ -66,6 +66,8 @@ internal static class ConnectionsWidgetUiChecks
                 Assert.True(widget.IsLoaded);Assert.True(map.IsAnimating);
                 widget.Visibility=Visibility.Collapsed;Assert.False(map.IsAnimating);
                 widget.Visibility=Visibility.Visible;widget.Refresh();Assert.True(map.IsAnimating);
+                service.TryRecord(new ConnectionSample(Epoch,0,2,"fixture",[traffic with {DownloadBytesPerSecond=0,UploadBytesPerSecond=0}],[],null,true,true,0,0,0,"Quiet fixture"));widget.Refresh();Assert.False(map.IsAnimating);Assert.Equal(1,map.DisplayedPointCount);
+                service.TryRecord(new ConnectionSample(Epoch,0,3,"fixture",[traffic],[],null,false,false,0,0,0,"Stopped capture"));widget.Refresh();Assert.False(map.IsAnimating);
                 session.Settings.ConnectionsAnimation=false;widget.Refresh();Assert.False(map.IsAnimating);
             }
             owner.Close();

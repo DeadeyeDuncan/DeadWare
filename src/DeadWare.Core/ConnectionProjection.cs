@@ -2,7 +2,8 @@ namespace DeadWare.Core;
 
 public sealed record MapCamera(double Longitude, double Latitude, double Zoom, bool Flat);
 public readonly record struct MapCoordinate(double X, double Y, double Depth, bool Visible);
-public sealed record ConnectionMapPoint(string Key, GeoPoint Point, long ReceivedBytes, long SentBytes, bool Selected);
+public sealed record ConnectionMapPoint(string Key, GeoPoint Point, long ReceivedBytes, long SentBytes, bool Selected,
+    bool ReceiveActive = true, bool SendActive = true);
 public sealed record ConnectionMapGroups(IReadOnlyList<ConnectionMapPoint> Points, int Overflow);
 
 public static class ConnectionProjection
@@ -117,7 +118,8 @@ public static class ConnectionProjection
             {
                 var first = group.OrderBy(p => p.Key, StringComparer.Ordinal).First();
                 return first with { ReceivedBytes = group.Aggregate(0L, (sum, p) => Add(sum, p.ReceivedBytes)),
-                    SentBytes = group.Aggregate(0L, (sum, p) => Add(sum, p.SentBytes)), Selected = group.Any(p => p.Selected) };
+                    SentBytes = group.Aggregate(0L, (sum, p) => Add(sum, p.SentBytes)), Selected = group.Any(p => p.Selected),
+                    ReceiveActive=group.Any(p=>p.ReceiveActive&&p.ReceivedBytes>0),SendActive=group.Any(p=>p.SendActive&&p.SentBytes>0) };
             }).OrderByDescending(p => p.Selected).ThenBy(p => p.Key, StringComparer.Ordinal).ToArray();
         return new(Array.AsReadOnly(groups.Take(256).ToArray()), Math.Max(0, groups.Length - 256));
     }

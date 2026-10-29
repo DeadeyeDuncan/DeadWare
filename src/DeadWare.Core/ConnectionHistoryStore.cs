@@ -20,6 +20,7 @@ public sealed class ConnectionHistoryStore
     private readonly object gate = new();
     private bool initialized;
     private const string Columns = "minute,pid,generation,name,remote,port,protocol,first_seen,last_seen,received,sent,location,origin,complete";
+    private const string RowOrder = "minute DESC,pid,generation,name,remote,port,protocol,location,origin";
     private const string Grouped = """
         SELECT minute,pid,generation,name,remote,port,protocol,min(first_seen) first_seen,
           max(last_seen) last_seen,sat_sum(received) received,sat_sum(sent) sent,
@@ -27,7 +28,7 @@ public sealed class ConnectionHistoryStore
         FROM traffic
         WHERE minute >= max($from,coalesce((SELECT value FROM metadata WHERE key='expiry'),0)) AND minute < $to
           AND minute > (SELECT value FROM metadata WHERE key='floor')
-          AND ($search='' OR instr(search,$search)>0)
+          AND ($search='' OR instr(search,$search)>0 OR instr(cast(pid AS TEXT),$search)>0)
           AND ($country='' OR country=$country)
         GROUP BY minute,pid,generation,name,remote,port,protocol,location,origin,country,kind
         HAVING ($direction=0 OR ($direction=1 AND sat_sum(received)>0) OR ($direction=2 AND sat_sum(sent)>0))
@@ -338,14 +339,34 @@ public sealed class ConnectionHistoryStore
             using var db=Open(readOnly:true); using var tx=db.BeginTransaction(deferred:true);
             var args=Arguments(query);
             var rows=new List<ConnectionHistoryRow>();
-            using(var command=Command(db,"WITH filtered AS ("+Grouped+") SELECT "+Columns+" FROM filtered ORDER BY minute DESC,pid,generation,name,remote,port,protocol,location,origin LIMIT $limit OFFSET $offset",tx,args.Concat(new[]{("$limit",(object)query.Limit),("$offset",(object)query.Offset)}).ToArray()))
-            using(var reader=command.ExecuteReader()) while(reader.Read()) rows.Add(ReadRow(reader,query));
+            using(var command=Command(db,"WITH filtered AS ("+Grouped+") SELECT "+Columns+" FROM filtered ORDER BY "+RowOrder+" LIMIT $limit OFFSET $offset",tx,args.Concat(new[]{("$limit",(object)query.Limit),("$offset",(object)query.Offset)}).ToArray()))
+            using(var reader=command.ExecuteReader()) while(reader.Read()) rows.Add(ReadRow(reader));
             long total; ConnectionHistorySummary summary;
             using(var command=Command(db,"WITH filtered AS ("+Grouped+") SELECT count(*),sat_sum(received),sat_sum(sent),count(DISTINCT nullif(country,'')),count(DISTINCT remote),count(DISTINCT CASE WHEN location='null' OR json_extract(location,'$.Point') IS NULL THEN remote END),count(DISTINCT CASE WHEN kind=1 THEN remote END) FROM filtered",tx,args))
             using(var reader=command.ExecuteReader()) {reader.Read(); total=reader.GetInt64(0); summary=new(Value(reader,1),Value(reader,2),reader.GetInt64(3),reader.GetInt64(4),reader.GetInt64(5),reader.GetInt64(6));}
             var markers=new List<ConnectionHistoryMarker>();
-            using(var command=Command(db,"WITH filtered AS ("+Grouped+") SELECT location,origin,sat_sum(received) received,sat_sum(sent) sent FROM filtered WHERE location<>'null' AND json_extract(location,'$.Point') IS NOT NULL GROUP BY location,origin ORDER BY (cast(sat_sum(received) AS REAL)+cast(sat_sum(sent) AS REAL)) DESC,location,origin LIMIT 256",tx,args))
-            using(var reader=command.ExecuteReader()) while(reader.Read()) markers.Add(new(JsonSerializer.Deserialize<ConnectionLocation>(reader.GetString(0))!,JsonSerializer.Deserialize<GeoPoint>(reader.GetString(1)),reader.GetInt64(2),reader.GetInt64(3)));
+            long markerCount=0;
+            // Rank the same complete saved grouping used by the table, in the same snapshot.
+            // Only the bounded representatives cross the storage/UI boundary.
+            string markerSql=$"""
+                WITH filtered AS ({Grouped}),
+                ranked AS (SELECT *,row_number() OVER (ORDER BY {RowOrder})-1 row_index FROM filtered),
+                groups AS (
+                  SELECT location,origin,sat_sum(received) total_received,sat_sum(sent) total_sent,min(row_index) representative
+                  FROM ranked WHERE location<>'null' AND json_extract(location,'$.Point') IS NOT NULL GROUP BY location,origin),
+                markers AS (
+                  SELECT *,count(*) OVER () marker_count FROM groups
+                  ORDER BY (cast(total_received AS REAL)+cast(total_sent AS REAL)) DESC,location,origin LIMIT 256)
+                SELECT {string.Join(',',Columns.Split(',').Select(c=>"r."+c))},m.total_received,m.total_sent,m.representative,m.marker_count
+                FROM markers m JOIN ranked r ON r.row_index=m.representative
+                ORDER BY (cast(m.total_received AS REAL)+cast(m.total_sent AS REAL)) DESC,m.location,m.origin
+                """;
+            using(var command=Command(db,markerSql,tx,args))
+            using(var reader=command.ExecuteReader()) while(reader.Read())
+            {
+                var representative=ReadRow(reader);markerCount=reader.GetInt64(17);
+                markers.Add(new(representative.Location!,representative.Origin,reader.GetInt64(14),reader.GetInt64(15),representative,reader.GetInt64(16)));
+            }
             var (coverage,gaps)=ReadCoverage(db,tx,query);
             object? earliest=Scalar(db,"""
                 SELECT min(stamp) FROM (
@@ -360,14 +381,15 @@ public sealed class ConnectionHistoryStore
             string status=floor>0?"Capacity shortened retention. ":"";
             if(gaps.Count>0||coverage.Any(x=>!x.Complete)) status+="History contains recording gaps.";
             else status+="Recorded coverage available.";
-            return new(query,rows.AsReadOnly(),total,summary,markers.AsReadOnly(),coverage.AsReadOnly(),gaps.AsReadOnly(),earliest is null or DBNull?null:Stamp(Convert.ToInt64(earliest,CultureInfo.InvariantCulture)),StorageBytes,status);
+            return new(query,rows.AsReadOnly(),total,summary,markers.AsReadOnly(),coverage.AsReadOnly(),gaps.AsReadOnly(),earliest is null or DBNull?null:Stamp(Convert.ToInt64(earliest,CultureInfo.InvariantCulture)),StorageBytes,status,Math.Max(0,markerCount-markers.Count));
         }
     }
     private static long Value(SqliteDataReader reader,int ordinal) => reader.IsDBNull(ordinal)?0:reader.GetInt64(ordinal);
     private static DateTimeOffset Stamp(long ticks) => new(ticks,TimeSpan.Zero);
-    private static ConnectionHistoryRow ReadRow(SqliteDataReader r,ConnectionHistoryQuery query)
+    private static ConnectionHistoryRow ReadRow(SqliteDataReader r)
     {
-        double seconds=(query.To-query.From).TotalSeconds;
+        // Rows represent whole minute buckets selected by their start, even for sub-minute queries.
+        double seconds=60;
         return new(Stamp(r.GetInt64(0)),new(r.GetInt32(1),r.GetInt64(2),r.GetString(3)),r.GetString(4),r.GetInt32(5),(ConnectionProtocol)r.GetInt32(6),Stamp(r.GetInt64(7)),Stamp(r.GetInt64(8)),r.GetInt64(9),r.GetInt64(10),r.GetInt64(9)/seconds,r.GetInt64(10)/seconds,JsonSerializer.Deserialize<ConnectionLocation>(r.GetString(11)),JsonSerializer.Deserialize<GeoPoint>(r.GetString(12)),r.GetInt32(13)!=0);
     }
     private static ConnectionHistoryQuery Normalize(ConnectionHistoryQuery query)
@@ -424,7 +446,7 @@ public sealed class ConnectionHistoryStore
             using var reader=command.ExecuteReader();
             while(reader.Read())
             {
-                var row=ReadRow(reader,query); var location=row.Location;
+                var row=ReadRow(reader); var location=row.Location;
                 object?[] values=[row.Minute.ToString("O"),row.Process.Name,row.Process.Pid,row.Process.Generation,row.RemoteAddress,row.RemotePort,row.Protocol,row.FirstSeen.ToString("O"),row.LastSeen.ToString("O"),row.ReceivedBytes,row.SentBytes,row.DownloadBytesPerSecond,row.UploadBytesPerSecond,location?.CountryCode,location?.Country,location?.Region,location?.City,location?.Point?.Latitude,location?.Point?.Longitude,location?.Source,row.Origin?.Latitude,row.Origin?.Longitude,row.Complete];
                 writer.WriteLine(string.Join(',',values.Select(Csv)));
             }

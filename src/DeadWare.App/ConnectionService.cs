@@ -23,7 +23,11 @@ public sealed class ConnectionService
     }
     private Task InitializeAsync()
     {
-        lock(gate)return initialization??=store is null?Task.CompletedTask:Task.Run(store.Initialize);
+        lock(gate)return initialization??=store is null?Task.CompletedTask:Task.Run(()=>
+        {
+            store.Initialize();store.Append([],[],clock());
+            lock(gate)storageStatus="Connection history saved locally · rolling 30 days.";
+        });
     }
     public async Task<ConnectionHistoryView> ReadViewAsync(ConnectionHistoryQuery query)
     {
@@ -230,7 +234,7 @@ public sealed class ConnectionService
         var batchCounts=new Dictionary<string,int>(StringComparer.Ordinal);
         void Flush(bool final=false,bool maintenance=false)
         {
-            if(publications==0){lock(gate)if(!maintenance||!recording)return;}
+            if(publications==0&&!maintenance)return;
             // A rollback can strand accepted observations beyond the store's future guard.
             // Retire entire pending batches, including any already-attempted immutable payload,
             // rather than poisoning fresh writes or replaying a changed subset under the same ID.

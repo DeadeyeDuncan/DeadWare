@@ -58,6 +58,34 @@ internal static class ConnectionMapUiChecks
         map.AnimationEnabled = false; Assert.False(map.IsAnimating);
         map.AnimationEnabled = true; map.RaiseEvent(new RoutedEventArgs(FrameworkElement.UnloadedEvent)); Assert.False(map.IsAnimating);
         theme.GetMethod("Apply", BindingFlags.Public | BindingFlags.Static)!.Invoke(null, ["Midnight"]);
+        CheckDirectionalFlowAndVolume();
+    }
+
+    private static void CheckDirectionalFlowAndVolume()
+    {
+        var map=new ConnectionMap {Flat=true};map.SetData([new("high",new(0,60),60000,30000,false),new("low",new(30,40),1,0,false)],new(0,-60),true,"Flow fixture");
+        using var source=new OffscreenSource(map);map.RaiseEvent(new RoutedEventArgs(FrameworkElement.LoadedEvent));
+        var phase=typeof(ConnectionMap).GetField("phase",BindingFlags.Instance|BindingFlags.NonPublic)!;
+        GeometryDrawing[] Ellipses()
+        {
+            static IEnumerable<GeometryDrawing> Shapes(Drawing drawing)=>drawing is GeometryDrawing shape?[shape]:drawing is DrawingGroup group?group.Children.SelectMany(Shapes):[];
+            Render(map,new(600,300),"connections-directional-fixture");return Shapes(VisualTreeHelper.GetDrawing(map)!).Where(s=>s.Geometry is EllipseGeometry).ToArray();
+        }
+        phase.SetValue(map,.5d);map.InvalidateVisual();var first=Ellipses();
+        var heads=first.Where(s=>((EllipseGeometry)s.Geometry).RadiusX<2.6).ToArray();Assert.Equal(3,heads.Length);
+        var highHeads=heads.Where(s=>Math.Abs(((EllipseGeometry)s.Geometry).Center.Y-((EllipseGeometry)heads[0].Geometry).Center.Y)<.1).ToArray();Assert.Equal(2,highHeads.Length);
+        phase.SetValue(map,1d);map.InvalidateVisual();var second=Ellipses().Where(s=>((EllipseGeometry)s.Geometry).RadiusX<2.6).ToArray();
+        // The two colors on the equatorial route travel in opposite directions.
+        double left=((EllipseGeometry)highHeads[0].Geometry).Center.X;
+        double right=((EllipseGeometry)highHeads[1].Geometry).Center.X;
+        var moved=second.Where(s=>Math.Abs(((EllipseGeometry)s.Geometry).Center.Y-((EllipseGeometry)highHeads[0].Geometry).Center.Y)<.1).ToArray();
+        Assert.True((((EllipseGeometry)moved[0].Geometry).Center.X-left)*(((EllipseGeometry)moved[1].Geometry).Center.X-right)<0);
+        var markerRadii=first.Select(s=>(EllipseGeometry)s.Geometry).Where(e=>e.RadiusX>=2.6&&e.RadiusX!=4).Select(e=>e.RadiusX).ToArray();Assert.Equal(2,markerRadii.Length);Assert.True(markerRadii.Max()>markerRadii.Min()+1);
+        map.AnimationEnabled=false;Assert.False(map.IsAnimating);Assert.Equal(3,Ellipses().Length);
+        map.AnimationEnabled=true;map.SetData([],new(0,-60),true,"Empty");Assert.False(map.IsAnimating);
+        map.SetData([new("stale",new(0,60),60000,30000,false)],new(0,-60),false,"Stale");Assert.False(map.IsAnimating);Assert.Equal(2,Ellipses().Length);
+        map.SetData([new("quiet",new(0,60),60000,30000,false,false,false)],new(0,-60),true,"Quiet peer with old byte totals");Assert.False(map.IsAnimating);Assert.Equal(2,Ellipses().Length);
+        map.RaiseEvent(new RoutedEventArgs(FrameworkElement.UnloadedEvent));
     }
 
     private static void CheckIndependentAssetRecovery()

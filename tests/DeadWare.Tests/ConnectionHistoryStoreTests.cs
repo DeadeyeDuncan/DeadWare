@@ -120,13 +120,47 @@ public sealed class ConnectionHistoryStoreTests : IDisposable
         Assert.Equal(new ConnectionHistoryInterval(c.From,c.To,true),Assert.Single(store.Read(Query()).Coverage));
         Assert.Throws<ArgumentException>(()=>store.Append([], [c with {Complete=false}],Epoch.AddMinutes(2)));
     }
-    [Fact] public void Saturating_totals_remain_exact_above_double_precision_and_query_rates_use_full_interval()
+    [Fact] public void Saturating_totals_remain_exact_above_double_precision_and_query_rates_use_minute_buckets()
     {
         var store=Store(); store.Append([Row(received:9007199254740993),Row(batch:"c",received:1)],[],Epoch.AddMinutes(1));
         var view=store.Read(new(Epoch,Epoch.AddMinutes(1))); Assert.Equal(9007199254740994,view.Summary.ReceivedBytes);
         store.Append([Row(batch:"d",received:long.MaxValue)],[],Epoch.AddMinutes(1)); view=store.Read(new(Epoch,Epoch.AddMinutes(1)));
         Assert.Equal(long.MaxValue,view.Summary.ReceivedBytes); Assert.Equal(long.MaxValue,Assert.Single(view.Rows).ReceivedBytes);
         Assert.Equal(long.MaxValue/60d,view.Rows[0].DownloadBytesPerSecond);
+    }
+    [Fact] public void Saved_minute_rates_and_csv_do_not_change_with_enclosing_query_duration()
+    {
+        var store=Store();var record=Row(received:61440,sent:30720) with {Complete=false};
+        store.Append([record with {Delta=record.Delta with {LastSeen=record.Delta.FirstSeen}}],[],Epoch.AddMinutes(1));
+        foreach(int minutes in new[]{1,1440,43200})
+        {
+            var query=Query(minutes);var row=Assert.Single(store.Read(query).Rows);
+            Assert.Equal(1024,row.DownloadBytesPerSecond);Assert.Equal(512,row.UploadBytesPerSecond);Assert.False(row.Complete);
+            using var output=new StringWriter();store.ExportCsv(output,query);
+            var cells=output.ToString().Split(Environment.NewLine)[1].Split(',');Assert.Equal("\"1024\"",cells[11]);Assert.Equal("\"512\"",cells[12]);
+        }
+        // Selection includes a bucket iff its minute start is inside the half-open query.
+        Assert.Empty(store.Read(new(Epoch.AddSeconds(1),Epoch.AddMinutes(1))).Rows);
+        Assert.Equal(1024,Assert.Single(store.Read(new(Epoch,Epoch.AddSeconds(1))).Rows).DownloadBytesPerSecond);
+    }
+    [Fact] public void History_pid_search_matches_existing_schema_v1_rows_without_rewriting_them()
+    {
+        var store=Store();store.Append([Row()],[],Epoch.AddMinutes(1));
+        using(var db=Connect())Sql(db,"UPDATE traffic SET pid=7654321");
+        Assert.Single(store.Read(Query() with {Search="7654321"}).Rows);
+        using var output=new StringWriter();store.ExportCsv(output,Query() with {Search="7654321"});Assert.Contains("7654321",output.ToString());
+        Assert.Empty(store.Read(Query() with {Search="7654322"}).Rows);
+    }
+    [Fact] public void Marker_representatives_preserve_full_saved_group_identity_and_absolute_page_rank()
+    {
+        var store=Store();var records=Enumerable.Range(0,202).Select(i=>Row(i,"b"+i) with {Location=Place with {City=i==0?"Old city":"New city",Source=i==0?"Old database":"New database"},Origin=i==0?new(1,2):new(3,4)}).ToArray();
+        store.Append(records,[],Epoch.AddMinutes(203));var query=Query(203);var view=store.Read(query);Assert.Equal(2,view.Markers.Count);
+        var old=Assert.Single(view.Markers,m=>m.Location.City=="Old city");Assert.Equal(201,old.RowIndex);
+        foreach(var marker in view.Markers)
+        {
+            var row=Assert.Single(store.Read(query with {Offset=(int)marker.RowIndex,Limit=1}).Rows);
+            Assert.Equal(row,marker.Representative);Assert.Equal(marker.Location,row.Location);Assert.Equal(marker.Origin,row.Origin);
+        }
     }
     [Fact] public void Csv_exports_entire_filter_even_with_page_offset_and_escapes_all_formula_prefixes()
     {
@@ -143,6 +177,7 @@ public sealed class ConnectionHistoryStoreTests : IDisposable
         rows.Add(Row(300,"local",address:"192.168.3.5") with {Location=null}); rows.Add(Row(301,"unknown",address:"9.9.9.9") with {Location=null});
         store.Append(rows,[],Epoch.AddMinutes(302)); var view=store.Read(Query(302));
         Assert.Equal(256,view.Markers.Count); Assert.Equal(302,view.Summary.Destinations); Assert.Equal(1,view.Summary.Countries); Assert.Equal(2,view.Summary.Unlocated); Assert.Equal(1,view.Summary.Local); Assert.Equal(3020,view.Summary.ReceivedBytes);
+        Assert.Equal(44,view.OmittedMarkers);
     }
     [Fact] public void Additional_schema_objects_are_rejected_without_modifying_existing_database()
     {
