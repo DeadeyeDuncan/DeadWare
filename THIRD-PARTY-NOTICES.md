@@ -16,6 +16,11 @@ DeadWare's MIT license applies to original DeadWare code. Included dependencies 
 - **.NET runtime and Windows Desktop runtime** — Microsoft and contributors; MIT and third-party licenses. See `licenses/texts/DOTNET-LICENSE.txt` and `DOTNET-THIRD-PARTY-NOTICES.txt` in a release archive.
 - **Mono.Posix.NETStandard** is a transitive dependency resolved by NuGet. Its manifest and available notices are preserved even where its platform-specific assets are not used on Windows.
 
+## Connections and offline geography
+
+- **MaxMind.Db 5.2.0** — MaxMind and contributors, Apache License 2.0. Unmodified local database reader. Source revision `575c4b8517c91d99cf8071bd7a3f3327a64696d8`: https://github.com/maxmind/MaxMind-DB-Reader-dotnet. The upstream Apache license is preserved in `licenses/MAXMIND-DB-LICENSE.txt` and release `licenses/texts/`. No commercial MaxMind database is bundled.
+- **Natural Earth v5.1.2** — public-domain 1:110m land and 1:10m populated places, maintained by Nathaniel Vaughn Kelso, Tom Patterson and contributors. Embedded derivative coordinate/city JSON comes from pinned revision `f1890d9f152c896d250a77557a5751a93d494776`. Source URLs, SHA-256 hashes and reproducible transformations are in `assets/maps/README.md`. Terms: https://www.naturalearthdata.com/about/terms-of-use/. No upstream endorsement is implied.
+
 The restore dependency inventory may contain packages for non-Windows runtimes. This does not indicate DeadWare supports those operating systems or that all those assets are included in the Windows executable distribution.
 
 No upstream component is claimed to be authored by DeadWare. Library and vendor names are used only to identify dependencies and compatibility.

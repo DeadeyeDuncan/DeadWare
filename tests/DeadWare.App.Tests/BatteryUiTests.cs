@@ -55,6 +55,7 @@ public class BatteryUiTests
                 foreach (var color in dictionary.Descendants().Attributes("Color").Where(a => a.Value.Contains("local:Theme.ScrollCorner")))
                     color.Value = "#151B24";
                 app.Resources = (ResourceDictionary)XamlReader.Parse(dictionary.ToString());
+                ConnectionMapUiChecks.Run(app);
                 var assembly = typeof(Collector).Assembly;
                 var pageType = assembly.GetType("DeadWare.App.BatteryHistoryPage"); Assert.NotNull(pageType);
                 var session = (UiSession)RuntimeHelpers.GetUninitializedObject(typeof(UiSession));
