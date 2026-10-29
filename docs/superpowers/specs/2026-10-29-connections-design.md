@@ -1,6 +1,6 @@
 # Connections: geographic network activity
 
-Status: proposed design, awaiting user approval before implementation.
+Status: approved by the user on 2026-10-29 ("Looks good!"). Implementation plan follows in `../plans/2026-10-29-connections.md`.
 
 Design gate evidence (2026-10-29): a fresh builder review returned "nothing important left". The unchanged latest-main baseline passed `dotnet test DeadWare.slnx -c Release --nologo`: 380 core tests and 101 app tests, zero failed/skipped. This verifies the implementation starting point, not the proposed Connections feature; no feature code or native network capture has been run.
 
@@ -8,7 +8,7 @@ Design gate evidence (2026-10-29): a fresh builder review returned "nothing impo
 
 Help a person see where this computer exchanges network data and which applications account for it, with country/city context when available. Add a sidebar page named **Connections** beside Network. The user requested live traffic plus saved history, supplied https://cybermap.kaspersky.com/ as visual inspiration, and requested an optional small 2D map in the desktop widget, enabled in Settings. The widget must show **live information only**, independently of any history selection in Connections. Keep GitHub updated during the project.
 
-The following defaults are proposed by Codex rather than decisions already made by the user: native WPF rendering, a local DB-IP City Lite database, 30-day local history retention with a storage cap, minute-resolution historical playback, and an optional manually selected approximate home city. These may be revised during design review.
+The following defaults were proposed by Codex and included in the approved design: native WPF rendering, a local DB-IP City Lite database, 30-day local history retention with a storage cap, minute-resolution historical playback, and an optional manually selected approximate home city. The user did not independently select these implementation defaults.
 
 ## Screen and interaction
 
