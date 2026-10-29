@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased — Widget map layout
+
+- Show only the map in the Connections widget, without headings, legends, status text or transfer-rate readouts.
+- Fit the full world across the widget panel and use the available height when the map is the only selected widget item.
+
 ## 0.6.21 — Connections map and history
 
 - Add Connections with a rotatable globe, 2D map, approximate country/city locations and a searchable application/peer table with traffic direction, bytes and rates.

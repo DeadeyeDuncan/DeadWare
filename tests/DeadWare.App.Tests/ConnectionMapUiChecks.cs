@@ -38,6 +38,7 @@ internal static class ConnectionMapUiChecks
                 Assert.Equal(3, map.DisplayedPointCount);
                 var drawings = VisualTreeHelper.GetDrawing(map)!;
                 Assert.True(CountGeometry(drawings) > 10, "Coastlines, graticules, paths and markers must draw.");
+                Assert.True(CountGlyphRuns(drawings) > 0, "The full-page map keeps its legend and status text.");
             }
         }
         foreach (string status in new[] { "No public locations", "Only local / special addresses", "Location database unavailable" })
@@ -58,7 +59,23 @@ internal static class ConnectionMapUiChecks
         map.AnimationEnabled = false; Assert.False(map.IsAnimating);
         map.AnimationEnabled = true; map.RaiseEvent(new RoutedEventArgs(FrameworkElement.UnloadedEvent)); Assert.False(map.IsAnimating);
         theme.GetMethod("Apply", BindingFlags.Public | BindingFlags.Static)!.Invoke(null, ["Midnight"]);
+        CheckMapOnlyPresentationSwitch();
         CheckDirectionalFlowAndVolume();
+    }
+
+    private static void CheckMapOnlyPresentationSwitch()
+    {
+        var map=new ConnectionMap {Flat=true,AnimationEnabled=false};
+        map.SetData([new("peer",new(0,60),1,0,false)],new(0,-60),true,"Presentation fixture");map.ResetView();
+        static IEnumerable<GeometryDrawing> Shapes(Drawing drawing)=>drawing is GeometryDrawing shape?[shape]:drawing is DrawingGroup group?group.Children.SelectMany(Shapes):[];
+        double Width(double thickness)=>Assert.Single(Shapes(VisualTreeHelper.GetDrawing(map)!),d=>d.Geometry is StreamGeometry&&d.Pen?.Thickness==thickness).Geometry.Bounds.Width;
+        foreach(bool mapOnly in new[]{false,true,false,true})
+        {
+            map.MapOnly=mapOnly;Render(map,new(600,150),"connections-presentation-"+mapOnly);
+            Assert.Equal(mapOnly,CountGlyphRuns(VisualTreeHelper.GetDrawing(map)!)==0);
+            Assert.InRange(Width(2.5),mapOnly?190:60,mapOnly?205:70);
+            Assert.InRange(Width(1),mapOnly?580:180,mapOnly?600:200);
+        }
     }
 
     private static void CheckDirectionalFlowAndVolume()
@@ -135,6 +152,7 @@ internal static class ConnectionMapUiChecks
     }
 
     private static int CountGeometry(Drawing drawing) => drawing is GeometryDrawing ? 1 : drawing is DrawingGroup group ? group.Children.Sum(CountGeometry) : 0;
+    private static int CountGlyphRuns(Drawing drawing) => drawing is GlyphRunDrawing ? 1 : drawing is DrawingGroup group ? group.Children.Sum(CountGlyphRuns) : 0;
     private static void Render(ConnectionMap map, Size size, string name)
     {
         map.Measure(size); map.Arrange(new Rect(size)); map.UpdateLayout();

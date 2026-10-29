@@ -13,7 +13,7 @@ public sealed class ConnectionMap : FrameworkElement
     private IReadOnlyList<ConnectionMapPoint> points = [];
     private GeoPoint? origin;
     private string status = "Waiting for connections";
-    private bool available, enabled = true, loaded, subscribed;
+    private bool available, enabled = true, loaded, subscribed, mapOnly;
     private Point? dragStart;
     private MapCamera? dragCamera;
     private bool dragged;
@@ -45,6 +45,7 @@ public sealed class ConnectionMap : FrameworkElement
     private static readonly DependencyProperty DownloadProperty = DependencyProperty.Register("Download", typeof(Brush), typeof(ConnectionMap), new FrameworkPropertyMetadata(null, FrameworkPropertyMetadataOptions.AffectsRender));
     private static readonly DependencyProperty UploadProperty = DependencyProperty.Register("Upload", typeof(Brush), typeof(ConnectionMap), new FrameworkPropertyMetadata(null, FrameworkPropertyMetadataOptions.AffectsRender));
     public bool Flat { get => camera.Flat; set { if (camera.Flat != value) ChangeCamera(camera with { Flat = value }); } }
+    public bool MapOnly { get => mapOnly; set { if (mapOnly != value) { mapOnly = value; cachedCamera = null; routesDirty = true; InvalidateVisual(); } } }
     public bool AnimationEnabled { get => enabled; set { enabled = value; UpdateAnimation(); InvalidateVisual(); } }
     public bool IsAnimating => subscribed;
     public MapCamera Camera => camera;
@@ -92,12 +93,14 @@ public sealed class ConnectionMap : FrameworkElement
         lastFrame = frame.RenderingTime; phase = frame.RenderingTime.TotalSeconds; InvalidateVisual();
     }
 
-    private Rect MapBounds => new(10, 21, Math.Max(1, ActualWidth - 20), Math.Max(1, ActualHeight - 55));
+    private Rect MapBounds => MapOnly ? new(3, 3, Math.Max(1, ActualWidth - 6), Math.Max(1, ActualHeight - 6)) :
+        new(10, 21, Math.Max(1, ActualWidth - 20), Math.Max(1, ActualHeight - 55));
     private Point Pixel(MapCoordinate coordinate)
     {
         var bounds = MapBounds;
         double yScale = Flat ? Math.Min(bounds.Height / 2, bounds.Width / 4) : Math.Min(bounds.Width, bounds.Height) / 2;
         double xScale = Flat ? yScale * 2 : yScale;
+        if (Flat && MapOnly) { xScale = bounds.Width / 2; yScale = bounds.Height / 2; }
         return new(bounds.X + bounds.Width / 2 + coordinate.X * xScale, bounds.Y + bounds.Height / 2 + coordinate.Y * yScale);
     }
     private StreamGeometry Geometry(IEnumerable<IReadOnlyList<GeoPoint>> paths)
@@ -174,7 +177,7 @@ public sealed class ConnectionMap : FrameworkElement
         var ink = Theme.Brush("Ink"); var muted = Theme.Brush("Muted");
         var download = Theme.Brush(Theme.GraphKey("download")); var upload = Theme.Brush(Theme.GraphKey("upload"));
         dc.DrawRectangle(Theme.Brush("Background"), null, new Rect(RenderSize));
-        Text(dc, "↓ Download —   ↑ Upload ┄", new(8, 2), ActualWidth - 16, 17, muted);
+        if (!MapOnly) Text(dc, "↓ Download —   ↑ Upload ┄", new(8, 2), ActualWidth - 16, 17, muted);
         EnsureGeometry(); hitPoints.Clear();
         dc.PushClip(new RectangleGeometry(bounds));
         Geometry clip;
@@ -224,7 +227,7 @@ public sealed class ConnectionMap : FrameworkElement
             }
         }
         dc.Pop(); dc.Pop();
-        Text(dc, StatusSummary, new(8, ActualHeight - 30), ActualWidth - 16, 28, muted);
+        if (!MapOnly) Text(dc, StatusSummary, new(8, ActualHeight - 30), ActualWidth - 16, 28, muted);
     }
 
     private void SelectAt(Point position)

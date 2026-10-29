@@ -1,6 +1,7 @@
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Windows;
+using System.Windows.Automation;
 using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
@@ -46,12 +47,14 @@ internal static class ConnectionsWidgetUiChecks
             var map=Assert.Single(widget.Children.OfType<ConnectionMap>());
             Assert.False(map.IsHitTestVisible);Assert.False(map.Focusable);
             foreach(string name in new[]{"Midnight","Ember","Glacier","Amethyst","Neon","Daylight"})
+            foreach(var size in new[]{new Size(600,150),new Size(600,300),new Size(300,171)})
             {
                 Theme.Apply(name);Pump();widget.Refresh();
-                widget.Measure(new(284,150));widget.Arrange(new Rect(0,0,284,150));widget.UpdateLayout();
-                Assert.Equal(150,widget.ActualHeight);Assert.True(map.ActualHeight>=100);Assert.Equal(284,map.ActualWidth);
+                Layout(widget,size.Width,size.Height);
+                Assert.Equal(size.Height,widget.ActualHeight);Assert.Equal(size.Height,map.ActualHeight);Assert.Equal(size.Width,map.ActualWidth);
+                CheckMapOnly(widget,map);
                 Assert.Equal(1,map.DisplayedPointCount);Assert.False(map.IsAnimating);
-                Render(widget,284,150,"widget-map-"+name);
+                Render(widget,(int)size.Width,(int)size.Height,$"widget-map-{name}-{size.Width}x{size.Height}");
             }
             if(!SystemParameters.HighContrast)
             {
@@ -126,12 +129,25 @@ internal static class ConnectionsWidgetUiChecks
                 Theme.Apply(theme);Pump();settings.WidgetGraphs=WidgetGraphSelection.Kinds.Take(count).ToList();Changed(session);
                 double height=count==0?171:260;
                 Layout(viewport,300,height);
-                Assert.Equal(150,map.ActualHeight);Assert.Equal(Visibility.Visible,map.Visibility);
-                Assert.Equal(((SolidColorBrush)Theme.Brush("Ink")).Color,((SolidColorBrush)map.Children.OfType<TextBlock>().First().Foreground).Color);
+                Assert.Equal(count==0?height-16:150,map.ActualHeight);Assert.Equal(Visibility.Visible,map.Visibility);
+                CheckMapOnly(map,Assert.Single(map.Children.OfType<ConnectionMap>()));
                 if(count==0)Assert.Equal(284,map.ActualWidth);
                 var graphs=Elements(content).OfType<WidgetGraph>().Where(g=>g.Visibility==Visibility.Visible).ToArray();
                 Assert.Equal(count,graphs.Length);Assert.All(graphs,g=>Assert.True(g.ActualHeight>=120));
                 var scroll=Assert.Single(Elements(content).OfType<ScrollViewer>());
+                Assert.Equal(count==0?ScrollBarVisibility.Disabled:ScrollBarVisibility.Auto,scroll.VerticalScrollBarVisibility);
+                if(count==0)
+                {
+                    Assert.Equal(0,scroll.ScrollableHeight);
+                    foreach(var size in new[]{new Size(600,300),new Size(300,171),new Size(600,150)})
+                    {
+                        Layout(viewport,size.Width,size.Height);
+                        Assert.Equal(size.Height-16,map.ActualHeight);Assert.Equal(size.Width-16,map.ActualWidth);
+                        CheckMapOnly(map,Assert.Single(map.Children.OfType<ConnectionMap>()));
+                        Render(viewport,(int)size.Width,(int)size.Height,$"widget-viewport-{theme}-{size.Width}x{size.Height}");
+                    }
+                    Layout(viewport,300,height);
+                }
                 if(count==4)
                 {
                     Assert.True(scroll.ScrollableHeight>0);scroll.ScrollToBottom();Pump();Layout(viewport,300,height);
@@ -176,7 +192,8 @@ internal static class ConnectionsWidgetUiChecks
         var live=service.Live;Changed(session);
         var map=Assert.Single(widget.Children.OfType<ConnectionMap>());
         Assert.Contains("Widget-only live",map.StatusSummary);Assert.DoesNotContain("Historical",map.StatusSummary);
-        Assert.Contains("7.0 B/s",string.Join(' ',widget.Children.OfType<TextBlock>().Select(t=>t.Text)));
+        Assert.Contains("Widget-only live",AutomationProperties.GetName(widget));
+        Assert.Equal(7,live.Connections[0].Traffic.DownloadBytesPerSecond);
         Assert.Equal(live,service.Live);Call("StopPlayback");
     }
 
@@ -201,6 +218,18 @@ internal static class ConnectionsWidgetUiChecks
     private static void PumpUntil(Func<bool> done) {var timer=Stopwatch.StartNew();while(!done()&&timer.Elapsed<TimeSpan.FromSeconds(3)){Pump();Thread.Sleep(1);}Assert.True(done());}
 
     private static IEnumerable<GeometryDrawing> Drawings(Drawing drawing)=>drawing is GeometryDrawing geometry?[geometry]:drawing is DrawingGroup group?group.Children.SelectMany(Drawings):[];
+    private static int GlyphRuns(Drawing drawing)=>drawing is GlyphRunDrawing?1:drawing is DrawingGroup group?group.Children.Sum(GlyphRuns):0;
+    private static void CheckMapOnly(ConnectionsWidget widget,ConnectionMap map)
+    {
+        Assert.Empty(Elements(widget).OfType<TextBlock>());
+        var drawing=VisualTreeHelper.GetDrawing(map)!;
+        Assert.Equal(0,GlyphRuns(drawing));
+        var world=Assert.Single(Drawings(drawing),d=>d.Geometry is RectangleGeometry&&d.Pen is not null).Geometry.Bounds;
+        Assert.InRange(world.Width,map.ActualWidth*.9,map.ActualWidth);
+        Assert.InRange(world.Height,map.ActualHeight*.9,map.ActualHeight);
+        Assert.InRange(world.Left,0,map.ActualWidth*.05);Assert.InRange(world.Top,0,map.ActualHeight*.05);
+        Assert.InRange(world.Right,map.ActualWidth*.95,map.ActualWidth);Assert.InRange(world.Bottom,map.ActualHeight*.95,map.ActualHeight);
+    }
     private static void Render(FrameworkElement element,int width,int height,string name)
     {
         var bitmap=new RenderTargetBitmap(width,height,96,96,PixelFormats.Pbgra32);bitmap.Render(element);
@@ -221,6 +250,7 @@ internal static class ConnectionsWidgetUiChecks
             typeof(UiSession).GetField("<Connections>k__BackingField",All)!.SetValue(session,service);
             var widget=new ConnectionsWidget(session);
             var map=Assert.Single(widget.Children.OfType<ConnectionMap>());
+            Assert.Null(widget.ToolTip);Assert.Null(map.ToolTip);
             Assert.True(map.Flat);
             Assert.Equal(0,map.Camera.Latitude);
             Assert.False(map.AnimationEnabled);
@@ -232,13 +262,16 @@ internal static class ConnectionsWidgetUiChecks
             Assert.True(SpinWait.SpinUntil(()=>service.Live.Connections[0].Location is not null,TimeSpan.FromSeconds(3)));
             widget.Refresh();
             Assert.Equal(1,map.DisplayedPointCount);
-            string text=string.Join(" ",widget.Children.OfType<TextBlock>().Select(t=>t.Text));
-            Assert.Contains("Live",text);Assert.Contains("129.0 B/s",text);Assert.Contains("64.0 B/s",text);
+            Assert.Empty(Elements(widget).OfType<TextBlock>());
+            string text=AutomationProperties.GetName(widget);
+            Assert.Contains("live",text);Assert.DoesNotContain("B/s",text);
+            Assert.Equal(129,service.Live.Connections.Sum(c=>c.Traffic.DownloadBytesPerSecond));
+            Assert.Equal(64,service.Live.Connections.Sum(c=>c.Traffic.UploadBytesPerSecond));
             Assert.Contains("Incomplete",map.StatusSummary);Assert.Contains("Fixture live capture",map.StatusSummary);
-            Assert.DoesNotContain("999",text);Assert.False(map.AnimationEnabled);
+            Assert.False(map.AnimationEnabled);
             clock=Epoch.AddMinutes(1);widget.Refresh();
             Assert.Contains("stale",map.StatusSummary,StringComparison.OrdinalIgnoreCase);
-            text=string.Join(" ",widget.Children.OfType<TextBlock>().Select(t=>t.Text));Assert.DoesNotContain("129.0 B/s",text);
+            Assert.False(service.Live.Available);Assert.Contains("stale",AutomationProperties.GetName(widget),StringComparison.OrdinalIgnoreCase);
             Assert.Empty(widget.Children.OfType<DataGrid>());Assert.Empty(widget.Children.OfType<ComboBox>());
         }
         finally {service.StopAsync().GetAwaiter().GetResult();}

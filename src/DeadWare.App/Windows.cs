@@ -325,8 +325,9 @@ internal sealed class WidgetWindow : Window
             else {NativePlacement.ClearScrollableMinimumHeight(this);MinHeight=minimum;}
             if(showMap&&connections is null) {connections=new ConnectionsWidget(session);cards.Children.Add(connections);}
             if(connections is not null)connections.Visibility=showMap?Visibility.Visible:Visibility.Collapsed;
-            cards.RowDefinitions[0].Height=new GridLength(showMap?150:0);
-            scroll.VerticalScrollBarVisibility=showMap?ScrollBarVisibility.Auto:ScrollBarVisibility.Disabled;
+            bool mapOnly=showMap&&selected.Count==0;
+            cards.RowDefinitions[0].Height=mapOnly?new GridLength(1,GridUnitType.Star):new GridLength(showMap?150:0);
+            scroll.VerticalScrollBarVisibility=showMap&&!mapOnly?ScrollBarVisibility.Auto:ScrollBarVisibility.Disabled;
             foreach(var graph in graphs)
             {
                 bool visible=selected.Contains(graph.Key);
