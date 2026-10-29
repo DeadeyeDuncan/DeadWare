@@ -1,4 +1,6 @@
 using System.Globalization;
+using System.Collections.ObjectModel;
+using System.ComponentModel;
 using System.Net;
 using System.Text.Json;
 using System.Windows;
@@ -6,6 +8,7 @@ using System.Windows.Automation;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Data;
+using System.Windows.Input;
 using System.Windows.Threading;
 using DeadWare.Core;
 using Microsoft.Win32;
@@ -18,6 +21,18 @@ internal sealed class ConnectionsPage : Grid
     private sealed record PeerRow(string Key, string Application, string Endpoint, string Location,
         string Download, string Upload, string Received, string Sent, string Coverage, string Seen,
         GeoPoint? Point, GeoPoint? Origin, long ReceivedBytes, long SentBytes);
+    private sealed class MapRow(string key, string label) : INotifyPropertyChanged
+    {
+        public string Key { get; } = key;
+        public string Label { get; private set; } = label;
+        public event PropertyChangedEventHandler? PropertyChanged;
+        public void Update(string value)
+        {
+            if(Label==value)return;
+            Label=value;PropertyChanged?.Invoke(this,new(nameof(Label)));
+        }
+        public override string ToString()=>Label;
+    }
     private sealed record CityChoice(string? Id, string Label) { public override string ToString() => Label; }
     private sealed record HistoryPeerKey(long MinuteUtcTicks, ProcessIdentity Process, string RemoteAddress,
         int RemotePort, ConnectionProtocol Protocol, ConnectionLocation? Location, GeoPoint? Origin);
@@ -34,10 +49,15 @@ internal sealed class ConnectionsPage : Grid
     private readonly CheckBox minute = new() { Content = "Minute cursor" }, recording = new() { Content = "Record history" }, animation = new() { Content = "Animate" };
     private readonly Slider cursor = new() { Minimum = 0, Maximum = 0, TickFrequency = 1, IsSnapToTickEnabled = true, Width = 170 };
     private readonly TextBlock summary = Ui.Text("Waiting for endpoint capture.", 12), capture = Ui.Text("", 11, "Muted"), storage = Ui.Text("", 11, "Muted"),
-        actionStatus = Ui.Text("", 11, "Warning"), database = Ui.Text("DB-IP Lite · no location database · download contacts download.db-ip.com · DB-IP.com (CC BY 4.0).", 11, "Muted"), pages = Ui.Text("", 11, "Muted"), cursorTime = Ui.Text("", 11, "Muted"), selection = Ui.Text("", 11, "Muted");
+        actionStatus = Ui.Text("", 11, "Warning"), database = Ui.Text("DB-IP Lite · no location database · download contacts download.db-ip.com · DB-IP.com (CC BY 4.0).", 11, "Muted"), cursorTime = Ui.Text("", 11, "Muted"), selection = Ui.Text("", 11, "Muted");
     private readonly ConnectionMap map = new() { MinHeight = 260 };
-    private readonly DataGrid table = new() { MinHeight = 164, EnableRowVirtualization = true, IsReadOnly = true, AutoGenerateColumns = false, SelectionMode = DataGridSelectionMode.Single };
-    private readonly Button previous, next, play, download, cancel, export;
+    private readonly ListBox mappedConnections = new() { MaxHeight = 140, MinHeight = 45 };
+    private readonly ObservableCollection<MapRow> mappedRows = [];
+    private readonly Canvas mapOverlay = new() { ClipToBounds = true };
+    private readonly Border nodeDetails = new() { Padding = new(10), BorderThickness = new(1), CornerRadius = new(5), Visibility = Visibility.Collapsed };
+    private readonly TextBlock nodeText = Ui.Text("", 12);
+    private readonly TextBlock mappedStatus = Ui.Text("", 11, "Muted");
+    private readonly Button play, download, cancel, export;
     private readonly ProgressBar progress = new() { Minimum = 0, Maximum = 100, Width = 80, Height = 6, Visibility = Visibility.Collapsed };
     private readonly StackPanel historical = new();
     private readonly DispatcherTimer playback = new() { Interval = TimeSpan.FromSeconds(1) };
@@ -46,9 +66,7 @@ internal sealed class ConnectionsPage : Grid
     private ConnectionHistoryQuery? displayedHistoryQuery;
     private ConnectionLiveView live = new(default, [], null, false, false, "Waiting for endpoint capture.");
     private IReadOnlyList<PeerRow> rows = [];
-    private IReadOnlyDictionary<string,ConnectionHistoryMarker> historyMarkers = new Dictionary<string,ConnectionHistoryMarker>();
-    private long generation, totalRows;
-    private int offset;
+    private long generation;
     private bool syncing, busy, playing, active, exportInProgress, historyMinuteReady;
     private string? selectedKey;
     private string historyStorage = "";
@@ -61,8 +79,8 @@ internal sealed class ConnectionsPage : Grid
         readHistory = q => session.Connections is { } service ? service.ReadViewAsync(q) : Task.FromResult(Empty(q, "Connection history is unavailable."));
         exportHistory=(path,query)=>session.Connections is { } service?service.ExportCsvAsync(path,query):Task.FromException(new InvalidOperationException("Connection export unavailable."));
         SetResourceReference(BackgroundProperty, "Background"); ClipToBounds = true;
-        foreach (var height in new[] { GridLength.Auto, new GridLength(2, GridUnitType.Star), new GridLength(4), new GridLength(1, GridUnitType.Star), GridLength.Auto, GridLength.Auto }) body.RowDefinitions.Add(new() { Height = height });
-        body.RowDefinitions[1].MinHeight = 260; body.RowDefinitions[3].MinHeight = 164;
+        foreach (var height in new[] { GridLength.Auto, new GridLength(1, GridUnitType.Star), GridLength.Auto, GridLength.Auto, GridLength.Auto }) body.RowDefinitions.Add(new() { Height = height });
+        body.RowDefinitions[1].MinHeight = 300;
         var controls = new StackPanel { Margin = new(0, 6, 0, 3) }; var top = new WrapPanel();
         mode.ItemsSource = new[] { "Live", "History" }; mode.SelectedIndex = 0; Named(mode, "Connections view"); range.ItemsSource = new[] { "Today", "7 days", "30 days" }; range.SelectedIndex = 0; Named(range, "Connections time range");
         top.Children.Add(mode); top.Children.Add(range); top.Children.Add(Button("Globe / 2D", () => map.Flat = !map.Flat)); top.Children.Add(Button("+", () => map.ZoomBy(1.25))); top.Children.Add(Button("−", () => map.ZoomBy(.8))); top.Children.Add(Button("Reset", map.ResetView));
@@ -72,13 +90,34 @@ internal sealed class ConnectionsPage : Grid
         var filters = new WrapPanel(); Named(search, "Search application or IP"); search.ToolTip = "Application name, PID or remote IP"; filters.Children.Add(Label("Application / IP", search, "Search application or IP")); country.ToolTip = "ISO country code; blank for all"; Named(country, "Country code"); filters.Children.Add(Label("Country code", country, "Country code"));
         direction.ItemsSource = Enum.GetValues<ConnectionDirection>(); direction.SelectedIndex = 0; Named(direction, "Traffic direction"); filters.Children.Add(Label("Direction", direction, "Traffic direction")); filters.Children.Add(Button("Filter", () => FiltersChanged())); controls.Children.Add(filters);
         var header=layoutHeader=new StackPanel();header.Children.Add(controls);header.Children.Add(summary);header.Children.Add(capture);body.Children.Add(header);
-        Grid.SetRow(map, 1); body.Children.Add(map);
-        var splitter = new GridSplitter { Height = 4, HorizontalAlignment = HorizontalAlignment.Stretch, ResizeDirection = GridResizeDirection.Rows, ResizeBehavior = GridResizeBehavior.PreviousAndNext }; splitter.SetResourceReference(BackgroundProperty, "Line"); Grid.SetRow(splitter, 2); body.Children.Add(splitter);
-        Column("Application / PID", "Application", 1.4); Column("Remote / protocol", "Endpoint", 1.5); Column("Approx. location", "Location", 1.2); Column("↓ rate", "Download", .85); Column("↑ rate", "Upload", .85); Column("Received", "Received", .85); Column("Sent", "Sent", .85); Column("Coverage", "Coverage", .8); Named(table, "Connection peers"); Grid.SetRow(table, 3); body.Children.Add(table);
-        var foot = layoutFooter = new StackPanel(); var pagination = new WrapPanel(); previous = Button("Previous", () => MovePage(-200)); next = Button("Next", () => MovePage(200)); pagination.Children.Add(previous); pagination.Children.Add(pages); pagination.Children.Add(next); export = Button("Export CSV…", () => _ = ExportAsync()); pagination.Children.Add(export); foot.Children.Add(pagination); foot.Children.Add(selection); Grid.SetRow(foot, 4); body.Children.Add(foot);
+        var mapHost = new Grid(); mapHost.Children.Add(map); mapHost.Children.Add(mapOverlay); Grid.SetRow(mapHost, 1); body.Children.Add(mapHost);
+        nodeDetails.SetResourceReference(Border.BackgroundProperty, "Panel"); nodeDetails.SetResourceReference(Border.BorderBrushProperty, "Line");
+        nodeText.TextWrapping = TextWrapping.Wrap;
+        var detailsLayout = new StackPanel(); var detailHeader = new DockPanel(); var close = Button("Close", ClearSelection); DockPanel.SetDock(close, Dock.Right); detailHeader.Children.Add(close); detailHeader.Children.Add(Ui.Text("Connection details", 13)); detailsLayout.Children.Add(detailHeader);
+        detailsLayout.Children.Add(new ScrollViewer { Content = nodeText, MaxHeight = 175, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled }); nodeDetails.Child = detailsLayout; mapOverlay.Children.Add(nodeDetails); Named(nodeDetails, "Selected map connection details");
+        var listLayout = new StackPanel(); listLayout.Children.Add(mappedStatus); listLayout.Children.Add(mappedConnections); Grid.SetRow(listLayout, 2); body.Children.Add(listLayout);
+        Named(mappedConnections, "Connections drawn on map");
+        mappedConnections.ItemsSource=mappedRows;
+        mappedConnections.SetResourceReference(Control.BackgroundProperty,"Background");
+        mappedConnections.SetResourceReference(Control.ForegroundProperty,"Ink");
+        mappedConnections.SetResourceReference(Control.BorderBrushProperty,"Line");
+        mappedConnections.SetResourceReference(Control.FontFamilyProperty,"BodyFont");
+        ScrollViewer.SetHorizontalScrollBarVisibility(mappedConnections, ScrollBarVisibility.Disabled);
+        var rowText = new FrameworkElementFactory(typeof(TextBlock)); rowText.SetBinding(TextBlock.TextProperty, new Binding("Label")); rowText.SetValue(TextBlock.TextWrappingProperty, TextWrapping.Wrap); rowText.SetValue(FrameworkElement.MarginProperty, new Thickness(4));
+        mappedConnections.ItemTemplate = new DataTemplate { VisualTree = rowText };
+        var itemStyle = new Style(typeof(ListBoxItem)); itemStyle.Setters.Add(new Setter(Control.HorizontalContentAlignmentProperty, HorizontalAlignment.Stretch));
+        itemStyle.Setters.Add(new Setter(Control.ForegroundProperty,new DynamicResourceExtension("Ink")));
+        itemStyle.Setters.Add(new Setter(Control.BackgroundProperty,new DynamicResourceExtension("Background")));
+        var itemBorder=new FrameworkElementFactory(typeof(Border)); itemBorder.SetBinding(Border.BackgroundProperty,new Binding("Background") {RelativeSource=RelativeSource.TemplatedParent});
+        itemBorder.SetValue(Border.PaddingProperty,new Thickness(3));itemBorder.AppendChild(new FrameworkElementFactory(typeof(ContentPresenter)));
+        itemStyle.Setters.Add(new Setter(Control.TemplateProperty,new ControlTemplate(typeof(ListBoxItem)) {VisualTree=itemBorder}));
+        foreach(var property in new[]{ListBoxItem.IsSelectedProperty,UIElement.IsMouseOverProperty,UIElement.IsKeyboardFocusWithinProperty})
+        {var trigger=new Trigger {Property=property,Value=true};trigger.Setters.Add(new Setter(Control.BackgroundProperty,new DynamicResourceExtension("Control")));itemStyle.Triggers.Add(trigger);}
+        mappedConnections.ItemContainerStyle = itemStyle;
+        var foot = layoutFooter = new StackPanel(); export = Button("Export CSV…", () => _ = ExportAsync()); export.HorizontalAlignment = HorizontalAlignment.Left; foot.Children.Add(export); foot.Children.Add(selection); Grid.SetRow(foot, 3); body.Children.Add(foot);
         var settings = layoutSettings = new StackPanel(); var databaseActions = new WrapPanel(); download = Button("Download / update locations", () => _ = UpdateDatabaseAsync()); cancel = Button("Cancel download", () => downloadCancellation?.Cancel()); cancel.IsEnabled = false; databaseActions.Children.Add(download); databaseActions.Children.Add(cancel); databaseActions.Children.Add(progress); settings.Children.Add(databaseActions); settings.Children.Add(database);
         var options = new StackPanel(); var choices = new WrapPanel(); recording.IsChecked = session.Settings.ConnectionsRecording; databaseActions.Children.Add(recording); Named(citySearch, "Search offline home cities"); citySearch.ToolTip = "Search 7,342 offline cities by name or country"; choices.Children.Add(citySearch); Named(home, "Home city"); choices.Children.Add(home); choices.Children.Add(Button("Clear home city", () => home.SelectedIndex = 0)); options.Children.Add(choices); settings.Children.Add(storage);
-        options.Children.Add(Ui.Text("Origin and destination geography are approximate; curves are illustrative. Local / special and unlocated peers remain in the table. Rolling history: 30 days, up to 256 MiB locally. CSV exports the full filtered interval to a new file.", 11, "Muted")); settings.Children.Add(new Expander { Header = "Recording, origin and storage", Content = options }); Grid.SetRow(settings, 5); settings.Children.Insert(0, actionStatus); body.Children.Add(settings);
+        options.Children.Add(Ui.Text("Origin and destination geography are approximate; curves are illustrative. The list follows the nodes visible on the map. Local / special and unlocated peers remain in totals and history CSV. Rolling history: 30 days, up to 256 MiB locally. CSV exports the full filtered interval to a new file.", 11, "Muted")); settings.Children.Add(new Expander { Header = "Recording, origin and storage", Content = options }); Grid.SetRow(settings, 4); settings.Children.Insert(0, actionStatus); body.Children.Add(settings);
         foreach (var element in new[] { mode, range, direction }) element.Margin = new(0, 0, 6, 3); foreach (var element in new[] { search, from, to, citySearch, country }) element.Margin = new(0, 0, 6, 3);
         selection.MaxHeight = 28; selection.TextTrimming = TextTrimming.CharacterEllipsis;
         layoutHeader.SizeChanged+=(_,_)=>InvalidateMeasure();layoutFooter.SizeChanged+=(_,_)=>InvalidateMeasure();layoutSettings.SizeChanged+=(_,_)=>InvalidateMeasure();
@@ -86,24 +125,24 @@ internal sealed class ConnectionsPage : Grid
         mode.SelectionChanged += (_, _) => ChangeMode(); range.SelectionChanged += (_, _) => { SetPreset(); FiltersChanged(); }; search.TextChanged += (_, _) => FiltersChanged(); direction.SelectionChanged += (_, _) => FiltersChanged(); country.TextChanged += (_, _) => FiltersChanged();
         minute.Checked += (_, _) => FiltersChanged(); minute.Unchecked += (_, _) => FiltersChanged(); cursor.ValueChanged += (_, _) => { if (!syncing) FiltersChanged(false); }; citySearch.TextChanged += (_, _) => FilterCities(); home.SelectionChanged += (_, _) => { if (!syncing && session.Connections is not null) session.SetConnectionsHomeCity((home.SelectedItem as CityChoice)?.Id); };
         recording.Checked += (_, _) => SetRecording(true); recording.Unchecked += (_, _) => SetRecording(false); animation.Checked += (_, _) => SetAnimation(true); animation.Unchecked += (_, _) => SetAnimation(false);
-        table.SelectionChanged += (_, _) => { if (!syncing) { selectedKey = (table.SelectedItem as PeerRow)?.Key; RefreshSelection(); } }; map.PointSelected += SelectMapPeer; playback.Tick += (_, _) => AdvancePlayback();
+        mappedConnections.SelectionChanged += (_, _) => { if (!syncing && mappedConnections.SelectedItem is MapRow row) SelectMapPeer(row.Key); };
+        map.PointSelected += SelectMapPeer; map.ViewChanged += RefreshMappedConnections;
+        PreviewKeyDown += (_, e) => { if (e.Key == System.Windows.Input.Key.Escape) { ClearSelection(); e.Handled = true; } }; playback.Tick += (_, _) => AdvancePlayback();
         Loaded += (_, _) => { active = true; session.Changed += RefreshSession; RefreshSession(); if (IsHistory) RequestHistory(); }; Unloaded += (_, _) => { active = false; session.Changed -= RefreshSession; CancelHistory(); StopPlayback(); downloadCancellation?.Cancel(); }; IsVisibleChanged += (_, _) => { if (!IsVisible) { CancelHistory(); StopPlayback(); } else if (active) { RefreshSession(); if (IsHistory) RequestHistory(); } }; RefreshSession();
     }
     protected override Size MeasureOverride(Size availableSize)
     {
-        // Scroll the page as one surface, but give star rows a finite height so the peer grid
-        // retains its own bounded viewport and only realizes visible rows.
+        // Keep the map large while allowing the whole page to scroll on compact displays.
         double width=double.IsFinite(availableSize.Width)?Math.Max(1,availableSize.Width-SystemParameters.VerticalScrollBarWidth):1000;
         var measure=new Size(width,double.PositiveInfinity);
         layoutHeader.Measure(measure);layoutFooter.Measure(measure);layoutSettings.Measure(measure);
-        double minimum=layoutHeader.DesiredSize.Height+layoutFooter.DesiredSize.Height+layoutSettings.DesiredSize.Height+260+164+4;
+        double minimum=layoutHeader.DesiredSize.Height+layoutFooter.DesiredSize.Height+layoutSettings.DesiredSize.Height+300+170;
         body.Height=Math.Max(minimum,double.IsFinite(availableSize.Height)?availableSize.Height:minimum);
         return base.MeasureOverride(availableSize);
     }
     private static void Named(DependencyObject element, string name) => AutomationProperties.SetName(element, name);
     private static UIElement Label(string text, FrameworkElement input, string name) { Named(input, name); var p = new StackPanel { Margin = new(0, 0, 6, 0) }; p.Children.Add(Ui.Text(text, 10, "Muted")); p.Children.Add(input); return p; }
     private static Button Button(string text, Action action) { var b = Ui.Button(text, action); b.Padding = new(7, 4, 7, 4); b.Margin = new(0, 0, 5, 3); Named(b, text); return b; }
-    private void Column(string title, string binding, double weight) => table.Columns.Add(new DataGridTextColumn { Header = title, Binding = new Binding(binding), Width = new(weight, DataGridLengthUnitType.Star), MinWidth = 52 });
     private static ConnectionHistoryView Empty(ConnectionHistoryQuery query, string status) => new(query, [], 0, new(0, 0, 0, 0, 0, 0), [], [], [], null, 0, status);
     private void SetRecording(bool enabled) { if (!syncing && session.Connections is not null) session.SetConnectionsRecording(enabled); }
     private void UpdateMapAnimation()=>map.AnimationEnabled=animation.IsChecked==true&&(!IsHistory||playing&&minute.IsChecked==true&&historyMinuteReady);
@@ -129,7 +168,7 @@ internal sealed class ConnectionsPage : Grid
         }
         else if (!IsHistory) ApplyLive(live);
     }
-    private void ChangeMode() { CancelHistory(); displayedHistoryQuery=null; StopPlayback(); offset = 0; historical.Visibility = IsHistory ? Visibility.Visible : Visibility.Collapsed; range.IsEnabled = IsHistory; UpdateExportEnabled(); if (IsHistory) RequestHistory(); else ApplyLive(live); }
+    private void ChangeMode() { CancelHistory(); displayedHistoryQuery=null; StopPlayback(); ClearSelection(); historical.Visibility = IsHistory ? Visibility.Visible : Visibility.Collapsed; range.IsEnabled = IsHistory; UpdateExportEnabled(); if (IsHistory) RequestHistory(); else ApplyLive(live); }
     private void SetPreset()
     { int days = range.SelectedIndex switch { 1 => 7, 2 => 30, _ => 1 }; from.Text = DateTime.Today.AddDays(1 - days).ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture); to.Text = DateTime.Today.AddDays(1).ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture); syncing = true; cursor.Value = 0; syncing = false; }
     private bool TryInterval(out DateTimeOffset start, out DateTimeOffset end)
@@ -151,9 +190,9 @@ internal sealed class ConnectionsPage : Grid
     {
         if (!TryInterval(out var start, out var end)) return null; if (!wholeInterval && minute.IsChecked == true) { start = start.AddMinutes((int)cursor.Value); end = end < start.AddMinutes(1) ? end : start.AddMinutes(1); }
         cursorTime.Text = minute.IsChecked == true ? $"{start.ToLocalTime():MM-dd HH:mm}" : "Whole interval";
-        return new(start, end, search.Text.Trim(), country.Text.Trim().ToUpperInvariant(), direction.SelectedItem is ConnectionDirection value ? value : ConnectionDirection.Both, wholeInterval ? 0 : offset, 200);
+        return new(start, end, search.Text.Trim(), country.Text.Trim().ToUpperInvariant(), direction.SelectedItem is ConnectionDirection value ? value : ConnectionDirection.Both, 0, 200);
     }
-    private void FiltersChanged(bool resetCursor = true) { if (syncing) return; StopPlayback(); selectedKey=null; offset = 0; if (resetCursor) { syncing = true; cursor.Value = 0; syncing = false; } if (IsHistory) RequestHistory(); else ApplyLive(live); }
+    private void FiltersChanged(bool resetCursor = true) { if (syncing) return; StopPlayback(); ClearSelection(); if (resetCursor) { syncing = true; cursor.Value = 0; syncing = false; } if (IsHistory) RequestHistory(); else ApplyLive(live); }
     private void CancelHistory() { generation++; queryCancellation?.Cancel(); queryCancellation?.Dispose(); queryCancellation = null; pending = null; historyMinuteReady=false; UpdateMapAnimation(); }
     private static bool SameHistoryContext(ConnectionHistoryQuery left,ConnectionHistoryQuery right)=>
         left.From==right.From&&left.To==right.To&&left.Direction==right.Direction&&
@@ -161,8 +200,11 @@ internal sealed class ConnectionsPage : Grid
     private void RequestHistory()
     {
         CancelHistory(); var query=BuildQuery();
-        // Old ranks are useful across pages of the same result, never across changed filters/minutes.
-        if(query is null||displayedHistoryQuery is { } displayed&&!SameHistoryContext(displayed,query))displayedHistoryQuery=null;
+        if(query is null || displayedHistoryQuery is null || !SameHistoryContext(displayedHistoryQuery,query))
+        {
+            displayedHistoryQuery=null; rows=[];
+            selectedKey=null; map.SetData([],null,true,"Reading saved history…"); RefreshMappedConnections(); summary.Text="History · Reading saved observations…";
+        }
         if(query is null){StopPlayback();return;}
         queryCancellation=new();pending=query;_=PumpHistoryAsync();
     }
@@ -180,54 +222,83 @@ internal sealed class ConnectionsPage : Grid
         }
         finally { busy = false; }
     }
-    private void MovePage(int delta) { if (delta < 0 && offset == 0 || delta > 0 && offset + 200 >= totalRows) return; offset = Math.Max(0, offset + delta); if (IsHistory) RequestHistory(); else ApplyLive(live); }
-    private void TogglePlayback() { if (playing) { StopPlayback(); return; } if (!IsHistory || !TryInterval(out _, out _)) return; syncing = true; minute.IsChecked = true; syncing = false; offset = 0; playing = true; play.Content = "Pause"; UpdateMapAnimation(); RequestHistory(); playback.Start(); }
+    private void TogglePlayback() { if (playing) { StopPlayback(); return; } if (!IsHistory || !TryInterval(out _, out _)) return; syncing = true; minute.IsChecked = true; syncing = false; playing = true; play.Content = "Pause"; UpdateMapAnimation(); RequestHistory(); playback.Start(); }
     private void StopPlayback() { playing = false; playback.Stop(); play.Content = "Play"; UpdateMapAnimation(); }
-    private void AdvancePlayback() { if (!playing || !IsHistory) { StopPlayback(); return; } if (busy || pending is not null) return; if (cursor.Value >= cursor.Maximum) { StopPlayback(); return; } syncing = true; cursor.Value++; syncing = false; offset = 0; RequestHistory(); }
+    private void AdvancePlayback() { if (!playing || !IsHistory) { StopPlayback(); return; } if (busy || pending is not null) return; if (cursor.Value >= cursor.Maximum) { StopPlayback(); return; } syncing = true; cursor.Value++; syncing = false; RequestHistory(); }
     internal void ApplyLive(ConnectionLiveView view)
     {
-        live = view; var filtered = view.Connections.Where(c => Matches(c.Traffic.Peer.Process, c.Traffic.Peer.RemoteAddress, c.Location, c.Traffic.ReceivedBytes, c.Traffic.SentBytes)).ToArray(); totalRows = filtered.Length; offset = Math.Min(offset, Math.Max(0, ((filtered.Length - 1) / 200) * 200));
-        rows = filtered.Skip(offset).Take(200).Select(c => new PeerRow(Key(c.Traffic.Peer), $"{c.Traffic.Peer.Process.Name} / {c.Traffic.Peer.Process.Pid}", Endpoint(c.Traffic.Peer.RemoteAddress,c.Traffic.Peer.RemotePort,c.Traffic.Peer.Protocol), Location(c.Traffic.Peer.RemoteAddress, c.Location), Ui.Bytes(view.Available ? c.Traffic.DownloadBytesPerSecond : null, true), Ui.Bytes(view.Available ? c.Traffic.UploadBytesPerSecond : null, true), Ui.Bytes(c.Traffic.ReceivedBytes), Ui.Bytes(c.Traffic.SentBytes), view.Complete ? "Observed" : "Incomplete", $"First {c.Traffic.FirstSeen.ToLocalTime():g} · Last {c.Traffic.LastSeen.ToLocalTime():g}", c.Location?.Point, view.Origin, c.Traffic.ReceivedBytes, c.Traffic.SentBytes)).ToArray();
+        live = view; var filtered = view.Connections.Where(c => Matches(c.Traffic.Peer.Process, c.Traffic.Peer.RemoteAddress, c.Location, c.Traffic.ReceivedBytes, c.Traffic.SentBytes)).ToArray();
+        rows = filtered.Where(c => c.Location?.Point is not null).Select(c => new PeerRow(Key(c.Traffic.Peer), $"{c.Traffic.Peer.Process.Name} / {c.Traffic.Peer.Process.Pid}", Endpoint(c.Traffic.Peer.RemoteAddress,c.Traffic.Peer.RemotePort,c.Traffic.Peer.Protocol), Location(c.Traffic.Peer.RemoteAddress, c.Location), Ui.Bytes(view.Available ? c.Traffic.DownloadBytesPerSecond : null, true), Ui.Bytes(view.Available ? c.Traffic.UploadBytesPerSecond : null, true), Ui.Bytes(c.Traffic.ReceivedBytes), Ui.Bytes(c.Traffic.SentBytes), view.Complete ? "Observed" : "Incomplete", $"First {c.Traffic.FirstSeen.ToLocalTime():g} · Last {c.Traffic.LastSeen.ToLocalTime():g}", c.Location?.Point, view.Origin, c.Traffic.ReceivedBytes, c.Traffic.SentBytes)).ToArray();
         long received = 0, sent = 0; foreach (var item in filtered) { received = Add(received, item.Traffic.ReceivedBytes); sent = Add(sent, item.Traffic.SentBytes); }
         int local = filtered.Where(c => Kind(c.Traffic.Peer.RemoteAddress) == NetworkAddressKind.Local).Select(c => c.Traffic.Peer.RemoteAddress).Distinct().Count(); int unlocated = filtered.Where(c => Kind(c.Traffic.Peer.RemoteAddress) == NetworkAddressKind.Public && c.Location?.Point is null).Select(c => c.Traffic.Peer.RemoteAddress).Distinct().Count();
         summary.Text = $"Live · {filtered.Select(c => c.Traffic.Peer.RemoteAddress).Distinct().Count()} destinations · {filtered.Select(c=>c.Location?.CountryCode).Where(c=>!string.IsNullOrEmpty(c)).Distinct(StringComparer.OrdinalIgnoreCase).Count()} countries · {local} local · {unlocated} unlocated · ↓ {Ui.Bytes(received)} received / ↑ {Ui.Bytes(sent)} sent (totals for active peers since first observed)"; capture.Text = $"{view.Status}{(!view.Complete ? " · Incomplete capture" : "")} · Current observed rates; geography approximate; curves illustrative.";
-        BindRows(); map.SetData(filtered.Where(c => c.Location?.Point is not null).Select(c => new ConnectionMapPoint(Key(c.Traffic.Peer), c.Location!.Point!, c.Traffic.ReceivedBytes, c.Traffic.SentBytes, selectedKey == Key(c.Traffic.Peer),view.Available&&c.Traffic.DownloadBytesPerSecond>0,view.Available&&c.Traffic.UploadBytesPerSecond>0)).ToArray(), view.Origin, view.Available, view.Status); UpdateMapAnimation(); RefreshPager();
+        map.SetData(filtered.Where(c => c.Location?.Point is not null).Select(c => new ConnectionMapPoint(Key(c.Traffic.Peer), c.Location!.Point!, c.Traffic.ReceivedBytes, c.Traffic.SentBytes, selectedKey == Key(c.Traffic.Peer),view.Available&&c.Traffic.DownloadBytesPerSecond>0,view.Available&&c.Traffic.UploadBytesPerSecond>0)).ToArray(), view.Origin, view.Available, view.Status); UpdateMapAnimation(); RefreshMappedConnections(); UpdateExportEnabled(); range.IsEnabled = IsHistory;
     }
     internal void ApplyHistory(ConnectionHistoryView view)
     {
         displayedHistoryQuery=view.Query;
         historyMinuteReady=view.Query.To-view.Query.From<=TimeSpan.FromMinutes(1);
-        historyMarkers=view.Markers.Where(m=>m.Representative is not null).ToDictionary(m=>Key(m.Representative!),StringComparer.Ordinal);
-        totalRows = view.TotalRows; offset = view.Query.Offset; rows = view.Rows.Select(r => new PeerRow(Key(r), $"{r.Process.Name} / {r.Process.Pid}", Endpoint(r.RemoteAddress,r.RemotePort,r.Protocol), Location(r.RemoteAddress, r.Location), Ui.Bytes(r.DownloadBytesPerSecond, true), Ui.Bytes(r.UploadBytesPerSecond, true), Ui.Bytes(r.ReceivedBytes), Ui.Bytes(r.SentBytes), r.Complete ? "Recorded" : "Incomplete", $"First {r.FirstSeen.ToLocalTime():g} · Last {r.LastSeen.ToLocalTime():g}", r.Location?.Point, r.Origin, r.ReceivedBytes, r.SentBytes)).ToArray(); var s = view.Summary;
+        rows = view.Markers.Select(m => m.Representative ?? view.Rows.FirstOrDefault(r => r.Location == m.Location && r.Origin == m.Origin)).OfType<ConnectionHistoryRow>().DistinctBy(Key).Select(r => new PeerRow(Key(r), $"{r.Process.Name} / {r.Process.Pid}", Endpoint(r.RemoteAddress,r.RemotePort,r.Protocol), Location(r.RemoteAddress, r.Location), Ui.Bytes(r.DownloadBytesPerSecond, true), Ui.Bytes(r.UploadBytesPerSecond, true), Ui.Bytes(r.ReceivedBytes), Ui.Bytes(r.SentBytes), r.Complete ? "Recorded" : "Incomplete", $"First {r.FirstSeen.ToLocalTime():g} · Last {r.LastSeen.ToLocalTime():g}", r.Location?.Point, r.Origin, r.ReceivedBytes, r.SentBytes)).ToArray(); var s = view.Summary;
         summary.Text = $"History · minute-bucket average rates · {s.Destinations} destinations · {s.Countries} countries · {s.Local} local · {s.Unlocated} unlocated · ↓ {Ui.Bytes(s.ReceivedBytes)} received / ↑ {Ui.Bytes(s.SentBytes)} sent"; capture.Text = $"{view.Query.From.ToLocalTime():g} – {view.Query.To.ToLocalTime():g} (exclusive) · {view.Gaps.Count} gaps · {view.Status}"+(view.OmittedMarkers>0?$" · {view.OmittedMarkers:N0} grouped locations omitted from map":""); historyStorage = $"{Ui.Bytes(view.StorageBytes)} stored · Earliest {(view.EarliestRetainedTime is { } earliest ? earliest.ToLocalTime().ToString("g") : "none")} · rolling 30 days / 256 MiB. "; storage.Text = historyStorage + session.Connections?.StorageStatus;
-        BindRows(); map.SetData(view.Markers.Where(m => m.Location.Point is not null).Select(m => new ConnectionMapPoint(m.Representative is not null?Key(m.Representative):view.Rows.FirstOrDefault(r=>r.Location==m.Location&&r.Origin==m.Origin) is { } representative?Key(representative):"saved:"+JsonSerializer.Serialize(new {m.Location,m.Origin}), m.Location.Point!, m.ReceivedBytes, m.SentBytes, false)).ToArray(), CommonOrigin(view.Markers), true, "Saved approximate geography · illustrative curves"+(view.OmittedMarkers>0?$" · +{view.OmittedMarkers:N0} grouped locations omitted":""));
-        if(IsHistory&&table.SelectedItem is not null){RefreshSelection();table.ScrollIntoView(table.SelectedItem);}
-        UpdateMapAnimation();
-        RefreshPager();
+        map.SetData(view.Markers.Where(m => m.Location.Point is not null).Select(m => new ConnectionMapPoint(m.Representative is not null?Key(m.Representative):view.Rows.FirstOrDefault(r=>r.Location==m.Location&&r.Origin==m.Origin) is { } representative?Key(representative):"saved:"+JsonSerializer.Serialize(new {m.Location,m.Origin}), m.Location.Point!, m.ReceivedBytes, m.SentBytes, selectedKey == (m.Representative is not null ? Key(m.Representative) : null))).ToArray(), CommonOrigin(view.Markers), true, "Saved approximate geography · illustrative curves"+(view.OmittedMarkers>0?$" · +{view.OmittedMarkers:N0} grouped locations omitted":""));
+        UpdateMapAnimation(); RefreshMappedConnections(); UpdateExportEnabled(); range.IsEnabled = IsHistory;
     }
-    private void BindRows() { syncing = true; table.ItemsSource = rows; table.SelectedItem = rows.FirstOrDefault(r => r.Key == selectedKey); syncing = false; selection.Text = table.SelectedItem is PeerRow row ? Description(row) : rows.Count == 0 ? "No observations match this interval and filter. Gaps remain empty." : "Select a peer to highlight its saved / approximate location."; selection.ToolTip = selection.Text; }
-    private void RefreshPager() { pages.Text = $"{(totalRows == 0 ? 0 : offset + 1)}–{Math.Min(offset + 200, totalRows)} of {totalRows:N0} rows · 200 per page"; previous.IsEnabled = offset > 0; next.IsEnabled = offset + 200 < totalRows; UpdateExportEnabled(); range.IsEnabled = IsHistory; }
     private static string Description(PeerRow row) => $"{row.Application} · {row.Endpoint} · {row.Location} · {row.Coverage} · {row.Seen}";
     private void UpdateExportEnabled()=>export.IsEnabled=IsHistory&&!exportInProgress;
+    private void ClearSelection()
+    {
+        selectedKey=null; nodeDetails.Visibility=Visibility.Collapsed; nodeText.Text="";
+        syncing=true; mappedConnections.SelectedItem=null; syncing=false;
+        map.SelectPoint(null);
+        RefreshMappedConnections();
+    }
     private void SelectMapPeer(string key)
     {
-        if(IsHistory&&displayedHistoryQuery is null)return;
-        if(IsHistory&&historyMarkers.TryGetValue(key,out var marker)&&!rows.Any(r=>r.Key==key))
-        {
-            if(marker.RowIndex>int.MaxValue){selection.Text="This saved group exceeds the table paging range; refine filters.";return;}
-            selectedKey=key;offset=(int)(marker.RowIndex/200*200);RequestHistory();return;
-        }
-        if (!IsHistory)
-        {
-            var matching = live.Connections.Where(c => Matches(c.Traffic.Peer.Process, c.Traffic.Peer.RemoteAddress, c.Location, c.Traffic.ReceivedBytes, c.Traffic.SentBytes)).ToArray();
-            int index = Array.FindIndex(matching, c => Key(c.Traffic.Peer) == key);
-            if (index >= 0) { selectedKey = key; offset = index / 200 * 200; ApplyLive(live); }
-        }
-        var row = rows.FirstOrDefault(r => r.Key == key);
-        if (row is not null) { table.SelectedItem = row; table.ScrollIntoView(row); RefreshSelection(); }
-        else selection.Text = "Grouped location outside this table page; refine filters or change pages to inspect its peers.";
+        if(IsHistory&&displayedHistoryQuery is null || map.PointPosition(key) is null)return;
+        if(!rows.Any(r=>r.Key==key))return;
+        selectedKey=key;
+        map.SelectPoint(key);
+        RefreshMappedConnections();
     }
-    private void RefreshSelection() { var selected = table.SelectedItem as PeerRow; if (selected is null) return; selection.Text = Description(selected); selection.ToolTip = selection.Text; if (IsHistory && selected.Point is { } point) map.SetData([new(selected.Key, point, selected.ReceivedBytes, selected.SentBytes, true)], selected.Origin, true, "Saved location / origin · illustrative curve"); else if (IsHistory) map.SetData([], null, true, "Selected peer has no saved geographic point."); else ApplyLive(live); }
+    private void RefreshMappedConnections()
+    {
+        var visible=map.DisplayedPoints.Where(p=>map.PointPosition(p.Key) is not null).OrderBy(p=>p.Key,StringComparer.Ordinal).ToArray();
+        var peers=rows.ToDictionary(r=>r.Key,StringComparer.Ordinal);
+        var items=visible.Where(p=>peers.ContainsKey(p.Key)).Select(p=>
+        {
+            var row=peers[p.Key];
+            return new MapRow(p.Key,$"{row.Location} · {row.Application} · ↓ {Ui.Bytes(p.ReceivedBytes)} / ↑ {Ui.Bytes(p.SentBytes)}");
+        }).ToArray();
+        // Preserve item containers, focus and scrolling while live traffic labels change.
+        syncing=true;
+        var wanted=items.Select(r=>r.Key).ToHashSet(StringComparer.Ordinal);
+        for(int i=mappedRows.Count-1;i>=0;i--)if(!wanted.Contains(mappedRows[i].Key))mappedRows.RemoveAt(i);
+        var existing=mappedRows.ToDictionary(r=>r.Key,StringComparer.Ordinal);
+        for(int i=0;i<items.Length;i++)
+        {
+            if(existing.TryGetValue(items[i].Key,out var retained))
+            {
+                retained.Update(items[i].Label);int oldIndex=mappedRows.IndexOf(retained);
+                if(oldIndex!=i)mappedRows.Move(oldIndex,i);
+            }
+            else mappedRows.Insert(i,items[i]);
+        }
+        mappedConnections.SelectedItem=mappedRows.FirstOrDefault(r=>r.Key==selectedKey);syncing=false;
+        mappedStatus.Text=$"{(IsHistory?"History":"Live")} · {items.Length} visible map nodes · location totals; click for connection details";
+        selection.Text=items.Length==0?"No located connections in this map view. Rotate the globe, change filters or download locations.":"Select a node or listed connection to see its details beside the node.";
+        selection.ToolTip=selection.Text;
+        if(selectedKey is not null && !map.DisplayedPoints.Any(p=>p.Key==selectedKey))selectedKey=null;
+        if(selectedKey is null || !peers.TryGetValue(selectedKey,out var selected) || map.PointPosition(selectedKey) is not Point anchor)
+        {nodeDetails.Visibility=Visibility.Collapsed;nodeText.Text="";return;}
+        var point=visible.First(p=>p.Key==selectedKey);
+        nodeText.Text=$"{(IsHistory?"Historical connection (saved minute)":"Live connection")}\n{selected.Application}\n{selected.Endpoint}\n{selected.Location}\n↓ {selected.Download}   ↑ {selected.Upload}\nReceived {selected.Received} · Sent {selected.Sent}\n{selected.Coverage} · {selected.Seen}\nLocation total: ↓ {Ui.Bytes(point.ReceivedBytes)} / ↑ {Ui.Bytes(point.SentBytes)}\nRepresentative connection at this grouped location.";
+        selection.Text=Description(selected); selection.ToolTip=selection.Text;
+        nodeDetails.Width=Math.Min(320,Math.Max(1,map.ActualWidth-16)); nodeDetails.Visibility=Visibility.Visible;
+        nodeDetails.Measure(new(nodeDetails.Width,double.PositiveInfinity));
+        double x=anchor.X+12;if(x+nodeDetails.Width>map.ActualWidth-8)x=anchor.X-nodeDetails.Width-12;
+        Canvas.SetLeft(nodeDetails,Math.Clamp(x,8,Math.Max(8,map.ActualWidth-nodeDetails.Width-8)));
+        Canvas.SetTop(nodeDetails,Math.Clamp(anchor.Y-20,8,Math.Max(8,map.ActualHeight-nodeDetails.DesiredSize.Height-8)));
+    }
     private bool Matches(ProcessIdentity process, string address, ConnectionLocation? location, long received, long sent) => (search.Text.Length == 0 || $"{process.Name} {process.Pid} {address}".Contains(search.Text, StringComparison.OrdinalIgnoreCase)) && (string.IsNullOrWhiteSpace(country.Text) || string.Equals(location?.CountryCode, country.Text.Trim(), StringComparison.OrdinalIgnoreCase)) && (direction.SelectedItem is not ConnectionDirection selected || selected == ConnectionDirection.Both || selected == ConnectionDirection.Received && received > 0 || selected == ConnectionDirection.Sent && sent > 0);
     private static string Key(ConnectionPeer peer) => "live:"+JsonSerializer.Serialize(peer);
     private static string Endpoint(string address,int port,ConnectionProtocol protocol)=>$"{(IPAddress.TryParse(address,out var ip)&&ip.AddressFamily==System.Net.Sockets.AddressFamily.InterNetworkV6?$"[{address}]":address)}:{port} {protocol}";

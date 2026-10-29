@@ -50,6 +50,26 @@ public sealed class ConnectionMap : FrameworkElement
     public bool IsAnimating => subscribed;
     public MapCamera Camera => camera;
     public int DisplayedPointCount => points.Count;
+    public IReadOnlyList<ConnectionMapPoint> DisplayedPoints => points;
+    public void SelectPoint(string? key)
+    {
+        points=Array.AsReadOnly(points.Select(p=>p with {Selected=p.Key==key}).ToArray());
+        routesDirty=true; InvalidateVisual();
+    }
+    public event Action? ViewChanged;
+    public Point? PointPosition(string key)
+    {
+        var point = points.FirstOrDefault(p => p.Key == key);
+        if (point is null || ActualWidth < 20 || ActualHeight < 60) return null;
+        var projected = ConnectionProjection.Project(point.Point, camera);
+        var pixel = Pixel(projected);
+        return projected.Visible && MapBounds.Contains(pixel) ? pixel : null;
+    }
+    protected override void OnRenderSizeChanged(SizeChangedInfo sizeInfo)
+    {
+        base.OnRenderSizeChanged(sizeInfo);
+        ViewChanged?.Invoke();
+    }
     public int OverflowCount { get; private set; }
     public string StatusSummary => $"{points.Count} locations{(OverflowCount > 0 ? $" · +{OverflowCount} omitted" : "")}" +
         (origin is null ? " · Unknown origin" : " · Approximate locations") +
@@ -78,6 +98,7 @@ public sealed class ConnectionMap : FrameworkElement
     private void ChangeCamera(MapCamera next)
     {
         camera = ConnectionProjection.Normalize(next); routesDirty = true; InvalidateVisual();
+        ViewChanged?.Invoke();
     }
 
     private void UpdateAnimation()
