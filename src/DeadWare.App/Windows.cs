@@ -299,12 +299,12 @@ internal sealed class WidgetWindow : Window
         bool showMap=session.Settings.WidgetConnectionsMap;
         MinHeight=WidgetGraphSelection.MinimumHeight(count,showMap);Ui.Icon(this);session.Place(this,"widget",340,WidgetGraphSelection.DefaultHeight(count,showMap));
         var grid=new Grid {Margin=new Thickness(8)};grid.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});
-        cards.RowDefinitions.Add(new() {Height=new GridLength(0)});
         foreach(string kind in WidgetGraphSelection.Kinds)
         {
             int row=cards.RowDefinitions.Count;cards.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});
             var graph=new WidgetGraph(session,kind);graphs.Add(kind,graph);Grid.SetRow(graph,row);cards.Children.Add(graph);
         }
+        cards.RowDefinitions.Add(new() {Height=new GridLength(0)});
         scroll.Content=cards;
         var area=new Grid();area.Children.Add(scroll);empty.TextAlignment=TextAlignment.Center;empty.HorizontalAlignment=HorizontalAlignment.Center;empty.VerticalAlignment=VerticalAlignment.Center;empty.Margin=new(12);area.Children.Add(empty);grid.Children.Add(area);
         Content=grid;
@@ -323,10 +323,11 @@ internal sealed class WidgetWindow : Window
             var before=minimum>MinHeight?NativePlacement.CaptureNormal(this):null;
             if(showMap)NativePlacement.SetScrollableMinimumHeight(this,minimum,session.Settings.Windows.GetValueOrDefault("widget"));
             else {NativePlacement.ClearScrollableMinimumHeight(this);MinHeight=minimum;}
-            if(showMap&&connections is null) {connections=new ConnectionsWidget(session);cards.Children.Add(connections);}
+            if(showMap&&connections is null) {connections=new ConnectionsWidget(session);Grid.SetRow(connections,cards.RowDefinitions.Count-1);cards.Children.Add(connections);}
             if(connections is not null)connections.Visibility=showMap?Visibility.Visible:Visibility.Collapsed;
-            cards.RowDefinitions[0].Height=new GridLength(showMap?150:0);
-            scroll.VerticalScrollBarVisibility=showMap?ScrollBarVisibility.Auto:ScrollBarVisibility.Disabled;
+            bool mapOnly=showMap&&selected.Count==0;
+            cards.RowDefinitions[cards.RowDefinitions.Count-1].Height=mapOnly?new GridLength(1,GridUnitType.Star):new GridLength(showMap?150:0);
+            scroll.VerticalScrollBarVisibility=showMap&&!mapOnly?ScrollBarVisibility.Auto:ScrollBarVisibility.Disabled;
             foreach(var graph in graphs)
             {
                 bool visible=selected.Contains(graph.Key);
