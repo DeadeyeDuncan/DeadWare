@@ -56,6 +56,7 @@ public class BatteryUiTests
                     color.Value = "#151B24";
                 app.Resources = (ResourceDictionary)XamlReader.Parse(dictionary.ToString());
                 ConnectionMapUiChecks.Run(app);
+                ConnectionsPageUiChecks.Run(app);
                 var assembly = typeof(Collector).Assembly;
                 var pageType = assembly.GetType("DeadWare.App.BatteryHistoryPage"); Assert.NotNull(pageType);
                 var session = (UiSession)RuntimeHelpers.GetUninitializedObject(typeof(UiSession));
@@ -187,6 +188,7 @@ public class BatteryUiTests
                 Set(collector, "latest", null!);
                 var lifetime = new ApplicationLifetime();
                 var dashboard = new MainWindow(session, lifetime, () => true, () => { });
+                ConnectionsPageUiChecks.CheckNavigation(dashboard);
                 var shell = (Grid)dashboard.Content;
                 var sidebar = (DockPanel)shell.Children[0];
                 var navigation = (StackPanel)sidebar.Children.OfType<ScrollViewer>().Single().Content;
