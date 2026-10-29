@@ -43,6 +43,7 @@ internal sealed class ConnectionsPage : Grid
     private readonly DispatcherTimer playback = new() { Interval = TimeSpan.FromSeconds(1) };
     private CancellationTokenSource? queryCancellation, downloadCancellation;
     private ConnectionHistoryQuery? pending;
+    private ConnectionHistoryQuery? displayedHistoryQuery;
     private ConnectionLiveView live = new(default, [], null, false, false, "Waiting for endpoint capture.");
     private IReadOnlyList<PeerRow> rows = [];
     private IReadOnlyDictionary<string,ConnectionHistoryMarker> historyMarkers = new Dictionary<string,ConnectionHistoryMarker>();
@@ -128,7 +129,7 @@ internal sealed class ConnectionsPage : Grid
         }
         else if (!IsHistory) ApplyLive(live);
     }
-    private void ChangeMode() { CancelHistory(); StopPlayback(); offset = 0; historical.Visibility = IsHistory ? Visibility.Visible : Visibility.Collapsed; range.IsEnabled = IsHistory; UpdateExportEnabled(); if (IsHistory) RequestHistory(); else ApplyLive(live); }
+    private void ChangeMode() { CancelHistory(); displayedHistoryQuery=null; StopPlayback(); offset = 0; historical.Visibility = IsHistory ? Visibility.Visible : Visibility.Collapsed; range.IsEnabled = IsHistory; UpdateExportEnabled(); if (IsHistory) RequestHistory(); else ApplyLive(live); }
     private void SetPreset()
     { int days = range.SelectedIndex switch { 1 => 7, 2 => 30, _ => 1 }; from.Text = DateTime.Today.AddDays(1 - days).ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture); to.Text = DateTime.Today.AddDays(1).ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture); syncing = true; cursor.Value = 0; syncing = false; }
     private bool TryInterval(out DateTimeOffset start, out DateTimeOffset end)
@@ -154,7 +155,17 @@ internal sealed class ConnectionsPage : Grid
     }
     private void FiltersChanged(bool resetCursor = true) { if (syncing) return; StopPlayback(); selectedKey=null; offset = 0; if (resetCursor) { syncing = true; cursor.Value = 0; syncing = false; } if (IsHistory) RequestHistory(); else ApplyLive(live); }
     private void CancelHistory() { generation++; queryCancellation?.Cancel(); queryCancellation?.Dispose(); queryCancellation = null; pending = null; historyMinuteReady=false; UpdateMapAnimation(); }
-    private void RequestHistory() { CancelHistory(); var query = BuildQuery(); if (query is null) { StopPlayback(); return; } queryCancellation = new(); pending = query; _ = PumpHistoryAsync(); }
+    private static bool SameHistoryContext(ConnectionHistoryQuery left,ConnectionHistoryQuery right)=>
+        left.From==right.From&&left.To==right.To&&left.Direction==right.Direction&&
+        string.Equals(left.Search,right.Search,StringComparison.OrdinalIgnoreCase)&&string.Equals(left.CountryCode,right.CountryCode,StringComparison.OrdinalIgnoreCase);
+    private void RequestHistory()
+    {
+        CancelHistory(); var query=BuildQuery();
+        // Old ranks are useful across pages of the same result, never across changed filters/minutes.
+        if(query is null||displayedHistoryQuery is { } displayed&&!SameHistoryContext(displayed,query))displayedHistoryQuery=null;
+        if(query is null){StopPlayback();return;}
+        queryCancellation=new();pending=query;_=PumpHistoryAsync();
+    }
     private async Task PumpHistoryAsync()
     {
         if (busy) return; busy = true;
@@ -184,6 +195,7 @@ internal sealed class ConnectionsPage : Grid
     }
     internal void ApplyHistory(ConnectionHistoryView view)
     {
+        displayedHistoryQuery=view.Query;
         historyMinuteReady=view.Query.To-view.Query.From<=TimeSpan.FromMinutes(1);
         historyMarkers=view.Markers.Where(m=>m.Representative is not null).ToDictionary(m=>Key(m.Representative!),StringComparer.Ordinal);
         totalRows = view.TotalRows; offset = view.Query.Offset; rows = view.Rows.Select(r => new PeerRow(Key(r), $"{r.Process.Name} / {r.Process.Pid}", Endpoint(r.RemoteAddress,r.RemotePort,r.Protocol), Location(r.RemoteAddress, r.Location), Ui.Bytes(r.DownloadBytesPerSecond, true), Ui.Bytes(r.UploadBytesPerSecond, true), Ui.Bytes(r.ReceivedBytes), Ui.Bytes(r.SentBytes), r.Complete ? "Recorded" : "Incomplete", $"First {r.FirstSeen.ToLocalTime():g} · Last {r.LastSeen.ToLocalTime():g}", r.Location?.Point, r.Origin, r.ReceivedBytes, r.SentBytes)).ToArray(); var s = view.Summary;
@@ -199,6 +211,7 @@ internal sealed class ConnectionsPage : Grid
     private void UpdateExportEnabled()=>export.IsEnabled=IsHistory&&!exportInProgress;
     private void SelectMapPeer(string key)
     {
+        if(IsHistory&&displayedHistoryQuery is null)return;
         if(IsHistory&&historyMarkers.TryGetValue(key,out var marker)&&!rows.Any(r=>r.Key==key))
         {
             if(marker.RowIndex>int.MaxValue){selection.Text="This saved group exceeds the table paging range; refine filters.";return;}

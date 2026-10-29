@@ -109,6 +109,26 @@ internal static class ConnectionsPageUiChecks
             points=(IReadOnlyList<ConnectionMapPoint>)typeof(ConnectionMap).GetField("points",All)!.GetValue(map)!;select(points.Single(p=>p.Point==place.Point).Key);
             Assert.NotNull(requested);Field<TextBox>(page,"search").Text="no peer matches";pending.SetResult(store.Read(requested!));Pump();
             Assert.Null(table.SelectedItem);Assert.Empty(table.Items);Assert.DoesNotContain("Saved Tokyo",Field<TextBlock>(page,"selection").Text);
+
+            // Opposite ordering: a changed filter owns page zero before an old map click arrives.
+            PageType.GetField("readHistory",All)!.SetValue(page,(Func<ConnectionHistoryQuery,Task<ConnectionHistoryView>>)(q=>Task.FromResult(store.Read(q))));
+            Field<TextBox>(page,"search").Text="";Pump();
+            points=(IReadOnlyList<ConnectionMapPoint>)typeof(ConnectionMap).GetField("points",All)!.GetValue(map)!;string oldKey=points.Single(p=>p.Point==place.Point).Key;
+            var filteredReply=new TaskCompletionSource<ConnectionHistoryView>();var filteredRequests=new List<ConnectionHistoryQuery>();
+            PageType.GetField("readHistory",All)!.SetValue(page,(Func<ConnectionHistoryQuery,Task<ConnectionHistoryView>>)(q=>{filteredRequests.Add(q);return filteredRequests.Count==1?filteredReply.Task:Task.FromResult(store.Read(q));}));
+            Field<TextBox>(page,"search").Text="peer 200";Assert.Single(filteredRequests);Assert.Equal(0,filteredRequests[0].Offset);
+            select(oldKey);filteredReply.SetResult(store.Read(filteredRequests[0]));Pump();
+            Assert.Single(filteredRequests);Assert.Single(table.Items.Cast<object>());Assert.Contains("Peer 200 /",table.Items[0].ToString());
+            Assert.Contains("1–1 of 1 rows",Field<TextBlock>(page,"pages").Text);Assert.Null(table.SelectedItem);
+
+            // A pending page in the same filter still permits selection of its saved representative.
+            PageType.GetField("readHistory",All)!.SetValue(page,(Func<ConnectionHistoryQuery,Task<ConnectionHistoryView>>)(q=>Task.FromResult(store.Read(q))));
+            Field<TextBox>(page,"search").Text="";Pump();
+            var pageReply=new TaskCompletionSource<ConnectionHistoryView>();var pageRequests=new List<ConnectionHistoryQuery>();
+            PageType.GetField("readHistory",All)!.SetValue(page,(Func<ConnectionHistoryQuery,Task<ConnectionHistoryView>>)(q=>{pageRequests.Add(q);return pageRequests.Count==1?pageReply.Task:Task.FromResult(store.Read(q));}));
+            Click(page,"next");select(oldKey);pageReply.SetResult(store.Read(pageRequests[0]));Pump();
+            Assert.Equal(2,pageRequests.Count);Assert.All(pageRequests,q=>Assert.Equal(200,q.Offset));
+            Assert.NotNull(table.SelectedItem);Assert.Contains("Peer 0 /",table.SelectedItem.ToString());
         }
         finally{if(Directory.Exists(root))Directory.Delete(root,true);}
     }
