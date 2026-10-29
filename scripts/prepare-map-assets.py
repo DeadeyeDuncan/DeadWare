@@ -10,14 +10,17 @@ HASHES = {
     "ne_110m_land": "9e0729ee253ca7d7a5c4ae9395fb1902264c5377c52e224d13dd85010e2835d9",
     "ne_110m_admin_0_boundary_lines_land": "d42479fd79552cca4eec7f85fcdca717a790d29ff06be7676f1af0568c6d3f7c",
     "ne_10m_populated_places_simple": "fd3fa867a320cbd5c5b6bb5bc550afeec2939fb2cef688e508007282a55ac42f",
+    "ne_50m_admin_1_states_provinces_lines": "72cca93c850d412628a5da4bc5ebfe21ba4d376eb34611bde6b623ee73f0fdcf",
+    "ne_10m_admin_1_states_provinces_lines": "1a1f30ccaaf4cc9c4bde34266f0b8cbb955d3a4cf254b756912255f2ec7c75b6",
 }
 OUTPUT = Path(__file__).resolve().parents[1] / "assets" / "maps"
 
 
 def source(name):
+    limit = 24_000_000 if name == "ne_10m_admin_1_states_provinces_lines" else 10_000_000
     with urlopen(BASE + name + ".geojson", timeout=60) as response:
-        data = response.read(10_000_001)
-    if len(data) > 10_000_000 or hashlib.sha256(data).hexdigest() != HASHES[name]:
+        data = response.read(limit + 1)
+    if len(data) > limit or hashlib.sha256(data).hexdigest() != HASHES[name]:
         raise ValueError(f"Source size/hash mismatch: {name}")
     return json.loads(data)["features"]
 
@@ -55,6 +58,25 @@ def main():
                     path.append(pair)
             if len(path) >= 2:
                 borders.append(path)
+    # Retain the 50m coverage elsewhere; use detailed US/Canada/Mexico boundaries.
+    features = [f for f in source("ne_50m_admin_1_states_provinces_lines") if f["properties"]["ADM0_A3"] not in ("USA", "CAN")]
+    features += [f for f in source("ne_10m_admin_1_states_provinces_lines") if f["properties"]["ADM0_A3"] in ("USA", "CAN", "MEX")]
+    states = []
+    for feature in features:
+        geometry = feature["geometry"]
+        if geometry["type"] not in ("LineString", "MultiLineString"):
+            raise ValueError("Unexpected state boundary geometry")
+        lines = [geometry["coordinates"]] if geometry["type"] == "LineString" else geometry["coordinates"]
+        for line in lines:
+            path = []
+            for longitude, latitude in line:
+                pair = [round(longitude, 2), round(latitude, 2)]
+                if not path or pair != path[-1]:
+                    path.append(pair)
+            if len(path) >= 2:
+                states.append(path)
+    if len(states) > 4096 or sum(map(len, states)) > 32768:
+        raise ValueError("State boundaries exceed runtime geometry limits")
     cities = []
     for feature in source("ne_10m_populated_places_simple"):
         props = feature["properties"]
@@ -63,8 +85,9 @@ def main():
                        "latitude": round(lat, 4), "longitude": round(lon, 4)})
     write("land.json", rings)
     write("borders.json", borders)
+    write("states.json", states)
     write("cities.json", sorted(cities, key=lambda city: (city["country"], city["name"], city["id"])))
-    print(f"Wrote {len(rings)} land rings, {len(borders)} country boundaries and {len(cities)} cities from Natural Earth v5.1.2 ({REVISION}).")
+    print(f"Wrote {len(rings)} land rings, {len(borders)} country boundaries, {len(states)} state/province paths and {len(cities)} cities from Natural Earth v5.1.2 ({REVISION}).")
 
 
 if __name__ == "__main__":

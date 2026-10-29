@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.6.26
+
+- Replace straight dashed connection overlays with DeadEye-style breathing oscilloscope waves. Download and upload keep their colors and travel in opposite directions; Animate pauses wave motion.
+- Halve connection-dot sizes in the widget and reduce its home marker and traveling highlights.
+- Fade in state and province borders as you zoom into either map, including US states, Canadian provinces and Mexican states. The widget's NA view shows these details automatically.
+- Bundle regional border data for offline use and cache projected geometry between camera changes.
+
 ## 0.6.25 — Fine connection lines and country borders
 
 - Restyle connection arcs with fine layered filaments, restrained glow and a brighter selected connection, inspired by DeadEye's node links.

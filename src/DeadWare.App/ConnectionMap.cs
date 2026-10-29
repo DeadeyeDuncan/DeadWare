@@ -21,13 +21,13 @@ public sealed class ConnectionMap : FrameworkElement
     private double phase;
     private Size cachedSize;
     private MapCamera? cachedCamera;
-    private StreamGeometry? coast, borders, grid;
-    private sealed record Route(ConnectionMapPoint Data,StreamGeometry? Arc,MapCoordinate[] Samples,Point[][] Segments,double Radius,double Width,double Seed)
+    private StreamGeometry? coast, borders, stateBorders, grid;
+    private sealed record Route(ConnectionMapPoint Data,MapCoordinate[] Samples,Point[][] Segments,double Radius,double Width,double Seed)
     {
         public double StrandTime { get; set; } = double.NaN;
         public StreamGeometry[] Strands { get; set; } = [];
     }
-    private readonly Dictionary<(Brush Brush,double Width,bool Dashed),Pen> pens = [];
+    private readonly Dictionary<(Brush Brush,double Width),Pen> pens = [];
     private readonly List<Route> routes = [];
     private readonly List<(Point Center, string Key)> hitPoints = [];
     private bool routesDirty = true;
@@ -155,6 +155,7 @@ public sealed class ConnectionMap : FrameworkElement
         {
             cachedSize = RenderSize; cachedCamera = camera;
             coast = Geometry(ConnectionAssets.Land); borders = Geometry(ConnectionAssets.Borders); grid = Geometry(Graticules()); routesDirty = true;
+            stateBorders = camera.Zoom > 1.25 ? Geometry(ConnectionAssets.StateBorders) : null;
         }
         if (!routesDirty) return;
         routes.Clear();
@@ -164,7 +165,7 @@ public sealed class ConnectionMap : FrameworkElement
             var samples = origin is null ? Array.Empty<GeoPoint>() : ConnectionProjection.GreatCircle(origin, point.Point);
             double relative=maximum>0?Math.Log(1+(double)point.ReceivedBytes+point.SentBytes)/Math.Log(1+maximum):0;
             uint seed=2166136261;foreach(char c in point.Key)seed=unchecked((seed^c)*16777619);
-            routes.Add(new(point,samples.Count>0?Geometry([samples]):null,samples.Select(p=>ConnectionProjection.Project(p,camera)).ToArray(),
+            routes.Add(new(point,samples.Select(p=>ConnectionProjection.Project(p,camera)).ToArray(),
                 ConnectionProjection.ProjectPath(samples,camera).Select(s=>s.Select(Pixel).ToArray()).ToArray(),3+relative*3,.6+Math.Round(relative*4)*.15,seed%1000/100d));
         }
         routesDirty = false;
@@ -182,51 +183,47 @@ public sealed class ConnectionMap : FrameworkElement
         x=a.X+(x-a.X)*progress;
         if(Flat){if(x>camera.Zoom)x-=2*camera.Zoom;else if(x< -camera.Zoom)x+=2*camera.Zoom;}
         var center=Pixel(new(x,a.Y+(b.Y-a.Y)*progress,1,true));
-        dc.DrawEllipse(brush,null,center,1.5,1.5);
+        double radius=MapOnly?1:1.5;dc.DrawEllipse(brush,null,center,radius,radius);
     }
-    private Pen Stroke(Brush brush, double width, bool dashed = false)
+    private Pen Stroke(Brush brush, double width)
     {
-        var key=(brush,width,dashed);if(pens.TryGetValue(key,out var cached))return cached;
-        var pen = new Pen(brush, width) {StartLineCap=PenLineCap.Round,EndLineCap=PenLineCap.Round,LineJoin=PenLineJoin.Round}; if (dashed) pen.DashStyle = DashStyles.Dash;
+        var key=(brush,width);if(pens.TryGetValue(key,out var cached))return cached;
+        var pen = new Pen(brush, width) {StartLineCap=PenLineCap.Round,EndLineCap=PenLineCap.Round,LineJoin=PenLineJoin.Round};
         if (pen.CanFreeze) pen.Freeze();if(pens.Count>=128)pens.Clear();pens[key]=pen;return pen;
     }
     private void DrawConnection(DrawingContext dc,Route route,Brush download,Brush upload,Brush ink)
     {
-        if(route.Arc is null)return;
+        if(route.Samples.Length==0)return;
         bool active=available&&(route.Data.ReceiveActive&&route.Data.ReceivedBytes>0||route.Data.SendActive&&route.Data.SentBytes>0);
         bool selected=route.Data.Selected;
-        Brush tint=route.Data.ReceivedBytes>0?download:upload;
-        // Thin colored paths carry direction; the near-white filaments carry selection.
-        dc.PushOpacity(selected?.13:active?.07:.025);
-        dc.DrawGeometry(null,Stroke(selected?ink:tint,route.Width+2.4),route.Arc);dc.Pop();
-        dc.PushOpacity(selected?.6:active?.55:.28);
-        if(route.Data.ReceivedBytes>0)dc.DrawGeometry(null,Stroke(download,route.Width),route.Arc);
-        if(route.Data.SentBytes>0)dc.DrawGeometry(null,Stroke(upload,route.Width,true),route.Arc);
-        dc.Pop();
-        // A small, screen-space strand bundle; geography and seam/horizon clipping stay cached.
-        double time=subscribed&&active?Math.Floor(phase*10)/10:0;
+        // DeadEye Lantern's breathing oscilloscope wave, in screen pixels along the geographic arc.
+        // Direction colors and opposite wave travel replace the straight solid/dashed overlay.
+        double time=subscribed&&active?Math.Floor(phase*30)/30:0;
         if(route.StrandTime!=time)
         {
             route.StrandTime=time;var strands=new List<StreamGeometry>();
-            int count=MapOnly||routes.Count>96?2:3;
+            const int count=2;
             for(int strand=0;strand<count;strand++)
             {
+                double waveTime=(strand==0?route.Data.ReceiveActive:route.Data.SendActive)?time:0;
                 var geometry=new StreamGeometry();using(var context=geometry.Open())
                 foreach(var segment in route.Segments)
                 {
                     double length=0;for(int i=1;i<segment.Length;i++)length+=(segment[i]-segment[i-1]).Length;
-                    if(length<12)continue;
-                    double amplitude=Math.Clamp(length*.012,.7,MapOnly?2.1:4);
+                    if(length<.001)continue;
+                    double amplitude=Math.Min(3.4,length*.08)*(active?1:.45);
+                    double cycles=Math.Clamp(length/24,2,10);
                     double distance=0;
                     for(int i=0;i<segment.Length;i++)
                     {
                         if(i>0)distance+=(segment[i]-segment[i-1]).Length;
                         double u=distance/length;
                         var tangent=segment[Math.Min(i+1,segment.Length-1)]-segment[Math.Max(0,i-1)];
-                        double seed=route.Seed+strand*5.7;
-                        double noise=(Math.Sin(u*5.1+seed*3.7+time*.21)+.55*Math.Sin(u*11.7+seed*9.1-time*.13)+.28*Math.Sin(u*23.3+seed*17.3+time*.34))/1.83;
-                        double spread=(strand-(count-1)/2d)*.65;
-                        double offset=amplitude*(spread+noise*.55)*Math.Pow(Math.Max(0,Math.Sin(Math.PI*u)),.75);
+                        double seed=route.Seed+strand*.5;
+                        double x=u*Math.Tau*cycles*.6+(strand==0?1:-1)*waveTime/0.520+seed*6;
+                        double cycle=x/Math.Tau-Math.Floor(x/Math.Tau);
+                        double wave=(int)route.Seed%2==0?Math.Sin(x):cycle<.5?4*cycle-1:3-4*cycle;
+                        double offset=amplitude*wave*(.72+.28*Math.Sin(waveTime/.9+seed*3))*Math.Sin(Math.PI*u);
                         var position=segment[i]+(tangent.Length>0?new Vector(-tangent.Y,tangent.X)/tangent.Length*offset:new Vector());
                         if(i==0)context.BeginFigure(position,false,false);else context.LineTo(position,true,false);
                     }
@@ -237,9 +234,16 @@ public sealed class ConnectionMap : FrameworkElement
         }
         for(int i=0;i<route.Strands.Length;i++)
         {
-            dc.PushOpacity(selected?(i==0?.88:.55):active?.24:.09);
-            Brush brush=selected?ink:route.Data.SentBytes>0&&i%2==1?upload:tint;
-            dc.DrawGeometry(null,Stroke(brush,i==0?.65:.45),route.Strands[i]);dc.Pop();
+            if(i==0&&route.Data.ReceivedBytes==0&&route.Data.SentBytes>0||i==1&&route.Data.SentBytes==0)continue;
+            Brush brush=i==0?download:upload;
+            dc.PushOpacity(selected?.20:active?.13:.04);
+            dc.DrawGeometry(null,Stroke(brush,route.Width+2),route.Strands[i]);dc.Pop();
+            dc.PushOpacity(selected?.85:active?.72:.30);
+            dc.DrawGeometry(null,Stroke(brush,route.Width),route.Strands[i]);dc.Pop();
+            if(selected)
+            {
+                dc.PushOpacity(.65);dc.DrawGeometry(null,Stroke(ink,.45),route.Strands[i]);dc.Pop();
+            }
         }
         if(route.Data.ReceiveActive&&route.Data.ReceivedBytes>0)DrawFlow(dc,route,download,true);
         if(route.Data.SendActive&&route.Data.SentBytes>0)DrawFlow(dc,route,upload,false);
@@ -261,7 +265,11 @@ public sealed class ConnectionMap : FrameworkElement
         var ink = Theme.Brush("Ink"); var muted = Theme.Brush("Muted");
         var download = Theme.Brush(Theme.GraphKey("download")); var upload = Theme.Brush(Theme.GraphKey("upload"));
         dc.DrawRectangle(Theme.Brush("Background"), null, new Rect(RenderSize));
-        if (!MapOnly) Text(dc, "↓ Download —   ↑ Upload ┄", new(8, 2), ActualWidth - 16, 17, muted);
+        if (!MapOnly)
+        {
+            Text(dc, "↓ Download ∿", new(8, 2), Math.Min(115, ActualWidth / 2 - 8), 17, download);
+            Text(dc, "↑ Upload ∿", new(Math.Min(131, ActualWidth / 2), 2), ActualWidth / 2 - 8, 17, upload);
+        }
         EnsureGeometry(); hitPoints.Clear();
         dc.PushClip(new RectangleGeometry(bounds));
         Geometry clip;
@@ -279,6 +287,11 @@ public sealed class ConnectionMap : FrameworkElement
         dc.DrawGeometry(Theme.Brush("Panel"), Stroke(Theme.Brush("Line"), 1), clip);
         dc.PushClip(clip);
         dc.DrawGeometry(null, Stroke(Theme.Brush("Line"), .6), grid);
+        if(stateBorders is not null)
+        {
+            dc.PushOpacity(.48*Math.Clamp((camera.Zoom-1.25)/1.25,0,1));
+            dc.DrawGeometry(null,Stroke(muted,.5),stateBorders);dc.Pop();
+        }
         dc.PushOpacity(.55);dc.DrawGeometry(null,Stroke(muted,.65),borders);dc.Pop();
         // Open coastlines avoid an invented closing chord across the horizon or seam.
         dc.DrawGeometry(null, Stroke(muted, 1), coast);
@@ -289,9 +302,10 @@ public sealed class ConnectionMap : FrameworkElement
             if (!projected.Visible) continue;
             var center = Pixel(projected); if (!bounds.Contains(center)) continue;
             hitPoints.Add((center, route.Data.Key));
-            double radius = route.Radius+(route.Data.Selected?1.5:0);
-            if(subscribed&&(route.Data.ReceiveActive||route.Data.SendActive))radius+=.25*Math.Sin(phase*2);
-            dc.DrawEllipse(route.Data.ReceivedBytes > 0 ? download : upload, Stroke(ink, route.Data.Selected ? 1.5 : .7), center, radius, radius);
+            double scale=MapOnly?.5:1;
+            double radius = (route.Radius+(route.Data.Selected?1.5:0))*scale;
+            if(subscribed&&(route.Data.ReceiveActive||route.Data.SendActive))radius+=.25*scale*Math.Sin(phase*2);
+            dc.DrawEllipse(route.Data.ReceivedBytes > 0 ? download : upload, Stroke(ink, (route.Data.Selected ? 1.5 : .7)*scale), center, radius, radius);
         }
         if (origin is not null)
         {
@@ -299,9 +313,10 @@ public sealed class ConnectionMap : FrameworkElement
             if (projected.Visible)
             {
                 var center = Pixel(projected);
-                dc.DrawEllipse(Theme.Brush("Panel"), Stroke(ink, 1.3), center, 4, 4);
-                dc.DrawLine(Stroke(ink, 1), new(center.X - 6, center.Y), new(center.X + 6, center.Y));
-                dc.DrawLine(Stroke(ink, 1), new(center.X, center.Y - 6), new(center.X, center.Y + 6));
+                double radius=MapOnly?2.5:4,arm=MapOnly?4:6;
+                dc.DrawEllipse(Theme.Brush("Panel"), Stroke(ink, MapOnly?.8:1.3), center, radius, radius);
+                dc.DrawLine(Stroke(ink, 1), new(center.X - arm, center.Y), new(center.X + arm, center.Y));
+                dc.DrawLine(Stroke(ink, 1), new(center.X, center.Y - arm), new(center.X, center.Y + arm));
             }
         }
         dc.Pop(); dc.Pop();

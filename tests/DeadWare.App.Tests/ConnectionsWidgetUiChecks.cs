@@ -124,7 +124,7 @@ internal static class ConnectionsWidgetUiChecks
             Point[] Centers()
             {
                 Layout(widget,284,150);
-                var centers=Drawings(VisualTreeHelper.GetDrawing(map)!).Where(d=>d.Geometry is EllipseGeometry e&&e.RadiusX==6).Select(d=>((EllipseGeometry)d.Geometry).Center).ToArray();
+                var centers=Drawings(VisualTreeHelper.GetDrawing(map)!).Where(d=>d.Geometry is EllipseGeometry e&&e.RadiusX==3).Select(d=>((EllipseGeometry)d.Geometry).Center).ToArray();
                 Assert.Equal(points.Length,centers.Length);
                 return centers;
             }
