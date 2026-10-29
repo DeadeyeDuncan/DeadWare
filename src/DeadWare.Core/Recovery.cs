@@ -7,17 +7,20 @@ public sealed class ProcessAttribution(Func<int,ProcessIdentity?> resolve)
     private readonly Dictionary<int,ProcessIdentity> identities=new();
     private ProcessLedger ledger=new();
     private long observedLoss;
-    public bool Record(int pid,long eventTime,int down,int up)
+    public bool Record(int pid,long eventTime,int down,int up,out ProcessIdentity? acceptedIdentity)
     {
+        acceptedIdentity=null;
         if(pid<0||down<0||up<0)return false;
         lock(gate)
         {
             if(!identities.ContainsKey(pid)) Refresh(pid);
             if(!identities.TryGetValue(pid,out var identity)||eventTime<identity.Generation)return false;
             ledger.Add(pid,identity.Generation,down,up);
+            acceptedIdentity=identity;
             return true;
         }
     }
+    public bool Record(int pid,long eventTime,int down,int up)=>Record(pid,eventTime,down,up,out _);
     public bool ObserveLoss(long cumulativeCount)
     {
         lock(gate)
