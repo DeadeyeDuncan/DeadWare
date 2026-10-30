@@ -48,7 +48,7 @@ internal static class ConnectionsWidgetUiChecks
             var owner=new Window {Content=widget};
             using var source=new OffscreenSource(widget);Pump();
             var map=Assert.Single(widget.Children.OfType<ConnectionMap>());
-            Assert.False(map.IsHitTestVisible);Assert.False(map.Focusable);
+            Assert.True(map.IsHitTestVisible);Assert.True(map.Focusable);
             foreach(string name in new[]{"Midnight","Ember","Glacier","Amethyst","Neon","Daylight"})
             foreach(var size in new[]{new Size(600,150),new Size(600,300),new Size(300,171)})
             {
@@ -72,8 +72,8 @@ internal static class ConnectionsWidgetUiChecks
                 Assert.True(widget.IsLoaded);Assert.True(map.IsAnimating);
                 widget.Visibility=Visibility.Collapsed;Assert.False(map.IsAnimating);
                 widget.Visibility=Visibility.Visible;widget.Refresh();Assert.True(map.IsAnimating);
-                service.TryRecord(new ConnectionSample(Epoch,0,2,"fixture",[traffic with {DownloadBytesPerSecond=0,UploadBytesPerSecond=0}],[],null,true,true,0,0,0,"Quiet fixture"));widget.Refresh();Assert.False(map.IsAnimating);Assert.Equal(1,map.DisplayedPointCount);
-                service.TryRecord(new ConnectionSample(Epoch,0,3,"fixture",[traffic],[],null,false,false,0,0,0,"Stopped capture"));widget.Refresh();Assert.False(map.IsAnimating);
+                service.TryRecord(new ConnectionSample(Epoch,0,2,"fixture",[traffic with {DownloadBytesPerSecond=0,UploadBytesPerSecond=0}],[],null,true,true,0,0,0,"Quiet fixture"));widget.Refresh();Assert.True(map.IsAnimating);Assert.Equal(1,map.DisplayedPointCount);
+                service.TryRecord(new ConnectionSample(Epoch,0,3,"fixture",[traffic],[],null,false,false,0,0,0,"Stopped capture"));widget.Refresh();Assert.True(map.IsAnimating);
                 session.Settings.ConnectionsAnimation=false;widget.Refresh();Assert.False(map.IsAnimating);
             }
             owner.Close();
@@ -117,7 +117,7 @@ internal static class ConnectionsWidgetUiChecks
             var button=Assert.Single(widget.Children.OfType<Button>());
             Assert.Equal("NA",button.Content);Assert.True(button.Focusable);Assert.True(KeyboardNavigation.GetIsTabStop(button));
             Assert.Contains("North America",AutomationProperties.GetName(button));Assert.Contains("North America",button.ToolTip!.ToString());
-            Assert.False(map.IsHitTestVisible);Assert.False(map.Focusable);
+            Assert.True(map.IsHitTestVisible);Assert.True(map.Focusable);
             Assert.Equal(1,map.Camera.Zoom);
             var mainPage=new ConnectionsPage(session);var mainMap=(ConnectionMap)typeof(ConnectionsPage).GetField("map",All)!.GetValue(mainPage)!;var mainCamera=mainMap.Camera;
             GeoPoint[] points=RegionalResolver.Cities;
@@ -175,6 +175,23 @@ internal static class ConnectionsWidgetUiChecks
             Assert.Contains("World",Assert.Single(restored.Children.OfType<Button>()).ToolTip!.ToString());
             button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));Assert.False(Region(session.Settings));Assert.Equal(1,map.Camera.Zoom);Assert.Equal(0,map.Camera.Latitude);
             Assert.False(Region(ReadSavedSettings(session,path)));
+            // The real routed handlers own zoom/pan; refresh must not recenter either mode.
+            foreach(bool northAmerica in new[]{false,true})
+            {
+                session.SetWidgetConnectionsNorthAmerica(northAmerica);widget.Refresh();
+                var preset=map.Camera;
+                var wheel=new MouseWheelEventArgs(Mouse.PrimaryDevice,0,120){RoutedEvent=Mouse.MouseWheelEvent};
+                map.RaiseEvent(wheel);Assert.True(wheel.Handled);Assert.True(map.Camera.Zoom>preset.Zoom);
+                var pan=new KeyEventArgs(Keyboard.PrimaryDevice,PresentationSource.FromVisual(map)!,0,Key.Right){RoutedEvent=Keyboard.KeyDownEvent};
+                map.RaiseEvent(pan);Assert.True(pan.Handled);Assert.NotEqual(preset.Longitude,map.Camera.Longitude);
+                var custom=map.Camera;
+                Publish(northAmerica?4:3);widget.Refresh();Assert.Equal(custom,map.Camera);
+                session.SetConnectionsHomeCity(northAmerica?london.Id:null);widget.Refresh();Assert.Equal(custom,map.Camera);
+                widget.Visibility=Visibility.Collapsed;widget.Visibility=Visibility.Visible;widget.Refresh();Assert.Equal(custom,map.Camera);
+                var home=new KeyEventArgs(Keyboard.PrimaryDevice,PresentationSource.FromVisual(map)!,0,Key.Home){RoutedEvent=Keyboard.PreviewKeyDownEvent};
+                map.RaiseEvent(home);Assert.True(home.Handled);Assert.Equal(northAmerica?2.5:1,map.Camera.Zoom);
+                if(northAmerica){Assert.Equal(43,map.Camera.Latitude);Assert.Equal(-103,map.Camera.Longitude);}
+            }
             Assert.Equal(mainCamera,mainMap.Camera);
         }
         finally {owner?.Close();service.StopAsync().GetAwaiter().GetResult();Theme.Apply("Midnight");if(Directory.Exists(directory))Directory.Delete(directory,true);}
@@ -207,8 +224,8 @@ internal static class ConnectionsWidgetUiChecks
         var bounds=Bounds(button,widget);Assert.InRange(bounds.Width,28,40);Assert.InRange(bounds.Height,22,30);
         Assert.InRange(bounds.Right,widget.ActualWidth-10,widget.ActualWidth-3);Assert.InRange(bounds.Top,3,10);
         Assert.InRange(bounds.Bottom,0,widget.ActualHeight);
-        Assert.Same(button,Assert.Single(widget.Children.OfType<UIElement>(),e=>e.IsHitTestVisible));
-        Assert.Null(widget.InputHitTest(new Point(10,widget.ActualHeight-10)));
+        Assert.All(widget.Children.OfType<UIElement>(),e=>Assert.True(e.IsHitTestVisible));
+        Assert.IsType<ConnectionMap>(widget.InputHitTest(new Point(10,widget.ActualHeight-10)));
         Assert.Contains(Elements(button),e=>ReferenceEquals(e,widget.InputHitTest(new Point(bounds.Left+bounds.Width/2,bounds.Top+bounds.Height/2))));
         FocusManager.SetIsFocusScope(widget,true);FocusManager.SetFocusedElement(widget,button);
         Assert.Same(button,FocusManager.GetFocusedElement(widget));
@@ -412,7 +429,7 @@ internal static class ConnectionsWidgetUiChecks
             typeof(UiSession).GetField("<Connections>k__BackingField",All)!.SetValue(session,service);
             var widget=new ConnectionsWidget(session);
             var map=Assert.Single(widget.Children.OfType<ConnectionMap>());
-            Assert.Null(widget.ToolTip);Assert.Null(map.ToolTip);
+            Assert.Null(widget.ToolTip);Assert.Contains("Drag to move",map.ToolTip!.ToString());
             Assert.True(map.Flat);
             Assert.Equal(0,map.Camera.Latitude);
             Assert.False(map.AnimationEnabled);

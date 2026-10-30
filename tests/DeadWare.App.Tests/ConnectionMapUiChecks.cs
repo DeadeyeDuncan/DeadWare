@@ -70,6 +70,7 @@ internal static class ConnectionMapUiChecks
         CheckDirectionalFlowAndVolume();
         CheckFineConnectionLayers();
         CheckStateBordersAndWidgetMarkers();
+        CheckActivityFade();
     }
 
     private static void CheckMapOnlyPresentationSwitch()
@@ -176,6 +177,42 @@ internal static class ConnectionMapUiChecks
         double full=Marker(main);map.MapOnly=true;
         var compact=Draw(new(600,300),"oscilloscope-widget");Assert.Equal(full/2,Marker(compact));
         map.SelectPoint(null);var unselected=Draw(new(300,171),"oscilloscope-widget-small");Assert.InRange(Marker(unselected),1.5,3);
+    }
+
+    private static void CheckActivityFade()
+    {
+        static IEnumerable<(GeometryDrawing Shape,double Alpha)> Shapes(Drawing drawing,double alpha=1)=>drawing is GeometryDrawing shape?[(shape,alpha)]:drawing is DrawingGroup group?group.Children.SelectMany(d=>Shapes(d,alpha*group.Opacity)):[];
+        foreach(bool widget in new[]{false,true})
+        {
+            var map=new ConnectionMap {Flat=true,MapOnly=widget};
+            var peer=new ConnectionMapPoint("fade",new(0,60),100,100,false);
+            map.SetData([peer],new(0,-60),true,"Active");
+            using var source=new OffscreenSource(map);map.RaiseEvent(new RoutedEventArgs(FrameworkElement.LoadedEvent));
+            var phase=typeof(ConnectionMap).GetField("phase",BindingFlags.Instance|BindingFlags.NonPublic)!;
+            (string Path,double Alpha) Shape(double time,string direction="download")
+            {
+                phase.SetValue(map,time);map.InvalidateVisual();Render(map,new(600,300),$"activity-{widget}-{time}");
+                var wave=Assert.Single(Shapes(VisualTreeHelper.GetDrawing(map)!),s=>s.Shape.Geometry is StreamGeometry&&s.Shape.Pen?.Brush==Theme.Brush(Theme.GraphKey(direction))&&s.Shape.Pen.Thickness==1.2);
+                return (wave.Shape.Geometry.ToString(),wave.Alpha);
+            }
+            // Turning quiet must retain the animation subscription long enough to ease out.
+            var active=Shape(1);map.SetData([peer with {ReceiveActive=false,SendActive=false}],new(0,-60),true,"Quiet");
+            Assert.True(map.IsAnimating);
+            Assert.Equal(active,Shape(1));
+            var fading=Shape(1.4);Assert.True(map.IsAnimating);Assert.InRange(fading.Alpha,.38,.56);
+            map.SetData([peer],new(0,-60),true,"Brief burst");Assert.Equal(fading,Shape(1.4));
+            Assert.True(Shape(1.5).Alpha>fading.Alpha);
+            map.SetData([peer with {ReceiveActive=false,SendActive=false}],new(0,-60),true,"Quiet refresh");
+            var stopped=Shape(5);Assert.False(map.IsAnimating);Assert.Equal(.30,stopped.Alpha,10);Assert.Equal(stopped,Shape(6));
+            map.SetData([peer],new(0,-60),true,"Active again");Shape(7);
+            map.SetData([peer with {ReceiveActive=false}],new(0,-60),true,"Only upload active");
+            var download=Shape(11);var upload=Shape(11,"upload");Assert.True(map.IsAnimating);
+            Assert.Equal(download,Shape(12));Assert.NotEqual(upload.Path,Shape(12,"upload").Path);
+            map.AnimationEnabled=false;var paused=Shape(12,"upload");Assert.False(map.IsAnimating);Assert.Equal(paused,Shape(20,"upload"));
+            map.SetData([],null,true,"Empty");Assert.False(map.IsAnimating);
+            Assert.Empty((System.Collections.IDictionary)typeof(ConnectionMap).GetField("activity",BindingFlags.Instance|BindingFlags.NonPublic)!.GetValue(map)!);
+            map.RaiseEvent(new RoutedEventArgs(FrameworkElement.UnloadedEvent));
+        }
     }
 
     private static void CheckDenseMapRendering()

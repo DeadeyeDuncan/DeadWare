@@ -19,12 +19,15 @@ public sealed class ConnectionMap : FrameworkElement
     private bool dragged;
     private TimeSpan lastFrame;
     private double phase;
+    private double motionPhase;
+    private sealed record Activity(ConnectionMotion Download, ConnectionMotion Upload);
+    private readonly Dictionary<(string Key,GeoPoint Point),Activity> activity = [];
     private Size cachedSize;
     private MapCamera? cachedCamera;
     private StreamGeometry? coast, borders, stateBorders, grid;
-    private sealed record Route(ConnectionMapPoint Data,MapCoordinate[] Samples,Point[][] Segments,double Radius,double Width,double Seed)
+    private sealed record Route(ConnectionMapPoint Data,MapCoordinate[] Samples,Point[][] Segments,double Radius,double Width,double Seed,Activity Activity)
     {
-        public double StrandTime { get; set; } = double.NaN;
+        public (double DownloadTime,double UploadTime,double DownloadLevel,double UploadLevel)? StrandState { get; set; }
         public StreamGeometry[] Strands { get; set; } = [];
     }
     private readonly Dictionary<(Brush Brush,double Width),Pen> pens = [];
@@ -84,10 +87,22 @@ public sealed class ConnectionMap : FrameworkElement
 
     public void SetData(IReadOnlyList<ConnectionMapPoint> points, GeoPoint? origin, bool available, string status)
     {
+        StepMotion();
         var grouped = ConnectionProjection.Group(points);
         this.points = grouped.Points; OverflowCount = grouped.Overflow;
-        this.origin = origin is not null && ConnectionProjection.IsValid(origin) ? origin : null;
+        var nextOrigin = origin is not null && ConnectionProjection.IsValid(origin) ? origin : null;
+        if(this.origin!=nextOrigin)activity.Clear();
+        this.origin = nextOrigin;
         this.available = available; this.status = status.Length > 240 ? status[..240] : status;
+        var keys=this.points.Select(p=>(p.Key,p.Point)).ToHashSet();
+        foreach(var key in activity.Keys.Where(k=>!keys.Contains(k)).ToArray())activity.Remove(key);
+        foreach(var point in this.points)
+        {
+            var key=(point.Key,point.Point);
+            bool receive=available&&point.ReceiveActive&&point.ReceivedBytes>0,send=available&&point.SendActive&&point.SentBytes>0;
+            if(!activity.TryGetValue(key,out var state))activity[key]=state=new(new(receive),new(send));
+            state.Download.Active=receive;state.Upload.Active=send;
+        }
         routesDirty = true;
         UpdateAnimation();
         AutomationProperties.SetName(this, "Connections map. " + StatusSummary);
@@ -108,7 +123,7 @@ public sealed class ConnectionMap : FrameworkElement
 
     private void UpdateAnimation()
     {
-        bool animate = loaded && IsVisible && enabled && available && points.Any(p=>p.ReceiveActive&&p.ReceivedBytes>0||p.SendActive&&p.SentBytes>0);
+        bool animate = loaded && IsVisible && enabled && activity.Values.Any(a=>a.Download.Moving||a.Upload.Moving);
         if (animate == subscribed) return;
         subscribed = animate;
         if (animate) { lastFrame = TimeSpan.Zero; CompositionTarget.Rendering += Animate; }
@@ -117,7 +132,15 @@ public sealed class ConnectionMap : FrameworkElement
     private void Animate(object? sender, EventArgs args)
     {
         if (args is not RenderingEventArgs frame || frame.RenderingTime - lastFrame < TimeSpan.FromSeconds(1d / 30)) return;
-        lastFrame = frame.RenderingTime; phase = frame.RenderingTime.TotalSeconds; InvalidateVisual();
+        // No wall-clock jump when a hidden/paused map resumes.
+        double elapsed=lastFrame==TimeSpan.Zero?0:Math.Clamp((frame.RenderingTime-lastFrame).TotalSeconds,0,.1);
+        lastFrame = frame.RenderingTime; phase += elapsed; StepMotion(); UpdateAnimation(); InvalidateVisual();
+    }
+    private void StepMotion()
+    {
+        double elapsed=Math.Max(0,phase-motionPhase);motionPhase=phase;
+        if(!subscribed)return;
+        foreach(var state in activity.Values){state.Download.Advance(elapsed);state.Upload.Advance(elapsed);}
     }
 
     private Rect MapBounds => MapOnly ? new(3, 3, Math.Max(1, ActualWidth - 6), Math.Max(1, ActualHeight - 6)) :
@@ -166,14 +189,16 @@ public sealed class ConnectionMap : FrameworkElement
             double relative=maximum>0?Math.Log(1+(double)point.ReceivedBytes+point.SentBytes)/Math.Log(1+maximum):0;
             uint seed=2166136261;foreach(char c in point.Key)seed=unchecked((seed^c)*16777619);
             routes.Add(new(point,samples.Select(p=>ConnectionProjection.Project(p,camera)).ToArray(),
-                ConnectionProjection.ProjectPath(samples,camera).Select(s=>s.Select(Pixel).ToArray()).ToArray(),3+relative*3,.6+Math.Round(relative*4)*.15,seed%1000/100d));
+                ConnectionProjection.ProjectPath(samples,camera).Select(s=>s.Select(Pixel).ToArray()).ToArray(),3+relative*3,.6+Math.Round(relative*4)*.15,seed%1000/100d,activity[(point.Key,point.Point)]));
         }
         routesDirty = false;
     }
     private void DrawFlow(DrawingContext dc,Route route,Brush brush,bool received)
     {
         if(!subscribed||route.Samples.Length<2)return;
-        double fraction=(phase/3)%1;if(fraction<0)fraction+=1;if(received)fraction=1-fraction;
+        var motion=received?route.Activity.Download:route.Activity.Upload;
+        if(motion.Level<=0)return;
+        double fraction=(motion.Time/3)%1;if(fraction<0)fraction+=1;if(received)fraction=1-fraction;
         double position=fraction*(route.Samples.Length-1);int index=Math.Min(route.Samples.Length-2,(int)position);
         var a=route.Samples[index];var b=route.Samples[index+1];
         // Never interpolate a highlight through the rear hemisphere or across the flat seam.
@@ -183,7 +208,7 @@ public sealed class ConnectionMap : FrameworkElement
         x=a.X+(x-a.X)*progress;
         if(Flat){if(x>camera.Zoom)x-=2*camera.Zoom;else if(x< -camera.Zoom)x+=2*camera.Zoom;}
         var center=Pixel(new(x,a.Y+(b.Y-a.Y)*progress,1,true));
-        double radius=MapOnly?1:1.5;dc.DrawEllipse(brush,null,center,radius,radius);
+        double radius=MapOnly?1:1.5;dc.PushOpacity(motion.Level);dc.DrawEllipse(brush,null,center,radius,radius);dc.Pop();
     }
     private Pen Stroke(Brush brush, double width)
     {
@@ -194,24 +219,25 @@ public sealed class ConnectionMap : FrameworkElement
     private void DrawConnection(DrawingContext dc,Route route,Brush download,Brush upload,Brush ink)
     {
         if(route.Samples.Length==0)return;
-        bool active=available&&(route.Data.ReceiveActive&&route.Data.ReceivedBytes>0||route.Data.SendActive&&route.Data.SentBytes>0);
         bool selected=route.Data.Selected;
         // DeadEye Lantern's breathing oscilloscope wave, in screen pixels along the geographic arc.
         // Direction colors and opposite wave travel replace the straight solid/dashed overlay.
-        double time=subscribed&&active?Math.Floor(phase*30)/30:0;
-        if(route.StrandTime!=time)
+        var downloadMotion=route.Activity.Download;var uploadMotion=route.Activity.Upload;
+        var state=(Math.Floor(downloadMotion.Time*30)/30,Math.Floor(uploadMotion.Time*30)/30,downloadMotion.Level,uploadMotion.Level);
+        if(route.StrandState!=state)
         {
-            route.StrandTime=time;var strands=new List<StreamGeometry>();
+            route.StrandState=state;var strands=new List<StreamGeometry>();
             const int count=2;
             for(int strand=0;strand<count;strand++)
             {
-                double waveTime=(strand==0?route.Data.ReceiveActive:route.Data.SendActive)?time:0;
+                double waveTime=strand==0?state.Item1:state.Item2;
+                double level=strand==0?downloadMotion.Level:uploadMotion.Level;
                 var geometry=new StreamGeometry();using(var context=geometry.Open())
                 foreach(var segment in route.Segments)
                 {
                     double length=0;for(int i=1;i<segment.Length;i++)length+=(segment[i]-segment[i-1]).Length;
                     if(length<.001)continue;
-                    double amplitude=Math.Min(3.4,length*.08)*(active?1:.45);
+                    double amplitude=Math.Min(3.4,length*.08)*(.45+.55*level);
                     double cycles=Math.Clamp(length/24,2,10);
                     double distance=0;
                     for(int i=0;i<segment.Length;i++)
@@ -236,17 +262,18 @@ public sealed class ConnectionMap : FrameworkElement
         {
             if(i==0&&route.Data.ReceivedBytes==0&&route.Data.SentBytes>0||i==1&&route.Data.SentBytes==0)continue;
             Brush brush=i==0?download:upload;
-            dc.PushOpacity(selected?.20:active?.13:.04);
+            double level=i==0?downloadMotion.Level:uploadMotion.Level;
+            dc.PushOpacity(selected?.20:.04+.09*level);
             dc.DrawGeometry(null,Stroke(brush,route.Width+2),route.Strands[i]);dc.Pop();
-            dc.PushOpacity(selected?.85:active?.72:.30);
+            dc.PushOpacity(selected?.85:.30+.42*level);
             dc.DrawGeometry(null,Stroke(brush,route.Width),route.Strands[i]);dc.Pop();
             if(selected)
             {
                 dc.PushOpacity(.65);dc.DrawGeometry(null,Stroke(ink,.45),route.Strands[i]);dc.Pop();
             }
         }
-        if(route.Data.ReceiveActive&&route.Data.ReceivedBytes>0)DrawFlow(dc,route,download,true);
-        if(route.Data.SendActive&&route.Data.SentBytes>0)DrawFlow(dc,route,upload,false);
+        if(route.Data.ReceivedBytes>0)DrawFlow(dc,route,download,true);
+        if(route.Data.SentBytes>0)DrawFlow(dc,route,upload,false);
     }
     private void Text(DrawingContext dc, string text, Point at, double width, double height, Brush brush)
     {
@@ -270,7 +297,7 @@ public sealed class ConnectionMap : FrameworkElement
             Text(dc, "↓ Download ∿", new(8, 2), Math.Min(115, ActualWidth / 2 - 8), 17, download);
             Text(dc, "↑ Upload ∿", new(Math.Min(131, ActualWidth / 2), 2), ActualWidth / 2 - 8, 17, upload);
         }
-        EnsureGeometry(); hitPoints.Clear();
+        StepMotion();UpdateAnimation();EnsureGeometry(); hitPoints.Clear();
         dc.PushClip(new RectangleGeometry(bounds));
         Geometry clip;
         if (Flat)
@@ -304,7 +331,7 @@ public sealed class ConnectionMap : FrameworkElement
             hitPoints.Add((center, route.Data.Key));
             double scale=MapOnly?.5:1;
             double radius = (route.Radius+(route.Data.Selected?1.5:0))*scale;
-            if(subscribed&&(route.Data.ReceiveActive||route.Data.SendActive))radius+=.25*scale*Math.Sin(phase*2);
+            if(subscribed)radius+=.25*scale*Math.Max(route.Activity.Download.Level,route.Activity.Upload.Level)*Math.Sin(phase*2);
             dc.DrawEllipse(route.Data.ReceivedBytes > 0 ? download : upload, Stroke(ink, (route.Data.Selected ? 1.5 : .7)*scale), center, radius, radius);
         }
         if (origin is not null)

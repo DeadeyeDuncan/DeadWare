@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.27 — Gentler transitions and interactive widget maps
+
+- Ease active connection waves into idle: brightness, wave size and motion settle gradually instead of snapping. Returning traffic resumes smoothly from the current wave phase.
+- Enable drag-to-pan and mouse-wheel zoom in the widget's World and North America views. Arrow keys and +/− also work when the map has focus; Home resets the current region.
+- Keep the widget's custom view during live refreshes and Home-city changes, independently of the main map.
+
 ## 0.6.26
 
 - Replace straight dashed connection overlays with DeadEye-style breathing oscilloscope waves. Download and upload keep their colors and travel in opposite directions; Animate pauses wave motion.
