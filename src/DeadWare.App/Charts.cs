@@ -64,7 +64,7 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
     private readonly UiSession session=session;
     private readonly string kind=kind;
     public bool CompareDevices {get;init;}
-    private sealed record Query(SampleHistory History,string Primary,string? Secondary,string? Fan,int Seconds,int Columns);
+    private sealed record Query(SampleHistory History,string Primary,string? Secondary,string? Fan,int Seconds,int Columns,bool Smoothed);
     private sealed record ChartData(Query Query,Dictionary<string,IReadOnlyList<SamplePoint>> Series,Dictionary<string,IReadOnlyList<ChartRangePoint>> Ranges,Summary Statistics);
     public event Action<Summary>? StatisticsReady;
     private ChartData? prepared;
@@ -76,14 +76,21 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
         bool compare=CompareDevices&&kind is "cpu" or "cputemp";
         bool fan=session.Settings.ShowGpuFanSpeed&&(kind=="gputemp"||kind=="cputemp"&&compare);
         return new(session.Collector.History,session.MetricId(kind),kind=="network"?"network/upload":compare?session.MetricId(kind=="cpu"?"gpu":"gputemp"):null,
-            fan?session.MetricId("gpufan"):null,session.HistorySeconds,Math.Max(1,(int)ActualWidth-90));
+            fan?session.MetricId("gpufan"):null,session.HistorySeconds,Math.Max(1,(int)ActualWidth-90),session.Settings.GraphSmoothing&&session.HistorySeconds>=3600);
     }
     private static ChartData Prepare(Query query,double now)
     {
         var series=new Dictionary<string,IReadOnlyList<SamplePoint>>();var ranges=new Dictionary<string,IReadOnlyList<ChartRangePoint>>();
+        Summary rawStatistics=new(null,null,null);
         foreach(var metric in new[]{query.Primary,query.Secondary,query.Fan}.OfType<string>().Distinct())
         {
-            if(query.Seconds<3600)series[metric]=query.History.Series(metric,now,query.Seconds);
+            if(!query.Smoothed)
+            {
+                var raw=query.History.Series(metric,now,query.Seconds);
+                if(metric==query.Primary)rawStatistics=SampleHistory.Statistics(raw);
+                // Keep raw peaks/gaps while preparing dense traces off the UI thread too.
+                series[metric]=query.Seconds>=3600?SampleHistory.ReduceForChart(raw,now,query.Seconds,query.Columns):raw;
+            }
             else
             {
                 var values=query.History.ChartRanges(metric,now,query.Seconds,query.Columns);ranges[metric]=values;
@@ -96,7 +103,7 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
             long count=primary.Sum(p=>(long)p.Samples);
             summary=count==0?new(null,null,null):new(primary.Min(p=>p.Minimum),primary.Max(p=>p.Maximum),primary.Sum(p=>(p.Average??0)*(p.Samples/(double)count)));
         }
-        else summary=SampleHistory.Statistics(series[query.Primary]);
+        else summary=rawStatistics;
         return new(query,series,ranges,summary);
     }
     public void Refresh()
@@ -142,8 +149,8 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
         var axisLabel=Formatted("Now");
         var sample=session.Current?.Sample;
         double now=session.Collector.ElapsedSeconds;
-        bool averaged=session.HistorySeconds>=3600;
-        var query=CurrentQuery();if(prepared?.Query!=query){prepared=Prepare(query,now);StatisticsReady?.Invoke(prepared.Statistics);}
+        var query=CurrentQuery();bool averaged=query.Smoothed;
+        if(prepared?.Query!=query){prepared=Prepare(query,now);StatisticsReady?.Invoke(prepared.Statistics);}
         var bands=prepared.Ranges;
         IReadOnlyList<SamplePoint> Read(string metric)=>prepared.Series[metric];
         var points=Read(session.MetricId(kind));
@@ -175,7 +182,7 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
             }
         }
         double timeLabelY=h-axisLabel.Height-(compact?2:6);
-        Label(dc,$"{HistoryRanges.Label(session.HistorySeconds)} ago"+(averaged?" · avg + range":""),left,timeLabelY);Label(dc,"Now",left+pw-axisLabel.Width,timeLabelY);
+        Label(dc,$"{HistoryRanges.Label(session.HistorySeconds)} ago"+(averaged?" · avg + range":query.Seconds>=3600?" · raw":""),left,timeLabelY);Label(dc,"Now",left+pw-axisLabel.Width,timeLabelY);
         dc.PushClip(new RectangleGeometry(new Rect(left,top,pw,ph)));
         // Retained WPF transform scrolls the recorded trace between polls without rebuilding it each frame.
         var scroll=new TranslateTransform();
@@ -186,7 +193,7 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
         {
             double maximumValue=scale??maximum;
             if(bands.TryGetValue(metric,out var range))DrawRange(dc,range,now,maximumValue,left,top,pw,ph,color);
-            DrawSeries(dc,values,now,maximumValue,left,top,pw,ph,color,dashed,dotted,averaged);
+            DrawSeries(dc,values,now,maximumValue,left,top,pw,ph,color,dashed,dotted,query.Seconds>=3600);
         }
         Trace(points,session.MetricId(kind),Theme.GraphKey(kind),false);
         if(kind=="network")Trace(secondary,"network/upload",Theme.GraphKey("upload"),true);

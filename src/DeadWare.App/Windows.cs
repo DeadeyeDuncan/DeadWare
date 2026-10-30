@@ -28,6 +28,7 @@ public sealed class MainWindow : Window
     private readonly CheckBox widgetAlwaysOnTop=new() {Content="Widget always on top",Margin=new Thickness(0,0,0,12)};
     private readonly CheckBox joinedPopouts=new() {Content="Join CPU and GPU graphs in pop-outs",Margin=new Thickness(0,0,0,8)};
     private readonly CheckBox gpuFanSpeed=new() {Content="Show GPU fan speed on temperature graphs",Margin=new Thickness(0,0,0,8)};
+    private readonly CheckBox graphSmoothing=new() {Content="Smooth long-range graphs (1, 3 and 6 hours)",Margin=new Thickness(0,0,0,8)};
     private readonly CheckBox startup=new() {Content="Start with Windows (administrator)",Margin=new Thickness(0,22,0,8)};
     private readonly TextBlock startupStatus=Ui.Text("Startup status is checked when this page opens.",12,"Muted"),startupResult=Ui.Text("",12,"Warning");
     private Button startupRepair=null!,startupDisable=null!,startupRefresh=null!,batteryNavigation=null!;
@@ -100,6 +101,11 @@ public sealed class MainWindow : Window
         var pollingLabel=Ui.Text("Data polling interval",14);pollingLabel.Margin=new(0,0,12,0);
         var pollingRow=Ui.Row(pollingLabel,polling);pollingRow.Margin=new(0,0,0,8);stack.Children.Add(pollingRow);
         var pollingHelp=Ui.Text("Applies without restarting after the current wait or reading finishes. Faster polling uses more resources; slow hardware may take longer than the selected interval. At 5 or 10 seconds, Cooling Health records history but does not gather enough samples for reference comparisons.",12,"Muted");pollingHelp.Margin=new(0,0,0,20);stack.Children.Add(pollingHelp);
+        graphSmoothing.IsChecked=session.Settings.GraphSmoothing;
+        System.Windows.Automation.AutomationProperties.SetName(graphSmoothing,"Graph smoothing");
+        graphSmoothing.Checked+=(_,_)=>{if(!syncingWidgetGraphs)session.SetGraphSmoothing(true);};
+        graphSmoothing.Unchecked+=(_,_)=>{if(!syncingWidgetGraphs)session.SetGraphSmoothing(false);};stack.Children.Add(graphSmoothing);
+        var smoothingHelp=Ui.Text("On shows an average line with a min/max band. Off shows raw traces. Applies immediately to the dashboard, pop-outs and widget; recorded data is unchanged.",12,"Muted");smoothingHelp.Margin=new(0,0,0,20);stack.Children.Add(smoothingHelp);
         gpuFanSpeed.IsChecked=session.Settings.ShowGpuFanSpeed;
         System.Windows.Automation.AutomationProperties.SetName(gpuFanSpeed,"Show GPU fan speed on temperature graphs");
         gpuFanSpeed.Checked+=(_,_)=>{if(!syncingWidgetGraphs)session.SetGpuFanSpeed(true);};
@@ -206,6 +212,7 @@ public sealed class MainWindow : Window
             widgetAlwaysOnTop.IsChecked=session.Settings.WidgetAlwaysOnTop;
             joinedPopouts.IsChecked=session.Settings.JoinCpuGpuPopouts;
             gpuFanSpeed.IsChecked=session.Settings.ShowGpuFanSpeed;
+            graphSmoothing.IsChecked=session.Settings.GraphSmoothing;
         }
         finally {syncingWidgetGraphs=false;}
         var r=session.Current;bool noBattery=r?.Battery.PowerState==BatteryPowerState.NoBattery;

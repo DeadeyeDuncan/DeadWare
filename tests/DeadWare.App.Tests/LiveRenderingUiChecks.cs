@@ -41,10 +41,11 @@ internal static class LiveRenderingUiChecks
         var map=new ConnectionMap {Flat=true,MapOnly=true,AnimationEnabled=false};
         var points=Enumerable.Range(0,256).Select(i=>new ConnectionMapPoint("perf"+i,new(i%100-50,i-128),100,100,false)).ToArray();
         map.SetData(points,new(41,-87),true,"Synthetic performance fixture");map.SetView(new(43,-103),2.5);
-        void Draw(FrameworkElement visual)
+        DrawingGroup Draw(FrameworkElement visual)
         {
             var drawing=new DrawingGroup();using var context=drawing.Open();
             visual.GetType().GetMethod("OnRender",flags)!.Invoke(visual,[context]);
+            return drawing;
         }
         foreach(var chart in charts){chart.Measure(new(300,120));chart.Arrange(new Rect(0,0,300,120));chart.UpdateLayout();}
         map.Measure(new(300,180));map.Arrange(new Rect(0,0,300,180));map.UpdateLayout();Draw(map);
@@ -64,8 +65,36 @@ internal static class LiveRenderingUiChecks
         var statistics=(Summary)Prepared(charts[0]).GetType().GetProperty("Statistics")!.GetValue(Prepared(charts[0]))!;
         Assert.Equal(expected.Minimum,statistics.Minimum);Assert.Equal(expected.Maximum,statistics.Maximum);
         Assert.Equal(expected.Average!.Value,statistics.Average!.Value,8);
+        bool HasRangeBand(Drawing drawing)=>Shapes(drawing).Any(shape=>shape.Geometry is StreamGeometry&&shape.Pen is null);
+        Assert.True(HasRangeBand(Draw(charts[0])));
+        // Toggle while an old smoothed request is in flight. It must never overwrite raw mode.
+        charts[0].Refresh();session.Settings.GraphSmoothing=false;
+        foreach(var chart in charts){chart.Refresh();Assert.False(HasRangeBand(Draw(chart)));}
+        var rawPrepared=charts.Select(Prepared).ToArray();WaitPrepared();
+        for(int i=0;i<charts.Length;i++)
+        {
+            Assert.Same(rawPrepared[i],Prepared(charts[i]));
+            var data=Prepared(charts[i]);
+            Assert.Empty((Dictionary<string,IReadOnlyList<ChartRangePoint>>)data.GetType().GetProperty("Ranges")!.GetValue(data)!);
+            var series=(Dictionary<string,IReadOnlyList<SamplePoint>>)data.GetType().GetProperty("Series")!.GetValue(data)!;
+            foreach(var (metric,rawPoints) in series)
+            {
+                var original=history.Series(metric,0,21600).Where(p=>p.Value.HasValue).ToDictionary(p=>p.MonotonicSeconds,p=>p.Value);
+                Assert.All(rawPoints.Where(p=>p.Value.HasValue),point=>Assert.Equal(original[point.MonotonicSeconds],point.Value));
+                Assert.Equal(original.Values.Min(),rawPoints.Min(p=>p.Value));Assert.Equal(original.Values.Max(),rawPoints.Max(p=>p.Value));
+                Assert.InRange(rawPoints.Count,1,4*210);
+            }
+        }
+        var rawSummary=(Summary)rawPrepared[0].GetType().GetProperty("Statistics")!.GetValue(rawPrepared[0])!;
+        Assert.Equal(expected,rawSummary); // Statistics use all readings, not just the retained extrema.
+        charts[0].Refresh();session.Settings.GraphSmoothing=true;
+        foreach(var chart in charts){chart.Refresh();Assert.True(HasRangeBand(Draw(chart)));}
+        var smoothAgain=charts.Select(Prepared).ToArray();WaitPrepared();
+        for(int i=0;i<charts.Length;i++)Assert.Same(smoothAgain[i],Prepared(charts[i]));
         charts[0].Refresh();session.Settings.HistorySeconds=60;charts[0].Refresh();Draw(charts[0]);
         var shortRange=Prepared(charts[0]);WaitPrepared();Assert.Same(shortRange,Prepared(charts[0]));
+        Assert.False(HasRangeBand(Draw(charts[0])));session.Settings.GraphSmoothing=false;charts[0].Refresh();
+        Assert.False(HasRangeBand(Draw(charts[0])));session.Settings.GraphSmoothing=true;
         session.Settings.HistorySeconds=21600;charts[0].Refresh();Draw(charts[0]);
         charts[0].Refresh();charts[0].Visibility=Visibility.Hidden;var beforeHide=Prepared(charts[0]);
         WaitPrepared();Assert.Same(beforeHide,Prepared(charts[0]));charts[0].Visibility=Visibility.Visible;

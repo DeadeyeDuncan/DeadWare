@@ -1,5 +1,15 @@
 # Release validation
 
+## Saved graph smoothing toggle (0.6.31, 2026-10-29)
+
+Settings now includes **Smooth long-range graphs (1, 3 and 6 hours)**, enabled by default for new and existing settings. Changes apply immediately across the shared dashboard/popout/widget charts and persist across launches. Shorter ranges retain detailed traces in either mode. The setting does not alter capture, stored history, selected range, colors or line styling.
+
+The chart preparation cache key includes the effective smoothing mode, so old in-flight replies cannot replace a newly selected view. Smoothed long ranges retain fixed-time averages/min-max bands. Raw long ranges use original sample values/timestamps with the existing first/minimum/maximum/last pixel reduction; this is display reduction without averaging, preserving peaks and explicit gaps. Full-data statistics are computed before reduction. Large warm raw histories use the same bounded background preparation as smoothed histories, and rendering avoids reducing them twice. Long raw charts are labeled raw; smoothed charts retain avg + range. Cold/mode changes still prepare synchronously once.
+
+Focused checks cover default/legacy and explicit on/off settings, preservation of range/style, checkbox persistence, notification/no-op save behavior and external-setting synchronization. Loaded chart fixtures verify mode-specific bands, original raw values and extrema, pixel-bounded output, full-data statistics and stale background reply rejection in both toggle directions. Existing short-range behavior, stable smoothed scrolling, gaps and shared graph checks remain covered. No native input or new hardware/DPI soak was performed.
+
+The final Release build passed with zero warnings/errors and all **721 tests** passed (519 core/update, 202 Windows app). Independent read-only review found no remaining correctness concerns in the mode/cache/rendering changes. Hosted packaging and public updater verification are recorded separately at publication.
+
 ## Blackout theme and stable history scrolling (0.6.30, 2026-10-29)
 
 Blackout adds pure-black Background/Panel resources, neutral charcoal controls and borders, light gray text and distinct green/amber/blue graph colors. It uses the existing shared palette path, default Segoe UI fonts and dark native-frame classification across the dashboard, widget, graph windows and maps. The settings allowlist preserves the selected preset on restart. Existing custom graph colors/styles and Windows high-contrast behavior retain their normal precedence. Theme tests cover exact palette values, text/trace contrast, settings roundtrip and cross-view switching. Blackout overview/widget previews under ignored `artifacts/ui-blackout/` were visually inspected; no native input or new hardware/DPI soak was performed.

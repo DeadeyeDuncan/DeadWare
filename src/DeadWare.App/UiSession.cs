@@ -104,6 +104,11 @@ public sealed class UiSession
         if(style==new GraphLineStyle())Settings.GraphStyles.Remove(kind);else Settings.GraphStyles[kind]=style;
         Changed?.Invoke();_ = SaveAsync();
     }
+    public void SetGraphSmoothing(bool enabled)
+    {
+        if(Settings.GraphSmoothing==enabled)return;
+        Settings.GraphSmoothing=enabled;Changed?.Invoke();_ = SaveAsync();
+    }
     public void SetGpuFanSpeed(bool enabled)
     {
         if(Settings.ShowGpuFanSpeed==enabled)return;
