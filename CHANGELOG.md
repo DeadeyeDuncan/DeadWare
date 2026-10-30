@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.6.28 — Smoother graphs and custom line styles
+## 0.6.28 â€” Smoother graphs and custom line styles
 
 - Add **Default, Solid, Dashed and Dotted** line patterns and optional **Neon glow** to each graph's color popout. Choices are saved per trace and shared with the dashboard, graph windows and widget; legends follow the selected pattern.
 - Make 1-, 3- and 6-hour graphs easier to read with an average trend line and a subtle min/max band. Real peaks, gaps, current readings and summary statistics remain represented.
