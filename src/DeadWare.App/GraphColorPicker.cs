@@ -104,7 +104,7 @@ internal sealed class GraphColorPicker : Button
     public static FrameworkElement Create(UiSession session,string kind)
     {
         var row=new StackPanel {Orientation=Orientation.Horizontal};
-        foreach(string series in kind=="network"?new[]{"download","upload"}:new[]{kind})row.Children.Add(new GraphColorPicker(session,series));
+        foreach(string series in kind switch {"network"=>new[]{"download","upload"},"gputemp"=>new[]{"gputemp","gpufan"},_=>new[]{kind}})row.Children.Add(new GraphColorPicker(session,series));
         return row;
     }
 }

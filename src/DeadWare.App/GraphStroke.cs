@@ -8,7 +8,7 @@ internal static class GraphStroke
 {
     public static GraphLineStyle Style(UserSettings settings,string color)=>color.StartsWith("Graph/",StringComparison.Ordinal)
         ?settings.GraphStyles.GetValueOrDefault(color[6..],new()):new();
-    public static string Pattern(UserSettings settings,string kind,bool dashed=false)=>settings.GraphStyles.GetValueOrDefault(kind=="network"?"download":kind,new()).Pattern is { } pattern&&pattern!="default"?pattern:dashed?"dashed":"solid";
+    public static string Pattern(UserSettings settings,string kind,bool dashed=false,bool dotted=false)=>settings.GraphStyles.GetValueOrDefault(kind=="network"?"download":kind,new()).Pattern is { } pattern&&pattern!="default"?pattern:dotted?"dotted":dashed?"dashed":"solid";
     public static DoubleCollection Dashes(GraphLineStyle style,bool dashed,bool dotted=false)=>style.Pattern switch
     {
         "solid"=>new(),"dashed"=>new([4,3]),"dotted"=>new([1,3]),_=>dotted?new([1,3]):dashed?new([4,3]):new()

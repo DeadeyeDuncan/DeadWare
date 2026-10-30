@@ -511,12 +511,14 @@ public class BatteryUiTests
         Assert.NotEqual(selected, Traces(gpuChart)[^1].Geometry.ToString());
         Assert.Equal("gpu-a/fan", session.MetricId("gpufan"));
         session.SetGpu("gpu-b");
+        var fanSurfaces = new List<(FrameworkElement Surface, Border Viewport, string Kind)>();
         foreach (var spec in new[] { ("CompactGraph", "gputemp"), ("CompactGraph", "temperature"), ("WidgetGraph", "cputemp"), ("ChartCard", "gputemp") })
         {
             var type = assembly.GetType("DeadWare.App." + spec.Item1)!;
             object[] arguments = spec.Item1 == "CompactGraph" ? [session, spec.Item2, new Window()] : spec.Item1 == "ChartCard" ? [session, spec.Item2, false] : [session, spec.Item2];
             var surface = (FrameworkElement)Activator.CreateInstance(type, All, null, arguments, null)!;
             var viewport = new Border { Child = surface };
+            fanSurfaces.Add((surface, viewport, spec.Item2));
             viewport.Measure(new Size(300, 230)); viewport.Arrange(new Rect(0, 0, 300, 230)); viewport.UpdateLayout();
             type.GetMethod("Refresh", All)!.Invoke(surface, null); viewport.UpdateLayout();
             var chart = Descendants(surface).OfType<FrameworkElement>().Single(element => element.GetType() == chartType);
@@ -534,6 +536,71 @@ public class BatteryUiTests
                 if (output is not null) Capture(viewport, Path.Combine(output, "gpu-fan-compact-" + spec.Item1 + "-" + spec.Item2 + ".png"));
             }
         }
+        var fanCard = fanSurfaces.Single(view => view.Surface.GetType().Name == "ChartCard").Surface;
+        var fanPicker = Descendants(fanCard).OfType<Button>().Single(button => button.ToolTip?.ToString() == "Change GPU fan speed color and line style");
+        Assert.Equal(fanPicker.ToolTip, System.Windows.Automation.AutomationProperties.GetName(fanPicker));
+        var fanPopup = (System.Windows.Controls.Primitives.Popup)fanPicker.GetType().GetField("popup", All)!.GetValue(fanPicker)!;
+        var fanActions = Descendants(fanPopup.Child).OfType<Button>().ToArray();
+        var fanPatterns = Descendants(fanPopup.Child).OfType<RadioButton>().ToArray();
+        var fanGlow = Descendants(fanPopup.Child).OfType<CheckBox>().Single();
+        var fanSliders = Descendants(fanPopup.Child).OfType<Slider>().ToArray();
+        var fanThickness = fanSliders.Single(slider => System.Windows.Automation.AutomationProperties.GetName(slider) == "Line thickness percent");
+        var fanStrength = fanSliders.Single(slider => System.Windows.Automation.AutomationProperties.GetName(slider) == "Neon glow strength percent");
+        string? temperatureColor = session.Settings.GraphColors.GetValueOrDefault("gputemp");
+        var temperatureStyle = session.Settings.GraphStyles.GetValueOrDefault("gputemp", new());
+        fanActions.Single(button => button.ToolTip?.ToString() == "#B69CFF").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        fanPatterns.Single(choice => choice.Content?.ToString() == "Dashed").IsChecked = true;
+        fanGlow.IsChecked = true; fanThickness.Value = 200; fanStrength.Value = 250;
+        CompleteSettingsSave(session);
+        var savedFan = SettingsCodec.Read(File.ReadAllText(settingsPath)).Settings;
+        Assert.Equal("#B69CFF", savedFan.GraphColors["gpufan"]);
+        Assert.Equal(new GraphLineStyle("dashed", true, 2, 2.5), savedFan.GraphStyles["gpufan"]);
+        Assert.Equal(temperatureColor, savedFan.GraphColors.GetValueOrDefault("gputemp"));
+        Assert.Equal(temperatureStyle, savedFan.GraphStyles.GetValueOrDefault("gputemp", new()));
+        session.Settings.GraphColors = savedFan.GraphColors; session.Settings.GraphStyles = savedFan.GraphStyles;
+        // Recreated windows and already-open surfaces consume the same saved fan appearance.
+        var reopenedFan = (FrameworkElement)Activator.CreateInstance(assembly.GetType("DeadWare.App.CompactGraph")!, All, null, [session, "gputemp", new Window()], null)!;
+        fanSurfaces.Add((reopenedFan, new Border { Child = reopenedFan }, "gputemp"));
+        var appearanceOwner = new Window();
+        foreach (bool custom in new[] { true, false })
+        {
+            if (!custom)
+            {
+                fanActions.Single(button => button.Content?.ToString() == "Theme default").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                fanPatterns.Single(choice => choice.Content?.ToString() == "Default").IsChecked = true;
+                fanGlow.IsChecked = false; fanThickness.Value = 100; fanStrength.Value = 100;
+                CompleteSettingsSave(session);
+                Assert.False(session.Settings.GraphColors.ContainsKey("gpufan")); Assert.False(session.Settings.GraphStyles.ContainsKey("gpufan"));
+            }
+            Color expectedColor = custom && !SystemParameters.HighContrast ? Color.FromRgb(0xB6, 0x9C, 0xFF) : ResourceColor("Warning");
+            foreach (var (surface, viewport, kind) in fanSurfaces)
+            {
+                appearanceOwner.Content = viewport;
+                surface.GetType().GetMethod("Refresh", All)!.Invoke(surface, null);
+                var chart = Descendants(surface).OfType<FrameworkElement>().Single(element => element.GetType() == chartType);
+                chartType.GetMethod("Refresh")!.Invoke(chart, null);
+                viewport.Measure(new Size(300, 230)); viewport.Arrange(new Rect(0, 0, 300, 230)); viewport.UpdateLayout();
+                var traces = Traces(chart); int normalCount = kind is "temperature" or "cputemp" ? 3 : 2;
+                Assert.Equal(normalCount + (custom && !SystemParameters.HighContrast ? 1 : 0), traces.Length);
+                Assert.Equal(expectedColor, ((SolidColorBrush)traces[^1].Pen.Brush).Color);
+                Assert.Equal(custom ? 4 : 2, traces[^1].Pen.Thickness);
+                Assert.Equal(custom ? new double[] { 4, 3 } : new double[] { 1, 3 }, traces[^1].Pen.DashStyle.Dashes);
+                if (custom && !SystemParameters.HighContrast) Assert.Equal(14, traces[^2].Pen.Thickness);
+                var annotation = (TextBlock)surface.GetType().GetField("fan", All)!.GetValue(surface)!;
+                Assert.Equal(expectedColor, ((SolidColorBrush)annotation.Foreground).Color);
+                if (surface.GetType().Name == "CompactGraph") Assert.Contains(custom ? "dashed" : "dotted", annotation.Text, StringComparison.OrdinalIgnoreCase);
+                if (surface.GetType().Name == "WidgetGraph")
+                {
+                    var legend = (StackPanel)surface.GetType().GetField("fanLegend", All)!.GetValue(surface)!;
+                    Assert.Contains(custom ? "dashed" : "dotted", legend.ToolTip!.ToString()!, StringComparison.OrdinalIgnoreCase);
+                    var line = Assert.Single(legend.Children.OfType<System.Windows.Shapes.Line>());
+                    Assert.Equal(expectedColor, ((SolidColorBrush)line.Stroke).Color);
+                    Assert.Equal(traces[^1].Pen.Thickness, line.StrokeThickness); Assert.Equal(traces[^1].Pen.DashStyle.Dashes, line.StrokeDashArray);
+                }
+                appearanceOwner.Content = null;
+            }
+        }
+        Assert.Equal(IntPtr.Zero, new System.Windows.Interop.WindowInteropHelper(appearanceOwner).Handle); appearanceOwner.Close();
         foreach (var values in new[] { (Temperature: (double?)80, Fan: (double?)null), (Temperature: (double?)null, Fan: (double?)1500), (Temperature: (double?)null, Fan: (double?)null) })
         {
             var missingHistory = new SampleHistory();
@@ -1091,8 +1158,9 @@ public class BatteryUiTests
             owner.Content = card;
             card.Measure(new Size(460, 240)); card.Arrange(new Rect(0, 0, 460, 240)); card.UpdateLayout();
             var pickers = Descendants(card).OfType<Button>().Where(button => button.GetType().Name == "GraphColorPicker").ToArray();
-            Assert.Equal(kinds.Length, pickers.Length);
-            for (int index = 0; index < kinds.Length; index++)
+            string[] pickerKinds = kind == "gputemp" ? ["gputemp", "gpufan"] : kinds;
+            Assert.Equal(pickerKinds.Length, pickers.Length);
+            for (int index = 0; index < pickerKinds.Length; index++)
             {
                 var picker = pickers[index];
                 var dot = Assert.IsType<System.Windows.Shapes.Ellipse>(picker.Content);
@@ -1107,10 +1175,10 @@ public class BatteryUiTests
                 preset.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
                 card.UpdateLayout();
                 var chosen = ((SolidColorBrush)((System.Windows.Shapes.Ellipse)preset.Content).Fill).Color;
-                Assert.Equal($"#{chosen.R:X2}{chosen.G:X2}{chosen.B:X2}", session.Settings.GraphColors[kinds[index]]);
+                Assert.Equal($"#{chosen.R:X2}{chosen.G:X2}{chosen.B:X2}", session.Settings.GraphColors[pickerKinds[index]]);
                 Assert.Equal(chosen, BrushColor(dot.Fill));
                 actions.Single(button => button.Content?.ToString() == "Theme default").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-                Assert.False(session.Settings.GraphColors.ContainsKey(kinds[index]));
+                Assert.False(session.Settings.GraphColors.ContainsKey(pickerKinds[index]));
                 Assert.Empty(Descendants(popup.Child).OfType<ComboBox>());
                 var patterns = Descendants(popup.Child).OfType<RadioButton>().ToArray();
                 Assert.Equal(new[]{"Default","Solid","Dashed","Dotted"},patterns.Select(choice=>choice.Content));
@@ -1125,13 +1193,13 @@ public class BatteryUiTests
                 patterns[2].IsChecked = true; glow.IsChecked = true;
                 Assert.True(strength.IsEnabled);
                 thickness.Value = 200; strength.Value = 250;
-                Assert.Equal(new GraphLineStyle("dashed", true, 2, 2.5), session.Settings.GraphStyles[kinds[index]]);
+                Assert.Equal(new GraphLineStyle("dashed", true, 2, 2.5), session.Settings.GraphStyles[pickerKinds[index]]);
                 glow.IsChecked = false; Assert.False(strength.IsEnabled); Assert.Equal(250, strength.Value);
                 glow.IsChecked = true;
                 CompleteSettingsSave(session);
-                Assert.Equal(session.Settings.GraphStyles[kinds[index]], SettingsCodec.Read(File.ReadAllText(settingsPath)).Settings.GraphStyles[kinds[index]]);
+                Assert.Equal(session.Settings.GraphStyles[pickerKinds[index]], SettingsCodec.Read(File.ReadAllText(settingsPath)).Settings.GraphStyles[pickerKinds[index]]);
                 patterns[0].IsChecked = true; glow.IsChecked = false; thickness.Value = 100; strength.Value = 100;
-                Assert.False(session.Settings.GraphStyles.ContainsKey(kinds[index]));
+                Assert.False(session.Settings.GraphStyles.ContainsKey(pickerKinds[index]));
                 string? paletteOutput = Environment.GetEnvironmentVariable("DEADWARE_UI_OUTPUT");
                 if (paletteOutput is not null && kind == "cpu")
                 {
@@ -1181,7 +1249,7 @@ public class BatteryUiTests
                         }
                     }
                     if (view.GetType().Name == "ChartCard")
-                        Assert.Equal(kinds.Select(Expected), Descendants(view).OfType<Button>().Where(button => button.GetType().Name == "GraphColorPicker")
+                        Assert.Equal(kinds[0] == "gputemp" ? kinds.Select(Expected).Append(ResourceColor("Warning")) : kinds.Select(Expected), Descendants(view).OfType<Button>().Where(button => button.GetType().Name == "GraphColorPicker")
                             .Select(button => BrushColor(((System.Windows.Shapes.Ellipse)button.Content).Fill)));
                     string[] geometry = traces.Select(trace => trace.Geometry.ToString()).ToArray();
                     foreach (string kind in kinds) SetColor(kind, "#789ABC");

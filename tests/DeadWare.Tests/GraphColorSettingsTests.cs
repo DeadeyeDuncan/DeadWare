@@ -9,13 +9,15 @@ public class GraphColorSettingsTests
     public void Every_series_keeps_its_independent_color_after_reopening_settings()
     {
         var settings=SettingsCodec.Read("""
-            {"Theme":"Neon","GraphColors":{"cpu":"#123456","cputemp":"#234567","gpu":"#345678","gputemp":"#456789","memory":"#56789A","download":"#6789AB","upload":"#789ABC"}}
+            {"Theme":"Neon","GraphColors":{"cpu":"#123456","cputemp":"#234567","gpu":"#345678","gputemp":"#456789","gpufan":"#89ABCD","memory":"#56789A","download":"#6789AB","upload":"#789ABC"}}
             """).Settings;
         var reopened=SettingsCodec.Read(SettingsCodec.Write(settings)).Settings;
-        Assert.Equal(7,reopened.GraphColors.Count);
+        Assert.Equal(8,reopened.GraphColors.Count);
         Assert.Equal("#123456",reopened.GraphColors["cpu"]);
         Assert.Equal("#234567",reopened.GraphColors["cputemp"]);
         Assert.Equal("#789ABC",reopened.GraphColors["upload"]);
+        Assert.Equal("#89ABCD",reopened.GraphColors["gpufan"]);
+        Assert.Equal("#456789",reopened.GraphColors["gputemp"]);
         Assert.Equal("Neon",reopened.Theme);
     }
 

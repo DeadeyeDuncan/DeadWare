@@ -1,5 +1,11 @@
 # Release validation
 
+## GPU fan appearance controls (0.6.32, 2026-10-29)
+
+The overview GPU temperature card now has an independent GPU fan appearance button, available even when the fan overlay is off. It reuses the existing color palette, pattern, thickness and glow controls. The saved `gpufan` color/style applies to the shared chart renderer, fan annotations, and widget legend; compact/joined temperature pop-outs use the same appearance. Default fan styling remains dotted with the theme's Warning color, including normal high-contrast fallback. Labels show the selected pattern. GPU selection, RPM scale, readings and stored history are unchanged.
+
+The Release build passed with zero warnings/errors. Focused checks passed: 2 offscreen app tests plus 11 color/style settings tests. They cover the dedicated picker while the overlay is disabled, independent fan persistence, customized and reset strokes/annotations/widget legends, recreated pop-outs, and existing color controls. The offscreen fixture attaches surfaces to an unshown Window for dynamic-resource invalidation; its native handle remains zero. Independent read-only source review found no concrete regressions. Hosted full-suite packaging and public updater verification are recorded at publication. No native input or new hardware/DPI soak is included.
+
 ## Saved graph smoothing toggle (0.6.31, 2026-10-29)
 
 Settings now includes **Smooth long-range graphs (1, 3 and 6 hours)**, enabled by default for new and existing settings. Changes apply immediately across the shared dashboard/popout/widget charts and persist across launches. Shorter ranges retain detailed traces in either mode. The setting does not alter capture, stored history, selected range, colors or line styling.

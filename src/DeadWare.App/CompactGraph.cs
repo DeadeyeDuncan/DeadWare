@@ -17,7 +17,7 @@ internal sealed class CompactGraph : Border
     private readonly bool joined;
     private readonly HistoryChart chart;
     private readonly TextBlock value=Ui.Text("—",26,font:"MetricFont"),upload=Ui.Text("—",18,"Cpu",font:"MetricFont"),status=Ui.Text("",10,"Warning");
-    private readonly TextBlock fan=Ui.Text("",10,"Warning",font:"MetricFont");
+    private readonly TextBlock fan=Ui.Text("",10,Theme.GraphKey("gpufan"),font:"MetricFont");
     private readonly TextBlock details=Ui.Text("Discovering hardware…",12,"Muted"),stats=Ui.Text("",12,"Muted");
     private readonly Button options;
     private readonly Popup popup;
@@ -41,7 +41,7 @@ internal sealed class CompactGraph : Border
         options=Ui.Button("⋯",OpenOptions);options.Width=28;options.Height=28;options.FontSize=18;options.Padding=new Thickness(0);options.Margin=new Thickness(6,0,0,0);options.ToolTip="Graph options";
         AutomationProperties.SetName(options,"Graph options");Grid.SetColumn(options,2);header.Children.Add(options);
         var annotations=new StackPanel();status.Visibility=Visibility.Collapsed;status.TextWrapping=TextWrapping.NoWrap;status.TextTrimming=TextTrimming.CharacterEllipsis;annotations.Children.Add(status);
-        fan.Visibility=Visibility.Collapsed;fan.ToolTip="Selected GPU's first reported fan · dotted trace · separate left RPM scale";annotations.Children.Add(fan);Grid.SetRow(annotations,1);grid.Children.Add(annotations);
+        fan.Visibility=Visibility.Collapsed;fan.ToolTip="Selected GPU's first reported fan · separate left RPM scale";annotations.Children.Add(fan);Grid.SetRow(annotations,1);grid.Children.Add(annotations);
         chart=new HistoryChart(session,chartKind,true) {CompareDevices=joined,ClipToBounds=true};Grid.SetRow(chart,2);grid.Children.Add(chart);
 
         var menu=new StackPanel();KeyboardNavigation.SetTabNavigation(menu,KeyboardNavigationMode.Cycle);
@@ -69,7 +69,7 @@ internal sealed class CompactGraph : Border
         var data=session.Current;
         bool showFan=session.Settings.ShowGpuFanSpeed&&(kind=="gputemp"||kind=="temperature");
         fan.Visibility=showFan?Visibility.Visible:Visibility.Collapsed;
-        if(showFan)fan.Text=Ui.GpuFanText(session)+" · dotted · left RPM";
+        if(showFan)fan.Text=Ui.GpuFanText(session)+$" · {GraphStroke.Pattern(session.Settings,"gpufan",dotted:true)} · left RPM";
         value.SetResourceReference(TextBlock.ForegroundProperty,Theme.GraphKey(chartKind));
         upload.SetResourceReference(TextBlock.ForegroundProperty,Theme.GraphKey(joined?(chartKind=="cpu"?"gpu":"gputemp"):"upload"));
         if(joined)
@@ -99,7 +99,7 @@ internal sealed class CompactGraph : Border
             details.Text=data is null?"Discovering hardware…":kind.StartsWith("cpu")?data.CpuName:session.GpuName;
             AutomationProperties.SetName(value,$"{Ui.Title(kind)} {value.Text}");
         }
-        if(showFan)details.Text+="\n\nGPU first fan: dotted warning line\nSeparate left RPM scale.";
+        if(showFan)details.Text+=$"\n\nGPU first fan: {GraphStroke.Pattern(session.Settings,"gpufan",dotted:true)} line\nSeparate left RPM scale.";
         bool unavailable=current is null||(joined&&other is null)||(kind=="network"&&session.Value("network/upload") is null);
         status.Text=data is null?"Discovering hardware…":session.Stale?"Stale · waiting for fresh readings":unavailable?"Reading unavailable":"";
         status.Visibility=status.Text.Length==0?Visibility.Collapsed:Visibility.Visible;

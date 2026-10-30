@@ -42,7 +42,7 @@ internal static class Ui
     }
     public static Image Logo()
     {var image=new Image {Width=38,Height=38,Margin=new Thickness(0,0,9,0)};try{image.Source=new BitmapImage(new Uri("pack://application:,,,/Assets/deadware.png"));}catch(System.IO.IOException){}return image;}
-    public static string Title(string kind)=>kind switch {"cpu"=>"CPU usage","cputemp"=>"CPU temperature","gpu"=>"GPU usage","gputemp"=>"GPU temperature","usage"=>"CPU / GPU usage","temperature"=>"CPU / GPU temperature","memory"=>"RAM usage",_=>"Network activity"};
+    public static string Title(string kind)=>kind switch {"cpu"=>"CPU usage","cputemp"=>"CPU temperature","gpu"=>"GPU usage","gputemp"=>"GPU temperature","gpufan"=>"GPU fan speed","usage"=>"CPU / GPU usage","temperature"=>"CPU / GPU temperature","memory"=>"RAM usage",_=>"Network activity"};
     private sealed record RangeChoice(int Seconds,string Label)
     {public override string ToString()=>Label;}
     public static ComboBox Range(UiSession session)
@@ -198,7 +198,7 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
         Trace(points,session.MetricId(kind),Theme.GraphKey(kind),false);
         if(kind=="network")Trace(secondary,"network/upload",Theme.GraphKey("upload"),true);
         else if(compare)Trace(secondary,session.MetricId(kind=="cpu"?"gpu":"gputemp"),Theme.GraphKey(kind=="cpu"?"gpu":"gputemp"),true);
-        if(showFan)Trace(fan,session.MetricId("gpufan"),"Warning",false,true,fanMaximum);
+        if(showFan)Trace(fan,session.MetricId("gpufan"),Theme.GraphKey("gpufan"),false,true,fanMaximum);
         dc.Pop();dc.Pop();
         if(!points.Concat(secondary).Concat(fan).Any(p=>p.Value.HasValue)) Label(dc,sample is null?(compact?"Waiting for data…":"Waiting for first sample…"):(compact?"No readings in this range":"No available readings in this range"),left+(compact?4:15),top+ph/2);
     }
@@ -241,7 +241,7 @@ internal sealed class ChartCard : Border
     private readonly UiSession session;
     private readonly string kind;
     private readonly TextBlock value=Ui.Text("—",30,font:"MetricFont"),subtitle=Ui.Text("Waiting for hardware…",11,"Muted"),stats=Ui.Text("",11,"Muted",font:"MetricFont");
-    private readonly TextBlock fan=Ui.Text("",11,"Warning",font:"MetricFont");
+    private readonly TextBlock fan=Ui.Text("",11,Theme.GraphKey("gpufan"),font:"MetricFont");
     private readonly Run downloadValue=new(),uploadValue=new();
     private readonly HistoryChart chart;
     public ChartCard(UiSession session,string kind,bool popButton=true)
@@ -262,7 +262,7 @@ internal sealed class ChartCard : Border
         var colors=GraphColorPicker.Create(session,kind);DockPanel.SetDock(colors,Dock.Right);header.Children.Insert(0,colors);
         grid.Children.Add(header);
         var metric=new StackPanel {Margin=new Thickness(0,5,0,5)};metric.Children.Add(value);metric.Children.Add(subtitle);
-        fan.Visibility=Visibility.Collapsed;fan.ToolTip="Selected GPU's first reported fan · dotted trace · separate left RPM scale";metric.Children.Add(fan);Grid.SetRow(metric,1);grid.Children.Add(metric);
+        fan.Visibility=Visibility.Collapsed;fan.ToolTip="Selected GPU's first reported fan · separate left RPM scale";metric.Children.Add(fan);Grid.SetRow(metric,1);grid.Children.Add(metric);
         Grid.SetRow(chart,2);grid.Children.Add(chart);Grid.SetRow(stats,3);grid.Children.Add(stats);Child=grid;
         Loaded+=(_,_)=>{session.Changed+=Refresh;Refresh();};Unloaded+=(_,_)=>session.Changed-=Refresh;
         IsVisibleChanged+=(_,_)=>{if(IsVisible)Refresh();};
@@ -273,7 +273,7 @@ internal sealed class ChartCard : Border
         string id=session.MetricId(kind);double? current=session.Stale?null:session.Value(id);var data=session.Current;
         bool showFan=kind=="gputemp"&&session.Settings.ShowGpuFanSpeed;
         fan.Visibility=showFan?Visibility.Visible:Visibility.Collapsed;
-        if(showFan)fan.Text=Ui.GpuFanText(session)+" · dotted · left RPM";
+        if(showFan)fan.Text=Ui.GpuFanText(session)+$" · {GraphStroke.Pattern(session.Settings,"gpufan",dotted:true)} · left RPM";
         value.SetResourceReference(TextBlock.ForegroundProperty,Theme.GraphKey(kind));
         if(kind=="network")
         {
