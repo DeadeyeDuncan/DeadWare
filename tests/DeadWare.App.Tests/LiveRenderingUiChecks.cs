@@ -84,6 +84,18 @@ internal static class LiveRenderingUiChecks
         var strokes=Shapes(styled).ToArray();Assert.Equal(SystemParameters.HighContrast?1:2,strokes.Length);
         Assert.Equal(new double[]{1,3},strokes[^1].Pen.DashStyle.Dashes);Assert.Equal(2,strokes[^1].Pen.Thickness);
         if(!SystemParameters.HighContrast)Assert.True(strokes[0].Pen.Thickness>strokes[1].Pen.Thickness);
+        session.Settings.GraphStyles["cpu"]=new("dotted",true,2,2.5);
+        var strong=new DrawingGroup();using(var context=strong.Open())GraphStroke.Draw(context,geometry,session.Settings,"Graph/cpu",2,false,false);
+        var strongStrokes=Shapes(strong).ToArray();Assert.Equal(4,strongStrokes[^1].Pen.Thickness);
+        if(!SystemParameters.HighContrast)
+        {
+            Assert.Equal(14,strongStrokes[0].Pen.Thickness);
+            Assert.Contains(strong.Children.OfType<DrawingGroup>(),group=>Math.Abs(group.Opacity-.4)<.0001);
+            Assert.Equal(4,strongStrokes[0].Pen.DashStyle.Dashes[0]*strongStrokes[0].Pen.Thickness,8);
+        }
+        session.Settings.GraphStyles["cpu"]=new("dotted",true,2,0);
+        var zero=new DrawingGroup();using(var context=zero.Open())GraphStroke.Draw(context,geometry,session.Settings,"Graph/cpu",2,false,false);
+        Assert.Equal(4,Assert.Single(Shapes(zero)).Pen.Thickness);
         session.Settings.GraphStyles.Clear();
         var results=new List<object>();
         void Measure(string name,Action<int> action)

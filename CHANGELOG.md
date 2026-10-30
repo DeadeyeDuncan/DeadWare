@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.29 — Graph thickness and glow controls
+
+- Add **Line thickness** (50–300%) and **Glow strength** (0–300%) sliders to graph color popouts. 100% keeps the original look; glow strength becomes available when Neon glow is enabled.
+- Fix the color popout closing when choosing a line pattern or using its controls. Default, Solid, Dashed and Dotted are now directly selectable within the popout.
+- Save all style choices per trace and share them with the widget, detached graphs and reopened windows. Widget legend widths follow the selected thickness.
+
 ## 0.6.28 — Smoother graphs and custom line styles
 
 - Add **Default, Solid, Dashed and Dotted** line patterns and optional **Neon glow** to each graph's color popout. Choices are saved per trace and shared with the dashboard, graph windows and widget; legends follow the selected pattern.

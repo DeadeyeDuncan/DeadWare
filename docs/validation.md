@@ -1,5 +1,15 @@
 # Release validation
 
+## Graph stroke controls and popup click fix (0.6.29, 2026-10-29)
+
+The graph color popout adds line-thickness (50-300%) and glow-strength (0-300%) sliders with visible values; 100% preserves the prior look. Strength controls both halo opacity and spread, remains saved when glow is off, and is disabled until glow is enabled. All settings are per trace, normalized to finite bounded values, backward compatible with .28 settings, and shared with dashboard, detached/joined graphs and widget traces/legend widths. Glow remains a single extra drawing pass and is suppressed in high contrast.
+
+The user's popup dismissal report was reproduced with real mouse input in an isolated native WPF harness using the actual GraphColorPicker and application theme. Replacing the dropdown with inline choices alone did not fix it: child RadioButton/ToggleButton Click events bubble through the popup's logical parent into the color button. The color button now accepts only its own original Click source. Inline Default/Solid/Dashed/Dotted choices avoid a nested selector; child buttons and slider track clicks no longer toggle the parent popup. Existing color actions, outside clicks and Escape retain their close behavior.
+
+The initial settings regression failed before implementation because stroke parameters were discarded. Focused tests cover settings roundtrip, old defaults, finite bounds, retained disabled-glow choices, popup radio selection/child-click routing, slider persistence and enabled state, exact stroke/halo widths and opacity, zero-strength suppression, and dash alignment. Persisted styles are reloaded and verified against actual drawing pens in existing cards, compact/joined popouts, the widget and a recreated network popout; widget legend widths are also checked. Native mouse checks confirmed selecting Dotted, clicking the thickness track, enabling glow and clicking its strength track all keep the popup open; clicking outside dismisses only the popup. A fresh harness process restored Dotted/150% thickness/glow on/150% strength from its isolated settings file.
+
+Native harness and offscreen previews are under ignored `artifacts/native-style-check/` and `artifacts/ui-stroke-controls/`. The installed app and personal settings were untouched. Native checking covered the Neon popup at the current desktop DPI, not a multi-DPI or hardware soak. The final Release build passed with zero warnings/errors and all **714 tests** passed (512 core/update, 202 Windows app). Computer Use was stopped with the physical Escape key during the final harness-close action; no further desktop input was sent. Hosted packaging and public updater verification are recorded separately at publication.
+
 ## Graph styling and smoother refreshes (0.6.28, 2026-10-29)
 
 The graph color popout now saves Default/Solid/Dashed/Dotted patterns and optional neon glow per trace. The dashboard, compact/joined graphs, widget legends and descriptive labels share those choices. Old settings retain their original styles; invalid settings normalize safely. Glow uses one low-opacity wider drawing pass, suppressed in high contrast, without a blur effect.
