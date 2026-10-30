@@ -11,14 +11,20 @@ public static class ConnectionProjection
     private const double Radians = Math.PI / 180;
     public static double Wrap(double longitude) => double.IsFinite(longitude) ? ((longitude + 180) % 360 + 360) % 360 - 180 : 0;
     public static bool IsValid(GeoPoint point) => double.IsFinite(point.Latitude) && Math.Abs(point.Latitude) <= 90 && double.IsFinite(point.Longitude);
-    public static MapCamera Normalize(MapCamera camera) => new(Wrap(camera.Longitude),
-        double.IsFinite(camera.Latitude) ? Math.Clamp(camera.Latitude, -90, 90) : 0,
-        double.IsFinite(camera.Zoom) ? Math.Clamp(camera.Zoom, 1, 8) : 1, camera.Flat);
+    public static MapCamera Normalize(MapCamera camera)
+    {
+        double longitude=Wrap(camera.Longitude),latitude=double.IsFinite(camera.Latitude)?Math.Clamp(camera.Latitude,-90,90):0;
+        double zoom=double.IsFinite(camera.Zoom)?Math.Clamp(camera.Zoom,1,8):1;
+        return longitude==camera.Longitude&&latitude==camera.Latitude&&zoom==camera.Zoom?camera:new(longitude,latitude,zoom,camera.Flat);
+    }
 
     public static MapCoordinate Project(GeoPoint point, MapCamera camera)
     {
         if (!IsValid(point)) return default;
-        camera = Normalize(camera);
+        return ProjectNormalized(point,Normalize(camera));
+    }
+    private static MapCoordinate ProjectNormalized(GeoPoint point,MapCamera camera)
+    {
         double longitude = Wrap(point.Longitude - camera.Longitude);
         if (camera.Flat) return new(longitude / 180 * camera.Zoom, (camera.Latitude - point.Latitude) / 90 * camera.Zoom, 1, true);
         double lat = point.Latitude * Radians, lon = longitude * Radians, center = camera.Latitude * Radians;
@@ -71,10 +77,11 @@ public static class ConnectionProjection
         camera = Normalize(camera);
         var result = new List<IReadOnlyList<MapCoordinate>>();
         List<MapCoordinate> current = [];
+        var previous=path.Count>0?ProjectNormalized(path[0],camera):default;
         void Flush() { if (current.Count > 1) result.Add(current.AsReadOnly()); current = []; }
         for (int i = 1; i < path.Count; i++)
         {
-            var a = Project(path[i - 1], camera); var b = Project(path[i], camera);
+            var a = previous; var b = previous=ProjectNormalized(path[i],camera);
             if (!IsValid(path[i - 1]) || !IsValid(path[i])) { Flush(); continue; }
             if (camera.Flat)
             {
@@ -99,9 +106,9 @@ public static class ConnectionProjection
                 for (int iteration = 0; iteration < 40; iteration++)
                 {
                     double mid = (low + high) / 2;
-                    if (Project(Interpolate(path[i - 1], path[i], mid), camera).Visible == a.Visible) low = mid; else high = mid;
+                    if (ProjectNormalized(Interpolate(path[i - 1], path[i], mid), camera).Visible == a.Visible) low = mid; else high = mid;
                 }
-                var horizon = Project(Interpolate(path[i - 1], path[i], (low + high) / 2), camera) with { Visible = true, Depth = 0 };
+                var horizon = ProjectNormalized(Interpolate(path[i - 1], path[i], (low + high) / 2), camera) with { Visible = true, Depth = 0 };
                 if (a.Visible) { if (current.Count == 0) current.Add(a); current.Add(horizon); Flush(); }
                 else { current.Add(horizon); current.Add(b); }
             }

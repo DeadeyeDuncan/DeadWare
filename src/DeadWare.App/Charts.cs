@@ -5,6 +5,7 @@ using System.Windows.Controls.Primitives;
 using System.Windows.Documents;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using System.Windows.Media.Animation;
 using DeadWare.Core;
 namespace DeadWare.App;
 internal static class Ui
@@ -63,23 +64,99 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
     private readonly UiSession session=session;
     private readonly string kind=kind;
     public bool CompareDevices {get;init;}
-    public void Refresh()=>InvalidateVisual();
+    private sealed record Query(SampleHistory History,string Primary,string? Secondary,string? Fan,int Seconds,int Columns);
+    private sealed record ChartData(Query Query,Dictionary<string,IReadOnlyList<SamplePoint>> Series,Dictionary<string,IReadOnlyList<ChartRangePoint>> Ranges,Summary Statistics);
+    public event Action<Summary>? StatisticsReady;
+    private ChartData? prepared;
+    private (Query Query,double Now,int Revision)? pending;
+    private int revision;
+    private bool preparing,preparationFailed;
+    private Query CurrentQuery()
+    {
+        bool compare=CompareDevices&&kind is "cpu" or "cputemp";
+        bool fan=session.Settings.ShowGpuFanSpeed&&(kind=="gputemp"||kind=="cputemp"&&compare);
+        return new(session.Collector.History,session.MetricId(kind),kind=="network"?"network/upload":compare?session.MetricId(kind=="cpu"?"gpu":"gputemp"):null,
+            fan?session.MetricId("gpufan"):null,session.HistorySeconds,Math.Max(1,(int)ActualWidth-90));
+    }
+    private static ChartData Prepare(Query query,double now)
+    {
+        var series=new Dictionary<string,IReadOnlyList<SamplePoint>>();var ranges=new Dictionary<string,IReadOnlyList<ChartRangePoint>>();
+        foreach(var metric in new[]{query.Primary,query.Secondary,query.Fan}.OfType<string>().Distinct())
+        {
+            if(query.Seconds<3600)series[metric]=query.History.Series(metric,now,query.Seconds);
+            else
+            {
+                var values=query.History.ChartRanges(metric,now,query.Seconds,query.Columns);ranges[metric]=values;
+                series[metric]=values.Select(p=>new SamplePoint(DateTimeOffset.UnixEpoch,p.EndSeconds,p.Average)).ToArray();
+            }
+        }
+        Summary summary;
+        if(ranges.TryGetValue(query.Primary,out var primary))
+        {
+            long count=primary.Sum(p=>(long)p.Samples);
+            summary=count==0?new(null,null,null):new(primary.Min(p=>p.Minimum),primary.Max(p=>p.Maximum),primary.Sum(p=>(p.Average??0)*(p.Samples/(double)count)));
+        }
+        else summary=SampleHistory.Statistics(series[query.Primary]);
+        return new(query,series,ranges,summary);
+    }
+    public void Refresh()
+    {
+        revision++;preparationFailed=false;
+        var query=CurrentQuery();
+        if(IsLoaded&&IsVisible&&query.Seconds>=3600&&query.History.Count>4096&&prepared?.Query==query)
+        {
+            // One worker per chart, with just the latest pending refresh. No WPF objects leave this dispatcher.
+            pending=(query,session.Collector.ElapsedSeconds,revision);if(!preparing)PrepareLatest();
+        }
+        else {pending=null;prepared=null;}
+        InvalidateVisual();
+    }
+    private void PrepareLatest()
+    {
+        if(pending is not { } request)return;
+        pending=null;
+        preparing=true;
+        _=Task.Run(()=>Prepare(request.Query,request.Now)).ContinueWith(work=>
+        {
+            // Explicit handoff also covers callers without a DispatcherSynchronizationContext.
+            var error=work.Exception;
+            if(Dispatcher.HasShutdownStarted||Dispatcher.HasShutdownFinished)return;
+            _=Dispatcher.InvokeAsync(()=>
+            {
+                preparing=false;
+                if(request.Revision==revision&&IsLoaded&&IsVisible&&request.Query==CurrentQuery())
+                {
+                    preparationFailed=error is not null;
+                    if(error is null){prepared=work.Result;StatisticsReady?.Invoke(prepared.Statistics);}
+                    InvalidateVisual();
+                }
+                if(!IsLoaded||!IsVisible)pending=null;else if(pending is not null)PrepareLatest();
+            });
+        },TaskScheduler.Default);
+    }
     protected override void OnRender(DrawingContext dc)
     {
         base.OnRender(dc);
         double w=ActualWidth,h=ActualHeight;if(w<90||h<(compact?48:65))return;
+        if(preparationFailed){Label(dc,"Chart temporarily unavailable",8,8);return;}
         var axisLabel=Formatted("Now");
         var sample=session.Current?.Sample;
         double now=session.Collector.ElapsedSeconds;
-        var points=session.Collector.History.Series(session.MetricId(kind),now,session.HistorySeconds);
+        bool averaged=session.HistorySeconds>=3600;
+        var query=CurrentQuery();if(prepared?.Query!=query){prepared=Prepare(query,now);StatisticsReady?.Invoke(prepared.Statistics);}
+        var bands=prepared.Ranges;
+        IReadOnlyList<SamplePoint> Read(string metric)=>prepared.Series[metric];
+        var points=Read(session.MetricId(kind));
         bool compare=CompareDevices&&kind is "cpu" or "cputemp";
-        var secondary=kind=="network"?session.Collector.History.Series("network/upload",now,session.HistorySeconds):compare?session.Collector.History.Series(session.MetricId(kind=="cpu"?"gpu":"gputemp"),now,session.HistorySeconds):[];
+        var secondary=kind=="network"?Read("network/upload"):compare?Read(session.MetricId(kind=="cpu"?"gpu":"gputemp")):[];
         bool showFan=session.Settings.ShowGpuFanSpeed&&(kind=="gputemp"||kind=="cputemp"&&compare);
-        var fan=showFan?session.Collector.History.Series(session.MetricId("gpufan"),now,session.HistorySeconds):[];
-        double maximum=kind is "cpu" or "gpu" or "memory"?100:kind=="network"?Math.Max(1000,points.Concat(secondary).Where(p=>p.Value.HasValue).Select(p=>p.Value!.Value).DefaultIfEmpty(0).Max()*1.15):Math.Max(100,points.Concat(secondary).Where(p=>p.Value.HasValue).Select(p=>p.Value!.Value).DefaultIfEmpty(0).Max()*1.1);
+        var fan=showFan?Read(session.MetricId("gpufan")):[];
+        double Peak(string metric,IReadOnlyList<SamplePoint> fallback)=>bands.TryGetValue(metric,out var range)?range.Max(p=>p.Maximum)??0:fallback.Max(p=>p.Value)??0;
+        double peak=Math.Max(Peak(session.MetricId(kind),points),Peak(kind=="network"?"network/upload":session.MetricId(kind=="cpu"?"gpu":"gputemp"),secondary));
+        double maximum=kind is "cpu" or "gpu" or "memory"?100:kind=="network"?Math.Max(1000,peak*1.15):Math.Max(100,peak*1.1);
         if(compare&&kind=="cputemp")maximum=Math.Ceiling(maximum/20)*20;
         string Axis(double value)=>kind=="network"?Ui.Bytes(value,true):$"{value:0}{(kind.Contains("temp")?(compare?"°C":"°"):"%")}";
-        double fanMaximum=Math.Max(1000,Math.Ceiling(fan.Where(p=>p.Value.HasValue).Select(p=>p.Value!.Value).DefaultIfEmpty(0).Max()/1000)*1000);
+        double fanMaximum=Math.Max(1000,Math.Ceiling(Peak(session.MetricId("gpufan"),fan)/1000)*1000);
         string FanAxis(double value)=>$"{value:0} RPM";
         double left=compact?3:12,top=compact?8:18;
         if(showFan)left=Enumerable.Range(0,3).Max(i=>Formatted(FanAxis(fanMaximum*i/2)).Width)+10;
@@ -98,19 +175,44 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
             }
         }
         double timeLabelY=h-axisLabel.Height-(compact?2:6);
-        Label(dc,$"{HistoryRanges.Label(session.HistorySeconds)} ago",left,timeLabelY);Label(dc,"Now",left+pw-axisLabel.Width,timeLabelY);
-        DrawSeries(dc,points,now,maximum,left,top,pw,ph,Theme.GraphKey(kind),false);
-        if(kind=="network") DrawSeries(dc,secondary,now,maximum,left,top,pw,ph,Theme.GraphKey("upload"),true);
-        else if(compare) DrawSeries(dc,secondary,now,maximum,left,top,pw,ph,Theme.GraphKey(kind=="cpu"?"gpu":"gputemp"),true);
-        if(showFan)DrawSeries(dc,fan,now,fanMaximum,left,top,pw,ph,"Warning",false,true);
+        Label(dc,$"{HistoryRanges.Label(session.HistorySeconds)} ago"+(averaged?" · avg + range":""),left,timeLabelY);Label(dc,"Now",left+pw-axisLabel.Width,timeLabelY);
+        dc.PushClip(new RectangleGeometry(new Rect(left,top,pw,ph)));
+        // Retained WPF transform scrolls the recorded trace between polls without rebuilding it each frame.
+        var scroll=new TranslateTransform();
+        if(IsLoaded&&IsVisible&&points.Count+secondary.Count+fan.Count>0)
+            scroll.BeginAnimation(TranslateTransform.XProperty,new DoubleAnimation(0,-pw/session.HistorySeconds*Math.Min(1,session.Settings.PollingIntervalSeconds),TimeSpan.FromSeconds(Math.Min(1,session.Settings.PollingIntervalSeconds))));
+        dc.PushTransform(scroll);
+        void Trace(IReadOnlyList<SamplePoint> values,string metric,string color,bool dashed,bool dotted=false,double? scale=null)
+        {
+            double maximumValue=scale??maximum;
+            if(bands.TryGetValue(metric,out var range))DrawRange(dc,range,now,maximumValue,left,top,pw,ph,color);
+            DrawSeries(dc,values,now,maximumValue,left,top,pw,ph,color,dashed,dotted,averaged);
+        }
+        Trace(points,session.MetricId(kind),Theme.GraphKey(kind),false);
+        if(kind=="network")Trace(secondary,"network/upload",Theme.GraphKey("upload"),true);
+        else if(compare)Trace(secondary,session.MetricId(kind=="cpu"?"gpu":"gputemp"),Theme.GraphKey(kind=="cpu"?"gpu":"gputemp"),true);
+        if(showFan)Trace(fan,session.MetricId("gpufan"),"Warning",false,true,fanMaximum);
+        dc.Pop();dc.Pop();
         if(!points.Concat(secondary).Concat(fan).Any(p=>p.Value.HasValue)) Label(dc,sample is null?(compact?"Waiting for data…":"Waiting for first sample…"):(compact?"No readings in this range":"No available readings in this range"),left+(compact?4:15),top+ph/2);
     }
-    private void DrawSeries(DrawingContext dc,IReadOnlyList<SamplePoint> points,double now,double maximum,double left,double top,double width,double height,string color,bool dashed,bool dotted=false)
+    private void DrawRange(DrawingContext dc,IReadOnlyList<ChartRangePoint> points,double now,double maximum,double left,double top,double width,double height,string color)
+    {
+        var band=new StreamGeometry();using(var context=band.Open())
+        foreach(var point in points)
+        {
+            if(point.Minimum is not { } min||point.Maximum is not { } max)continue;
+            double x=left+width*(1-(now-point.StartSeconds)/session.HistorySeconds),end=left+width*(1-(now-point.EndSeconds)/session.HistorySeconds);
+            double y=top+height*(1-Math.Clamp(max/maximum,0,1)),bottom=top+height*(1-Math.Clamp(min/maximum,0,1));
+            context.BeginFigure(new(x,y),true,true);context.LineTo(new(Math.Max(x+.8,end),y),true,false);context.LineTo(new(Math.Max(x+.8,end),bottom),true,false);context.LineTo(new(x,bottom),true,false);
+        }
+        band.Freeze();dc.PushOpacity(.14);dc.DrawGeometry(Theme.Brush(color),null,band);dc.Pop();
+    }
+    private void DrawSeries(DrawingContext dc,IReadOnlyList<SamplePoint> points,double now,double maximum,double left,double top,double width,double height,string color,bool dashed,bool dotted=false,bool reduced=false)
     {
         var geometry=new StreamGeometry();bool open=false;Point? lastPoint=null;
         using(var context=geometry.Open())
         {
-            foreach(var point in SampleHistory.ReduceForChart(points,now,session.HistorySeconds,(int)Math.Ceiling(width)))
+            foreach(var point in reduced?points:SampleHistory.ReduceForChart(points,now,session.HistorySeconds,(int)Math.Ceiling(width)))
             {
                 if(!point.Value.HasValue){open=false;continue;}
                 var p=new Point(left+width*(1-(now-point.MonotonicSeconds)/session.HistorySeconds),top+height*(1-Math.Clamp(point.Value.Value/maximum,0,1)));
@@ -119,7 +221,7 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
             }
         }
         bool dense=CompareDevices&&session.HistorySeconds>=3600;
-        geometry.Freeze();var pen=new Pen(Theme.Brush(color),dense?1:2);if(dotted)pen.DashStyle=new DashStyle([1,3],0);else if(dashed)pen.DashStyle=new DashStyle([4,3],0);dc.DrawGeometry(null,pen,geometry);
+        geometry.Freeze();GraphStroke.Draw(dc,geometry,session.Settings,color,dense?1:2,dashed,dotted);
         double markerRadius=dense?1.5:2.5;
         if(lastPoint.HasValue) dc.DrawEllipse(Theme.Brush(color),null,lastPoint.Value,markerRadius,markerRadius);
     }
@@ -146,6 +248,7 @@ internal sealed class ChartCard : Border
         }
         // A forced MinHeight larger than the grid's remaining row caused WPF to clip axis labels.
         chart=new(session,kind){ClipToBounds=true};
+        chart.StatisticsReady+=UpdateStatistics;
         var grid=new Grid();grid.RowDefinitions.Add(new(){Height=GridLength.Auto});grid.RowDefinitions.Add(new(){Height=GridLength.Auto});grid.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});grid.RowDefinitions.Add(new(){Height=GridLength.Auto});
         var header=new DockPanel();var title=Ui.Heading(Ui.Title(kind),14);title.FontWeight=FontWeights.SemiBold;header.Children.Add(title);
         if(popButton){var pop=Ui.Button("Pop out ↗",()=>session.OpenDetached(kind));pop.HorizontalAlignment=HorizontalAlignment.Right;DockPanel.SetDock(pop,Dock.Right);header.Children.Insert(0,pop);}
@@ -168,7 +271,8 @@ internal sealed class ChartCard : Border
         if(kind=="network")
         {
             downloadValue.Text=$"↓ {Ui.Bytes(current,true)}    ";uploadValue.Text=$"↑ {Ui.Bytes(session.Stale?null:session.Value("network/upload"),true)}";
-            subtitle.Text="Solid: download    ·    Dashed: upload    ·    Shared scale";
+            string Pattern(string metric,bool dashed)=>CultureInfo.CurrentCulture.TextInfo.ToTitleCase(GraphStroke.Pattern(session.Settings,metric,dashed));
+            subtitle.Text=$"{Pattern("download",false)}: download    ·    {Pattern("upload",true)}: upload    ·    Shared scale";
         }
         else if(kind=="memory")
         {
@@ -181,9 +285,11 @@ internal sealed class ChartCard : Border
             subtitle.Text=data is null?"Discovering hardware…":kind.StartsWith("cpu")?data.CpuName:session.GpuName;
             if(current is null&&data is not null)subtitle.Text+=" · "+(session.Stale?"stale":"sensor unavailable");
         }
-        double now=session.Collector.ElapsedSeconds;var summary=session.Collector.History.Summarize(id,now,session.HistorySeconds);
+        chart.Refresh();
+    }
+    private void UpdateStatistics(Summary summary)
+    {
         Func<double?,string> format=kind=="network"?v=>Ui.Bytes(v,true):v=>Ui.Number(v,kind.Contains("temp")?"°C":"%");
         stats.Text=$"MIN  {format(summary.Minimum)}      AVG  {format(summary.Average)}      MAX  {format(summary.Maximum)}"+(kind=="network"?"    · Download":"");
-        chart.Refresh();
     }
 }

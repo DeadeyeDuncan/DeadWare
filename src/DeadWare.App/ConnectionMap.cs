@@ -34,6 +34,7 @@ public sealed class ConnectionMap : FrameworkElement
     private readonly List<Route> routes = [];
     private readonly List<(Point Center, string Key)> hitPoints = [];
     private bool routesDirty = true;
+    private bool projectionDirty = true;
 
     public ConnectionMap()
     {
@@ -91,7 +92,7 @@ public sealed class ConnectionMap : FrameworkElement
         var grouped = ConnectionProjection.Group(points);
         this.points = grouped.Points; OverflowCount = grouped.Overflow;
         var nextOrigin = origin is not null && ConnectionProjection.IsValid(origin) ? origin : null;
-        if(this.origin!=nextOrigin)activity.Clear();
+        if(this.origin!=nextOrigin){activity.Clear();projectionDirty=true;}
         this.origin = nextOrigin;
         this.available = available; this.status = status.Length > 240 ? status[..240] : status;
         var keys=this.points.Select(p=>(p.Key,p.Point)).ToHashSet();
@@ -179,19 +180,26 @@ public sealed class ConnectionMap : FrameworkElement
             cachedSize = RenderSize; cachedCamera = camera;
             coast = Geometry(ConnectionAssets.Land); borders = Geometry(ConnectionAssets.Borders); grid = Geometry(Graticules()); routesDirty = true;
             stateBorders = camera.Zoom > 1.25 ? Geometry(ConnectionAssets.StateBorders) : null;
+            projectionDirty=true;
         }
         if (!routesDirty) return;
+        var previous=projectionDirty?null:routes.ToDictionary(r=>(r.Data.Key,r.Data.Point));
         routes.Clear();
         double maximum=points.Select(p=>(double)p.ReceivedBytes+p.SentBytes).DefaultIfEmpty(0).Max();
         foreach (var point in points)
         {
-            var samples = origin is null ? Array.Empty<GeoPoint>() : ConnectionProjection.GreatCircle(origin, point.Point);
             double relative=maximum>0?Math.Log(1+(double)point.ReceivedBytes+point.SentBytes)/Math.Log(1+maximum):0;
+            if(previous is not null&&previous.TryGetValue((point.Key,point.Point),out var cached))
+            {
+                routes.Add(cached with {Data=point,Radius=3+relative*3,Width=.6+Math.Round(relative*4)*.15,Activity=activity[(point.Key,point.Point)]});
+                continue;
+            }
+            var samples = origin is null ? Array.Empty<GeoPoint>() : ConnectionProjection.GreatCircle(origin, point.Point);
             uint seed=2166136261;foreach(char c in point.Key)seed=unchecked((seed^c)*16777619);
             routes.Add(new(point,samples.Select(p=>ConnectionProjection.Project(p,camera)).ToArray(),
                 ConnectionProjection.ProjectPath(samples,camera).Select(s=>s.Select(Pixel).ToArray()).ToArray(),3+relative*3,.6+Math.Round(relative*4)*.15,seed%1000/100d,activity[(point.Key,point.Point)]));
         }
-        routesDirty = false;
+        routesDirty = false;projectionDirty=false;
     }
     private void DrawFlow(DrawingContext dc,Route route,Brush brush,bool received)
     {

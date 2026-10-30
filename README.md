@@ -25,14 +25,14 @@ Connections is available starting with version 0.6.21.
 - Close the dashboard to the system tray and keep graphs, the widget and monitoring running independently.
 - Restore the graphs and widget left open, including their saved positions and sizes.
 - Optional administrator startup at your Windows sign-in.
-- Shared 1-, 5- and 15-minute plus 1-, 3- and 6-hour graph ranges; all windows use one collector. Choose a range from the dropdown above the dashboard or in a pop-out's **⋯** menu. The dropdown follows the selected app theme, and its selected range stays synchronized across windows. The choice and recent CPU/GPU/RAM/network traces are saved locally across quits and computer restarts. Cooling Health's longer saved history is separate.
+- Shared 1-, 5- and 15-minute plus 1-, 3- and 6-hour graph ranges; all windows use one collector. Choose a range from the dropdown above the dashboard or in a pop-out's **⋯** menu. The dropdown follows the selected app theme, and its selected range stays synchronized across windows. The choice and recent CPU/GPU/RAM/network traces are saved locally across quits and computer restarts. Cooling Health's longer saved history is separate. At 1–6 hours, a per-pixel average line shows the trend and a faint min/max band retains spikes and variation. Missing readings remain gaps, and displayed statistics use the actual readings. Short ranges retain their detailed traces.
 - Local Cooling Health history, fixed reference comparisons, CSV export and optional sustained-change warnings.
 - Lifetime battery-percentage history with recorded charging and Windows battery-saver periods, Day/Week/Month/Year/All views, CSV export and a separate remembered window.
 - Startup and manual GitHub release checks, update-available notices, verified user-initiated updates and rollback to the previous installed version.
 - Six saved themes: **Midnight**, **Ember**, **Glacier**, **Amethyst**, **Neon**, and **Daylight**. Choose **Neon** in the sidebar's **Color theme** menu for near-black surfaces, electric cyan accents, and vivid green, magenta and blue graphs.
 - Scrollbars follow the selected theme across all windows, with matching native title bars on Windows 11.
 - Themes coordinate text colors and fonts across headings, controls, tables, graph labels and tooltips, and update open windows immediately.
-- Use the filled circles in each Overview graph's corner to choose its line color. Choices are saved and shared with pop-outs, widget traces and legends; download and upload have separate colors. Choose **Theme default** to clear a custom color.
+- Use the filled circles in each Overview graph's corner to choose its line color, **Default / Solid / Dashed / Dotted** pattern and optional **Neon glow**. Choices are saved and shared with pop-outs, widget traces and legends; download and upload have separate colors. Choose **Theme default** to clear a custom color; choose **Default** under Line style and turn off glow to restore the original trace style.
 
 ## Download and run
 
@@ -169,7 +169,7 @@ dotnet run --project src/DeadWare.App/DeadWare.App.csproj
 Create a self-contained portable ZIP and SHA-256 checksum:
 
 ```powershell
-pwsh -File scripts/publish.ps1 -Version 0.6.27
+pwsh -File scripts/publish.ps1 -Version 0.6.28
 ```
 
 The packaging script runs tests before publishing, bundles the independent self-contained update helper, and records all managed file hashes in `deadware-package.json`. Output goes under `artifacts/`. GitHub Actions runs the same script. Pushing a normal three-part version tag such as `v0.6.0` builds and publishes a normal release after tests pass, using the matching `docs/releases/v0.6.0.md` notes. Workflows use pinned action commits.

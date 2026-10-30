@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.6.28 — Smoother graphs and custom line styles
+
+- Add **Default, Solid, Dashed and Dotted** line patterns and optional **Neon glow** to each graph's color popout. Choices are saved per trace and shared with the dashboard, graph windows and widget; legends follow the selected pattern.
+- Make 1-, 3- and 6-hour graphs easier to read with an average trend line and a subtle min/max band. Real peaks, gaps, current readings and summary statistics remain represented.
+- Prepare large chart histories in the background and scroll traces smoothly between refreshes, reducing the polling interruptions to map dragging and animation.
+- Reuse connection-map paths when only traffic changes and reduce repeated projection work while panning.
+
 ## 0.6.27 — Gentler transitions and interactive widget maps
 
 - Ease active connection waves into idle: brightness, wave size and motion settle gradually instead of snapping. Returning traffic resumes smoothly from the current wave phase.

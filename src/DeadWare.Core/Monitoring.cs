@@ -27,6 +27,8 @@ public sealed class SampleHistory
     private readonly Queue<Snapshot> samples=new();
     private readonly Dictionary<string,string> keys=new(StringComparer.Ordinal);
     private double lastSeconds=double.NegativeInfinity;
+    private Snapshot[]? chartSnapshot;
+    public int Count {get {lock(gate)return samples.Count;}}
     public void Add(Snapshot s)
     {
         if (!double.IsFinite(s.MonotonicSeconds)) return;
@@ -34,6 +36,7 @@ public sealed class SampleHistory
         {
             if(s.MonotonicSeconds<=lastSeconds) return;
             samples.Enqueue(Copy(s));
+            chartSnapshot=null;
             lastSeconds=s.MonotonicSeconds;
             while(samples.Count>HistoryRanges.MaximumSamples || (samples.Count>0 && samples.Peek().MonotonicSeconds<s.MonotonicSeconds-HistoryRanges.MaximumSeconds)) samples.Dequeue();
         }
@@ -65,6 +68,7 @@ public sealed class SampleHistory
             }
             var ordered=merged.Values.Where(s=>s.MonotonicSeconds>=cutoff).OrderBy(s=>s.MonotonicSeconds).TakeLast(HistoryRanges.MaximumSamples).ToArray();
             samples.Clear();foreach(var sample in ordered)samples.Enqueue(sample);
+            chartSnapshot=null;
             if(ordered.Length>0)lastSeconds=ordered[^1].MonotonicSeconds;
         }
     }
@@ -102,6 +106,38 @@ public sealed class SampleHistory
     private Snapshot[] Capture(double now,int seconds)
     {
         lock(gate)return samples.Where(s=>s.MonotonicSeconds>=now-seconds&&s.MonotonicSeconds<=now).ToArray();
+    }
+    /// <summary>Pixel-bucket averages and extrema from immutable snapshot references; gaps are never averaged across.</summary>
+    public IReadOnlyList<ChartRangePoint> ChartRanges(string id,double now,int seconds,int pixelWidth)
+    {
+        if(!double.IsFinite(now)||seconds<=0||pixelWidth<=0)throw new ArgumentOutOfRangeException(nameof(now));
+        Snapshot[] captured;lock(gate)captured=chartSnapshot??=samples.ToArray();
+        var result=new List<ChartRangePoint>(Math.Min(pixelWidth,4096));
+        int bucket=-1,count=0;double total=0,min=0,max=0,start=0,end=0;
+        Snapshot? previous=null;double previousInterval=1;
+        void Flush()
+        {
+            if(count==0)return;
+            result.Add(new(start,end,total/count,min,max,count));count=0;bucket=-1;
+        }
+        void Gap(double time)
+        {
+            Flush();if(result.Count==0||result[^1].Average.HasValue)result.Add(new(time,time,null,null,null,0));
+        }
+        foreach(var sample in captured)
+        {
+            double time=sample.MonotonicSeconds;
+            if(time<now-seconds||time>now)continue;
+            double interval=PollingPolicy.Normalize(sample.PollingIntervalSeconds);
+            if(previous is not null&&(sample.SessionId!=previous.SessionId||time-previous.MonotonicSeconds>Math.Max(previousInterval,interval)+1.5))Gap(time);
+            previous=sample;previousInterval=interval;
+            if(Finite(sample.Values.GetValueOrDefault(id)) is not { } value){Gap(time);continue;}
+            int column=(int)Math.Clamp((time-(now-seconds))*pixelWidth/seconds,0,pixelWidth-1);
+            if(column!=bucket)Flush();
+            if(count==0){bucket=column;start=time;min=max=value;total=0;}
+            end=time;min=Math.Min(min,value);max=Math.Max(max,value);total+=value;count++;
+        }
+        Flush();return result;
     }
     public Summary Summarize(string id,double now,int seconds)
     {
@@ -183,6 +219,7 @@ public sealed class SampleHistory
         return v.Length==0?new(null,null,null):new(v.Min(),v.Max(),v.Average());
     }
 }
+public readonly record struct ChartRangePoint(double StartSeconds,double EndSeconds,double? Average,double? Minimum,double? Maximum,int Samples);
 public sealed class CounterRate
 {
     private long? previous;
@@ -278,6 +315,7 @@ public sealed class UserSettings
     public bool ExtendedSensors {get;set;}
     public string Theme {get;set;}="Midnight";
     public Dictionary<string,string> GraphColors {get;set;}=new();
+    public Dictionary<string,GraphLineStyle> GraphStyles {get;set;}=new();
     public int HistorySeconds {get;set;}=60;
     public string? SelectedGpuId {get;set;}
     public Dictionary<string,WindowPlacement> Windows {get;set;}=new();
@@ -293,6 +331,7 @@ public static class SettingsCodec
             if(s is null) return new(new(),"Settings were empty; defaults restored.");
             if(s.Theme is not ("Midnight" or "Ember" or "Glacier" or "Amethyst" or "Neon" or "Daylight")) s.Theme="Midnight";
             s.GraphColors=GraphColorSettings.Normalize(s.GraphColors);
+            s.GraphStyles=GraphLineStyles.Normalize(s.GraphStyles);
             if(string.IsNullOrWhiteSpace(s.ConnectionsHomeCityId)||s.ConnectionsHomeCityId.Length>80||s.ConnectionsHomeCityId.Any(char.IsControl))s.ConnectionsHomeCityId=null;
             bool invalid=!HistoryRanges.IsSupported(s.HistorySeconds) || s.Windows is null || PollingPolicy.Normalize(s.PollingIntervalSeconds)!=s.PollingIntervalSeconds;
             var widgetGraphs=WidgetGraphSelection.Normalize(s.WidgetGraphs);

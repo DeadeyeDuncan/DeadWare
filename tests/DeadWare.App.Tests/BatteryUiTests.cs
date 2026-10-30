@@ -63,6 +63,7 @@ public class BatteryUiTests
                 ConnectionsPageUiChecks.Run(app);
                 Phase("Connections widget (all six themes)");
                 ConnectionsWidgetUiChecks.Run(app);
+                LiveRenderingUiChecks.Run();
                 Phase("battery history");
                 var assembly = typeof(Collector).Assembly;
                 var pageType = assembly.GetType("DeadWare.App.BatteryHistoryPage"); Assert.NotNull(pageType);
@@ -884,7 +885,7 @@ public class BatteryUiTests
         Assert.Equal(thermalTop + thermalHeight * (1 - 125.0 / 140), Drawings(thermalDrawing).First(item => item.Geometry is StreamGeometry).Geometry.Bounds.Top, 3);
         session.Settings.HistorySeconds = 3600; Changed(); content.UpdateLayout();
         Assert.All(Descendants(content).OfType<FrameworkElement>().Where(element => element.GetType().Name == "HistoryChart"), chart =>
-            Assert.All(Drawings(VisualTreeHelper.GetDrawing(chart)!).Where(item => item.Geometry is StreamGeometry), item => Assert.Equal((string)chart.GetType().GetField("kind", All)!.GetValue(chart)! is "cpu" or "cputemp" ? 1 : 2, item.Pen.Thickness)));
+            Assert.All(Drawings(VisualTreeHelper.GetDrawing(chart)!).Where(item => item.Geometry is StreamGeometry&&item.Pen is not null), item => Assert.Equal((string)chart.GetType().GetField("kind", All)!.GetValue(chart)! is "cpu" or "cputemp" ? 1 : 2, item.Pen.Thickness)));
         session.Settings.HistorySeconds = 60;
         Set(collector, "latest", reading with { Sample = reading.Sample with { MonotonicSeconds = -10 } }); Changed();
         string stale = string.Join("\n", Descendants(content).OfType<TextBlock>().Select(block => block.Text));
@@ -1076,6 +1077,14 @@ public class BatteryUiTests
                 Assert.Equal(chosen, BrushColor(dot.Fill));
                 actions.Single(button => button.Content?.ToString() == "Theme default").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
                 Assert.False(session.Settings.GraphColors.ContainsKey(kinds[index]));
+                var pattern = Descendants(popup.Child).OfType<ComboBox>().Single();
+                var glow = Descendants(popup.Child).OfType<CheckBox>().Single();
+                pattern.SelectedIndex = 2; glow.IsChecked = true;
+                Assert.Equal(new GraphLineStyle("dashed", true), session.Settings.GraphStyles[kinds[index]]);
+                CompleteSettingsSave(session);
+                Assert.Equal(session.Settings.GraphStyles[kinds[index]], SettingsCodec.Read(File.ReadAllText(settingsPath)).Settings.GraphStyles[kinds[index]]);
+                pattern.SelectedIndex = 0; glow.IsChecked = false;
+                Assert.False(session.Settings.GraphStyles.ContainsKey(kinds[index]));
                 string? paletteOutput = Environment.GetEnvironmentVariable("DEADWARE_UI_OUTPUT");
                 if (paletteOutput is not null && kind == "cpu")
                 {
