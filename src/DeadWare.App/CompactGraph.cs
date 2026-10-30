@@ -63,6 +63,7 @@ internal sealed class CompactGraph : Border
 
     private void Refresh()
     {
+        string Pattern(string metric,bool dashed=false)=>System.Globalization.CultureInfo.CurrentCulture.TextInfo.ToTitleCase(GraphStroke.Pattern(session.Settings,metric,dashed));
         string id=session.MetricId(chartKind);double? current=session.Stale?null:session.Value(id);
         double? other=joined?(session.Stale?null:session.Value(session.MetricId(chartKind=="cpu"?"gpu":"gputemp"))):null;
         var data=session.Current;
@@ -76,14 +77,14 @@ internal sealed class CompactGraph : Border
             string unit=chartKind=="cputemp"?" °C":" %";
             value.Text="CPU "+Ui.Number(current)+unit;upload.Text="GPU "+Ui.Number(other)+unit;
             value.ToolTip=data?.CpuName;upload.ToolTip=session.GpuName;
-            details.Text=$"CPU · {data?.CpuName??"Unavailable"}\nSolid CPU-color line\n\nGPU · {session.GpuName}\nDashed GPU-color line\n"+(showFan?"CPU / GPU temperatures share the right °C scale.":"Both devices share the same scale.");
+            details.Text=$"CPU · {data?.CpuName??"Unavailable"}\n{Pattern(chartKind)} CPU-color line\n\nGPU · {session.GpuName}\n{Pattern(chartKind=="cpu"?"gpu":"gputemp",true)} GPU-color line\n"+(showFan?"CPU / GPU temperatures share the right °C scale.":"Both devices share the same scale.");
             AutomationProperties.SetName(value,$"{data?.CpuName??"CPU"} {value.Text}");
             AutomationProperties.SetName(upload,$"{session.GpuName} {upload.Text}");
         }
         else if(kind=="network")
         {
             value.Text=$"↓ {Ui.Bytes(current,true)}";upload.Text=$"↑ {Ui.Bytes(session.Stale?null:session.Value("network/upload"),true)}";
-            details.Text="↓ Download: solid line\n↑ Upload: dashed line\nBoth directions share the same scale.";
+            details.Text=$"↓ Download: {GraphStroke.Pattern(session.Settings,"download")} line\n↑ Upload: {GraphStroke.Pattern(session.Settings,"upload",true)} line\nBoth directions share the same scale.";
             AutomationProperties.SetName(value,$"Download {Ui.Bytes(current,true)}");AutomationProperties.SetName(upload,$"Upload {Ui.Bytes(session.Stale?null:session.Value("network/upload"),true)}");
         }
         else if(kind=="memory")

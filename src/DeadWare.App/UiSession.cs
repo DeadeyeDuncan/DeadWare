@@ -95,6 +95,15 @@ public sealed class UiSession
         Theme.SetGraphColors(Settings.GraphColors);Changed?.Invoke();_ = SaveAsync();
     }
     public void SetExtendedSensors(bool enabled) {Settings.ExtendedSensors=enabled;_ = SaveAsync();}
+    public void SetGraphStyle(string kind,string pattern,bool glow)
+    {
+        if(kind=="network")kind="download";
+        if(!GraphColorSettings.Kinds.Contains(kind)||!GraphLineStyles.IsPattern(pattern))return;
+        var style=new GraphLineStyle(pattern,glow);
+        if(Settings.GraphStyles.GetValueOrDefault(kind,new())==style)return;
+        if(pattern=="default"&&!glow)Settings.GraphStyles.Remove(kind);else Settings.GraphStyles[kind]=style;
+        Changed?.Invoke();_ = SaveAsync();
+    }
     public void SetGpuFanSpeed(bool enabled)
     {
         if(Settings.ShowGpuFanSpeed==enabled)return;

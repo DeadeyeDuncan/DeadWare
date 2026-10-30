@@ -6,6 +6,7 @@ using System.Windows.Input;
 using System.Windows.Markup;
 using System.Windows.Media;
 using System.Windows.Shapes;
+using DeadWare.Core;
 
 namespace DeadWare.App;
 
@@ -28,7 +29,7 @@ internal sealed class GraphColorPicker : Button
     {
         Width=26;Height=26;Padding=new(0);Margin=new(3);Template=CircleTemplate;Cursor=Cursors.Hand;
         string title=kind switch {"download"=>"Download","upload"=>"Upload",_=>Ui.Title(kind)};
-        ToolTip=$"Change {title} color";AutomationProperties.SetName(this,(string)ToolTip);
+        ToolTip=$"Change {title} color and line style";AutomationProperties.SetName(this,(string)ToolTip);
         var dot=new Ellipse {Width=12,Height=12};dot.SetResourceReference(Shape.FillProperty,Theme.GraphKey(kind));Content=dot;
         popup=new Popup {PlacementTarget=this,Placement=PlacementMode.Bottom,StaysOpen=false,AllowsTransparency=true};
         var menu=new StackPanel();KeyboardNavigation.SetTabNavigation(menu,KeyboardNavigationMode.Cycle);
@@ -52,8 +53,24 @@ internal sealed class GraphColorPicker : Button
             Focus();
         }));
         menu.Children.Add(Ui.Button("Theme default",()=>{session.SetGraphColor(kind,null);popup.IsOpen=false;Focus();}));
+        menu.Children.Add(Ui.Heading("Line style",12));
+        var pattern=new ComboBox {ItemsSource=new[]{"Default","Solid","Dashed","Dotted"},SelectedIndex=0,MinWidth=160,Margin=new(0,5,0,5)};
+        var glow=new CheckBox {Content="Neon glow",Margin=new(0,3,0,3)};
+        AutomationProperties.SetName(pattern,"Line pattern");
+        pattern.ToolTip="Line pattern for this trace across graphs, pop-outs and widget";
+        glow.ToolTip="A subtle glow around this trace";
+        menu.Children.Add(pattern);menu.Children.Add(glow);
+        bool syncing=false;
+        string[] patterns=["default","solid","dashed","dotted"];
+        void SyncStyle()
+        {
+            syncing=true;var style=session.Settings.GraphStyles.GetValueOrDefault(kind,new());
+            pattern.SelectedIndex=Array.IndexOf(patterns,style.Pattern);glow.IsChecked=style.Glow;syncing=false;
+        }
+        void SaveStyle(){if(!syncing&&pattern.SelectedIndex>=0)session.SetGraphStyle(kind,patterns[pattern.SelectedIndex],glow.IsChecked==true);}
+        pattern.SelectionChanged+=(_,_)=>SaveStyle();glow.Checked+=(_,_)=>SaveStyle();glow.Unchecked+=(_,_)=>SaveStyle();SyncStyle();
         popup.Child=Ui.Panel(menu,new Thickness(10));AddLogicalChild(popup);
-        Click+=(_,_)=>{popup.IsOpen=!popup.IsOpen;if(popup.IsOpen)menu.MoveFocus(new TraversalRequest(FocusNavigationDirection.First));};
+        Click+=(_,_)=>{SyncStyle();popup.IsOpen=!popup.IsOpen;if(popup.IsOpen)menu.MoveFocus(new TraversalRequest(FocusNavigationDirection.First));};
         menu.PreviewKeyDown+=(_,e)=>{if(e.Key==Key.Escape){popup.IsOpen=false;Focus();e.Handled=true;}};
         Unloaded+=(_,_)=>popup.IsOpen=false;
     }

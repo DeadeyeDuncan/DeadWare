@@ -12,6 +12,7 @@ internal sealed class WidgetGraph : Border
     private readonly TextBlock fan=Ui.Text("",11,"Warning",font:"MetricFont");
     private readonly StackPanel fanLegend;
     private readonly HistoryChart chart;
+    private readonly List<(Line Line,string Color,bool Dashed,bool Dotted)> legendLines=[];
     public WidgetGraph(UiSession session,string kind)
     {
         this.session=session;this.kind=kind;
@@ -28,21 +29,27 @@ internal sealed class WidgetGraph : Border
         fanLegend=Legend(fan,"Warning",false,true);fanLegend.Visibility=Visibility.Collapsed;fanLegend.Margin=new(0,3,0,0);fanLegend.ToolTip="Selected GPU's first reported fan · dotted trace · separate left RPM scale";Grid.SetRow(fanLegend,1);grid.Children.Add(fanLegend);
         Grid.SetRow(chart,2);grid.Children.Add(chart);Child=grid;
     }
-    private static StackPanel Legend(TextBlock value,string color,bool dashed,bool dotted=false)
+    private StackPanel Legend(TextBlock value,string color,bool dashed,bool dotted=false)
     {
         var line=new Line {X1=0,Y1=5,X2=14,Y2=5,Width=14,Height=10,StrokeThickness=2,Margin=new(0,0,4,0),VerticalAlignment=VerticalAlignment.Center};
         line.SetResourceReference(Shape.StrokeProperty,color);if(dotted)line.StrokeDashArray=new([1,3]);else if(dashed)line.StrokeDashArray=new([3,2]);
+        legendLines.Add((line,color,dashed,dotted));
         var item=Ui.Row(line,value);item.Margin=new(0,0,10,0);return item;
     }
     public void Refresh()
     {
+        foreach(var (line,color,dashed,dotted) in legendLines)
+        {
+            var style=GraphStroke.Style(session.Settings,color);
+            line.StrokeDashArray=style.Pattern=="default"?(dotted?new([1,3]):dashed?new([3,2]):new()):GraphStroke.Dashes(style,dashed,dotted);
+        }
         bool showFan=kind=="cputemp"&&session.Settings.ShowGpuFanSpeed;
         fanLegend.Visibility=showFan?Visibility.Visible:Visibility.Collapsed;
         if(showFan)fan.Text=Ui.GpuFanText(session)+" · left RPM";
         double? Value(string metric)=>session.Stale?null:session.Value(session.MetricId(metric));
         if(kind=="network")
         {
-            title.Text="Network";title.ToolTip="Network download (solid) and upload (dashed), in bytes per second";
+            title.Text="Network";title.ToolTip=$"Network download ({GraphStroke.Pattern(session.Settings,"download")}) and upload ({GraphStroke.Pattern(session.Settings,"upload",true)}), in bytes per second";
             primary.Text="↓ "+Ui.Bytes(session.Stale?null:session.Value("network/download"),true);primary.ToolTip="Download rate";
             secondary.Text="↑ "+Ui.Bytes(session.Stale?null:session.Value("network/upload"),true);secondary.ToolTip="Upload rate";
         }
