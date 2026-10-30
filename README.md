@@ -32,7 +32,7 @@ Connections is available starting with version 0.6.21.
 - Six saved themes: **Midnight**, **Ember**, **Glacier**, **Amethyst**, **Neon**, and **Daylight**. Choose **Neon** in the sidebar's **Color theme** menu for near-black surfaces, electric cyan accents, and vivid green, magenta and blue graphs.
 - Scrollbars follow the selected theme across all windows, with matching native title bars on Windows 11.
 - Themes coordinate text colors and fonts across headings, controls, tables, graph labels and tooltips, and update open windows immediately.
-- Use the filled circles in each Overview graph's corner to choose its line color, **Default / Solid / Dashed / Dotted** pattern and optional **Neon glow**. Choices are saved and shared with pop-outs, widget traces and legends; download and upload have separate colors. Choose **Theme default** to clear a custom color; choose **Default** under Line style and turn off glow to restore the original trace style.
+- Use the filled circles in each Overview graph's corner to choose its line color, **Default / Solid / Dashed / Dotted** pattern, **Line thickness** (50–300%) and optional **Neon glow** with **Glow strength** (0–300%). 100% preserves the original thickness/glow. Choices are saved and shared with pop-outs, widget traces and legends; download and upload have separate colors. Choose **Theme default** to clear a custom color; choose **Default** under Line style, return both sliders to 100%, and turn off glow to restore the original trace style.
 
 ## Download and run
 
@@ -169,7 +169,7 @@ dotnet run --project src/DeadWare.App/DeadWare.App.csproj
 Create a self-contained portable ZIP and SHA-256 checksum:
 
 ```powershell
-pwsh -File scripts/publish.ps1 -Version 0.6.28
+pwsh -File scripts/publish.ps1 -Version 0.6.29
 ```
 
 The packaging script runs tests before publishing, bundles the independent self-contained update helper, and records all managed file hashes in `deadware-package.json`. Output goes under `artifacts/`. GitHub Actions runs the same script. Pushing a normal three-part version tag such as `v0.6.0` builds and publishes a normal release after tests pass, using the matching `docs/releases/v0.6.0.md` notes. Workflows use pinned action commits.

@@ -16,13 +16,14 @@ internal static class GraphStroke
     public static void Draw(DrawingContext dc,Geometry geometry,UserSettings settings,string color,double width,bool dashed,bool dotted)
     {
         var style=Style(settings,color);
+        width*=style.Thickness;
         var pen=new Pen(Theme.Brush(color),width){DashStyle=new(Dashes(style,dashed,dotted),0),LineJoin=PenLineJoin.Round};
         pen.Freeze();
-        if(style.Glow&&!SystemParameters.HighContrast)
+        if(style.Glow&&style.GlowStrength>0&&!SystemParameters.HighContrast)
         {
-            double glowWidth=width+4;
+            double glowWidth=width+4*style.GlowStrength;
             var halo=new Pen(pen.Brush,glowWidth){DashStyle=new(pen.DashStyle.Dashes.Select(d=>d*width/glowWidth),0),LineJoin=PenLineJoin.Round};halo.Freeze();
-            dc.PushOpacity(.16);dc.DrawGeometry(null,halo,geometry);dc.Pop();
+            dc.PushOpacity(.16*style.GlowStrength);dc.DrawGeometry(null,halo,geometry);dc.Pop();
         }
         dc.DrawGeometry(null,pen,geometry);
     }

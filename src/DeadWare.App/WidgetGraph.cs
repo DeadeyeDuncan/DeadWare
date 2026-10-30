@@ -41,6 +41,7 @@ internal sealed class WidgetGraph : Border
         foreach(var (line,color,dashed,dotted) in legendLines)
         {
             var style=GraphStroke.Style(session.Settings,color);
+            line.StrokeThickness=2*style.Thickness;
             line.StrokeDashArray=style.Pattern=="default"?(dotted?new([1,3]):dashed?new([3,2]):new()):GraphStroke.Dashes(style,dashed,dotted);
         }
         bool showFan=kind=="cputemp"&&session.Settings.ShowGpuFanSpeed;

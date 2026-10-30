@@ -54,23 +54,49 @@ internal sealed class GraphColorPicker : Button
         }));
         menu.Children.Add(Ui.Button("Theme default",()=>{session.SetGraphColor(kind,null);popup.IsOpen=false;Focus();}));
         menu.Children.Add(Ui.Heading("Line style",12));
-        var pattern=new ComboBox {ItemsSource=new[]{"Default","Solid","Dashed","Dotted"},SelectedIndex=0,MinWidth=160,Margin=new(0,5,0,5)};
-        var glow=new CheckBox {Content="Neon glow",Margin=new(0,3,0,3)};
-        AutomationProperties.SetName(pattern,"Line pattern");
-        pattern.ToolTip="Line pattern for this trace across graphs, pop-outs and widget";
-        glow.ToolTip="A subtle glow around this trace";
-        menu.Children.Add(pattern);menu.Children.Add(glow);
-        bool syncing=false;
+        // Four inline choices keep pattern selection within this popup.
         string[] patterns=["default","solid","dashed","dotted"];
+        var patternPanel=new UniformGrid {Columns=2,Margin=new(0,5,0,5)};
+        var patternChoices=new[]{"Default","Solid","Dashed","Dotted"}.Select(label=>new RadioButton {Content=label,Margin=new(0,3,8,3)}).ToArray();
+        foreach(var choice in patternChoices){choice.SetResourceReference(ForegroundProperty,"Ink");patternPanel.Children.Add(choice);AutomationProperties.SetName(choice,$"{choice.Content} line pattern");}
+        var glow=new CheckBox {Content="Neon glow",Margin=new(0,3,0,3)};
+        patternPanel.ToolTip="Line pattern for this trace across graphs, pop-outs and widget";
+        glow.ToolTip="A glow around this trace";
+        menu.Children.Add(patternPanel);
+        var thicknessLabel=Ui.Text("",12);menu.Children.Add(thicknessLabel);
+        var thickness=new Slider {Minimum=50,Maximum=300,Value=100,TickFrequency=25,SmallChange=25,LargeChange=50,IsSnapToTickEnabled=true,MinWidth=170,Margin=new(0,4,0,8)};
+        AutomationProperties.SetName(thickness,"Line thickness percent");
+        thickness.ToolTip="50–300% of the normal trace width; 100% keeps the original thickness";
+        menu.Children.Add(thickness);menu.Children.Add(glow);
+        var strengthLabel=Ui.Text("",12);menu.Children.Add(strengthLabel);
+        var strength=new Slider {Minimum=0,Maximum=300,Value=100,TickFrequency=10,SmallChange=10,LargeChange=50,IsSnapToTickEnabled=true,MinWidth=170,Margin=new(0,4,0,4)};
+        AutomationProperties.SetName(strength,"Neon glow strength percent");
+        strength.ToolTip="0–300% glow brightness and spread; 100% keeps the original glow";
+        menu.Children.Add(strength);
+        bool syncing=false;
         void SyncStyle()
         {
             syncing=true;var style=session.Settings.GraphStyles.GetValueOrDefault(kind,new());
-            pattern.SelectedIndex=Array.IndexOf(patterns,style.Pattern);glow.IsChecked=style.Glow;syncing=false;
+            for(int i=0;i<patterns.Length;i++)patternChoices[i].IsChecked=patterns[i]==style.Pattern;
+            glow.IsChecked=style.Glow;
+            thickness.Value=style.Thickness*100;strength.Value=style.GlowStrength*100;syncing=false;UpdateControls();
         }
-        void SaveStyle(){if(!syncing&&pattern.SelectedIndex>=0)session.SetGraphStyle(kind,patterns[pattern.SelectedIndex],glow.IsChecked==true);}
-        pattern.SelectionChanged+=(_,_)=>SaveStyle();glow.Checked+=(_,_)=>SaveStyle();glow.Unchecked+=(_,_)=>SaveStyle();SyncStyle();
+        void UpdateControls()
+        {
+            thicknessLabel.Text=$"Line thickness · {thickness.Value:0}%";strengthLabel.Text=$"Glow strength · {strength.Value:0}%";
+            strength.IsEnabled=glow.IsChecked==true;strengthLabel.Opacity=strength.IsEnabled?1:.5;
+        }
+        void SaveStyle(){UpdateControls();int selected=Array.FindIndex(patternChoices,choice=>choice.IsChecked==true);if(!syncing&&selected>=0)session.SetGraphStyle(kind,patterns[selected],glow.IsChecked==true,thickness.Value/100,strength.Value/100);}
+        thickness.ValueChanged+=(_,_)=>SaveStyle();strength.ValueChanged+=(_,_)=>SaveStyle();
+        foreach(var choice in patternChoices)choice.Checked+=(_,_)=>SaveStyle();
+        glow.Checked+=(_,_)=>SaveStyle();glow.Unchecked+=(_,_)=>SaveStyle();SyncStyle();
         popup.Child=Ui.Panel(menu,new Thickness(10));AddLogicalChild(popup);
-        Click+=(_,_)=>{SyncStyle();popup.IsOpen=!popup.IsOpen;if(popup.IsOpen)menu.MoveFocus(new TraversalRequest(FocusNavigationDirection.First));};
+        Click+=(_,e)=>
+        {
+            // Popup children are logical descendants. Ignore their bubbling Click events.
+            if(!ReferenceEquals(e.OriginalSource,this))return;
+            SyncStyle();popup.IsOpen=!popup.IsOpen;if(popup.IsOpen)menu.MoveFocus(new TraversalRequest(FocusNavigationDirection.First));
+        };
         menu.PreviewKeyDown+=(_,e)=>{if(e.Key==Key.Escape){popup.IsOpen=false;Focus();e.Handled=true;}};
         Unloaded+=(_,_)=>popup.IsOpen=false;
     }

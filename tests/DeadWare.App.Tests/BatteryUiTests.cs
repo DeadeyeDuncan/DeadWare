@@ -1077,13 +1077,26 @@ public class BatteryUiTests
                 Assert.Equal(chosen, BrushColor(dot.Fill));
                 actions.Single(button => button.Content?.ToString() == "Theme default").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
                 Assert.False(session.Settings.GraphColors.ContainsKey(kinds[index]));
-                var pattern = Descendants(popup.Child).OfType<ComboBox>().Single();
+                Assert.Empty(Descendants(popup.Child).OfType<ComboBox>());
+                var patterns = Descendants(popup.Child).OfType<RadioButton>().ToArray();
+                Assert.Equal(new[]{"Default","Solid","Dashed","Dotted"},patterns.Select(choice=>choice.Content));
+                patterns[2].RaiseEvent(new RoutedEventArgs(Button.ClickEvent,patterns[2]));
+                Assert.False(popup.IsOpen); // A child click must never toggle the owning color button.
                 var glow = Descendants(popup.Child).OfType<CheckBox>().Single();
-                pattern.SelectedIndex = 2; glow.IsChecked = true;
-                Assert.Equal(new GraphLineStyle("dashed", true), session.Settings.GraphStyles[kinds[index]]);
+                var sliders = Descendants(popup.Child).OfType<Slider>().ToArray();
+                Assert.Equal(2, sliders.Length);
+                var thickness = sliders.Single(slider => System.Windows.Automation.AutomationProperties.GetName(slider) == "Line thickness percent");
+                var strength = sliders.Single(slider => System.Windows.Automation.AutomationProperties.GetName(slider) == "Neon glow strength percent");
+                Assert.Equal(100, thickness.Value); Assert.Equal(100, strength.Value); Assert.False(strength.IsEnabled);
+                patterns[2].IsChecked = true; glow.IsChecked = true;
+                Assert.True(strength.IsEnabled);
+                thickness.Value = 200; strength.Value = 250;
+                Assert.Equal(new GraphLineStyle("dashed", true, 2, 2.5), session.Settings.GraphStyles[kinds[index]]);
+                glow.IsChecked = false; Assert.False(strength.IsEnabled); Assert.Equal(250, strength.Value);
+                glow.IsChecked = true;
                 CompleteSettingsSave(session);
                 Assert.Equal(session.Settings.GraphStyles[kinds[index]], SettingsCodec.Read(File.ReadAllText(settingsPath)).Settings.GraphStyles[kinds[index]]);
-                pattern.SelectedIndex = 0; glow.IsChecked = false;
+                patterns[0].IsChecked = true; glow.IsChecked = false; thickness.Value = 100; strength.Value = 100;
                 Assert.False(session.Settings.GraphStyles.ContainsKey(kinds[index]));
                 string? paletteOutput = Environment.GetEnvironmentVariable("DEADWARE_UI_OUTPUT");
                 if (paletteOutput is not null && kind == "cpu")
@@ -1174,9 +1187,44 @@ public class BatteryUiTests
                     var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap)); encoder.Save(file);
                 }
             }
+            // Reload persisted styles before checking both existing and recreated graph surfaces.
+            foreach(string metric in colors.Keys)session.SetGraphStyle(metric,metric=="upload"?"solid":"dotted",true,metric=="upload"?2:1.5,2);
+            CompleteSettingsSave(session);
+            session.Settings.GraphStyles=SettingsCodec.Read(File.ReadAllText(settingsPath)).Settings.GraphStyles;
+            void CheckStyles(FrameworkElement graph,string[] kinds)
+            {
+                var chart=Field(graph,"chart");graph.GetType().GetMethod("Refresh",All)!.Invoke(graph,null);
+                chart.GetType().GetMethod("Refresh",All)!.Invoke(chart,null);graph.UpdateLayout();
+                var traces=Traces(chart);int passes=SystemParameters.HighContrast?1:2;
+                Assert.Equal(kinds.Length*passes,traces.Length);
+                for(int index=0;index<kinds.Length;index++)
+                {
+                    var style=session.Settings.GraphStyles[kinds[index]];var pen=traces[index*passes+passes-1].Pen;
+                    Assert.Equal(2*style.Thickness,pen.Thickness);
+                    Assert.Equal(style.Pattern=="solid"?Array.Empty<double>():new double[]{1,3},pen.DashStyle.Dashes);
+                    if(passes==2)Assert.Equal(pen.Thickness+8,traces[index*passes].Pen.Thickness);
+                }
+            }
+            foreach(var (view,kinds,_) in views)
+            {
+                var viewport=new Border {Child=view};owner.Content=viewport;
+                viewport.Measure(new Size(460,240));viewport.Arrange(new Rect(0,0,460,240));viewport.UpdateLayout();
+                CheckStyles(view,kinds);viewport.Child=null;owner.Content=null;
+            }
+            foreach(var graph in Descendants(widget).OfType<FrameworkElement>().Where(element=>element.GetType().Name=="WidgetGraph"))
+            {
+                string kind=(string)graph.GetType().GetField("kind",All)!.GetValue(graph)!;
+                string[] kinds=kind switch {"cpu"=>["cpu","gpu"],"cputemp"=>["cputemp","gputemp"],"network"=>["download","upload"],_=>["memory"]};
+                CheckStyles(graph,kinds);
+                Assert.Equal(kinds.Select(metric=>2*session.Settings.GraphStyles[metric].Thickness),Descendants(graph).OfType<System.Windows.Shapes.Line>().Where(line=>line.Parent is not UIElement {Visibility:Visibility.Collapsed}).Select(line=>line.StrokeThickness));
+            }
+            var reopened=(FrameworkElement)Activator.CreateInstance(assembly.GetType("DeadWare.App.CompactGraph")!,All,null,[session,"network",owner],null)!;
+            owner.Content=reopened;reopened.Measure(new Size(460,240));reopened.Arrange(new Rect(0,0,460,240));reopened.UpdateLayout();
+            CheckStyles(reopened,["download","upload"]);
         }
         finally
         {
+            foreach(string metric in colors.Keys)session.SetGraphStyle(metric,"default",false);
             owner.Content = null;
             Assert.Equal(IntPtr.Zero, new System.Windows.Interop.WindowInteropHelper(owner).Handle); owner.Close();
             foreach (string kind in colors.Keys) SetColor(kind, null);
