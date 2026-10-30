@@ -320,6 +320,7 @@ public sealed class UserSettings
     public string Theme {get;set;}="Midnight";
     public Dictionary<string,string> GraphColors {get;set;}=new();
     public Dictionary<string,GraphLineStyle> GraphStyles {get;set;}=new();
+    public bool GraphSmoothing {get;set;}=true;
     public int HistorySeconds {get;set;}=60;
     public string? SelectedGpuId {get;set;}
     public Dictionary<string,WindowPlacement> Windows {get;set;}=new();

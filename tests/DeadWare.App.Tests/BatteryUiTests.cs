@@ -228,6 +228,7 @@ public class BatteryUiTests
                 Set(session, "writer", new SettingsSnapshotWriter(pollingSettingsPath));
                 ConnectionsWidgetUiChecks.CheckSettings(session, settings, pollingSettingsPath);
                 VerifyGpuFanSpeed(session, collector, assembly, settings, pollingSettingsPath);
+                VerifyGraphSmoothing(session, settings, pollingSettingsPath);
                 VerifyRangeDropdown(session, dashboard, assembly, pollingSettingsPath);
                 foreach (double seconds in new double[] { 10, .5, 1 })
                 {
@@ -431,6 +432,26 @@ public class BatteryUiTests
     {
         var bitmap = new RenderTargetBitmap((int)Math.Ceiling(element.ActualWidth), (int)Math.Ceiling(element.ActualHeight), 96, 96, PixelFormats.Pbgra32); bitmap.Render(element);
         using var file = File.Create(path); var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap)); encoder.Save(file);
+    }
+
+    private static void VerifyGraphSmoothing(UiSession session,StackPanel settings,string settingsPath)
+    {
+        var toggle=Assert.Single(settings.Children.OfType<CheckBox>(),choice=>choice.Content?.ToString()=="Smooth long-range graphs (1, 3 and 6 hours)");
+        Assert.Equal("Graph smoothing",System.Windows.Automation.AutomationProperties.GetName(toggle));
+        Assert.True(toggle.IsChecked);int notifications=0;void Changed()=>notifications++;
+        int range=session.HistorySeconds;session.Changed+=Changed;
+        try
+        {
+            toggle.IsChecked=false;Assert.False(session.Settings.GraphSmoothing);Assert.Equal(1,notifications);
+            long revision=(long)typeof(UiSession).GetField("saveRevision",All)!.GetValue(session)!;
+            session.SetGraphSmoothing(false);Assert.Equal(1,notifications);
+            Assert.Equal(revision,(long)typeof(UiSession).GetField("saveRevision",All)!.GetValue(session)!);
+            CompleteSettingsSave(session);Assert.False(SettingsCodec.Read(File.ReadAllText(settingsPath)).Settings.GraphSmoothing);
+            session.SetGraphSmoothing(true);Assert.True(toggle.IsChecked);Assert.Equal(2,notifications);
+            CompleteSettingsSave(session);Assert.True(SettingsCodec.Read(File.ReadAllText(settingsPath)).Settings.GraphSmoothing);
+            Assert.Equal(range,session.HistorySeconds);
+        }
+        finally {session.Changed-=Changed;session.SetGraphSmoothing(true);CompleteSettingsSave(session);}
     }
 
     private static void VerifyGpuFanSpeed(UiSession session, Collector collector, Assembly assembly, StackPanel settings, string settingsPath)
