@@ -311,7 +311,7 @@ public class BatteryUiTests
             catch (Exception error) { failure = error; }
         });
         thread.SetApartmentState(ApartmentState.STA); thread.Start();
-        // One bounded deadline covers the expanded six-theme map/page/widget checks too.
+        // One bounded deadline covers the all-theme map/page/widget checks too.
         Assert.True(thread.Join(TimeSpan.FromSeconds(120)), $"Offscreen rendering timed out during {Volatile.Read(ref phase)}.");
         if (failure is not null) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(failure).Throw();
     }
@@ -323,6 +323,7 @@ public class BatteryUiTests
         ("Glacier", "Calibri", "Calibri Light", "Calibri"),
         ("Amethyst", "Corbel", "Corbel", "Corbel"),
         ("Neon", "Bahnschrift", "Bahnschrift", "Consolas"),
+        ("Blackout", "Segoe UI", "Segoe UI Semibold", "Segoe UI"),
         ("Daylight", "Segoe UI", "Segoe UI Semibold", "Segoe UI")
     ];
 
@@ -346,6 +347,18 @@ public class BatteryUiTests
             foreach (var (theme, body, header, metric) in ThemeFonts)
             {
                 session.SetTheme(theme);
+                var themeType=assembly.GetType("DeadWare.App.Theme")!;
+                Assert.Contains(theme,(string[])themeType.GetField("Names",All)!.GetValue(null)!);
+                Assert.Equal(theme!="Daylight",(bool)themeType.GetProperty("IsDark",All)!.GetValue(null)!);
+                if(theme=="Blackout"&&!SystemParameters.HighContrast)
+                {
+                    Assert.Equal(Colors.Black,ResourceColor("Background"));
+                    Assert.Equal(Colors.Black,ResourceColor("Panel"));
+                    Assert.Equal(Color.FromRgb(18,18,18),ResourceColor("Control"));
+                    Assert.Equal(Color.FromRgb(48,48,48),ResourceColor("Line"));
+                    foreach(string trace in new[]{"Cpu","Gpu","Download","Accent","Warning"})
+                        Assert.True(Contrast(ResourceColor(trace),ResourceColor("Panel"))>=4.5,$"Blackout {trace} must remain readable on black.");
+                }
                 foreach (string destination in new[] { "network", "sensors", "overview" })
                 {
                     typeof(MainWindow).GetMethod("Navigate", All)!.Invoke(dashboard, [destination]);
@@ -816,7 +829,7 @@ public class BatteryUiTests
         System.Windows.Documents.TextElement.SetFontSize(viewport, widget.FontSize);
         widget.Content = viewport;
         string? output = Environment.GetEnvironmentVariable("DEADWARE_UI_OUTPUT");
-        foreach (string theme in new[] { "Midnight", "Daylight" })
+        foreach (string theme in new[] { "Midnight", "Blackout", "Daylight" })
         {
             assembly.GetType("DeadWare.App.Theme")!.GetMethod("Apply", All)!.Invoke(null, [theme]); Changed();
             foreach (var size in new[] { new Size(284, 481), new Size(324, 561), new Size(620, 750) })
@@ -1124,7 +1137,7 @@ public class BatteryUiTests
             var saved = SettingsCodec.Read(File.ReadAllText(settingsPath)).Settings;
             var savedColors = (IReadOnlyDictionary<string, string>)typeof(UserSettings).GetProperty("GraphColors")!.GetValue(saved)!;
             Assert.Equal(colors.OrderBy(pair => pair.Key), savedColors.OrderBy(pair => pair.Key));
-            foreach (string theme in new[] { "Midnight", "Daylight" })
+            foreach (string theme in new[] { "Midnight", "Blackout", "Daylight" })
             {
                 assembly.GetType("DeadWare.App.Theme")!.GetMethod("Apply", All)!.Invoke(null, [theme]);
                 foreach (var (view, kinds, values) in views)
@@ -1265,7 +1278,7 @@ public class BatteryUiTests
             var viewport = new Border { Child = graph }; window.Content = viewport;
             void Refresh() { graphType.GetMethod("Refresh", All)!.Invoke(graph, null); viewport.UpdateLayout(); }
             GeometryDrawing[] Traces() => Drawings(VisualTreeHelper.GetDrawing(chart)!).Where(item => item.Geometry is StreamGeometry).ToArray();
-            foreach (string theme in new[] { "Midnight", "Daylight" })
+            foreach (string theme in new[] { "Midnight", "Blackout", "Daylight" })
             {
                 assembly.GetType("DeadWare.App.Theme")!.GetMethod("Apply", All)!.Invoke(null, [theme]); Refresh();
                 foreach (var size in new[] { new Size(284, 141), new Size(404, 191) })

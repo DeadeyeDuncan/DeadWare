@@ -43,7 +43,39 @@ public sealed class ChartRangeTests
     {
         var history=History(Enumerable.Range(0,21601).Select(i=>(double?)(i==11000?99:10)).ToArray());
         var ranges=history.ChartRanges("cpu",21600,21600,200);
-        Assert.InRange(ranges.Count,1,200);Assert.Equal(21601,ranges.Sum(p=>p.Samples));
+        // An inclusive window can intersect a partial bucket at each edge.
+        Assert.InRange(ranges.Count,1,201);Assert.Equal(21601,ranges.Sum(p=>p.Samples));
         Assert.Equal(99,ranges.Max(p=>p.Maximum));Assert.All(ranges,p=>Assert.InRange(p.Average!.Value,10,11));
+    }
+    [Theory][InlineData(0)][InlineData(-130)]
+    public void Completed_buckets_keep_their_values_and_timestamps_as_the_window_moves(int offset)
+    {
+        var history=new SampleHistory();
+        var initial=Enumerable.Range(0,120).Select(i=>new Snapshot(DateTimeOffset.UnixEpoch.AddSeconds(offset+i),offset+i,
+            new Dictionary<string,double?>{{"cpu",i==41?null:i%7*13}}){SessionId="fixture"}).ToArray();
+        if(offset<0)history.Restore(initial,0);else foreach(var sample in initial)history.Add(sample);
+        var before=history.ChartRanges("cpu",offset+119,120,12);
+        history.Add(new(DateTimeOffset.UnixEpoch.AddSeconds(offset+120),offset+120,new Dictionary<string,double?>{{"cpu",99}}){SessionId="fixture"});
+        var after=history.ChartRanges("cpu",offset+120,120,12);
+        var interior=before.Where(point=>point.StartSeconds>=offset+20&&point.EndSeconds<=offset+99).ToArray();
+        Assert.NotEmpty(interior);
+        Assert.All(interior,point=>Assert.Contains(point,after));
+        Assert.Contains(interior,point=>point.Average is null);
+        Assert.Equal(history.Series("cpu",offset+120,120).Count(point=>point.Value.HasValue),after.Sum(point=>point.Samples));
+        var summary=history.Summarize("cpu",offset+120,120);
+        Assert.Equal(summary.Minimum,after.Min(point=>point.Minimum));Assert.Equal(summary.Maximum,after.Max(point=>point.Maximum));
+        Assert.Equal(summary.Average!.Value,after.Sum(point=>(point.Average??0)*point.Samples)/after.Sum(point=>point.Samples),8);
+    }
+    [Fact] public void Restored_negative_times_use_the_same_fixed_boundaries_as_live_times()
+    {
+        var history=new SampleHistory();
+        history.Restore([new(DateTimeOffset.UnixEpoch.AddSeconds(-2),-2,new Dictionary<string,double?>{{"cpu",10}}){SessionId="fixture"},
+            new(DateTimeOffset.UnixEpoch.AddSeconds(-1),-1,new Dictionary<string,double?>{{"cpu",20}}){SessionId="fixture"}],0);
+        history.Add(new(DateTimeOffset.UnixEpoch,0,new Dictionary<string,double?>{{"cpu",30}}){SessionId="fixture"});
+        history.Add(new(DateTimeOffset.UnixEpoch.AddSeconds(1),1,new Dictionary<string,double?>{{"cpu",40}}){SessionId="fixture"});
+        var ranges=history.ChartRanges("cpu",1,60,6);
+        Assert.Equal(new double?[]{15,35},ranges.Select(point=>point.Average));
+        Assert.Equal(new double[]{-2,0},ranges.Select(point=>point.StartSeconds));
+        Assert.Equal(new double[]{-1,1},ranges.Select(point=>point.EndSeconds));
     }
 }

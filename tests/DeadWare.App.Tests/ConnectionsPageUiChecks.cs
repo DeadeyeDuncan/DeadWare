@@ -259,7 +259,7 @@ internal static class ConnectionsPageUiChecks
         // Constructing a Window registers the resource-invalidation root, without creating an HWND.
         var host = new Window { Content = page };
         var theme = typeof(Collector).Assembly.GetType("DeadWare.App.Theme")!;
-        foreach (string name in new[] { "Midnight", "Ember", "Glacier", "Amethyst", "Neon", "Daylight" })
+        foreach (string name in new[] { "Midnight", "Ember", "Glacier", "Amethyst", "Neon", "Blackout", "Daylight" })
         {
             theme.GetMethod("Apply", BindingFlags.Public | BindingFlags.Static)!.Invoke(null, [name]); Pump();
             Assert.Equal(((SolidColorBrush)app.Resources["Ink"]).Color, ((SolidColorBrush)Field<Button>(page, "download").Foreground).Color);

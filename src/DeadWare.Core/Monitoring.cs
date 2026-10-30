@@ -113,12 +113,13 @@ public sealed class SampleHistory
         if(!double.IsFinite(now)||seconds<=0||pixelWidth<=0)throw new ArgumentOutOfRangeException(nameof(now));
         Snapshot[] captured;lock(gate)captured=chartSnapshot??=samples.ToArray();
         var result=new List<ChartRangePoint>(Math.Min(pixelWidth,4096));
-        int bucket=-1,count=0;double total=0,min=0,max=0,start=0,end=0;
+        int count=0;double bucket=double.NaN,total=0,min=0,max=0,start=0,end=0;
+        double bucketSeconds=seconds/(double)pixelWidth;
         Snapshot? previous=null;double previousInterval=1;
         void Flush()
         {
             if(count==0)return;
-            result.Add(new(start,end,total/count,min,max,count));count=0;bucket=-1;
+            result.Add(new(start,end,total/count,min,max,count));count=0;bucket=double.NaN;
         }
         void Gap(double time)
         {
@@ -132,7 +133,10 @@ public sealed class SampleHistory
             if(previous is not null&&(sample.SessionId!=previous.SessionId||time-previous.MonotonicSeconds>Math.Max(previousInterval,interval)+1.5))Gap(time);
             previous=sample;previousInterval=interval;
             if(Finite(sample.Values.GetValueOrDefault(id)) is not { } value){Gap(time);continue;}
-            int column=(int)Math.Clamp((time-(now-seconds))*pixelWidth/seconds,0,pixelWidth-1);
+            // Anchor buckets to the monotonic timeline, not the moving viewport.
+            // Completed historical averages then scroll without being re-binned on each poll.
+            // Floor also assigns restored negative timestamps to the correct interval.
+            double column=Math.Floor(time/bucketSeconds);
             if(column!=bucket)Flush();
             if(count==0){bucket=column;start=time;min=max=value;total=0;}
             end=time;min=Math.Min(min,value);max=Math.Max(max,value);total+=value;count++;
@@ -329,7 +333,7 @@ public static class SettingsCodec
         {
             var s=JsonSerializer.Deserialize<UserSettings>(json);
             if(s is null) return new(new(),"Settings were empty; defaults restored.");
-            if(s.Theme is not ("Midnight" or "Ember" or "Glacier" or "Amethyst" or "Neon" or "Daylight")) s.Theme="Midnight";
+            if(s.Theme is not ("Midnight" or "Ember" or "Glacier" or "Amethyst" or "Neon" or "Blackout" or "Daylight")) s.Theme="Midnight";
             s.GraphColors=GraphColorSettings.Normalize(s.GraphColors);
             s.GraphStyles=GraphLineStyles.Normalize(s.GraphStyles);
             if(string.IsNullOrWhiteSpace(s.ConnectionsHomeCityId)||s.ConnectionsHomeCityId.Length>80||s.ConnectionsHomeCityId.Any(char.IsControl))s.ConnectionsHomeCityId=null;

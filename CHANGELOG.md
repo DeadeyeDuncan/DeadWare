@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.30 — Blackout theme and stable chart scrolling
+
+- Add **Blackout** to the Color theme menu: pure-black backgrounds and panels, restrained charcoal controls and borders, and clear neutral text.
+- Apply Blackout across the dashboard, widget, detached graphs, connection maps and supported native window frames. Graph colors remain distinct, and custom graph colors/styles continue to apply.
+- Fix long-range smoothing regrouping old readings on each refresh. Historical averages retain their shape and move left with time.
+
 ## 0.6.29 — Graph thickness and glow controls
 
 - Add **Line thickness** (50–300%) and **Glow strength** (0–300%) sliders to graph color popouts. 100% keeps the original look; glow strength becomes available when Neon glow is enabled.
