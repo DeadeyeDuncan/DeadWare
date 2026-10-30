@@ -7,10 +7,12 @@ public sealed class GraphLineStyleTests
 {
     [Fact] public void Styles_roundtrip_independently_of_colors_and_other_traces()
     {
-        var settings=new UserSettings {GraphStyles=new(){{"cpu",new("dotted",true)},{"upload",new("solid")}},GraphColors=new(){{"cpu","#AABBCC"}}};
+        var settings=new UserSettings {GraphStyles=new(){{"cpu",new("dotted",true)},{"upload",new("solid")},{"gpufan",new("dashed",true,2,2.5)},{"gputemp",new("solid",false,.5,0)}},GraphColors=new(){{"cpu","#AABBCC"},{"gpufan","#B69CFF"}}};
         var loaded=SettingsCodec.Read(SettingsCodec.Write(settings)).Settings;
         Assert.Equal(new("dotted",true),loaded.GraphStyles["cpu"]);Assert.Equal(new("solid"),loaded.GraphStyles["upload"]);
         Assert.False(loaded.GraphStyles.ContainsKey("gpu"));Assert.Equal("#AABBCC",loaded.GraphColors["cpu"]);
+        Assert.Equal(new("dashed",true,2,2.5),loaded.GraphStyles["gpufan"]);Assert.Equal("#B69CFF",loaded.GraphColors["gpufan"]);
+        Assert.Equal(new("solid",false,.5,0),loaded.GraphStyles["gputemp"]);
     }
     [Theory][InlineData("{}")][InlineData("{\"GraphStyles\":null}")]
     public void Old_settings_keep_default_line_styles(string json)=>Assert.Empty(SettingsCodec.Read(json).Settings.GraphStyles);

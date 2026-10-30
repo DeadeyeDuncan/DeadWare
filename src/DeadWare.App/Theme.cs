@@ -15,7 +15,7 @@ internal static class Theme
     {
         foreach(string kind in GraphColorSettings.Kinds)
         {
-            string role=kind switch {"gpu" or "gputemp"=>"Gpu","memory"=>"Accent","download"=>"Download",_=>"Cpu"};
+            string role=kind switch {"gpu" or "gputemp"=>"Gpu","gpufan"=>"Warning","memory"=>"Accent","download"=>"Download",_=>"Cpu"};
             Application.Current.Resources[GraphKey(kind)]=!SystemParameters.HighContrast&&graphColors.TryGetValue(kind,out var color)
                 ?new SolidColorBrush((Color)ColorConverter.ConvertFromString(color)):Brush(role);
         }

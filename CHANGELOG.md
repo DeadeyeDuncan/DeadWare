@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.32 — GPU fan graph appearance
+
+- Add a dedicated GPU fan color and style button beside the GPU temperature color button on the overview.
+- Choose the fan trace's color, solid/dashed/dotted pattern, thickness, neon glow and glow strength independently of the temperature trace.
+- Save the fan appearance across launches and share it with temperature pop-outs and the widget. Fan labels and legend samples follow the selected appearance; the default remains dotted in the theme's fan color.
+
 ## 0.6.31 — Graph smoothing toggle
 
 - Add **Smooth long-range graphs (1, 3 and 6 hours)** in Settings. Switch between the smoothed average/range view and raw traces across the dashboard, pop-outs and widget without restarting.

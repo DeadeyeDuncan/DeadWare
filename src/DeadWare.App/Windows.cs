@@ -110,7 +110,7 @@ public sealed class MainWindow : Window
         System.Windows.Automation.AutomationProperties.SetName(gpuFanSpeed,"Show GPU fan speed on temperature graphs");
         gpuFanSpeed.Checked+=(_,_)=>{if(!syncingWidgetGraphs)session.SetGpuFanSpeed(true);};
         gpuFanSpeed.Unchecked+=(_,_)=>{if(!syncingWidgetGraphs)session.SetGpuFanSpeed(false);};stack.Children.Add(gpuFanSpeed);
-        var fanHelp=Ui.Text("Adds the selected GPU's first reported fan as a dotted amber line on its own left RPM scale. Applies immediately to the overview, temperature pop-outs and widget. Unsupported fan readings stay unavailable; 0 RPM means stopped.",12,"Muted");fanHelp.Margin=new(0,0,0,20);stack.Children.Add(fanHelp);
+        var fanHelp=Ui.Text("Adds the selected GPU's first reported fan on its own left RPM scale, dotted and amber by default. Use the GPU fan color button on the overview's GPU temperature card to change its appearance across the overview, temperature pop-outs and widget. Unsupported fan readings stay unavailable; 0 RPM means stopped.",12,"Muted");fanHelp.Margin=new(0,0,0,20);stack.Children.Add(fanHelp);
         var widgetLabel=Ui.Text("Widget graphs",14);widgetLabel.Margin=new(0,0,0,8);stack.Children.Add(widgetLabel);
         var widgetOptions=new WrapPanel {Margin=new Thickness(0,0,0,6)};
         var selectedGraphs=WidgetGraphSelection.Normalize(session.Settings.WidgetGraphs);

@@ -9,7 +9,7 @@ internal sealed class WidgetGraph : Border
     private readonly UiSession session;
     private readonly string kind;
     private readonly TextBlock title=Ui.Text("",12,"Heading",font:"HeadingFont"),primary=Ui.Text("",11,font:"MetricFont"),secondary=Ui.Text("",11,font:"MetricFont");
-    private readonly TextBlock fan=Ui.Text("",11,"Warning",font:"MetricFont");
+    private readonly TextBlock fan=Ui.Text("",11,Theme.GraphKey("gpufan"),font:"MetricFont");
     private readonly StackPanel fanLegend;
     private readonly HistoryChart chart;
     private readonly List<(Line Line,string Color,bool Dashed,bool Dotted)> legendLines=[];
@@ -26,7 +26,7 @@ internal sealed class WidgetGraph : Border
         primary.SetResourceReference(TextBlock.ForegroundProperty,firstColor);secondary.SetResourceReference(TextBlock.ForegroundProperty,secondColor);
         var legend=memory?Ui.Row(Legend(primary,firstColor,false)):Ui.Row(Legend(primary,firstColor,false),Legend(secondary,secondColor,true));
         var header=new DockPanel();DockPanel.SetDock(legend,Dock.Right);header.Children.Add(legend);header.Children.Add(title);grid.Children.Add(header);
-        fanLegend=Legend(fan,"Warning",false,true);fanLegend.Visibility=Visibility.Collapsed;fanLegend.Margin=new(0,3,0,0);fanLegend.ToolTip="Selected GPU's first reported fan · dotted trace · separate left RPM scale";Grid.SetRow(fanLegend,1);grid.Children.Add(fanLegend);
+        fanLegend=Legend(fan,Theme.GraphKey("gpufan"),false,true);fanLegend.Visibility=Visibility.Collapsed;fanLegend.Margin=new(0,3,0,0);Grid.SetRow(fanLegend,1);grid.Children.Add(fanLegend);
         Grid.SetRow(chart,2);grid.Children.Add(chart);Child=grid;
     }
     private StackPanel Legend(TextBlock value,string color,bool dashed,bool dotted=false)
@@ -46,7 +46,11 @@ internal sealed class WidgetGraph : Border
         }
         bool showFan=kind=="cputemp"&&session.Settings.ShowGpuFanSpeed;
         fanLegend.Visibility=showFan?Visibility.Visible:Visibility.Collapsed;
-        if(showFan)fan.Text=Ui.GpuFanText(session)+" · left RPM";
+        if(showFan)
+        {
+            fan.Text=Ui.GpuFanText(session)+" · left RPM";
+            fanLegend.ToolTip=$"Selected GPU's first reported fan · {GraphStroke.Pattern(session.Settings,"gpufan",dotted:true)} trace · separate left RPM scale";
+        }
         double? Value(string metric)=>session.Stale?null:session.Value(session.MetricId(metric));
         if(kind=="network")
         {
