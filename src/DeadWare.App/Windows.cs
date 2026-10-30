@@ -57,7 +57,7 @@ public sealed class MainWindow : Window
         var header=new StackPanel();DockPanel.SetDock(header,Dock.Top);main.Children.Add(header);
         var titleRow=new DockPanel();var widget=Ui.Button("↗ Open widget",()=>session.OpenDetached("widget"));widget.HorizontalAlignment=HorizontalAlignment.Right;DockPanel.SetDock(widget,Dock.Right);titleRow.Children.Add(widget);titleRow.Children.Add(heading);header.Children.Add(titleRow);
         updateNotice=new(ShowUpdates);header.Children.Add(updateNotice);
-        liveToolbar=new DockPanel {Margin=new Thickness(0,18,0,12)};var ranges=Ui.Range(session);DockPanel.SetDock(ranges,Dock.Right);liveToolbar.Children.Add(ranges);var gpuLabel=Ui.Text("GPU",12,"Muted");gpuLabel.Margin=new(0,0,8,0);gpuControls=Ui.Row(gpuLabel,gpu);liveToolbar.Children.Add(gpuControls);header.Children.Add(liveToolbar);
+        liveToolbar=new DockPanel {Margin=new Thickness(6,18,6,12)};var ranges=Ui.Range(session);DockPanel.SetDock(ranges,Dock.Right);liveToolbar.Children.Add(ranges);var gpuLabel=Ui.Text("GPU",11,"Muted");gpuLabel.Margin=new(0,0,10,0);gpuControls=Ui.Row(gpuLabel,gpu);liveToolbar.Children.Add(gpuControls);header.Children.Add(liveToolbar);
         gpu.SelectionChanged+=(_,_)=>{if(!syncingGpu)session.SetGpu((gpu.SelectedItem as Device)?.Id);};
         main.Children.Add(content);
         pages["overview"]=Overview();pages["network"]=Network();pages["connections"]=new ConnectionsPage(session);pages["cooling"]=new CoolingHealthPage(session);pages["battery"]=new BatteryHistoryPage(session);pages["sensors"]=Sensors();pages["desktop"]=Desktop();pages["updates"]=new UpdatesPage(session);Navigate("overview");
@@ -66,15 +66,7 @@ public sealed class MainWindow : Window
         RefreshUpdateNotice();
         IsVisibleChanged+=(_,_)=>{if(IsVisible)Refresh();};
     }
-    private FrameworkElement Overview()
-    {
-        var stack=new StackPanel();var charts=new UniformGrid {Columns=2,Rows=2,Height=530};
-        foreach(var kind in new[]{"cpu","gpu","cputemp","gputemp"})charts.Children.Add(new ChartCard(session,kind));stack.Children.Add(charts);
-        memory.Margin=new(8,8,8,8);stack.Children.Add(memory);
-        var bottom=new UniformGrid {Columns=2,Rows=1,Height=265};bottom.Children.Add(new ChartCard(session,"memory"));bottom.Children.Add(new ChartCard(session,"network"));stack.Children.Add(bottom);
-        var note=Ui.Text("One collector feeds every window. Unknown readings stay blank; no synthetic data is shown.",11,"Muted");note.Margin=new(8);stack.Children.Add(note);
-        return new ScrollViewer {Content=stack,VerticalScrollBarVisibility=ScrollBarVisibility.Auto,HorizontalScrollBarVisibility=ScrollBarVisibility.Disabled};
-    }
+    private FrameworkElement Overview()=>new OverviewPage(session,memory);
     private FrameworkElement Network()
     {
         var grid=new Grid();grid.RowDefinitions.Add(new(){Height=new GridLength(265)});grid.RowDefinitions.Add(new(){Height=GridLength.Auto});grid.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});grid.RowDefinitions.Add(new(){Height=GridLength.Auto});
