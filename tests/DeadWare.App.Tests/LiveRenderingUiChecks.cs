@@ -97,6 +97,22 @@ internal static class LiveRenderingUiChecks
         var zero=new DrawingGroup();using(var context=zero.Open())GraphStroke.Draw(context,geometry,session.Settings,"Graph/cpu",2,false,false);
         Assert.Equal(4,Assert.Single(Shapes(zero)).Pen.Thickness);
         session.Settings.GraphStyles.Clear();
+        // At one hour, completed averages must translate left without changing their vertical shape.
+        session.Settings.HistorySeconds=3600;
+        Point[] RollingTrace(double now)
+        {
+            var rolling=history.ChartRanges("cpu/usage",now,3600,200)
+                .Where(p=>p.StartSeconds>=-3000&&p.EndSeconds<=-1000)
+                .Select(p=>new SamplePoint(DateTimeOffset.UnixEpoch,p.EndSeconds,p.Average)).ToArray();
+            var drawing=new DrawingGroup();using(var context=drawing.Open())
+                typeof(HistoryChart).GetMethod("DrawSeries",flags)!.Invoke(charts[0],[context,rolling,now,100d,0d,0d,600d,120d,"Graph/cpu",false,false,true]);
+            var path=PathGeometry.CreateFromGeometry(Shapes(drawing).Single(shape=>shape.Geometry is StreamGeometry).Geometry);
+            return path.Figures.SelectMany(figure=>new[]{figure.StartPoint}.Concat(figure.Segments.SelectMany(segment=>segment switch
+                {PolyLineSegment poly=>poly.Points.AsEnumerable(),LineSegment line=>new[]{line.Point},_=>Array.Empty<Point>()}))).ToArray();
+        }
+        var earlier=RollingTrace(0);var later=RollingTrace(2);Assert.True(earlier.Length>20,$"Points: {earlier.Length}; ranges: {history.ChartRanges("cpu/usage",0,3600,200).Count}; history: {history.Count}");Assert.Equal(earlier.Length,later.Length);
+        for(int i=0;i<earlier.Length;i++){Assert.Equal(earlier[i].Y,later[i].Y,8);Assert.Equal(earlier[i].X-600d*2/3600,later[i].X,8);}
+        session.Settings.HistorySeconds=21600;
         var results=new List<object>();
         void Measure(string name,Action<int> action)
         {

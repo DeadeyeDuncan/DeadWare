@@ -49,7 +49,7 @@ internal static class ConnectionsWidgetUiChecks
             using var source=new OffscreenSource(widget);Pump();
             var map=Assert.Single(widget.Children.OfType<ConnectionMap>());
             Assert.True(map.IsHitTestVisible);Assert.True(map.Focusable);
-            foreach(string name in new[]{"Midnight","Ember","Glacier","Amethyst","Neon","Daylight"})
+            foreach(string name in new[]{"Midnight","Ember","Glacier","Amethyst","Neon","Blackout","Daylight"})
             foreach(var size in new[]{new Size(600,150),new Size(600,300),new Size(300,171)})
             {
                 Theme.Apply(name);Pump();widget.Refresh();
@@ -270,7 +270,7 @@ internal static class ConnectionsWidgetUiChecks
             PumpUntil(()=>service.Live.Connections[0].Location is not null);Changed(session);
             Assert.Contains("Widget-only live",Assert.Single(map.Children.OfType<ConnectionMap>()).StatusSummary);
             CheckHistoryIsolation(session,service,map);
-            foreach(string theme in new[]{"Midnight","Ember","Glacier","Amethyst","Neon","Daylight"})
+            foreach(string theme in new[]{"Midnight","Ember","Glacier","Amethyst","Neon","Blackout","Daylight"})
             foreach(int count in new[]{0,1,4})
             {
                 Theme.Apply(theme);Pump();settings.WidgetGraphs=WidgetGraphSelection.Kinds.Take(count).ToList();Changed(session);
@@ -307,7 +307,7 @@ internal static class ConnectionsWidgetUiChecks
                 }
                 Render(viewport,300,(int)height,$"widget-layout-{theme}-{count}");
             }
-            foreach(string theme in new[]{"Midnight","Ember","Glacier","Amethyst","Neon","Daylight"})
+            foreach(string theme in new[]{"Midnight","Ember","Glacier","Amethyst","Neon","Blackout","Daylight"})
             foreach(uint dpi in new uint[]{96,144,192})
             {
                 Theme.Apply(theme);Pump();
