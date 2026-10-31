@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.37 — CPU pump speed in Cooling Health
+
+- Record the CPU cooler's pump speed as the CPU's **Fan speed** in Cooling Health, matching how GPU fan speed is shown. DeadWare uses a motherboard or AIO header labeled as a pump (for example `Pump Fan` or `AIO Pump`), otherwise the `CPU Fan` header. Unlabeled headers such as `Fan #2` are not used.
+- Requires **Extended sensors** and a single CPU. Reference comparisons also match comparable pump speed.
+- The new sensor mapping starts CPU Cooling Health history and references under a new setup; save a fresh CPU reference after updating. GPU history is unchanged.
+
 ## 0.6.36 — See-through glass windows
 
 - Add **Settings → Window glass** with **Off**, **Subtle**, **Balanced** (default) and **Strong**. Glass levels let the blurred desktop and windows behind show through the dashboard, graph pop-outs, battery history and widget using the Windows 11 acrylic backdrop, with thinner tinted panels and brighter highlighted edges.

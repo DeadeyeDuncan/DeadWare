@@ -57,6 +57,39 @@ public class ThermalProjectionTests
     }
 
     [Fact]
+    public void Cpu_cooler_speed_prefers_a_labeled_pump_then_the_cpu_fan_header()
+    {
+        var cpu = Sensor("t", "CPU Package", "Temperature", 60);
+        var pump = Sensor("pump", "Pump Fan", "Fan", 2376, "/lpc/nct6687d/0", "SuperIO");
+        var cpuFan = Sensor("cpufan", "CPU Fan", "Fan", 900, "/lpc/nct6687d/0", "SuperIO");
+        var system = Sensor("sys", "System Fan #1", "Fan", 700, "/lpc/nct6687d/0", "SuperIO");
+        var duty = Sensor("duty", "Pump Fan", "Control", 90, "/lpc/nct6687d/0", "SuperIO");
+        var withPump = Assert.Single(ThermalProjection.Project(Reading(cpu, system, cpuFan, duty, pump), "s", "m", "c"));
+        Assert.Equal(2376, withPump.FanRpm); Assert.Contains("SuperIO", withPump.Device.SensorMap);
+        Assert.Equal(900, Assert.Single(ThermalProjection.Project(Reading(cpu, system, cpuFan), "s", "m", "c")).FanRpm);
+        var cooler = Sensor("aio", "Pump", "Fan", 2800, "/nzxt/kraken/0", "Cooler");
+        Assert.Equal(2800, Assert.Single(ThermalProjection.Project(Reading(cpu, cooler), "s", "m", "c")).FanRpm);
+        // Unlabeled headers cannot be attributed to the CPU cooler.
+        Assert.Null(Assert.Single(ThermalProjection.Project(Reading(cpu,
+            Sensor("f1", "Fan #1", "Fan", 1200, "/lpc/nct6798d/0", "SuperIO")), "s", "m", "c")).FanRpm);
+    }
+
+    [Fact]
+    public void Cpu_cooler_speed_keeps_its_mapping_through_outages_and_skips_multi_socket_hosts()
+    {
+        var cpu = Sensor("t", "CPU Package", "Temperature", 60);
+        var pump = Sensor("pump", "Pump Fan", "Fan", 2376, "/lpc/nct6687d/0", "SuperIO");
+        var live = Assert.Single(ThermalProjection.Project(Reading(cpu, pump), "s", "m", "c"));
+        var outage = Assert.Single(ThermalProjection.Project(Reading(cpu, pump with { Value = null }), "s", "m", "c"));
+        Assert.Null(outage.FanRpm); Assert.Equal(live.Device.Id, outage.Device.Id);
+        var sockets = ThermalProjection.Project(Reading(cpu, cpu with { Id = "t2", HardwareId = "/cpu/1" }, pump), "s", "m", "c");
+        Assert.Equal(2, sockets.Count); Assert.All(sockets, s => Assert.Null(s.FanRpm));
+        var gpu = Assert.Single(ThermalProjection.Project(Reading(pump,
+            Sensor("g", "GPU Core", "Temperature", 50, "/gpu/0", "GpuAmd")), "s", "m", "c"));
+        Assert.Null(gpu.FanRpm);
+    }
+
+    [Fact]
     public void Sensor_outages_keep_identity_but_mapping_machine_or_device_changes_separate_it()
     {
         var r=Reading(Sensor("t", "CPU Package", "Temperature", 60));
