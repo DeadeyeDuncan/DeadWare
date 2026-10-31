@@ -17,8 +17,8 @@
           <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
         </Border>
         <ControlTemplate.Triggers>
-          <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Surface" Property="Background" Value="{DynamicResource Control}"/><Setter Property="Foreground" Value="{DynamicResource Ink}"/></Trigger>
-          <Trigger Property="IsPressed" Value="True"><Setter TargetName="Surface" Property="Background" Value="{DynamicResource Line}"/><Setter Property="Foreground" Value="{DynamicResource Accent}"/></Trigger>
+          <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Surface" Property="Background" Value="{DynamicResource GlassHover}"/><Setter Property="Foreground" Value="{DynamicResource Ink}"/></Trigger>
+          <Trigger Property="IsPressed" Value="True"><Setter TargetName="Surface" Property="Background" Value="{DynamicResource GlassSelected}"/><Setter Property="Foreground" Value="{DynamicResource Accent}"/></Trigger>
           <Trigger Property="IsEnabled" Value="False"><Setter Property="Foreground" Value="{DynamicResource ScrollDisabled}"/></Trigger>
         </ControlTemplate.Triggers>
       </ControlTemplate>
@@ -79,7 +79,7 @@
   </Grid>
 </ControlTemplate>
 <Style TargetType="ScrollBar">
-  <Setter Property="Background" Value="{DynamicResource Panel}"/><Setter Property="Focusable" Value="False"/><Setter Property="IsTabStop" Value="False"/>
+  <Setter Property="Background" Value="{DynamicResource GlassPanel}"/><Setter Property="Focusable" Value="False"/><Setter Property="IsTabStop" Value="False"/>
   <Setter Property="Width" Value="{DynamicResource {x:Static SystemParameters.VerticalScrollBarWidthKey}}"/>
   <Setter Property="Template" Value="{StaticResource VerticalScrollBarTemplate}"/>
   <Style.Triggers>
@@ -90,15 +90,169 @@
   </Style.Triggers>
 </Style>
 <Style x:Key="BodyControlText" TargetType="Control"><Setter Property="FontFamily" Value="{DynamicResource BodyFont}"/></Style>
-<Style TargetType="Window"><Setter Property="Background" Value="{DynamicResource Background}"/><Setter Property="Foreground" Value="{DynamicResource Ink}"/><Setter Property="FontFamily" Value="{DynamicResource BodyFont}"/><Setter Property="FontSize" Value="13"/></Style>
-<Style TargetType="Button" BasedOn="{StaticResource BodyControlText}"><Setter Property="Background" Value="{DynamicResource Control}"/><Setter Property="Foreground" Value="{DynamicResource Ink}"/><Setter Property="BorderBrush" Value="{DynamicResource Line}"/><Setter Property="BorderThickness" Value="1"/><Setter Property="Padding" Value="12,7"/><Setter Property="Margin" Value="3"/><Setter Property="Cursor" Value="Hand"/><Setter Property="Template"><Setter.Value><ControlTemplate TargetType="Button"><Border x:Name="Frame" CornerRadius="6" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" Padding="{TemplateBinding Padding}"><ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/></Border><ControlTemplate.Triggers><Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Frame" Property="BorderBrush" Value="{DynamicResource Accent}"/></Trigger><Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="Frame" Property="BorderBrush" Value="{DynamicResource Accent}"/><Setter TargetName="Frame" Property="BorderThickness" Value="2"/></Trigger><Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.5"/></Trigger></ControlTemplate.Triggers></ControlTemplate></Setter.Value></Setter></Style>
-<Style TargetType="TextBox" BasedOn="{StaticResource BodyControlText}"><Setter Property="Foreground" Value="{DynamicResource Ink}"/><Setter Property="Background" Value="{DynamicResource Background}"/><Setter Property="BorderBrush" Value="{DynamicResource Line}"/><Setter Property="Padding" Value="9"/><Setter Property="CaretBrush" Value="{DynamicResource Ink}"/></Style>
-<Style TargetType="ComboBox" BasedOn="{StaticResource BodyControlText}"><Setter Property="Foreground" Value="{DynamicResource Ink}"/><Setter Property="Background" Value="{DynamicResource Control}"/><Setter Property="MinWidth" Value="120"/><Setter Property="Margin" Value="3"/><Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ComboBox"><Grid><ToggleButton Focusable="False" IsChecked="{Binding IsDropDownOpen,RelativeSource={RelativeSource TemplatedParent},Mode=TwoWay}" Background="{DynamicResource Control}" Foreground="{DynamicResource Ink}" BorderBrush="{DynamicResource Line}"><ToggleButton.Template><ControlTemplate TargetType="ToggleButton"><Border Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="1" CornerRadius="6" Padding="10,8"><TextBlock Text="⌄" HorizontalAlignment="Right"/></Border></ControlTemplate></ToggleButton.Template></ToggleButton><ContentPresenter Margin="10,5,27,5" VerticalAlignment="Center" Content="{TemplateBinding SelectionBoxItem}" ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}" IsHitTestVisible="False"/><Popup x:Name="PART_Popup" IsOpen="{TemplateBinding IsDropDownOpen}" Placement="Bottom" AllowsTransparency="True"><Border Background="{DynamicResource Panel}" BorderBrush="{DynamicResource Line}" BorderThickness="1" MinWidth="{Binding ActualWidth,RelativeSource={RelativeSource TemplatedParent}}"><ScrollViewer MaxHeight="320"><ItemsPresenter/></ScrollViewer></Border></Popup></Grid></ControlTemplate></Setter.Value></Setter></Style>
-<Style TargetType="ComboBoxItem" BasedOn="{StaticResource BodyControlText}"><Setter Property="Padding" Value="10,8"/><Setter Property="Foreground" Value="{DynamicResource Ink}"/><Setter Property="Background" Value="{DynamicResource Panel}"/><Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ComboBoxItem"><Border x:Name="Row" Background="{TemplateBinding Background}" Padding="{TemplateBinding Padding}"><ContentPresenter/></Border><ControlTemplate.Triggers><Trigger Property="IsHighlighted" Value="True"><Setter TargetName="Row" Property="Background" Value="{DynamicResource Control}"/></Trigger></ControlTemplate.Triggers></ControlTemplate></Setter.Value></Setter></Style>
-<Style TargetType="DataGrid" BasedOn="{StaticResource BodyControlText}"><Setter Property="Background" Value="{DynamicResource Panel}"/><Setter Property="Foreground" Value="{DynamicResource Ink}"/><Setter Property="RowBackground" Value="{DynamicResource Panel}"/><Setter Property="AlternatingRowBackground" Value="{DynamicResource Background}"/><Setter Property="BorderThickness" Value="0"/><Setter Property="GridLinesVisibility" Value="Horizontal"/><Setter Property="HorizontalGridLinesBrush" Value="{DynamicResource Line}"/><Setter Property="RowHeaderWidth" Value="0"/><Setter Property="HeadersVisibility" Value="Column"/><Setter Property="IsReadOnly" Value="True"/><Setter Property="AutoGenerateColumns" Value="False"/><Setter Property="CanUserAddRows" Value="False"/><Setter Property="CanUserDeleteRows" Value="False"/><Setter Property="EnableRowVirtualization" Value="True"/><Setter Property="RowHeight" Value="35"/></Style>
-<Style TargetType="DataGridColumnHeader" BasedOn="{StaticResource BodyControlText}"><Setter Property="FontFamily" Value="{DynamicResource HeadingFont}"/><Setter Property="Foreground" Value="{DynamicResource Heading}"/><Setter Property="Background" Value="{DynamicResource Panel}"/><Setter Property="Padding" Value="9"/><Setter Property="BorderBrush" Value="{DynamicResource Line}"/><Setter Property="BorderThickness" Value="0,0,0,1"/></Style>
-<Style TargetType="DataGridCell" BasedOn="{StaticResource BodyControlText}"><Setter Property="Padding" Value="7,3"/><Setter Property="BorderThickness" Value="0"/><Style.Triggers><Trigger Property="IsSelected" Value="True"><Setter Property="Background" Value="{DynamicResource Control}"/><Setter Property="Foreground" Value="{DynamicResource Ink}"/></Trigger></Style.Triggers></Style>
-<Style TargetType="CheckBox" BasedOn="{StaticResource BodyControlText}"><Setter Property="Foreground" Value="{DynamicResource Ink}"/><Setter Property="Margin" Value="6"/></Style>
+<Style TargetType="Window"><Setter Property="Background" Value="{DynamicResource WindowSurface}"/><Setter Property="Foreground" Value="{DynamicResource Ink}"/><Setter Property="FontFamily" Value="{DynamicResource BodyFont}"/><Setter Property="FontSize" Value="13"/></Style>
+<!-- Glass brushes are palette resources; high contrast supplies solid system colors. -->
+<Style TargetType="Button" BasedOn="{StaticResource BodyControlText}">
+  <Setter Property="Background" Value="{DynamicResource GlassControl}"/><Setter Property="Foreground" Value="{DynamicResource Ink}"/>
+  <Setter Property="BorderBrush" Value="{DynamicResource GlassBorder}"/><Setter Property="BorderThickness" Value="1"/>
+  <Setter Property="Padding" Value="12,7"/><Setter Property="Margin" Value="3"/><Setter Property="Cursor" Value="Hand"/>
+  <Setter Property="HorizontalContentAlignment" Value="Center"/><Setter Property="VerticalContentAlignment" Value="Center"/>
+  <Setter Property="Template"><Setter.Value>
+    <ControlTemplate TargetType="Button">
+      <Border x:Name="Frame" CornerRadius="9" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" Padding="{TemplateBinding Padding}" SnapsToDevicePixels="True">
+        <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}" VerticalAlignment="{TemplateBinding VerticalContentAlignment}" RecognizesAccessKey="True"/>
+      </Border>
+      <ControlTemplate.Triggers>
+        <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Frame" Property="Background" Value="{DynamicResource GlassHover}"/><Setter TargetName="Frame" Property="BorderBrush" Value="{DynamicResource Accent}"/></Trigger>
+        <Trigger Property="IsPressed" Value="True"><Setter TargetName="Frame" Property="Background" Value="{DynamicResource GlassSelected}"/></Trigger>
+        <Trigger Property="IsDefaulted" Value="True"><Setter TargetName="Frame" Property="BorderBrush" Value="{DynamicResource Accent}"/></Trigger>
+        <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="Frame" Property="BorderBrush" Value="{DynamicResource Accent}"/></Trigger>
+        <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.5"/><Setter Property="Cursor" Value="Arrow"/></Trigger>
+      </ControlTemplate.Triggers>
+    </ControlTemplate>
+  </Setter.Value></Setter>
+</Style>
+<Style TargetType="TextBox" BasedOn="{StaticResource BodyControlText}">
+  <Setter Property="Foreground" Value="{DynamicResource Ink}"/><Setter Property="Background" Value="{DynamicResource GlassInput}"/>
+  <Setter Property="BorderBrush" Value="{DynamicResource GlassBorder}"/><Setter Property="BorderThickness" Value="1"/><Setter Property="Padding" Value="9"/>
+  <Setter Property="CaretBrush" Value="{DynamicResource Ink}"/>
+  <Setter Property="Template"><Setter.Value>
+    <ControlTemplate TargetType="TextBox">
+      <Border x:Name="Frame" CornerRadius="8" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" SnapsToDevicePixels="True">
+        <!-- TextBoxBase forwards Padding to this viewer; a matching Margin doubles it. -->
+        <ScrollViewer x:Name="PART_ContentHost" Focusable="False" HorizontalScrollBarVisibility="{TemplateBinding ScrollViewer.HorizontalScrollBarVisibility}" VerticalScrollBarVisibility="{TemplateBinding ScrollViewer.VerticalScrollBarVisibility}"/>
+      </Border>
+      <ControlTemplate.Triggers>
+        <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Frame" Property="BorderBrush" Value="{DynamicResource Muted}"/></Trigger>
+        <Trigger Property="IsKeyboardFocusWithin" Value="True"><Setter TargetName="Frame" Property="BorderBrush" Value="{DynamicResource Accent}"/></Trigger>
+        <Trigger Property="Validation.HasError" Value="True"><Setter TargetName="Frame" Property="BorderBrush" Value="{DynamicResource Warning}"/></Trigger>
+        <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.5"/></Trigger>
+      </ControlTemplate.Triggers>
+    </ControlTemplate>
+  </Setter.Value></Setter>
+</Style>
+<Style TargetType="ComboBox" BasedOn="{StaticResource BodyControlText}">
+  <!-- Retain Control on the public property used by graph-range selectors. -->
+  <Setter Property="Foreground" Value="{DynamicResource Ink}"/><Setter Property="Background" Value="{DynamicResource Control}"/>
+  <Setter Property="BorderBrush" Value="{DynamicResource GlassBorder}"/><Setter Property="MinWidth" Value="120"/><Setter Property="Margin" Value="3"/>
+  <Setter Property="ScrollViewer.HorizontalScrollBarVisibility" Value="Auto"/><Setter Property="ScrollViewer.VerticalScrollBarVisibility" Value="Auto"/>
+  <Setter Property="ScrollViewer.CanContentScroll" Value="True"/>
+  <Setter Property="Template"><Setter.Value>
+    <ControlTemplate TargetType="ComboBox">
+      <Grid>
+        <ToggleButton x:Name="DropDownToggle" Focusable="False" IsTabStop="False" ClickMode="Press" IsChecked="{Binding IsDropDownOpen,RelativeSource={RelativeSource TemplatedParent},Mode=TwoWay}" Background="{DynamicResource GlassControl}" Foreground="{TemplateBinding Foreground}" BorderBrush="{TemplateBinding BorderBrush}">
+          <ToggleButton.Template><ControlTemplate TargetType="ToggleButton">
+            <Border x:Name="Frame" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="1" CornerRadius="8" Padding="10,8">
+              <Path Data="M 0,0 L 4,4 L 8,0" Stroke="{TemplateBinding Foreground}" StrokeThickness="1.5" StrokeStartLineCap="Round" StrokeEndLineCap="Round" HorizontalAlignment="Right" VerticalAlignment="Center"/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Frame" Property="Background" Value="{DynamicResource GlassHover}"/><Setter TargetName="Frame" Property="BorderBrush" Value="{DynamicResource Accent}"/></Trigger>
+              <Trigger Property="IsChecked" Value="True"><Setter TargetName="Frame" Property="Background" Value="{DynamicResource GlassSelected}"/><Setter TargetName="Frame" Property="BorderBrush" Value="{DynamicResource Accent}"/></Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate></ToggleButton.Template>
+        </ToggleButton>
+        <ContentPresenter x:Name="Selection" Margin="10,5,30,5" VerticalAlignment="Center" Content="{TemplateBinding SelectionBoxItem}" ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}" ContentTemplateSelector="{TemplateBinding ItemTemplateSelector}" IsHitTestVisible="False"/>
+        <TextBox x:Name="PART_EditableTextBox" Visibility="Hidden" Margin="3,1,28,1" Padding="7,4" Background="{DynamicResource GlassInput}" BorderThickness="0" IsReadOnly="{TemplateBinding IsReadOnly}" VerticalContentAlignment="Center" Focusable="True"/>
+        <Popup x:Name="PART_Popup" IsOpen="{Binding IsDropDownOpen,RelativeSource={RelativeSource TemplatedParent},Mode=TwoWay}" Placement="Bottom" AllowsTransparency="True" Focusable="False">
+          <Border Background="{DynamicResource GlassPopup}" BorderBrush="{DynamicResource GlassBorder}" BorderThickness="1" CornerRadius="9" Padding="4" Margin="0,5,0,0" MinWidth="{Binding ActualWidth,RelativeSource={RelativeSource TemplatedParent}}" MaxHeight="{TemplateBinding MaxDropDownHeight}">
+            <ScrollViewer x:Name="DropDownScrollViewer" CanContentScroll="{TemplateBinding ScrollViewer.CanContentScroll}" HorizontalScrollBarVisibility="{TemplateBinding ScrollViewer.HorizontalScrollBarVisibility}" VerticalScrollBarVisibility="{TemplateBinding ScrollViewer.VerticalScrollBarVisibility}">
+              <ItemsPresenter x:Name="ItemsPresenter" KeyboardNavigation.DirectionalNavigation="Contained"/>
+            </ScrollViewer>
+          </Border>
+        </Popup>
+      </Grid>
+      <ControlTemplate.Triggers>
+        <Trigger Property="IsKeyboardFocusWithin" Value="True"><Setter TargetName="DropDownToggle" Property="BorderBrush" Value="{DynamicResource Accent}"/></Trigger>
+        <Trigger Property="IsEditable" Value="True"><Setter Property="IsTabStop" Value="False"/><Setter TargetName="Selection" Property="Visibility" Value="Hidden"/><Setter TargetName="PART_EditableTextBox" Property="Visibility" Value="Visible"/></Trigger>
+        <Trigger Property="IsGrouping" Value="True"><Setter TargetName="DropDownScrollViewer" Property="CanContentScroll" Value="False"/></Trigger>
+        <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.5"/></Trigger>
+      </ControlTemplate.Triggers>
+    </ControlTemplate>
+  </Setter.Value></Setter>
+</Style>
+<Style TargetType="ComboBoxItem" BasedOn="{StaticResource BodyControlText}">
+  <Setter Property="Padding" Value="10,8"/><Setter Property="Foreground" Value="{DynamicResource Ink}"/><Setter Property="Background" Value="Transparent"/>
+  <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+  <Setter Property="Template"><Setter.Value>
+    <ControlTemplate TargetType="ComboBoxItem">
+      <Border x:Name="Row" Background="{TemplateBinding Background}" Padding="{TemplateBinding Padding}" CornerRadius="6" BorderThickness="1" BorderBrush="Transparent">
+        <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}" VerticalAlignment="Center" RecognizesAccessKey="True"/>
+      </Border>
+      <ControlTemplate.Triggers>
+        <Trigger Property="IsSelected" Value="True"><Setter TargetName="Row" Property="Background" Value="{DynamicResource GlassSelected}"/><Setter TargetName="Row" Property="BorderBrush" Value="{DynamicResource Accent}"/></Trigger>
+        <Trigger Property="IsHighlighted" Value="True"><Setter TargetName="Row" Property="Background" Value="{DynamicResource GlassHover}"/><Setter TargetName="Row" Property="BorderBrush" Value="{DynamicResource GlassBorder}"/></Trigger>
+        <Trigger Property="IsKeyboardFocusWithin" Value="True"><Setter TargetName="Row" Property="BorderBrush" Value="{DynamicResource Accent}"/></Trigger>
+        <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.5"/></Trigger>
+      </ControlTemplate.Triggers>
+    </ControlTemplate>
+  </Setter.Value></Setter>
+</Style>
+<!-- Keep DataGrid's native templates, resize/sort thumbs and recycling behavior. -->
+<Style TargetType="DataGrid" BasedOn="{StaticResource BodyControlText}">
+  <Setter Property="Background" Value="{DynamicResource GlassTable}"/><Setter Property="Foreground" Value="{DynamicResource Ink}"/>
+  <Setter Property="RowBackground" Value="Transparent"/><Setter Property="AlternatingRowBackground" Value="{DynamicResource GlassPanel}"/>
+  <Setter Property="BorderBrush" Value="{DynamicResource GlassBorder}"/><Setter Property="BorderThickness" Value="0"/>
+  <Setter Property="GridLinesVisibility" Value="Horizontal"/><Setter Property="HorizontalGridLinesBrush" Value="{DynamicResource GlassBorder}"/>
+  <Setter Property="RowHeaderWidth" Value="0"/><Setter Property="HeadersVisibility" Value="Column"/><Setter Property="IsReadOnly" Value="True"/>
+  <Setter Property="AutoGenerateColumns" Value="False"/><Setter Property="CanUserAddRows" Value="False"/><Setter Property="CanUserDeleteRows" Value="False"/>
+  <Setter Property="EnableRowVirtualization" Value="True"/><Setter Property="RowHeight" Value="35"/>
+</Style>
+<Style TargetType="DataGridColumnHeader" BasedOn="{StaticResource BodyControlText}">
+  <Setter Property="FontFamily" Value="{DynamicResource HeadingFont}"/><Setter Property="Foreground" Value="{DynamicResource Heading}"/>
+  <Setter Property="Background" Value="{DynamicResource GlassControl}"/><Setter Property="Padding" Value="9"/>
+  <Setter Property="BorderBrush" Value="{DynamicResource GlassBorder}"/><Setter Property="BorderThickness" Value="0,0,0,1"/>
+  <Style.Triggers><Trigger Property="IsMouseOver" Value="True"><Setter Property="Background" Value="{DynamicResource GlassHover}"/></Trigger></Style.Triggers>
+</Style>
+<Style TargetType="DataGridRow" BasedOn="{StaticResource BodyControlText}">
+  <Style.Triggers>
+    <Trigger Property="IsMouseOver" Value="True"><Setter Property="Background" Value="{DynamicResource GlassHover}"/></Trigger>
+    <Trigger Property="IsSelected" Value="True"><Setter Property="Background" Value="{DynamicResource GlassSelected}"/><Setter Property="Foreground" Value="{DynamicResource Ink}"/><Setter Property="BorderBrush" Value="{DynamicResource Accent}"/><Setter Property="BorderThickness" Value="1"/></Trigger>
+  </Style.Triggers>
+</Style>
+<Style TargetType="DataGridCell" BasedOn="{StaticResource BodyControlText}">
+  <Setter Property="Padding" Value="7,3"/><Setter Property="BorderBrush" Value="Transparent"/><Setter Property="BorderThickness" Value="0"/>
+  <Style.Triggers>
+    <Trigger Property="IsSelected" Value="True"><Setter Property="Background" Value="{DynamicResource GlassSelected}"/><Setter Property="Foreground" Value="{DynamicResource Ink}"/><Setter Property="BorderBrush" Value="{DynamicResource Accent}"/><Setter Property="BorderThickness" Value="1"/></Trigger>
+    <Trigger Property="IsKeyboardFocusWithin" Value="True"><Setter Property="BorderBrush" Value="{DynamicResource Accent}"/><Setter Property="BorderThickness" Value="1"/></Trigger>
+  </Style.Triggers>
+</Style>
+<Style TargetType="CheckBox" BasedOn="{StaticResource BodyControlText}">
+  <Setter Property="Foreground" Value="{DynamicResource Ink}"/><Setter Property="Background" Value="{DynamicResource GlassControl}"/>
+  <Setter Property="BorderBrush" Value="{DynamicResource GlassBorder}"/><Setter Property="Margin" Value="6"/>
+  <Setter Property="VerticalContentAlignment" Value="Center"/>
+  <Setter Property="Template"><Setter.Value>
+    <ControlTemplate TargetType="CheckBox">
+      <BulletDecorator Background="Transparent">
+        <BulletDecorator.Bullet>
+          <Border x:Name="Box" Width="18" Height="18" CornerRadius="5" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="1" VerticalAlignment="Center">
+            <Grid>
+              <Path x:Name="Check" Data="M 3,8 L 7,12 L 14,4" Stroke="{DynamicResource Ink}" StrokeThickness="1.8" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round" Visibility="Collapsed"/>
+              <Border x:Name="Mixed" Height="2" Margin="4,0" Background="{DynamicResource Ink}" VerticalAlignment="Center" Visibility="Collapsed"/>
+            </Grid>
+          </Border>
+        </BulletDecorator.Bullet>
+        <ContentPresenter Margin="9,0,0,0" HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}" VerticalAlignment="{TemplateBinding VerticalContentAlignment}" RecognizesAccessKey="True"/>
+      </BulletDecorator>
+      <ControlTemplate.Triggers>
+        <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Box" Property="Background" Value="{DynamicResource GlassHover}"/><Setter TargetName="Box" Property="BorderBrush" Value="{DynamicResource Accent}"/></Trigger>
+        <Trigger Property="IsPressed" Value="True"><Setter TargetName="Box" Property="Background" Value="{DynamicResource GlassSelected}"/></Trigger>
+        <Trigger Property="IsChecked" Value="True"><Setter TargetName="Check" Property="Visibility" Value="Visible"/><Setter TargetName="Box" Property="Background" Value="{DynamicResource GlassSelected}"/><Setter TargetName="Box" Property="BorderBrush" Value="{DynamicResource Accent}"/></Trigger>
+        <Trigger Property="IsChecked" Value="{x:Null}"><Setter TargetName="Mixed" Property="Visibility" Value="Visible"/><Setter TargetName="Box" Property="Background" Value="{DynamicResource GlassSelected}"/></Trigger>
+        <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="Box" Property="BorderBrush" Value="{DynamicResource Accent}"/></Trigger>
+        <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.5"/></Trigger>
+      </ControlTemplate.Triggers>
+    </ControlTemplate>
+  </Setter.Value></Setter>
+</Style>
 <Style TargetType="Expander" BasedOn="{StaticResource BodyControlText}"><Setter Property="Foreground" Value="{DynamicResource Ink}"/></Style>
-<Style TargetType="ToolTip" BasedOn="{StaticResource BodyControlText}"><Setter Property="Foreground" Value="{DynamicResource Ink}"/><Setter Property="Background" Value="{DynamicResource Panel}"/><Setter Property="BorderBrush" Value="{DynamicResource Line}"/><Setter Property="Padding" Value="8,6"/></Style>
+<!-- Leave native track/drag/indeterminate templates intact. -->
+<Style TargetType="Slider" BasedOn="{StaticResource BodyControlText}"><Setter Property="Foreground" Value="{DynamicResource Accent}"/><Setter Property="Background" Value="{DynamicResource GlassInput}"/></Style>
+<Style TargetType="ProgressBar" BasedOn="{StaticResource BodyControlText}"><Setter Property="Foreground" Value="{DynamicResource Accent}"/><Setter Property="Background" Value="{DynamicResource GlassInput}"/><Setter Property="BorderBrush" Value="{DynamicResource GlassBorder}"/></Style>
+<Style TargetType="ToolTip" BasedOn="{StaticResource BodyControlText}">
+  <Setter Property="Foreground" Value="{DynamicResource Ink}"/><Setter Property="Background" Value="{DynamicResource GlassPopup}"/>
+  <Setter Property="BorderBrush" Value="{DynamicResource GlassBorder}"/><Setter Property="BorderThickness" Value="1"/><Setter Property="Padding" Value="10,8"/>
+  <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ToolTip">
+    <Border CornerRadius="9" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" Padding="{TemplateBinding Padding}"><ContentPresenter/></Border>
+  </ControlTemplate></Setter.Value></Setter>
+</Style>
 </Application.Resources></Application>

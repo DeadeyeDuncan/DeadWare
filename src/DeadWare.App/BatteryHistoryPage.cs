@@ -26,7 +26,7 @@ internal sealed class BatteryHistoryPage : ScrollViewer
     public BatteryHistoryPage(UiSession session, bool showOpenWindow = true)
     {
         this.session = session;
-        SetResourceReference(BackgroundProperty, "Background");
+        Background = Brushes.Transparent;
         VerticalScrollBarVisibility = ScrollBarVisibility.Auto; HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled;
         var body = new StackPanel { Margin = new(6, 10, 6, 10) }; Content = body;
         var current = new Grid(); current.ColumnDefinitions.Add(new() { Width = GridLength.Auto }); current.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) });

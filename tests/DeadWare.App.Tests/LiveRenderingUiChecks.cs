@@ -134,7 +134,7 @@ internal static class LiveRenderingUiChecks
                 .Where(p=>p.StartSeconds>=-3000&&p.EndSeconds<=-1000)
                 .Select(p=>new SamplePoint(DateTimeOffset.UnixEpoch,p.EndSeconds,p.Average)).ToArray();
             var drawing=new DrawingGroup();using(var context=drawing.Open())
-                typeof(HistoryChart).GetMethod("DrawSeries",flags)!.Invoke(charts[0],[context,rolling,now,100d,0d,0d,600d,120d,"Graph/cpu",false,false,true]);
+                typeof(HistoryChart).GetMethod("DrawSeries",flags)!.Invoke(charts[0],[context,rolling,now,100d,0d,0d,600d,120d,"Graph/cpu",false,false,true,null,1d]);
             var path=PathGeometry.CreateFromGeometry(Shapes(drawing).Single(shape=>shape.Geometry is StreamGeometry).Geometry);
             return path.Figures.SelectMany(figure=>new[]{figure.StartPoint}.Concat(figure.Segments.SelectMany(segment=>segment switch
                 {PolyLineSegment poly=>poly.Points.AsEnumerable(),LineSegment line=>new[]{line.Point},_=>Array.Empty<Point>()}))).ToArray();

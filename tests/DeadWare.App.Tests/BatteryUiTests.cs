@@ -201,7 +201,7 @@ public class BatteryUiTests
                 var dashboard = new MainWindow(session, lifetime, () => true, () => { });
                 ConnectionsPageUiChecks.CheckNavigation(dashboard);
                 var shell = (Grid)dashboard.Content;
-                var sidebar = (DockPanel)shell.Children[0];
+                var sidebar = Assert.IsType<DockPanel>(shell.Children[0] is Border surface ? surface.Child : shell.Children[0]);
                 var navigation = (StackPanel)sidebar.Children.OfType<ScrollViewer>().Single().Content;
                 var batteryNavigation = navigation.Children.OfType<Button>().Single(b => b.Content?.ToString()?.Contains("Battery history") == true);
                 var pages = (Dictionary<string, FrameworkElement>)typeof(MainWindow).GetField("pages", All)!.GetValue(dashboard)!;
@@ -209,7 +209,8 @@ public class BatteryUiTests
                 var overviewCards = Descendants(pages["overview"]).OfType<FrameworkElement>().Where(element => element.GetType().Name == "ChartCard").ToArray();
                 Assert.Equal(6, overviewCards.Length);
                 Assert.Single(overviewCards, card => (string)card.GetType().GetField("kind", All)!.GetValue(card)! == "memory");
-                var settings = (StackPanel)((ScrollViewer)pages["desktop"]).Content;
+                var settingsRoot = ((ScrollViewer)pages["desktop"]).Content;
+                var settings = Assert.IsType<StackPanel>(settingsRoot is Border surfaceCard ? surfaceCard.Child : settingsRoot);
                 var widgetChoices = settings.Children.OfType<WrapPanel>().SelectMany(panel => panel.Children.OfType<CheckBox>()).Where(box => box.Tag is string kind && new[] { "cpu", "cputemp", "memory", "network" }.Contains(kind)).ToArray();
                 Assert.Equal(4, widgetChoices.Length);
                 Assert.All(widgetChoices, choice => Assert.True(choice.IsChecked));
@@ -292,7 +293,7 @@ public class BatteryUiTests
                     foreach (string theme in new[] { "Midnight", "Daylight" })
                     {
                         assembly.GetType("DeadWare.App.Theme")!.GetMethod("Apply", All)!.Invoke(null, [theme]);
-                        shell.SetResourceReference(Panel.BackgroundProperty, "Background");
+                        shell.SetResourceReference(Panel.BackgroundProperty, "WindowSurface");
                         shell.Measure(new Size(1220, 900)); shell.Arrange(new Rect(0, 0, 1220, 900)); shell.UpdateLayout();
                         var bitmap = new RenderTargetBitmap(1220, 900, 96, 96, PixelFormats.Pbgra32); bitmap.Render(shell);
                         using var file = File.Create(Path.Combine(dashboardOutput, $"desktop-settings-{theme}.png"));
@@ -857,7 +858,7 @@ public class BatteryUiTests
         void Capture(string name)
         {
             string? output = Environment.GetEnvironmentVariable("DEADWARE_UI_OUTPUT"); if (output is null) return;
-            shell.SetResourceReference(Panel.BackgroundProperty, "Background");
+            shell.SetResourceReference(Panel.BackgroundProperty, "WindowSurface");
             shell.Measure(new Size(1220, 900)); shell.Arrange(new Rect(0, 0, 1220, 900)); shell.UpdateLayout();
             var bitmap = new RenderTargetBitmap(1220, 900, 96, 96, PixelFormats.Pbgra32); bitmap.Render(shell);
             using var file = File.Create(Path.Combine(output, name + ".png"));

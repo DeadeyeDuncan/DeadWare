@@ -1,0 +1,4 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><OutputType>WinExe</OutputType><TargetFramework>net10.0-windows</TargetFramework><UseWPF>true</UseWPF><AssemblyName>DeadWare.OverviewPreview</AssemblyName></PropertyGroup>
+  <ItemGroup><ProjectReference Include="../../src/DeadWare.App/DeadWare.App.csproj"/><None Include="../../src/DeadWare.App/App.xaml" Link="Fixtures/App.xaml" CopyToOutputDirectory="PreserveNewest"/></ItemGroup>
+</Project>

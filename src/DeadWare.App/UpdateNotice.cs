@@ -11,7 +11,7 @@ internal sealed class UpdateNotice : Border
     {
         Visibility=Visibility.Collapsed;Padding=new(12);Margin=new(0,14,0,0);
         CornerRadius=new(10);BorderThickness=new(1);
-        SetResourceReference(BackgroundProperty,"Control");SetResourceReference(BorderBrushProperty,"Accent");
+        SetResourceReference(BackgroundProperty,"GlassPanel");SetResourceReference(BorderBrushProperty,"GlassBorder");
         var body=new Grid();body.ColumnDefinitions.Add(new(){Width=new(1,GridUnitType.Star)});body.ColumnDefinitions.Add(new(){Width=GridLength.Auto});
         message.Margin=new(0,0,16,0);body.Children.Add(message);
         var button=Ui.Button("Review update",review);Grid.SetColumn(button,1);body.Children.Add(button);Child=body;

@@ -28,7 +28,7 @@ internal sealed class CompactGraph : Border
         joined=kind is "usage" or "temperature";
         chartKind=kind switch {"usage"=>"cpu","temperature"=>"cputemp",_=>kind};
         Padding=new Thickness(8,3,8,3);CornerRadius=new CornerRadius(8);BorderThickness=new Thickness(1);
-        SetResourceReference(BackgroundProperty,"Panel");SetResourceReference(BorderBrushProperty,"Line");
+        SetResourceReference(BackgroundProperty,"GlassPanel");SetResourceReference(BorderBrushProperty,"GlassBorder");
         var grid=new Grid();grid.RowDefinitions.Add(new(){Height=GridLength.Auto});grid.RowDefinitions.Add(new(){Height=GridLength.Auto});grid.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});Child=grid;
         var header=new Grid();header.ColumnDefinitions.Add(new(){Width=new GridLength(1,GridUnitType.Star)});header.ColumnDefinitions.Add(new(){Width=GridLength.Auto});header.ColumnDefinitions.Add(new(){Width=GridLength.Auto});grid.Children.Add(header);
         var title=Ui.Text(kind switch {"usage"=>"Usage","temperature"=>"Temp","cputemp"=>"CPU temp","gputemp"=>"GPU temp","network"=>"Network",_=>Ui.Title(kind)},12,"Heading",font:"HeadingFont");
@@ -49,7 +49,7 @@ internal sealed class CompactGraph : Border
         var pin=new CheckBox {Content="Always on top",Margin=new Thickness(0,5,0,12)};
         pin.SetBinding(ToggleButton.IsCheckedProperty,new Binding(nameof(Window.Topmost)){Source=owner,Mode=BindingMode.TwoWay});menu.Children.Add(pin);
         details.Margin=new Thickness(0,2,0,8);menu.Children.Add(details);menu.Children.Add(stats);
-        var menuBorder=Ui.Panel(menu,new Thickness(12));menuBorder.Width=270;
+        var menuBorder=Ui.Panel(menu,new Thickness(12));menuBorder.Width=270;menuBorder.SetResourceReference(BackgroundProperty,"GlassPopup");
         popup=new Popup {Child=menuBorder,PlacementTarget=options,Placement=PlacementMode.Bottom,StaysOpen=false,AllowsTransparency=true};
         popup.Opened+=(_,_)=>ranges.Focus();
         popup.Closed+=(_,_)=>{if(IsLoaded)options.Focus();};

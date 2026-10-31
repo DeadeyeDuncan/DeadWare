@@ -39,7 +39,7 @@ internal sealed class CoolingHealthPage : ScrollViewer
     public CoolingHealthPage(UiSession session)
     {
         this.session = session;
-        SetResourceReference(BackgroundProperty, "Background");
+        Background = System.Windows.Media.Brushes.Transparent;
         VerticalScrollBarVisibility = ScrollBarVisibility.Auto;
         HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled;
         var body = new StackPanel { Margin = new Thickness(6, 10, 6, 10) };

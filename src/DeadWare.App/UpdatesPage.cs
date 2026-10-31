@@ -20,7 +20,7 @@ internal sealed class UpdatesPage : ScrollViewer
     public UpdatesPage(UiSession session)
     {
         service=session.Updates;VerticalScrollBarVisibility=ScrollBarVisibility.Auto;HorizontalScrollBarVisibility=ScrollBarVisibility.Disabled;
-        SetResourceReference(BackgroundProperty,"Background");
+        Background=System.Windows.Media.Brushes.Transparent;
         var body=new StackPanel{Margin=new Thickness(6,10,6,10)};Content=body;
         var heading=new StackPanel();heading.Children.Add(installed);latest.Margin=new(0,8,0,8);heading.Children.Add(latest);heading.Children.Add(last);body.Children.Add(Card(heading));
         check=Ui.Button("Check for updates",()=>_ = RunAsync(token=>service.CheckAsync(token)));
