@@ -162,9 +162,10 @@ internal static class ConnectionsWidgetUiChecks
                 Assert.Equal(regionalCamera,map.Camera);CheckRegionButton(widget,button);
                 Assert.Equal(((SolidColorBrush)Theme.Brush("Accent")).Color,((SolidColorBrush)button.BorderBrush).Color);
                 Assert.Equal(((SolidColorBrush)Theme.Brush("Ink")).Color,((SolidColorBrush)button.Foreground).Color);
-                Assert.Equal(((SolidColorBrush)Theme.Brush("Control")).Color,((SolidColorBrush)button.Background).Color);
+                Assert.Same(Theme.Brush("GlassControl"),button.Background);
                 Render(widget,(int)size.Width,(int)size.Height,$"widget-region-{theme}-{size.Width}x{size.Height}");
                 button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));Layout(widget,size.Width,size.Height);
+                Assert.Same(Theme.Brush("GlassBorder"),button.BorderBrush);
                 Assert.Equal(1,map.Camera.Zoom);CheckMapOnly(widget,map);
                 Render(widget,(int)size.Width,(int)size.Height,$"widget-world-{theme}-{size.Width}x{size.Height}");
                 button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));Assert.Equal(regionalCamera,map.Camera);

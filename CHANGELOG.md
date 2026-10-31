@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.6.33 — Glass-panel refresh
+
+- Give dashboard panels, controls, tables, graph pop-outs and the desktop widget tinted glass surfaces with subtle highlights and soft borders.
+- Refine the Overview with consistent metric cards, larger readings, compact pop-out actions and separate download/upload statistics.
+- Give graphs recessed plotting surfaces and soft trace shadows, with subtle live-chart fills; retain battery state markers, cooling ranges and missing-data gaps.
+- Carry the appearance through all seven palettes, with solid surfaces for Blackout, Windows High Contrast and disabled Windows transparency.
+
 ## 0.6.32 — GPU fan graph appearance
 
 - Add a dedicated GPU fan color and style button beside the GPU temperature color button on the overview.

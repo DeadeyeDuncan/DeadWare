@@ -90,7 +90,7 @@ internal sealed class GraphColorPicker : Button
         thickness.ValueChanged+=(_,_)=>SaveStyle();strength.ValueChanged+=(_,_)=>SaveStyle();
         foreach(var choice in patternChoices)choice.Checked+=(_,_)=>SaveStyle();
         glow.Checked+=(_,_)=>SaveStyle();glow.Unchecked+=(_,_)=>SaveStyle();SyncStyle();
-        popup.Child=Ui.Panel(menu,new Thickness(10));AddLogicalChild(popup);
+        var menuPanel=Ui.Panel(menu,new Thickness(10));menuPanel.SetResourceReference(Border.BackgroundProperty,"GlassPopup");popup.Child=menuPanel;AddLogicalChild(popup);
         Click+=(_,e)=>
         {
             // Popup children are logical descendants. Ignore their bubbling Click events.

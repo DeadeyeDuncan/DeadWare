@@ -1,17 +1,21 @@
-# Raven-inspired Overview preview — 2026-10-30
+# Glass panels and graph depth — 2026-10-30
 
-This first visual pass keeps the existing native WPF rendering and monitoring stack. The Overview now uses six consistent cards with metric glyphs, larger values, compact pop-out actions, a faint theme-colored surface, a short hover transition, and separated min/average/max statistics. Network download and upload readings have independent columns. Existing graph colors, patterns, glow, range selection, and optional GPU-fan trace remain available.
+Version 0.6.33 refreshes the existing WPF application. Palette-tinted panels, soft edge highlights and layered controls extend across the dashboard, pop-outs and widget. Layered gradients create the appearance inside the app without desktop blur or another rendering dependency.
 
-The styling is opt-in for Overview cards. The graph renderer and other chart-card surfaces retain their existing behavior. Blackout and Windows High Contrast omit the card tint; hover transitions honor the system client-area animation setting. Long device labels trim with full tooltips. Unknown and stale current readings continue to display an em dash.
+Live graphs have recessed plot surfaces, translucent fills, shallow trace shadows and point halos. Fills close each continuous segment independently, preserving missing-data gaps. Battery and Cooling Health charts use the recessed surface and connected-trace shadows while retaining their state colors, range bands and markers. Coordinates, scales, graph styles and statistics are unchanged.
 
-Use [the standalone preview](../../tools/OverviewPreview/README.md) to try the actual Overview view with labeled sample data, seven themes, graph controls and pop-outs. This is a visual review candidate; no release tag, installed-app replacement, or Raven dependency was added.
+All seven palettes remain available. Blackout keeps pure-black backgrounds and flat plots. Windows High Contrast and disabled Windows transparency use solid surfaces. Pop-up menus have opaque backing. Resources refresh existing windows when appearance settings change.
+
+The Overview has six consistent metric cards, larger readings, compact pop-out actions and separated min/average/max statistics. Network download/upload values have independent columns. The Network page allocates room to both chart and process table at small window sizes.
 
 ## Verification
 
-- .NET 10 Release solution tests: 721 passed (519 core + 202 Windows app), zero failures.
+- Release package checks: 721 tests passed (519 core and 202 Windows app).
 - Preview build: zero warnings and errors.
-- Offscreen preview: seven themes at 660px and 1000px widths, plus unavailable, stale and discovering states (17 scenarios). Checks cover six charts, continuous fixture traces, chart bounds, minimum plot height and theme resource updates. Screenshots use a WPF Window owner so dynamic resources update correctly.
-- Native smoke: changed Midnight to Neon, opened appearance controls, dismissed them with Escape, and opened a live sample CPU graph from the compact pop-out button. Closing the preview also closed its detached graph.
-- Independent source review found no blocking issues. Download statistics were given visible down-arrow labels after review.
+- Overview: 17 offscreen scenarios cover all seven themes at 660 and 1000 pixels, plus unavailable, stale and discovery states.
+- Full shell: 70 offscreen captures cover all eight production pages across seven themes at 1220×900, plus Network and Settings at 900×640. Minimum Network charts are at least 74.85 pixels high with visible sample traces; tables are at least 78.34 pixels high.
+- Independent source and screenshot reviews found no blocking issues after fixes to high-contrast selection, popup opacity, input padding and minimum-window layout.
 
-The native smoke used synthetic readings. No physical hardware soak, multi-monitor/mixed-DPI session, native custom-color dialog, or performance benchmark is claimed. Screenshot evidence is generated locally under `artifacts/raven-overview-preview/renders/`, and can be recreated with the preview tool's `--render` option.
+Reproduce the labeled synthetic previews with [the preview tool](../../tools/OverviewPreview/README.md). Evidence is generated under `artifacts/glass-overview/` and `artifacts/glass-shell/`. Fixtures do not start hardware/ETW capture, open history stores, use installed settings, change startup tasks or make update requests.
+
+These checks cover WPF layout and rendering at 96 DPI. They do not constitute a physical-hardware soak, mixed-DPI session, final native-input check or performance benchmark. The earlier Overview prototype had a native smoke check of theme switching, appearance-popup dismissal and graph pop-out; the final shared styling was verified through the automated suite and offscreen renders above.

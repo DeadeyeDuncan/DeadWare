@@ -78,7 +78,7 @@ internal sealed class ConnectionsPage : Grid
         viewport.Content=body;Children.Add(viewport);
         readHistory = q => session.Connections is { } service ? service.ReadViewAsync(q) : Task.FromResult(Empty(q, "Connection history is unavailable."));
         exportHistory=(path,query)=>session.Connections is { } service?service.ExportCsvAsync(path,query):Task.FromException(new InvalidOperationException("Connection export unavailable."));
-        SetResourceReference(BackgroundProperty, "Background"); ClipToBounds = true;
+        Background = System.Windows.Media.Brushes.Transparent; ClipToBounds = true;
         foreach (var height in new[] { GridLength.Auto, new GridLength(1, GridUnitType.Star), GridLength.Auto, GridLength.Auto, GridLength.Auto }) body.RowDefinitions.Add(new() { Height = height });
         body.RowDefinitions[1].MinHeight = 300;
         var controls = new StackPanel { Margin = new(0, 6, 0, 3) }; var top = new WrapPanel();
@@ -91,28 +91,28 @@ internal sealed class ConnectionsPage : Grid
         direction.ItemsSource = Enum.GetValues<ConnectionDirection>(); direction.SelectedIndex = 0; Named(direction, "Traffic direction"); filters.Children.Add(Label("Direction", direction, "Traffic direction")); filters.Children.Add(Button("Filter", () => FiltersChanged())); controls.Children.Add(filters);
         var header=layoutHeader=new StackPanel();header.Children.Add(controls);header.Children.Add(summary);header.Children.Add(capture);body.Children.Add(header);
         var mapHost = new Grid(); mapHost.Children.Add(map); mapHost.Children.Add(mapOverlay); Grid.SetRow(mapHost, 1); body.Children.Add(mapHost);
-        nodeDetails.SetResourceReference(Border.BackgroundProperty, "Panel"); nodeDetails.SetResourceReference(Border.BorderBrushProperty, "Line");
+        nodeDetails.SetResourceReference(Border.BackgroundProperty, "GlassPanel"); nodeDetails.SetResourceReference(Border.BorderBrushProperty, "GlassBorder");
         nodeText.TextWrapping = TextWrapping.Wrap;
         var detailsLayout = new StackPanel(); var detailHeader = new DockPanel(); var close = Button("Close", ClearSelection); DockPanel.SetDock(close, Dock.Right); detailHeader.Children.Add(close); detailHeader.Children.Add(Ui.Text("Connection details", 13)); detailsLayout.Children.Add(detailHeader);
         detailsLayout.Children.Add(new ScrollViewer { Content = nodeText, MaxHeight = 175, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled }); nodeDetails.Child = detailsLayout; mapOverlay.Children.Add(nodeDetails); Named(nodeDetails, "Selected map connection details");
         var listLayout = new StackPanel(); listLayout.Children.Add(mappedStatus); listLayout.Children.Add(mappedConnections); Grid.SetRow(listLayout, 2); body.Children.Add(listLayout);
         Named(mappedConnections, "Connections drawn on map");
         mappedConnections.ItemsSource=mappedRows;
-        mappedConnections.SetResourceReference(Control.BackgroundProperty,"Background");
+        mappedConnections.SetResourceReference(Control.BackgroundProperty,"GlassControl");
         mappedConnections.SetResourceReference(Control.ForegroundProperty,"Ink");
-        mappedConnections.SetResourceReference(Control.BorderBrushProperty,"Line");
+        mappedConnections.SetResourceReference(Control.BorderBrushProperty,"GlassBorder");
         mappedConnections.SetResourceReference(Control.FontFamilyProperty,"BodyFont");
         ScrollViewer.SetHorizontalScrollBarVisibility(mappedConnections, ScrollBarVisibility.Disabled);
         var rowText = new FrameworkElementFactory(typeof(TextBlock)); rowText.SetBinding(TextBlock.TextProperty, new Binding("Label")); rowText.SetValue(TextBlock.TextWrappingProperty, TextWrapping.Wrap); rowText.SetValue(FrameworkElement.MarginProperty, new Thickness(4));
         mappedConnections.ItemTemplate = new DataTemplate { VisualTree = rowText };
         var itemStyle = new Style(typeof(ListBoxItem)); itemStyle.Setters.Add(new Setter(Control.HorizontalContentAlignmentProperty, HorizontalAlignment.Stretch));
         itemStyle.Setters.Add(new Setter(Control.ForegroundProperty,new DynamicResourceExtension("Ink")));
-        itemStyle.Setters.Add(new Setter(Control.BackgroundProperty,new DynamicResourceExtension("Background")));
+        itemStyle.Setters.Add(new Setter(Control.BackgroundProperty,new DynamicResourceExtension("GlassPanel")));
         var itemBorder=new FrameworkElementFactory(typeof(Border)); itemBorder.SetBinding(Border.BackgroundProperty,new Binding("Background") {RelativeSource=RelativeSource.TemplatedParent});
         itemBorder.SetValue(Border.PaddingProperty,new Thickness(3));itemBorder.AppendChild(new FrameworkElementFactory(typeof(ContentPresenter)));
         itemStyle.Setters.Add(new Setter(Control.TemplateProperty,new ControlTemplate(typeof(ListBoxItem)) {VisualTree=itemBorder}));
         foreach(var property in new[]{ListBoxItem.IsSelectedProperty,UIElement.IsMouseOverProperty,UIElement.IsKeyboardFocusWithinProperty})
-        {var trigger=new Trigger {Property=property,Value=true};trigger.Setters.Add(new Setter(Control.BackgroundProperty,new DynamicResourceExtension("Control")));itemStyle.Triggers.Add(trigger);}
+        {var trigger=new Trigger {Property=property,Value=true};trigger.Setters.Add(new Setter(Control.BackgroundProperty,new DynamicResourceExtension("GlassControl")));itemStyle.Triggers.Add(trigger);}
         mappedConnections.ItemContainerStyle = itemStyle;
         var foot = layoutFooter = new StackPanel(); export = Button("Export CSV…", () => _ = ExportAsync()); export.HorizontalAlignment = HorizontalAlignment.Left; foot.Children.Add(export); foot.Children.Add(selection); Grid.SetRow(foot, 3); body.Children.Add(foot);
         var settings = layoutSettings = new StackPanel(); var databaseActions = new WrapPanel(); download = Button("Download / update locations", () => _ = UpdateDatabaseAsync()); cancel = Button("Cancel download", () => downloadCancellation?.Cancel()); cancel.IsEnabled = false; databaseActions.Children.Add(download); databaseActions.Children.Add(cancel); databaseActions.Children.Add(progress); settings.Children.Add(databaseActions); settings.Children.Add(database);

@@ -1,11 +1,13 @@
 using System.Windows;
 using System.Windows.Media;
+using Microsoft.Win32;
 using DeadWare.Core;
 namespace DeadWare.App;
 internal static class Theme
 {
     public static string CurrentName {get;private set;}="Midnight";
     public static bool IsDark=>CurrentName!="Daylight";
+    public static bool GlassEnabled {get;private set;}
     public static Typeface ChartTypeface=>new((FontFamily)Application.Current.Resources["MetricFont"],FontStyles.Normal,FontWeights.Normal,FontStretches.Normal);
     private static IReadOnlyDictionary<string,string> graphColors=new Dictionary<string,string>();
     public static string GraphKey(string kind)=>"Graph/"+(kind=="network"?"download":kind);
@@ -39,9 +41,16 @@ internal static class Theme
         SystemParameters.StaticPropertyChanged+=(_,e)=>
         {
             if(e.PropertyName!=nameof(SystemParameters.HighContrast))return;
-            var app=Application.Current;
-            if(app is not null&&!app.Dispatcher.HasShutdownStarted)app.Dispatcher.InvokeAsync(()=>Apply(CurrentName));
+            RefreshFromWindows();
         };
+        // Windows broadcasts personalization changes, including its Transparency effects
+        // preference. Replacing resources refreshes already-open windows and pop-ups.
+        SystemEvents.UserPreferenceChanged+=(_,_)=>RefreshFromWindows();
+    }
+    private static void RefreshFromWindows()
+    {
+        var app=Application.Current;
+        if(app is not null&&!app.Dispatcher.HasShutdownStarted)app.Dispatcher.InvokeAsync(()=>Apply(CurrentName));
     }
     public static void Apply(string name)
     {
@@ -76,8 +85,87 @@ internal static class Theme
         Application.Current.Resources["Heading"]=SystemParameters.HighContrast?SystemColors.WindowTextBrush:Brush("Accent");
         Application.Current.Resources["ScrollThumbHover"]=SystemParameters.HighContrast?SystemColors.HighlightBrush:Brush("Muted");
         ScrollCorner.Color=((SolidColorBrush)Brush("Panel")).Color;
+        ApplyGlassResources();
         ApplyGraphColors();
         NativeTheme.RefreshOpenWindows();
     }
+    private static bool TransparencyAllowed()
+    {
+        try
+        {
+            using var key=Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize");
+            return key?.GetValue("EnableTransparency") is not int value||value!=0;
+        }
+        catch(Exception error) when(error is System.Security.SecurityException or UnauthorizedAccessException or System.IO.IOException)
+        {return false;}
+    }
+    private static void ApplyGlassResources()
+    {
+        GlassEnabled=!SystemParameters.HighContrast&&CurrentName!="Blackout"&&TransparencyAllowed();
+        var resources=Application.Current.Resources;
+        if(!GlassEnabled)
+        {
+            // Keep all fallback surfaces opaque. In particular, Blackout's window,
+            // panels, tables and pop-ups stay pure black, without a highlight wash.
+            resources["WindowSurface"]=Brush("Background");
+            resources["GlassPanel"]=Brush("Panel");
+            resources["GlassBorder"]=Brush("Line");
+            resources["GlassControl"]=Brush("Control");
+            resources["GlassHover"]=SystemParameters.HighContrast?SystemColors.WindowBrush:Brush("Control");
+            resources["GlassSelected"]=SystemParameters.HighContrast?SystemColors.WindowBrush:Brush("Control");
+            resources["GlassInput"]=SystemParameters.HighContrast?SystemColors.WindowBrush:Brush("Background");
+            resources["GlassPopup"]=Brush("Panel");
+            resources["GlassTable"]=Brush("Panel");
+            return;
+        }
+        Color ColorOf(string key)=>((SolidColorBrush)Brush(key)).Color;
+        var background=ColorOf("Background");var panel=ColorOf("Panel");var control=ColorOf("Control");
+        var accent=ColorOf("Accent");var gpu=ColorOf("Gpu");var line=ColorOf("Line");
+        bool light=CurrentName=="Daylight";
+
+        // An opaque atmospheric foundation gives the translucent card layers
+        // something to reveal; it never samples or blurs the desktop behind us.
+        var drawing=new DrawingGroup();var bounds=new Rect(0,0,1,1);
+        drawing.Children.Add(new GeometryDrawing(new SolidColorBrush(background),null,new RectangleGeometry(bounds)));
+        drawing.Children.Add(new GeometryDrawing(Bloom(accent,light ? .13 : .11,new Point(.08,.02),.95,.85),null,new RectangleGeometry(bounds)));
+        drawing.Children.Add(new GeometryDrawing(Bloom(gpu,light ? .055 : .065,new Point(.98,.95),.8,.95),null,new RectangleGeometry(bounds)));
+        var window=new DrawingBrush(drawing) {Viewbox=bounds,ViewboxUnits=BrushMappingMode.Absolute,Stretch=Stretch.Fill};
+        window.Freeze();resources["WindowSurface"]=window;
+
+        resources["GlassPanel"]=Surface(panel,accent,light ? .035 : .07,.94,light ? .84 : .87,light ? .91 : .93);
+        resources["GlassControl"]=Surface(control,accent,light ? .025 : .045,.96,.88,.94);
+        resources["GlassHover"]=Surface(Mix(control,accent,.12),accent,.08,.98,.95,.98);
+        resources["GlassSelected"]=Surface(Mix(control,accent,light ? .19 : .2),accent,.1,.99,.97,.99);
+        resources["GlassInput"]=Surface(Mix(background,panel,.5),accent,light ? .015 : .035,.96,.91,.96);
+        resources["GlassPopup"]=Surface(panel,accent,light ? .025 : .045,1,1,1);
+        resources["GlassTable"]=Surface(panel,accent,light ? .015 : .03,.93,.86,.93);
+
+        // A brighter upper rim catches light; the lower rim recedes into the card.
+        var border=new LinearGradientBrush {StartPoint=new Point(0,0),EndPoint=new Point(.2,1)};
+        border.GradientStops.Add(new(Alpha(Mix(line,Colors.White,light ? .66 : .36),light ? .96 : .75),0));
+        border.GradientStops.Add(new(Alpha(Mix(line,accent,.1),light ? .58 : .65),.28));
+        border.GradientStops.Add(new(Alpha(line,light ? .5 : .52),1));
+        border.Freeze();resources["GlassBorder"]=border;
+    }
+    private static LinearGradientBrush Surface(Color basis,Color tint,double tintAmount,double topAlpha,double middleAlpha,double bottomAlpha)
+    {
+        bool light=CurrentName=="Daylight";
+        var brush=new LinearGradientBrush {StartPoint=new Point(0,0),EndPoint=new Point(.12,1)};
+        brush.GradientStops.Add(new(Alpha(Mix(basis,Colors.White,light ? .36 : .055),topAlpha),0));
+        brush.GradientStops.Add(new(Alpha(Mix(basis,tint,tintAmount),middleAlpha),.22));
+        brush.GradientStops.Add(new(Alpha(basis,bottomAlpha),1));
+        brush.Freeze();return brush;
+    }
+    private static RadialGradientBrush Bloom(Color color,double opacity,Point center,double radiusX,double radiusY)
+    {
+        var brush=new RadialGradientBrush {Center=center,GradientOrigin=center,RadiusX=radiusX,RadiusY=radiusY};
+        brush.GradientStops.Add(new(Alpha(color,opacity),0));
+        brush.GradientStops.Add(new(Alpha(color,opacity*.35),.45));
+        brush.GradientStops.Add(new(Alpha(color,0),1));
+        brush.Freeze();return brush;
+    }
+    private static Color Alpha(Color color,double opacity)=>Color.FromArgb((byte)Math.Round(255*opacity),color.R,color.G,color.B);
+    private static Color Mix(Color from,Color to,double amount)=>Color.FromRgb(
+        (byte)Math.Round(from.R+(to.R-from.R)*amount),(byte)Math.Round(from.G+(to.G-from.G)*amount),(byte)Math.Round(from.B+(to.B-from.B)*amount));
     public static Brush Brush(string name)=>(Brush)Application.Current.Resources[name];
 }

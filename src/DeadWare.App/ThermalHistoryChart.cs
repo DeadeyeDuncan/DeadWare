@@ -78,6 +78,7 @@ internal sealed class ThermalHistoryChart : FrameworkElement
         double right = Math.Max(56, Text(Axis(maximum)).Width + 14);
         double width = ActualWidth - left - right, height = ActualHeight - top - bottom;
         if (width < 30 || height < 30) return;
+        GraphDepth.Surface(drawing, new Rect(left, top, width, height));
         for (int i = 0; i <= 2; i++)
         {
             double value = maximum * i / 2, y = top + height * (1 - value / maximum);
@@ -113,7 +114,10 @@ internal sealed class ThermalHistoryChart : FrameworkElement
             if (aggregate.Minimum is double minimum && aggregate.Maximum is double upper && double.IsFinite(minimum) && double.IsFinite(upper))
                 drawing.DrawLine(spreadPen, new(point.X, Y(minimum)), new(point.X, Y(upper)));
             if (previous is not null && previousPoint is Point last && CanConnect(previous, window, metric))
+            {
+                GraphDepth.LineShadow(drawing, last, point, seriesPen);
                 drawing.DrawLine(seriesPen, last, point);
+            }
             drawing.DrawEllipse(color, null, point, valid.Length > 500 ? 1 : 1.8, valid.Length > 500 ? 1 : 1.8);
             previous = window; previousPoint = point;
         }

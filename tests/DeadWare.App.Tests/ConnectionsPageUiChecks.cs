@@ -282,7 +282,8 @@ internal static class ConnectionsPageUiChecks
                     {
                         list.SelectedIndex=0;Layout(page,size.Width,size.Height);Snapshot("-selected");
                         Assert.Equal(((SolidColorBrush)app.Resources["Ink"]).Color,((SolidColorBrush)list.Foreground).Color);
-                        Assert.Equal(((SolidColorBrush)app.Resources["Panel"]).Color,((SolidColorBrush)Field<Border>(page,"nodeDetails").Background).Color);
+                        Assert.Same(app.Resources["GlassControl"],list.Background);
+                        Assert.Same(app.Resources["GlassPanel"],Field<Border>(page,"nodeDetails").Background);
                         Assert.Contains(historical?"Historical connection":"Live connection",Field<TextBlock>(page,"nodeText").Text);
                     }
                     scroll.ScrollToBottom();Pump();Layout(page,size.Width,size.Height);
@@ -301,7 +302,7 @@ internal static class ConnectionsPageUiChecks
     internal static void CheckNavigation(MainWindow dashboard)
     {
         var shell = (Grid)dashboard.Content;
-        var sidebar = (DockPanel)shell.Children[0];
+        var sidebar = Assert.IsType<DockPanel>(shell.Children[0] is Border surface ? surface.Child : shell.Children[0]);
         var nav = (StackPanel)sidebar.Children.OfType<ScrollViewer>().Single().Content;
         Assert.Contains(nav.Children.OfType<Button>(), b => b.Content?.ToString()?.Contains("Connections") == true);
         typeof(MainWindow).GetMethod("Navigate", All)!.Invoke(dashboard, ["connections"]);

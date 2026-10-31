@@ -40,7 +40,7 @@ internal sealed class ConnectionsWidget : Grid
         {
             previousNorthAmerica=northAmerica;
             ResetRegion();
-            region.SetResourceReference(Button.BorderBrushProperty,northAmerica?"Accent":"Line");
+            region.SetResourceReference(Button.BorderBrushProperty,northAmerica?"Accent":"GlassBorder");
             region.ToolTip=northAmerica?"Return to World view":"Zoom to North America";
             AutomationProperties.SetName(region,northAmerica?"North America view. Switch to World view.":"World view. Zoom to North America.");
             AutomationProperties.SetItemStatus(region,northAmerica?"North America":"World");

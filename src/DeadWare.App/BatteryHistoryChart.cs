@@ -30,6 +30,7 @@ internal sealed class BatteryHistoryChart : FrameworkElement
         double seconds = Math.Max(60, (view.To - view.From).TotalSeconds);
         double X(DateTimeOffset time) => left + width * Math.Clamp((time - view.From).TotalSeconds / seconds, 0, 1);
         double Y(double value) => top + height * (1 - Math.Clamp(value, 0, 100) / 100);
+        GraphDepth.Surface(dc, new Rect(left, top, width, height));
         for (int i = 0; i <= 4; i++)
         {
             double y = Y(i * 25);
@@ -44,8 +45,14 @@ internal sealed class BatteryHistoryChart : FrameworkElement
             {
                 var charge = ChargePen(bucket);
                 if (previous is not null && CanConnect(previous, bucket))
+                {
                     // The earlier observation's state lasts until the next recorded change.
-                    dc.DrawLine(ChargePen(previous), new(X(previous.Start), Y(previous.Average!.Value)), new(x, Y(average)));
+                    var previousPen = ChargePen(previous);
+                    var start = new Point(X(previous.Start), Y(previous.Average!.Value));
+                    var end = new Point(x, Y(average));
+                    GraphDepth.LineShadow(dc, start, end, previousPen);
+                    dc.DrawLine(previousPen, start, end);
+                }
                 if (bucket.Minimum is { } minimum && bucket.Maximum is { } maximum)
                     dc.DrawLine(new Pen(charge.Brush, 1), new(x, Y(minimum)), new(x, Y(maximum)));
                 bool certain = bucket.SaverKnownSamples == bucket.Samples && (bucket.SaverSamples == 0 || bucket.SaverSamples == bucket.Samples);

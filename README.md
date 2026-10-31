@@ -32,11 +32,12 @@ Connections is available starting with version 0.6.21.
 - Seven saved themes: **Midnight**, **Ember**, **Glacier**, **Amethyst**, **Neon**, **Blackout**, and **Daylight**. Choose **Blackout** for pure-black backgrounds and panels, neutral controls and borders, and distinct graph colors. Choose **Neon** in the sidebar's **Color theme** menu for near-black surfaces, electric cyan accents, and vivid green, magenta and blue graphs.
 - Scrollbars follow the selected theme across all windows, with matching native title bars on Windows 11.
 - Themes coordinate text colors and fonts across headings, controls, tables, graph labels and tooltips, and update open windows immediately.
+- Glass-inspired panels, controls and tables use soft palette-tinted gradients and highlighted edges across the dashboard, pop-outs and widget. The effect stays inside the app. Blackout keeps pure-black backgrounds and panels; Windows High Contrast and disabled Windows transparency use solid surfaces.
 - Use the filled circles in each Overview graph's corner to choose its line color, **Default / Solid / Dashed / Dotted** pattern, **Line thickness** (50–300%) and optional **Neon glow** with **Glow strength** (0–300%). 100% preserves the original thickness/glow. Choices are saved and shared with pop-outs, widget traces and legends; download and upload have separate colors. Choose **Theme default** to clear a custom color; choose **Default** under Line style, return both sliders to 100%, and turn off glow to restore the original trace style.
 
 ## Download and run
 
-Get the Windows x64 ZIP from [Releases](https://github.com/DeadeyeDuncan/DeadWare/releases). Extract the **entire** archive and run `DeadWare.exe` inside the `DeadWare` folder. The .NET runtime is bundled. The app is portable and unsigned. Version 0.6.0 adds manual update and rollback controls; older installations need one complete ZIP upgrade to gain those controls.
+Get the Windows x64 ZIP from [v0.6.33](https://github.com/DeadeyeDuncan/DeadWare/releases/tag/v0.6.33) or browse [all releases](https://github.com/DeadeyeDuncan/DeadWare/releases). Extract the **entire** archive and run `DeadWare.exe` inside the `DeadWare` folder. The .NET runtime is bundled. The app is portable and unsigned. Version 0.6.0 adds manual update and rollback controls; older installations need one complete ZIP upgrade to gain those controls.
 
 Windows 10/11 x64 is the target. ARM64 and other operating systems are not validated. Hardware coverage varies by device.
 
@@ -169,7 +170,7 @@ dotnet run --project src/DeadWare.App/DeadWare.App.csproj
 Create a self-contained portable ZIP and SHA-256 checksum:
 
 ```powershell
-pwsh -File scripts/publish.ps1 -Version 0.6.32
+pwsh -File scripts/publish.ps1 -Version 0.6.33
 ```
 
 The packaging script runs tests before publishing, bundles the independent self-contained update helper, and records all managed file hashes in `deadware-package.json`. Output goes under `artifacts/`. GitHub Actions runs the same script. Pushing a normal three-part version tag such as `v0.6.0` builds and publishes a normal release after tests pass, using the matching `docs/releases/v0.6.0.md` notes. Workflows use pinned action commits.

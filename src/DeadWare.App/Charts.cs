@@ -18,7 +18,7 @@ internal static class Ui
     public static StackPanel Row(params UIElement[] children)
     {var p=new StackPanel {Orientation=Orientation.Horizontal};foreach(var c in children)p.Children.Add(c);return p;}
     public static Border Panel(UIElement child,Thickness? padding=null)
-    {var b=new Border {Child=child,Padding=padding??new Thickness(18),CornerRadius=new CornerRadius(10),BorderThickness=new Thickness(1)};b.SetResourceReference(Border.BackgroundProperty,"Panel");b.SetResourceReference(Border.BorderBrushProperty,"Line");return b;}
+    {var b=new Border {Child=child,Padding=padding??new Thickness(18),CornerRadius=new CornerRadius(14),BorderThickness=new Thickness(1)};b.SetResourceReference(Border.BackgroundProperty,"GlassPanel");b.SetResourceReference(Border.BorderBrushProperty,"GlassBorder");return b;}
     public static string Number(double? value,string unit="")=>value.HasValue&&double.IsFinite(value.Value)?$"{value.Value:0.0}{unit}":"—";
     public static string GpuFanText(UiSession session)
     {
@@ -36,7 +36,7 @@ internal static class Ui
     {
         NativeTheme.Attach(w);
         // An implicit Window style does not automatically style our derived Window types.
-        w.SetResourceReference(Control.BackgroundProperty,"Background");w.SetResourceReference(Control.ForegroundProperty,"Ink");
+        w.SetResourceReference(Control.BackgroundProperty,"WindowSurface");w.SetResourceReference(Control.ForegroundProperty,"Ink");
         w.SetResourceReference(Control.FontFamilyProperty,"BodyFont");w.FontSize=13;
         try {w.Icon=new BitmapImage(new Uri("pack://application:,,,/Assets/deadware.ico"));}catch(System.IO.IOException) {}
     }
@@ -170,6 +170,7 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
         double right=compact?Enumerable.Range(0,3).Max(i=>Formatted(Axis(maximum*i/2)).Width)+10:74;
         double bottom=axisLabel.Height+(compact?10:18),pw=w-left-right,ph=h-top-bottom;
         if(pw<=0||ph<=0)return;
+        var plot=new Rect(left,top,pw,ph);GraphDepth.Surface(dc,plot);
         for(int i=0;i<3;i++)
         {
             double value=maximum*i/2,y=top+ph*(1-value/maximum);
@@ -189,15 +190,15 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
         if(IsLoaded&&IsVisible&&points.Count+secondary.Count+fan.Count>0)
             scroll.BeginAnimation(TranslateTransform.XProperty,new DoubleAnimation(0,-pw/session.HistorySeconds*Math.Min(1,session.Settings.PollingIntervalSeconds),TimeSpan.FromSeconds(Math.Min(1,session.Settings.PollingIntervalSeconds))));
         dc.PushTransform(scroll);
-        void Trace(IReadOnlyList<SamplePoint> values,string metric,string color,bool dashed,bool dotted=false,double? scale=null)
+        void Trace(IReadOnlyList<SamplePoint> values,string metric,string color,bool dashed,bool dotted=false,double? scale=null,double fillStrength=1)
         {
             double maximumValue=scale??maximum;
-            if(bands.TryGetValue(metric,out var range))DrawRange(dc,range,now,maximumValue,left,top,pw,ph,color);
-            DrawSeries(dc,values,now,maximumValue,left,top,pw,ph,color,dashed,dotted,query.Seconds>=3600);
+            bands.TryGetValue(metric,out var range);
+            DrawSeries(dc,values,now,maximumValue,left,top,pw,ph,color,dashed,dotted,query.Seconds>=3600,range,dotted?0:fillStrength);
         }
-        Trace(points,session.MetricId(kind),Theme.GraphKey(kind),false);
-        if(kind=="network")Trace(secondary,"network/upload",Theme.GraphKey("upload"),true);
-        else if(compare)Trace(secondary,session.MetricId(kind=="cpu"?"gpu":"gputemp"),Theme.GraphKey(kind=="cpu"?"gpu":"gputemp"),true);
+        Trace(points,session.MetricId(kind),Theme.GraphKey(kind),false,fillStrength:(kind=="network"||compare) ? .65 : 1);
+        if(kind=="network")Trace(secondary,"network/upload",Theme.GraphKey("upload"),true,fillStrength:.42);
+        else if(compare)Trace(secondary,session.MetricId(kind=="cpu"?"gpu":"gputemp"),Theme.GraphKey(kind=="cpu"?"gpu":"gputemp"),true,fillStrength:.45);
         if(showFan)Trace(fan,session.MetricId("gpufan"),Theme.GraphKey("gpufan"),false,true,fanMaximum);
         dc.Pop();dc.Pop();
         if(!points.Concat(secondary).Concat(fan).Any(p=>p.Value.HasValue)) Label(dc,sample is null?(compact?"Waiting for data…":"Waiting for first sample…"):(compact?"No readings in this range":"No available readings in this range"),left+(compact?4:15),top+ph/2);
@@ -214,23 +215,29 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
         }
         band.Freeze();dc.PushOpacity(.14);dc.DrawGeometry(Theme.Brush(color),null,band);dc.Pop();
     }
-    private void DrawSeries(DrawingContext dc,IReadOnlyList<SamplePoint> points,double now,double maximum,double left,double top,double width,double height,string color,bool dashed,bool dotted=false,bool reduced=false)
+    private void DrawSeries(DrawingContext dc,IReadOnlyList<SamplePoint> points,double now,double maximum,double left,double top,double width,double height,string color,bool dashed,bool dotted=false,bool reduced=false,IReadOnlyList<ChartRangePoint>? range=null,double fillStrength=1)
     {
         var geometry=new StreamGeometry();bool open=false;Point? lastPoint=null;
+        List<IReadOnlyList<Point>>? segments=Theme.GlassEnabled&&fillStrength>0?new():null;List<Point>? segment=null;
         using(var context=geometry.Open())
         {
             foreach(var point in reduced?points:SampleHistory.ReduceForChart(points,now,session.HistorySeconds,(int)Math.Ceiling(width)))
             {
-                if(!point.Value.HasValue){open=false;continue;}
+                if(!point.Value.HasValue){open=false;segment=null;continue;}
                 var p=new Point(left+width*(1-(now-point.MonotonicSeconds)/session.HistorySeconds),top+height*(1-Math.Clamp(point.Value.Value/maximum,0,1)));
-                if(!open){context.BeginFigure(p,false,false);open=true;}else context.LineTo(p,true,false);
+                if(!open){context.BeginFigure(p,false,false);open=true;if(segments is not null){segment=new();segments.Add(segment);}}else context.LineTo(p,true,false);
+                segment?.Add(p);
                 lastPoint=p;
             }
         }
         bool dense=CompareDevices&&session.HistorySeconds>=3600;
-        geometry.Freeze();GraphStroke.Draw(dc,geometry,session.Settings,color,dense?1:2,dashed,dotted);
+        geometry.Freeze();
+        if(segments is not null)GraphDepth.Area(dc,segments,new(left,top,width,height),color,fillStrength);
+        if(range is not null)DrawRange(dc,range,now,maximum,left,top,width,height,color);
+        GraphDepth.TraceShadow(dc,geometry,session.Settings,color,dense?1:2,dashed,dotted);
+        GraphStroke.Draw(dc,geometry,session.Settings,color,dense?1:2,dashed,dotted);
         double markerRadius=dense?1.5:2.5;
-        if(lastPoint.HasValue) dc.DrawEllipse(Theme.Brush(color),null,lastPoint.Value,markerRadius,markerRadius);
+        if(lastPoint.HasValue){GraphDepth.PointHalo(dc,lastPoint.Value,color,markerRadius);dc.DrawEllipse(Theme.Brush(color),null,lastPoint.Value,markerRadius,markerRadius);}
     }
     private void Label(DrawingContext dc,string text,double x,double y)
     {dc.DrawText(Formatted(text),new(x,y));}
@@ -250,7 +257,7 @@ internal sealed class ChartCard : Border
     public ChartCard(UiSession session,string kind,bool popButton=true):this(session,kind,popButton,false) {}
     public ChartCard(UiSession session,string kind,bool popButton,bool overview)
     {
-        this.session=session;this.kind=kind;this.overview=overview;CornerRadius=new(overview?14:10);BorderThickness=new(1);Padding=overview?new(16,13,16,11):new(16,12,16,10);Margin=new(6);SetResourceReference(BackgroundProperty,"Panel");SetResourceReference(BorderBrushProperty,"Line");
+        this.session=session;this.kind=kind;this.overview=overview;CornerRadius=new(overview?14:10);BorderThickness=new(1);Padding=overview?new(16,13,16,11):new(16,12,16,10);Margin=new(6);SetResourceReference(BackgroundProperty,"GlassPanel");SetResourceReference(BorderBrushProperty,"GlassBorder");
         value.SetResourceReference(TextBlock.ForegroundProperty,Theme.GraphKey(kind));
         if(kind=="network")
         {
@@ -323,7 +330,7 @@ internal sealed class ChartCard : Border
     private void Refresh()
     {
         if(!IsVisible)return;
-        if(tint is not null)tint.Visibility=Theme.CurrentName=="Blackout"||SystemParameters.HighContrast?Visibility.Collapsed:Visibility.Visible;
+        if(tint is not null)tint.Visibility=Theme.GlassEnabled?Visibility.Visible:Visibility.Collapsed;
         string id=session.MetricId(kind);double? current=session.Stale?null:session.Value(id);var data=session.Current;
         bool showFan=kind=="gputemp"&&session.Settings.ShowGpuFanSpeed;
         fan.Visibility=showFan?Visibility.Visible:Visibility.Collapsed;
