@@ -294,6 +294,12 @@ public record WindowPlacement(double Left,double Top,double Width,double Height,
         return new(Math.Clamp(left,area.Left,area.Left+area.Width-w),Math.Clamp(top,area.Top,area.Top+area.Height-h),w,h,p.Topmost);
     }
 }
+public static class GlassLevels
+{
+    public const string Off="Off",Subtle="Subtle",Balanced="Balanced",Strong="Strong";
+    public static readonly string[] All=[Off,Subtle,Balanced,Strong];
+    public static string Normalize(string? level)=>All.FirstOrDefault(l=>l==level)??Balanced;
+}
 public sealed class UserSettings
 {
     public bool ConnectionsRecording {get;set;}=true;
@@ -318,6 +324,7 @@ public sealed class UserSettings
     public string WindowPlacementFormat {get;set;}=WindowCoordinates.Format;
     public bool ExtendedSensors {get;set;}
     public string Theme {get;set;}="Midnight";
+    public string GlassLevel {get;set;}=GlassLevels.Balanced;
     public Dictionary<string,string> GraphColors {get;set;}=new();
     public Dictionary<string,GraphLineStyle> GraphStyles {get;set;}=new();
     public bool GraphSmoothing {get;set;}=true;
@@ -335,6 +342,7 @@ public static class SettingsCodec
             var s=JsonSerializer.Deserialize<UserSettings>(json);
             if(s is null) return new(new(),"Settings were empty; defaults restored.");
             if(s.Theme is not ("Midnight" or "Ember" or "Glacier" or "Amethyst" or "Neon" or "Blackout" or "Skyrim" or "Mage" or "Daylight")) s.Theme="Midnight";
+            s.GlassLevel=GlassLevels.Normalize(s.GlassLevel);
             s.GraphColors=GraphColorSettings.Normalize(s.GraphColors);
             s.GraphStyles=GraphLineStyles.Normalize(s.GraphStyles);
             if(string.IsNullOrWhiteSpace(s.ConnectionsHomeCityId)||s.ConnectionsHomeCityId.Length>80||s.ConnectionsHomeCityId.Any(char.IsControl))s.ConnectionsHomeCityId=null;

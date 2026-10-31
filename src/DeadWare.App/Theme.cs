@@ -9,6 +9,10 @@ internal static class Theme
     public static string CurrentName {get;private set;}="Midnight";
     public static bool IsDark=>CurrentName!="Daylight";
     public static bool GlassEnabled {get;private set;}
+    // See-through windows reveal the blurred desktop through a Windows 11 acrylic backdrop.
+    private static string glassLevel=GlassLevels.Balanced;
+    public static string GlassLevel {get=>glassLevel;set=>glassLevel=GlassLevels.Normalize(value);}
+    public static bool BackdropActive {get;private set;}
     public static bool ElderScrolls=>CurrentName is "Skyrim" or "Mage";
     public static FontFamily NordicFont {get;}=new(new Uri("pack://application:,,,/DeadWare;component/"),"./Assets/Fonts/#Caesar Dressing");
     public static FontFamily RuneFont {get;}=new(new Uri("pack://application:,,,/DeadWare;component/"),"./Assets/Fonts/#Noto Sans Runic");
@@ -110,6 +114,7 @@ internal static class Theme
     private static void ApplyGlassResources()
     {
         GlassEnabled=!SystemParameters.HighContrast&&CurrentName!="Blackout"&&TransparencyAllowed();
+        BackdropActive=GlassEnabled&&GlassLevel!=GlassLevels.Off&&NativeTheme.BackdropSupported;
         var resources=Application.Current.Resources;
         if(!GlassEnabled)
         {
@@ -131,32 +136,42 @@ internal static class Theme
         var accent=ColorOf("Accent");var gpu=ColorOf("Gpu");var line=ColorOf("Line");
         bool light=CurrentName=="Daylight";
 
-        // An opaque atmospheric foundation gives the translucent card layers
-        // something to reveal; it never samples or blurs the desktop behind us.
+        // Without a backdrop, an opaque atmospheric foundation gives the translucent card
+        // layers something to reveal. With one, the tinted foundation lets the blurred desktop
+        // through and the card layers thin out by the same chosen amount.
+        var (windowAlpha,cardAlpha)=!BackdropActive?(1d,1d):GlassLevel switch
+        {
+            GlassLevels.Subtle=>(.78,.88),
+            GlassLevels.Strong=>(light ? .34 : .25,light ? .58 : .5),
+            _=>(light ? .58 : .5,light ? .74 : .68)
+        };
+        double controlAlpha=(1+cardAlpha)/2;
         var drawing=new DrawingGroup();var bounds=new Rect(0,0,1,1);
-        drawing.Children.Add(new GeometryDrawing(new SolidColorBrush(background),null,new RectangleGeometry(bounds)));
+        drawing.Children.Add(new GeometryDrawing(new SolidColorBrush(Alpha(background,windowAlpha)),null,new RectangleGeometry(bounds)));
         drawing.Children.Add(new GeometryDrawing(Bloom(accent,light ? .13 : .11,new Point(.08,.02),.95,.85),null,new RectangleGeometry(bounds)));
         drawing.Children.Add(new GeometryDrawing(Bloom(gpu,light ? .055 : .065,new Point(.98,.95),.8,.95),null,new RectangleGeometry(bounds)));
         var window=new DrawingBrush(drawing) {Viewbox=bounds,ViewboxUnits=BrushMappingMode.Absolute,Stretch=Stretch.Fill};
         window.Freeze();resources["WindowSurface"]=window;
 
-        resources["GlassPanel"]=Surface(panel,accent,light ? .035 : .07,.94,light ? .84 : .87,light ? .91 : .93);
-        resources["GlassControl"]=Surface(control,accent,light ? .025 : .045,.96,.88,.94);
-        resources["GlassHover"]=Surface(Mix(control,accent,.12),accent,.08,.98,.95,.98);
-        resources["GlassSelected"]=Surface(Mix(control,accent,light ? .19 : .2),accent,.1,.99,.97,.99);
-        resources["GlassInput"]=Surface(Mix(background,panel,.5),accent,light ? .015 : .035,.96,.91,.96);
+        resources["GlassPanel"]=Surface(panel,accent,light ? .035 : .07,.94*cardAlpha,(light ? .84 : .87)*cardAlpha,(light ? .91 : .93)*cardAlpha);
+        resources["GlassControl"]=Surface(control,accent,light ? .025 : .045,.96*controlAlpha,.88*controlAlpha,.94*controlAlpha);
+        resources["GlassHover"]=Surface(Mix(control,accent,.12),accent,.08,.98*controlAlpha,.95*controlAlpha,.98*controlAlpha);
+        resources["GlassSelected"]=Surface(Mix(control,accent,light ? .19 : .2),accent,.1,.99*controlAlpha,.97*controlAlpha,.99*controlAlpha);
+        resources["GlassInput"]=Surface(Mix(background,panel,.5),accent,light ? .015 : .035,.96*controlAlpha,.91*controlAlpha,.96*controlAlpha);
+        // Pop-ups are separate layered windows without a backdrop, so they stay solid.
         resources["GlassPopup"]=Surface(panel,accent,light ? .025 : .045,1,1,1);
-        resources["GlassTable"]=Surface(panel,accent,light ? .015 : .03,.93,.86,.93);
+        resources["GlassTable"]=Surface(panel,accent,light ? .015 : .03,.93*cardAlpha,.86*cardAlpha,.93*cardAlpha);
 
         // A brighter upper rim catches light; the lower rim recedes into the card.
         var border=new LinearGradientBrush {StartPoint=new Point(0,0),EndPoint=new Point(.2,1)};
-        border.GradientStops.Add(new(Alpha(Mix(line,Colors.White,light ? .66 : .36),light ? .96 : .75),0));
+        // Over a live backdrop the rim reads as a specular edge, so it brightens further.
+        border.GradientStops.Add(new(Alpha(Mix(line,Colors.White,light ? .66 : BackdropActive ? .55 : .36),light ? .96 : BackdropActive ? .85 : .75),0));
         border.GradientStops.Add(new(Alpha(Mix(line,accent,.1),light ? .58 : .65),.28));
         border.GradientStops.Add(new(Alpha(line,light ? .5 : .52),1));
         border.Freeze();resources["GlassBorder"]=border;
         if(ElderScrolls)
         {
-            resources["WindowSurface"]=StoneSurface(Brush("Background"),.32);
+            resources["WindowSurface"]=StoneSurface(BackdropActive?window:Brush("Background"),.32*windowAlpha);
             resources["GlassPanel"]=StoneSurface((Brush)resources["GlassPanel"],.22);
             resources["GlassPopup"]=StoneSurface((Brush)resources["GlassPopup"],.12);
         }

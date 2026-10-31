@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.36 — See-through glass windows
+
+- Add **Settings → Window glass** with **Off**, **Subtle**, **Balanced** (default) and **Strong**. Glass levels let the blurred desktop and windows behind show through the dashboard, graph pop-outs, battery history and widget using the Windows 11 acrylic backdrop, with thinner tinted panels and brighter highlighted edges.
+- Windows shows acrylic only in the focused window, so unfocused DeadWare windows switch to the theme's solid surface until selected again. Pop-up menus stay solid.
+- Off keeps the previous solid glass-panel look. Windows 10 and Windows 11 21H2, disabled Windows Transparency effects, Blackout and High Contrast stay solid.
+
 ## 0.6.35 — Elder Scrolls themes
 
 - Add **Skyrim** and **Mage** beneath the hover-open **Elder Scrolls Themes** submenu in Color theme. Skyrim uses charcoal, silver and frost blue; Mage uses deep violet, arcane cyan and antique gold.
