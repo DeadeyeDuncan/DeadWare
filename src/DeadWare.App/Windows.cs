@@ -20,6 +20,7 @@ public sealed class MainWindow : Window
     private readonly StackPanel gpuControls;
     private readonly DockPanel liveToolbar;
     private readonly UpdateNotice updateNotice;
+    private readonly ThemePicker themePicker;
     private readonly TextBox appSearch=new(){Width=250},sensorSearch=new(){Width=280};
     private readonly DataGrid apps=new(),sensors=new();
     private readonly Dictionary<string,FrameworkElement> pages=new();
@@ -46,7 +47,7 @@ public sealed class MainWindow : Window
         var sidebar=new DockPanel();var sidePanel=Ui.Panel(sidebar,new Thickness(14,20,14,14));sidePanel.Margin=new Thickness(12);Grid.SetColumn(sidePanel,0);shell.Children.Add(sidePanel);
         var brand=Ui.Row(Ui.Logo(),Ui.Heading("DeadWare",21));brand.Margin=new(0,0,0,27);DockPanel.SetDock(brand,Dock.Top);sidebar.Children.Add(brand);
         var sideBottom=new StackPanel();DockPanel.SetDock(sideBottom,Dock.Bottom);sidebar.Children.Add(sideBottom);
-        sideBottom.Children.Add(Ui.Text("COLOR THEME",10,"Muted"));var theme=new ComboBox {ItemsSource=Theme.Names,SelectedItem=session.Settings.Theme,Margin=new Thickness(0,8,0,15)};theme.SelectionChanged+=(_,_)=>{if(theme.SelectedItem is string name)session.SetTheme(name);};sideBottom.Children.Add(theme);
+        sideBottom.Children.Add(Ui.Text("COLOR THEME",10,"Muted"));themePicker=new ThemePicker(session.Settings.Theme,session.SetTheme) {Margin=new Thickness(0,8,0,15)};sideBottom.Children.Add(themePicker);
         var elevate=Ui.Button("Restart as administrator",session.RestartElevated);elevate.FontSize=10;sideBottom.Children.Add(elevate);
         var quitButton=Ui.Button("Quit DeadWare",quit);quitButton.FontSize=11;sideBottom.Children.Add(quitButton);trayNotice.Margin=new Thickness(3,5,3,8);sideBottom.Children.Add(trayNotice);
         sideBottom.Children.Add(monitoringInfo);
@@ -197,6 +198,7 @@ public sealed class MainWindow : Window
     }
     private void Refresh()
     {
+        themePicker.SetSelection(session.Settings.Theme);
         monitoringInfo.Text=$"Local monitoring\n{session.Settings.PollingIntervalSeconds:0.#} s polling · 6 h saved graphs\nv{BuildInfo.Version}";
         syncingWidgetGraphs=true;
         try

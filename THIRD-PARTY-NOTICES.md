@@ -2,6 +2,12 @@
 
 DeadWare's MIT license applies to original DeadWare code. Included dependencies retain their own licenses and notices. Release archives include package manifests, supplied license/notice files and a dependency inventory in `licenses/`.
 
+## Theme typography
+
+- **Caesar Dressing** — Copyright 2011 Open Window; SIL Open Font License 1.1. Unmodified, embedded for readable Nordic-style lettering.
+- **Noto Sans Runic** — Copyright 2022 The Noto Project Authors; SIL Open Font License 1.1. Unmodified, embedded for decorative rune glyphs.
+- Font sources and checksums are recorded in `assets/fonts/README.md`; complete notices are in `licenses/CAESAR-DRESSING-OFL.txt` and `licenses/NOTO-SANS-RUNIC-OFL.txt`.
+
 ## Hardware monitoring
 
 - **LibreHardwareMonitorLib 0.9.6** — LibreHardwareMonitor contributors; Mozilla Public License 2.0. Distributed without source modifications. Corresponding source: https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/tree/v0.9.6. Package: https://www.nuget.org/packages/LibreHardwareMonitorLib/0.9.6.

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.35 — Elder Scrolls themes
+
+- Add **Skyrim** and **Mage** beneath the hover-open **Elder Scrolls Themes** submenu in Color theme. Skyrim uses charcoal, silver and frost blue; Mage uses deep violet, arcane cyan and antique gold.
+- Add readable Nordic-style lettering, an original subdued stone background, and decorative runes along live graph traces across the dashboard, graph pop-outs and widget. Keep numeric readings clear and preserve data gaps.
+- Remember the selected theme across launches while preserving custom graph colors/styles and keyboard menu navigation. Windows High Contrast uses system fonts and undecorated traces; disabled transparency keeps solid backgrounds.
+
 ## 0.6.34 — Readable long-range network graphs
 
 - Scale smoothed 1-, 3- and 6-hour network graphs to the highest download or upload average, with headroom, so brief traffic spikes no longer flatten the trend.

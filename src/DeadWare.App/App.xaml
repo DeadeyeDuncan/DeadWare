@@ -91,6 +91,52 @@
 </Style>
 <Style x:Key="BodyControlText" TargetType="Control"><Setter Property="FontFamily" Value="{DynamicResource BodyFont}"/></Style>
 <Style TargetType="Window"><Setter Property="Background" Value="{DynamicResource WindowSurface}"/><Setter Property="Foreground" Value="{DynamicResource Ink}"/><Setter Property="FontFamily" Value="{DynamicResource BodyFont}"/><Setter Property="FontSize" Value="13"/></Style>
+<!-- Keep MenuItem's native hover, focus, keyboard and dismissal behavior for both levels. -->
+<Style x:Key="ThemeMenu" TargetType="Menu" BasedOn="{StaticResource BodyControlText}">
+  <Setter Property="Background" Value="Transparent"/><Setter Property="Padding" Value="0"/>
+  <Setter Property="ItemsPanel"><Setter.Value><ItemsPanelTemplate><StackPanel/></ItemsPanelTemplate></Setter.Value></Setter>
+  <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="Menu"><ItemsPresenter KeyboardNavigation.DirectionalNavigation="Cycle"/></ControlTemplate></Setter.Value></Setter>
+</Style>
+<Style x:Key="ThemeMenuItem" TargetType="MenuItem" BasedOn="{StaticResource BodyControlText}">
+  <Setter Property="Foreground" Value="{DynamicResource Ink}"/><Setter Property="Background" Value="Transparent"/>
+  <Setter Property="BorderBrush" Value="Transparent"/><Setter Property="BorderThickness" Value="1"/>
+  <Setter Property="Padding" Value="9,7"/><Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+  <Setter Property="Template"><Setter.Value>
+    <ControlTemplate TargetType="MenuItem">
+      <Grid>
+        <Border x:Name="Frame" CornerRadius="7" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" Padding="{TemplateBinding Padding}" SnapsToDevicePixels="True">
+          <Grid>
+            <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+            <TextBlock x:Name="Check" Text="✓" Width="20" Visibility="Hidden" Foreground="{DynamicResource Accent}" FontFamily="Segoe UI" VerticalAlignment="Center"/>
+            <ContentPresenter Grid.Column="1" ContentSource="Header" RecognizesAccessKey="True" VerticalAlignment="Center"/>
+            <Path x:Name="Arrow" Grid.Column="2" Data="M 0,0 L 4,4 L 0,8" Stroke="{TemplateBinding Foreground}" StrokeThickness="1.3" Width="5" Height="8" Margin="14,0,0,0" Visibility="Hidden" VerticalAlignment="Center"/>
+          </Grid>
+        </Border>
+        <Popup x:Name="PART_Popup" IsOpen="{Binding IsSubmenuOpen,RelativeSource={RelativeSource TemplatedParent},Mode=TwoWay}" Placement="Right" PlacementTarget="{Binding RelativeSource={RelativeSource TemplatedParent}}" AllowsTransparency="True" Focusable="False" PopupAnimation="None">
+          <Border Background="{DynamicResource GlassPopup}" BorderBrush="{DynamicResource GlassBorder}" BorderThickness="1" CornerRadius="9" Padding="4" MinWidth="180">
+            <ScrollViewer CanContentScroll="True" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto" MaxHeight="480">
+              <ItemsPresenter KeyboardNavigation.DirectionalNavigation="Cycle" KeyboardNavigation.TabNavigation="Cycle" Grid.IsSharedSizeScope="True"/>
+            </ScrollViewer>
+          </Border>
+        </Popup>
+      </Grid>
+      <ControlTemplate.Triggers>
+        <Trigger Property="IsChecked" Value="True"><Setter TargetName="Check" Property="Visibility" Value="Visible"/></Trigger>
+        <Trigger Property="HasItems" Value="True"><Setter TargetName="Arrow" Property="Visibility" Value="Visible"/></Trigger>
+        <Trigger Property="Role" Value="TopLevelHeader">
+          <Setter Property="Background" Value="{DynamicResource GlassControl}"/><Setter Property="BorderBrush" Value="{DynamicResource GlassBorder}"/>
+          <Setter TargetName="Check" Property="Visibility" Value="Collapsed"/>
+          <Setter TargetName="Arrow" Property="Data" Value="M 0,0 L 4,4 L 8,0"/><Setter TargetName="Arrow" Property="Width" Value="8"/><Setter TargetName="Arrow" Property="Height" Value="5"/>
+          <Setter TargetName="PART_Popup" Property="Placement" Value="Bottom"/>
+        </Trigger>
+        <Trigger Property="IsHighlighted" Value="True"><Setter TargetName="Frame" Property="Background" Value="{DynamicResource GlassHover}"/><Setter TargetName="Frame" Property="BorderBrush" Value="{DynamicResource Accent}"/></Trigger>
+        <Trigger Property="IsSubmenuOpen" Value="True"><Setter TargetName="Frame" Property="Background" Value="{DynamicResource GlassSelected}"/><Setter TargetName="Frame" Property="BorderBrush" Value="{DynamicResource Accent}"/></Trigger>
+        <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="Frame" Property="BorderBrush" Value="{DynamicResource Accent}"/></Trigger>
+        <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value=".5"/></Trigger>
+      </ControlTemplate.Triggers>
+    </ControlTemplate>
+  </Setter.Value></Setter>
+</Style>
 <!-- Glass brushes are palette resources; high contrast supplies solid system colors. -->
 <Style TargetType="Button" BasedOn="{StaticResource BodyControlText}">
   <Setter Property="Background" Value="{DynamicResource GlassControl}"/><Setter Property="Foreground" Value="{DynamicResource Ink}"/>

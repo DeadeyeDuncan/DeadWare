@@ -219,7 +219,7 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
     private void DrawSeries(DrawingContext dc,IReadOnlyList<SamplePoint> points,double now,double maximum,double left,double top,double width,double height,string color,bool dashed,bool dotted=false,bool reduced=false,IReadOnlyList<ChartRangePoint>? range=null,double fillStrength=1)
     {
         var geometry=new StreamGeometry();bool open=false;Point? lastPoint=null;
-        List<IReadOnlyList<Point>>? segments=Theme.GlassEnabled&&fillStrength>0?new():null;List<Point>? segment=null;
+        List<IReadOnlyList<Point>>? segments=(Theme.GlassEnabled&&fillStrength>0)||RuneTrace.Enabled?new():null;List<Point>? segment=null;
         using(var context=geometry.Open())
         {
             foreach(var point in reduced?points:SampleHistory.ReduceForChart(points,now,session.HistorySeconds,(int)Math.Ceiling(width)))
@@ -237,6 +237,7 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
         if(range is not null)DrawRange(dc,range,now,maximum,left,top,width,height,color);
         GraphDepth.TraceShadow(dc,geometry,session.Settings,color,dense?1:2,dashed,dotted);
         GraphStroke.Draw(dc,geometry,session.Settings,color,dense?1:2,dashed,dotted);
+        if(segments is not null)RuneTrace.Draw(dc,segments,new(left,top,width,height),color,VisualTreeHelper.GetDpi(this).PixelsPerDip);
         double markerRadius=dense?1.5:2.5;
         if(lastPoint.HasValue){GraphDepth.PointHalo(dc,lastPoint.Value,color,markerRadius);dc.DrawEllipse(Theme.Brush(color),null,lastPoint.Value,markerRadius,markerRadius);}
     }
