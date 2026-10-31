@@ -30,6 +30,7 @@ public sealed class MainWindow : Window
     private readonly CheckBox widgetAlwaysOnTop=new() {Content="Widget always on top",Margin=new Thickness(0,0,0,12)};
     private readonly CheckBox joinedPopouts=new() {Content="Join CPU and GPU graphs in pop-outs",Margin=new Thickness(0,0,0,8)};
     private readonly CheckBox gpuFanSpeed=new() {Content="Show GPU fan speed on temperature graphs",Margin=new Thickness(0,0,0,8)};
+    private readonly ComboBox glass=new() {MinWidth=160};
     private readonly CheckBox graphSmoothing=new() {Content="Smooth long-range graphs (1, 3 and 6 hours)",Margin=new Thickness(0,0,0,8)};
     private readonly CheckBox startup=new() {Content="Start with Windows (administrator)",Margin=new Thickness(0,22,0,8)};
     private readonly TextBlock startupStatus=Ui.Text("Startup status is checked when this page opens.",12,"Muted"),startupResult=Ui.Text("",12,"Warning");
@@ -95,6 +96,12 @@ public sealed class MainWindow : Window
         var pollingLabel=Ui.Text("Data polling interval",14);pollingLabel.Margin=new(0,0,12,0);
         var pollingRow=Ui.Row(pollingLabel,polling);pollingRow.Margin=new(0,0,0,8);stack.Children.Add(pollingRow);
         var pollingHelp=Ui.Text("Applies without restarting after the current wait or reading finishes. Faster polling uses more resources; slow hardware may take longer than the selected interval. At 5 or 10 seconds, Cooling Health records history but does not gather enough samples for reference comparisons.",12,"Muted");pollingHelp.Margin=new(0,0,0,20);stack.Children.Add(pollingHelp);
+        glass.ItemsSource=GlassLevels.All;glass.SelectedItem=session.Settings.GlassLevel;
+        System.Windows.Automation.AutomationProperties.SetName(glass,"Window glass");
+        glass.SelectionChanged+=(_,_)=>{if(!syncingWidgetGraphs&&glass.SelectedItem is string level)session.SetGlassLevel(level);};
+        var glassLabel=Ui.Text("Window glass",14);glassLabel.Margin=new(0,0,12,0);
+        var glassRow=Ui.Row(glassLabel,glass);glassRow.Margin=new(0,0,0,8);stack.Children.Add(glassRow);
+        var glassHelp=Ui.Text("Subtle, Balanced and Strong let the blurred desktop show through every DeadWare window by increasing amounts. Windows shows the glass in the focused window; other DeadWare windows use the solid theme surface until selected. Off keeps solid windows. Needs Windows 11 22H2 or later with Windows Transparency effects on; Blackout and High Contrast always stay solid.",12,"Muted");glassHelp.Margin=new(0,0,0,20);stack.Children.Add(glassHelp);
         graphSmoothing.IsChecked=session.Settings.GraphSmoothing;
         System.Windows.Automation.AutomationProperties.SetName(graphSmoothing,"Graph smoothing");
         graphSmoothing.Checked+=(_,_)=>{if(!syncingWidgetGraphs)session.SetGraphSmoothing(true);};
@@ -210,6 +217,7 @@ public sealed class MainWindow : Window
             joinedPopouts.IsChecked=session.Settings.JoinCpuGpuPopouts;
             gpuFanSpeed.IsChecked=session.Settings.ShowGpuFanSpeed;
             graphSmoothing.IsChecked=session.Settings.GraphSmoothing;
+            glass.SelectedItem=session.Settings.GlassLevel;
         }
         finally {syncingWidgetGraphs=false;}
         var r=session.Current;bool noBattery=r?.Battery.PowerState==BatteryPowerState.NoBattery;

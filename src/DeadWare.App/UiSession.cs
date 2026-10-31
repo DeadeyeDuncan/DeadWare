@@ -44,7 +44,7 @@ public sealed class UiSession
             Settings=loaded.Settings;SettingsStatus=loaded.Error??"";
         }
         catch(Exception e) when(e is IOException or UnauthorizedAccessException) {Settings=new();SettingsStatus="Settings unavailable; using defaults.";diagnostics?.Record("settings_load_failed",error:e);}
-        Theme.SetGraphColors(Settings.GraphColors);
+        Theme.SetGraphColors(Settings.GraphColors);Theme.GlassLevel=Settings.GlassLevel;
         writer=new(settingsPath);
         layout=new(Settings.RestoreOpenWindows?Settings.OpenWindows:[]);
         diagnostics?.Record("settings_loaded",new {Status=SettingsStatus,Settings.RestoreOpenWindows,OpenWindows=layout.Remembered,Settings.SelectedGpuId,Disk=LayoutDiagnostics.ReadSettingsState(settingsPath)});
@@ -81,6 +81,11 @@ public sealed class UiSession
     public void SetRange(int seconds) {Settings.HistorySeconds=seconds;Changed?.Invoke();_ = SaveAsync();}
     public void SetGpu(string? id) {Settings.SelectedGpuId=id;Changed?.Invoke();_ = SaveAsync();}
     public void SetTheme(string theme) {Settings.Theme=theme;Theme.Apply(theme);Changed?.Invoke();_ = SaveAsync();}
+    public void SetGlassLevel(string level)
+    {
+        level=GlassLevels.Normalize(level);if(Settings.GlassLevel==level)return;
+        Settings.GlassLevel=level;Theme.GlassLevel=level;Theme.Apply(Settings.Theme);Changed?.Invoke();_ = SaveAsync();
+    }
     public void SetGraphColor(string kind,string? color)
     {
         if(kind=="network")kind="download";
