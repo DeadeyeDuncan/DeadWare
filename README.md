@@ -133,7 +133,7 @@ History begins with this version while DeadWare runs; earlier device history can
 
 ## Cooling Health
 
-The **Cooling Health** page saves local CPU/GPU temperature, usage and package power, plus clock and fan readings when supported. Recording starts by default; optional tray notifications start off. Choose a device and day/week/month range, switch metrics or export a new CSV file. Settings and the SQLite history database live under `%LOCALAPPDATA%\DeadWare`. No thermal data is uploaded. Per-application network data is not stored there.
+The **Cooling Health** page saves local CPU/GPU temperature, usage and package power, plus clock and fan readings when supported. A GPU's fan speed comes from the card. A single CPU's fan speed comes from its cooler: a motherboard or AIO header labeled as a pump (for example `Pump Fan` or `AIO Pump`), otherwise the `CPU Fan` header. These readings need **Extended sensors**; unlabeled headers such as `Fan #2` are not used. Turning Extended sensors on or off changes the CPU sensor mapping, so its Cooling Health history and references start under a new identity. Recording starts by default; optional tray notifications start off. Choose a device and day/week/month range, switch metrics or export a new CSV file. Settings and the SQLite history database live under `%LOCALAPPDATA%\DeadWare`. No thermal data is uploaded. Per-application network data is not stored there.
 
 The first minute produces a history window. To compare cooling, select a past period of up to seven days when you believe the setup was operating normally and save it as a named reference. At least 30 eligible minute windows are needed. The first five minutes, gaps, unstable workloads, missing required readings and known throttling are excluded; learning can therefore take longer than 35 minutes. Saved reference readings stay fixed rather than learning a developing problem as normal.
 
@@ -143,7 +143,7 @@ Warnings are logged even when tray notifications are muted. Enable notifications
 
 By default, minute detail is retained for 30 days and hourly summaries for 90 days. Controls offer 7/30 days of detail and 30/90 days of summaries. The database is capped at 256 MiB with a bounded journal; the page shows storage usage. Up to ten references per device/setup are retained. If storage is locked, full or corrupt, recording reports an error and live monitoring continues; resolve the storage issue and restart to retry. Saved references can consume space independently of ordinary history retention. Database files are local to this Windows profile; cloud synchronization of an open database is not supported.
 
-Cooling Health flags changes worth investigating. It cannot diagnose a blocked cooler, failing pump, or remaining lifespan. Pump/flow/coolant-specific monitoring needs confirmed supported sensors and is not included yet.
+Cooling Health flags changes worth investigating. It cannot diagnose a blocked cooler, failing pump, or remaining lifespan. Pump speed is recorded as CPU fan context when a labeled pump header is available, but RPM alone cannot show flow; flow and coolant monitoring are not included yet.
 
 ## Network measurements and privacy
 
