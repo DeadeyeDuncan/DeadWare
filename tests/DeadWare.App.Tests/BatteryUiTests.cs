@@ -65,6 +65,7 @@ public class BatteryUiTests
                 ConnectionsWidgetUiChecks.Run(app);
                 NetworkChartUiChecks.Run();
                 LiveRenderingUiChecks.Run();
+                RuneTraceUiChecks.Run();
                 Phase("battery history");
                 var assembly = typeof(Collector).Assembly;
                 var pageType = assembly.GetType("DeadWare.App.BatteryHistoryPage"); Assert.NotNull(pageType);
@@ -232,6 +233,7 @@ public class BatteryUiTests
                 VerifyGpuFanSpeed(session, collector, assembly, settings, pollingSettingsPath);
                 VerifyGraphSmoothing(session, settings, pollingSettingsPath);
                 VerifyRangeDropdown(session, dashboard, assembly, pollingSettingsPath);
+                VerifyThemeMenu(session, sidebar, pollingSettingsPath);
                 foreach (double seconds in new double[] { 10, .5, 1 })
                 {
                     polling.SelectedValue = seconds;
@@ -319,6 +321,45 @@ public class BatteryUiTests
         if (failure is not null) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(failure).Throw();
     }
 
+    private static void VerifyThemeMenu(UiSession session, FrameworkElement sidebar, string settingsPath)
+    {
+        var menu = Assert.Single(Descendants(sidebar).OfType<Menu>(), item => System.Windows.Automation.AutomationProperties.GetName(item) == "Color theme");
+        var root = Assert.IsType<MenuItem>(Assert.Single(menu.Items.Cast<object>()));
+        var elder = Assert.Single(root.Items.OfType<MenuItem>(), item => item.Header?.ToString() == "Elder Scrolls Themes");
+        Assert.Equal(new[] { "Skyrim", "Mage" }, elder.Items.OfType<MenuItem>().Select(item => item.Header?.ToString()));
+        var ordinary = root.Items.OfType<MenuItem>().Where(item => item != elder).ToArray();
+        Assert.DoesNotContain(ordinary, item => item.Header?.ToString() is "Skyrim" or "Mage");
+        Assert.Equal(7, ordinary.Length);
+        string original = session.Settings.Theme;
+        try
+        {
+            foreach (var leaf in elder.Items.OfType<MenuItem>())
+            {
+                leaf.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent, leaf));
+                string name = leaf.Header.ToString()!;
+                Assert.Equal(name, session.Settings.Theme);
+                Assert.Equal(name, root.Header);
+                Assert.True(leaf.IsChecked);
+                Assert.Single(ordinary.Concat(elder.Items.OfType<MenuItem>()), item => item.IsChecked);
+                CompleteSettingsSave(session);
+                Assert.Equal(name, SettingsCodec.Read(File.ReadAllText(settingsPath)).Settings.Theme);
+            }
+            session.SetTheme("Midnight");
+            Assert.Equal("Midnight", root.Header);
+            Assert.True(ordinary.Single(item => item.Header?.ToString() == "Midnight").IsChecked);
+            Assert.All(elder.Items.OfType<MenuItem>(), item => Assert.False(item.IsChecked));
+            foreach (var parent in new[] { root, elder })
+            {
+                parent.ApplyTemplate();
+                var popup = Assert.IsType<System.Windows.Controls.Primitives.Popup>(parent.Template.FindName("PART_Popup", parent));
+                var child = Assert.IsAssignableFrom<FrameworkElement>(popup.Child);
+                child.Measure(new Size(320, 480)); child.Arrange(new Rect(new Point(), child.DesiredSize)); child.UpdateLayout();
+                Assert.Contains(Descendants(child).OfType<ItemsPresenter>(), _ => true);
+            }
+        }
+        finally { session.SetTheme(original); CompleteSettingsSave(session); }
+    }
+
     private static readonly (string Theme, string Body, string Heading, string Metric)[] ThemeFonts =
     [
         ("Midnight", "Segoe UI", "Segoe UI Semibold", "Segoe UI"),
@@ -327,7 +368,8 @@ public class BatteryUiTests
         ("Amethyst", "Corbel", "Corbel", "Corbel"),
         ("Neon", "Bahnschrift", "Bahnschrift", "Consolas"),
         ("Blackout", "Segoe UI", "Segoe UI Semibold", "Segoe UI"),
-        ("Skyrim", "Segoe UI", "Palatino Linotype", "Segoe UI"),
+        ("Skyrim", "Caesar Dressing", "Caesar Dressing", "Segoe UI"),
+        ("Mage", "Caesar Dressing", "Caesar Dressing", "Segoe UI"),
         ("Daylight", "Segoe UI", "Segoe UI Semibold", "Segoe UI")
     ];
 
@@ -354,6 +396,14 @@ public class BatteryUiTests
                 var themeType=assembly.GetType("DeadWare.App.Theme")!;
                 Assert.Contains(theme,(string[])themeType.GetField("Names",All)!.GetValue(null)!);
                 Assert.Equal(theme!="Daylight",(bool)themeType.GetProperty("IsDark",All)!.GetValue(null)!);
+                if (theme is "Skyrim" or "Mage" && !SystemParameters.HighContrast)
+                {
+                    var face = new Typeface((FontFamily)Application.Current.Resources["BodyFont"], FontStyles.Normal, FontWeights.Normal, FontStretches.Normal);
+                    Assert.True(face.TryGetGlyphTypeface(out var glyph));
+                    Assert.Contains("Caesar Dressing", glyph.FamilyNames.Values);
+                    Assert.Contains("Assets/Fonts", glyph.FontUri.ToString(), StringComparison.OrdinalIgnoreCase);
+                    VerifyTexturedSurfaceContrast(theme);
+                }
                 if(theme=="Blackout"&&!SystemParameters.HighContrast)
                 {
                     Assert.Equal(Colors.Black,ResourceColor("Background"));
@@ -416,7 +466,31 @@ public class BatteryUiTests
     }
 
     private static void AssertFont(FontFamily actual, string expected) =>
-        Assert.Equal(SystemParameters.HighContrast ? SystemFonts.MessageFontFamily.Source : expected, actual.Source.Split(',')[0].Trim());
+        Assert.Equal(SystemParameters.HighContrast ? SystemFonts.MessageFontFamily.Source : expected, actual.Source.Split('#')[^1].Split(',')[0].Trim());
+
+    private static void VerifyTexturedSurfaceContrast(string theme)
+    {
+        const int size = 512;
+        foreach (bool panel in new[] { false, true })
+        {
+            var visual = new DrawingVisual();
+            using (var drawing = visual.RenderOpen())
+            {
+                drawing.DrawRectangle(Theme.Brush("WindowSurface"), null, new Rect(0, 0, size, size));
+                if (panel) drawing.DrawRectangle(Theme.Brush("GlassPanel"), null, new Rect(0, 0, size, size));
+            }
+            var bitmap = new RenderTargetBitmap(size, size, 96, 96, PixelFormats.Pbgra32); bitmap.Render(visual);
+            var pixels = new byte[size * size * 4]; bitmap.CopyPixels(pixels, size * 4, 0);
+            foreach (string role in new[] { "Ink", "Muted", "Heading" })
+            {
+                double minimum = double.MaxValue;
+                var foreground = ResourceColor(role);
+                for (int pixel = 0; pixel < pixels.Length; pixel += 4)
+                    minimum = Math.Min(minimum, Contrast(foreground, Color.FromRgb(pixels[pixel + 2], pixels[pixel + 1], pixels[pixel])));
+                Assert.True(minimum >= 4.5, $"{theme} {role} over {(panel ? "stone panel" : "stone background")} needs readable contrast; actual {minimum:0.00}:1.");
+            }
+        }
+    }
 
     private static Color ResourceColor(string key) => ((SolidColorBrush)Application.Current.Resources[key]).Color;
 
@@ -1128,9 +1202,14 @@ public class BatteryUiTests
         bool installed = Fonts.SystemFontFamilies.Any(font => font.FamilyNames.Values.Any(name => name.Equals(family, StringComparison.OrdinalIgnoreCase)));
         foreach (var glyph in text)
         {
-            string expected = SystemParameters.HighContrast ? SystemFonts.MessageFontFamily.Source : installed ? family : "Segoe UI";
-            Assert.Contains(glyph.GlyphRun.GlyphTypeface.FamilyNames.Values, name => name.Equals(expected, StringComparison.OrdinalIgnoreCase));
-            Assert.Equal(ResourceColor("Muted"), ((SolidColorBrush)glyph.ForegroundBrush).Color);
+            bool runic = glyph.GlyphRun.GlyphTypeface.FamilyNames.Values.Contains("Noto Sans Runic");
+            if (runic) Assert.True(Theme.ElderScrolls && !SystemParameters.HighContrast);
+            else
+            {
+                string expected = SystemParameters.HighContrast ? SystemFonts.MessageFontFamily.Source : installed ? family : "Segoe UI";
+                Assert.Contains(glyph.GlyphRun.GlyphTypeface.FamilyNames.Values, name => name.Equals(expected, StringComparison.OrdinalIgnoreCase));
+                Assert.Equal(ResourceColor("Muted"), ((SolidColorBrush)glyph.ForegroundBrush).Color);
+            }
             Assert.True(glyph.Bounds.Left >= -.01 && glyph.Bounds.Right <= chart.ActualWidth + .01 && glyph.Bounds.Top >= -.01 && glyph.Bounds.Bottom <= chart.ActualHeight + .01,
                 $"{chart.GetType().Name} {family} text clipped: {glyph.Bounds} in {chart.RenderSize}.");
         }

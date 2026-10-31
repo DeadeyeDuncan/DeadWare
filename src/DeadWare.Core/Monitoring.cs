@@ -334,7 +334,7 @@ public static class SettingsCodec
         {
             var s=JsonSerializer.Deserialize<UserSettings>(json);
             if(s is null) return new(new(),"Settings were empty; defaults restored.");
-            if(s.Theme is not ("Midnight" or "Ember" or "Glacier" or "Amethyst" or "Neon" or "Blackout" or "Skyrim" or "Daylight")) s.Theme="Midnight";
+            if(s.Theme is not ("Midnight" or "Ember" or "Glacier" or "Amethyst" or "Neon" or "Blackout" or "Skyrim" or "Mage" or "Daylight")) s.Theme="Midnight";
             s.GraphColors=GraphColorSettings.Normalize(s.GraphColors);
             s.GraphStyles=GraphLineStyles.Normalize(s.GraphStyles);
             if(string.IsNullOrWhiteSpace(s.ConnectionsHomeCityId)||s.ConnectionsHomeCityId.Length>80||s.ConnectionsHomeCityId.Any(char.IsControl))s.ConnectionsHomeCityId=null;

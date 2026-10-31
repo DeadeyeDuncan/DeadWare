@@ -1,10 +1,10 @@
 # Changelog
 
-## 0.6.35 — Skyrim theme
+## 0.6.35 — Elder Scrolls themes
 
-- Add **Skyrim** to the Color theme menu, inspired by dark Nordic stone, silver lettering, frost-blue accents and classic serif headings.
-- Carry the theme through the dashboard, connection maps, graph pop-outs, desktop widget and supported native window frames.
-- Remember the selected theme across launches while preserving custom graph colors, Windows High Contrast and reduced-transparency preferences.
+- Add **Skyrim** and **Mage** beneath the hover-open **Elder Scrolls Themes** submenu in Color theme. Skyrim uses charcoal, silver and frost blue; Mage uses deep violet, arcane cyan and antique gold.
+- Add readable Nordic-style lettering, an original subdued stone background, and decorative runes along live graph traces across the dashboard, graph pop-outs and widget. Keep numeric readings clear and preserve data gaps.
+- Remember the selected theme across launches while preserving custom graph colors/styles and keyboard menu navigation. Windows High Contrast uses system fonts and undecorated traces; disabled transparency keeps solid backgrounds.
 
 ## 0.6.34 — Readable long-range network graphs
 
