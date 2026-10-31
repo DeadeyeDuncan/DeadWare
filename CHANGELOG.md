@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.6.34 — Readable long-range network graphs
+
+- Scale smoothed 1-, 3- and 6-hour network graphs to the highest download or upload average, with headroom, so brief traffic spikes no longer flatten the trend.
+- Keep the min/max band, clipped at the plot ceiling for larger spikes, and retain full-data statistics. Raw mode continues to scale to the original peaks.
+
 ## 0.6.33 — Glass-panel refresh
 
 - Give dashboard panels, controls, tables, graph pop-outs and the desktop widget tinted glass surfaces with subtle highlights and soft borders.

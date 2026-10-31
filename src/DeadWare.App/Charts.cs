@@ -158,7 +158,8 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
         var secondary=kind=="network"?Read("network/upload"):compare?Read(session.MetricId(kind=="cpu"?"gpu":"gputemp")):[];
         bool showFan=session.Settings.ShowGpuFanSpeed&&(kind=="gputemp"||kind=="cputemp"&&compare);
         var fan=showFan?Read(session.MetricId("gpufan")):[];
-        double Peak(string metric,IReadOnlyList<SamplePoint> fallback)=>bands.TryGetValue(metric,out var range)?range.Max(p=>p.Maximum)??0:fallback.Max(p=>p.Value)??0;
+        // Smoothed network axes follow the average trace; raw peaks remain in the band and statistics.
+        double Peak(string metric,IReadOnlyList<SamplePoint> fallback)=>bands.TryGetValue(metric,out var range)?range.Max(p=>kind=="network"&&averaged?p.Average:p.Maximum)??0:fallback.Max(p=>p.Value)??0;
         double peak=Math.Max(Peak(session.MetricId(kind),points),Peak(kind=="network"?"network/upload":session.MetricId(kind=="cpu"?"gpu":"gputemp"),secondary));
         double maximum=kind is "cpu" or "gpu" or "memory"?100:kind=="network"?Math.Max(1000,peak*1.15):Math.Max(100,peak*1.1);
         if(compare&&kind=="cputemp")maximum=Math.Ceiling(maximum/20)*20;
