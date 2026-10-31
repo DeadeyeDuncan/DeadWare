@@ -1,5 +1,13 @@
 # Release validation
 
+## Smoothed network axis scaling (0.6.34, 2026-10-31)
+
+Smoothed 1-, 3- and 6-hour network charts now choose their shared download/upload axis from the highest bucket average, retaining 15% headroom and the 1,000 B/s floor. Raw extrema remain in the min/max band and full-data statistics; a band above the new ceiling is clipped to the plot. Raw mode, short ranges and other metrics keep their existing scale. Overview cards, detached graphs and the widget use the same HistoryChart renderer.
+
+The offscreen regression first reproduced the defect: a 200 KB/s sustained upload with a brief 1 MB/s download burst rendered a 1.2 MB/s ceiling instead of 230 KB/s. After the narrow peak-selector change, the focused WPF test passed. Checks inspect real drawing labels for both traffic directions, all six supported ranges, raw/smoothed toggles, zero/missing data and unchanged minimum/maximum/weighted-average statistics. Before/after PNGs under ignored `artifacts/ui-network-average-scale/` were visually inspected. The Release solution build passed with zero warnings/errors, and independent read-only review found no actionable issues. These are synthetic rendering/software checks; no new physical network or long-duration hardware soak is claimed.
+
+The final local packaging gate passed all **721 tests** (519 core/update, 202 Windows app) and produced the self-contained app/helper ZIP plus checksum and managed-file manifest. Hosted CI, publication and public updater/package verification are checked separately before release acceptance.
+
 ## GPU fan appearance controls (0.6.32, 2026-10-29)
 
 The overview GPU temperature card now has an independent GPU fan appearance button, available even when the fan overlay is off. It reuses the existing color palette, pattern, thickness and glow controls. The saved `gpufan` color/style applies to the shared chart renderer, fan annotations, and widget legend; compact/joined temperature pop-outs use the same appearance. Default fan styling remains dotted with the theme's Warning color, including normal high-contrast fallback. Labels show the selected pattern. GPU selection, RPM scale, readings and stored history are unchanged.

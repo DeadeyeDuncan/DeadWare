@@ -63,6 +63,7 @@ public class BatteryUiTests
                 ConnectionsPageUiChecks.Run(app);
                 Phase("Connections widget (all six themes)");
                 ConnectionsWidgetUiChecks.Run(app);
+                NetworkChartUiChecks.Run();
                 LiveRenderingUiChecks.Run();
                 Phase("battery history");
                 var assembly = typeof(Collector).Assembly;
