@@ -34,7 +34,7 @@ internal static class ConnectionMapUiChecks
         var points = new[] { new ConnectionMapPoint("london", new(51.5, -.12), 200, 100, true),
             new ConnectionMapPoint("tokyo", new(35.7, 139.7), 0, 150, false), new ConnectionMapPoint("sydney", new(-33.9, 151.2), 80, 0, false) };
         var theme = typeof(Collector).Assembly.GetType("DeadWare.App.Theme")!;
-        foreach (string name in new[] { "Midnight", "Ember", "Glacier", "Amethyst", "Neon", "Blackout", "Daylight" })
+        foreach (string name in new[] { "Midnight", "Ember", "Glacier", "Amethyst", "Neon", "Blackout", "Skyrim", "Daylight" })
         {
             theme.GetMethod("Apply", BindingFlags.Public | BindingFlags.Static)!.Invoke(null, [name]);
             foreach (bool flat in new[] { false, true })

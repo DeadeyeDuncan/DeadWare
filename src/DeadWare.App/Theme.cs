@@ -25,7 +25,7 @@ internal static class Theme
     // Binding source for the stock ScrollViewer corner; shared Style resources do not
     // reliably inherit application DynamicResource invalidation after a palette switch.
     public static SolidColorBrush ScrollCorner {get;}=new();
-    public static readonly string[] Names=["Midnight","Ember","Glacier","Amethyst","Neon","Blackout","Daylight"];
+    public static readonly string[] Names=["Midnight","Ember","Glacier","Amethyst","Neon","Blackout","Skyrim","Daylight"];
     private static readonly Dictionary<string,string[]> Palettes=new()
     {
         ["Midnight"]=["#0D1117","#151B24","#202B37","#354150","#DDE9F5","#9EB2C9","#91E7CA","#68E0BD","#F0B76C","#82ADFF","#F2CD91"],
@@ -34,6 +34,7 @@ internal static class Theme
         ["Amethyst"]=["#161221","#231E31","#352C48","#5B4B75","#E8DDF6","#B7A3D0","#D4ACFF","#81DFBF","#F4C17C","#9CB6FF","#F4D18E"],
         ["Neon"]=["#070A12","#0E1422","#18243A","#2D4961","#C4E9F4","#82ADBF","#36F5FF","#69FFAD","#FF67E7","#66B3FF","#FFD166"],
         ["Blackout"]=["#000000","#000000","#121212","#303030","#EEEEEE","#A3A3A3","#D4D4D4","#80DAB5","#E8B87D","#8CB8F0","#E8CD80"],
+        ["Skyrim"]=["#101315","#1B2023","#2A3135","#677177","#E4E5DF","#AEB8BE","#B3D9EC","#9FD4E5","#D6C49B","#A5BAEF","#E3BC7D"],
         ["Daylight"]=["#EFF3F8","#FFFFFF","#E1E8F0","#B6C3D1","#243B50","#465D70","#245E8C","#08745D","#9B5709","#235CB3","#8D5700"]
     };
     static Theme()
@@ -76,13 +77,14 @@ internal static class Theme
             "Glacier"=>("Calibri","Calibri Light","Calibri"),
             "Amethyst"=>("Corbel","Corbel","Corbel"),
             "Neon"=>("Bahnschrift","Bahnschrift","Consolas"),
+            "Skyrim"=>("Segoe UI","Palatino Linotype","Segoe UI"),
             _=>("Segoe UI","Segoe UI Semibold","Segoe UI")
         };
         FontFamily Font(string name)=>SystemParameters.HighContrast?SystemFonts.MessageFontFamily:new FontFamily(name=="Segoe UI"?name:name+", Segoe UI");
         Application.Current.Resources["BodyFont"]=Font(body);
         Application.Current.Resources["HeadingFont"]=Font(heading);
         Application.Current.Resources["MetricFont"]=Font(metric);
-        Application.Current.Resources["Heading"]=SystemParameters.HighContrast?SystemColors.WindowTextBrush:Brush("Accent");
+        Application.Current.Resources["Heading"]=SystemParameters.HighContrast?SystemColors.WindowTextBrush:Brush(CurrentName=="Skyrim"?"Ink":"Accent");
         Application.Current.Resources["ScrollThumbHover"]=SystemParameters.HighContrast?SystemColors.HighlightBrush:Brush("Muted");
         ScrollCorner.Color=((SolidColorBrush)Brush("Panel")).Color;
         ApplyGlassResources();

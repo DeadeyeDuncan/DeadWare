@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.35 — Skyrim theme
+
+- Add **Skyrim** to the Color theme menu, inspired by dark Nordic stone, silver lettering, frost-blue accents and classic serif headings.
+- Carry the theme through the dashboard, connection maps, graph pop-outs, desktop widget and supported native window frames.
+- Remember the selected theme across launches while preserving custom graph colors, Windows High Contrast and reduced-transparency preferences.
+
 ## 0.6.34 — Readable long-range network graphs
 
 - Scale smoothed 1-, 3- and 6-hour network graphs to the highest download or upload average, with headroom, so brief traffic spikes no longer flatten the trend.

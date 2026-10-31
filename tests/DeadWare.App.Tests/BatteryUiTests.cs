@@ -57,11 +57,11 @@ public class BatteryUiTests
                 foreach (var color in dictionary.Descendants().Attributes("Color").Where(a => a.Value.Contains("local:Theme.ScrollCorner")))
                     color.Value = "#151B24";
                 app.Resources = (ResourceDictionary)XamlReader.Parse(dictionary.ToString());
-                Phase("Connections map (all six themes)");
+                Phase("Connections map (all themes)");
                 ConnectionMapUiChecks.Run(app);
-                Phase("Connections page (all six themes)");
+                Phase("Connections page (all themes)");
                 ConnectionsPageUiChecks.Run(app);
-                Phase("Connections widget (all six themes)");
+                Phase("Connections widget (all themes)");
                 ConnectionsWidgetUiChecks.Run(app);
                 NetworkChartUiChecks.Run();
                 LiveRenderingUiChecks.Run();
@@ -327,6 +327,7 @@ public class BatteryUiTests
         ("Amethyst", "Corbel", "Corbel", "Corbel"),
         ("Neon", "Bahnschrift", "Bahnschrift", "Consolas"),
         ("Blackout", "Segoe UI", "Segoe UI Semibold", "Segoe UI"),
+        ("Skyrim", "Segoe UI", "Palatino Linotype", "Segoe UI"),
         ("Daylight", "Segoe UI", "Segoe UI Semibold", "Segoe UI")
     ];
 
