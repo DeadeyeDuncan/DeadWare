@@ -108,8 +108,11 @@ Requirements:
    (its `StopAsync` task completes) even though the worker never finishes. Existing shutdown tests keep passing.
 
 Amendments after plan roast (binding, supersede the text above where they conflict):
-5. **One absolute deadline.** The whole normal-Quit collector stop is bounded by a single 5-second deadline
-   measured from its start, not per stage. Connection shutdown must still be *initiated* when the network-capture
+5. **One absolute deadline.** Waiting on the hardware provider and the ETW network-capture stop during normal
+   Quit is bounded by a single 5-second deadline measured from the start of the stop, not per stage. The history
+   drains (cooling, graph, battery, connections) do not depend on native providers and are awaited under a
+   separate absolute 20-second cap (under the updater helper's 60-second wait), so a normal flush is never cut
+   short. Connection shutdown must still be *initiated* when the network-capture
    stop times out or faults (flush whatever is already buffered). At sign-out the existing 3-second outer bound
    stays; within it, connection shutdown must start without waiting for the hardware worker.
 6. **No synchronous native hang before the deadline is attached.** `StopEtwAsync` currently runs
