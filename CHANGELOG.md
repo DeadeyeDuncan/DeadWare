@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.38 — CPU pump speed on graphs
+
+- Add **Settings → Show CPU pump speed on CPU temperature graphs**. It draws the CPU cooler's pump RPM as a dotted line on its own left RPM scale on the dashboard CPU temperature graph, the CPU temperature pop-out and the widget temperature graph, matching the GPU fan overlay. The joined CPU / GPU temperature pop-out keeps only the GPU fan.
+- When the widget shows both, the GPU fan and CPU pump share the left RPM scale. The pump is blue by default; change its color and line style from the new CPU pump color button on the overview's CPU temperature card.
+- Pump RPM is saved in the six-hour graph history. Like Cooling Health, it uses a header labeled as a pump, otherwise the `CPU Fan` header, and needs **Extended sensors** and a single CPU. The option is off by default.
+
 ## 0.6.37 — CPU pump speed in Cooling Health
 
 - Record the CPU cooler's pump speed as the CPU's **Fan speed** in Cooling Health, matching how GPU fan speed is shown. DeadWare uses a motherboard or AIO header labeled as a pump (for example `Pump Fan` or `AIO Pump`), otherwise the `CPU Fan` header. Unlabeled headers such as `Fan #2` are not used.
