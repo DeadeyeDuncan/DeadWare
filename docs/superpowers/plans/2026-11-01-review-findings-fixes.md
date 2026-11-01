@@ -65,6 +65,14 @@ exclusively; `SafeFiles.NoLinks` on every entry before deletion; IO/permission e
    (`UpdateHandoff.ValidateJob` already rejects jobs older than one day, so they can never run) are deleted
    entirely, again only if their `helper.exe` (when present) can be opened exclusively.
 4. Orphaned jobs younger than 24 hours are untouched (an install may be in progress).
+Amendments after plan roast (binding):
+- Re-check `pending.json` after acquiring `install.lock` (a recovery journal may appear between the first check
+  and the lock).
+- An orphan's age is the newer of its directory creation time and its `request.json` last-write time, so a job
+  whose request was written recently is never treated as stale.
+- Cleanup is best-effort: a job that fails `SafeFiles.NoLinks` or has an unreadable/corrupt `complete.json` is
+  skipped (left in place) instead of aborting cleanup or surfacing as an install-verification failure.
+
 5. Tests in `tests/DeadWare.Tests/UpdateCacheTests.cs` (use `Directory.SetCreationTimeUtc` like the existing
    tests): payload trimming of the newest completed job; old orphan removed; young orphan kept; locked
    `helper.exe` (open `FileShare.None` handle held by the test) keeps that job; `pending.json` still blocks all
@@ -98,6 +106,25 @@ Requirements:
    reflection pattern): with the hardware worker blocked forever, (a) the normal stop path completes within the
    provider deadline plus a small margin, and (b) a `ConnectionService` attached to the session is stopped
    (its `StopAsync` task completes) even though the worker never finishes. Existing shutdown tests keep passing.
+
+Amendments after plan roast (binding, supersede the text above where they conflict):
+5. **One absolute deadline.** The whole normal-Quit collector stop is bounded by a single 5-second deadline
+   measured from its start, not per stage. Connection shutdown must still be *initiated* when the network-capture
+   stop times out or faults (flush whatever is already buffered). At sign-out the existing 3-second outer bound
+   stays; within it, connection shutdown must start without waiting for the hardware worker.
+6. **No synchronous native hang before the deadline is attached.** `StopEtwAsync` currently runs
+   `StopEtwCoreAsync` while holding `etwStopGate`, and `EtwNetwork.StopAsync` calls native `stopNative()`
+   synchronously before its first await. Publish the shared stop task under a short lock but start the native work
+   on the thread pool (e.g. `Task.Run`), so neither the caller nor a second caller can block before the deadline
+   applies. Test: an `EtwNetwork` built with the internal test constructor whose `stopNative` blocks
+   synchronously; the stop path still returns within the deadline and concurrent calls get the same task.
+7. **No lost in-flight connection sample.** The worker takes an ETW snapshot, then does more work
+   (`WindowsBattery.Read()`) before raising `SampleAvailable`; an early final drain could publish sequence N+1
+   while N is still unpublished, and `ConnectionService` then drops N as stale. Read the battery *before* the ETW
+   snapshot, and serialize "take snapshot → raise SampleAvailable" in the worker against "take final snapshot →
+   raise FinalConnectionsAvailable" with one small gate that is never held across hardware or native calls.
+   Test: a worker sample taken but not yet published when stop begins still reaches the `ConnectionService`
+   (assert the traffic/delta arrives, not merely that `StopAsync` completed).
 
 ## Task 4: Install-location protection policy + startup gate
 
@@ -140,6 +167,20 @@ Requirements:
      can change. Move DeadWare to a protected folder such as C:\Program Files\DeadWare and repair startup, or
      turn startup off." The Settings page keeps **Turn off** usable in that state. Never delete or disable an
      existing task automatically.
+Amendments after plan roast (binding, supersede 1. where they conflict):
+- **Audit everything, not the manifest's inventory.** The reader checks the install directory, every
+  subdirectory and every file beneath it recursively (including `deadware-package.json`), plus the ancestors.
+  The manifest is not used to decide what to check. Test: an otherwise protected model with one writable file
+  that is *not* listed in a manifest → unprotected.
+- **Inheritable rules count on directories.** For the install directory and its subdirectories, an untrusted
+  Allow rule that is inheritable (ObjectInherit/ContainerInherit, including inherit-only) and grants any write
+  right (union of the directory and file masks) makes the location unprotected, because files the updater
+  creates later inherit it. Inherit-only rules remain ignored on ancestors and files. Test: install dir with a
+  Users inherit-only write rule → unprotected.
+- **General chain API (ruling R1).** Expose a general evaluator over (path, kind) entries plus a reader for an
+  arbitrary directory: "strict" directories checked recursively with descendants, and "ancestor" directories.
+  Task 5 reuses it for `%ProgramData%\DeadWare\updates`.
+
 3. Tests: pure policy cases in `tests/DeadWare.Tests` (trusted-only rules → protected; Users with add-file on
    install dir → unprotected; untrusted inherit-only rule ignored; untrusted owner → unprotected; DELETE_CHILD
    on an ancestor → unprotected; untrusted write on one managed file → unprotected; reparse flag → unprotected;
@@ -172,6 +213,23 @@ Requirements (builds on Task 4's `InstallLocation`):
 5. **Compatibility:** `UpdateService.AcknowledgeStartup` looks for `jobs/<id>/request.json` under the factory's
    root first and falls back to `%LOCALAPPDATA%\DeadWare\updates\<key>` (the 0.6.38 helper's root). All existing
    identity checks still apply to whichever root holds the job.
+Amendments after plan roast (binding, supersede the text above where they conflict):
+- **Descendants are verified too.** Before use (prepare, helper start, helper apply/recover), the protected
+  `<key>` root is verified recursively — every existing directory and file beneath it (jobs, staged packages,
+  journals, `previous/` snapshots) must grant no untrusted write rights — in addition to the base chain.
+  Directories DeadWare creates under the protected base inherit its protected DACL; verify after creating.
+- **Legacy user-folder state is never trusted for a protected installation.** A protected installation does not
+  read `pending.json`, `rollback.json`, `result.json` or `previous/` from `%LOCALAPPDATA%\DeadWare\updates`.
+  Consequences, by design: rollback to a pre-0.6.39 version is unavailable for a protected installation (its
+  `previous/` records exist only in the protected root, created by 0.6.39+, so every rollback target already knows
+  the protected root); if a legacy `pending.json` exists for a protected installation, the Updates page reports
+  that an unfinished update from an earlier version needs a reinstall from the complete package, and update is
+  disabled. The only legacy read allowed is requirement 5's acknowledgement fallback (identity-checked).
+- **Helper lock mode.** Open the copied helper with `FileAccess.Read` + `FileShare.Read`, hash *that* stream,
+  keep it open through authenticated readiness, and release it on cancellation/failure. Test that a process can
+  be started from a file while such a handle is held (copy a small system executable such as `cmd.exe` to a temp
+  folder and run it with `/c exit 0`), and that overwrite/delete fail while held.
+
 6. Tests: factory picks the LocalAppData base for an unprotected temp install; `AcknowledgeStartup` root search
    finds a handoff in the fallback root (structure the search so it is testable with injected candidate roots);
    the locked helper cannot be overwritten or deleted while its verified handle is held; verification rejects a
