@@ -231,6 +231,7 @@ public class BatteryUiTests
                 Set(session, "writer", new SettingsSnapshotWriter(pollingSettingsPath));
                 ConnectionsWidgetUiChecks.CheckSettings(session, settings, pollingSettingsPath);
                 VerifyGpuFanSpeed(session, collector, assembly, settings, pollingSettingsPath);
+                VerifyCpuPumpSpeed(session, collector, assembly, settings, pollingSettingsPath);
                 VerifyGraphSmoothing(session, settings, pollingSettingsPath);
                 VerifyRangeDropdown(session, dashboard, assembly, pollingSettingsPath);
                 VerifyThemeMenu(session, sidebar, pollingSettingsPath);
@@ -696,6 +697,106 @@ public class BatteryUiTests
 
         static void Set(object target, string name, object? value) => target.GetType().GetField(name, All)!.SetValue(target, value);
         static GeometryDrawing[] Traces(FrameworkElement chart) => Drawings(VisualTreeHelper.GetDrawing(chart)!).Where(item => item.Geometry is StreamGeometry).ToArray();
+        static IEnumerable<GlyphRunDrawing> Glyphs(Drawing drawing)
+        {
+            if (drawing is GlyphRunDrawing glyph) yield return glyph;
+            if (drawing is DrawingGroup group)
+                foreach (var child in group.Children)
+                    foreach (var nested in Glyphs(child)) yield return nested;
+        }
+    }
+
+    private static void VerifyCpuPumpSpeed(UiSession session, Collector collector, Assembly assembly, StackPanel settings, string settingsPath)
+    {
+        var toggle = Assert.Single(settings.Children.OfType<CheckBox>(), choice => choice.Content?.ToString() == "Show CPU pump speed on CPU temperature graphs");
+        Assert.False(toggle.IsChecked); Assert.False(session.Settings.ShowGpuFanSpeed);
+        var originalHistory = collector.History; var originalReading = collector.Latest;
+        string? originalGpu = session.Settings.SelectedGpuId;
+        var history = new SampleHistory();
+        for (int second = -55; second <= 0; second++)
+            history.Add(new(DateTimeOffset.UtcNow.AddSeconds(second), second, new Dictionary<string, double?>
+            {
+                ["cpu/temperature"] = 60, ["gpu-b/temperature"] = 80, ["gpu-b/fan"] = 1200,
+                ["cpu/pump"] = second == -30 ? null : second == 0 ? 2370 : 2300 + second
+            }));
+        Set(collector, "<History>k__BackingField", history);
+        Set(collector, "latest", new Reading(history.Read()[^1], [new("gpu-b", "Selected GPU", true)], [], [], "CPU", "", "", "", false));
+        session.Settings.SelectedGpuId = "gpu-b";
+        var chartType = assembly.GetType("DeadWare.App.HistoryChart")!;
+        // (kind, joined CPU/GPU, pump allowed on the joined chart, expects the pump line)
+        var specs = new[] { ("cputemp", false, false, true), ("cputemp", true, false, false), ("cputemp", true, true, true), ("gputemp", false, false, false) };
+        var charts = new List<(FrameworkElement Chart, int Count, bool Eligible)>();
+        foreach (var spec in specs)
+        {
+            var chart = (FrameworkElement)Activator.CreateInstance(chartType, All, null, [session, spec.Item1, true], null)!;
+            chartType.GetProperty("CompareDevices")!.SetValue(chart, spec.Item2);
+            chartType.GetProperty("PumpWithDevices")!.SetValue(chart, spec.Item3);
+            chart.Measure(new Size(284, 130)); chart.Arrange(new Rect(0, 0, 284, 130)); chart.UpdateLayout();
+            charts.Add((chart, Traces(chart).Length, spec.Item4));
+        }
+        toggle.IsChecked = true; CompleteSettingsSave(session);
+        Assert.True(SettingsCodec.Read(File.ReadAllText(settingsPath)).Settings.ShowCpuPumpSpeed);
+        Assert.Equal("cpu/pump", session.MetricId("cpupump"));
+        foreach (var (chart, count, eligible) in charts)
+        {
+            chartType.GetMethod("Refresh")!.Invoke(chart, null); chart.UpdateLayout();
+            var traces = Traces(chart);
+            Assert.Equal(count + (eligible ? 1 : 0), traces.Length);
+            if (!eligible) continue;
+            Assert.Equal(ResourceColor("Graph/cpupump"), ((SolidColorBrush)traces[^1].Pen.Brush).Color);
+            Assert.Equal(new double[] { 1, 3 }, traces[^1].Pen.DashStyle.Dashes);
+            // The missing sample at -30 s splits the pump line.
+            Assert.Equal(2, PathGeometry.CreateFromGeometry(traces[^1].Geometry).Figures.Count);
+            Assert.Equal(new[] { "0 RPM", "1500 RPM", "3000 RPM" }, RpmLabels(chart));
+        }
+        // With the GPU fan also on, the widget's joined chart puts both lines on one RPM scale.
+        session.SetGpuFanSpeed(true); CompleteSettingsSave(session);
+        var widgetChart = charts[2].Chart;
+        chartType.GetMethod("Refresh")!.Invoke(widgetChart, null); widgetChart.UpdateLayout();
+        var both = Traces(widgetChart);
+        Assert.Equal(charts[2].Count + 2, both.Length);
+        Assert.Equal(ResourceColor("Graph/gpufan"), ((SolidColorBrush)both[^2].Pen.Brush).Color);
+        Assert.Equal(ResourceColor("Graph/cpupump"), ((SolidColorBrush)both[^1].Pen.Brush).Color);
+        Assert.Equal(new[] { "0 RPM", "1500 RPM", "3000 RPM" }, RpmLabels(widgetChart));
+        // The joined pop-out (no pump) keeps a GPU-fan-only scale.
+        var joinedChart = charts[1].Chart;
+        chartType.GetMethod("Refresh")!.Invoke(joinedChart, null); joinedChart.UpdateLayout();
+        Assert.Equal(charts[1].Count + 1, Traces(joinedChart).Length);
+        Assert.Equal(new[] { "0 RPM", "1000 RPM", "2000 RPM" }, RpmLabels(joinedChart));
+        session.SetGpuFanSpeed(false); CompleteSettingsSave(session);
+        foreach (var spec in new[] { ("CompactGraph", "cputemp", true), ("CompactGraph", "temperature", false), ("WidgetGraph", "cputemp", true), ("ChartCard", "cputemp", true) })
+        {
+            var type = assembly.GetType("DeadWare.App." + spec.Item1)!;
+            object[] arguments = spec.Item1 == "CompactGraph" ? [session, spec.Item2, new Window()] : spec.Item1 == "ChartCard" ? [session, spec.Item2, false] : [session, spec.Item2];
+            var surface = (FrameworkElement)Activator.CreateInstance(type, All, null, arguments, null)!;
+            var viewport = new Border { Child = surface };
+            viewport.Measure(new Size(300, 230)); viewport.Arrange(new Rect(0, 0, 300, 230)); viewport.UpdateLayout();
+            type.GetMethod("Refresh", All)!.Invoke(surface, null); viewport.UpdateLayout();
+            var chart = Descendants(surface).OfType<FrameworkElement>().Single(element => element.GetType() == chartType);
+            string? output = Environment.GetEnvironmentVariable("DEADWARE_UI_OUTPUT");
+            if (output is not null) Capture(viewport, Path.Combine(output, "cpu-pump-" + spec.Item1 + "-" + spec.Item2 + ".png"));
+            int baseline = spec.Item1 == "ChartCard" || spec.Item1 == "CompactGraph" && spec.Item2 == "cputemp" ? 1 : 2;
+            Assert.Equal(baseline + (spec.Item3 ? 1 : 0), Traces(chart).Length);
+            var annotation = (TextBlock)type.GetField("pump", All)!.GetValue(surface)!;
+            Assert.Equal(ResourceColor("Graph/cpupump"), ((SolidColorBrush)annotation.Foreground).Color);
+            // Dashboard cards refresh only while visible; their Window remains hidden in this fixture.
+            if (spec.Item1 == "ChartCard") continue;
+            var shown = spec.Item1 == "WidgetGraph" ? (FrameworkElement)type.GetField("pumpLegend", All)!.GetValue(surface)! : annotation;
+            Assert.Equal(spec.Item3 ? Visibility.Visible : Visibility.Collapsed, shown.Visibility);
+            if (spec.Item3) Assert.Equal("CPU pump · 2370 RPM · " + (spec.Item1 == "WidgetGraph" ? "left RPM" : "dotted · left RPM"), annotation.Text);
+        }
+        var card = (FrameworkElement)Activator.CreateInstance(assembly.GetType("DeadWare.App.ChartCard")!, All, null, [session, "cputemp", false], null)!;
+        var pumpPicker = Descendants(card).OfType<Button>().Single(button => button.ToolTip?.ToString() == "Change CPU pump speed color and line style");
+        Assert.Equal(pumpPicker.ToolTip, System.Windows.Automation.AutomationProperties.GetName(pumpPicker));
+        toggle.IsChecked = false; CompleteSettingsSave(session);
+        Assert.False(SettingsCodec.Read(File.ReadAllText(settingsPath)).Settings.ShowCpuPumpSpeed);
+        chartType.GetMethod("Refresh")!.Invoke(charts[0].Chart, null); charts[0].Chart.UpdateLayout();
+        Assert.Equal(charts[0].Count, Traces(charts[0].Chart).Length);
+        Set(collector, "<History>k__BackingField", originalHistory); Set(collector, "latest", originalReading); session.SetGpu(originalGpu);
+
+        static void Set(object target, string name, object? value) => target.GetType().GetField(name, All)!.SetValue(target, value);
+        static GeometryDrawing[] Traces(FrameworkElement chart) => Drawings(VisualTreeHelper.GetDrawing(chart)!).Where(item => item.Geometry is StreamGeometry).ToArray();
+        static string[] RpmLabels(FrameworkElement chart) => Glyphs(VisualTreeHelper.GetDrawing(chart)!).Select(glyph => new string(glyph.GlyphRun.Characters.ToArray())).Where(label => label.EndsWith(" RPM", StringComparison.Ordinal)).ToArray();
         static IEnumerable<GlyphRunDrawing> Glyphs(Drawing drawing)
         {
             if (drawing is GlyphRunDrawing glyph) yield return glyph;
@@ -1240,7 +1341,7 @@ public class BatteryUiTests
             owner.Content = card;
             card.Measure(new Size(460, 240)); card.Arrange(new Rect(0, 0, 460, 240)); card.UpdateLayout();
             var pickers = Descendants(card).OfType<Button>().Where(button => button.GetType().Name == "GraphColorPicker").ToArray();
-            string[] pickerKinds = kind == "gputemp" ? ["gputemp", "gpufan"] : kinds;
+            string[] pickerKinds = kind == "gputemp" ? ["gputemp", "gpufan"] : kind == "cputemp" ? ["cputemp", "cpupump"] : kinds;
             Assert.Equal(pickerKinds.Length, pickers.Length);
             for (int index = 0; index < pickerKinds.Length; index++)
             {
@@ -1331,7 +1432,7 @@ public class BatteryUiTests
                         }
                     }
                     if (view.GetType().Name == "ChartCard")
-                        Assert.Equal(kinds[0] == "gputemp" ? kinds.Select(Expected).Append(ResourceColor("Warning")) : kinds.Select(Expected), Descendants(view).OfType<Button>().Where(button => button.GetType().Name == "GraphColorPicker")
+                        Assert.Equal(kinds[0] == "gputemp" ? kinds.Select(Expected).Append(ResourceColor("Warning")) : kinds[0] == "cputemp" ? kinds.Select(Expected).Append(ResourceColor("Download")) : kinds.Select(Expected), Descendants(view).OfType<Button>().Where(button => button.GetType().Name == "GraphColorPicker")
                             .Select(button => BrushColor(((System.Windows.Shapes.Ellipse)button.Content).Fill)));
                     string[] geometry = traces.Select(trace => trace.Geometry.ToString()).ToArray();
                     foreach (string kind in kinds) SetColor(kind, "#789ABC");

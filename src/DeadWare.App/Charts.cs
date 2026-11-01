@@ -25,6 +25,11 @@ internal static class Ui
         double? rpm=session.Stale?null:session.Value(session.MetricId("gpufan"));
         return "GPU fan · "+(session.Stale?"stale":rpm.HasValue&&double.IsFinite(rpm.Value)?$"{rpm.Value:0} RPM":"unavailable");
     }
+    public static string CpuPumpText(UiSession session)
+    {
+        double? rpm=session.Stale?null:session.Value(session.MetricId("cpupump"));
+        return "CPU pump · "+(session.Stale?"stale":rpm.HasValue&&double.IsFinite(rpm.Value)?$"{rpm.Value:0} RPM":"unavailable");
+    }
     public static string Bytes(double? bytes,bool rate=false)
     {
         if(!bytes.HasValue||!double.IsFinite(bytes.Value)) return "—";
@@ -42,7 +47,7 @@ internal static class Ui
     }
     public static Image Logo()
     {var image=new Image {Width=38,Height=38,Margin=new Thickness(0,0,9,0)};try{image.Source=new BitmapImage(new Uri("pack://application:,,,/Assets/deadware.png"));}catch(System.IO.IOException){}return image;}
-    public static string Title(string kind)=>kind switch {"cpu"=>"CPU usage","cputemp"=>"CPU temperature","gpu"=>"GPU usage","gputemp"=>"GPU temperature","gpufan"=>"GPU fan speed","usage"=>"CPU / GPU usage","temperature"=>"CPU / GPU temperature","memory"=>"RAM usage",_=>"Network activity"};
+    public static string Title(string kind)=>kind switch {"cpu"=>"CPU usage","cputemp"=>"CPU temperature","cpupump"=>"CPU pump speed","gpu"=>"GPU usage","gputemp"=>"GPU temperature","gpufan"=>"GPU fan speed","usage"=>"CPU / GPU usage","temperature"=>"CPU / GPU temperature","memory"=>"RAM usage",_=>"Network activity"};
     private sealed record RangeChoice(int Seconds,string Label)
     {public override string ToString()=>Label;}
     public static ComboBox Range(UiSession session)
@@ -64,7 +69,9 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
     private readonly UiSession session=session;
     private readonly string kind=kind;
     public bool CompareDevices {get;init;}
-    private sealed record Query(SampleHistory History,string Primary,string? Secondary,string? Fan,int Seconds,int Columns,bool Smoothed);
+    /// <summary>Lets a joined CPU/GPU temperature chart carry the CPU pump line too (the widget).</summary>
+    public bool PumpWithDevices {get;init;}
+    private sealed record Query(SampleHistory History,string Primary,string? Secondary,string? Fan,string? Pump,int Seconds,int Columns,bool Smoothed);
     private sealed record ChartData(Query Query,Dictionary<string,IReadOnlyList<SamplePoint>> Series,Dictionary<string,IReadOnlyList<ChartRangePoint>> Ranges,Summary Statistics);
     public event Action<Summary>? StatisticsReady;
     private ChartData? prepared;
@@ -74,15 +81,16 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
     private Query CurrentQuery()
     {
         bool compare=CompareDevices&&kind is "cpu" or "cputemp";
-        bool fan=session.Settings.ShowGpuFanSpeed&&(kind=="gputemp"||kind=="cputemp"&&compare);
         return new(session.Collector.History,session.MetricId(kind),kind=="network"?"network/upload":compare?session.MetricId(kind=="cpu"?"gpu":"gputemp"):null,
-            fan?session.MetricId("gpufan"):null,session.HistorySeconds,Math.Max(1,(int)ActualWidth-90),session.Settings.GraphSmoothing&&session.HistorySeconds>=3600);
+            ShowsFan(compare)?session.MetricId("gpufan"):null,ShowsPump(compare)?session.MetricId("cpupump"):null,session.HistorySeconds,Math.Max(1,(int)ActualWidth-90),session.Settings.GraphSmoothing&&session.HistorySeconds>=3600);
     }
+    private bool ShowsFan(bool compare)=>session.Settings.ShowGpuFanSpeed&&(kind=="gputemp"||kind=="cputemp"&&compare);
+    private bool ShowsPump(bool compare)=>session.Settings.ShowCpuPumpSpeed&&kind=="cputemp"&&(!compare||PumpWithDevices);
     private static ChartData Prepare(Query query,double now)
     {
         var series=new Dictionary<string,IReadOnlyList<SamplePoint>>();var ranges=new Dictionary<string,IReadOnlyList<ChartRangePoint>>();
         Summary rawStatistics=new(null,null,null);
-        foreach(var metric in new[]{query.Primary,query.Secondary,query.Fan}.OfType<string>().Distinct())
+        foreach(var metric in new[]{query.Primary,query.Secondary,query.Fan,query.Pump}.OfType<string>().Distinct())
         {
             if(!query.Smoothed)
             {
@@ -156,18 +164,20 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
         var points=Read(session.MetricId(kind));
         bool compare=CompareDevices&&kind is "cpu" or "cputemp";
         var secondary=kind=="network"?Read("network/upload"):compare?Read(session.MetricId(kind=="cpu"?"gpu":"gputemp")):[];
-        bool showFan=session.Settings.ShowGpuFanSpeed&&(kind=="gputemp"||kind=="cputemp"&&compare);
+        bool showFan=ShowsFan(compare),showPump=ShowsPump(compare),showRpm=showFan||showPump;
         var fan=showFan?Read(session.MetricId("gpufan")):[];
+        var pump=showPump?Read(session.MetricId("cpupump")):[];
         // Smoothed network axes follow the average trace; raw peaks remain in the band and statistics.
         double Peak(string metric,IReadOnlyList<SamplePoint> fallback)=>bands.TryGetValue(metric,out var range)?range.Max(p=>kind=="network"&&averaged?p.Average:p.Maximum)??0:fallback.Max(p=>p.Value)??0;
         double peak=Math.Max(Peak(session.MetricId(kind),points),Peak(kind=="network"?"network/upload":session.MetricId(kind=="cpu"?"gpu":"gputemp"),secondary));
         double maximum=kind is "cpu" or "gpu" or "memory"?100:kind=="network"?Math.Max(1000,peak*1.15):Math.Max(100,peak*1.1);
         if(compare&&kind=="cputemp")maximum=Math.Ceiling(maximum/20)*20;
         string Axis(double value)=>kind=="network"?Ui.Bytes(value,true):$"{value:0}{(kind.Contains("temp")?(compare?"°C":"°"):"%")}";
-        double fanMaximum=Math.Max(1000,Math.Ceiling(Peak(session.MetricId("gpufan"),fan)/1000)*1000);
+        // GPU fan and CPU pump share the left RPM scale when both are shown.
+        double fanMaximum=Math.Max(1000,Math.Ceiling(Math.Max(showFan?Peak(session.MetricId("gpufan"),fan):0,showPump?Peak(session.MetricId("cpupump"),pump):0)/1000)*1000);
         string FanAxis(double value)=>$"{value:0} RPM";
         double left=compact?3:12,top=compact?8:18;
-        if(showFan)left=Enumerable.Range(0,3).Max(i=>Formatted(FanAxis(fanMaximum*i/2)).Width)+10;
+        if(showRpm)left=Enumerable.Range(0,3).Max(i=>Formatted(FanAxis(fanMaximum*i/2)).Width)+10;
         double right=compact?Enumerable.Range(0,3).Max(i=>Formatted(Axis(maximum*i/2)).Width)+10:74;
         double bottom=axisLabel.Height+(compact?10:18),pw=w-left-right,ph=h-top-bottom;
         if(pw<=0||ph<=0)return;
@@ -177,7 +187,7 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
             double value=maximum*i/2,y=top+ph*(1-value/maximum);
             dc.DrawLine(new Pen(Theme.Brush("Line"),1){DashStyle=new DashStyle([3,5],0)},new(left,y),new(left+pw,y));
             Label(dc,Axis(value),left+pw+7,y-7);
-            if(showFan)
+            if(showRpm)
             {
                 string text=FanAxis(fanMaximum*i/2);
                 Label(dc,text,left-Formatted(text).Width-7,y-7);
@@ -188,7 +198,7 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
         dc.PushClip(new RectangleGeometry(new Rect(left,top,pw,ph)));
         // Retained WPF transform scrolls the recorded trace between polls without rebuilding it each frame.
         var scroll=new TranslateTransform();
-        if(IsLoaded&&IsVisible&&points.Count+secondary.Count+fan.Count>0)
+        if(IsLoaded&&IsVisible&&points.Count+secondary.Count+fan.Count+pump.Count>0)
             scroll.BeginAnimation(TranslateTransform.XProperty,new DoubleAnimation(0,-pw/session.HistorySeconds*Math.Min(1,session.Settings.PollingIntervalSeconds),TimeSpan.FromSeconds(Math.Min(1,session.Settings.PollingIntervalSeconds))));
         dc.PushTransform(scroll);
         void Trace(IReadOnlyList<SamplePoint> values,string metric,string color,bool dashed,bool dotted=false,double? scale=null,double fillStrength=1)
@@ -201,8 +211,9 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
         if(kind=="network")Trace(secondary,"network/upload",Theme.GraphKey("upload"),true,fillStrength:.42);
         else if(compare)Trace(secondary,session.MetricId(kind=="cpu"?"gpu":"gputemp"),Theme.GraphKey(kind=="cpu"?"gpu":"gputemp"),true,fillStrength:.45);
         if(showFan)Trace(fan,session.MetricId("gpufan"),Theme.GraphKey("gpufan"),false,true,fanMaximum);
+        if(showPump)Trace(pump,session.MetricId("cpupump"),Theme.GraphKey("cpupump"),false,true,fanMaximum);
         dc.Pop();dc.Pop();
-        if(!points.Concat(secondary).Concat(fan).Any(p=>p.Value.HasValue)) Label(dc,sample is null?(compact?"Waiting for data…":"Waiting for first sample…"):(compact?"No readings in this range":"No available readings in this range"),left+(compact?4:15),top+ph/2);
+        if(!points.Concat(secondary).Concat(fan).Concat(pump).Any(p=>p.Value.HasValue)) Label(dc,sample is null?(compact?"Waiting for data…":"Waiting for first sample…"):(compact?"No readings in this range":"No available readings in this range"),left+(compact?4:15),top+ph/2);
     }
     private void DrawRange(DrawingContext dc,IReadOnlyList<ChartRangePoint> points,double now,double maximum,double left,double top,double width,double height,string color)
     {
@@ -251,6 +262,7 @@ internal sealed class ChartCard : Border
     private readonly string kind;
     private readonly TextBlock value=Ui.Text("—",30,font:"MetricFont"),subtitle=Ui.Text("Waiting for hardware…",11,"Muted"),stats=Ui.Text("",11,"Muted",font:"MetricFont");
     private readonly TextBlock fan=Ui.Text("",11,Theme.GraphKey("gpufan"),font:"MetricFont");
+    private readonly TextBlock pump=Ui.Text("",11,Theme.GraphKey("cpupump"),font:"MetricFont");
     private readonly Run downloadValue=new(),uploadValue=new();
     private readonly HistoryChart chart;
     private readonly bool overview;
@@ -280,10 +292,12 @@ internal sealed class ChartCard : Border
             value.FontSize=34;value.FontWeight=FontWeights.SemiBold;
             subtitle.TextWrapping=TextWrapping.NoWrap;subtitle.TextTrimming=TextTrimming.CharacterEllipsis;
             fan.TextWrapping=TextWrapping.NoWrap;fan.TextTrimming=TextTrimming.CharacterEllipsis;
+            pump.TextWrapping=TextWrapping.NoWrap;pump.TextTrimming=TextTrimming.CharacterEllipsis;
         }
         grid.Children.Add(header);
         var metric=new StackPanel {Margin=new Thickness(0,5,0,5)};metric.Children.Add(value);metric.Children.Add(subtitle);
-        fan.Visibility=Visibility.Collapsed;fan.ToolTip="Selected GPU's first reported fan · separate left RPM scale";metric.Children.Add(fan);Grid.SetRow(metric,1);grid.Children.Add(metric);
+        fan.Visibility=Visibility.Collapsed;fan.ToolTip="Selected GPU's first reported fan · separate left RPM scale";metric.Children.Add(fan);
+        pump.Visibility=Visibility.Collapsed;pump.ToolTip="CPU cooler pump, or the CPU Fan header · separate left RPM scale";metric.Children.Add(pump);Grid.SetRow(metric,1);grid.Children.Add(metric);
         if(overview&&kind=="network")
         {
             metric.Children.Remove(value);
@@ -337,6 +351,9 @@ internal sealed class ChartCard : Border
         bool showFan=kind=="gputemp"&&session.Settings.ShowGpuFanSpeed;
         fan.Visibility=showFan?Visibility.Visible:Visibility.Collapsed;
         if(showFan)fan.Text=Ui.GpuFanText(session)+$" · {GraphStroke.Pattern(session.Settings,"gpufan",dotted:true)} · left RPM";
+        bool showPump=kind=="cputemp"&&session.Settings.ShowCpuPumpSpeed;
+        pump.Visibility=showPump?Visibility.Visible:Visibility.Collapsed;
+        if(showPump)pump.Text=Ui.CpuPumpText(session)+$" · {GraphStroke.Pattern(session.Settings,"cpupump",dotted:true)} · left RPM";
         value.SetResourceReference(TextBlock.ForegroundProperty,Theme.GraphKey(kind));
         if(kind=="network")
         {

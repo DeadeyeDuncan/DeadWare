@@ -72,7 +72,7 @@ public class GraphHistoryServiceTests
         reading=reading with {Gpus=[..reading.Gpus,new("/gpu/1","Same model")],Sensors=[..reading.Sensors,new("private-extra","Same model","GPU Core","%",50,"/gpu/1","GpuAmd","Load","Available")]};
         var mapping=GraphHistoryProjection.Mappings(reading,"machine");
         Assert.DoesNotContain(mapping.Values,key=>key.StartsWith("/gpu/"));
-        Assert.Equal(5,mapping.Count);
+        Assert.Equal(6,mapping.Count);
         Assert.DoesNotContain(mapping.Keys,key=>key.Contains("Test CPU")||key.Contains("private"));
     }
 
