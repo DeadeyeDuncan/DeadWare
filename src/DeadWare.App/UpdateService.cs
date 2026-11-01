@@ -73,7 +73,7 @@ public sealed class UpdateService
                 LocalStatus=result.pending?result.previous is null?"An unfinished update requires repair using a complete package.":"An unfinished update needs recovery. Use Roll back & restart before installing another update.":
                     result.previous is null?"No earlier packaged installation is available for rollback yet.":$"Rollback available: {result.previous.Version}.",LastOperation=result.last?.Message??""});
         }
-        catch(Exception error) when(error is IOException or UnauthorizedAccessException or ArgumentException)
+        catch(Exception error) when(error is IOException or UnauthorizedAccessException or ArgumentException or InvalidDataException)
         {Publish(s=>s with {InstallationVerified=false,Previous=null,LocalStatus="Install the complete updater-enabled package before updating from this folder. "+error.Message});}
     }
     public Task CheckAtStartupAsync(CancellationToken token)

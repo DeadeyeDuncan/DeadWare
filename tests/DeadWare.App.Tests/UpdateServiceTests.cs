@@ -89,6 +89,42 @@ public class UpdateServiceTests
         await service.CheckAsync(CancellationToken.None);Assert.Equal(1,handler.Calls);
         Assert.Contains("No normal release",service.State.Status);Assert.False(service.State.Busy);
     }
+    [Fact] public async Task A_managed_file_changed_after_verification_disables_install_instead_of_throwing()
+    {
+        string root=Path.Combine(Path.GetTempPath(),"DeadWare-changed-"+Guid.NewGuid().ToString("N"));
+        try
+        {
+            string installed=Package(root,"app","0.6.0");var service=new UpdateService("0.6.0",installed,cacheBase:Path.Combine(root,"cache"));
+            await service.ReadLocalAsync();Assert.True(service.State.InstallationVerified);
+            File.WriteAllText(Path.Combine(installed,"DeadWare.dll"),"modified");
+            await service.ReadLocalAsync();
+            Assert.False(service.State.InstallationVerified);Assert.Null(service.State.Previous);Assert.False(service.State.CanUpdate);Assert.False(service.State.CanRollback);
+            Assert.StartsWith("Install the complete updater-enabled package before updating from this folder. ",service.State.LocalStatus);Assert.Contains("DeadWare.dll",service.State.LocalStatus);
+        }
+        finally{if(Directory.Exists(root))Directory.Delete(root,true);}
+    }
+    [Fact] public async Task A_corrupted_rollback_snapshot_disables_install_instead_of_throwing()
+    {
+        string root=Path.Combine(Path.GetTempPath(),"DeadWare-rollback-"+Guid.NewGuid().ToString("N"));
+        try
+        {
+            string installed=Package(root,"app","0.6.0"),stage=Package(root,"stage","0.6.1");var paths=new UpdatePaths(installed,Path.Combine(root,"cache"));
+            var transaction=new InstallTransaction(paths);transaction.Apply(stage,"0.6.0","0.6.1");transaction.Commit();
+            var service=new UpdateService("0.6.1",installed,cacheBase:Path.Combine(root,"cache"));
+            await service.ReadLocalAsync();Assert.True(service.State.InstallationVerified);Assert.True(service.State.CanRollback);
+            var record=SafeFiles.ReadJson<BackupRecord>(paths.RollbackFile);File.WriteAllText(Path.Combine(paths.BackupDirectory(record.Id),"DeadWare.dll"),"corrupted");
+            await service.ReadLocalAsync();
+            Assert.False(service.State.InstallationVerified);Assert.Null(service.State.Previous);Assert.False(service.State.CanUpdate);Assert.False(service.State.CanRollback);
+            Assert.StartsWith("Install the complete updater-enabled package before updating from this folder. ",service.State.LocalStatus);
+        }
+        finally{if(Directory.Exists(root))Directory.Delete(root,true);}
+    }
+    private static string Package(string root,string name,string version)
+    {
+        string folder=Path.Combine(root,name);Directory.CreateDirectory(folder);
+        foreach(string file in new[]{"DeadWare.exe","DeadWare.dll","DeadWare.Updater.exe"})File.WriteAllText(Path.Combine(folder,file),version+file);
+        SafeFiles.WriteJson(Path.Combine(folder,Packages.ManifestName),new PackageManifest(1,version,Directory.GetFiles(folder).ToDictionary(f=>Path.GetFileName(f)!,Packages.Hash)));return folder;
+    }
     [Fact] public async Task Verified_package_allows_a_newer_normal_release_and_never_automatic_downgrade()
     {
         string root=Path.Combine(Path.GetTempPath(),"DeadWare-updates-"+Guid.NewGuid().ToString("N"));Directory.CreateDirectory(root);
