@@ -228,35 +228,41 @@ public sealed class UiSession
         catch(Exception e) when(e is IOException or UnauthorizedAccessException) {SettingsStatus="The final window layout could not be saved.";diagnostics?.Record("final_save_failed",new {Revision=saveRevision},e);}
         catch(Exception e) {diagnostics?.Record("final_save_failed",new {Revision=saveRevision},e);throw;}
     }
-    private Task StopCollectorAsync()=>collectorStop??=Task.Run(async ()=>
+    private static readonly TimeSpan QuitDeadline=TimeSpan.FromSeconds(5),SessionEndingDeadline=TimeSpan.FromSeconds(3);
+    private Task StopCollectorAsync(TimeSpan deadline)=>collectorStop??=Task.Run(async ()=>
     {
-        // Request provider cancellation before closing the recording queue. History drains
-        // independently even when a native provider is slow to finish shutting down.
+        // One absolute deadline bounds the whole stop, so a hung provider never keeps DeadWare alive.
+        // Network capture stops without the hardware worker; every history drains independently.
+        var expired=Task.Delay(deadline);
+        var networkStop=Collector.StopNetworkCaptureAsync();
         var providerStop=Collector.DisposeAsync().AsTask();
         Collector.SampleAvailable-=Cooling.TryRecord;
         Collector.SampleAvailable-=GraphHistory.TryRecord;
         Collector.SampleAvailable-=Battery.TryRecord;
-        try {await Task.WhenAll(providerStop,Cooling.StopAsync(),GraphHistory.StopAsync(),Battery.StopAsync()).ConfigureAwait(false);}
-        finally
-        {
-            if(Connections is not null)
-            {
-                Collector.SampleAvailable-=Connections.TryRecord;
-                Collector.FinalConnectionsAvailable-=Connections.TryRecord;
-                await Connections.StopAsync().ConfigureAwait(false);
-            }
-        }
+        var stopped=Task.WhenAll(providerStop,Cooling.StopAsync(),GraphHistory.StopAsync(),Battery.StopAsync(),StopConnectionsAsync(networkStop,deadline/2));
+        if(await Task.WhenAny(stopped,expired).ConfigureAwait(false)==stopped)await stopped.ConfigureAwait(false);
+        else diagnostics?.Record("collector_stop_timeout",new {DeadlineSeconds=deadline.TotalSeconds,NetworkCaptureStopped=networkStop.IsCompleted},networkStop.Exception?.GetBaseException());
     });
+    private async Task StopConnectionsAsync(Task networkStop,TimeSpan captureDeadline)
+    {
+        if(Connections is null)return;
+        // Wait for the final drain only part of the deadline; the rest flushes what is already
+        // buffered even if network capture hangs or fails to stop.
+        await Task.WhenAny(networkStop,Task.Delay(captureDeadline)).ConfigureAwait(false);
+        Collector.SampleAvailable-=Connections.TryRecord;
+        Collector.FinalConnectionsAvailable-=Connections.TryRecord;
+        await Connections.StopAsync().ConfigureAwait(false);
+    }
     internal void StopCollectorForSessionEnding()
     {
         // Windows session ending cannot wait for a dispatcher continuation. The shared stop
         // runs entirely on the pool, stops ETW first, and is bounded even if hardware hangs.
         try
         {
-            StopCollectorAsync().WaitAsync(TimeSpan.FromSeconds(3)).GetAwaiter().GetResult();
+            StopCollectorAsync(SessionEndingDeadline).WaitAsync(SessionEndingDeadline).GetAwaiter().GetResult();
             diagnostics?.Record("session_end_collector_stopped");
         }
-        catch(TimeoutException e) {diagnostics?.Record("session_end_collector_stop_timeout",new {DeadlineSeconds=3},e);}
+        catch(TimeoutException e) {diagnostics?.Record("session_end_collector_stop_timeout",new {DeadlineSeconds=SessionEndingDeadline.TotalSeconds},e);}
         catch(Exception e) {diagnostics?.Record("session_end_collector_stop_failed",error:e);}
     }
     public void Place(Window window,string key,double width,double height)
@@ -303,7 +309,7 @@ public sealed class UiSession
         diagnostics?.Record("shutdown_begin",new {OpenWindows=layout.Remembered});
         layout.BeginShutdown();timer.Stop();saveTimer.Stop();CaptureAll();
         foreach(var window in detached.Values.ToArray())window.Close();
-        try {await SaveAsync();}finally {await StopCollectorAsync();}
+        try {await SaveAsync();}finally {await StopCollectorAsync(QuitDeadline);}
         diagnostics?.Record("shutdown_completed");
     }
     public async void RestartElevated()
