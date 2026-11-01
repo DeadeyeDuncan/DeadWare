@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using DeadWare.UpdateCore;
 using Xunit;
 namespace DeadWare.Tests;
@@ -61,6 +62,37 @@ public class UpdateCacheTests
         using(new FileStream(Path.Combine(newest,"helper.exe"),FileMode.Open,FileAccess.ReadWrite,FileShare.None))UpdateCache.CleanupCompletedJobs(paths);
         Assert.Equal(Sorted("complete.json","helper.exe","ready.json","request.json","started.json"),Names(newest));
     }
+    [Fact] public void Cleanup_skips_older_completed_job_with_corrupt_result_and_still_cleans_the_rest()
+    {
+        using var fixture=new UpdateFixture();var paths=new UpdatePaths(Path.Combine(fixture.Root,"app"),Path.Combine(fixture.Root,"cache"));
+        string oldest=Job(paths,TimeSpan.FromHours(3),true),corrupt=Job(paths,TimeSpan.FromHours(2),true),newest=Job(paths,TimeSpan.FromHours(1),true),stale=Job(paths,TimeSpan.FromDays(2),false);
+        File.WriteAllText(Path.Combine(corrupt,"complete.json"),"{ not json");
+        UpdateCache.CleanupCompletedJobs(paths);
+        Assert.Equal(Sorted("complete.json","download.zip","helper.exe","package","ready.json","request.json","started.json"),Names(corrupt));
+        Assert.False(Directory.Exists(oldest));Assert.False(Directory.Exists(stale));Assert.Equal(Metadata,Names(newest));
+    }
+    [Fact] public void Cleanup_keeps_old_directory_whose_request_was_just_written()
+    {
+        using var fixture=new UpdateFixture();var paths=new UpdatePaths(Path.Combine(fixture.Root,"app"),Path.Combine(fixture.Root,"cache"));
+        string reused=Job(paths,TimeSpan.FromDays(3),false),stale=Job(paths,TimeSpan.FromDays(3),false);
+        File.SetLastWriteTimeUtc(Path.Combine(reused,"request.json"),DateTime.UtcNow.AddMinutes(-5));
+        UpdateCache.CleanupCompletedJobs(paths);
+        Assert.Equal(Unfinished,Names(reused));Assert.False(Directory.Exists(stale));
+    }
+    [Fact] public void Cleanup_keeps_orphan_containing_a_junction_without_following_it()
+    {
+        using var fixture=new UpdateFixture();var paths=new UpdatePaths(Path.Combine(fixture.Root,"app"),Path.Combine(fixture.Root,"cache"));
+        string linked=Job(paths,TimeSpan.FromDays(3),false),stale=Job(paths,TimeSpan.FromDays(3),false),outside=Path.Combine(fixture.Root,"outside");
+        Directory.CreateDirectory(outside);File.WriteAllText(Path.Combine(outside,"battery.db"),"history");
+        string link=Path.Combine(linked,"package","link");Junction(link,outside);
+        try
+        {
+            UpdateCache.CleanupCompletedJobs(paths);
+            Assert.Equal(Unfinished,Names(linked));Assert.True(Directory.Exists(link));
+            Assert.Equal("history",File.ReadAllText(Path.Combine(outside,"battery.db")));Assert.False(Directory.Exists(stale));
+        }
+        finally{if(Directory.Exists(link))Directory.Delete(link);}
+    }
     private static string[] Sorted(params string[] names)=>names.Order().ToArray();
     private static readonly string[] Metadata=Sorted("complete.json","ready.json","request.json","started.json");
     private static readonly string[] Unfinished=Sorted("download.zip","helper.exe","package","ready.json","request.json","started.json");
@@ -72,6 +104,11 @@ public class UpdateCacheTests
         foreach(string name in new[]{"request.json","ready.json","started.json","download.zip","helper.exe"})File.WriteAllText(Path.Combine(job,name),name);
         File.WriteAllText(Path.Combine(package,"DeadWare.exe"),"app");
         if(completed)SafeFiles.WriteJson(Path.Combine(job,"complete.json"),new UpdateResult(true,"Done","0.6.0"));
-        Directory.SetCreationTimeUtc(job,DateTime.UtcNow-age);return job;
+        Directory.SetCreationTimeUtc(job,DateTime.UtcNow-age);File.SetLastWriteTimeUtc(Path.Combine(job,"request.json"),DateTime.UtcNow-age);return job;
+    }
+    private static void Junction(string link,string target)
+    {
+        using var process=Process.Start(new ProcessStartInfo("cmd.exe",$"/c mklink /J \"{link}\" \"{target}\""){CreateNoWindow=true,UseShellExecute=false,RedirectStandardOutput=true,RedirectStandardError=true})!;
+        process.StandardOutput.ReadToEnd();process.WaitForExit();Assert.Equal(0,process.ExitCode);
     }
 }
