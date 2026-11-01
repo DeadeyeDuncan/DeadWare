@@ -242,7 +242,7 @@ public class ConnectionServiceTests
         {
             service.Start();capture.TakeSnapshot(now,collector.ElapsedSeconds);
             capture.RecordEndpoint(11,now,71,false,System.Net.IPAddress.Parse("8.8.8.8"),443,System.Net.IPAddress.Loopback,123,ConnectionProtocol.Tcp);
-            var stop=(Task)typeof(UiSession).GetMethod("StopCollectorAsync",flags)!.Invoke(session,[TimeSpan.FromSeconds(5)])!;
+            var stop=(Task)typeof(UiSession).GetMethod("StopCollectorAsync",flags)!.Invoke(session,[TimeSpan.FromSeconds(5),TimeSpan.FromSeconds(5),TimeSpan.FromSeconds(20)])!;
             if(failingFinalSubscriber)await Assert.ThrowsAsync<InvalidOperationException>(()=>stop);else await stop;
             var history=await service.ReadViewAsync(new(now.AddMinutes(-1),now.AddMinutes(1)));Assert.Equal(71,history.Summary.ReceivedBytes);Assert.False(Assert.Single(history.Rows).Complete);
             Assert.True(service.StopAsync().IsCompleted);

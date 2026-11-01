@@ -57,18 +57,20 @@ public class CoolingShutdownTests
     private const BindingFlags Flags=BindingFlags.Instance|BindingFlags.NonPublic;
     private static void SetField(object target,string name,object value)=>target.GetType().GetField(name,Flags)!.SetValue(target,value);
     private static string Root()=>Path.Combine(Path.GetTempPath(),"DeadWare-tests-"+Guid.NewGuid().ToString("N"));
-    private static Task Stop(UiSession session,TimeSpan deadline)=>(Task)typeof(UiSession).GetMethod("StopCollectorAsync",Flags)!.Invoke(session,[deadline])!;
+    /// <summary>Normal Quit shape: the final drain may use the whole provider deadline; history has its own cap.</summary>
+    private static Task Stop(UiSession session,TimeSpan providerDeadline)=>(Task)typeof(UiSession).GetMethod("StopCollectorAsync",Flags)!.Invoke(session,[providerDeadline,providerDeadline,TimeSpan.FromSeconds(10)])!;
+    private sealed class NoLocation:IConnectionGeolocation {public ConnectionLocation? Lookup(string address)=>null;}
     private static async Task<long> SavedBytes(ConnectionService connections,DateTimeOffset now)=>(await connections.ReadViewAsync(new(now.AddMinutes(-1),now.AddMinutes(1)))).Summary.ReceivedBytes;
     private static void Observe(EtwNetwork capture,DateTimeOffset now,double seconds)
     {capture.TakeSnapshot(now,seconds);capture.RecordEndpoint(11,now,71,false,IPAddress.Parse("8.8.8.8"),443,IPAddress.Loopback,123,ConnectionProtocol.Tcp);}
     /// <summary>A session wired like the real one whose hardware worker never finishes. Never starts hardware or ETW.</summary>
-    private static (UiSession Session,Collector Collector,ConnectionService Connections,TaskCompletionSource Worker) StuckSession(string root,EtwNetwork capture)
+    private static (UiSession Session,Collector Collector,ConnectionService Connections,TaskCompletionSource Worker) StuckSession(string root,EtwNetwork capture,ConnectionService? connections=null)
     {
         var worker=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var collector=(Collector)RuntimeHelpers.GetUninitializedObject(typeof(Collector));
         SetField(collector,"cancellation",new CancellationTokenSource());SetField(collector,"worker",worker.Task);SetField(collector,"etwStopGate",new object());
         SetField(collector,"publicationGate",new object());SetField(collector,"clock",Stopwatch.StartNew());SetField(collector,"options",new CollectorOptions());SetField(collector,"etw",capture);
-        var connections=new ConnectionService(Path.Combine(root,"connections.db"));
+        connections??=new ConnectionService(Path.Combine(root,"connections.db"));
         var session=(UiSession)RuntimeHelpers.GetUninitializedObject(typeof(UiSession));
         SetField(session,"<Collector>k__BackingField",collector);SetField(session,"<Connections>k__BackingField",connections);
         SetField(session,"<Cooling>k__BackingField",new CoolingHistoryService(Path.Combine(root,"cooling.db"),"fixture","setup"));
@@ -91,7 +93,8 @@ public class CoolingShutdownTests
             Assert.InRange(watch.Elapsed.TotalSeconds,0.8,3);Assert.False(worker.Task.IsCompleted);
             // The final ETW drain and the connection flush never waited for the hardware worker.
             Assert.True(connections.StopAsync().IsCompleted);Assert.Equal(71,await SavedBytes(connections,now));
-            Assert.Contains("collector_stop_timeout",File.ReadAllText(Path.Combine(root,"trace.jsonl")));
+            string trace=File.ReadAllText(Path.Combine(root,"trace.jsonl"));
+            Assert.Contains("collector_stop_timeout",trace);Assert.Contains("hardware provider",trace);Assert.DoesNotContain("network capture",trace);
         }
         finally {worker.TrySetResult();await connections.StopAsync();if(Directory.Exists(root))Directory.Delete(root,true);}
     }
@@ -115,6 +118,8 @@ public class CoolingShutdownTests
             {
                 await Stop(session,TimeSpan.FromSeconds(1)).WaitAsync(TimeSpan.FromSeconds(10));
                 Assert.InRange(watch.Elapsed.TotalSeconds,0.8,3);
+                string trace=File.ReadAllText(Path.Combine(root,"trace.jsonl"));
+                Assert.Contains("network capture",trace);Assert.Contains("hardware provider",trace);Assert.DoesNotContain("connections",trace);
             }
             Assert.True(connections.StopAsync().IsCompleted);Assert.Equal(71,await SavedBytes(connections,now));
             // Native stop is still blocked: concurrent callers share its task without waiting on it.
@@ -135,6 +140,39 @@ public class CoolingShutdownTests
             typeof(UiSession).GetMethod("StopCollectorForSessionEnding",Flags)!.Invoke(session,null);
             Assert.True(connections.StopAsync().IsCompleted);Assert.Equal(71,await SavedBytes(connections,now));
             Assert.Contains("session_end_collector_stop_failed",File.ReadAllText(Path.Combine(root,"trace.jsonl")));
+        }
+        finally {await connections.StopAsync();if(Directory.Exists(root))Directory.Delete(root,true);}
+    }
+    [Fact]
+    public async Task Connection_flush_that_outlasts_the_provider_deadline_completes_before_quit_returns()
+    {
+        string root=Root();var capture=new EtwNetwork(_=>new(11,1,"fixture"));long saved=0;
+        var connections=new ConnectionService(new NoLocation(),()=>DateTimeOffset.UtcNow,(records,_)=>{if(records.Count==0)return;Thread.Sleep(1500);Interlocked.Add(ref saved,records.Sum(r=>r.Delta.ReceivedBytes));});
+        var (session,collector,_,worker)=StuckSession(root,capture,connections);var now=DateTimeOffset.UtcNow;
+        try
+        {
+            connections.Start();Observe(capture,now,collector.ElapsedSeconds);
+            var watch=Stopwatch.StartNew();
+            await Stop(session,TimeSpan.FromMilliseconds(300)).WaitAsync(TimeSpan.FromSeconds(10));
+            // The hardware provider missed its deadline long before the slow flush finished; Quit still waited for the flush.
+            Assert.InRange(watch.Elapsed.TotalSeconds,1.4,6);Assert.Equal(71,Interlocked.Read(ref saved));Assert.False(worker.Task.IsCompleted);
+            string trace=File.ReadAllText(Path.Combine(root,"trace.jsonl"));
+            Assert.Contains("hardware provider",trace);Assert.DoesNotContain("connections",trace);
+        }
+        finally {worker.TrySetResult();await connections.StopAsync();if(Directory.Exists(root))Directory.Delete(root,true);}
+    }
+    [Fact]
+    public async Task Synchronous_history_stop_failure_still_flushes_connections()
+    {
+        string root=Root();var capture=new EtwNetwork(_=>new(11,1,"fixture"));
+        var (session,collector,connections,worker)=StuckSession(root,capture);var now=DateTimeOffset.UtcNow;worker.SetResult();
+        // An unconstructed service throws from StopAsync before it can return a task.
+        SetField(session,"<Cooling>k__BackingField",RuntimeHelpers.GetUninitializedObject(typeof(CoolingHistoryService)));
+        try
+        {
+            connections.Start();await SavedBytes(connections,now);Observe(capture,now,collector.ElapsedSeconds);
+            await Assert.ThrowsAsync<ArgumentNullException>(()=>Stop(session,TimeSpan.FromSeconds(1)).WaitAsync(TimeSpan.FromSeconds(10)));
+            Assert.True(connections.StopAsync().IsCompleted);Assert.Equal(71,await SavedBytes(connections,now));
         }
         finally {await connections.StopAsync();if(Directory.Exists(root))Directory.Delete(root,true);}
     }
