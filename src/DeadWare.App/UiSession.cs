@@ -119,6 +119,11 @@ public sealed class UiSession
         if(Settings.ShowGpuFanSpeed==enabled)return;
         Settings.ShowGpuFanSpeed=enabled;Changed?.Invoke();_ = SaveAsync();
     }
+    public void SetCpuPumpSpeed(bool enabled)
+    {
+        if(Settings.ShowCpuPumpSpeed==enabled)return;
+        Settings.ShowCpuPumpSpeed=enabled;Changed?.Invoke();_ = SaveAsync();
+    }
     public void SetJoinedPopouts(bool enabled)
     {
         if(Settings.JoinCpuGpuPopouts==enabled)return;
@@ -187,7 +192,7 @@ public sealed class UiSession
         Cooling.Configure(Settings.CoolingRecording,Settings.CoolingNotifications,Settings.CoolingDetailedDays,Settings.CoolingSummaryDays,Settings.CoolingConfigurationId);
         _ = SaveAsync();
     }
-    public string MetricId(string kind)=>kind switch {"cpu"=>"cpu/usage","cputemp"=>"cpu/temperature","gpu"=>(SelectedGpuId??"unavailable")+"/usage","gputemp"=>(SelectedGpuId??"unavailable")+"/temperature","gpufan"=>(SelectedGpuId??"unavailable")+"/fan","memory"=>"memory/usage",_=>"network/download"};
+    public string MetricId(string kind)=>kind switch {"cpu"=>"cpu/usage","cputemp"=>"cpu/temperature","cpupump"=>"cpu/pump","gpu"=>(SelectedGpuId??"unavailable")+"/usage","gputemp"=>(SelectedGpuId??"unavailable")+"/temperature","gpufan"=>(SelectedGpuId??"unavailable")+"/fan","memory"=>"memory/usage",_=>"network/download"};
     public async Task SaveAsync()
     {
         Settings.OpenWindows=layout.Remembered.ToList();

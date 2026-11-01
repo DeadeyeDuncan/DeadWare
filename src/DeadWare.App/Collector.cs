@@ -36,6 +36,29 @@ public sealed class GpuFanSpeed
     }
 }
 
+/// <summary>Reads the CPU cooler's pump (or CPU Fan header) RPM and keeps its source through outages.</summary>
+public sealed class CpuPumpSpeed
+{
+    private string? source;
+    /// <summary>Board and AIO headers are machine-wide, so they describe the CPU cooler only on single-socket hosts.</summary>
+    public static SensorReading? Select(IEnumerable<SensorReading> sensors)
+    {
+        var fans=sensors.Where(s=>s.SensorType=="Fan"&&s.Unit=="RPM"&&s.HardwareType is "SuperIO" or "Cooler" or "EmbeddedController")
+            .OrderBy(s=>s.Id,StringComparer.Ordinal).ToArray();
+        // Unlabeled headers such as "Fan #2" cannot be attributed to the CPU cooler.
+        return fans.FirstOrDefault(s=>s.Name.Contains("Pump",StringComparison.OrdinalIgnoreCase))
+            ??fans.FirstOrDefault(s=>s.Name.Equals("CPU Fan",StringComparison.OrdinalIgnoreCase));
+    }
+    public double? Read(IReadOnlyList<SensorReading> sensors,int cpuCount)
+    {
+        if(cpuCount!=1)return null;
+        source??=Select(sensors)?.Id;
+        if(source is null)return null;
+        double? value=sensors.FirstOrDefault(s=>s.Id==source)?.Value;
+        return value is >=0&&double.IsFinite(value.Value)?value:null;
+    }
+}
+
 /// <summary>One serial background loop owns all hardware updates; windows only read immutable publications.</summary>
 public sealed class Collector : IAsyncDisposable
 {
@@ -51,6 +74,7 @@ public sealed class Collector : IAsyncDisposable
     private readonly Stopwatch clock=Stopwatch.StartNew();
     private readonly WindowsCounters windows=new();
     private readonly GpuFanSpeed gpuFanSpeed=new();
+    private readonly CpuPumpSpeed cpuPumpSpeed=new();
     private readonly EtwNetwork etw;
     private bool lowLevelAvailable;
     private Task? worker;
@@ -125,6 +149,7 @@ public sealed class Collector : IAsyncDisposable
                     if(timings is not null)timings["windows/cpu"]=Stopwatch.GetElapsedTime(providerStarted).TotalMilliseconds;
                     values["cpu/usage"]=cpuLoad??fallbackCpu;
                     values["cpu/temperature"]=cpuTemp;
+                    values["cpu/pump"]=cpuPumpSpeed.Read(sensors,sensors.Where(s=>s.HardwareType=="Cpu"&&s.HardwareId.Length>0).Select(s=>s.HardwareId).Distinct(StringComparer.Ordinal).Count());
                     providerStarted=Stopwatch.GetTimestamp();var memory=windows.Memory();values["memory/used"]=memory.Used;values["memory/total"]=memory.Total;
                     values["memory/usage"]=MemoryUsage.Percentage(memory.Used,memory.Total);
                     if(timings is not null)timings["windows/memory"]=Stopwatch.GetElapsedTime(providerStarted).TotalMilliseconds;

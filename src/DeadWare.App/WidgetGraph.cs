@@ -11,6 +11,8 @@ internal sealed class WidgetGraph : Border
     private readonly TextBlock title=Ui.Text("",12,"Heading",font:"HeadingFont"),primary=Ui.Text("",11,font:"MetricFont"),secondary=Ui.Text("",11,font:"MetricFont");
     private readonly TextBlock fan=Ui.Text("",11,Theme.GraphKey("gpufan"),font:"MetricFont");
     private readonly StackPanel fanLegend;
+    private readonly TextBlock pump=Ui.Text("",11,Theme.GraphKey("cpupump"),font:"MetricFont");
+    private readonly StackPanel pumpLegend;
     private readonly HistoryChart chart;
     private readonly List<(Line Line,string Color,bool Dashed,bool Dotted)> legendLines=[];
     public WidgetGraph(UiSession session,string kind)
@@ -19,14 +21,16 @@ internal sealed class WidgetGraph : Border
         CornerRadius=new(8);BorderThickness=new(1);Padding=new(8,5,8,4);Margin=new(0,5,0,0);
         SetResourceReference(BackgroundProperty,"GlassPanel");SetResourceReference(BorderBrushProperty,"GlassBorder");
         bool network=kind=="network",memory=kind=="memory";
-        chart=new(session,kind,true){CompareDevices=kind is "cpu" or "cputemp",ClipToBounds=true};
+        chart=new(session,kind,true){CompareDevices=kind is "cpu" or "cputemp",PumpWithDevices=true,ClipToBounds=true};
         var grid=new Grid();grid.RowDefinitions.Add(new(){Height=GridLength.Auto});grid.RowDefinitions.Add(new(){Height=GridLength.Auto});grid.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});
         title.TextWrapping=TextWrapping.NoWrap;title.TextTrimming=TextTrimming.CharacterEllipsis;
         string firstColor=Theme.GraphKey(kind),secondColor=Theme.GraphKey(network?"upload":kind=="cputemp"?"gputemp":"gpu");
         primary.SetResourceReference(TextBlock.ForegroundProperty,firstColor);secondary.SetResourceReference(TextBlock.ForegroundProperty,secondColor);
         var legend=memory?Ui.Row(Legend(primary,firstColor,false)):Ui.Row(Legend(primary,firstColor,false),Legend(secondary,secondColor,true));
         var header=new DockPanel();DockPanel.SetDock(legend,Dock.Right);header.Children.Add(legend);header.Children.Add(title);grid.Children.Add(header);
-        fanLegend=Legend(fan,Theme.GraphKey("gpufan"),false,true);fanLegend.Visibility=Visibility.Collapsed;fanLegend.Margin=new(0,3,0,0);Grid.SetRow(fanLegend,1);grid.Children.Add(fanLegend);
+        fanLegend=Legend(fan,Theme.GraphKey("gpufan"),false,true);fanLegend.Visibility=Visibility.Collapsed;
+        pumpLegend=Legend(pump,Theme.GraphKey("cpupump"),false,true);pumpLegend.Visibility=Visibility.Collapsed;
+        var rpmLegend=Ui.Row(fanLegend,pumpLegend);rpmLegend.Margin=new(0,3,0,0);Grid.SetRow(rpmLegend,1);grid.Children.Add(rpmLegend);
         Grid.SetRow(chart,2);grid.Children.Add(chart);Child=grid;
     }
     private StackPanel Legend(TextBlock value,string color,bool dashed,bool dotted=false)
@@ -50,6 +54,13 @@ internal sealed class WidgetGraph : Border
         {
             fan.Text=Ui.GpuFanText(session)+" · left RPM";
             fanLegend.ToolTip=$"Selected GPU's first reported fan · {GraphStroke.Pattern(session.Settings,"gpufan",dotted:true)} trace · separate left RPM scale";
+        }
+        bool showPump=kind=="cputemp"&&session.Settings.ShowCpuPumpSpeed;
+        pumpLegend.Visibility=showPump?Visibility.Visible:Visibility.Collapsed;
+        if(showPump)
+        {
+            pump.Text=Ui.CpuPumpText(session)+" · left RPM";
+            pumpLegend.ToolTip=$"CPU cooler pump, or the CPU Fan header · {GraphStroke.Pattern(session.Settings,"cpupump",dotted:true)} trace · "+(showFan?"shares the left RPM scale with the GPU fan":"separate left RPM scale");
         }
         double? Value(string metric)=>session.Stale?null:session.Value(session.MetricId(metric));
         if(kind=="network")

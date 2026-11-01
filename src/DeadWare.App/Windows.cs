@@ -30,6 +30,7 @@ public sealed class MainWindow : Window
     private readonly CheckBox widgetAlwaysOnTop=new() {Content="Widget always on top",Margin=new Thickness(0,0,0,12)};
     private readonly CheckBox joinedPopouts=new() {Content="Join CPU and GPU graphs in pop-outs",Margin=new Thickness(0,0,0,8)};
     private readonly CheckBox gpuFanSpeed=new() {Content="Show GPU fan speed on temperature graphs",Margin=new Thickness(0,0,0,8)};
+    private readonly CheckBox cpuPumpSpeed=new() {Content="Show CPU pump speed on CPU temperature graphs",Margin=new Thickness(0,0,0,8)};
     private readonly ComboBox glass=new() {MinWidth=160};
     private readonly CheckBox graphSmoothing=new() {Content="Smooth long-range graphs (1, 3 and 6 hours)",Margin=new Thickness(0,0,0,8)};
     private readonly CheckBox startup=new() {Content="Start with Windows (administrator)",Margin=new Thickness(0,22,0,8)};
@@ -112,6 +113,11 @@ public sealed class MainWindow : Window
         gpuFanSpeed.Checked+=(_,_)=>{if(!syncingWidgetGraphs)session.SetGpuFanSpeed(true);};
         gpuFanSpeed.Unchecked+=(_,_)=>{if(!syncingWidgetGraphs)session.SetGpuFanSpeed(false);};stack.Children.Add(gpuFanSpeed);
         var fanHelp=Ui.Text("Adds the selected GPU's first reported fan on its own left RPM scale, dotted and amber by default. Use the GPU fan color button on the overview's GPU temperature card to change its appearance across the overview, temperature pop-outs and widget. Unsupported fan readings stay unavailable; 0 RPM means stopped.",12,"Muted");fanHelp.Margin=new(0,0,0,20);stack.Children.Add(fanHelp);
+        cpuPumpSpeed.IsChecked=session.Settings.ShowCpuPumpSpeed;
+        System.Windows.Automation.AutomationProperties.SetName(cpuPumpSpeed,"Show CPU pump speed on CPU temperature graphs");
+        cpuPumpSpeed.Checked+=(_,_)=>{if(!syncingWidgetGraphs)session.SetCpuPumpSpeed(true);};
+        cpuPumpSpeed.Unchecked+=(_,_)=>{if(!syncingWidgetGraphs)session.SetCpuPumpSpeed(false);};stack.Children.Add(cpuPumpSpeed);
+        var pumpHelp=Ui.Text("Adds the CPU cooler's pump speed on its own left RPM scale, dotted and blue by default, to the CPU temperature card, CPU temperature pop-out and the widget's temperature graph. DeadWare uses a motherboard or AIO header labeled as a pump, otherwise the CPU Fan header; this needs Extended sensors and a single CPU. Use the CPU pump color button on the overview's CPU temperature card to change its appearance.",12,"Muted");pumpHelp.Margin=new(0,0,0,20);stack.Children.Add(pumpHelp);
         var widgetLabel=Ui.Text("Widget graphs",14);widgetLabel.Margin=new(0,0,0,8);stack.Children.Add(widgetLabel);
         var widgetOptions=new WrapPanel {Margin=new Thickness(0,0,0,6)};
         var selectedGraphs=WidgetGraphSelection.Normalize(session.Settings.WidgetGraphs);
@@ -216,6 +222,7 @@ public sealed class MainWindow : Window
             widgetAlwaysOnTop.IsChecked=session.Settings.WidgetAlwaysOnTop;
             joinedPopouts.IsChecked=session.Settings.JoinCpuGpuPopouts;
             gpuFanSpeed.IsChecked=session.Settings.ShowGpuFanSpeed;
+            cpuPumpSpeed.IsChecked=session.Settings.ShowCpuPumpSpeed;
             graphSmoothing.IsChecked=session.Settings.GraphSmoothing;
             glass.SelectedItem=session.Settings.GlassLevel;
         }

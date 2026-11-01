@@ -14,8 +14,8 @@ public static class ThermalProjection
         var groups = reading.Sensors.Where(s => s.HardwareId.Length > 0 &&
             s.HardwareType is "Cpu" or "GpuAmd" or "GpuNvidia" or "GpuIntel")
             .GroupBy(s => (s.HardwareId, s.HardwareType, s.Hardware)).Take(16).ToArray();
-        // Board and AIO headers are machine-wide, so they describe the CPU cooler only on single-socket hosts.
-        var cooler = groups.Count(g => g.Key.HardwareType == "Cpu") == 1 ? CpuCooler(reading.Sensors) : null;
+        // CpuPumpSpeed.Select reads machine-wide headers, so only single-socket hosts attribute them to the CPU.
+        var cooler = groups.Count(g => g.Key.HardwareType == "Cpu") == 1 ? CpuPumpSpeed.Select(reading.Sensors) : null;
         foreach (var group in groups)
         {
             bool cpu = group.Key.HardwareType == "Cpu";
@@ -58,14 +58,5 @@ public static class ThermalProjection
                 { PollingIntervalSeconds = reading.Sample.PollingIntervalSeconds });
         }
         return result;
-    }
-
-    private static SensorReading? CpuCooler(IEnumerable<SensorReading> sensors)
-    {
-        var fans = sensors.Where(s => s.SensorType == "Fan" && s.HardwareType is "SuperIO" or "Cooler" or "EmbeddedController")
-            .OrderBy(s => s.Id, StringComparer.Ordinal).ToArray();
-        // Unlabeled headers such as "Fan #2" cannot be attributed to the CPU cooler.
-        return fans.FirstOrDefault(s => s.Name.Contains("Pump", StringComparison.OrdinalIgnoreCase))
-            ?? fans.FirstOrDefault(s => s.Name.Equals("CPU Fan", StringComparison.OrdinalIgnoreCase));
     }
 }
