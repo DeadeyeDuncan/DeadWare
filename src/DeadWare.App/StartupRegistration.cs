@@ -5,11 +5,12 @@ using System.Runtime.InteropServices;
 using System.Security.Principal;
 using System.Text.Json;
 using DeadWare.Core;
+using DeadWare.UpdateCore;
 namespace DeadWare.App;
 
-internal sealed record StartupRegistrationStatus(string TaskName,bool Registered,bool Owned,bool Enabled,bool NeedsRepair,string? Executable,string Message,string? Error=null,string? TaskXml=null)
+internal sealed record StartupRegistrationStatus(string TaskName,bool Registered,bool Owned,bool Enabled,bool NeedsRepair,string? Executable,string Message,string? Error=null,string? TaskXml=null,bool Unprotected=false)
 {
-    public bool Ready=>Registered&&Owned&&Enabled&&!NeedsRepair&&Error is null;
+    public bool Ready=>Registered&&Owned&&Enabled&&!NeedsRepair&&!Unprotected&&Error is null;
 }
 internal sealed record StartupConfigurationResult(bool Succeeded,bool Cancelled,int HelperExitCode,string Message,StartupRegistrationStatus Registration);
 
@@ -38,19 +39,27 @@ internal static class StartupRegistration
         {
             service=Connect();folder=((dynamic)service).GetFolder("\\");task=GetTask(folder,name);
             if(task is null)return new(name,false,false,false,false,null,"Off — DeadWare will not start at sign-in.");
-            string xml=((dynamic)task).Xml;bool owned=StartupTaskPolicy.IsOwned(xml,sid),enabled=((dynamic)task).Enabled;
-            string? executable=StartupTaskPolicy.Executable(xml);bool repair=owned&&!StartupTaskPolicy.IsCurrent(xml,sid,Executable,ResolveUserSid);
-            string message=!owned?"A task with this name belongs to something else. DeadWare will not change it.":repair?"Startup needs repair: its executable location or task settings differ. Choose Repair startup to use this copy of DeadWare.":enabled?"On — starts as administrator when you sign in.":"Off — the registered startup task is disabled.";
-            return new(name,true,owned,enabled,repair,executable,message,TaskXml:xml);
+            string xml=((dynamic)task).Xml;bool enabled=((dynamic)task).Enabled;
+            return Describe(name,xml,enabled,sid,Executable,ResolveUserSid,IsProtectedExecutable);
         }
         catch(Exception e) {return new(name,false,false,false,false,null,"Startup status could not be read.",e.Message);}
         finally {Release(task);Release(folder);Release(service);}
     }
+    // An owned task is audited where it actually runs; an unprotected location is reported, never deleted or disabled here.
+    internal static StartupRegistrationStatus Describe(string name,string xml,bool enabled,string sid,string current,Func<string,string?>? resolveUserSid,Func<string,bool> isProtected)
+    {
+        bool owned=StartupTaskPolicy.IsOwned(xml,sid);string? executable=StartupTaskPolicy.Executable(xml);
+        bool repair=owned&&!StartupTaskPolicy.IsCurrent(xml,sid,current,resolveUserSid),unprotected=owned&&executable is not null&&!isProtected(executable);
+        string message=!owned?"A task with this name belongs to something else. DeadWare will not change it.":unprotected?"Startup runs DeadWare as administrator from a folder other programs can change. Move DeadWare to a protected folder such as C:\\Program Files\\DeadWare and repair startup, or turn startup off.":repair?"Startup needs repair: its executable location or task settings differ. Choose Repair startup to use this copy of DeadWare.":enabled?"On — starts as administrator when you sign in.":"Off — the registered startup task is disabled.";
+        return new(name,true,owned,enabled,repair,executable,message,TaskXml:xml,Unprotected:unprotected);
+    }
+    internal static bool IsProtectedExecutable(string executable)=>Path.IsPathFullyQualified(executable)&&Path.GetDirectoryName(executable) is {Length:>0} directory&&InstallLocation.Check(directory).Protected;
     // Called only by the explicitly elevated helper (or an already elevated UI).
     private static int Apply(bool enable,string expectedSid)
     {
         try {StartupTaskPolicy.RequireSameUser(expectedSid,CurrentSid);}catch(InvalidOperationException) {return 2;}
         if(!IsAdministrator)return 5;
+        if(enable&&!IsProtectedExecutable(Executable))return 6;
         string name=StartupTaskPolicy.TaskName(expectedSid);object? service=null,folder=null,existing=null,registered=null;
         try
         {
@@ -86,16 +95,17 @@ internal static class StartupRegistration
         catch(Exception e) {code=e.HResult;}
         var status=await Task.Run(Query);
         bool succeeded=code==0&&status.Error is null&&(enable?status.Ready:!status.Registered);
-        string message=succeeded?(enable?"Startup enabled for this executable.":"Startup disabled."):code switch
-        {
-            1223=>"Administrator approval was cancelled. Startup was not changed.",
-            2=>"Windows used a different administrator account. Startup was not changed; use the original user's administrator account.",
-            3=>"The existing task is not owned by DeadWare for this user. It was not changed.",
-            5=>"Administrator approval is required to change startup.",
-            _=>"Windows could not confirm the startup change"+(code==0?".":$" (0x{code:X8}).")+" "+status.Message+(status.Error is null?"":" "+status.Error)
-        };
-        return new(succeeded,code==1223,code,message,status);
+        return new(succeeded,code==1223,code,ResultMessage(code,enable,succeeded,status),status);
     }
+    internal static string ResultMessage(int code,bool enable,bool succeeded,StartupRegistrationStatus status)=>succeeded?(enable?"Startup enabled for this executable.":"Startup disabled."):code switch
+    {
+        1223=>"Administrator approval was cancelled. Startup was not changed.",
+        2=>"Windows used a different administrator account. Startup was not changed; use the original user's administrator account.",
+        3=>"The existing task is not owned by DeadWare for this user. It was not changed.",
+        5=>"Administrator approval is required to change startup.",
+        6=>"DeadWare can start as administrator at sign-in only from a folder standard users can't change, such as C:\\Program Files\\DeadWare. Move the DeadWare folder there, then turn startup on.",
+        _=>"Windows could not confirm the startup change"+(code==0?".":$" (0x{code:X8}).")+" "+status.Message+(status.Error is null?"":" "+status.Error)
+    };
     public static async Task<int?> HandleCommandLineAsync(string[] args)
     {
         if(!args.Any(a=>a is "--startup-status" or "--startup-config" or "--startup-apply"))return null;
