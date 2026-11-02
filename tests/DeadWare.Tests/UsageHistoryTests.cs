@@ -196,8 +196,8 @@ public class UsageHistoryTests
             new ProcessTraffic(10, 1, "chrome.exe", null, null, 5300, 1100),
             new ProcessTraffic(11, 1, "Chrome.exe", null, null, 900, 50),
             new ProcessTraffic(12, 1, "steam.exe", null, null, 4000, 10)], true, GpuId));
-        var batch = folder.Observe(Sample(60), [], true, GpuId);
-        Assert.NotNull(batch);
+        // Continuous publications to the minute boundary: skipping ahead would be a sample gap.
+        var batch = Assert.Single(Run(folder, 3, 61));
         Assert.False(batch.CaptureGap);
         var chrome = Assert.Single(batch.Applications, app => app.Name == "chrome.exe");
         Assert.Equal((1200L, 150L), (chrome.Received, chrome.Sent));
@@ -217,7 +217,8 @@ public class UsageHistoryTests
         // Counter moved backwards for the same process: the ledger reset, so only the new value counts.
         Assert.Null(folder.Observe(Sample(2), [new ProcessTraffic(10, 2, "app.exe", null, null, 15, 0)], true, GpuId));
         Assert.Null(folder.Observe(Sample(3), [new ProcessTraffic(10, 2, "app.exe", null, null, 25, 0)], true, GpuId));
-        var batch = folder.Observe(Sample(60), [], true, GpuId)!;
+        var batch = Assert.Single(Run(folder, 4, 61));
+        Assert.False(batch.CaptureGap);
         var app = Assert.Single(batch.Applications);
         Assert.Equal(40 + 15 + 10, app.Received);
     }
@@ -233,7 +234,7 @@ public class UsageHistoryTests
         var folder = new UsageMinuteFolder();
         Assert.Null(folder.Observe(Sample(0), [], true, GpuId));
         Assert.Null(folder.Observe(Sample(1), [new ProcessTraffic(1, 1, "   ", null, null, 10, 0), new ProcessTraffic(2, 1, new string('y', 300), null, null, 5, 5)], true, GpuId));
-        var batch = folder.Observe(Sample(60), [], true, GpuId)!;
+        var batch = Assert.Single(Run(folder, 2, 61));
         Assert.Contains(batch.Applications, app => app.Name == UsageMetrics.UnknownName && app.Received == 10);
         Assert.Contains(batch.Applications, app => app.Name.Length == UsageMetrics.MaximumNameLength && app.Sent == 5);
     }
