@@ -4,6 +4,7 @@ using DeadWare.App;
 using DeadWare.Core;
 using Xunit;
 namespace DeadWare.App.Tests;
+[Collection(TestHostThreadPool.TimingCollection)]
 public class ConnectionCaptureTests
 {
     private static readonly DateTimeOffset Time=new(2026,10,29,12,0,0,TimeSpan.Zero);

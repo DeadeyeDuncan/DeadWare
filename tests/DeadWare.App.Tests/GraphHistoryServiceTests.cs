@@ -7,6 +7,7 @@ using Xunit;
 
 namespace DeadWare.App.Tests;
 
+[Collection(TestHostThreadPool.TimingCollection)]
 public class GraphHistoryServiceTests
 {
     [Fact]

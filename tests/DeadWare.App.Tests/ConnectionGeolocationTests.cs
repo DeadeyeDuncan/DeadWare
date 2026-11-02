@@ -5,6 +5,7 @@ using Xunit;
 
 namespace DeadWare.App.Tests;
 
+[Collection(TestHostThreadPool.TimingCollection)]
 public sealed class ConnectionGeolocationTests
 {
     [Fact]
