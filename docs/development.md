@@ -32,7 +32,7 @@ Build/test with the .NET 10 SDK, then package with `pwsh -File scripts/publish.p
 
 Version 0.6.33's glass-panel refresh uses the existing WPF application. `scripts/publish.ps1` continues to publish `src/DeadWare.App/DeadWare.App.csproj`; no Raven runtime, Vulkan requirement or framework migration is part of this release. The final visual scope is recorded in [the glass refresh notes](previews/2026-10-30-raven-overview.md).
 
-Source pushes preserve development progress; they do not themselves create a user-facing update. A normal version tag such as `v0.6.0` publishes the matching release and makes it visible to installed updaters. Include the helper and generated package manifest whenever distributing a build.
+Source pushes preserve development progress; they do not themselves create a user-facing update. A normal version tag such as `v0.6.0` publishes the matching release and makes it visible to installed updaters. When a tag cannot be pushed from the current machine, run the **Release** workflow manually from the Actions tab on the commit to publish and give it the tag; the workflow creates the tag on that commit and then publishes as usual. Include the helper and generated package manifest whenever distributing a build.
 
 Release notes describe what changed in that version. Omit repeated installation steps and generic assurances that settings, histories and saved windows are preserved; installation and upgrade guidance belongs in README. The release workflow publishes `docs/releases/<tag>.md` verbatim, and the app displays the published GitHub text.
 
