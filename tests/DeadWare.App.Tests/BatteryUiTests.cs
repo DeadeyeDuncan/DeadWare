@@ -66,6 +66,8 @@ public class BatteryUiTests
                 NetworkChartUiChecks.Run();
                 LiveRenderingUiChecks.Run();
                 RuneTraceUiChecks.Run();
+                Phase("usage history");
+                UsageHistoryUiChecks.Run(app);
                 Phase("battery history");
                 var assembly = typeof(Collector).Assembly;
                 var pageType = assembly.GetType("DeadWare.App.BatteryHistoryPage"); Assert.NotNull(pageType);
@@ -234,6 +236,7 @@ public class BatteryUiTests
                 VerifyGpuFanSpeed(session, collector, assembly, settings, pollingSettingsPath);
                 VerifyCpuPumpSpeed(session, collector, assembly, settings, pollingSettingsPath);
                 VerifyGraphSmoothing(session, settings, pollingSettingsPath);
+                VerifyUsageRecording(session, settings, pollingSettingsPath);
                 VerifyRangeDropdown(session, dashboard, assembly, pollingSettingsPath);
                 VerifyThemeMenu(session, sidebar, pollingSettingsPath);
                 foreach (double seconds in new double[] { 10, .5, 1 })
@@ -533,6 +536,23 @@ public class BatteryUiTests
         finally {session.Changed-=Changed;session.SetGraphSmoothing(true);CompleteSettingsSave(session);}
     }
 
+    private static void VerifyUsageRecording(UiSession session,StackPanel settings,string settingsPath)
+    {
+        var toggle=Assert.Single(settings.Children.OfType<CheckBox>(),choice=>choice.Content?.ToString()=="Record usage history on this device");
+        Assert.Equal("Record usage history",System.Windows.Automation.AutomationProperties.GetName(toggle));
+        Assert.True(toggle.IsChecked);int notifications=0;void Changed()=>notifications++;
+        session.Changed+=Changed;
+        try
+        {
+            toggle.IsChecked=false;Assert.False(session.Settings.UsageRecording);Assert.Equal(1,notifications);
+            Assert.Contains("paused",session.Usage.Status,StringComparison.OrdinalIgnoreCase);
+            CompleteSettingsSave(session);Assert.False(SettingsCodec.Read(File.ReadAllText(settingsPath)).Settings.UsageRecording);
+            session.SetUsageRecording(true);Assert.True(toggle.IsChecked);Assert.Equal(2,notifications);
+            CompleteSettingsSave(session);Assert.True(SettingsCodec.Read(File.ReadAllText(settingsPath)).Settings.UsageRecording);
+            Assert.Contains(settings.Children.OfType<Button>(),button=>button.Content?.ToString()=="Open Usage history");
+        }
+        finally {session.Changed-=Changed;session.SetUsageRecording(true);CompleteSettingsSave(session);}
+    }
     private static void VerifyGpuFanSpeed(UiSession session, Collector collector, Assembly assembly, StackPanel settings, string settingsPath)
     {
         var toggle = Assert.Single(settings.Children.OfType<CheckBox>(), choice => choice.Content?.ToString() == "Show GPU fan speed on temperature graphs");

@@ -19,6 +19,8 @@ public class StartupLayoutTests
         Assert.False(SettingsCodec.Read(SettingsCodec.Write(settings)).Settings.UsageRecording);
         Assert.True(new UserSettings().UsageRecording);
         Assert.True(SettingsCodec.Read("""{"BatteryRecording":false}""").Settings.UsageRecording);
+        Assert.Contains("usagehistory",SettingsCodec.Read("""{"OpenWindows":["usagehistory","bogus"]}""").Settings.OpenWindows);
+        Assert.True(DetachedWindowState.IsAllowed("usagehistory"));
     }
     [Fact] public void OldPlacementHistoryDoesNotReopenClosedWindows()
     {

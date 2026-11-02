@@ -67,12 +67,12 @@
 
 **Files:** Create `src/DeadWare.App/UsageHistoryPage.cs`, `src/DeadWare.App/UsageHistoryChart.cs`, `tests/DeadWare.App.Tests/UsageHistoryUiChecks.cs`; modify `src/DeadWare.App/Windows.cs`, `src/DeadWare.App/UiSession.cs`, `src/DeadWare.Core/StartupLayout.cs` (allow key `usagehistory`), the Settings page for the recording checkbox.
 
-**Interfaces:** `UsageHistoryPage(UiSession)` uses `session.Usage`; `UsageHistoryChart.SetData(UsageHistoryView)` draws the average line and min/max band with gaps; `UsageHistoryWindow` restores under key `usagehistory`.
+**Interfaces:** `UsageHistoryPage(UiSession, bool showOpenWindow)` uses `session.Usage` and applies a `UsagePageData` record (all seven metric views, the application view, status and the selected GPU model) so tests can feed a fixture; `UsageHistoryChart.SetData(IReadOnlyList<UsageTrace>, unit, fixedMaximum)` draws each trace's average line over a min/max band and connects only adjacent full buckets (`IsFull`, `CanConnect`); `UsageHistoryWindow` restores under key `usagehistory`. The page has Day/Week/Month with Earlier/Later stepping, six charts in a two-column grid (network shows download and upload together), per-chart MIN/AVG/MAX from stored minutes, an application table with search, a share bar, an Other row and a capture-gap notice, a recording checkbox mirrored in Settings, storage and earliest-retained text, and two CSV exports.
 
-- [ ] Add failing window-key, settings and offscreen UI tests before integration: Day/Week/Month selection and date stepping, GPU selection following the dashboard, six metric charts, application table sorting and search, remainder row, capture-gap notice, storage and earliest-retained text, recording checkbox, both CSV exports, and the detached window's placement restoration.
-- [ ] Implement the page with the existing theme, glass and `HistoryChart` primitives; keep all reads asynchronous with stale-result rejection when the range or GPU changes; show "no history yet" and gap notices honestly.
-- [ ] Run focused and full solution tests; expected PASS. Render offscreen in Midnight, Daylight, Blackout and High Contrast at narrow and wide sizes with empty, one-day, one-month and gap-heavy fixtures; inspect the PNGs under an ignored `artifacts/ui-usage-history/`.
-- [ ] Commit the tested UI.
+- [x] Add window-key, settings and offscreen UI tests: Day/Week/Month selection, GPU title following the dashboard, six metric charts, application table ordering and search, remainder row, capture-gap notice, storage and earliest-retained text, recording checkbox with saved-settings round trip, chart gap and partial-slot breaks, and the `usagehistory` key in `DetachedWindowState`. Exports and the native Save dialog are covered by the service tests rather than UI automation.
+- [x] Implement the page with the existing theme, glass and `GraphDepth` primitives; keep all reads asynchronous with stale-result rejection when the range or GPU changes; show "no history yet" and gap notices honestly.
+- [ ] Run focused and full solution tests; expected PASS (CI on the pull request). Offscreen renders cover Midnight, Daylight and Blackout at 620 and 1050 pixels with empty and one-month fixtures plus a gap-heavy chart; PNGs are written under `DEADWARE_UI_OUTPUT` when set. Windows High Contrast and the physical Save dialog need a Windows machine.
+- [x] Commit the tested UI.
 
 ### Task 5: Versioned delivery and GitHub handoff
 

@@ -315,7 +315,7 @@ public sealed class UiSession
     {
         if(layout.Ending||!DetachedWindowState.IsAllowed(kind))return;
         if(detached.TryGetValue(kind,out var existing)) {existing.WindowState=WindowState.Normal;existing.Activate();return;}
-        var window=kind=="batteryhistory"?(Window)new BatteryHistoryWindow(this):kind=="widget"?new WidgetWindow(this):new GraphWindow(this,kind);
+        var window=kind=="batteryhistory"?(Window)new BatteryHistoryWindow(this):kind=="usagehistory"?(Window)new UsageHistoryWindow(this):kind=="widget"?new WidgetWindow(this):new GraphWindow(this,kind);
         detached[kind]=window;
         window.Closed+=(_,_)=>{detached.Remove(kind);layout.Close(kind);diagnostics?.Record("window_closed",new {Kind=kind,layout.Ending,OpenWindows=layout.Remembered});QueueSave();};
         window.Show();layout.Open(kind);diagnostics?.Record("window_opened",new {Kind=kind,OpenWindows=layout.Remembered});QueueSave();
