@@ -315,6 +315,8 @@ public sealed class UserSettings
     public double PollingIntervalSeconds {get;set;}=1;
     public bool BatteryRecording {get;set;}=true;
     public bool UsageRecording {get;set;}=true;
+    public List<AlertRule> Alerts {get;set;}=new();
+    public bool AlertNotifications {get;set;}=true;
     public bool RestoreOpenWindows {get;set;}=true;
     public bool StartInTray {get;set;}
     public bool CoolingRecording {get;set;}=true;
@@ -363,6 +365,7 @@ public static class SettingsCodec
             if(s.CoolingSummaryDays is not (30 or 90))s.CoolingSummaryDays=90;
             if(!Guid.TryParse(s.CoolingConfigurationId,out _))s.CoolingConfigurationId=Guid.NewGuid().ToString("N");
             s.OpenWindows=DetachedWindowState.Normalize(s.OpenWindows);
+            s.Alerts=AlertRules.Normalize(s.Alerts);
             s.Windows=s.Windows.Where(p=>p.Value is not null).Take(16).ToDictionary(p=>p.Key,p=>p.Value);
             bool legacyPlacement=!document.RootElement.TryGetProperty(nameof(UserSettings.WindowPlacementFormat),out _)||s.WindowPlacementFormat!=WindowCoordinates.Format;
             bool resetPlacement=legacyPlacement&&s.Windows.Count>0;
