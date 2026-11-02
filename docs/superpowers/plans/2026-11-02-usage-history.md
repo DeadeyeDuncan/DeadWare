@@ -43,13 +43,13 @@
 
 **Files:** Create `src/DeadWare.Core/UsageHistoryStore.cs`, `tests/DeadWare.Tests/UsageHistoryStoreTests.cs`.
 
-**Interfaces:** `UsageHistoryStore(string path, long maximumDatabaseBytes = 256 MiB)` with `Initialize`, `Append(string machine, IReadOnlyList<UsageMetricMinute>, IReadOnlyList<UsageApplicationMinute>, DateTimeOffset now)`, `ReadMetric(machine, metric, hardwareId, from, to, maxPoints)` returning `UsageHistoryView` of `UsageHistoryBucket(Start, End, Average, Minimum, Maximum, Minutes, CompleteMinutes)`, `ReadApplications(machine, from, to, maxNames)` returning totals plus an `Other` remainder and capture-gap minute count, `EarliestRetained(machine)`, `StorageBytes`, `ExportMetricsCsv` and `ExportApplicationsCsv`.
+**Interfaces:** `UsageHistoryStore(string path, long maximumDatabaseBytes = 256 MiB)` with `Initialize`, `Append(string machine, IReadOnlyList<UsageMinuteBatch> batches, DateTimeOffset now)`, `ReadMetric(machine, metric, hardwareId, from, to, maxPoints)` returning `UsageHistoryView` of aligned `UsageHistoryBucket(Start, End, Average, Minimum, Maximum, Minutes, CompleteMinutes, Samples)` plus sample-weighted `Statistics`, `ReadApplications(machine, from, to, maxNames)` returning `UsageApplicationView` with per-name totals, the `Other` remainder, capture-gap and recorded minute counts, `EarliestRetained(machine)`, `StorageBytes`, `ExportMetricsCsv` (minute rows) and `ExportApplicationsCsv` (per-name totals). A minute already stored from a different segment merges (weighted average, min/max, summed bytes) and is marked incomplete; the same segment repeated is ignored, so a retried batch cannot double count. Capture gaps live in their own `capture_gaps` table.
 
-- [ ] Write tests for initialize/close/reopen, newer `user_version` refusal, machine partitioning, 400-day retention, whole-day eviction at a small test cap that keeps today and leaves no partial oldest day, bucketed Day/Week/Month reads with gap preservation and bounded point counts, application totals ordering, the 200-name remainder, capture-gap counts, and CSV content with formula neutralization.
-- [ ] Run focused tests; expected missing-feature FAIL.
-- [ ] Implement two tables, `metric_minutes` and `application_minutes`, each unique on machine, key and minute, with `PRAGMA user_version=1`, WAL, the bounded journal and the same open/size-check pattern as `GraphHistoryStore`. Bucket in SQL by integer division of the minute; stream CSV rows.
-- [ ] Run focused tests; expected PASS. Measure a synthetic 13-month fixture's file size and Month query time and record them in the validation notes.
-- [ ] Commit the tested persistence layer and push the branch.
+- [x] Write tests for initialize/close/reopen, newer `user_version` refusal, machine partitioning, 400-day retention, whole-day eviction at a small test cap that keeps today and leaves no partial oldest day, bucketed Day/Week/Month reads with gap preservation and bounded point counts, application totals ordering, the 200-name remainder, capture-gap counts, and CSV content with formula neutralization.
+- [x] Run focused tests; expected missing-feature FAIL. (First execution is the pull request's Windows CI; see Task 1.)
+- [x] Implement `metric_minutes`, `application_minutes` and `capture_gaps`, each keyed on machine, key and minute, with `PRAGMA user_version=1`, WAL, the bounded journal and the same open/size-check pattern as `GraphHistoryStore`. Bucket in SQL by integer division of the minute; stream CSV rows. On `SQLITE_FULL`, evict the oldest whole day across all tables and retry, never the day being recorded.
+- [ ] Run focused tests; expected PASS (CI on the pull request). Measure a synthetic 13-month fixture's file size and Month query time and record them in the validation notes (needs a Windows machine with the SDK).
+- [x] Commit the tested persistence layer and push the branch.
 
 ### Task 3: Background service and lifecycle integration
 
