@@ -31,6 +31,8 @@ public sealed class UsageHistoryService
     public long DroppedSamples => Interlocked.Read(ref dropped);
     public int PendingSamples => queue.Reader.Count;
     public bool Failed => Volatile.Read(ref failed);
+    /// <summary>Raised on the history worker for every minute the folder closes, in order. Handlers must be quick and must not throw.</summary>
+    public event Action<UsageMinuteBatch>? MinuteClosed;
     public string Status => (Volatile.Read(ref failed) ? Volatile.Read(ref status) : Volatile.Read(ref recording) == 0
         ? "Usage recording paused. Saved history is retained." : Volatile.Read(ref status)) +
         (DroppedSamples > 0 ? $" · {DroppedSamples} publications dropped; history contains gaps." : "");
@@ -90,6 +92,12 @@ public sealed class UsageHistoryService
                 store.Append(machine, pending, time.GetUtcNow()); pending.Clear();
                 Volatile.Write(ref status, SavedStatus);
             }
+            void Closed(UsageMinuteBatch batch)
+            {
+                pending.Add(batch);
+                // A listener's failure must not turn a saved minute into a history failure.
+                try { MinuteClosed?.Invoke(batch); } catch { }
+            }
             void Process(Pending item)
             {
                 var reading = item.Reading;
@@ -101,7 +109,7 @@ public sealed class UsageHistoryService
                 }
                 previousGeneration = item.Generation; previousDrops = item.Drops;
                 bool captureAvailable = reading.Connections?.Available ?? reading.Processes.Count > 0;
-                if (folder.Observe(reading.Sample, reading.Processes, captureAvailable, Gpus(reading)) is { } batch) pending.Add(batch);
+                if (folder.Observe(reading.Sample, reading.Processes, captureAvailable, Gpus(reading)) is { } batch) Closed(batch);
                 if (pending.Count >= 30) Flush();
             }
             using var timer = new PeriodicTimer(interval, time);
@@ -121,7 +129,7 @@ public sealed class UsageHistoryService
                     available = queue.Reader.WaitToReadAsync().AsTask();
                 }
             }
-            if (folder.Flush() is { } last) pending.Add(last);
+            if (folder.Flush() is { } last) Closed(last);
             Flush();
         }
         catch (Exception error)
@@ -143,6 +151,19 @@ public sealed class UsageHistoryService
             return new(from, to, 60_000, [], new(null, null, null), 0, null, 0);
         }
     }
+    public async Task<IReadOnlyList<UsageApplicationMinute>> ReadApplicationMinutesAsync(string name, DateTimeOffset from, DateTimeOffset to)
+    {
+        try
+        {
+            await InitializeAsync().ConfigureAwait(false);
+            return await Task.Run(() => store.ReadApplicationMinutes(machine, name, from, to)).ConfigureAwait(false);
+        }
+        catch (Exception error) when (error is not ArgumentException)
+        {
+            Fail(error);
+            return [];
+        }
+    }
     public async Task<UsageApplicationView> ReadApplicationsAsync(DateTimeOffset from, DateTimeOffset to, int maxNames = UsageHistoryStore.MaximumApplications)
     {
         try
@@ -155,6 +176,11 @@ public sealed class UsageHistoryService
             Fail(error);
             return new(from, to, [], 0, 0, 0, 0, 0, null, 0);
         }
+    }
+    public async Task<(long AtOrAbove, long Total)> ShareAtOrAboveAsync(string metric, string? hardwareId, DateTimeOffset from, DateTimeOffset to, double threshold)
+    {
+        await InitializeAsync().ConfigureAwait(false);
+        return await Task.Run(() => store.ShareAtOrAbove(machine, metric, hardwareId, from, to, threshold)).ConfigureAwait(false);
     }
     /// <summary>Writes a new file; an existing file is never replaced.</summary>
     public async Task ExportCsvAsync(string path, bool applications, DateTimeOffset from, DateTimeOffset to)

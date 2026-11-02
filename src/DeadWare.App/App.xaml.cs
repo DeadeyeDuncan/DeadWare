@@ -43,6 +43,17 @@ public partial class App : Application
                     if(!lifetime.IsEnding&&session.Settings.CoolingNotifications)tray?.ShowCoolingWarning(warning.Message);
                 });
             };
+            session.Alerts.EpisodeStarted+=episode=>
+            {
+                if(lifetime.IsEnding||Dispatcher.HasShutdownStarted)return;
+                Dispatcher.BeginInvoke(()=>
+                {
+                    if(lifetime.IsEnding||!session.Settings.AlertNotifications)return;
+                    var rule=session.Settings.Alerts.FirstOrDefault(r=>r.Id==episode.RuleId);
+                    string peak=rule is null?episode.Peak.ToString("0.#"):AlertRules.FormatValue(rule,episode.Peak);
+                    tray?.ShowAlert("DeadWare alert",$"{episode.Summary}. Observed {peak} at {episode.Start.ToLocalTime():t}. Open Alerts to review.",ShowAlerts);
+                });
+            };
             session.Updates.UpdateAvailable+=release=>
             {
                 if(lifetime.IsEnding||Dispatcher.HasShutdownStarted)return;
@@ -65,6 +76,11 @@ public partial class App : Application
         main.Show();if(main.WindowState==WindowState.Minimized)main.WindowState=WindowState.Normal;main.Activate();
     }
     private async void RequestQuit()=>await QuitAsync();
+    private void ShowAlerts()
+    {
+        ShowDashboard();
+        if(!lifetime.IsEnding&&MainWindow is MainWindow main)main.ShowAlerts();
+    }
     private void ShowUpdates()
     {
         ShowDashboard();

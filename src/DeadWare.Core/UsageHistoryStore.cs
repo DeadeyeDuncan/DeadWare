@@ -214,6 +214,40 @@ public sealed class UsageHistoryStore
             sent - applications.Sum(a => a.Sent), gaps, recorded, Earliest(db, machine), StorageBytes);
     }
 
+    /// <summary>One application's stored minutes in a range, oldest first, with the segment that first wrote each row.</summary>
+    public IReadOnlyList<UsageApplicationMinute> ReadApplicationMinutes(string machine, string name, DateTimeOffset from, DateTimeOffset to)
+    {
+        EnsureInitialized(); ValidateMachine(machine); ValidateRange(from, to);
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        using var db = Open(readOnly: true);
+        var rows = new List<UsageApplicationMinute>();
+        using var command = Command(db, """
+            SELECT name,minute,received,sent,segment FROM application_minutes
+            WHERE machine=$machine AND name=$name COLLATE NOCASE AND minute>=$from AND minute<$to ORDER BY minute
+            """, null, [("$machine", machine), ("$name", name), ("$from", from.ToUnixTimeMilliseconds()), ("$to", to.ToUnixTimeMilliseconds())]);
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+            rows.Add(new(reader.GetString(0), DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(1)), reader.GetInt64(2), reader.GetInt64(3), reader.GetString(4)));
+        return rows;
+    }
+
+    /// <summary>How many recorded minutes of a metric averaged at or above a value, for threshold suggestions.</summary>
+    public (long AtOrAbove, long Total) ShareAtOrAbove(string machine, string metric, string? hardwareId, DateTimeOffset from, DateTimeOffset to, double threshold)
+    {
+        EnsureInitialized(); ValidateMachine(machine); ValidateRange(from, to);
+        if (!UsageMetrics.IsKnown(metric) || UsageMetrics.UsesHardwareId(metric) != !string.IsNullOrEmpty(hardwareId) || !double.IsFinite(threshold))
+            throw new ArgumentException("Unknown usage metric or hardware selection.", nameof(metric));
+        using var db = Open(readOnly: true);
+        using var command = Command(db, """
+            SELECT COALESCE(SUM(CASE WHEN average>=$threshold THEN 1 ELSE 0 END),0),COUNT(*) FROM metric_minutes
+            WHERE machine=$machine AND metric=$metric AND hardware=$hardware AND minute>=$from AND minute<$to
+            """, null, ("$threshold", threshold), ("$machine", machine), ("$metric", metric), ("$hardware", hardwareId ?? ""),
+            ("$from", from.ToUnixTimeMilliseconds()), ("$to", to.ToUnixTimeMilliseconds()));
+        using var reader = command.ExecuteReader();
+        reader.Read();
+        return (reader.GetInt64(0), reader.GetInt64(1));
+    }
+
     public DateTimeOffset? EarliestRetained(string machine)
     {
         EnsureInitialized(); ValidateMachine(machine);

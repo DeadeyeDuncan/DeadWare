@@ -30,7 +30,7 @@ public class CoolingShutdownTests
         Set(collector,"etw",Activator.CreateInstance(typeof(Collector).Assembly.GetType("DeadWare.App.EtwNetwork")!,[false])!);
         var session=(UiSession)RuntimeHelpers.GetUninitializedObject(typeof(UiSession));
         Set(session,"<Collector>k__BackingField",collector);Set(session,"<Cooling>k__BackingField",history);Set(session,"<GraphHistory>k__BackingField",graphs);
-        Set(session,"<Battery>k__BackingField",battery);Set(session,"<Usage>k__BackingField",new UsageHistoryService(Path.Combine(root,"usage.db"),"fixture"));
+        Set(session,"<Battery>k__BackingField",battery);Set(session,"<Usage>k__BackingField",new UsageHistoryService(Path.Combine(root,"usage.db"),"fixture"));Set(session,"<Alerts>k__BackingField",new AlertService(Path.Combine(root,"alerts.db"),"fixture",new UsageHistoryService(Path.Combine(root,"usage-alerts.db"),"fixture"),()=>null));
         try
         {
             history.Start();history.TryRecord(ThermalProjectionTests.Reading(ThermalProjectionTests.Sensor("t","CPU Package","Temperature",60)));
@@ -78,6 +78,7 @@ public class CoolingShutdownTests
         SetField(session,"<GraphHistory>k__BackingField",new GraphHistoryService(Path.Combine(root,"graphs.db"),"fixture",new SampleHistory()));
         SetField(session,"<Battery>k__BackingField",new BatteryHistoryService(Path.Combine(root,"battery.db"),"fixture"));
         SetField(session,"<Usage>k__BackingField",new UsageHistoryService(Path.Combine(root,"usage.db"),"fixture"));
+        SetField(session,"<Alerts>k__BackingField",new AlertService(Path.Combine(root,"alerts.db"),"fixture",new UsageHistoryService(Path.Combine(root,"usage-alerts.db"),"fixture"),()=>null));
         SetField(session,"diagnostics",new LayoutDiagnostics(Path.Combine(root,"trace.jsonl"),Path.Combine(root,"settings.json")));
         collector.SampleAvailable+=connections.TryRecord;collector.FinalConnectionsAvailable+=connections.TryRecord;
         return (session,collector,connections,worker);

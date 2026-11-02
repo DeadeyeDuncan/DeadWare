@@ -1,6 +1,6 @@
 # Alerts and thresholds (0.8.0)
 
-Status: proposed on 2026-11-02; awaiting the user's approval before implementation. A 0.7.1 settling release (listed at the top of the plan) comes first.
+Status: proposed on 2026-11-02; approved by the user on 2026-11-02 after 0.7.1 shipped. Implemented in 0.8.0.
 
 ## Intent
 
