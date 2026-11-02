@@ -1,6 +1,6 @@
 # Long-term usage history (0.7.0)
 
-Status: proposed on 2026-11-02; awaiting the user's approval before implementation.
+Status: proposed on 2026-11-02; approved by the user on 2026-11-02 and implementation started with Task 1.
 
 ## Intent
 

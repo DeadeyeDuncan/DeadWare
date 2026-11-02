@@ -31,13 +31,13 @@
 
 **Files:** Create `src/DeadWare.Core/UsageHistory.cs`, `tests/DeadWare.Tests/UsageHistoryTests.cs`.
 
-**Interfaces:** `UsageMetricMinute(string Metric, string? HardwareId, DateTimeOffset Minute, double Average, double Minimum, double Maximum, int Samples, bool Complete, string Segment)`; `UsageApplicationMinute(string Name, DateTimeOffset Minute, long Received, long Sent, bool CaptureGap, string Segment)`; `UsageMinuteFolder.Observe(Snapshot sample, IReadOnlyList<ProcessTraffic> processes, string? etwFailure, string gpuId)` returns completed minutes when the clock crosses a minute boundary; `UsageMinuteFolder.Flush()` closes the open minute as incomplete.
+**Interfaces:** `UsageMetricMinute(string Metric, string? HardwareId, DateTimeOffset Minute, double Average, double Minimum, double Maximum, int Samples, bool Complete, string Segment)`; `UsageApplicationMinute(string Name, DateTimeOffset Minute, long Received, long Sent, string Segment)`; `UsageMinuteBatch(Minute, Metrics, Applications, bool CaptureGap, Segment)` carries the capture-gap flag for the whole minute; `UsageMinuteFolder.Observe(Snapshot sample, IReadOnlyList<ProcessTraffic> processes, bool captureAvailable, string? gpuId)` returns the previous minute when a sample starts a later one; `UsageMinuteFolder.Flush()` closes the open minute as incomplete. A batch keeps the segment its samples belonged to, so the store can tell a restart within the same minute apart and merge the two rows (Task 2).
 
-- [ ] Write tests for one-second and ten-second cadence completeness, partial first/last minutes, interval change mid-minute, null readings leaving Samples unchanged, restart/clock-jump segment boundaries, GPU id switching, same-name PID summing, PID generation reuse, name normalization/truncation and ETW failure minutes.
-- [ ] Run the focused tests and observe missing-feature failures.
-- [ ] Implement the folder as a pure core type with no timers or threads; the metric list reuses the `cpu`, `cputemp`, `gpu`, `gputemp`, `memory` identifiers and splits `network` into `download` and `upload`.
-- [ ] Run focused tests; expected PASS.
-- [ ] Commit the tested aggregation layer.
+- [x] Write tests for one-second and ten-second cadence completeness, partial first/last minutes, interval change mid-minute, null readings leaving Samples unchanged, restart/clock-jump segment boundaries, GPU id switching, same-name PID summing, PID generation reuse, name normalization/truncation and ETW failure minutes.
+- [x] Run the focused tests and observe missing-feature failures. (The cloud session could not install the .NET SDK, so the first run is the pull request's Windows CI.)
+- [x] Implement the folder as a pure core type with no timers or threads; the metric list reuses the `cpu`, `cputemp`, `gpu`, `gputemp`, `memory` identifiers and splits `network` into `download` and `upload`.
+- [ ] Run focused tests; expected PASS (CI on the pull request).
+- [x] Commit the tested aggregation layer.
 
 ### Task 2: Versioned SQLite store with retention and eviction
 
