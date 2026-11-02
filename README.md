@@ -30,6 +30,7 @@ Connections is available starting with version 0.6.21.
 - Local Cooling Health history, fixed reference comparisons, CSV export and optional sustained-change warnings. With **Extended sensors** on, CPU fan speed comes from a labeled pump or CPU Fan header.
 - Lifetime battery-percentage history with recorded charging and Windows battery-saver periods, Day/Week/Month/Year/All views, CSV export and a separate remembered window.
 - Usage history: Day/Week/Month views of CPU and GPU usage and temperature, RAM and network, per-application download/upload totals, CSV exports and a separate remembered window, kept for up to 400 days.
+- Alerts: your own thresholds on CPU, GPU, RAM, network rate, an application's daily traffic or battery charge, with tray notifications, a 400-day log and a jump to the Usage history minutes behind each alert.
 - Startup and manual GitHub release checks, update-available notices, verified user-initiated updates and rollback to the previous installed version.
 - Update downloads clean up after themselves, and installations in a protected folder update through an administrator-only update folder.
 - Nine saved themes: **Midnight**, **Ember**, **Glacier**, **Amethyst**, **Neon**, **Blackout**, **Skyrim**, **Mage**, and **Daylight**. Open the sidebar's **Color theme** menu and hover over **Elder Scrolls Themes** to choose **Skyrim** (charcoal, silver and frost blue) or **Mage** (violet, arcane cyan and antique gold). Both add readable Nordic lettering, subtle stone surfaces and runes along live graph traces while keeping numeric readings clear. Use arrow keys and Enter to navigate the menu with a keyboard. Custom graph colors remain in effect when switching themes.
@@ -40,7 +41,7 @@ Connections is available starting with version 0.6.21.
 
 ## Download and run
 
-Get the Windows x64 ZIP from [v0.7.1](https://github.com/DeadeyeDuncan/DeadWare/releases/tag/v0.7.1) or browse [all releases](https://github.com/DeadeyeDuncan/DeadWare/releases). Extract the **entire** archive and run `DeadWare.exe` inside the `DeadWare` folder. The .NET runtime is bundled. The app is portable and unsigned. Version 0.6.0 adds manual update and rollback controls; older installations need one complete ZIP upgrade to gain those controls.
+Get the Windows x64 ZIP from [v0.8.0](https://github.com/DeadeyeDuncan/DeadWare/releases/tag/v0.8.0) or browse [all releases](https://github.com/DeadeyeDuncan/DeadWare/releases). Extract the **entire** archive and run `DeadWare.exe` inside the `DeadWare` folder. The .NET runtime is bundled. The app is portable and unsigned. Version 0.6.0 adds manual update and rollback controls; older installations need one complete ZIP upgrade to gain those controls.
 
 Windows 10/11 x64 is the target. ARM64 and other operating systems are not validated. Hardware coverage varies by device.
 
@@ -150,6 +151,16 @@ DeadWare records one row per minute for each metric (average, minimum, maximum, 
 
 History begins when version 0.7.0 first runs; the six-hour live graphs and their cache are separate and are not copied into the new store. Year and All ranges are not offered yet. Export the period's device minutes or application totals to a new CSV file; names that look like spreadsheet formulas are neutralized. Application names and byte totals describe what runs on this computer, so treat exports as private. Usage history stays in this Windows profile and is never uploaded; back up the database only while DeadWare is fully quit.
 
+## Alerts
+
+Open **Alerts** in the sidebar. **Rules** lists the thresholds you have set; add one by choosing a kind, a target, a value and a duration, then **Add rule**. Four kinds are available. A **device metric** rule fires when CPU usage, CPU temperature, the dashboard's selected GPU's usage or temperature, or RAM usage is at or above the value for 1, 5, 15 or 60 consecutive recorded minutes. A **network rate** rule does the same for download or upload in MB/s. An **application traffic** rule fires when a named executable's download plus upload reaches a budget in MB within one local calendar day. A **battery** rule fires as soon as the charge is at or below a percentage while running on battery. Rules can be edited, switched off without deleting them, or removed.
+
+While you type a threshold, the page shows what Usage history recorded in the last 7 and 30 days: the highest minute, the average and the share of recorded minutes at or above the value. That is the suggestion mechanism; DeadWare never sets a threshold for you.
+
+Every crossing is one **episode**. When it starts, a tray balloon names the rule and the observed value; clicking it opens Alerts. **Recent alerts** lists episodes newest first with their peak and whether they are still open, with **Acknowledge** as a bookkeeping mark and **View in Usage history**, which opens the Day view around the episode so you can see the surrounding minutes. A rule notifies once per episode and re-arms after the metric stays below the threshold minus a small margin (3°C, 5 percentage points or 10% of a byte value) for the rule's duration; it never notifies more than once an hour, and an application budget notifies once per day. **Show tray notifications for alerts**, on the page and in Settings, mutes balloons for all rules while episodes are still logged. Cooling Health keeps its own warnings and notification setting.
+
+Device and network rules evaluate the per-minute averages that Usage history records, so **Record usage history on this device** must be on for them, and what the log shows is exactly what the Usage history charts show. A minute without a reading neither counts nor resets; a recording gap such as sleep or a restart resets the consecutive count. Application budgets are seeded from the stored day at startup, so a restart mid-day keeps the morning's traffic. Rules are saved in `settings.json`; the log lives in `%LOCALAPPDATA%\DeadWare\alerts.db`, keeps 400 days under a 64 MiB cap, is written in the background and flushed on Quit, and is never uploaded. An alert means a threshold you chose was crossed in observed data; it is not a hardware diagnosis or a security finding.
+
 ## Cooling Health
 
 The **Cooling Health** page saves local CPU/GPU temperature, usage and package power, plus clock and fan readings when supported. A GPU's fan speed comes from the card. A single CPU's fan speed comes from its cooler: a motherboard or AIO header labeled as a pump (for example `Pump Fan` or `AIO Pump`), otherwise the `CPU Fan` header. These readings need **Extended sensors**; unlabeled headers such as `Fan #2` are not used. Turning Extended sensors on or off changes the CPU sensor mapping, so its Cooling Health history and references start under a new identity. Recording starts by default; optional tray notifications start off. Choose a device and day/week/month range, switch metrics or export a new CSV file. Settings and the SQLite history database live under `%LOCALAPPDATA%\DeadWare`. No thermal data is uploaded. Per-application network data is not stored there.
@@ -189,7 +200,7 @@ dotnet run --project src/DeadWare.App/DeadWare.App.csproj
 Create a self-contained portable ZIP and SHA-256 checksum:
 
 ```powershell
-pwsh -File scripts/publish.ps1 -Version 0.7.1
+pwsh -File scripts/publish.ps1 -Version 0.8.0
 ```
 
 The packaging script runs tests before publishing, bundles the independent self-contained update helper, and records all managed file hashes in `deadware-package.json`. Output goes under `artifacts/`. GitHub Actions runs the same script. Pushing a normal three-part version tag such as `v0.6.0` builds and publishes a normal release after tests pass, using the matching `docs/releases/v0.6.0.md` notes. Workflows use pinned action commits.

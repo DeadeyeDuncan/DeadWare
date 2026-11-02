@@ -1,6 +1,6 @@
 # Alerts and thresholds (0.8.0)
 
-Status: proposed on 2026-11-02; approved by the user on 2026-11-02 after 0.7.1 shipped. Implementation started with Task 1.
+Status: proposed on 2026-11-02; approved by the user on 2026-11-02 after 0.7.1 shipped. Implemented in 0.8.0.
 
 ## Intent
 
