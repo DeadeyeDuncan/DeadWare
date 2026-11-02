@@ -1,6 +1,6 @@
 # Refined glass redesign
 
-Status: proposed on 2026-11-02; design approved section by section in conversation on 2026-11-02. Written spec awaiting review before the implementation plan.
+Status: proposed on 2026-11-02; design approved section by section in conversation on 2026-11-02; written spec and Blackout preview approved by the user on 2026-11-02.
 
 ## Intent
 
@@ -112,7 +112,7 @@ Land fill geometry is cached with the camera, viewport and presentation exactly 
 - **Settings**: grouped cards (Monitoring, Appearance, Widget, Startup, Pop-outs, History and alerts) with a section title each. Every control stays; nothing moves between windows.
 - **Pop-out graphs** (`GraphWindow`, `CompactGraph`): same chart; chrome slims to the current reading, device name and the ⋯ options button on one row with the chart filling the rest. Always-on-top and the options menu behave as now.
 - **Widget**: same card and chart language at the small scale; the map-only widget gets the filled globe or flat map with particles at half density and no hover chips. Size, snapping, always-on-top and remembered placement are untouched.
-- **Themes**: all nine keep their palettes and fonts; Skyrim and Mage keep the stone texture, Nordic lettering and runes along traces; Blackout stays pure black and flat; High Contrast and disabled transparency fall back to solid surfaces exactly as today.
+- **Themes**: all nine keep their palettes and fonts; Skyrim and Mage keep the stone texture, Nordic lettering and runes along traces. Blackout keeps pure black window, panel and plot surfaces with no highlight wash or recess, but does get the trace under-glow, arc glow, particles and node halos, since those read well on black and the user chose this theme from the preview. High Contrast and disabled transparency fall back to solid, flat surfaces exactly as today.
 
 ## Implementation choices
 
@@ -135,4 +135,5 @@ Reuse `Theme.Apply` and `ApplyGlassResources` for tokens, `GraphDepth`/`GraphStr
 - No placeholders remain; every section names its files and the behaviours it keeps.
 - Section 2's "avg + range / raw" hint relocation and Section 4's Alerts/Usage history cards were added during the written pass to cover the 0.7.0 and 0.8.0 pages; they follow the same rules as the approved sections.
 - Scope is one implementation plan with six checkpoints; no decomposition needed.
-- Ambiguities resolved: gradient fills are out; battery percent stays linear; the widget shows no hover chips; particles are capped; `Dev` is not the base branch.
+- Ambiguities resolved: gradient fills are out; battery percent stays linear; the widget shows no hover chips; particles are capped; `Dev` is not the base branch; Blackout keeps black surfaces but gets glow.
+- A design-canvas preview (Overview and Connections artboards in Blackout, synthetic readings) was reviewed before planning; it is a visual target, not a rendering of the WPF app.
