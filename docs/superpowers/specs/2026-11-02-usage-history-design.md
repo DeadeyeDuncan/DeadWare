@@ -1,0 +1,49 @@
+# Long-term usage history (0.7.0)
+
+Status: proposed on 2026-11-02; awaiting the user's approval before implementation.
+
+## Intent
+
+The user asked what the next iteration of DeadWare should be. The README names long-term usage history as planned work, and it is the gap that touches every page: the live CPU, GPU, RAM and network graphs keep only six hours in `live-graph-history.db`, and the Network page's per-application totals exist only for the current session. Battery history and Connections history already show that users keep DeadWare running for days and want to look back. This release gives the core metrics the same treatment, so a user can answer "how hot did the GPU run this week" and "which applications used my bandwidth since Monday" without a third-party tool.
+
+This is a minor-version milestone, 0.7.0, because it introduces a new local database and a new page rather than refining an existing one. No settings, histories or saved windows from 0.6.x are changed or migrated.
+
+## Proposed experience
+
+- Add a **Usage history** page beside Battery history, and an **Open in window** action with a remembered resizable window, following the battery history pattern. The page has two areas: **Device** metrics and **Applications**.
+- **Device** charts CPU usage, CPU temperature, GPU usage, GPU temperature, RAM usage and combined network download/upload over **Day**, **Week** and **Month** ranges with a date picker to move the range back. The selected GPU follows the dashboard's GPU selection. Each chart draws the per-bucket average as a line with a faint minimum/maximum band, matching the smoothed 1–6 hour live graphs, and keeps real time spacing. Missing minutes, sleep, stopped monitoring and restarts are gaps; aggregated buckets that contain gaps do not draw across them. Minimum, average and maximum for the displayed range use the stored minute values, not the drawn buckets.
+- **Applications** lists per-application download and upload totals for the selected range, sorted by total bytes, with a search box and a small stacked bar showing each application's share. Totals come from observed ETW traffic only, so an application that ran while ETW capture was unavailable shows nothing for that time, and the page says when the range contains capture gaps. Application identity is the executable name DeadWare already shows on the Network page; different executables with the same name are combined, and the page says so.
+- The page shows storage use, the earliest retained time, recording status and a **Record usage history** checkbox, and exports the current range to a new local CSV for the device metrics and a second CSV for application totals.
+- Recording starts on by default after upgrading. History begins when 0.7.0 first runs; the six-hour cache is not back-filled into it because the cache has one-second samples without the minute coverage information this store needs. The live graphs and their six-hour cache are unchanged.
+- Day, Week and Month cover the first release. Year and All are deliberately excluded until the store has run long enough on real machines to confirm the size and query behavior below.
+
+## Storage and collection
+
+- Record one row per minute per metric from the existing collector publication, computed in a bounded background worker from the one-second (or slower) samples: average, minimum, maximum and sample count for the minute, plus a completeness flag that is set only when the minute received at least the number of samples its polling interval promises, minus one. A minute with no samples is not written. Metrics are `cpu`, `cputemp`, `gpu`, `gputemp`, `memory`, `download` and `upload`, keyed by the same identifiers the graph cache uses, with the GPU rows additionally keyed by hardware id so a GPU change does not merge histories. GPU fan and CPU pump RPM are not recorded in this release; Cooling Health already keeps them with the minute resolution they need.
+- Record one row per minute per application name from `Reading.Processes`, summing received and sent bytes across PIDs with that name. Names are normalized the way the Network page normalizes them, truncated to 256 characters, and CSV export neutralizes formula-like names exactly as Connections export does. Minutes where ETW capture was unavailable or reported a failure are written as a capture gap row so the page can disclose them, rather than as zero traffic.
+- Use a separate local SQLite file, `%LOCALAPPDATA%\DeadWare\usage-history.db`, versioned with `PRAGMA user_version`, WAL journal and the bounded journal size the other stores use. Retain 400 days of minute rows, so a month view a year back remains available, and cap the file at 256 MiB with whole-day eviction of the oldest days when the cap is reached. The page shows the actual earliest retained time. Estimated growth is about 7 metric rows plus a few dozen application rows per minute, around 20 MB per month on a busy machine; the cap exists for safety, not as the expected lifetime.
+- Keep writes on a bounded background worker with the same 15-second flush, normal-Quit drain, 20-second history deadline and 3-second sign-out path as the other history services. A crash or abrupt power loss can lose the unflushed batch. A full, locked or corrupt store reports an error on the page and in the dashboard status while live monitoring continues; resolve storage and restart to retry.
+- Keep reads and CSV streaming off the UI thread. Charts use SQL buckets sized to the pixel width, at most 1,500 points per series, and never load a month of minute rows into memory. Application totals aggregate in SQL with a bounded result size and an "other applications" remainder when more than 200 names match.
+- Partition rows by the existing stable local machine key. Source and version history synchronize through GitHub; usage history stays local to each device and is never uploaded, included in diagnostics by default or copied by source synchronization. Application names and byte totals are personal data about what the user runs; the page says that history stays on this computer.
+
+## Implementation choices
+
+These are the builder's proposed defaults, not additional user requirements: minute aggregation in the app rather than in SQL; Day/Week/Month ranges; a 400-day retention with a 256 MiB cap; per-name application totals rather than per-executable-path; one shared store for device metrics and application totals; an opt-out recording control; two CSV exports. No alerts, thresholds, Year/All ranges, per-connection detail (Connections already has it), import of the six-hour cache, or cloud sync in this change.
+
+Per-application totals could instead be queried from `connections.db`, which already records application bytes per minute. That store is optional, can be paused, evicts whole minutes early under high traffic because it keeps every remote endpoint, and only retains 30 days. A compact per-name minute aggregate in the new store is independent of Connections recording, far smaller, and keeps the 400-day retention. Connections remains the place to see where the bytes went.
+
+Reuse `BatteryHistoryStore`'s bucketed SQL summaries, `BatteryHistoryService`'s worker and shutdown shape, `ThermalStore`'s whole-period eviction and storage reporting, the existing `HistoryChart` renderer's average/range band, the Network page's application naming, the theme and glass resources, and the window restoration keys. Keep the existing live graphs, Cooling Health, Battery history, Connections and update behavior intact. Work inline as the user's standing preference requests.
+
+## Verification and delivery
+
+- Test minute aggregation for one-second and ten-second polling, partial first and last minutes, polling-interval changes mid-minute, unavailable readings, restart and clock-jump segment boundaries and bounded queue loss.
+- Test application minute aggregation across PID changes, same-name processes, name normalization and truncation, and ETW unavailable or failed minutes becoming capture-gap rows rather than zeros.
+- Test SQLite initialize, close and reopen, newer-version refusal, machine partitioning, 400-day retention, whole-day eviction at the size cap, bucketed Day/Week/Month reads with gaps preserved, bounded application totals with the remainder row, and CSV correctness including formula neutralization.
+- Test the service's cadence, recording toggle, flush timer, normal-Quit drain and the bounded sign-out path alongside the existing history services.
+- Build and run the full existing test suite. Render the page offscreen in Midnight, Daylight, Blackout and Windows High Contrast at narrow and wide sizes with empty, one-day, one-month and gap-heavy fixtures, and verify the detached window restores its placement.
+- Run a short diagnostic sample on a real machine, let the app record for at least an hour and compare the Day view against the live six-hour graph for the same period; this is a software check, not a long-duration hardware soak, and the validation notes must say so.
+- Commit the design, plan, implementation, tests and validation to a GitHub feature branch, open a reviewable pull request, verify CI, and package 0.7.0 with `scripts/publish.ps1`. Update README, CHANGELOG, the release notes and the development guide's current-version references.
+
+## Inline builder check
+
+The collector publication, the four existing history services, the battery page and chart, and the window restoration keys supply every integration point. A distinct store is necessary because the six-hour cache deliberately prunes by time and row count, Cooling Health's retention and identity rules are built around thermal references, and Connections history keeps far more detail than totals need. Nothing in this design changes an existing database schema. Implementation starts once the user approves this scope.
