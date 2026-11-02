@@ -129,7 +129,8 @@ public class UsageHistoryServiceTests
         {
             ["cpu/usage"] = cpu, ["cpu/temperature"] = 55, ["/gpu/0/usage"] = 20, ["/gpu/0/temperature"] = 48,
             ["memory/usage"] = 61, ["network/download"] = 1000, ["network/upload"] = 200,
-        }), [new("/gpu/0", "Fixture GPU")], [], processes ?? [], "CPU", "", "", "", false);
+        }), [new("/gpu/0", "Fixture GPU")], [], processes ?? [new ProcessTraffic(99, 1, "fixture.exe", null, null, 0, 0)], "CPU", "", "", "", false);
+    // A zero-byte fixture process keeps per-application capture "available" without adding application rows.
 
     private sealed class Fixture : IDisposable
     {
