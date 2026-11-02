@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.1 — Reliable tests and manual releases
+
+- Make the automated test suite reliable on busy build machines. Five timing-sensitive tests failed intermittently on CI and blocked two release attempts; the test host now runs those service and shutdown tests one at a time with a larger thread pool, and a settings-save race in a UI check is drained before cleanup. No app behavior changes.
+- The Release workflow can be run manually from the Actions tab with a version tag; it creates the tag on the chosen commit and publishes as a tag push does. A repeated run after a failed one moves an unreleased tag to the commit it builds.
+- Update Microsoft.Data.Sqlite to 10.0.14 and the test SDK and xUnit runner to their current releases.
+
 ## 0.7.0 — Usage history
 
 - Add **Usage history** beside Battery history, with an **Open in window** action and a remembered window. Browse **Day**, **Week** and **Month** views of CPU and GPU usage and temperature, RAM usage and network download/upload, step to earlier periods, and read minimum, average and maximum for the period from the stored minute values.
