@@ -8,6 +8,7 @@ using GeoFile = DeadWare.App.Tests.ConnectionGeolocationTests.GeoFile;
 
 namespace DeadWare.App.Tests;
 
+[Collection(TestHostThreadPool.TimingCollection)]
 public sealed class ConnectionDatabaseDownloadTests
 {
     [Fact]

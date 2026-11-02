@@ -5,6 +5,7 @@ using Xunit;
 
 namespace DeadWare.App.Tests;
 
+[Collection(TestHostThreadPool.TimingCollection)]
 public class UsageHistoryServiceTests
 {
     private static readonly DateTimeOffset Start = UsageMetrics.Floor(DateTimeOffset.UtcNow.AddMinutes(-10));

@@ -9,6 +9,7 @@ using Xunit;
 
 namespace DeadWare.App.Tests;
 
+[Collection(TestHostThreadPool.TimingCollection)]
 public class UpdateServiceTests
 {
     [Fact] public async Task Startup_checks_once_and_announces_each_newer_version_once_without_downloading()

@@ -5,6 +5,7 @@ using System.IO;
 
 namespace DeadWare.App.Tests;
 
+[Collection(TestHostThreadPool.TimingCollection)]
 public class CoolingHistoryServiceTests
 {
     [Fact]
