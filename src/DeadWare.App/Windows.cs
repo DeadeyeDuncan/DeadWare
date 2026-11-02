@@ -33,6 +33,7 @@ public sealed class MainWindow : Window
     private readonly CheckBox cpuPumpSpeed=new() {Content="Show CPU pump speed on CPU temperature graphs",Margin=new Thickness(0,0,0,8)};
     private readonly ComboBox glass=new() {MinWidth=160};
     private readonly CheckBox graphSmoothing=new() {Content="Smooth long-range graphs (1, 3 and 6 hours)",Margin=new Thickness(0,0,0,8)};
+    private readonly CheckBox usageRecording=new() {Content="Record usage history on this device",Margin=new Thickness(0,8,0,8)};
     private readonly CheckBox startup=new() {Content="Start with Windows (administrator)",Margin=new Thickness(0,22,0,8)};
     private readonly TextBlock startupStatus=Ui.Text("Startup status is checked when this page opens.",12,"Muted"),startupResult=Ui.Text("",12,"Warning");
     private Button startupRepair=null!,startupDisable=null!,startupRefresh=null!,batteryNavigation=null!;
@@ -54,7 +55,7 @@ public sealed class MainWindow : Window
         var quitButton=Ui.Button("Quit DeadWare",quit);quitButton.FontSize=11;sideBottom.Children.Add(quitButton);trayNotice.Margin=new Thickness(3,5,3,8);sideBottom.Children.Add(trayNotice);
         sideBottom.Children.Add(monitoringInfo);
         var nav=new StackPanel();sidebar.Children.Add(new ScrollViewer{Content=nav,VerticalScrollBarVisibility=ScrollBarVisibility.Auto,HorizontalScrollBarVisibility=ScrollBarVisibility.Disabled});
-        foreach(var item in new[]{("overview","▦  Overview"),("network","⇄  Network"),("connections","◎  Connections"),("battery","▤  Battery history"),("sensors","≡  Sensors"),("cooling","◷  Cooling Health"),("desktop","▱  Settings"),("updates","↓  Updates")})
+        foreach(var item in new[]{("overview","▦  Overview"),("network","⇄  Network"),("connections","◎  Connections"),("battery","▤  Battery history"),("usage","◫  Usage history"),("sensors","≡  Sensors"),("cooling","◷  Cooling Health"),("desktop","▱  Settings"),("updates","↓  Updates")})
         {var key=item.Item1;var button=Ui.Button(item.Item2,()=>Navigate(key));button.HorizontalContentAlignment=HorizontalAlignment.Left;button.Margin=new(0,3,0,3);button.Padding=new(10,12,10,12);navigation[key]=button;nav.Children.Add(button);if(key=="battery")batteryNavigation=button;}
         var main=new DockPanel {Margin=new Thickness(8,12,18,16)};Grid.SetColumn(main,1);shell.Children.Add(main);
         var footer=new StackPanel {Margin=new Thickness(4,10,4,0)};footer.Children.Add(status);DockPanel.SetDock(footer,Dock.Bottom);main.Children.Add(footer);
@@ -64,7 +65,7 @@ public sealed class MainWindow : Window
         liveToolbar=new DockPanel {Margin=new Thickness(6,12,6,8)};var ranges=Ui.Range(session);DockPanel.SetDock(ranges,Dock.Right);liveToolbar.Children.Add(ranges);var gpuLabel=Ui.Text("GPU",11,"Muted");gpuLabel.Margin=new(0,0,10,0);gpuControls=Ui.Row(gpuLabel,gpu);liveToolbar.Children.Add(gpuControls);header.Children.Add(liveToolbar);
         gpu.SelectionChanged+=(_,_)=>{if(!syncingGpu)session.SetGpu((gpu.SelectedItem as Device)?.Id);};
         main.Children.Add(content);
-        pages["overview"]=Overview();pages["network"]=Network();pages["connections"]=new ConnectionsPage(session);pages["cooling"]=new CoolingHealthPage(session);pages["battery"]=new BatteryHistoryPage(session);pages["sensors"]=Sensors();pages["desktop"]=Desktop();pages["updates"]=new UpdatesPage(session);Navigate("overview");
+        pages["overview"]=Overview();pages["network"]=Network();pages["connections"]=new ConnectionsPage(session);pages["cooling"]=new CoolingHealthPage(session);pages["battery"]=new BatteryHistoryPage(session);pages["usage"]=new UsageHistoryPage(session);pages["sensors"]=Sensors();pages["desktop"]=Desktop();pages["updates"]=new UpdatesPage(session);Navigate("overview");
         session.Changed+=Refresh;session.Updates.Changed+=RefreshUpdateNotice;
         Closed+=(_,_)=>{session.Changed-=Refresh;session.Updates.Changed-=RefreshUpdateNotice;};Closing+=OnClosing;
         RefreshUpdateNotice();
@@ -141,6 +142,13 @@ public sealed class MainWindow : Window
         widgetAlwaysOnTop.Unchecked+=(_,_)=>{if(!syncingWidgetGraphs)session.SetWidgetAlwaysOnTop(false);};
         stack.Children.Add(widgetAlwaysOnTop);
         var widgetHelp=Ui.Text("Choose the graphs shown in the widget. Changes apply immediately; resize the widget to your preferred height.",12,"Muted");widgetHelp.Margin=new(0,0,0,20);stack.Children.Add(widgetHelp);
+        stack.Children.Add(Ui.Heading("Usage history",16));
+        usageRecording.IsChecked=session.Settings.UsageRecording;
+        System.Windows.Automation.AutomationProperties.SetName(usageRecording,"Record usage history");
+        usageRecording.Checked+=(_,_)=>{if(!syncingWidgetGraphs)session.SetUsageRecording(true);};
+        usageRecording.Unchecked+=(_,_)=>{if(!syncingWidgetGraphs)session.SetUsageRecording(false);};stack.Children.Add(usageRecording);
+        var usageHelp=Ui.Text("Keeps day, week and month history of CPU, GPU, RAM and network usage plus per-application network totals for up to 400 days in this Windows profile. Pausing keeps what was saved. Open Usage history to browse, export or check storage.",12,"Muted");usageHelp.Margin=new(0,0,0,8);stack.Children.Add(usageHelp);
+        var usageOpen=Ui.Button("Open Usage history",()=>Navigate("usage"));usageOpen.Margin=new(0,0,0,20);stack.Children.Add(usageOpen);
         stack.Children.Add(Ui.Heading("Connections",16));
         stack.Children.Add(Ui.Text("Record endpoint history, choose an optional home city, manage the offline location database and export saved traffic from Connections. Local history rolls over after 30 days or 256 MiB.",12,"Muted"));
         stack.Children.Add(Ui.Button("Open Connections controls",()=>Navigate("connections")));
@@ -202,17 +210,17 @@ public sealed class MainWindow : Window
     private void Navigate(string destination)
     {
         gpuControls.Visibility=destination=="overview"?Visibility.Visible:Visibility.Collapsed;
-        liveToolbar.Visibility=destination is "cooling" or "battery" or "updates" or "connections"?Visibility.Collapsed:Visibility.Visible;
+        liveToolbar.Visibility=destination is "cooling" or "battery" or "usage" or "updates" or "connections"?Visibility.Collapsed:Visibility.Visible;
         foreach(var (key,button) in navigation)
         {button.SetResourceReference(Control.BackgroundProperty,key==destination?"GlassSelected":"GlassControl");button.SetResourceReference(Control.BorderBrushProperty,key==destination?"Accent":"GlassBorder");}
-        page=destination;content.Content=pages[destination];heading.Text=destination switch {"network"=>"Network","connections"=>"Connections","cooling"=>"Cooling Health","battery"=>"Battery history","updates"=>"Keep DeadWare current","sensors"=>"Hardware sensors","desktop"=>"Settings",_=>"System overview"};
+        page=destination;content.Content=pages[destination];heading.Text=destination switch {"network"=>"Network","connections"=>"Connections","cooling"=>"Cooling Health","battery"=>"Battery history","usage"=>"Usage history","updates"=>"Keep DeadWare current","sensors"=>"Hardware sensors","desktop"=>"Settings",_=>"System overview"};
         RefreshUpdateNotice();Refresh();
         if(destination=="desktop")_ = RefreshStartupAsync();
     }
     private void Refresh()
     {
         themePicker.SetSelection(session.Settings.Theme);
-        monitoringInfo.Text=$"Local monitoring\n{session.Settings.PollingIntervalSeconds:0.#} s polling · 6 h saved graphs\nv{BuildInfo.Version}";
+        monitoringInfo.Text=$"Local monitoring\n{session.Settings.PollingIntervalSeconds:0.#} s polling · 6 h saved graphs · usage history\nv{BuildInfo.Version}";
         syncingWidgetGraphs=true;
         try
         {
@@ -224,6 +232,7 @@ public sealed class MainWindow : Window
             gpuFanSpeed.IsChecked=session.Settings.ShowGpuFanSpeed;
             cpuPumpSpeed.IsChecked=session.Settings.ShowCpuPumpSpeed;
             graphSmoothing.IsChecked=session.Settings.GraphSmoothing;
+            usageRecording.IsChecked=session.Settings.UsageRecording;
             glass.SelectedItem=session.Settings.GlassLevel;
         }
         finally {syncingWidgetGraphs=false;}
@@ -292,6 +301,19 @@ internal sealed class BatteryHistoryWindow : Window
         pin.Checked+=(_,_)=>Topmost=true;pin.Unchecked+=(_,_)=>Topmost=false;DockPanel.SetDock(pin,Dock.Right);header.Children.Add(pin);
         header.Children.Add(Ui.Heading("Battery history",24));DockPanel.SetDock(header,Dock.Top);panel.Children.Add(header);
         panel.Children.Add(new BatteryHistoryPage(session,false));Content=panel;
+    }
+}
+internal sealed class UsageHistoryWindow : Window
+{
+    public UsageHistoryWindow(UiSession session)
+    {
+        Title="Usage history — DeadWare";MinWidth=720;MinHeight=560;Ui.Icon(this);session.Place(this,"usagehistory",1100,900);
+        var panel=new DockPanel {Margin=new Thickness(16)};
+        var header=new DockPanel {Margin=new Thickness(6,0,6,8)};
+        var pin=new CheckBox {Content="Always on top",VerticalAlignment=VerticalAlignment.Center,IsChecked=Topmost};
+        pin.Checked+=(_,_)=>Topmost=true;pin.Unchecked+=(_,_)=>Topmost=false;DockPanel.SetDock(pin,Dock.Right);header.Children.Add(pin);
+        header.Children.Add(Ui.Heading("Usage history",24));DockPanel.SetDock(header,Dock.Top);panel.Children.Add(header);
+        panel.Children.Add(new UsageHistoryPage(session,false));Content=panel;
     }
 }
 internal sealed class GraphWindow : Window

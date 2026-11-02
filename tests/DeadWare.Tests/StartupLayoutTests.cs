@@ -13,6 +13,15 @@ public class StartupLayoutTests
         Assert.False(roundtrip.BatteryRecording);
         Assert.True(new UserSettings().BatteryRecording);
     }
+    [Fact] public void UsageRecordingChoiceSurvivesSettingsRoundtripAndDefaultsOn()
+    {
+        var settings=SettingsCodec.Read("""{"UsageRecording":false}""").Settings;
+        Assert.False(SettingsCodec.Read(SettingsCodec.Write(settings)).Settings.UsageRecording);
+        Assert.True(new UserSettings().UsageRecording);
+        Assert.True(SettingsCodec.Read("""{"BatteryRecording":false}""").Settings.UsageRecording);
+        Assert.Contains("usagehistory",SettingsCodec.Read("""{"OpenWindows":["usagehistory","bogus"]}""").Settings.OpenWindows);
+        Assert.True(DetachedWindowState.IsAllowed("usagehistory"));
+    }
     [Fact] public void OldPlacementHistoryDoesNotReopenClosedWindows()
     {
         var settings=SettingsCodec.Read("""{"WindowPlacementFormat":"physical-pixels-v1","Windows":{"cpu":{"Left":10,"Top":10,"Width":600,"Height":400}}}""").Settings;

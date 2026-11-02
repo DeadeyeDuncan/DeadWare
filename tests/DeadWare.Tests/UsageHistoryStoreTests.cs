@@ -1,0 +1,215 @@
+using System.Globalization;
+using DeadWare.Core;
+using Microsoft.Data.Sqlite;
+using Xunit;
+
+namespace DeadWare.Tests;
+
+public class UsageHistoryStoreTests
+{
+    private static readonly DateTimeOffset Day = new(2026, 11, 2, 0, 0, 0, TimeSpan.Zero);
+
+    private static UsageMetricMinute Metric(DateTimeOffset minute, string metric, double average, string segment = "seg-a", int samples = 60,
+        bool complete = true, double? minimum = null, double? maximum = null, string? hardware = null)
+        => new(metric, hardware, minute, average, minimum ?? average, maximum ?? average, samples, complete, segment);
+
+    private static UsageMinuteBatch Batch(DateTimeOffset minute, string segment = "seg-a", bool gap = false,
+        IReadOnlyList<UsageMetricMinute>? metrics = null, (string Name, long Received, long Sent)[]? apps = null)
+        => new(minute, metrics ?? [Metric(minute, UsageMetrics.Cpu, 10, segment)],
+            (apps ?? []).Select(a => new UsageApplicationMinute(a.Name, minute, a.Received, a.Sent, segment)).ToArray(), gap, segment);
+
+    [Fact]
+    public void Reopen_preserves_rows_partitions_machines_and_refuses_newer_versions()
+    {
+        using var fixture = new Fixture(); var store = fixture.Open(); var now = Day.AddHours(1);
+        store.Append("tablet", [Batch(Day, apps: [("chrome.exe", 100, 10)]), Batch(Day.AddMinutes(1))], now);
+        store.Append("desktop", [Batch(Day)], now);
+        var reopened = fixture.Open();
+        var view = reopened.ReadMetric("tablet", UsageMetrics.Cpu, null, Day, now);
+        Assert.Equal(2, view.Minutes); Assert.Equal(Day, view.EarliestRetained); Assert.True(view.StorageBytes > 0);
+        Assert.Equal(1, reopened.ReadMetric("desktop", UsageMetrics.Cpu, null, Day, now).Minutes);
+        Assert.Empty(reopened.ReadApplications("desktop", Day, now).Applications);
+        Assert.Equal("chrome.exe", Assert.Single(reopened.ReadApplications("tablet", Day, now).Applications).Name);
+        using (var db = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = fixture.Path, Pooling = false }.ToString()))
+        {
+            db.Open(); using var command = db.CreateCommand(); command.CommandText = "PRAGMA user_version=2"; command.ExecuteNonQuery();
+        }
+        Assert.Throws<InvalidDataException>(() => fixture.Open());
+    }
+
+    [Fact]
+    public void A_restart_inside_a_minute_merges_segments_but_a_retried_batch_is_ignored()
+    {
+        using var fixture = new Fixture(); var store = fixture.Open(); var now = Day.AddHours(1);
+        var first = Batch(Day, "seg-a", metrics: [Metric(Day, UsageMetrics.Cpu, 10, "seg-a", 20, true, 5, 15)], apps: [("chrome.exe", 100, 10)]);
+        store.Append("tablet", [first], now);
+        store.Append("tablet", [first], now);
+        var once = store.ReadMetric("tablet", UsageMetrics.Cpu, null, Day, now);
+        var bucket = Assert.Single(once.Buckets);
+        Assert.Equal((20L, 1L, 10.0), (bucket.Samples, bucket.CompleteMinutes, bucket.Average));
+        Assert.Equal(100, Assert.Single(store.ReadApplications("tablet", Day, now).Applications).Received);
+        var restarted = Batch(Day, "seg-b", metrics: [Metric(Day, UsageMetrics.Cpu, 40, "seg-b", 20, true, 30, 50)], apps: [("chrome.exe", 50, 5)]);
+        store.Append("tablet", [restarted], now);
+        var merged = Assert.Single(store.ReadMetric("tablet", UsageMetrics.Cpu, null, Day, now).Buckets);
+        Assert.Equal(40, merged.Samples); Assert.Equal(25, merged.Average); Assert.Equal(5, merged.Minimum); Assert.Equal(50, merged.Maximum);
+        Assert.Equal(0, merged.CompleteMinutes); Assert.Equal(1, merged.Minutes);
+        var app = Assert.Single(store.ReadApplications("tablet", Day, now).Applications);
+        Assert.Equal((150L, 15L, 1L), (app.Received, app.Sent, app.Minutes));
+    }
+
+    [Fact]
+    public void Retention_keeps_400_days_and_ignores_rows_outside_the_window()
+    {
+        using var fixture = new Fixture(); var store = fixture.Open(); var now = Day.AddHours(12);
+        var tooOld = Day.AddDays(-401); var old = Day.AddDays(-399); var future = now.AddMinutes(10); var soon = now.AddMinutes(2);
+        store.Append("tablet", [Batch(tooOld), Batch(old), Batch(future), Batch(soon)], now);
+        Assert.Equal(old, store.EarliestRetained("tablet"));
+        var view = store.ReadMetric("tablet", UsageMetrics.Cpu, null, Day.AddDays(-400), now.AddHours(1));
+        Assert.Equal(2, view.Minutes);
+        store.Append("tablet", [Batch(now.AddDays(2))], now.AddDays(2));
+        Assert.Equal(soon, store.EarliestRetained("tablet"));
+        Assert.Throws<ArgumentOutOfRangeException>(() => store.ReadMetric("tablet", UsageMetrics.Cpu, null, Day.AddDays(-500), now));
+        Assert.Throws<ArgumentOutOfRangeException>(() => store.ReadMetric("tablet", UsageMetrics.Cpu, null, now, now));
+    }
+
+    [Fact]
+    public void Reads_use_aligned_buckets_preserve_gaps_and_weight_statistics_by_samples()
+    {
+        using var fixture = new Fixture(); var store = fixture.Open(); var start = Day; var end = Day.AddHours(3);
+        var batches = new List<UsageMinuteBatch>(); var values = new List<double>();
+        for (int i = 0; i < 180; i++)
+        {
+            if (i is >= 60 and < 80) continue;
+            double value = i % 100; values.Add(value);
+            batches.Add(Batch(start.AddMinutes(i), metrics: [Metric(start.AddMinutes(i), UsageMetrics.Cpu, value, complete: i % 7 != 0),
+                Metric(start.AddMinutes(i), UsageMetrics.Gpu, 50, hardware: "/gpu/0")]));
+        }
+        store.Append("tablet", batches, end);
+        var view = store.ReadMetric("tablet", UsageMetrics.Cpu, null, start, end, 18);
+        Assert.Equal(600_000, view.BucketMilliseconds);
+        Assert.Equal(16, view.Buckets.Count);
+        Assert.Equal(start, view.Buckets[0].Start); Assert.Equal(start.AddMinutes(10), view.Buckets[0].End);
+        Assert.All(view.Buckets, b => Assert.Equal(10, b.Minutes));
+        Assert.DoesNotContain(view.Buckets, b => b.Start == start.AddMinutes(60) || b.Start == start.AddMinutes(70));
+        Assert.Equal(start.AddMinutes(80), view.Buckets[6].Start);
+        Assert.Equal(160, view.Minutes);
+        Assert.Equal(0, view.Statistics.Minimum); Assert.Equal(99, view.Statistics.Maximum);
+        Assert.Equal(values.Average(), view.Statistics.Average!.Value, 9);
+        Assert.Equal(batches.Count(b => b.Metrics[0].Complete), view.Buckets.Sum(b => b.CompleteMinutes));
+        var month = store.ReadMetric("tablet", UsageMetrics.Cpu, null, end.AddDays(-30), end);
+        Assert.InRange(month.Buckets.Count, 1, 1500); Assert.Equal(160, month.Buckets.Sum(b => b.Minutes));
+        Assert.Equal(160, store.ReadMetric("tablet", UsageMetrics.Gpu, "/gpu/0", start, end).Minutes);
+        Assert.Equal(0, store.ReadMetric("tablet", UsageMetrics.Gpu, "/gpu/1", start, end).Minutes);
+        Assert.Null(store.ReadMetric("tablet", UsageMetrics.Memory, null, start, end).Statistics.Average);
+        Assert.Throws<ArgumentException>(() => store.ReadMetric("tablet", UsageMetrics.Gpu, null, start, end));
+        Assert.Throws<ArgumentException>(() => store.ReadMetric("tablet", UsageMetrics.Cpu, "/gpu/0", start, end));
+        Assert.Throws<ArgumentException>(() => store.ReadMetric("tablet", "gpufan", null, start, end));
+    }
+
+    [Fact]
+    public void Application_totals_are_bounded_with_a_remainder_and_disclose_capture_gaps()
+    {
+        using var fixture = new Fixture(); var store = fixture.Open(); var now = Day.AddHours(1);
+        var apps = Enumerable.Range(0, 250).Select(i => ($"app{i:000}.exe", (i + 1) * 1000L, 1L)).ToArray();
+        var batches = new List<UsageMinuteBatch> { Batch(Day, apps: apps), Batch(Day.AddMinutes(1), apps: [("app249.exe", 1, 1)]) };
+        for (int i = 2; i < 5; i++) batches.Add(Batch(Day.AddMinutes(i), gap: true, metrics: []));
+        store.Append("tablet", batches, now);
+        var view = store.ReadApplications("tablet", Day, now);
+        Assert.Equal(200, view.Applications.Count);
+        Assert.Equal("app249.exe", view.Applications[0].Name); Assert.Equal(250_001, view.Applications[0].Received); Assert.Equal(2, view.Applications[0].Minutes);
+        Assert.Equal(50, view.OtherApplications); Assert.Equal(Enumerable.Range(1, 50).Sum(i => i * 1000L), view.OtherReceived); Assert.Equal(50, view.OtherSent);
+        Assert.Equal(3, view.CaptureGapMinutes); Assert.Equal(2, view.RecordedMinutes); Assert.Equal(Day, view.EarliestRetained);
+        var all = store.ReadApplications("tablet", Day, now, 1000);
+        Assert.Equal(250, all.Applications.Count); Assert.Equal(0, all.OtherApplications); Assert.Equal(0, all.OtherReceived);
+        Assert.Empty(store.ReadApplications("tablet", Day.AddHours(-2), Day).Applications);
+    }
+
+    [Fact]
+    public void Eviction_drops_whole_oldest_days_and_never_the_day_being_recorded()
+    {
+        using var fixture = new Fixture(); const long cap = 131_072; var store = fixture.Open(cap);
+        static UsageMinuteBatch[] DayOf(DateTimeOffset day) => Enumerable.Range(0, 240)
+            .Select(i => Batch(day.AddMinutes(i), apps: [("app.exe", 1, 1)])).ToArray();
+        var days = Enumerable.Range(0, 10).Select(i => Day.AddDays(i)).ToArray();
+        foreach (var day in days) store.Append("tablet", DayOf(day), day.AddHours(23));
+        var earliest = store.EarliestRetained("tablet");
+        Assert.NotNull(earliest);
+        Assert.True(earliest > days[0], "the oldest day was evicted");
+        Assert.Equal(TimeSpan.Zero, earliest.Value.TimeOfDay);
+        Assert.Equal(240, store.ReadMetric("tablet", UsageMetrics.Cpu, null, earliest.Value, earliest.Value.AddDays(1)).Minutes);
+        Assert.Equal(240, store.ReadMetric("tablet", UsageMetrics.Cpu, null, days[9], days[9].AddDays(1)).Minutes);
+        Assert.Equal(240, Assert.Single(store.ReadApplications("tablet", days[9], days[9].AddDays(1)).Applications).Minutes);
+        Assert.InRange(new FileInfo(fixture.Path).Length, 1, cap);
+    }
+
+    [Fact]
+    public void A_full_store_with_only_today_reports_an_error_and_keeps_existing_rows()
+    {
+        using var fixture = new Fixture(); var store = fixture.Open(65_536); var now = Day.AddHours(12);
+        store.Append("tablet", Enumerable.Range(0, 30).Select(i => Batch(Day.AddMinutes(i))).ToArray(), now);
+        var huge = Enumerable.Range(30, 400).Select(i => Batch(Day.AddMinutes(i), metrics: UsageMetrics.All
+            .Select(m => Metric(Day.AddMinutes(i), m, 1, hardware: UsageMetrics.UsesHardwareId(m) ? "/gpu/0" : null)).ToArray())).ToArray();
+        Assert.Throws<IOException>(() => store.Append("tablet", huge, now));
+        Assert.Equal(30, store.ReadMetric("tablet", UsageMetrics.Cpu, null, Day, now).Minutes);
+        Assert.Equal(Day, store.EarliestRetained("tablet"));
+    }
+
+    [Fact]
+    public void Csv_exports_neutralize_formulas_and_use_invariant_culture()
+    {
+        using var fixture = new Fixture(); var store = fixture.Open(); var now = Day.AddHours(1);
+        string hostile = "=cmd|' /C calc'!A0";
+        store.Append("tablet", [Batch(Day, metrics: [Metric(Day, UsageMetrics.Cpu, 12.5, minimum: 1.25, maximum: 99.75),
+            Metric(Day, UsageMetrics.GpuTemperature, 60, hardware: "/gpu/0", complete: false)], apps: [(hostile, 10, 20), ("chrome.exe", 1, 2)])], now);
+        store.Append("other", [Batch(Day, apps: [("steam.exe", 5, 5)])], now);
+        using var metrics = new StringWriter(CultureInfo.GetCultureInfo("fr-FR"));
+        store.ExportMetricsCsv("tablet", metrics, Day, now);
+        string csv = metrics.ToString();
+        Assert.StartsWith("minute_utc,metric,hardware_id,average,minimum,maximum,samples,complete,segment", csv);
+        Assert.Contains("\"cpu\",\"\",\"12.5\",\"1.25\",\"99.75\",\"60\",\"True\",\"seg-a\"", csv);
+        Assert.Contains("\"gputemp\",\"/gpu/0\",\"60\",\"60\",\"60\",\"60\",\"False\"", csv);
+        Assert.Contains("2026-11-02T00:00:00.0000000+00:00", csv);
+        Assert.Equal(3, csv.Split('\n', StringSplitOptions.RemoveEmptyEntries).Length);
+        using var apps = new StringWriter(CultureInfo.InvariantCulture);
+        store.ExportApplicationsCsv("tablet", apps, Day, now);
+        string totals = apps.ToString();
+        Assert.StartsWith("application,received_bytes,sent_bytes,minutes_observed", totals);
+        Assert.Contains("\"'" + hostile + "\",\"10\",\"20\",\"1\"", totals);
+        Assert.Contains("\"chrome.exe\",\"1\",\"2\",\"1\"", totals);
+        Assert.DoesNotContain("steam", totals);
+        Assert.Equal(3, totals.Split('\n', StringSplitOptions.RemoveEmptyEntries).Length);
+    }
+
+    [Fact]
+    public void Invalid_batches_are_rejected_before_any_write()
+    {
+        using var fixture = new Fixture(); var store = fixture.Open(); var now = Day.AddHours(1);
+        var good = Batch(Day);
+        var wrongMinute = new UsageMinuteBatch(Day, [Metric(Day.AddMinutes(1), UsageMetrics.Cpu, 1)], [], false, "seg-a");
+        Assert.Throws<ArgumentException>(() => store.Append("tablet", [good, wrongMinute], now));
+        Assert.Throws<ArgumentException>(() => store.Append("tablet", [Batch(Day, metrics: [Metric(Day, "gpufan", 1)])], now));
+        Assert.Throws<ArgumentException>(() => store.Append("tablet", [Batch(Day, metrics: [Metric(Day, UsageMetrics.Gpu, 1)])], now));
+        Assert.Throws<ArgumentException>(() => store.Append("tablet", [Batch(Day, metrics: [Metric(Day, UsageMetrics.Cpu, 1, samples: 0)])], now));
+        Assert.Throws<ArgumentException>(() => store.Append("tablet", [Batch(Day, metrics: [Metric(Day, UsageMetrics.Cpu, double.NaN)])], now));
+        Assert.Throws<ArgumentException>(() => store.Append("tablet", [Batch(Day, apps: [("chrome.exe", -1, 0)])], now));
+        Assert.Throws<ArgumentException>(() => store.Append("tablet", [Batch(Day, apps: [(" chrome.exe", 1, 0)])], now));
+        Assert.Throws<ArgumentException>(() => store.Append("tablet", [Batch(Day, "bad segment!")], now));
+        Assert.Throws<ArgumentException>(() => store.Append("", [good], now));
+        Assert.Throws<ArgumentException>(() => store.Append("tablet", Enumerable.Range(0, UsageHistoryStore.MaximumBatchRows + 1)
+            .Select(i => Batch(Day.AddMinutes(i))).ToArray(), now));
+        Assert.Equal(0, store.ReadMetric("tablet", UsageMetrics.Cpu, null, Day, now).Minutes);
+        Assert.Null(store.EarliestRetained("tablet"));
+        store.Append("tablet", [], now);
+        Assert.Throws<InvalidOperationException>(() => new UsageHistoryStore(fixture.Path).ReadMetric("tablet", UsageMetrics.Cpu, null, Day, now));
+        Assert.Throws<ArgumentOutOfRangeException>(() => new UsageHistoryStore(fixture.Path, 1024));
+    }
+
+    private sealed class Fixture : IDisposable
+    {
+        private readonly string root = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "DeadWare-usage-" + Guid.NewGuid().ToString("N"));
+        public string Path => System.IO.Path.Combine(root, "usage.db");
+        public UsageHistoryStore Open(long maximumBytes = UsageHistoryStore.MaximumDatabaseBytes)
+        { var store = new UsageHistoryStore(Path, maximumBytes); store.Initialize(); return store; }
+        public void Dispose() { if (Directory.Exists(root)) Directory.Delete(root, true); }
+    }
+}

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.7.0 — Usage history
+
+- Add **Usage history** beside Battery history, with an **Open in window** action and a remembered window. Browse **Day**, **Week** and **Month** views of CPU and GPU usage and temperature, RAM usage and network download/upload, step to earlier periods, and read minimum, average and maximum for the period from the stored minute values.
+- Each chart draws the average of the recorded minutes in each slot over a shaded minimum–maximum band. Minutes without readings stay empty, and partial slots are not connected, so sleep, restarts and stopped monitoring remain visible as gaps.
+- See per-application download and upload totals for the period, summed by executable name across its processes, with search, a share bar, an **Other applications** row beyond the first 200 names, and a notice when recorded minutes had no per-application capture. Open Connections to see where the bytes went.
+- Recording is on by default and saved as **Record usage history on this device** on the page and in Settings. Pausing keeps what was saved. History lives in `%LOCALAPPDATA%\DeadWare\usage-history.db`, keeps up to 400 days or 256 MiB (the oldest whole days are dropped first, never the current day), and is never uploaded. GPU rows are keyed by model name, so a change in enumeration order does not split them.
+- Export the period's device minutes or application totals to a new CSV file. Names that look like spreadsheet formulas are neutralized in exports.
+- History begins when 0.7.0 first runs; the six-hour live graphs and their cache are unchanged and are not copied into the new store.
+
 ## 0.6.39 — Safer updates and startup
 
 - The Updates page no longer closes DeadWare when an installed app file or the saved rollback copy has been changed or damaged. It shows a message and disables installing until the complete package is reinstalled.
