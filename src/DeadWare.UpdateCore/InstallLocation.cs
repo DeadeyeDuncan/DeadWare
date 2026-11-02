@@ -1,6 +1,9 @@
+using System.Runtime.CompilerServices;
 using System.Runtime.Versioning;
 using System.Security.AccessControl;
 using System.Security.Principal;
+
+[assembly: InternalsVisibleTo("DeadWare.Tests")]
 
 namespace DeadWare.UpdateCore;
 
@@ -47,12 +50,12 @@ public static class InstallLocation
     [SupportedOSPlatform("windows")]
     public static LocationProtection Check(string directory,int strictParents=0)=>Evaluate(Enumerate(directory,strictParents));
 
-    /// <summary>Reads <paramref name="directory"/> and everything beneath it as Directory/File entries, its nearest <paramref name="strictParents"/> parents as Directory entries (without their other children), and the remaining parents up to the volume root as Ancestor entries.</summary>
+    /// <summary>Reads <paramref name="directory"/> and everything beneath it as Directory/File entries, its nearest <paramref name="strictParents"/> parents as Directory entries (without their other children), and the remaining parents up to the volume root as Ancestor entries. Descendants deleted while it reads are skipped.</summary>
     [SupportedOSPlatform("windows")]
     public static List<PathSecurity> Read(string directory,int strictParents=0)=>Enumerate(directory,strictParents).ToList();
 
     [SupportedOSPlatform("windows")]
-    private static IEnumerable<PathSecurity> Enumerate(string directory,int strictParents)
+    internal static IEnumerable<PathSecurity> Enumerate(string directory,int strictParents)
     {
         string? root=null,invalid=null;bool network=false;
         try {root=Path.TrimEndingDirectorySeparator(Path.GetFullPath(directory));network=Remote(root);}catch(Exception e) {root=null;invalid=e.Message;}
@@ -61,12 +64,16 @@ public static class InstallLocation
         var options=new EnumerationOptions{AttributesToSkip=0,IgnoreInaccessible=false};
         while(pending.TryPop(out var folder))
         {
-            var entry=Entry(folder,PathKind.Directory);yield return entry;
+            // A descendant deleted after its folder listed it is no longer part of the tree and is skipped; the root itself must exist.
+            bool descendant=!folder.FullName.Equals(root,StringComparison.OrdinalIgnoreCase);
+            var entry=Entry(folder,PathKind.Directory);
+            if(entry.Error is not null&&descendant&&Gone(folder.FullName))continue;
+            yield return entry;
             if(entry.Error is not null||entry.ReparsePoint)continue;
             FileSystemInfo[] children;string? error=null;
             try {children=folder.GetFileSystemInfos("*",options);}catch(Exception e) {children=[];error=e.Message;}
-            if(error is not null)yield return new(folder.FullName,PathKind.Directory,null,[],false,error);
-            foreach(var child in children)if(child is DirectoryInfo subfolder)pending.Push(subfolder);else yield return Entry(child,PathKind.File);
+            if(error is not null&&!(descendant&&Gone(folder.FullName)))yield return new(folder.FullName,PathKind.Directory,null,[],false,error);
+            foreach(var child in children)if(child is DirectoryInfo subfolder)pending.Push(subfolder);else if(Entry(child,PathKind.File) is var file&&(file.Error is null||!Gone(file.Path)))yield return file;
         }
         int depth=0;
         for(string? parent=Path.GetDirectoryName(root);parent is not null;parent=Path.GetDirectoryName(parent))yield return ReadEntry(parent,depth++<strictParents?PathKind.Directory:PathKind.Ancestor);
@@ -95,6 +102,15 @@ public static class InstallLocation
             return Describe(info.FullName,kind,security,(info.Attributes&FileAttributes.ReparsePoint)!=0);
         }
         catch(Exception e) {return new(info.FullName,kind,null,[],false,e.Message);}
+    }
+
+    /// <summary>Only when its folder no longer lists <paramref name="path"/> (or is itself gone). A listed name that cannot be opened, such as one ending in a dot, still exists and fails closed.</summary>
+    [SupportedOSPlatform("windows")]
+    private static bool Gone(string path)
+    {
+        try {return !Directory.EnumerateFileSystemEntries(Path.GetDirectoryName(path)!,"*",new EnumerationOptions{AttributesToSkip=0,IgnoreInaccessible=false}).Contains(path,StringComparer.OrdinalIgnoreCase);}
+        catch(DirectoryNotFoundException) {return true;}
+        catch(Exception) {return false;}
     }
 
     /// <summary>The owner and Allow/Deny rules (inherited included) of a security descriptor, as one policy entry.</summary>

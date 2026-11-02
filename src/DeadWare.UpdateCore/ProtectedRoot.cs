@@ -17,15 +17,17 @@ public static class ProtectedRoot
     [SupportedOSPlatform("windows")]
     public static void Verify(string root){if(!InstallLocation.Check(root,2).Protected)throw new InvalidDataException(Refusal);}
 
-    /// <summary>Verifies the deepest part of the protected chain that exists (key root, else updates, else DeadWare, links included); before %ProgramData%\DeadWare exists there is nothing to trust or refuse.</summary>
+    /// <summary>Verifies the deepest part of the protected chain that exists (key root, else updates, else DeadWare, links included); before %ProgramData%\DeadWare exists there is nothing to trust or refuse.
+    /// Returns whether the key root may be read: false while a protected key root did not exist when checked, so nothing beneath it was verified.</summary>
     [SupportedOSPlatform("windows")]
-    public static void VerifyExisting(UpdatePaths paths)
+    public static bool VerifyExisting(UpdatePaths paths)
     {
-        if(!paths.Protected)return;
+        if(!paths.Protected)return true;
         string updates=Path.GetDirectoryName(paths.Root)!,deadWare=Path.GetDirectoryName(updates)!;
-        if(Path.Exists(paths.Root))Verify(paths.Root);
-        else if(Path.Exists(updates)){if(!InstallLocation.Check(updates,1).Protected)throw new InvalidDataException(Refusal);}
+        if(Path.Exists(paths.Root)){Verify(paths.Root);return true;}
+        if(Path.Exists(updates)){if(!InstallLocation.Check(updates,1).Protected)throw new InvalidDataException(Refusal);}
         else if(Path.Exists(deadWare)&&!InstallLocation.Check(deadWare).Protected)throw new InvalidDataException(Refusal);
+        return false;
     }
 
     [SupportedOSPlatform("windows")]

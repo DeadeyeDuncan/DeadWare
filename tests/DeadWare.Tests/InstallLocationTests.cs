@@ -153,6 +153,46 @@ public class InstallLocationTests
         }
         finally {if(Directory.Exists(directory))Directory.Delete(directory,true);}
     }
+    [Fact, SupportedOSPlatform("windows")] public void Reader_skips_descendants_deleted_during_the_audit_but_a_missing_root_fails_closed()
+    {
+        string directory=Path.Combine(Path.GetTempPath(),"DeadWare-tests-"+Guid.NewGuid().ToString("N")),nested=Path.Combine(directory,"nested"),inner=Path.Combine(directory,"inner");
+        try
+        {
+            Directory.CreateDirectory(nested);Directory.CreateDirectory(inner);
+            foreach(string file in new[]{Path.Combine(directory,"a.dll"),Path.Combine(directory,"b.dll"),Path.Combine(nested,"c.dll"),Path.Combine(inner,"d.dll")})File.WriteAllText(file,"app");
+            var entries=new List<PathSecurity>();
+            // The reader is lazy: after the first file is read, its listed sibling and queued folder vanish before their own reads,
+            // and the inner folder vanishes after its own read but before its children are listed.
+            foreach(var entry in InstallLocation.Enumerate(directory,0))
+            {
+                entries.Add(entry);
+                if(entry.Kind==PathKind.File&&entries.Count(e=>e.Kind==PathKind.File)==1)
+                {
+                    foreach(string file in new[]{Path.Combine(directory,"a.dll"),Path.Combine(directory,"b.dll")})if(file!=entry.Path)File.Delete(file);
+                    Directory.Delete(nested,true);
+                }
+                if(entry.Path==inner&&Directory.Exists(inner))Directory.Delete(inner,true);
+            }
+            Assert.All(entries,entry=>Assert.Null(entry.Error));
+            Assert.Single(entries,entry=>entry.Kind==PathKind.File);Assert.DoesNotContain(entries,entry=>entry.Path.StartsWith(nested,StringComparison.OrdinalIgnoreCase));
+            Directory.Delete(directory,true);
+            var missing=InstallLocation.Check(directory);
+            Assert.False(missing.Protected);Assert.Equal($"Permissions for {directory} could not be read: The path does not exist.",missing.Reason);
+        }
+        finally {if(Directory.Exists(directory))Directory.Delete(directory,true);}
+    }
+    [Fact, SupportedOSPlatform("windows")] public void Reader_fails_closed_on_a_listed_entry_it_cannot_open()
+    {
+        string directory=Path.Combine(Path.GetTempPath(),"DeadWare-tests-"+Guid.NewGuid().ToString("N")),odd=Path.Combine(directory,"plugin.dll.");
+        try
+        {
+            // Windows lists a name with a trailing dot but normal paths cannot open it; it still exists, so it is never skipped as vanished.
+            Directory.CreateDirectory(directory);File.WriteAllText(@"\\?\"+odd,"app");
+            var entry=Assert.Single(InstallLocation.Read(directory),entry=>entry.Path==odd);
+            Assert.NotNull(entry.Error);Assert.False(InstallLocation.Check(directory).Protected);
+        }
+        finally {if(File.Exists(@"\\?\"+odd))File.Delete(@"\\?\"+odd);if(Directory.Exists(directory))Directory.Delete(directory,true);}
+    }
     [Fact, SupportedOSPlatform("windows")] public void Reader_flags_junctions_without_following_them()
     {
         string directory=Path.Combine(Path.GetTempPath(),"DeadWare-tests-"+Guid.NewGuid().ToString("N")),target=Path.Combine(directory,"target"),link=Path.Combine(directory,"link");

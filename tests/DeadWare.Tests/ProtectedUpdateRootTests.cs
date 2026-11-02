@@ -88,7 +88,7 @@ public class ProtectedUpdateRootTests
     {
         using var fixture=new UpdateFixture();string target=Path.Combine(fixture.Root,"elsewhere"),programData=Path.Combine(fixture.Root,"ProgramData"),link=Path.Combine(programData,"DeadWare");
         string protectedBase=Path.Combine(link,"updates"),userBase=Path.Combine(fixture.Root,"user"),id=Guid.NewGuid().ToString("N"),installed=fixture.Package("app","0.6.0","old");
-        ProtectedRoot.VerifyExisting(UpdatePaths.ForInstallation(installed,true,protectedBase,userBase)); // Nothing to trust or refuse before DeadWare exists.
+        Assert.False(ProtectedRoot.VerifyExisting(UpdatePaths.ForInstallation(installed,true,protectedBase,userBase))); // Nothing to trust, refuse or read before DeadWare exists.
         Directory.CreateDirectory(target);Directory.CreateDirectory(programData);Junction(link,target);
         try
         {
@@ -110,10 +110,37 @@ public class ProtectedUpdateRootTests
         using var process=Process.Start(new ProcessStartInfo("cmd.exe"){ArgumentList={"/c","mklink","/J",link,target},CreateNoWindow=true,UseShellExecute=false,RedirectStandardOutput=true})!;
         process.StandardOutput.ReadToEnd();process.WaitForExit();Assert.Equal(0,process.ExitCode);
     }
+    [ElevatedFact, SupportedOSPlatform("windows")] public void An_elevated_update_of_a_protected_installation_keeps_the_root_and_the_installation_protected()
+    {
+        // Real ACLs, no network: a scratch administrator-only folder stands in for %ProgramData% and Program Files (a user's temp folder fails as a parent).
+        using var fixture=new UpdateFixture();string smoke=@"C:\dw-smoke-"+Guid.NewGuid().ToString("N"),installed=Path.Combine(smoke,"app"),userBase=Path.Combine(fixture.Root,"user");
+        void Protected(string directory,int strictParents=0){var result=InstallLocation.Check(directory,strictParents);Assert.True(result.Protected,result.Reason);}
+        try
+        {
+            new DirectoryInfo(smoke).Create(ProtectedRoot.Security());new DirectoryInfo(installed).Create(ProtectedRoot.Security());fixture.Package(installed,"0.6.38","old app");
+            Protected(installed);Assert.True(UpdatePaths.ForInstallation(installed).Protected);
+            var paths=UpdatePaths.ForInstallation(installed,true,Path.Combine(smoke,"DeadWare","updates"),userBase);
+            Assert.False(ProtectedRoot.VerifyExisting(paths));
+            ProtectedRoot.Prepare(paths);Protected(paths.Root,2);Assert.True(ProtectedRoot.VerifyExisting(paths));
+            string id=Guid.NewGuid().ToString("N"),stage=fixture.Package(Path.Combine(paths.JobDirectory(id),"package"),"0.6.39","new app");fixture.AddFile(stage,"DeadWare.Extra.dll","new library");
+            var transaction=new InstallTransaction(paths);transaction.Apply(stage,"0.6.38","0.6.39");transaction.Commit();
+            // Replaced and added files, the journal and the snapshot inherit the protected folders' rules.
+            Packages.ValidateDirectory(installed,"0.6.39");Assert.Equal("new library",File.ReadAllText(Path.Combine(installed,"DeadWare.Extra.dll")));
+            ProtectedRoot.Verify(paths);Protected(paths.Root,2);Protected(installed);Assert.Equal("0.6.38",transaction.Previous()!.Version);
+            // A second job interrupted after replacing files is recovered from its protected snapshot.
+            string next=Guid.NewGuid().ToString("N"),newer=fixture.Package(Path.Combine(paths.JobDirectory(next),"package"),"0.6.40","newer app");
+            transaction.Apply(newer,"0.6.39","0.6.40");Assert.True(File.Exists(paths.PendingFile));Packages.ValidateDirectory(installed,"0.6.40");
+            transaction.Recover();Assert.False(File.Exists(paths.PendingFile));
+            Packages.ValidateDirectory(installed,"0.6.39");Assert.Equal("new app",File.ReadAllText(Path.Combine(installed,"DeadWare.exe")));
+            ProtectedRoot.Verify(paths);Protected(paths.Root,2);Protected(installed);Assert.Equal("0.6.38",transaction.Previous()!.Version);
+            Assert.False(Directory.Exists(userBase));
+        }
+        finally{if(Directory.Exists(smoke))Directory.Delete(smoke,true);}
+    }
     [Fact, SupportedOSPlatform("windows")] public void Unprotected_paths_are_neither_prepared_nor_audited()
     {
         using var fixture=new UpdateFixture();var paths=new UpdatePaths(fixture.Package("app","0.6.0","old"),Path.Combine(fixture.Root,"cache"));
-        ProtectedRoot.Prepare(paths);ProtectedRoot.Verify(paths);ProtectedRoot.VerifyExisting(paths);
+        ProtectedRoot.Prepare(paths);ProtectedRoot.Verify(paths);Assert.True(ProtectedRoot.VerifyExisting(paths));
         Assert.False(Directory.Exists(Path.Combine(fixture.Root,"cache")));
     }
     [Fact] public void Locked_helper_cannot_be_replaced_or_deleted_but_still_starts()
@@ -138,4 +165,12 @@ public class ProtectedUpdateRootTests
         Assert.Throws<InvalidDataException>(()=>UpdateHandoff.LockHelper(helper,new string('0',64)));
         File.Delete(helper);Assert.False(File.Exists(helper));
     }
+}
+
+/// <summary>Runs only in an elevated test process (CI runners are elevated) and is reported as skipped otherwise.</summary>
+public sealed class ElevatedFactAttribute:FactAttribute
+{
+    public ElevatedFactAttribute(){if(!OperatingSystem.IsWindows()||!Elevated())Skip="Needs an elevated test run; CI runs it elevated.";}
+    [SupportedOSPlatform("windows")]
+    private static bool Elevated(){using var identity=WindowsIdentity.GetCurrent();return new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator);}
 }

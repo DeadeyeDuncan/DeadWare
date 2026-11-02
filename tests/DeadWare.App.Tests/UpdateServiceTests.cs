@@ -120,7 +120,7 @@ public class UpdateServiceTests
         }
         finally{if(Directory.Exists(root))Directory.Delete(root,true);}
     }
-    [Fact] public void Handoff_search_prefers_the_installation_root_and_falls_back_to_the_legacy_per_user_root()
+    [Fact] public void Handoff_search_prefers_a_verified_installation_root_and_falls_back_to_the_legacy_per_user_root()
     {
         string root=Path.Combine(Path.GetTempPath(),"DeadWare-handoff-"+Guid.NewGuid().ToString("N"));
         try
@@ -128,16 +128,19 @@ public class UpdateServiceTests
             string installed=Package(root,"app","0.6.39"),id=Guid.NewGuid().ToString("N");
             var paths=UpdatePaths.ForInstallation(installed,true,Path.Combine(root,"protected"),Path.Combine(root,"user"));
             void Request(UpdatePaths candidate){Directory.CreateDirectory(candidate.JobDirectory(id));File.WriteAllText(Path.Combine(candidate.JobDirectory(id),"request.json"),"{}");}
-            Assert.Same(paths,UpdateService.HandoffPaths(paths,id));
-            Request(paths.Legacy!);Assert.Same(paths.Legacy,UpdateService.HandoffPaths(paths,id));
-            Request(paths);Assert.Same(paths,UpdateService.HandoffPaths(paths,id));
+            Func<UpdatePaths,bool> verified=_=>true;
+            Assert.Empty(UpdateService.HandoffPaths(paths,id));Assert.Empty(UpdateService.HandoffPaths(paths,id,verified));
+            // A request planted in a protected base that fails verification (a user-created temp folder) is never a candidate.
+            Request(paths);Assert.Empty(UpdateService.HandoffPaths(paths,id));Assert.Same(paths,Assert.Single(UpdateService.HandoffPaths(paths,id,verified)));
+            Request(paths.Legacy!);Assert.Same(paths.Legacy,Assert.Single(UpdateService.HandoffPaths(paths,id)));
+            Assert.Equal(new[]{paths,paths.Legacy!},UpdateService.HandoffPaths(paths,id,verified));
             var user=UpdatePaths.ForInstallation(installed,false,Path.Combine(root,"protected"),Path.Combine(root,"user"));
-            Assert.Equal(paths.Legacy!.Root,user.Root);Assert.Same(user,UpdateService.HandoffPaths(user,id));
+            Assert.Equal(paths.Legacy!.Root,user.Root);Assert.Same(user,Assert.Single(UpdateService.HandoffPaths(user,id,_=>throw new InvalidOperationException("An unprotected root is not verified."))));
         }
         finally{if(Directory.Exists(root))Directory.Delete(root,true);}
     }
-    [Theory] [InlineData(false)] [InlineData(true)]
-    public void Startup_acknowledges_a_handoff_left_by_an_older_updater_in_the_per_user_root(bool plantedJunction)
+    [Theory] [InlineData(false,false)] [InlineData(true,false)] [InlineData(false,true)]
+    public void Startup_acknowledges_a_handoff_left_by_an_older_updater_in_the_per_user_root(bool plantedJunction,bool plantedRequest)
     {
         string root=Path.Combine(Path.GetTempPath(),"DeadWare-legacy-ack-"+Guid.NewGuid().ToString("N")),link=Path.Combine(root,"ProgramData","DeadWare");Process? helper=null;
         try
@@ -154,14 +157,23 @@ public class UpdateServiceTests
             SafeFiles.WriteJson(Path.Combine(job,"request.json"),new UpdateJob(id,paths.Key,installed,stage,"0.6.38","0.6.39","update",new ProcessIdentity(self.Id,1,self.SessionId,sid,Path.Combine(installed,"DeadWare.exe")),
                 Packages.Hash(Path.Combine(stage,Packages.ManifestName)),DateTimeOffset.UtcNow));
             SafeFiles.WriteJson(Path.Combine(job,"ready.json"),new HelperReady(id,new ProcessIdentity(pid,helper.StartTime.ToUniversalTime().Ticks,helper.SessionId,sid,executable)));
+            // Any local user can create folders under %ProgramData% and plant a request with the job's identifier there.
+            string planted=Path.Combine(link,"updates",paths.Key,"jobs",id);
+            if(plantedRequest){Directory.CreateDirectory(planted);File.WriteAllText(Path.Combine(planted,"request.json"),"{ not json");}
             string[] args=["--update-handoff",id];
             Assert.Throws<InvalidDataException>(()=>UpdateService.AcknowledgeStartup(args,paths,"0.6.40"));Assert.False(File.Exists(Path.Combine(job,"started.json")));
+            if(plantedRequest)
+            {
+                // Even a planted request that is preferred (as if its root verified) only fails over to the genuine handoff; every candidate failing still throws.
+                Assert.Equal("Invalid update metadata.",Assert.Throws<InvalidDataException>(()=>UpdateService.AcknowledgeStartup(args,paths,"0.6.40",_=>true)).Message);
+                UpdateService.AcknowledgeStartup(args,paths,"0.6.39",_=>true);Assert.True(File.Exists(Path.Combine(job,"started.json")));File.Delete(Path.Combine(job,"started.json"));
+            }
             UpdateService.AcknowledgeStartup(args,paths,"0.6.39");
             var ack=SafeFiles.ReadJson<StartupAck>(Path.Combine(job,"started.json"));
             Assert.Equal((id,"0.6.39",self.Id,sid),(ack.Id,ack.Version,ack.Process.Pid,ack.Process.UserSid));
-            Assert.False(Directory.Exists(Path.Combine(link,"updates")));
+            Assert.Equal(plantedRequest,Directory.Exists(Path.Combine(link,"updates")));Assert.False(File.Exists(Path.Combine(planted,"started.json")));
         }
-        finally{if(helper is not null){if(!helper.HasExited)helper.Kill();helper.WaitForExit();helper.Dispose();}if(Directory.Exists(link))Directory.Delete(link);if(Directory.Exists(root))Directory.Delete(root,true);}
+        finally{if(helper is not null){if(!helper.HasExited)helper.Kill();helper.WaitForExit();helper.Dispose();}if(plantedJunction&&Directory.Exists(link))Directory.Delete(link);if(Directory.Exists(root))Directory.Delete(root,true);}
     }
     [Fact] public async Task A_protected_installation_never_trusts_update_state_in_the_per_user_root()
     {
