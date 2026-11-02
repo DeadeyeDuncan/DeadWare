@@ -122,6 +122,13 @@ internal sealed class UsageHistoryPage : ScrollViewer
         else { timer.Stop(); revision++; }
     }
     private void Step(int direction) { offset = Math.Max(0, offset + direction); UpdatePeriod(); RequestRefresh(); }
+    /// <summary>Selects the Day range and steps back to the day that contains <paramref name="at"/>.</summary>
+    public void ShowDay(DateTimeOffset at)
+    {
+        range.SelectedIndex = 0;
+        offset = Math.Max(0, (int)Math.Floor((DateTimeOffset.UtcNow - at).TotalDays));
+        UpdatePeriod(); RequestRefresh();
+    }
     private (DateTimeOffset From, DateTimeOffset To) Period()
     {
         var to = DateTimeOffset.UtcNow.AddDays(-offset * Days);

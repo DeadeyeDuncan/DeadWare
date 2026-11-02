@@ -29,6 +29,9 @@ public sealed class UiSession
     private readonly Dictionary<string,Window> detached=new();
     private readonly Dictionary<Window,Action> captureWindows=new();
     public event Action? Changed;
+    /// <summary>Raised when a page asks the dashboard to show Usage history for the day containing the given time.</summary>
+    public event Action<DateTimeOffset>? UsageDayRequested;
+    public void RequestUsageDay(DateTimeOffset at)=>UsageDayRequested?.Invoke(at);
     public Reading? Current=>Collector.Latest;
     public int HistorySeconds=>Settings.HistorySeconds;
     public string? SelectedGpuId=>Current is null?null:DeviceSelection.Resolve(Settings.SelectedGpuId,Current.Gpus);

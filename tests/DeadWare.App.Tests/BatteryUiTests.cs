@@ -68,6 +68,8 @@ public class BatteryUiTests
                 RuneTraceUiChecks.Run();
                 Phase("usage history");
                 UsageHistoryUiChecks.Run(app);
+                Phase("alerts");
+                AlertsUiChecks.Run(app);
                 Phase("battery history");
                 var assembly = typeof(Collector).Assembly;
                 var pageType = assembly.GetType("DeadWare.App.BatteryHistoryPage"); Assert.NotNull(pageType);
@@ -238,6 +240,7 @@ public class BatteryUiTests
                 VerifyCpuPumpSpeed(session, collector, assembly, settings, pollingSettingsPath);
                 VerifyGraphSmoothing(session, settings, pollingSettingsPath);
                 VerifyUsageRecording(session, settings, pollingSettingsPath);
+                VerifyAlertNotifications(session, settings, pollingSettingsPath);
                 VerifyRangeDropdown(session, dashboard, assembly, pollingSettingsPath);
                 VerifyThemeMenu(session, sidebar, pollingSettingsPath);
                 foreach (double seconds in new double[] { 10, .5, 1 })
@@ -553,6 +556,24 @@ public class BatteryUiTests
             Assert.Contains(settings.Children.OfType<Button>(),button=>button.Content?.ToString()=="Open Usage history");
         }
         finally {session.Changed-=Changed;session.SetUsageRecording(true);CompleteSettingsSave(session);}
+    }
+    private static void VerifyAlertNotifications(UiSession session,StackPanel settings,string settingsPath)
+    {
+        var toggle=Assert.Single(settings.Children.OfType<CheckBox>(),choice=>choice.Content?.ToString()=="Show tray notifications for alerts");
+        Assert.Equal("Alert notifications",System.Windows.Automation.AutomationProperties.GetName(toggle));
+        Assert.True(toggle.IsChecked);int notifications=0;void Changed()=>notifications++;
+        session.Changed+=Changed;
+        try
+        {
+            toggle.IsChecked=false;Assert.False(session.Settings.AlertNotifications);Assert.Equal(1,notifications);Assert.False(session.Alerts.NotificationsEnabled);
+            CompleteSettingsSave(session);Assert.False(SettingsCodec.Read(File.ReadAllText(settingsPath)).Settings.AlertNotifications);
+            session.SetAlertNotifications(true);Assert.True(toggle.IsChecked);Assert.Equal(2,notifications);
+            var rule=new AlertRule("ui-rule",AlertKind.Metric,"cpu",90,5,true,DateTimeOffset.UtcNow);
+            session.SetAlertRules([rule]);Assert.Equal(3,notifications);Assert.Equal("ui-rule",Assert.Single(session.Alerts.Rules).Id);
+            CompleteSettingsSave(session);Assert.Equal("ui-rule",Assert.Single(SettingsCodec.Read(File.ReadAllText(settingsPath)).Settings.Alerts).Id);
+            Assert.Contains(settings.Children.OfType<Button>(),button=>button.Content?.ToString()=="Open Alerts");
+        }
+        finally {session.Changed-=Changed;session.SetAlertRules([]);session.SetAlertNotifications(true);CompleteSettingsSave(session);}
     }
     private static void VerifyGpuFanSpeed(UiSession session, Collector collector, Assembly assembly, StackPanel settings, string settingsPath)
     {

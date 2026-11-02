@@ -96,6 +96,15 @@ public static class AlertRules
         _ => FormatBytes(rule.Threshold),
     };
 
+    /// <summary>A recorded value in the rule's unit: "97%", "88°C", "5.2 MB/s" or "2.3 GB".</summary>
+    public static string FormatValue(AlertRule rule, double value) => rule.Kind switch
+    {
+        AlertKind.Metric when IsTemperature(rule.Target) => $"{value:0}°C",
+        AlertKind.Metric or AlertKind.Battery => $"{value:0}%",
+        AlertKind.NetworkRate => FormatBytes(value) + "/s",
+        _ => FormatBytes(value),
+    };
+
     /// <summary>"CPU temperature ≥ 85°C for 15 minutes", "chrome.exe ≥ 2.0 GB in a day", "Battery ≤ 20% on battery".</summary>
     public static string Describe(AlertRule rule) => rule.Kind switch
     {
