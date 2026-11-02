@@ -30,9 +30,16 @@ jobs:
           RELEASE_TAG: ${{ inputs.tag }}
         run: |
           if ($env:RELEASE_TAG -notmatch '^v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$') { throw 'Use a normal three-part version tag' }
+          gh release view $env:RELEASE_TAG *> $null
+          if ($LASTEXITCODE -eq 0) { throw "Release $env:RELEASE_TAG is already published; choose a new version." }
           gh api "repos/$env:GITHUB_REPOSITORY/git/ref/tags/$env:RELEASE_TAG" *> $null
-          if ($LASTEXITCODE -eq 0) { throw "Tag $env:RELEASE_TAG already exists; push a new tag instead of re-running." }
-          gh api -X POST "repos/$env:GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$env:RELEASE_TAG" -f sha="$env:GITHUB_SHA"
+          if ($LASTEXITCODE -eq 0) {
+            # An earlier manual run created the tag but failed before publishing: move it to this commit.
+            Write-Host "Tag $env:RELEASE_TAG exists without a published release; moving it to $env:GITHUB_SHA."
+            gh api -X PATCH "repos/$env:GITHUB_REPOSITORY/git/refs/tags/$env:RELEASE_TAG" -f sha="$env:GITHUB_SHA" -F force=true
+          } else {
+            gh api -X POST "repos/$env:GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$env:RELEASE_TAG" -f sha="$env:GITHUB_SHA"
+          }
           if ($LASTEXITCODE -ne 0) { throw 'Tag creation failed' }
       - name: Build, test and package tag
         shell: pwsh
