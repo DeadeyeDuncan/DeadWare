@@ -2,6 +2,12 @@ name: Release
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Normal three-part version tag to create on the chosen commit and publish, such as v0.7.0'
+        required: true
+        type: string
 permissions:
   contents: write
 concurrency:
@@ -16,10 +22,22 @@ jobs:
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
         with:
           dotnet-version: '10.0.402'
+      - name: Create the tag for a manual release
+        if: github.event_name == 'workflow_dispatch'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          if ($env:RELEASE_TAG -notmatch '^v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$') { throw 'Use a normal three-part version tag' }
+          gh api "repos/$env:GITHUB_REPOSITORY/git/ref/tags/$env:RELEASE_TAG" *> $null
+          if ($LASTEXITCODE -eq 0) { throw "Tag $env:RELEASE_TAG already exists; push a new tag instead of re-running." }
+          gh api -X POST "repos/$env:GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$env:RELEASE_TAG" -f sha="$env:GITHUB_SHA"
+          if ($LASTEXITCODE -ne 0) { throw 'Tag creation failed' }
       - name: Build, test and package tag
         shell: pwsh
         env:
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           if ($env:RELEASE_TAG -notmatch '^v((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*))$') { throw 'Use a normal three-part version tag' }
           ./scripts/publish.ps1 -Version $Matches[1]
@@ -27,7 +45,7 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           $files = Get-ChildItem artifacts/DeadWare-*-win-x64.zip* | Select-Object -ExpandProperty FullName
           $notes = Join-Path 'docs/releases' ($env:RELEASE_TAG + '.md')
