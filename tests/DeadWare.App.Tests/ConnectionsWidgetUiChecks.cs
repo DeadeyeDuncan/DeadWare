@@ -100,13 +100,13 @@ internal static class ConnectionsWidgetUiChecks
         string path=Path.Combine(directory,"settings.json");
         var service=new ConnectionService(new RegionalResolver(),()=>Epoch,(_,_)=>throw new InvalidOperationException("Widget must not record history."));
         service.Configure(false,new(41.88,-87.63));service.Start();
-        Window? owner=null;
+        Window? owner=null;UiSession? saving=null;
         try
         {
             var session=(UiSession)RuntimeHelpers.GetUninitializedObject(typeof(UiSession));
             void Set(string name,object value)=>typeof(UiSession).GetField(name,All)!.SetValue(session,value);
             Set("<Settings>k__BackingField",new UserSettings {ConnectionsAnimation=false,WidgetConnectionsMap=true});Set("<Connections>k__BackingField",service);
-            Set("layout",new DetachedWindowState([]));Set("writer",new SettingsSnapshotWriter(path));
+            Set("layout",new DetachedWindowState([]));Set("writer",new SettingsSnapshotWriter(path));saving=session;
             var traffic=Enumerable.Range(1,8).Select(i=>new ConnectionTraffic(new(new(i,i,"Synthetic city"),"",0,"8.8.8."+i,443,ConnectionProtocol.Tcp),Epoch,Epoch,100,50,128,64)).ToArray();
             void Publish(int sequence)=>service.TryRecord(new ConnectionSample(Epoch,0,sequence,"fixture",traffic,[],null,true,true,0,0,0,"Synthetic regional capture"));
             Publish(1);PumpUntil(()=>service.Live.Connections.All(c=>c.Location is not null));
@@ -195,7 +195,13 @@ internal static class ConnectionsWidgetUiChecks
             }
             Assert.Equal(mainCamera,mainMap.Camera);
         }
-        finally {owner?.Close();service.StopAsync().GetAwaiter().GetResult();Theme.Apply("Midnight");if(Directory.Exists(directory))Directory.Delete(directory,true);}
+        finally
+        {
+            owner?.Close();service.StopAsync().GetAwaiter().GetResult();Theme.Apply("Midnight");
+            // Fire-and-forget saves (home city, region) write a temp file on the thread pool; deleting under them races.
+            if(saving is not null)DrainSaves(saving);
+            if(Directory.Exists(directory))Directory.Delete(directory,true);
+        }
     }
 
     private static bool Region(UserSettings settings)
@@ -206,10 +212,17 @@ internal static class ConnectionsWidgetUiChecks
 
     private static UserSettings ReadSavedSettings(UiSession session,string path)
     {
+        DrainSaves(session);
+        var saved=SettingsCodec.Read(File.ReadAllText(path));Assert.Null(saved.Error);return saved.Settings;
+    }
+
+    private static void DrainSaves(UiSession session)
+    {
         var writer=(SettingsSnapshotWriter)typeof(UiSession).GetField("writer",All)!.GetValue(session)!;
         var gate=typeof(SettingsSnapshotWriter).GetField("gate",All)!.GetValue(writer)!;
         var savedRevision=typeof(SettingsSnapshotWriter).GetField("savedRevision",All)!;
         long requested=(long)typeof(UiSession).GetField("saveRevision",All)!.GetValue(session)!;
+        if(requested==0)return;
         // A matching older snapshot is insufficient: the latest atomic replacement must finish.
         PumpUntil(()=>
         {
@@ -217,7 +230,6 @@ internal static class ConnectionsWidgetUiChecks
             try {return (long)savedRevision.GetValue(writer)!>=requested;}
             finally {Monitor.Exit(gate);}
         });
-        var saved=SettingsCodec.Read(File.ReadAllText(path));Assert.Null(saved.Error);return saved.Settings;
     }
 
     private static void CheckRegionButton(ConnectionsWidget widget,Button button)
