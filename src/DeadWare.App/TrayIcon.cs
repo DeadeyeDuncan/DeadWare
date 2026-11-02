@@ -60,6 +60,13 @@ internal sealed class TrayIcon : IDisposable
         try {notify.ShowBalloonTip(10000,"DeadWare · Cooling change",message.Length>250?message[..247]+"…":message,Forms.ToolTipIcon.Warning);}
         catch(Exception) { /* The warning remains available in the persistent in-app log. */ }
     }
+    public void ShowAlert(string title,string message,Action? onClick)
+    {
+        if(disposed||notify is null)return;
+        balloonClick=onClick;
+        try {notify.ShowBalloonTip(10000,title.Length>60?title[..57]+"…":title,message.Length>250?message[..247]+"…":message,Forms.ToolTipIcon.Warning);}
+        catch(Exception) { /* The episode remains in the Alerts log. */ }
+    }
     public void ShowUpdateAvailable(string version)
     {
         if(disposed||notify is null)return;

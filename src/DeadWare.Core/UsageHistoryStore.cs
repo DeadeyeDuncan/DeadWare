@@ -214,6 +214,23 @@ public sealed class UsageHistoryStore
             sent - applications.Sum(a => a.Sent), gaps, recorded, Earliest(db, machine), StorageBytes);
     }
 
+    /// <summary>How many recorded minutes of a metric averaged at or above a value, for threshold suggestions.</summary>
+    public (long AtOrAbove, long Total) ShareAtOrAbove(string machine, string metric, string? hardwareId, DateTimeOffset from, DateTimeOffset to, double threshold)
+    {
+        EnsureInitialized(); ValidateMachine(machine); ValidateRange(from, to);
+        if (!UsageMetrics.IsKnown(metric) || UsageMetrics.UsesHardwareId(metric) != !string.IsNullOrEmpty(hardwareId) || !double.IsFinite(threshold))
+            throw new ArgumentException("Unknown usage metric or hardware selection.", nameof(metric));
+        using var db = Open(readOnly: true);
+        using var command = Command(db, """
+            SELECT COALESCE(SUM(CASE WHEN average>=$threshold THEN 1 ELSE 0 END),0),COUNT(*) FROM metric_minutes
+            WHERE machine=$machine AND metric=$metric AND hardware=$hardware AND minute>=$from AND minute<$to
+            """, null, ("$threshold", threshold), ("$machine", machine), ("$metric", metric), ("$hardware", hardwareId ?? ""),
+            ("$from", from.ToUnixTimeMilliseconds()), ("$to", to.ToUnixTimeMilliseconds()));
+        using var reader = command.ExecuteReader();
+        reader.Read();
+        return (reader.GetInt64(0), reader.GetInt64(1));
+    }
+
     public DateTimeOffset? EarliestRetained(string machine)
     {
         EnsureInitialized(); ValidateMachine(machine);
