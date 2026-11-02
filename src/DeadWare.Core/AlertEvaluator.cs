@@ -21,6 +21,8 @@ public sealed class AlertEvaluator
         public DateOnly? Day;
         public long DayBytes;
         public bool FiredToday;
+        /// <summary>Stored minutes the day total was seeded from, by minute and writing segment, so a closed minute delivered after the seed is not counted twice.</summary>
+        public Dictionary<DateTimeOffset, string> Seeded = new();
     }
 
     private readonly TimeZoneInfo zone;
@@ -69,6 +71,28 @@ public sealed class AlertEvaluator
             if (state.Day is { } current && current != date) continue;
             state.Day = date;
             state.DayBytes = bytesByName.FirstOrDefault(p => p.Key.Equals(state.Rule.Target, StringComparison.OrdinalIgnoreCase)).Value;
+            state.Seeded = new();
+        }
+    }
+
+    /// <summary>Seeds today's application totals from stored minute rows. A later closed minute whose row was already stored by the same
+    /// segment is skipped, so the seed and the live stream never count one minute twice; a row from another segment (a restart inside the
+    /// minute) still adds.</summary>
+    public void SeedDay(DateTimeOffset day, IReadOnlyList<UsageApplicationMinute> rows)
+    {
+        ArgumentNullException.ThrowIfNull(rows);
+        var date = LocalDay(day);
+        foreach (var state in states.Values)
+        {
+            if (state.Rule.Kind != AlertKind.ApplicationDaily) continue;
+            if (state.Day is { } current && current != date) continue;
+            state.Day = date; state.DayBytes = 0; state.Seeded = new();
+            foreach (var row in rows)
+            {
+                if (!row.Name.Equals(state.Rule.Target, StringComparison.OrdinalIgnoreCase) || LocalDay(row.Minute) != date) continue;
+                state.DayBytes += row.Received + row.Sent;
+                state.Seeded[row.Minute] = row.Segment;
+            }
         }
     }
 
@@ -144,10 +168,14 @@ public sealed class AlertEvaluator
         if (state.Day != day)
         {
             if (state.Open is { } open) { ended.Add(open with { End = StartOfDay(day) }); state.Open = null; }
-            state.Day = day; state.DayBytes = 0; state.FiredToday = false; state.Armed = true;
+            state.Day = day; state.DayBytes = 0; state.FiredToday = false; state.Armed = true; state.Seeded = new();
         }
         foreach (var application in batch.Applications)
-            if (application.Name.Equals(state.Rule.Target, StringComparison.OrdinalIgnoreCase)) state.DayBytes += application.Received + application.Sent;
+        {
+            if (!application.Name.Equals(state.Rule.Target, StringComparison.OrdinalIgnoreCase)) continue;
+            if (state.Seeded.TryGetValue(application.Minute, out var segment) && segment == application.Segment) continue;
+            state.DayBytes += application.Received + application.Sent;
+        }
         if (state.Open is { } current) { if (state.DayBytes > state.Peak) { state.Peak = state.DayBytes; state.Open = current with { Peak = state.Peak }; } }
         else if (!state.FiredToday && state.DayBytes >= state.Rule.Threshold)
         {

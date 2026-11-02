@@ -127,10 +127,11 @@ public sealed class AlertService
             pending.AddRange(open.Where(e => !adopted.Contains(e.Id)).Select(e => e with { End = startedAt }));
             try
             {
-                var today = await usage.ReadApplicationsAsync(StartOfLocalDay(startedAt), startedAt, 1000).ConfigureAwait(false);
-                var totals = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
-                foreach (var application in today.Applications) totals[application.Name] = totals.GetValueOrDefault(application.Name) + application.Received + application.Sent;
-                evaluator.SeedDay(startedAt, totals);
+                // Per-minute rows let the evaluator skip a minute the usage worker already handed over before this seed was read.
+                var rows = new List<UsageApplicationMinute>();
+                foreach (var name in evaluator.Rules.Where(r => r.Kind == AlertKind.ApplicationDaily).Select(r => r.Target).Distinct(StringComparer.OrdinalIgnoreCase))
+                    rows.AddRange(await usage.ReadApplicationMinutesAsync(name, StartOfLocalDay(startedAt), startedAt.AddMinutes(1)).ConfigureAwait(false));
+                evaluator.SeedDay(startedAt, rows);
             }
             catch (Exception) { /* Without a seed the day's budget counts from now; usage history reports its own failure. */ }
             void Flush()

@@ -151,6 +151,19 @@ public sealed class UsageHistoryService
             return new(from, to, 60_000, [], new(null, null, null), 0, null, 0);
         }
     }
+    public async Task<IReadOnlyList<UsageApplicationMinute>> ReadApplicationMinutesAsync(string name, DateTimeOffset from, DateTimeOffset to)
+    {
+        try
+        {
+            await InitializeAsync().ConfigureAwait(false);
+            return await Task.Run(() => store.ReadApplicationMinutes(machine, name, from, to)).ConfigureAwait(false);
+        }
+        catch (Exception error) when (error is not ArgumentException)
+        {
+            Fail(error);
+            return [];
+        }
+    }
     public async Task<UsageApplicationView> ReadApplicationsAsync(DateTimeOffset from, DateTimeOffset to, int maxNames = UsageHistoryStore.MaximumApplications)
     {
         try

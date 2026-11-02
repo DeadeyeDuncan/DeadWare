@@ -162,6 +162,24 @@ public class AlertEvaluatorTests
     }
 
     [Fact]
+    public void Seeded_minute_rows_are_not_counted_again_when_the_same_segment_delivers_them()
+    {
+        var early = new DateTimeOffset(2026, 11, 1, 10, 0, 0, TimeSpan.Zero);
+        var evaluator = Evaluator(Rule(AlertKind.ApplicationDaily, "chrome.exe", 1000, 1));
+        evaluator.SeedDay(early.AddMinutes(2), [new UsageApplicationMinute("Chrome.exe", early, 500, 100, "seg"),
+            new UsageApplicationMinute("chrome.exe", early.AddMinutes(1), 200, 0, "earlier"), new UsageApplicationMinute("steam.exe", early, 5000, 0, "seg")]);
+        // The same minute arriving from the segment that stored it is the seed's own row; a different segment is new bytes.
+        Assert.Empty(evaluator.ObserveMinute(Batch(early, apps: [("chrome.exe", 600)]), null).Started);
+        var fired = Assert.Single(evaluator.ObserveMinute(Batch(early.AddMinutes(1), apps: [("chrome.exe", 300)]), null).Started);
+        Assert.Equal(1100, fired.Peak);
+        // Rows of another day are ignored by the seed, and a day change forgets the seeded minutes.
+        var fresh = Evaluator(Rule(AlertKind.ApplicationDaily, "chrome.exe", 1000, 1));
+        fresh.SeedDay(early, [new UsageApplicationMinute("chrome.exe", early.AddDays(-1), 900, 0, "seg")]);
+        Assert.Empty(fresh.ObserveMinute(Batch(early, apps: [("chrome.exe", 600)]), null).Started);
+        Assert.Single(fresh.ObserveMinute(Batch(early.AddMinutes(1), apps: [("chrome.exe", 600)]), null).Started);
+    }
+
+    [Fact]
     public void Battery_rules_fire_immediately_and_re_arm_on_charge_or_recovery()
     {
         var evaluator = Evaluator(Rule(AlertKind.Battery, "", 20, 1));

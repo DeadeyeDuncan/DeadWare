@@ -122,6 +122,11 @@ public class UsageHistoryStoreTests
         var all = store.ReadApplications("tablet", Day, now, 1000);
         Assert.Equal(250, all.Applications.Count); Assert.Equal(0, all.OtherApplications); Assert.Equal(0, all.OtherReceived);
         Assert.Empty(store.ReadApplications("tablet", Day.AddHours(-2), Day).Applications);
+        var minutes = store.ReadApplicationMinutes("tablet", "APP249.EXE", Day, now);
+        Assert.Equal(new[] { (Day, 250_000L, "seg-a"), (Day.AddMinutes(1), 1L, "seg-a") }, minutes.Select(m => (m.Minute, m.Received, m.Segment)));
+        Assert.All(minutes, m => Assert.Equal("app249.exe", m.Name));
+        Assert.Empty(store.ReadApplicationMinutes("tablet", "nothing.exe", Day, now));
+        Assert.Throws<ArgumentException>(() => store.ReadApplicationMinutes("tablet", " ", Day, now));
     }
 
     [Fact]
