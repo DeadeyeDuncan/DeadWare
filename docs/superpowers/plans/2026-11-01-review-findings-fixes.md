@@ -139,7 +139,7 @@ sign-in with no UAC prompt.
 
 Requirements:
 1. New file `src/DeadWare.UpdateCore/InstallLocation.cs` (UpdateCore is shared by the app and the updater):
-   - Pure, platform-neutral policy over a model: `AccessRule(string Sid, int Rights, bool Allow, bool InheritOnly)`
+   - Pure, platform-neutral policy over a model: `AclRule(string Sid, int Rights, bool Allow, bool InheritOnly)` (renamed from AccessRule, ruling R18)
      and a per-path record (path, kind, owner SID, rules, reparse flag). Evaluation returns protected/unprotected
      plus a short human-readable reason naming the first offending path.
    - Trusted SIDs: `S-1-5-18` (SYSTEM), `S-1-5-32-544` (Administrators),
@@ -232,6 +232,17 @@ Amendments after plan roast (binding, supersede the text above where they confli
   keep it open through authenticated readiness, and release it on cancellation/failure. Test that a process can
   be started from a file while such a handle is held (copy a small system executable such as `cmd.exe` to a temp
   folder and run it with `/c exit 0`), and that overwrite/delete fail while held.
+
+- **Runtime hardening (rulings R15, R16).** Add `<StartupHookSupport>false</StartupHookSupport>` to
+  `src/DeadWare.App/DeadWare.App.csproj` and `src/DeadWare.Updater/DeadWare.Updater.csproj` so a user-set
+  `DOTNET_STARTUP_HOOKS` cannot inject code into an elevated DeadWare or helper. Remove
+  `-p:IncludeNativeLibrariesForSelfExtract=true` from the helper publish line in `scripts/publish.ps1` (the helper
+  has no native libraries today, so output is unchanged; this prevents a future native dependency from being
+  silently extracted to user-writable `%TEMP%\.net`). Verify the published helper is still a single file.
+- **Task 4 API to reuse:** `InstallLocation.Check(directory, strictParents)`, `Read`, `ReadEntry`, `Evaluate`,
+  records `AclRule`, `PathSecurity`, `LocationProtection`, enum `PathKind` (see `src/DeadWare.UpdateCore/InstallLocation.cs`).
+  `Check(keyRoot, strictParents:2)` audits `<key>` recursively plus `updates` and `DeadWare` as strict directories
+  and `%ProgramData%` and above as ancestors; `Check(updatesBase, strictParents:1)` audits the base before a key exists.
 
 6. Tests: factory picks the LocalAppData base for an unprotected temp install; `AcknowledgeStartup` root search
    finds a handoff in the fallback root (structure the search so it is testable with injected candidate roots);
