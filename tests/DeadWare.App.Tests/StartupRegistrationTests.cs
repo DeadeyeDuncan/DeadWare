@@ -45,5 +45,6 @@ public class StartupRegistrationTests
         try {Directory.CreateDirectory(directory);Assert.False(StartupRegistration.IsProtectedExecutable(Path.Combine(directory,"DeadWare.exe")));}
         finally {if(Directory.Exists(directory))Directory.Delete(directory,true);}
         Assert.False(StartupRegistration.IsProtectedExecutable("DeadWare.exe"));
+        Assert.False(StartupRegistration.IsProtectedExecutable(@"\\server\share\DeadWare\DeadWare.exe"));
     }
 }

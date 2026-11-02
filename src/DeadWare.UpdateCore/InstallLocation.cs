@@ -6,28 +6,31 @@ namespace DeadWare.UpdateCore;
 
 /// <summary>Directory and File: a protected folder, its subfolders and files (inheritable rules count on folders). Ancestor: a parent up to the volume root (only renames and permission changes count).</summary>
 public enum PathKind{Directory,File,Ancestor}
-public sealed record AccessRule(string Sid,int Rights,bool Allow,bool InheritOnly);
-public sealed record PathSecurity(string Path,PathKind Kind,string? Owner,IReadOnlyList<AccessRule> Rules,bool ReparsePoint,string? Error=null);
+public sealed record AclRule(string Sid,int Rights,bool Allow,bool InheritOnly);
+public sealed record PathSecurity(string Path,PathKind Kind,string? Owner,IReadOnlyList<AclRule> Rules,bool ReparsePoint,string? Error=null,bool Network=false);
 public sealed record LocationProtection(bool Protected,string? Reason=null);
 
 /// <summary>Decides whether only SYSTEM, Administrators and TrustedInstaller can change a folder tree and the parents above it.</summary>
 public static class InstallLocation
 {
-    public const int DirectoryRights=0x2|0x4|0x40|0x10000|0x40000|0x80000|0x40000000|0x10000000;
-    public const int FileRights=0x2|0x4|0x10000|0x40000|0x80000|0x40000000|0x10000000;
+    // 0x100 FILE_WRITE_ATTRIBUTES is enough to turn an empty folder into a mount point.
+    public const int DirectoryRights=0x2|0x4|0x40|0x100|0x10000|0x40000|0x80000|0x40000000|0x10000000;
+    public const int FileRights=0x2|0x4|0x100|0x10000|0x40000|0x80000|0x40000000|0x10000000;
     public const int AncestorRights=0x40|0x10000|0x40000|0x80000|0x10000000;
     private static readonly string[] TrustedSids=["S-1-5-18","S-1-5-32-544","S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464"];
     private static bool Trusted(string? sid)=>sid is not null&&TrustedSids.Contains(sid,StringComparer.Ordinal);
     // OWNER RIGHTS and CREATOR OWNER grant the (future) owner; only trusted principals can own or create in a protected tree.
     private static bool Trusted(string sid,string? owner)=>Trusted(sid)||sid is "S-1-3-4" or "S-1-3-0"&&Trusted(owner);
 
-    /// <summary>Protected only when every entry is readable, not a link, trusted-owned and grants no untrusted Allow rule a write right for its kind; the reason names the first offending path.</summary>
+    /// <summary>Protected only when every entry is local, readable, not a link, trusted-owned and grants no untrusted Allow rule a write right for its kind; the reason names the first offending path.</summary>
     public static LocationProtection Evaluate(IEnumerable<PathSecurity> entries)
     {
         bool any=false;
         foreach(var entry in entries)
         {
             any=true;
+            // On a network location SYSTEM and Administrators are the server's accounts, not this computer's.
+            if(entry.Network||entry.Path.StartsWith(@"\\",StringComparison.Ordinal))return new(false,$"{entry.Path} is not on a local drive.");
             if(entry.Error is not null)return new(false,$"Permissions for {entry.Path} could not be read: {entry.Error}");
             if(entry.ReparsePoint)return new(false,$"{entry.Path} is a link or junction.");
             if(!Trusted(entry.Owner))return new(false,$"{entry.Path} is not owned by SYSTEM, Administrators or TrustedInstaller.");
@@ -51,9 +54,9 @@ public static class InstallLocation
     [SupportedOSPlatform("windows")]
     private static IEnumerable<PathSecurity> Enumerate(string directory,int strictParents)
     {
-        string? root=null,invalid=null;
-        try {root=Path.TrimEndingDirectorySeparator(Path.GetFullPath(directory));}catch(Exception e) {invalid=e.Message;}
-        if(root is null) {yield return new(directory,PathKind.Directory,null,[],false,invalid);yield break;}
+        string? root=null,invalid=null;bool network=false;
+        try {root=Path.TrimEndingDirectorySeparator(Path.GetFullPath(directory));network=Remote(root);}catch(Exception e) {root=null;invalid=e.Message;}
+        if(root is null||network) {yield return new(root??directory,PathKind.Directory,null,[],false,invalid,network);yield break;}
         var pending=new Stack<DirectoryInfo>();pending.Push(new DirectoryInfo(root));
         var options=new EnumerationOptions{AttributesToSkip=0,IgnoreInaccessible=false};
         while(pending.TryPop(out var folder))
@@ -73,9 +76,13 @@ public static class InstallLocation
     [SupportedOSPlatform("windows")]
     public static PathSecurity ReadEntry(string path,PathKind kind)
     {
-        try {return Entry(kind==PathKind.File?new FileInfo(path):new DirectoryInfo(path),kind);}
+        try {return Remote(Path.GetFullPath(path))?new(path,kind,null,[],false,Network:true):Entry(kind==PathKind.File?new FileInfo(path):new DirectoryInfo(path),kind);}
         catch(Exception e) {return new(path,kind,null,[],false,e.Message);}
     }
+
+    /// <summary>UNC and device paths (\\server\share, \\?\UNC\...) or a mapped network drive; decided without touching the location.</summary>
+    [SupportedOSPlatform("windows")]
+    private static bool Remote(string fullPath)=>fullPath.StartsWith(@"\\",StringComparison.Ordinal)||new DriveInfo(Path.GetPathRoot(fullPath)!).DriveType==DriveType.Network;
 
     [SupportedOSPlatform("windows")]
     private static PathSecurity Entry(FileSystemInfo info,PathKind kind)
@@ -86,7 +93,7 @@ public static class InstallLocation
             const AccessControlSections sections=AccessControlSections.Owner|AccessControlSections.Access;
             FileSystemSecurity security=info is DirectoryInfo folder?folder.GetAccessControl(sections):((FileInfo)info).GetAccessControl(sections);
             var rules=security.GetAccessRules(true,true,typeof(SecurityIdentifier)).Cast<FileSystemAccessRule>()
-                .Select(rule=>new AccessRule(rule.IdentityReference.Value,(int)rule.FileSystemRights,rule.AccessControlType==AccessControlType.Allow,(rule.PropagationFlags&PropagationFlags.InheritOnly)!=0)).ToArray();
+                .Select(rule=>new AclRule(rule.IdentityReference.Value,(int)rule.FileSystemRights,rule.AccessControlType==AccessControlType.Allow,(rule.PropagationFlags&PropagationFlags.InheritOnly)!=0)).ToArray();
             return new(info.FullName,kind,security.GetOwner(typeof(SecurityIdentifier))?.Value,rules,(info.Attributes&FileAttributes.ReparsePoint)!=0);
         }
         catch(Exception e) {return new(info.FullName,kind,null,[],false,e.Message);}
