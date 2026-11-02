@@ -16,9 +16,12 @@ static async Task<int> RunAsync(string[] args)
     try
     {
         if(args.Length!=4||args[0]!="--key"||args[2]!="--job")throw new ArgumentException("Invalid updater arguments.");
-        string root=UpdatePaths.RootForKey(args[1]),id=UpdatePaths.Id(args[3]);
+        string id=UpdatePaths.Id(args[3]),root=UpdatePaths.HelperRoot(Environment.ProcessPath??throw new InvalidDataException("The updater path is unavailable."),args[1],id,UpdatePaths.ProtectedCacheBase,UpdatePaths.CacheBase);
+        if(root.Equals(UpdatePaths.RootForKey(args[1],UpdatePaths.ProtectedCacheBase),StringComparison.OrdinalIgnoreCase))ProtectedRoot.Verify(root);
         job=SafeFiles.ReadJson<UpdateJob>(SafeFiles.Child(root,"jobs/"+id+"/request.json"));
-        paths=new UpdatePaths(job.InstallDirectory);UpdateHandoff.ValidateJob(paths,job);
+        paths=UpdatePaths.ForInstallation(job.InstallDirectory);
+        if(!paths.Root.Equals(root,StringComparison.OrdinalIgnoreCase))throw new InvalidDataException("Update handoff mismatch.");
+        UpdateHandoff.ValidateJob(paths,job);
         if(paths.Key!=args[1]||job.Id!=id)throw new InvalidDataException("Update handoff mismatch.");
         Directory.CreateDirectory(paths.Root);
         using var installationLock=new FileStream(SafeFiles.Child(paths.Root,"install.lock"),FileMode.OpenOrCreate,FileAccess.ReadWrite,FileShare.None);
@@ -49,7 +52,7 @@ static async Task<int> RunAsync(string[] args)
         }
         if(File.Exists(UpdateHandoff.JobFile(paths,id,"cancel")))throw new OperationCanceledException("Update cancelled before file replacement.");
         parentExited=true;
-        UpdateHandoff.ValidateJob(paths,job);
+        UpdateHandoff.ValidateJob(paths,job);ProtectedRoot.Verify(paths);
         var transaction=new InstallTransaction(paths);
         if(File.Exists(paths.PendingFile))transaction.Recover();
         string current=Packages.ReadManifest(paths.Install).Version;
@@ -84,7 +87,7 @@ static async Task<int> RunAsync(string[] args)
             {
                 if(parentExited&&replacement?.HasExited!=false)
                 {
-                    new InstallTransaction(paths).Recover();
+                    ProtectedRoot.Verify(paths);new InstallTransaction(paths).Recover();
                     message="The update failed. The previous installation was restored. "+error.Message;
                     Process.Start(new ProcessStartInfo(SafeFiles.Child(paths.Install,"DeadWare.exe")){UseShellExecute=false,WorkingDirectory=paths.Install})?.Dispose();
                 }

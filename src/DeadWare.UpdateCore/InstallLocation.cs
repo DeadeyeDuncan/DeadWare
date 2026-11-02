@@ -92,10 +92,17 @@ public static class InstallLocation
             if(!info.Exists)return new(info.FullName,kind,null,[],false,"The path does not exist.");
             const AccessControlSections sections=AccessControlSections.Owner|AccessControlSections.Access;
             FileSystemSecurity security=info is DirectoryInfo folder?folder.GetAccessControl(sections):((FileInfo)info).GetAccessControl(sections);
-            var rules=security.GetAccessRules(true,true,typeof(SecurityIdentifier)).Cast<FileSystemAccessRule>()
-                .Select(rule=>new AclRule(rule.IdentityReference.Value,(int)rule.FileSystemRights,rule.AccessControlType==AccessControlType.Allow,(rule.PropagationFlags&PropagationFlags.InheritOnly)!=0)).ToArray();
-            return new(info.FullName,kind,security.GetOwner(typeof(SecurityIdentifier))?.Value,rules,(info.Attributes&FileAttributes.ReparsePoint)!=0);
+            return Describe(info.FullName,kind,security,(info.Attributes&FileAttributes.ReparsePoint)!=0);
         }
         catch(Exception e) {return new(info.FullName,kind,null,[],false,e.Message);}
+    }
+
+    /// <summary>The owner and Allow/Deny rules (inherited included) of a security descriptor, as one policy entry.</summary>
+    [SupportedOSPlatform("windows")]
+    public static PathSecurity Describe(string path,PathKind kind,FileSystemSecurity security,bool reparsePoint=false)
+    {
+        var rules=security.GetAccessRules(true,true,typeof(SecurityIdentifier)).Cast<FileSystemAccessRule>()
+            .Select(rule=>new AclRule(rule.IdentityReference.Value,(int)rule.FileSystemRights,rule.AccessControlType==AccessControlType.Allow,(rule.PropagationFlags&PropagationFlags.InheritOnly)!=0)).ToArray();
+        return new(path,kind,security.GetOwner(typeof(SecurityIdentifier))?.Value,rules,reparsePoint);
     }
 }
