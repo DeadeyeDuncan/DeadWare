@@ -163,13 +163,15 @@ Requirements:
 2. Startup gate (`src/DeadWare.App/StartupRegistration.cs`, plus `StartupTaskPolicy`/status record as needed):
    - `Apply(enable:true)` checks the executable's directory first; if unprotected it returns a new exit code
      **6** and registers nothing. `ConfigureAsync` maps 6 to: "DeadWare can start as administrator at sign-in
-     only from a folder standard users can't change, such as C:\Program Files\DeadWare. Move the DeadWare
-     folder there, then turn startup on." Disabling is always allowed.
+     only from a folder standard users can't change, such as C:\Program Files\DeadWare. Copy or extract
+     DeadWare there with administrator approval, start it from that copy, then turn startup on." Disabling is
+     always allowed.
    - `Query()`: when an owned task exists, evaluate the task executable's directory; if unprotected, the status
      is not `Ready` and its message reads: "Startup runs DeadWare as administrator from a folder other programs
-     can change. Move DeadWare to a protected folder such as C:\Program Files\DeadWare and repair startup, or
-     turn startup off." The Settings page keeps **Turn off** usable in that state. Never delete or disable an
-     existing task automatically.
+     can change. Copy or extract DeadWare into a protected folder such as C:\Program Files\DeadWare with
+     administrator approval, start it from there and choose Enable / repair startup, or turn startup off."
+     followed by the policy's reason in parentheses (final fix wave, R20). The Settings page keeps **Turn off**
+     usable in that state. Never delete or disable an existing task automatically.
 Amendments after plan roast (binding, supersede 1. where they conflict):
 - **Audit everything, not the manifest's inventory.** The reader checks the install directory, every
   subdirectory and every file beneath it recursively (including `deadware-package.json`), plus the ancestors.
