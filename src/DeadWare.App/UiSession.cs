@@ -10,6 +10,7 @@ public sealed class UiSession
     public CoolingHistoryService Cooling {get;}
     public GraphHistoryService GraphHistory {get;}
     public BatteryHistoryService Battery {get;}
+    public UsageHistoryService Usage {get;}
     public ConnectionService Connections {get;}
     public UpdateService Updates {get;}=new(BuildInfo.Version);
     public UserSettings Settings {get;}
@@ -59,6 +60,9 @@ public sealed class UiSession
         Battery=new(Path.Combine(Path.GetDirectoryName(settingsPath)!,"battery-history.db"),Environment.MachineName);
         Battery.Configure(Settings.BatteryRecording);
         Collector.SampleAvailable+=Battery.TryRecord;
+        Usage=new(Path.Combine(Path.GetDirectoryName(settingsPath)!,"usage-history.db"),Environment.MachineName);
+        Usage.Configure(Settings.UsageRecording);
+        Collector.SampleAvailable+=Usage.TryRecord;
         Connections=new(Path.Combine(Path.GetDirectoryName(settingsPath)!,"connections.db"));
         var home=ConnectionAssets.Cities.FirstOrDefault(city=>city.Id==Settings.ConnectionsHomeCityId);
         Settings.ConnectionsHomeCityId=home?.Id;
@@ -76,7 +80,7 @@ public sealed class UiSession
     {
         // Restore the saved window types exactly; the launch preference only affects new requests.
         foreach(string key in layout.Remembered)OpenDetachedCore(key);
-        GraphHistory.Start();Cooling.Start();Battery.Start();Connections.Start();_ = SaveAsync();Collector.Start();timer.Start();
+        GraphHistory.Start();Cooling.Start();Battery.Start();Usage.Start();Connections.Start();_ = SaveAsync();Collector.Start();timer.Start();
     }
     public void SetRange(int seconds) {Settings.HistorySeconds=seconds;Changed?.Invoke();_ = SaveAsync();}
     public void SetGpu(string? id) {Settings.SelectedGpuId=id;Changed?.Invoke();_ = SaveAsync();}
@@ -166,6 +170,7 @@ public sealed class UiSession
     public void SetRestoreOpenWindows(bool enabled) {Settings.RestoreOpenWindows=enabled;_ = SaveAsync();}
     public void SetStartInTray(bool enabled) {Settings.StartInTray=enabled;_ = SaveAsync();}
     public void SetBatteryRecording(bool enabled) {Settings.BatteryRecording=enabled;Battery.Configure(enabled);Changed?.Invoke();_ = SaveAsync();}
+    public void SetUsageRecording(bool enabled) {Settings.UsageRecording=enabled;Usage.Configure(enabled);Changed?.Invoke();_ = SaveAsync();}
     public void SetConnectionsRecording(bool enabled)
     {
         Settings.ConnectionsRecording=enabled;
@@ -242,7 +247,8 @@ public sealed class UiSession
         Collector.SampleAvailable-=Cooling.TryRecord;
         Collector.SampleAvailable-=GraphHistory.TryRecord;
         Collector.SampleAvailable-=Battery.TryRecord;
-        (string Stage,Task Stop)[] drains=[("connections",connections),("cooling",Begin(Cooling.StopAsync)),("graph history",Begin(GraphHistory.StopAsync)),("battery",Begin(Battery.StopAsync))];
+        Collector.SampleAvailable-=Usage.TryRecord;
+        (string Stage,Task Stop)[] drains=[("connections",connections),("cooling",Begin(Cooling.StopAsync)),("graph history",Begin(GraphHistory.StopAsync)),("battery",Begin(Battery.StopAsync)),("usage history",Begin(Usage.StopAsync))];
         await Task.WhenAny(providerStop,providerExpired).ConfigureAwait(false);
         await Task.WhenAny(Task.WhenAll(drains.Select(d=>d.Stop)),historyExpired).ConfigureAwait(false);
         (string Stage,Task Stop)[] stages=[("network capture",networkStop),("hardware provider",providerStop),..drains];

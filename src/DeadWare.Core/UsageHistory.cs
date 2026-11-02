@@ -67,11 +67,16 @@ public sealed class UsageMinuteFolder
         baselines = new(); hasBaseline = false;
     }
 
-    /// <summary>Folds one publication. Returns the previous minute when this sample starts a later one; otherwise null.</summary>
+    /// <summary>Folds one publication with a single GPU whose value prefix and stored key are the same identifier.</summary>
     public UsageMinuteBatch? Observe(Snapshot sample, IReadOnlyList<ProcessTraffic> processes, bool captureAvailable, string? gpuId)
+        => Observe(sample, processes, captureAvailable, string.IsNullOrEmpty(gpuId) ? Array.Empty<(string, string)>() : new[] { (gpuId, gpuId) });
+
+    /// <summary>Folds one publication. Returns the previous minute when this sample starts a later one; otherwise null.
+    /// Each GPU's Id prefixes its sample values and its Key is stored as the row's hardware identity.</summary>
+    public UsageMinuteBatch? Observe(Snapshot sample, IReadOnlyList<ProcessTraffic> processes, bool captureAvailable, IReadOnlyList<(string Id, string Key)> gpus)
     {
         ArgumentNullException.ThrowIfNull(sample);
-        processes ??= [];
+        processes ??= []; gpus ??= [];
         if (!double.IsFinite(sample.MonotonicSeconds)) { Break(); return null; }
         if (previousSeconds is { } last && sample.MonotonicSeconds <= last) return null;
         double sampleInterval = PollingPolicy.Normalize(sample.PollingIntervalSeconds);
@@ -96,10 +101,11 @@ public sealed class UsageMinuteFolder
         Fold(UsageMetrics.Memory, null, sample, "memory/usage");
         Fold(UsageMetrics.Download, null, sample, "network/download");
         Fold(UsageMetrics.Upload, null, sample, "network/upload");
-        if (!string.IsNullOrEmpty(gpuId))
+        foreach (var gpu in gpus)
         {
-            Fold(UsageMetrics.Gpu, gpuId, sample, gpuId + "/usage");
-            Fold(UsageMetrics.GpuTemperature, gpuId, sample, gpuId + "/temperature");
+            if (string.IsNullOrEmpty(gpu.Id) || string.IsNullOrEmpty(gpu.Key)) continue;
+            Fold(UsageMetrics.Gpu, gpu.Key, sample, gpu.Id + "/usage");
+            Fold(UsageMetrics.GpuTemperature, gpu.Key, sample, gpu.Id + "/temperature");
         }
 
         if (!captureAvailable) captureGap = true;

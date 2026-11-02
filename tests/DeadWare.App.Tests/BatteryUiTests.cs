@@ -79,6 +79,7 @@ public class BatteryUiTests
                 Set(session, "<Collector>k__BackingField", collector);
                 Set(session, "<Settings>k__BackingField", new UserSettings());
                 Set(session, "<Battery>k__BackingField", new BatteryHistoryService(Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".db"), "fixture"));
+                Set(session, "<Usage>k__BackingField", new UsageHistoryService(Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".db"), "fixture"));
                 var now = DateTimeOffset.UtcNow;
                 foreach (string theme in new[] { "Midnight", "Daylight" })
                 {

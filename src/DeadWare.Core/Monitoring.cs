@@ -314,6 +314,7 @@ public sealed class UserSettings
     public bool ShowCpuPumpSpeed {get;set;}
     public double PollingIntervalSeconds {get;set;}=1;
     public bool BatteryRecording {get;set;}=true;
+    public bool UsageRecording {get;set;}=true;
     public bool RestoreOpenWindows {get;set;}=true;
     public bool StartInTray {get;set;}
     public bool CoolingRecording {get;set;}=true;

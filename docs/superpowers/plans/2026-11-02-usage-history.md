@@ -55,13 +55,13 @@
 
 **Files:** Create `src/DeadWare.App/UsageHistoryService.cs`, `tests/DeadWare.App.Tests/UsageHistoryServiceTests.cs`; modify `src/DeadWare.App/UiSession.cs`, `src/DeadWare.Core/Monitoring.cs` (add `UsageRecording` to `UserSettings`, default true).
 
-**Interfaces:** `UsageHistoryService(string path, string machineKey, TimeProvider?, TimeSpan? flushInterval)` with `Start`, `TryRecord(Reading)`, `Configure(bool recording)`, `ReadMetricAsync`, `ReadApplicationsAsync`, `ExportAsync`, `Status`, `StopAsync`.
+**Interfaces:** `UsageHistoryService(string path, string machineKey, TimeProvider?, TimeSpan? flushInterval)` with `Start`, `TryRecord(Reading)`, `Configure(bool recording)`, `ReadMetricAsync`, `ReadApplicationsAsync`, `ExportCsvAsync(path, applications, from, to)`, `Status`, `Failed`, `StopAsync`. GPUs are recorded for every unique model in the publication, keyed by model name (`UsageHistoryService.Gpus`), so a GPU enumeration-order change does not split history and the page can show whichever GPU the dashboard selects. Capture availability comes from the publication's connection sample, falling back to whether any process traffic was attributed.
 
-- [ ] Write tests for enqueue-only `TryRecord`, minute completion through the folder, flush timer and batch bounds, recording toggle leaving the open minute incomplete, queue-loss accounting in `Status`, store failure reported without throwing into the collector, and `StopAsync` draining the final batch within the history deadline.
-- [ ] Run focused tests; expected FAIL.
-- [ ] Implement the service mirroring `GraphHistoryService` and `BatteryHistoryService`; subscribe it to `Collector.SampleAvailable` in `UiSession`, start it with the other services and add it to the Quit drain list and the sign-out path.
-- [ ] Run focused tests plus the existing shutdown tests; expected PASS.
-- [ ] Commit the tested service and integration.
+- [x] Write tests for enqueue-only `TryRecord`, minute completion through the folder, flush timer and batch bounds, recording toggle leaving the open minute incomplete, queue-loss accounting in `Status`, store failure reported without throwing into the collector, and `StopAsync` draining the final batch within the history deadline.
+- [x] Run focused tests; expected FAIL. (First execution is the pull request's Windows CI.)
+- [x] Implement the service mirroring `GraphHistoryService` and `BatteryHistoryService`; subscribe it to `Collector.SampleAvailable` in `UiSession`, start it with the other services and add it to the Quit drain list and the sign-out path. The uninitialized-session test fixtures set the new `Usage` field.
+- [ ] Run focused tests plus the existing shutdown tests; expected PASS (CI on the pull request).
+- [x] Commit the tested service and integration.
 
 ### Task 4: Usage history page, chart and window
 

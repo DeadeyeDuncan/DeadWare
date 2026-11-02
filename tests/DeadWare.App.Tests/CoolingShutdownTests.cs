@@ -76,6 +76,7 @@ public class CoolingShutdownTests
         SetField(session,"<Cooling>k__BackingField",new CoolingHistoryService(Path.Combine(root,"cooling.db"),"fixture","setup"));
         SetField(session,"<GraphHistory>k__BackingField",new GraphHistoryService(Path.Combine(root,"graphs.db"),"fixture",new SampleHistory()));
         SetField(session,"<Battery>k__BackingField",new BatteryHistoryService(Path.Combine(root,"battery.db"),"fixture"));
+        SetField(session,"<Usage>k__BackingField",new UsageHistoryService(Path.Combine(root,"usage.db"),"fixture"));
         SetField(session,"diagnostics",new LayoutDiagnostics(Path.Combine(root,"trace.jsonl"),Path.Combine(root,"settings.json")));
         collector.SampleAvailable+=connections.TryRecord;collector.FinalConnectionsAvailable+=connections.TryRecord;
         return (session,collector,connections,worker);
