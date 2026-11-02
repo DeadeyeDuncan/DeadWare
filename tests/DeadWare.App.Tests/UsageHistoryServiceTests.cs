@@ -72,9 +72,11 @@ public class UsageHistoryServiceTests
             Assert.Contains("dropped", service.Status, StringComparison.OrdinalIgnoreCase);
             var view = store.ReadMetric("tablet", UsageMetrics.Cpu, null, Start, Start.AddMinutes(3), 3);
             Assert.Equal(3, view.Buckets.Count);
+            // The dropped publication was minute 2's first second: minutes 0 and 1 were fully covered, minute 2 was not.
             Assert.Equal(1, view.Buckets[0].CompleteMinutes);
-            Assert.Equal(0, view.Buckets[1].CompleteMinutes);
-            Assert.Equal(1, view.Buckets[2].CompleteMinutes);
+            Assert.Equal(1, view.Buckets[1].CompleteMinutes);
+            Assert.Equal(0, view.Buckets[2].CompleteMinutes);
+            Assert.Equal(1, store.ReadApplications("tablet", Start, Start.AddMinutes(3)).CaptureGapMinutes);
         }
         finally { ready.TrySetResult(); await service.StopAsync(); }
     }

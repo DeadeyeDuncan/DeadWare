@@ -84,7 +84,16 @@ public class UsageHistoryTests
         Assert.Equal(Start.AddMinutes(1), last.Minute);
         Assert.Equal(30, Metric(last, UsageMetrics.Cpu).Samples);
         Assert.False(Metric(last, UsageMetrics.Cpu).Complete);
+        Assert.False(last.CaptureGap);
         Assert.Null(folder.Flush());
+        // A minute closed early but fully recorded keeps its completeness; the segment changes for what follows.
+        var full = new UsageMinuteFolder();
+        Run(full, 0, 60);
+        var flushed = full.Flush();
+        Assert.NotNull(flushed);
+        Assert.True(Metric(flushed, UsageMetrics.Cpu).Complete);
+        var next = Assert.Single(Run(full, 60, 121));
+        Assert.NotEqual(flushed.Segment, next.Segment);
     }
 
     [Fact]

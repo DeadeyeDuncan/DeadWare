@@ -94,7 +94,11 @@ public sealed class UsageHistoryService
             {
                 var reading = item.Reading;
                 // A pause, resume or queue loss ends the open minute as incomplete and starts a new segment.
-                if ((item.Generation != previousGeneration || item.Drops != previousDrops) && folder.Flush() is { } closed) pending.Add(closed);
+                if (item.Generation != previousGeneration || item.Drops != previousDrops)
+                {
+                    if (folder.Flush() is { } closed) pending.Add(closed);
+                    folder.Break();
+                }
                 previousGeneration = item.Generation; previousDrops = item.Drops;
                 bool captureAvailable = reading.Connections?.Available ?? reading.Processes.Count > 0;
                 if (folder.Observe(reading.Sample, reading.Processes, captureAvailable, Gpus(reading)) is { } batch) pending.Add(batch);

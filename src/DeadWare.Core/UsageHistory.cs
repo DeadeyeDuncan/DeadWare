@@ -115,11 +115,11 @@ public sealed class UsageMinuteFolder
         return closed;
     }
 
-    /// <summary>Closes the open minute, for Quit or a recording pause. The result is never marked complete.</summary>
+    /// <summary>Closes the open minute early, for Quit or a recording pause. Its rows keep their own completeness and capture flags;
+    /// call <see cref="Break"/> afterwards when the samples that follow should start a discontinuous minute.</summary>
     public UsageMinuteBatch? Flush()
     {
         if (minute is null) return null;
-        broken = true;
         var batch = Close();
         segment = NewSegment(); previousSeconds = null; previousTimestamp = null; baselines = new(); hasBaseline = false;
         return batch;

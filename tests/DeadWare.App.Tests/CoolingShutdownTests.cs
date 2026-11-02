@@ -29,7 +29,7 @@ public class CoolingShutdownTests
         Set(collector,"etw",Activator.CreateInstance(typeof(Collector).Assembly.GetType("DeadWare.App.EtwNetwork")!,[false])!);
         var session=(UiSession)RuntimeHelpers.GetUninitializedObject(typeof(UiSession));
         Set(session,"<Collector>k__BackingField",collector);Set(session,"<Cooling>k__BackingField",history);Set(session,"<GraphHistory>k__BackingField",graphs);
-        Set(session,"<Battery>k__BackingField",battery);
+        Set(session,"<Battery>k__BackingField",battery);Set(session,"<Usage>k__BackingField",new UsageHistoryService(Path.Combine(root,"usage.db"),"fixture"));
         try
         {
             history.Start();history.TryRecord(ThermalProjectionTests.Reading(ThermalProjectionTests.Sensor("t","CPU Package","Temperature",60)));

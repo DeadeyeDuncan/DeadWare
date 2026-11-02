@@ -234,7 +234,7 @@ public class ConnectionServiceTests
         void Set(string name,object value)=>typeof(UiSession).GetField("<"+name+">k__BackingField",flags)!.SetValue(session,value);
         var capture=new EtwNetwork(_=>new(11,1,"fixture"));typeof(Collector).GetField("etw",flags)!.SetValue(collector,capture);
         Set("Collector",collector);Set("Connections",service);Set("Cooling",new CoolingHistoryService(System.IO.Path.Combine(root,"cooling.db"),"fixture","setup"));
-        Set("GraphHistory",new GraphHistoryService(System.IO.Path.Combine(root,"graphs.db"),"fixture",new SampleHistory()));Set("Battery",new BatteryHistoryService(System.IO.Path.Combine(root,"battery.db"),"fixture"));
+        Set("GraphHistory",new GraphHistoryService(System.IO.Path.Combine(root,"graphs.db"),"fixture",new SampleHistory()));Set("Battery",new BatteryHistoryService(System.IO.Path.Combine(root,"battery.db"),"fixture"));Set("Usage",new UsageHistoryService(System.IO.Path.Combine(root,"usage.db"),"fixture"));
         collector.SampleAvailable+=service.TryRecord;collector.FinalConnectionsAvailable+=service.TryRecord;
         if(failingFinalSubscriber)collector.FinalConnectionsAvailable+=_=>throw new InvalidOperationException("late subscriber failure");
         DateTimeOffset now=DateTimeOffset.UtcNow;
