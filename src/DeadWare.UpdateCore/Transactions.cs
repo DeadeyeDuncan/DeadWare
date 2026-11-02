@@ -1,3 +1,4 @@
+using System.Runtime.Versioning;
 using System.Security.Cryptography;
 using System.Text;
 
@@ -12,20 +13,47 @@ public sealed class UpdatePaths
     public string Install { get; }
     public string Key { get; }
     public string Root { get; }
+    /// <summary>Root is in the administrator-only base and must pass <see cref="ProtectedRoot.Verify(UpdatePaths)"/> before use.</summary>
+    public bool Protected { get; }
+    /// <summary>For a protected installation, the per-user root that DeadWare 0.6.38 and earlier used. Only its startup handoff is ever read.</summary>
+    public UpdatePaths? Legacy { get; }
     public string PendingFile => SafeFiles.Child(Root,"pending.json");
     public string RollbackFile => SafeFiles.Child(Root,"rollback.json");
     public string ResultFile => SafeFiles.Child(Root,"result.json");
     public static string CacheBase => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"DeadWare","updates");
+    public static string ProtectedCacheBase => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),"DeadWare","updates");
     public UpdatePaths(string install, string? cacheBase = null)
     {
         Install = SafeFiles.DirectoryPath(install);
         Key = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(Install.ToUpperInvariant()))).ToLowerInvariant();
         Root = RootForKey(Key,cacheBase);
     }
+    // Computed without touching the disk: any local user can plant a junction under %ProgramData%, and that must surface as a ProtectedRoot refusal, never as a failure to start or acknowledge.
+    private UpdatePaths(string protectedBase,UpdatePaths legacy){Install=legacy.Install;Key=legacy.Key;Root=LexicalRoot(Key,protectedBase);Protected=true;Legacy=legacy;}
+    /// <summary>An installation only administrators can change keeps its update state in <see cref="ProtectedCacheBase"/>; any other keeps using <see cref="CacheBase"/>.</summary>
+    [SupportedOSPlatform("windows")]
+    public static UpdatePaths ForInstallation(string install){string directory=SafeFiles.DirectoryPath(install);return ForInstallation(directory,InstallLocation.Check(directory).Protected);}
+    public static UpdatePaths ForInstallation(string install,bool protectedInstallation,string? protectedBase=null,string? userBase=null)
+        =>protectedInstallation?new(protectedBase??ProtectedCacheBase,new UpdatePaths(install,userBase)):new(install,userBase);
     public static string RootForKey(string key,string? cacheBase=null)
     {
         if(!ReleasePolicy.HashPattern().IsMatch(key))throw new InvalidDataException("Invalid installation key.");
         return SafeFiles.Child(cacheBase??CacheBase,key.ToLowerInvariant());
+    }
+    /// <summary>The same path as <see cref="RootForKey"/>, computed as text only: no link checks and no disk access.</summary>
+    public static string LexicalRoot(string key,string cacheBase)
+    {
+        if(!ReleasePolicy.HashPattern().IsMatch(key))throw new InvalidDataException("Invalid installation key.");
+        return Path.GetFullPath(Path.Join(Path.GetFullPath(cacheBase),key.ToLowerInvariant()));
+    }
+    /// <summary>A staged helper runs as &lt;root&gt;\jobs\&lt;id&gt;\helper.exe; its root must be the one for <paramref name="key"/> under one of <paramref name="bases"/>. Bases are matched as text, and only the matching one is checked for links.</summary>
+    public static string HelperRoot(string executable,string key,string id,params string[] bases)
+    {
+        string full=Path.GetFullPath(executable),job="jobs/"+Id(id)+"/helper.exe";
+        string cacheBase=bases.FirstOrDefault(cacheBase=>Path.GetFullPath(Path.Join(LexicalRoot(key,cacheBase),job)).Equals(full,StringComparison.OrdinalIgnoreCase))
+            ??throw new InvalidDataException("The updater is outside its staged handoff.");
+        string root=RootForKey(key,cacheBase);
+        return SafeFiles.Child(root,job).Equals(full,StringComparison.OrdinalIgnoreCase)?root:throw new InvalidDataException("The updater is outside its staged handoff.");
     }
     public static string Id(string id)=>Guid.TryParseExact(id,"N",out var value)?value.ToString("N"):throw new InvalidDataException("Invalid update identifier.");
     public string JobDirectory(string id)=>SafeFiles.Child(Root,"jobs/"+Id(id));

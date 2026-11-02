@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.6.39 — Safer updates and startup
+
+- The Updates page no longer closes DeadWare when an installed app file or the saved rollback copy has been changed or damaged. It shows a message and disables installing until the complete package is reinstalled.
+- Opening Updates now cleans up old update downloads. Only small records of the latest update are kept, so its downloaded ZIP and unpacked copy are removed, and abandoned update folders older than a day are deleted. For an installation in a protected folder, this cleanup happens when DeadWare runs as administrator. Update data that an earlier version left for such an installation in `%LOCALAPPDATA%\DeadWare\updates` isn't cleaned up automatically; you can delete it while DeadWare is quit.
+- Quit no longer hangs when a hardware sensor driver stops responding. DeadWare waits at most 5 seconds for hardware providers, while saving graph, Cooling Health, battery and connection history gets up to 20 seconds to finish. Connection history is now saved even if a hardware provider is stuck, including when Windows signs out.
+- Starting as administrator at sign-in now requires DeadWare to be in a folder standard users can't change, such as `C:\Program Files\DeadWare`. A copy in a user folder such as `AppData\Local\Programs` or Downloads can't turn it on, and Settings explains why. If startup was already on from such a folder, Settings now shows a warning; copy or extract DeadWare into `C:\Program Files\DeadWare` with administrator approval, start DeadWare from that copy, then choose **Enable / repair startup**, or turn startup off. Startup is never turned off automatically.
+- A DeadWare installed in a protected folder such as Program Files now updates through an administrator-only update folder, `%ProgramData%\DeadWare\updates`, so programs without administrator rights can't change a downloaded update. Updating such an installation needs **Restart as administrator**, and rolling back to a version older than 0.6.39 isn't available for it. Copies in user folders keep using `%LOCALAPPDATA%\DeadWare\updates`.
+- DeadWare and its updater ignore .NET startup hooks set through environment variables.
+
 ## 0.6.38 — CPU pump speed on graphs
 
 - Add **Settings → Show CPU pump speed on CPU temperature graphs**. It draws the CPU cooler's pump RPM as a dotted line on its own left RPM scale on the dashboard CPU temperature graph, the CPU temperature pop-out and the widget temperature graph, matching the GPU fan overlay. The joined CPU / GPU temperature pop-out keeps only the GPU fan.

@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+
 namespace DeadWare.UpdateCore;
 
 public sealed record ProcessIdentity(int Pid,long StartTicks,int SessionId,string UserSid,string Executable);
@@ -9,6 +11,17 @@ public sealed record StartupAck(string Id,string Version,ProcessIdentity Process
 public static class UpdateHandoff
 {
     public static string JobFile(UpdatePaths paths,string id,string name)=>SafeFiles.Child(paths.JobDirectory(id),name);
+    /// <summary>Opens the copied helper for reading while denying writers, deleters and renames, and verifies the bytes of that same handle. Keep it open until the helper is ready: Windows can still start the file.</summary>
+    public static FileStream LockHelper(string path,string expectedHash)
+    {
+        var stream=new FileStream(path,FileMode.Open,FileAccess.Read,FileShare.Read);
+        try
+        {
+            if(!Convert.ToHexString(SHA256.HashData(stream)).Equals(expectedHash,StringComparison.OrdinalIgnoreCase))throw new InvalidDataException("The copied updater could not be verified.");
+            return stream;
+        }
+        catch{stream.Dispose();throw;}
+    }
     public static void RequireIdentity(ProcessIdentity expected,ProcessIdentity actual)
     {
         if(expected is null||actual is null||expected.Pid<=0||expected.Pid!=actual.Pid||expected.StartTicks!=actual.StartTicks||expected.SessionId!=actual.SessionId||

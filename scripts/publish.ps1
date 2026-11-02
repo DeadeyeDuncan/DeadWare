@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [ValidatePattern('^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$')][string]$Version = '0.6.38',
+    [ValidatePattern('^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$')][string]$Version = '0.6.39',
     [string]$Dotnet = 'dotnet'
 )
 $ErrorActionPreference = 'Stop'
@@ -21,7 +21,7 @@ try {
     & $Dotnet publish 'src/DeadWare.App/DeadWare.App.csproj' -c Release -r win-x64 --self-contained true -p:PublishTrimmed=false -p:PublishSingleFile=false "-p:Version=$Version" -p:DebugType=None -o $stage --nologo
     if ($LASTEXITCODE -ne 0) { throw 'Publish failed. No package produced.' }
     $helperStage = Join-Path $artifacts "helper-$buildId"
-    & $Dotnet publish 'src/DeadWare.Updater/DeadWare.Updater.csproj' -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true -p:PublishTrimmed=false "-p:Version=$Version" -p:DebugType=None -o $helperStage --nologo
+    & $Dotnet publish 'src/DeadWare.Updater/DeadWare.Updater.csproj' -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true -p:PublishTrimmed=false "-p:Version=$Version" -p:DebugType=None -o $helperStage --nologo
     if ($LASTEXITCODE -ne 0) { throw 'Updater publish failed. No package produced.' }
     Copy-Item -LiteralPath (Join-Path $helperStage 'DeadWare.Updater.exe') -Destination $stage
     foreach ($name in @('LICENSE','THIRD-PARTY-NOTICES.md','README.md','CHANGELOG.md')) {

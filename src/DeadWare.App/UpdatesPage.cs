@@ -37,9 +37,9 @@ internal sealed class UpdatesPage : ScrollViewer
         notesStatus.Margin=new(0,10,0,0);releaseNotes.Children.Add(notesStatus);
         retryHistory=Ui.Button("Retry history",()=>_ = RunAsync(service.ReadHistoryAsync));retryHistory.HorizontalAlignment=HorizontalAlignment.Left;releaseNotes.Children.Add(retryHistory);
         releaseNotes.Children.Add(noteSections);body.Children.Add(Card(releaseNotes));
-        Loaded+=async(_,_)=>{service.Changed+=Changed;ApplyState(service.State);await service.ReadLocalAsync();};
+        Loaded+=async(_,_)=>{service.Changed+=Changed;ApplyState(service.State);try{await service.ReadLocalAsync();}catch(Exception error){service.ReportFailure(error);}};
         Unloaded+=(_,_)=>service.Changed-=Changed;
-        IsVisibleChanged+=async(_,_)=>{if(IsLoaded&&IsVisible)await service.ReadLocalAsync();};ApplyState(service.State);
+        IsVisibleChanged+=async(_,_)=>{if(!IsLoaded||!IsVisible)return;try{await service.ReadLocalAsync();}catch(Exception error){service.ReportFailure(error);}};ApplyState(service.State);
     }
     private static Border Card(UIElement child){var panel=Ui.Panel(child,new Thickness(16));panel.Margin=new(0,0,0,12);return panel;}
     private void Changed(){if(Dispatcher.HasShutdownStarted)return;if(Dispatcher.CheckAccess())ApplyState(service.State);else Dispatcher.InvokeAsync(()=>{if(!Dispatcher.HasShutdownStarted)ApplyState(service.State);});}

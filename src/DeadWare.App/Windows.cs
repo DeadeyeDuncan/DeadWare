@@ -163,7 +163,7 @@ public sealed class MainWindow : Window
         startupDisable=Ui.Button("Disable startup",()=>_ = ChangeStartupAsync(false));
         startupRefresh=Ui.Button("Refresh status",()=>_ = RefreshStartupAsync());
         var startupButtons=new WrapPanel();startupButtons.Children.Add(startupRepair);startupButtons.Children.Add(startupDisable);startupButtons.Children.Add(startupRefresh);stack.Children.Add(startupButtons);
-        stack.Children.Add(Ui.Text("Windows asks for administrator approval when changing startup. This applies to your Windows account and this executable location. After moving DeadWare, repair startup from the new location. The drive must be available when you sign in.",12,"Muted"));
+        stack.Children.Add(Ui.Text("Windows asks for administrator approval when changing startup. This applies to your Windows account and this executable location. After copying DeadWare to a new location, start it from there and repair startup. The drive must be available when you sign in.",12,"Muted"));
         var extended=new CheckBox {Content="Extended sensors (may affect responsiveness)",IsChecked=session.Settings.ExtendedSensors,Margin=new Thickness(0,22,0,8)};
         extended.Checked+=(_,_)=>session.SetExtendedSensors(true);extended.Unchecked+=(_,_)=>session.SetExtendedSensors(false);stack.Children.Add(extended);
         stack.Children.Add(Ui.Text("Includes motherboard, controller, storage and memory sensors. Off by default. Restart DeadWare after changing this setting.",12,"Muted"));

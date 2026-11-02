@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Net;
 using System.Net.Http;
+using System.Runtime.ExceptionServices;
 using DeadWare.UpdateCore;
 
 namespace DeadWare.App;
@@ -43,8 +44,10 @@ public sealed class UpdateService
     public UpdateState State=>Volatile.Read(ref state);
     public event Action? Changed;
     public event Action<ReleaseInfo>? UpdateAvailable;
+    internal const string LegacyPending="An unfinished update from an earlier DeadWare version needs a reinstall from the complete package. Updates are disabled until then.";
     public UpdateService(string version,string? install=null,HttpClient? http=null,string? cacheBase=null)
-    {state=new(version);paths=new(install??AppContext.BaseDirectory,cacheBase);releases=new(http);}
+    {state=new(version);install??=AppContext.BaseDirectory;paths=cacheBase is null?UpdatePaths.ForInstallation(install):new(install,cacheBase);releases=new(http);}
+    internal UpdateService(string version,UpdatePaths paths,HttpClient? http=null){state=new(version);this.paths=paths;releases=new(http);}
     private void Publish(Func<UpdateState,UpdateState> change)
     {lock(gate)Volatile.Write(ref state,change(state));Changed?.Invoke();}
     public void ReportFailure(Exception error)=>Publish(s=>s with {Status="Update could not continue: "+error.Message});
@@ -60,21 +63,38 @@ public sealed class UpdateService
         if(Volatile.Read(ref busy)!=0&&Volatile.Read(ref checking)==0)return;
         try
         {
-            var result=await Task.Run(()=>
+            var result=await Task.Run<(string? problem,BackupRecord? previous,UpdateResult? last,bool pending)>(()=>
             {
-                UpdateCache.CleanupCompletedJobs(paths);
-                bool pending=File.Exists(paths.PendingFile);
+                // Verified, then used, in one step: a protected key root that did not exist when verified is neither read nor cleaned up.
+                if(ProtectedRootProblem(out bool state) is {} refusal)return(refusal,null,null,false);
+                if(state)UpdateCache.CleanupCompletedJobs(paths);
+                bool pending=state&&File.Exists(paths.PendingFile);
                 if(!pending)Packages.ValidateDirectory(paths.Install,ReleasePolicy.VersionOf(State.InstalledVersion).ToString());
-                var previous=new InstallTransaction(paths).Previous();
-                var last=File.Exists(paths.ResultFile)?SafeFiles.ReadJson<UpdateResult>(paths.ResultFile):null;
-                return(previous,last,pending);
+                var previous=state?new InstallTransaction(paths).Previous():null;
+                var last=state&&File.Exists(paths.ResultFile)?SafeFiles.ReadJson<UpdateResult>(paths.ResultFile):null;
+                return(null,previous,last,pending);
             });
+            if(result.problem is {} problem){Publish(s=>s with {InstallationVerified=false,Previous=null,LocalStatus=problem});return;}
             Publish(s=>s with {InstallationVerified=true,Previous=result.previous,NeedsRecovery=result.pending,
                 LocalStatus=result.pending?result.previous is null?"An unfinished update requires repair using a complete package.":"An unfinished update needs recovery. Use Roll back & restart before installing another update.":
                     result.previous is null?"No earlier packaged installation is available for rollback yet.":$"Rollback available: {result.previous.Version}.",LastOperation=result.last?.Message??""});
         }
-        catch(Exception error) when(error is IOException or UnauthorizedAccessException or ArgumentException)
+        catch(Exception error) when(error is IOException or UnauthorizedAccessException or ArgumentException or InvalidDataException)
         {Publish(s=>s with {InstallationVerified=false,Previous=null,LocalStatus="Install the complete updater-enabled package before updating from this folder. "+error.Message});}
+    }
+    /// <summary>A protected installation never reads update state from the per-user folder, and refuses a protected folder that others can change; <paramref name="state"/> is false while there is no verified key root to read.</summary>
+    private string? ProtectedRootProblem(out bool state)
+    {
+        state=false;if(LegacyBlocks())return LegacyPending;
+        try{state=ProtectedRoot.VerifyExisting(paths);return null;}
+        catch(InvalidDataException error){return error.Message;}
+    }
+    /// <summary>An earlier version's unfinished journal blocks a protected installation only while the installation fails validation; it is never read for recovery and never deleted.</summary>
+    private bool LegacyBlocks()
+    {
+        if(paths.Legacy is not {} legacy||!File.Exists(legacy.PendingFile))return false;
+        try{Packages.ValidateDirectory(paths.Install,ReleasePolicy.VersionOf(State.InstalledVersion).ToString());return false;}
+        catch(Exception error) when(error is IOException or UnauthorizedAccessException or ArgumentException or InvalidDataException){return true;}
     }
     public Task CheckAtStartupAsync(CancellationToken token)
     {
@@ -142,6 +162,7 @@ public sealed class UpdateService
         try
         {
             string currentVersion=ReleasePolicy.VersionOf(State.InstalledVersion).ToString();
+            if(paths.Protected)await Task.Run(()=>{if(LegacyBlocks())throw new InvalidOperationException(LegacyPending);ProtectedRoot.Prepare(paths);},token);
             if(!rollback&&File.Exists(paths.PendingFile))throw new InvalidOperationException("Recover the unfinished update with Roll back & restart first.");
             if(!File.Exists(paths.PendingFile))await Task.Run(()=>Packages.ValidateDirectory(paths.Install,currentVersion),token);
             string id=Guid.NewGuid().ToString("N");jobDirectory=paths.JobDirectory(id);Directory.CreateDirectory(jobDirectory);
@@ -162,6 +183,7 @@ public sealed class UpdateService
                 await Task.Run(()=>Packages.Extract(archive,stage,target),token);
             }
             token.ThrowIfCancellationRequested();
+            if(paths.Protected)await Task.Run(()=>ProtectedRoot.Verify(paths),token);
             using var process=Process.GetCurrentProcess();
             var parent=new ProcessIdentity(process.Id,process.StartTime.ToUniversalTime().Ticks,process.SessionId,StartupRegistration.CurrentSid,StartupRegistration.Executable);
             var job=new UpdateJob(id,paths.Key,paths.Install,stage,currentVersion,target,rollback?"rollback":"update",parent,
@@ -177,15 +199,18 @@ public sealed class UpdateService
     public async Task<bool> StartHelperAsync(UpdateJob job,CancellationToken token)
     {
         if(!Begin("Preparing the installer; monitoring continues…"))return false;
+        FileStream? verified=null;
         try
         {
-            await Task.Run(()=>
+            verified=await Task.Run(()=>
             {
-                UpdateHandoff.ValidateJob(paths,job);
+                ProtectedRoot.Verify(paths);UpdateHandoff.ValidateJob(paths,job);
                 var manifest=Packages.ReadManifest(paths.Install);
-                string source=SafeFiles.Child(paths.Install,"DeadWare.Updater.exe");
+                string source=SafeFiles.Child(paths.Install,"DeadWare.Updater.exe"),target=UpdateHandoff.JobFile(paths,job.Id,"helper.exe");
                 if(!manifest.Files.TryGetValue("DeadWare.Updater.exe",out var expected)||!Packages.Hash(source).Equals(expected,StringComparison.OrdinalIgnoreCase))throw new InvalidDataException("The installed updater could not be verified.");
-                File.Copy(source,UpdateHandoff.JobFile(paths,job.Id,"helper.exe"),false);
+                File.Copy(source,target,false);
+                // Held until the helper proves it is running: the copy that Windows starts cannot be replaced after verification.
+                return UpdateHandoff.LockHelper(target,expected);
             },token);
             var start=new ProcessStartInfo(UpdateHandoff.JobFile(paths,job.Id,"helper.exe")){UseShellExecute=false,CreateNoWindow=true,WorkingDirectory=paths.JobDirectory(job.Id)};
             foreach(string argument in new[]{"--key",paths.Key,"--job",job.Id})start.ArgumentList.Add(argument);
@@ -214,13 +239,27 @@ public sealed class UpdateService
             if(error is OperationCanceledException)Publish(s=>s with {Status="Update cancelled. Monitoring continues."});else ReportFailure(error);
             End();return false;
         }
+        finally{verified?.Dispose();}
         // A ready helper holds the operation gate until normal Quit exits this process.
     }
     public static void AcknowledgeStartup(string[] args,string install,string version)
     {
+        if(Array.IndexOf(args,"--update-handoff")<0)return;
+        AcknowledgeStartup(args,UpdatePaths.ForInstallation(install),version);
+    }
+    /// <summary>Acknowledges the handoff in the first candidate root that passes every check, so a request planted in an earlier candidate cannot block the genuine one; fails only when every candidate fails.</summary>
+    internal static void AcknowledgeStartup(string[] args,UpdatePaths installation,string version,Func<UpdatePaths,bool>? verified=null)
+    {
         int index=Array.IndexOf(args,"--update-handoff");if(index<0)return;
         if(index+1>=args.Length)throw new InvalidDataException("Missing update handoff identifier.");
-        var paths=new UpdatePaths(install);string id=UpdatePaths.Id(args[index+1]);
+        string id=UpdatePaths.Id(args[index+1]);Exception? failure=null;
+        foreach(var paths in HandoffPaths(installation,id,verified))
+            try{Acknowledge(paths,id,version);return;}catch(Exception error){failure??=error;}
+        if(failure is not null)ExceptionDispatchInfo.Throw(failure);
+        throw new InvalidDataException("The update handoff could not be found or verified.");
+    }
+    private static void Acknowledge(UpdatePaths paths,string id,string version)
+    {
         var job=SafeFiles.ReadJson<UpdateJob>(UpdateHandoff.JobFile(paths,id,"request.json"));UpdateHandoff.ValidateJob(paths,job);
         if(job.ToVersion!=version)throw new InvalidDataException("The installed version does not match the update.");
         var ready=SafeFiles.ReadJson<HelperReady>(UpdateHandoff.JobFile(paths,id,"ready.json"));
@@ -232,5 +271,16 @@ public sealed class UpdateService
         using var self=Process.GetCurrentProcess();
         SafeFiles.WriteJson(UpdateHandoff.JobFile(paths,id,"started.json"),new StartupAck(id,version,
             new(self.Id,self.StartTime.ToUniversalTime().Ticks,self.SessionId,StartupRegistration.CurrentSid,StartupRegistration.Executable)));
+    }
+    /// <summary>The installation's own root when it holds the request and passes <see cref="ProtectedRoot.VerifyExisting"/> (any local user can create folders under %ProgramData%), then the per-user root where a 0.6.38 or earlier updater stages the job that installs this version. The identity checks apply to whichever root holds it.</summary>
+    internal static IReadOnlyList<UpdatePaths> HandoffPaths(UpdatePaths installation,string id,Func<UpdatePaths,bool>? verified=null)
+    {
+        bool Requested(UpdatePaths candidate){try{return File.Exists(UpdateHandoff.JobFile(candidate,id,"request.json"));}catch(InvalidDataException){return false;}}
+        bool Verified(UpdatePaths candidate){try{return ProtectedRoot.VerifyExisting(candidate);}catch(InvalidDataException){return false;}}
+        if(installation.Legacy is not {} legacy)return [installation];
+        var candidates=new List<UpdatePaths>();
+        if(Requested(installation)&&(verified??Verified)(installation))candidates.Add(installation);
+        if(Requested(legacy))candidates.Add(legacy);
+        return candidates;
     }
 }

@@ -110,8 +110,12 @@ public class ConnectionCaptureTests
         var worker=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         typeof(Collector).GetField("etw",flags)!.SetValue(collector,capture);typeof(Collector).GetField("worker",flags)!.SetValue(collector,worker.Task);
         int finals=0;collector.FinalConnectionsAvailable+=_=>Interlocked.Increment(ref finals);
-        var stop=collector.DisposeAsync().AsTask();
-        try {await Task.Delay(50);Assert.Equal(0,Volatile.Read(ref finals));}
+        var publication=typeof(Collector).GetField("publicationGate",flags)!.GetValue(collector)!;Task stop;
+        Monitor.Enter(publication);
+        try {stop=collector.DisposeAsync().AsTask();Thread.Sleep(100);Assert.Equal(0,Volatile.Read(ref finals));}
+        finally {Monitor.Exit(publication);}
+        // Only the in-flight publication delays the final drain; the stuck hardware worker does not.
+        try {Assert.True(SpinWait.SpinUntil(()=>Volatile.Read(ref finals)==1,TimeSpan.FromSeconds(3)));Assert.False(stop.IsCompleted);}
         finally {worker.SetResult();await stop;}
         Assert.Equal(1,finals);
     }
