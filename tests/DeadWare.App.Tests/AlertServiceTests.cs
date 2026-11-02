@@ -33,8 +33,17 @@ public class AlertServiceTests
         var store = (UsageHistoryStore)typeof(UsageHistoryService).GetField("store", Fields)!.GetValue(usage)!;
         store.Initialize(); return store;
     }
-    private static void Feed(UsageHistoryService usage, int fromSecond, int toSecond, double cpu = 99)
-    { for (int i = fromSecond; i < toSecond; i++) usage.TryRecord(Reading(Start.AddSeconds(i), i, cpu)); }
+    /// <summary>Publishes one reading per second and lets the usage worker drain its 120-slot queue every 50 readings, so none is dropped.</summary>
+    private static async Task Feed(UsageHistoryService usage, int fromSecond, int toSecond, double cpu = 99)
+    {
+        for (int i = fromSecond; i < toSecond; i++)
+        {
+            usage.TryRecord(Reading(Start.AddSeconds(i), i, cpu));
+            if ((i - fromSecond) % 50 == 49) await Until(() => Task.FromResult(usage.PendingSamples == 0));
+        }
+        await Until(() => Task.FromResult(usage.PendingSamples == 0));
+        Assert.Equal(0, usage.DroppedSamples);
+    }
     private static async Task Until(Func<Task<bool>> condition)
     {
         using var deadline = new CancellationTokenSource(Timeout);
@@ -52,7 +61,7 @@ public class AlertServiceTests
         usage.Start(); alerts.Start();
         try
         {
-            Feed(usage, 0, 61);
+            await Feed(usage, 0, 61);
             var episode = await notified.Task.WaitAsync(Timeout);
             Assert.Equal("CPU usage ≥ 90% for 1 minute", episode.Summary); Assert.Equal(Start, episode.Start); Assert.Null(episode.End);
             await alerts.StopAsync(); await usage.StopAsync();
@@ -76,11 +85,11 @@ public class AlertServiceTests
         usage.Start(); alerts.Start();
         try
         {
-            Feed(usage, 0, 61);
+            await Feed(usage, 0, 61);
             await Until(async () => (await Log(alerts)).Total == 1);
             Assert.Equal(0, Volatile.Read(ref notifications));
             alerts.Configure([Rule(AlertKind.Metric, "cpu", 90), Rule(AlertKind.Metric, "memory", 40, id: "ram")], true);
-            Feed(usage, 61, 121);
+            await Feed(usage, 61, 121);
             await Until(async () => (await Log(alerts)).Total == 2);
             Assert.Equal(1, Volatile.Read(ref notifications));
             Assert.False(alerts.Failed); Assert.Equal(AlertService.SavedStatus, alerts.Status);
@@ -97,7 +106,7 @@ public class AlertServiceTests
         var notified = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         first.Alerts.EpisodeStarted += _ => notified.TrySetResult();
         first.Usage.Start(); first.Alerts.Start();
-        Feed(first.Usage, 0, 61);
+        await Feed(first.Usage, 0, 61);
         await notified.Task.WaitAsync(Timeout);
         await first.Alerts.StopAsync(); await first.Usage.StopAsync();
         var second = Services(fixture);
@@ -106,7 +115,7 @@ public class AlertServiceTests
         second.Usage.Start(); second.Alerts.Start();
         try
         {
-            Feed(second.Usage, 60, 120, cpu: 10); Feed(second.Usage, 120, 181, cpu: 99);
+            await Feed(second.Usage, 60, 120, cpu: 10); await Feed(second.Usage, 120, 181, cpu: 99);
             await Until(async () => (await Log(second.Alerts)).Total == 2);
             var log = await Log(second.Alerts);
             Assert.NotNull(log.Episodes[1].End); Assert.Null(log.Episodes[0].End);
@@ -156,7 +165,10 @@ public class AlertServiceTests
         try
         {
             for (int i = 0; i < 61; i++)
+            {
                 usage.TryRecord(Reading(Start.AddSeconds(i), i, processes: [new ProcessTraffic(7, 1, "chrome.exe", null, null, 2L * i, 0)]));
+                if (i % 50 == 49) await Until(() => Task.FromResult(usage.PendingSamples == 0));
+            }
             var episode = await notified.Task.WaitAsync(Timeout);
             Assert.Equal("chrome.exe ≥ 1.0 KB in a day", episode.Summary);
             Assert.InRange(episode.Peak, 1000, 1100);
