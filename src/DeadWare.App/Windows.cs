@@ -220,7 +220,7 @@ public sealed class MainWindow : Window
     private void Refresh()
     {
         themePicker.SetSelection(session.Settings.Theme);
-        monitoringInfo.Text=$"Local monitoring\n{session.Settings.PollingIntervalSeconds:0.#} s polling · 6 h saved graphs\nv{BuildInfo.Version}";
+        monitoringInfo.Text=$"Local monitoring\n{session.Settings.PollingIntervalSeconds:0.#} s polling · 6 h saved graphs · usage history\nv{BuildInfo.Version}";
         syncingWidgetGraphs=true;
         try
         {

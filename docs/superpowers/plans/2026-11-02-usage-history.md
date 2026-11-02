@@ -78,11 +78,11 @@
 
 **Files:** Update `README.md`, `CHANGELOG.md`, `Directory.Build.props`, `docs/development.md`, `docs/validation.md`; create `docs/releases/v0.7.0.md`.
 
-- [ ] Review the full change against the approved design inline; fix material issues with regression proof.
-- [ ] Record for at least an hour on a real machine and compare the Day view against the live graph for the same period; state in validation notes that this is a software check, not a hardware soak.
-- [ ] Run solution tests/build and `scripts/publish.ps1 -Version 0.7.0`; expected zero failures and a complete portable ZIP, checksum and manifest.
-- [ ] Update README's feature list, a new **Usage history** section, the download links and publish example to 0.7.0, and the development guide's current-version references.
-- [ ] Commit and push the feature branch, open a pull request against `main`, inspect CI, and report the pull-request link with the verification result.
+- [x] Review the full change against the approved design inline; fix material issues with regression proof. (Deviations recorded in each task above: batch-based `Append`, a capture-gap table, all unique-model GPUs recorded with the page showing the selected one, and a share bar built from the top eight names.)
+- [ ] Record for at least an hour on a real machine and compare the Day view against the live graph for the same period; state in validation notes that this is a software check, not a hardware soak. (Needs a Windows machine.)
+- [x] Run solution tests/build and `scripts/publish.ps1 -Version 0.7.0`; expected zero failures and a complete portable ZIP, checksum and manifest. (CI runs the same script on the pull request; its artifact is the package.)
+- [x] Update README's feature list, a new **Usage history** section, the download links and publish example to 0.7.0, and the development guide's current-version references.
+- [x] Commit and push the feature branch, open a pull request against `main`, inspect CI, and report the pull-request link with the verification result.
 
 ## Inline self-review
 

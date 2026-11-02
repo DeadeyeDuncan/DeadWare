@@ -1,5 +1,13 @@
 # Release validation
 
+## Usage history (0.7.0, 2026-11-02)
+
+Usage history adds a fourth local history store. A pure core folder turns collector publications into per-minute metric rows (average, minimum, maximum, samples, completeness) and per-application byte deltas with segment boundaries for sleep, restarts, clock jumps and queue loss; a versioned SQLite store keeps them for 400 days under a 256 MiB cap with whole-day eviction that never removes the day being recorded; a background service mirrors the battery and graph services' flush, drain and sign-out handling; and a page, chart and remembered window present Day/Week/Month views, per-chart statistics from stored minutes, application totals with an Other remainder and capture-gap disclosure, two CSV exports and a recording checkbox mirrored in Settings.
+
+The change was developed in a cloud session without a local .NET SDK, so every test ran first on the pull request's Windows CI rather than on a developer machine. Focused checks cover minute completeness at every polling interval, interval changes, unavailable readings, segment breaks, GPU switching, same-name process summing, PID reuse, name normalization and capture gaps (13 core tests); store reopen and version refusal, machine partitioning, segment merge versus retry, retention, aligned buckets with gaps, bounded application totals, eviction at a small cap, the full-store error path, CSV neutralization and invalid-batch rejection (9 core tests); service quit, pause/resume, queue loss, corrupt-store failure, timer flush and exports (6 app tests); and offscreen renders of the page in Midnight, Daylight and Blackout at 620 and 1050 pixels with empty and one-month fixtures plus a gap-heavy chart, the Settings checkbox round trip and the `usagehistory` window key. CI results for the final commit are recorded on the pull request.
+
+Not done in this release: a physical-hardware soak, a Windows High Contrast render, the native Save dialog, mixed-DPI checks, and the plan's 13-month fixture size and Month query timing, which need a Windows machine with the SDK. Estimated growth is about 20 MB per month on a busy machine; the cap and eviction are the safety net until measured.
+
 ## Smoothed network axis scaling (0.6.34, 2026-10-31)
 
 Smoothed 1-, 3- and 6-hour network charts now choose their shared download/upload axis from the highest bucket average, retaining 15% headroom and the 1,000 B/s floor. Raw extrema remain in the min/max band and full-data statistics; a band above the new ceiling is clipped to the plot. Raw mode, short ranges and other metrics keep their existing scale. Overview cards, detached graphs and the widget use the same HistoryChart renderer.
