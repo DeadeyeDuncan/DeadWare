@@ -84,10 +84,36 @@ public class ProtectedUpdateRootTests
         Assert.Contains("Restart as administrator",ProtectedRoot.Elevation);
         Assert.False(Directory.Exists(paths.Root));Assert.False(Directory.Exists(Path.Combine(fixture.Root,"user")));
     }
+    [Fact, SupportedOSPlatform("windows")] public void A_junction_under_the_protected_base_is_refused_without_breaking_construction_or_the_per_user_helper()
+    {
+        using var fixture=new UpdateFixture();string target=Path.Combine(fixture.Root,"elsewhere"),programData=Path.Combine(fixture.Root,"ProgramData"),link=Path.Combine(programData,"DeadWare");
+        string protectedBase=Path.Combine(link,"updates"),userBase=Path.Combine(fixture.Root,"user"),id=Guid.NewGuid().ToString("N"),installed=fixture.Package("app","0.6.0","old");
+        ProtectedRoot.VerifyExisting(UpdatePaths.ForInstallation(installed,true,protectedBase,userBase)); // Nothing to trust or refuse before DeadWare exists.
+        Directory.CreateDirectory(target);Directory.CreateDirectory(programData);Junction(link,target);
+        try
+        {
+            // Any local user can plant this junction under %ProgramData%.
+            var paths=UpdatePaths.ForInstallation(installed,true,protectedBase,userBase);
+            Assert.Equal(Path.Combine(protectedBase,paths.Key),paths.Root);Assert.Equal(paths.Root,UpdatePaths.LexicalRoot(paths.Key,protectedBase));
+            Assert.Equal(Refusal,Assert.Throws<InvalidDataException>(()=>ProtectedRoot.VerifyExisting(paths)).Message);
+            var prepared=Record.Exception(()=>ProtectedRoot.Prepare(paths));
+            Assert.True(prepared is UnauthorizedAccessException {Message:ProtectedRoot.Elevation} or InvalidDataException {Message:Refusal},prepared?.ToString());
+            string userRoot=UpdatePaths.RootForKey(Key,userBase);
+            Assert.Equal(userRoot,UpdatePaths.HelperRoot(Path.Combine(userRoot,"jobs",id,"helper.exe"),Key,id,protectedBase,userBase));
+            Assert.Throws<InvalidDataException>(()=>UpdatePaths.HelperRoot(Path.Combine(protectedBase,Key,"jobs",id,"helper.exe"),Key,id,protectedBase,userBase));
+            Assert.Empty(Directory.GetFileSystemEntries(target));
+        }
+        finally{if(Directory.Exists(link))Directory.Delete(link);}
+    }
+    private static void Junction(string link,string target)
+    {
+        using var process=Process.Start(new ProcessStartInfo("cmd.exe"){ArgumentList={"/c","mklink","/J",link,target},CreateNoWindow=true,UseShellExecute=false,RedirectStandardOutput=true})!;
+        process.StandardOutput.ReadToEnd();process.WaitForExit();Assert.Equal(0,process.ExitCode);
+    }
     [Fact, SupportedOSPlatform("windows")] public void Unprotected_paths_are_neither_prepared_nor_audited()
     {
         using var fixture=new UpdateFixture();var paths=new UpdatePaths(fixture.Package("app","0.6.0","old"),Path.Combine(fixture.Root,"cache"));
-        ProtectedRoot.Prepare(paths);ProtectedRoot.Verify(paths);
+        ProtectedRoot.Prepare(paths);ProtectedRoot.Verify(paths);ProtectedRoot.VerifyExisting(paths);
         Assert.False(Directory.Exists(Path.Combine(fixture.Root,"cache")));
     }
     [Fact] public void Locked_helper_cannot_be_replaced_or_deleted_but_still_starts()

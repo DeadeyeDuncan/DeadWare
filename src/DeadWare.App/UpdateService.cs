@@ -82,9 +82,16 @@ public sealed class UpdateService
     /// <summary>A protected installation never reads update state from the per-user folder, and refuses a protected folder that others can change.</summary>
     private string? ProtectedRootProblem()
     {
-        if(paths.Legacy is {} legacy&&File.Exists(legacy.PendingFile))return LegacyPending;
-        try{if(paths.Protected&&Directory.Exists(paths.Root))ProtectedRoot.Verify(paths);return null;}
+        if(LegacyBlocks())return LegacyPending;
+        try{ProtectedRoot.VerifyExisting(paths);return null;}
         catch(InvalidDataException error){return error.Message;}
+    }
+    /// <summary>An earlier version's unfinished journal blocks a protected installation only while the installation fails validation; it is never read for recovery and never deleted.</summary>
+    private bool LegacyBlocks()
+    {
+        if(paths.Legacy is not {} legacy||!File.Exists(legacy.PendingFile))return false;
+        try{Packages.ValidateDirectory(paths.Install,ReleasePolicy.VersionOf(State.InstalledVersion).ToString());return false;}
+        catch(Exception error) when(error is IOException or UnauthorizedAccessException or ArgumentException or InvalidDataException){return true;}
     }
     public Task CheckAtStartupAsync(CancellationToken token)
     {
@@ -152,7 +159,7 @@ public sealed class UpdateService
         try
         {
             string currentVersion=ReleasePolicy.VersionOf(State.InstalledVersion).ToString();
-            if(paths.Protected)await Task.Run(()=>{if(paths.Legacy is {} legacy&&File.Exists(legacy.PendingFile))throw new InvalidOperationException(LegacyPending);ProtectedRoot.Prepare(paths);},token);
+            if(paths.Protected)await Task.Run(()=>{if(LegacyBlocks())throw new InvalidOperationException(LegacyPending);ProtectedRoot.Prepare(paths);},token);
             if(!rollback&&File.Exists(paths.PendingFile))throw new InvalidOperationException("Recover the unfinished update with Roll back & restart first.");
             if(!File.Exists(paths.PendingFile))await Task.Run(()=>Packages.ValidateDirectory(paths.Install,currentVersion),token);
             string id=Guid.NewGuid().ToString("N");jobDirectory=paths.JobDirectory(id);Directory.CreateDirectory(jobDirectory);

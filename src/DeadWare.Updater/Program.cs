@@ -17,7 +17,7 @@ static async Task<int> RunAsync(string[] args)
     {
         if(args.Length!=4||args[0]!="--key"||args[2]!="--job")throw new ArgumentException("Invalid updater arguments.");
         string id=UpdatePaths.Id(args[3]),root=UpdatePaths.HelperRoot(Environment.ProcessPath??throw new InvalidDataException("The updater path is unavailable."),args[1],id,UpdatePaths.ProtectedCacheBase,UpdatePaths.CacheBase);
-        if(root.Equals(UpdatePaths.RootForKey(args[1],UpdatePaths.ProtectedCacheBase),StringComparison.OrdinalIgnoreCase))ProtectedRoot.Verify(root);
+        if(root.Equals(UpdatePaths.LexicalRoot(args[1],UpdatePaths.ProtectedCacheBase),StringComparison.OrdinalIgnoreCase))ProtectedRoot.Verify(root);
         job=SafeFiles.ReadJson<UpdateJob>(SafeFiles.Child(root,"jobs/"+id+"/request.json"));
         paths=UpdatePaths.ForInstallation(job.InstallDirectory);
         if(!paths.Root.Equals(root,StringComparison.OrdinalIgnoreCase))throw new InvalidDataException("Update handoff mismatch.");

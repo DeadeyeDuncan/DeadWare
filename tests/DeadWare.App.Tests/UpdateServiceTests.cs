@@ -136,14 +136,16 @@ public class UpdateServiceTests
         }
         finally{if(Directory.Exists(root))Directory.Delete(root,true);}
     }
-    [Fact] public void Startup_acknowledges_a_handoff_left_by_an_older_updater_in_the_per_user_root()
+    [Theory] [InlineData(false)] [InlineData(true)]
+    public void Startup_acknowledges_a_handoff_left_by_an_older_updater_in_the_per_user_root(bool plantedJunction)
     {
-        string root=Path.Combine(Path.GetTempPath(),"DeadWare-legacy-ack-"+Guid.NewGuid().ToString("N"));Process? helper=null;
+        string root=Path.Combine(Path.GetTempPath(),"DeadWare-legacy-ack-"+Guid.NewGuid().ToString("N")),link=Path.Combine(root,"ProgramData","DeadWare");Process? helper=null;
         try
         {
             // The 0.6.38 updater stages its job under %LOCALAPPDATA% even when the installation is protected.
             string installed=Package(root,"app","0.6.39"),id=Guid.NewGuid().ToString("N"),sid=StartupRegistration.CurrentSid;
-            var paths=UpdatePaths.ForInstallation(installed,true,Path.Combine(root,"protected"),Path.Combine(root,"user"));
+            if(plantedJunction){Directory.CreateDirectory(Path.Combine(root,"elsewhere"));Directory.CreateDirectory(Path.GetDirectoryName(link)!);Junction(link,Path.Combine(root,"elsewhere"));}
+            var paths=UpdatePaths.ForInstallation(installed,true,Path.Combine(link,"updates"),Path.Combine(root,"user"));
             string job=paths.Legacy!.JobDirectory(id),stage=Package(job,"package","0.6.39"),executable=Path.Combine(job,"helper.exe");
             File.Copy(Path.Combine(Environment.SystemDirectory,"cmd.exe"),executable);
             helper=Process.Start(new ProcessStartInfo(executable){UseShellExecute=false,CreateNoWindow=true,RedirectStandardInput=true,RedirectStandardOutput=true,RedirectStandardError=true})!;
@@ -157,31 +159,60 @@ public class UpdateServiceTests
             UpdateService.AcknowledgeStartup(args,paths,"0.6.39");
             var ack=SafeFiles.ReadJson<StartupAck>(Path.Combine(job,"started.json"));
             Assert.Equal((id,"0.6.39",self.Id,sid),(ack.Id,ack.Version,ack.Process.Pid,ack.Process.UserSid));
-            Assert.False(Directory.Exists(Path.Combine(root,"protected")));
+            Assert.False(Directory.Exists(Path.Combine(link,"updates")));
         }
-        finally{if(helper is not null){if(!helper.HasExited)helper.Kill();helper.WaitForExit();helper.Dispose();}if(Directory.Exists(root))Directory.Delete(root,true);}
+        finally{if(helper is not null){if(!helper.HasExited)helper.Kill();helper.WaitForExit();helper.Dispose();}if(Directory.Exists(link))Directory.Delete(link);if(Directory.Exists(root))Directory.Delete(root,true);}
     }
     [Fact] public async Task A_protected_installation_never_trusts_update_state_in_the_per_user_root()
     {
         string root=Path.Combine(Path.GetTempPath(),"DeadWare-protected-state-"+Guid.NewGuid().ToString("N"));
         try
         {
-            string installed=Package(root,"app","0.6.38"),stage=Package(root,"stage","0.6.39"),protectedBase=Path.Combine(root,"protected"),userBase=Path.Combine(root,"user");
+            string installed=Package(root,"app","0.6.38"),stage=Package(root,"stage","0.6.39"),protectedBase=Path.Combine(root,"ProgramData","DeadWare","updates"),userBase=Path.Combine(root,"user");
             var legacy=new UpdatePaths(installed,userBase);var transaction=new InstallTransaction(legacy);transaction.Apply(stage,"0.6.38","0.6.39");transaction.Commit();
             SafeFiles.WriteJson(legacy.ResultFile,new UpdateResult(true,"Updated to 0.6.39.","0.6.39"));
             var user=new UpdateService("0.6.39",installed,cacheBase:userBase);await user.ReadLocalAsync();
             Assert.True(user.State.CanRollback);Assert.Equal("Updated to 0.6.39.",user.State.LastOperation);
+            // While the installation validates, an earlier version's unfinished journal is ignored: never read, never removed.
+            File.WriteAllText(legacy.PendingFile,"{ not json");
             using var http=new HttpClient(new Handler{Content=Release("0.6.40")});
-            var service=new UpdateService("0.6.39",UpdatePaths.ForInstallation(installed,true,protectedBase,userBase),http);await service.ReadLocalAsync();
-            Assert.True(service.State.InstallationVerified);Assert.Null(service.State.Previous);Assert.False(service.State.CanRollback);Assert.Equal("",service.State.LastOperation);
-            File.WriteAllText(legacy.PendingFile,"{}");
+            var service=new UpdateService("0.6.39",UpdatePaths.ForInstallation(installed,true,protectedBase,userBase),http);
             await service.ReadLocalAsync();await service.CheckAsync(CancellationToken.None);
             const string unfinished="An unfinished update from an earlier DeadWare version needs a reinstall from the complete package. Updates are disabled until then.";
-            Assert.True(service.State.HasNewerRelease);Assert.False(service.State.InstallationVerified);Assert.False(service.State.CanUpdate);Assert.Equal(unfinished,service.State.LocalStatus);
+            Assert.True(service.State.InstallationVerified);Assert.True(service.State.CanUpdate);Assert.NotEqual(unfinished,service.State.LocalStatus);
+            Assert.Null(service.State.Previous);Assert.False(service.State.CanRollback);Assert.Equal("",service.State.LastOperation);
+            // Preparation passes the legacy gate and stops at the protected folder: unelevated runs need administrator rights, elevated runs refuse the user-writable test parents.
+            Assert.Null(await service.PrepareAsync(false,CancellationToken.None));
+            Assert.True(service.State.Status.EndsWith(ProtectedRoot.Elevation)||service.State.Status.EndsWith(ProtectedRoot.Refusal),service.State.Status);
+            Assert.Equal("{ not json",File.ReadAllText(legacy.PendingFile));
+            // Once the installation fails validation, the journal blocks updating until a reinstall.
+            File.WriteAllText(Path.Combine(installed,"DeadWare.dll"),"changed");
+            await service.ReadLocalAsync();
+            Assert.False(service.State.InstallationVerified);Assert.False(service.State.CanUpdate);Assert.Equal(unfinished,service.State.LocalStatus);
             Assert.Null(await service.PrepareAsync(false,CancellationToken.None));Assert.EndsWith(unfinished,service.State.Status);
-            Assert.False(Directory.Exists(protectedBase));
+            Assert.Equal("{ not json",File.ReadAllText(legacy.PendingFile));Assert.False(Directory.Exists(protectedBase));
         }
         finally{if(Directory.Exists(root))Directory.Delete(root,true);}
+    }
+    [Fact] public async Task A_junction_in_the_protected_update_folder_is_reported_instead_of_failing()
+    {
+        string root=Path.Combine(Path.GetTempPath(),"DeadWare-protected-junction-"+Guid.NewGuid().ToString("N")),link=Path.Combine(root,"ProgramData","DeadWare");
+        try
+        {
+            // Any local user can create %ProgramData%\DeadWare as a junction; the app must still start and report it.
+            string installed=Package(root,"app","0.6.39"),target=Path.Combine(root,"elsewhere");
+            Directory.CreateDirectory(target);Directory.CreateDirectory(Path.GetDirectoryName(link)!);Junction(link,target);
+            var service=new UpdateService("0.6.39",UpdatePaths.ForInstallation(installed,true,Path.Combine(link,"updates"),Path.Combine(root,"user")));
+            await service.ReadLocalAsync();
+            Assert.False(service.State.InstallationVerified);Assert.False(service.State.CanUpdate);Assert.Equal(ProtectedRoot.Refusal,service.State.LocalStatus);
+            Assert.Empty(Directory.GetFileSystemEntries(target));
+        }
+        finally{if(Directory.Exists(link))Directory.Delete(link);if(Directory.Exists(root))Directory.Delete(root,true);}
+    }
+    private static void Junction(string link,string target)
+    {
+        using var process=Process.Start(new ProcessStartInfo("cmd.exe"){ArgumentList={"/c","mklink","/J",link,target},CreateNoWindow=true,UseShellExecute=false,RedirectStandardOutput=true})!;
+        process.StandardOutput.ReadToEnd();process.WaitForExit();Assert.Equal(0,process.ExitCode);
     }
     [Fact] public async Task A_helper_that_stops_before_ready_releases_its_verified_lock()
     {
