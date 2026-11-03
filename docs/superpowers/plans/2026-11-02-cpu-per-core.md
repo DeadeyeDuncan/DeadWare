@@ -15,7 +15,7 @@
 - Version becomes `0.10.0` in `Directory.Build.props` (Task 9 only).
 - Setting name and copy: `ShowCpuCoreUsage`, default `false`, label **Show per-core CPU usage on usage graphs**, in Settings → **Monitoring** card.
 - Snapshot keys: `cpu/core/{i}/usage`, `i` zero-based, at most **64** cores published, persisted and drawn.
-- Core traces appear only on `HistoryChart` kind `cpu` with `CompareDevices == false`. Joined pop-out, Usage history, Alerts and Cooling Health never read `cpu/core/*`.
+- Core traces appear only on `HistoryChart` kind `cpu` when `!CompareDevices || CoresWithDevices`. `WidgetGraph` builds its Usage chart with `CompareDevices=true` (`WidgetGraph.cs:23`), so it sets `CoresWithDevices=true`; `CompactGraph`'s joined pop-out does not. Usage history, Alerts and Cooling Health never read `cpu/core/*`.
 - Core line: stroke width 0.5 × the total's width (before the user's thickness multiplier), solid, no area fill, no under-glow, no rune trace, no end marker; total drawn last.
 - Hover chip: after the total, up to **8** cores in descending value as `Core {k} · {v:0}%` (`k` one-based), then `+{N} more` when more exist.
 - Card subtitle appends ` · {N} cores` when the switch is on and `N > 0`; hardware status appends ` · Per-core CPU usage unavailable.` when the switch is on and `N == 0`.
@@ -40,7 +40,7 @@
 
 **Interfaces:**
 - Produces: `public static class CpuCoreUsage { public const int MaximumCores = 64; public static IReadOnlyList<double?> FromSensors(IReadOnlyList<SensorReading> sensors); public static string Key(int index) => $"cpu/core/{index}/usage"; }`
-  - `FromSensors` returns one entry per core in ascending `k` from sensors with `HardwareType == "Cpu"`, `Unit == "%"`, `SensorType == "Load"` and a name matching `^CPU Core #(\d+)$` (case-insensitive). Names matching `^CPU Core #(\d+) Thread #(\d+)$` are used only when no plain core sensor exists, each thread then becoming an entry ordered by `(k, t)`. Entries beyond `MaximumCores` are dropped. Returns an empty list when nothing matches. A matched sensor with `Value == null` yields a `null` entry.
+  - `FromSensors` returns one entry per core from sensors with `HardwareType == "Cpu"`, `Unit == "%"`, `SensorType == "Load"` and a name matching `^(CPU Core|P-Core|E-Core) #(\d+)$` (case-insensitive; LibreHardwareMonitor 0.9.6 emits all three prefixes, plus `CPU Core Max` and `CPU Cores`, which must not match). Order: `P-Core` entries, then `E-Core`, then `CPU Core`, each group ascending by number. Names matching the same prefixes followed by ` Thread #(\d+)` are used only when no plain core sensor exists, each thread then becoming an entry ordered by `(group, k, t)`. Entries beyond `MaximumCores` are dropped. Returns an empty list when nothing matches. A matched sensor with `Value == null` yields a `null` entry.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -56,8 +56,10 @@ public class CpuCoreUsageTests
         =>Assert.Equal([10d],CpuCoreUsage.FromSensors([Load("CPU Core #1",10),Load("CPU Core #1 Thread #1",9),Load("CPU Core #1 Thread #2",11)]));
     [Fact] public void Thread_only_chips_get_one_entry_per_thread()
         =>Assert.Equal([9d,11d,20d],CpuCoreUsage.FromSensors([Load("CPU Core #2 Thread #1",20),Load("CPU Core #1 Thread #2",11),Load("CPU Core #1 Thread #1",9)]));
-    [Fact] public void Total_other_units_and_other_hardware_do_not_count()
-        =>Assert.Empty(CpuCoreUsage.FromSensors([Load("CPU Total",50),Load("CPU Core #1",3000) with {Unit="MHz",SensorType="Clock"},Load("CPU Core #1",40) with {HardwareType="GpuNvidia"}]));
+    [Fact] public void Total_max_other_units_and_other_hardware_do_not_count()
+        =>Assert.Empty(CpuCoreUsage.FromSensors([Load("CPU Total",50),Load("CPU Core Max",90),Load("CPU Cores",40),Load("CPU Core #1",3000) with {Unit="MHz",SensorType="Clock"},Load("CPU Core #1",40) with {HardwareType="GpuNvidia"}]));
+    [Fact] public void Hybrid_p_cores_come_before_e_cores()
+        =>Assert.Equal([5d,6d,1d,2d],CpuCoreUsage.FromSensors([Load("E-Core #2",2),Load("P-Core #2",6),Load("E-Core #1",1),Load("P-Core #1",5)]));
     [Fact] public void More_than_sixty_four_cores_are_capped()
         =>Assert.Equal(64,CpuCoreUsage.FromSensors(Enumerable.Range(1,70).Select(k=>Load($"CPU Core #{k}",k)).ToArray()).Count);
     [Fact] public void Key_is_zero_based()=>Assert.Equal("cpu/core/0/usage",CpuCoreUsage.Key(0));
@@ -74,7 +76,7 @@ Expected: build error, `CpuCoreUsage` not found.
 
 - [ ] **Step 4: Run to verify it passes**
 
-Run: same filter. Expected: 6 passed.
+Run: same filter. Expected: 8 passed.
 
 - [ ] **Step 5: Commit**
 
@@ -246,13 +248,14 @@ In `ShellUiChecks`, where the Settings page is built, assert a `CheckBox` with a
 ### Task 7: Core traces and hover in HistoryChart
 
 **Files:**
-- Modify: `src/DeadWare.App/Charts.cs:109-150` (Query/Prepare), `:194` (TraceSpec), `:240-296` (specs and draw order), `:298-316` (hover), `:341-356` (DrawTrace)
+- Modify: `src/DeadWare.App/Charts.cs:105-150` (ctor flags, Query/Prepare), `:194` (TraceSpec), `:240-296` (specs and draw order), `:298-316` (hover), `:341-356` (DrawTrace); `src/DeadWare.App/WidgetGraph.cs:23` (add `CoresWithDevices=true`)
 - Test: `tests/DeadWare.App.Tests/LiveRenderingUiChecks.cs` (extend fixture and add checks)
 
 **Interfaces:**
 - Consumes: `Settings.ShowCpuCoreUsage`, `Reading.CpuCoreCount` via `session.Current`, `Theme.CoreKey`, `CpuCoreUsage.Key`.
 - Produces:
-  - `Query` gains `int Cores` (0 when the switch is off, `kind != "cpu"`, or `CompareDevices`); `Prepare` reads `CpuCoreUsage.Key(i)` series for `i < Cores` exactly like the fan/pump metrics (smoothed ranges included).
+  - `HistoryChart` gains `public bool CoresWithDevices {get;init;}` beside `PumpWithDevices`; `private bool ShowsCores()=>session.Settings.ShowCpuCoreUsage&&kind=="cpu"&&(!CompareDevices||CoresWithDevices)`.
+  - `Query` gains `int Cores` (`ShowsCores() ? session.Current?.CpuCoreCount ?? 0 : 0`); `Prepare` reads `CpuCoreUsage.Key(i)` series for `i < Cores` exactly like the fan/pump metrics (smoothed ranges included).
   - `TraceSpec` gains `bool Core` (default false). Specs order: core specs first (so the total draws last), then the existing primary/secondary/fan/pump order unchanged.
   - `DrawTrace` for `Core`: width 0.5 × the normal width, skip the area, band stays, skip `UnderGlow`, skip `RuneTrace`, skip the end marker, `GraphStroke.Draw` with `dashed:false, dotted:false`.
   - `DrawHover`: collect `(k, value)` for core specs instead of adding them inline; after the non-core lines add up to 8 lines `Core {k} · {value:0}%` sorted descending by value using each core's own brush, then `+{N} more` in `Muted` when more cores had values. The hover dot is drawn only for non-core specs.
@@ -271,7 +274,7 @@ In `ShellUiChecks`, where the Settings page is built, assert a `CheckBox` with a
 In `LiveRenderingUiChecks.Run`: add `cpu/core/0..7/usage` series to the fixture (core 3 null on every 10th sample), set `CpuCoreCount=8` on the fixture `Reading`, and:
   - with `ShowCpuCoreUsage=false`, a `cpu` chart's rendered `DrawingGroup` has the same geometry-drawing count as before (record it first);
   - with `ShowCpuCoreUsage=true`, the count rises by exactly 8 stroked geometries and the core strokes have half the primary stroke's thickness;
-  - a `cpu` chart with `CompareDevices=true` and the switch on draws no extra geometries;
+  - a `cpu` chart with `CompareDevices=true` and the switch on draws no extra geometries, while one with `CompareDevices=true, CoresWithDevices=true` (the widget's shape) draws the 8 core strokes;
   - setting the switch back to `false` and re-rendering returns to the original count (Review Focus 3).
 
 - [ ] **Step 2: Run to verify they fail** — filter `Hover_core_lines|BatteryUiTests`.
