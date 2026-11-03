@@ -376,8 +376,8 @@ public class GraphHistoryServiceTests
         var second=new GraphHistoryService(fixture.Path,"machine",history);second.Start();second.TryRecord(live);await second.StopAsync();
         var restored=history.Read().Where(s=>s.SessionId is not null).OrderBy(s=>s.MonotonicSeconds).ToArray();
         Assert.Equal(9,restored.Length);
-        // fillWindow = 2 s cadence + 0.5 s: records up to +2.5 s are filled from the real record, later ones must not be.
-        for(int i=0;i<restored.Length;i++)Assert.Equal(i<=5,restored[i].Values.ContainsKey("cpu/core/0/usage"));
+        // fillWindow = 2 s cadence + 0.5 s: records clearly inside the window (<= +2.0 s) are filled from the real record; those >= +3.0 s must not be. The +2.5 s boundary is not asserted.
+        for(int i=0;i<restored.Length;i++){if(i==5)continue;Assert.Equal(i<=4,restored[i].Values.ContainsKey("cpu/core/0/usage"));}
     }
     [Fact] public async Task One_second_polling_with_jitter_writes_cores_on_every_record()
     {

@@ -153,8 +153,8 @@ public sealed class Collector : IAsyncDisposable
                     if(timings is not null)timings["windows/cpu"]=Stopwatch.GetElapsedTime(providerStarted).TotalMilliseconds;
                     values["cpu/usage"]=cpuLoad??fallbackCpu;
                     var cores=CpuCoreUsage.FromSensors(sensors,out int droppedCores);
-                    if(cores.Count>0)hardwareCores=true;else if(!hardwareCores)cores=windowsCores.Read();
-                    cores=HoldCores(cores,ref heldCores,hardwareCores);
+                    if(cores.Count>0)hardwareCores=true;else if(!hardwareCores){cores=windowsCores.Read(out int windowsDropped);droppedCores=windowsDropped;}
+                    cores=HoldCores(cores,ref heldCores);
                     PublishCores(values,cores);
                     values["cpu/temperature"]=cpuTemp;
                     values["cpu/pump"]=cpuPumpSpeed.Read(sensors,sensors.Where(s=>s.HardwareType=="Cpu"&&s.HardwareId.Length>0).Select(s=>s.HardwareId).Distinct(StringComparer.Ordinal).Count());
@@ -218,10 +218,10 @@ public sealed class Collector : IAsyncDisposable
         }
     }
     /// <summary>Holds the last good core count for one empty poll (as nulls) so a transient sensor miss shows a gap, not a disappearance.</summary>
-    internal static IReadOnlyList<double?> HoldCores(IReadOnlyList<double?> read,ref int held,bool hardware)
+    internal static IReadOnlyList<double?> HoldCores(IReadOnlyList<double?> read,ref int held)
     {
         if(read.Count>0){held=read.Count;return read;}
-        if(!hardware||held==0)return read;
+        if(held==0)return read;
         int count=held;held=0;return new double?[count];
     }
     internal static int PublishCores(Dictionary<string,double?> values,IReadOnlyList<double?> cores)

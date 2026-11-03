@@ -5,8 +5,10 @@ namespace DeadWare.App;
 public sealed class WindowsCpuCores
 {
     private (ulong Idle,ulong Kernel,ulong User)[]? previous;
-    public IReadOnlyList<double?> Read()
+    public IReadOnlyList<double?> Read()=>Read(out _);
+    public IReadOnlyList<double?> Read(out int dropped)
     {
+        dropped=0;
         var count=(int)GetActiveProcessorCount(0xFFFF);
         if(count<=0){previous=null;return [];}
         var buffer=new ProcessorPerformance[count];
@@ -18,8 +20,12 @@ public sealed class WindowsCpuCores
         var current=new (ulong Idle,ulong Kernel,ulong User)[Math.Min(count,(int)returned/size)];
         for(var i=0;i<current.Length;i++) current[i]=((ulong)buffer[i].IdleTime,(ulong)buffer[i].KernelTime,(ulong)buffer[i].UserTime);
         var before=previous;previous=current;
-        return before is null?[]:Delta(before,current);
+        if(before is null)return [];
+        var result=Delta(before,current);
+        if(result.Count>0)dropped=Dropped(current.Length);
+        return result;
     }
+    internal static int Dropped(int processors)=>Math.Max(0,processors-CpuCoreUsage.MaximumCores);
     internal static IReadOnlyList<double?> Delta(ReadOnlySpan<(ulong Idle,ulong Kernel,ulong User)> previous,ReadOnlySpan<(ulong Idle,ulong Kernel,ulong User)> current)
     {
         if(previous.Length!=current.Length) return [];
