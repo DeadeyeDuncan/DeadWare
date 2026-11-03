@@ -218,7 +218,7 @@ public sealed class MainWindow : Window
         if(startupBusy)return;SetStartupBusy(true);startupResult.Text="Waiting for Windows administrator approval…";
         var result=await StartupRegistration.ConfigureAsync(enabled);SetStartupBusy(false);ShowStartupStatus(result.Registration);startupResult.Text=result.Message;
     }
-    private static void Column(DataGrid table,string title,string binding,double weight)=>table.Columns.Add(new DataGridTextColumn {Header=title,Binding=new Binding(binding),Width=new DataGridLength(weight,DataGridLengthUnitType.Star)});
+    private static void Column(DataGrid table,string title,string binding,double weight)=>table.Columns.Add(new DataGridTextColumn {Header=title.ToUpperInvariant(),Binding=new Binding(binding),Width=new DataGridLength(weight,DataGridLengthUnitType.Star)});
     public void ShowUpdates()=>Navigate("updates");
     public void ShowAlerts()=>Navigate("alerts");
     private void ShowUsageDay(DateTimeOffset at) {Navigate("usage");if(pages["usage"] is UsageHistoryPage usage)usage.ShowDay(at);}

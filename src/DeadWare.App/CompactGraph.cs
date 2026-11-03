@@ -54,7 +54,7 @@ internal sealed class CompactGraph : Border
         details.Margin=new Thickness(0,2,0,8);menu.Children.Add(details);menu.Children.Add(stats);
         var menuBorder=Ui.Panel(menu,new Thickness(12));menuBorder.Width=270;menuBorder.SetResourceReference(BackgroundProperty,"GlassPopup");
         popup=new Popup {Child=menuBorder,PlacementTarget=options,Placement=PlacementMode.Bottom,StaysOpen=false,AllowsTransparency=true};
-        popup.Opened+=(_,_)=>ranges.Focus();
+        popup.Opened+=(_,_)=>((RangeSegments)ranges).FocusChecked();
         popup.Closed+=(_,_)=>{if(IsLoaded)options.Focus();};
         menu.PreviewKeyDown+=(_,e)=>{if(e.Key==Key.Escape){popup.IsOpen=false;e.Handled=true;}};
         Loaded+=(_,_)=>{session.Changed+=Refresh;Refresh();};

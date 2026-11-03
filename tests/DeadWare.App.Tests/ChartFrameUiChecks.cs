@@ -27,9 +27,6 @@ internal static class ChartFrameUiChecks
         Point[] a=[new(0,50),new(10,40),new(20,45),new(30,10)];Point[] b=[new(50,20),new(60,25)];
         var spline=ChartFrame.Spline([a,b]);
         Assert.Equal(2,PathGeometry.CreateFromGeometry(spline).Figures.Count);
-        // Diagnostic for the ledger: does flattening keep open stroked figures at all?
-        var poly=new StreamGeometry();using(var c=poly.Open()){c.BeginFigure(new(0,0),false,false);c.LineTo(new(10,10),true,false);}poly.Freeze();
-        System.IO.File.WriteAllText(System.IO.Path.Combine(System.IO.Path.GetTempPath(),"deadware-flatten-diag.txt"),$"spline flattened {spline.GetFlattenedPathGeometry().Figures.Count}; polyline flattened {poly.GetFlattenedPathGeometry().Figures.Count}; polyline converted {PathGeometry.CreateFromGeometry(poly).Figures.Count}");
         var figures=PathGeometry.CreateFromGeometry(spline).Figures;
         Assert.All(figures,figure=>Assert.All(figure.Segments,segment=>Assert.True(segment is BezierSegment or PolyBezierSegment,segment.GetType().Name)));
         Assert.Equal(new Point(0,50),figures[0].StartPoint);

@@ -295,8 +295,6 @@ public sealed class ConnectionMap : FrameworkElement
     /// <summary>Gradient brushes are rebuilt once per theme and cached; a frozen brush per role keeps rendering allocation-free.</summary>
     private Brush Cached(string key, Func<Brush> build)
     {
-        string theme = Theme.CurrentName + "|" + Theme.GlassEnabled + "|" + Flat + "|" + MapOnly;
-        if (theme != brushTheme) { brushes.Clear(); brushTheme = theme; }
         if (!brushes.TryGetValue(key, out var brush)) { brush = build(); if (brush.CanFreeze) brush.Freeze(); brushes[key] = brush; }
         return brush;
     }
@@ -352,7 +350,7 @@ public sealed class ConnectionMap : FrameworkElement
             dc.PushOpacity(selected?.95:.30+.50*motion.Level);dc.DrawGeometry(null,Stroke(brush,1.2),core);dc.Pop();
         }
     }
-    private void DrawParticles(DrawingContext dc,Route route,Brush brush,bool received,bool glow,string role)
+    private void DrawParticles(DrawingContext dc,Route route,Brush brush,Brush? spark,bool received)
     {
         var motion=received?route.Activity.Download:route.Activity.Upload;
         if(motion.Level<=0)return;
@@ -361,7 +359,7 @@ public sealed class ConnectionMap : FrameworkElement
         {
             if(Sample(route,ArcParticles.Fraction(motion.Time,.33,count,i,received)) is not { } center)continue;
             dc.PushOpacity(motion.Level);
-            if(glow)dc.DrawEllipse(Halo(brush,1,role),null,center,3.5,3.5);
+            if(spark is not null)dc.DrawEllipse(spark,null,center,3.5,3.5);
             dc.DrawEllipse(brush,null,center,1.1,1.1);
             dc.Pop();
         }
@@ -396,6 +394,11 @@ public sealed class ConnectionMap : FrameworkElement
         bool gradients = glow;
         var ink = Theme.Brush("Ink"); var muted = Theme.Brush("Muted"); var hairline = Theme.Brush("Hairline");
         var download = Theme.Brush(Theme.GraphKey("download")); var upload = Theme.Brush(Theme.GraphKey("upload"));
+        // One cache key and four halo brushes per render; the node and particle loops allocate nothing.
+        string theme = Theme.CurrentName + "|" + Theme.GlassEnabled + "|" + Flat + "|" + MapOnly;
+        if (theme != brushTheme) { brushes.Clear(); brushTheme = theme; }
+        Brush? downloadHalo = glow ? Halo(download, .25, "download") : null, uploadHalo = glow ? Halo(upload, .25, "upload") : null;
+        Brush? downloadSpark = glow ? Halo(download, 1, "download") : null, uploadSpark = glow ? Halo(upload, 1, "upload") : null;
         dc.DrawRectangle(Theme.Brush("Background"), null, new Rect(RenderSize));
         StepMotion();UpdateAnimation();EnsureGeometry(); hitPoints.Clear();
         dc.PushClip(new RectangleGeometry(bounds));
@@ -440,8 +443,8 @@ public sealed class ConnectionMap : FrameworkElement
         if (subscribed)
             foreach (var route in busiest)
             {
-                if (route.Data.ReceivedBytes > 0) DrawParticles(dc, route, download, true, glow, "download");
-                if (route.Data.SentBytes > 0) DrawParticles(dc, route, upload, false, glow, "upload");
+                if (route.Data.ReceivedBytes > 0) DrawParticles(dc, route, download, downloadSpark, true);
+                if (route.Data.SentBytes > 0) DrawParticles(dc, route, upload, uploadSpark, false);
             }
         double scale = MapOnly ? .5 : 1;
         foreach (var route in routes)
@@ -454,8 +457,8 @@ public sealed class ConnectionMap : FrameworkElement
             double level = Math.Max(route.Activity.Download.Level, route.Activity.Upload.Level);
             double radius = (route.Radius + (selected ? 1.5 : 0)) * scale;
             if (subscribed) radius += .25 * scale * level * Math.Sin(phase * 2);
-            var brush = route.Data.ReceivedBytes > 0 ? download : upload; string role = route.Data.ReceivedBytes > 0 ? "download" : "upload";
-            if (glow) dc.DrawEllipse(Halo(brush, .25, role), null, center, radius * 3, radius * 3);
+            bool receives = route.Data.ReceivedBytes > 0; var brush = receives ? download : upload; var halo = receives ? downloadHalo : uploadHalo;
+            if (halo is not null) dc.DrawEllipse(halo, null, center, radius * 3, radius * 3);
             dc.DrawEllipse(brush, Stroke(ink, (selected ? 1.2 : .6) * scale), center, radius, radius);
             if (subscribed && level > 0)
             {
@@ -508,8 +511,13 @@ public sealed class ConnectionMap : FrameworkElement
 
     private (Point Center, string Key)? Hit(Point position)
     {
-        var hit = hitPoints.OrderBy(p => (p.Center - position).LengthSquared).FirstOrDefault();
-        return hit.Key is not null && (hit.Center - position).Length <= (MapOnly ? WidgetHitRadius : HitRadius) ? hit : null;
+        double limit = MapOnly ? WidgetHitRadius : HitRadius, best = limit * limit; (Point Center, string Key)? hit = null;
+        foreach (var candidate in hitPoints)
+        {
+            double distance = (candidate.Center - position).LengthSquared;
+            if (distance <= best) { best = distance; hit = candidate; }
+        }
+        return hit;
     }
     /// <summary>Resolves the node under <paramref name="position"/> (null clears), raises <see cref="PointHovered"/> and sets the cursor.</summary>
     internal void SetHover(Point? position)

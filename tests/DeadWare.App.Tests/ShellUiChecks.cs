@@ -48,6 +48,9 @@ internal static class ShellUiChecks
         Assert.True(subtitle.FontSize<=12);Assert.False(string.IsNullOrWhiteSpace(subtitle.Text));
         Assert.Equal(26,Field<TextBlock>("heading").FontSize);
 
+        // Table headers are small uppercase captions (spec: 10 px uppercase, Muted).
+        foreach(var grid in new[]{Field<DataGrid>("apps"),Field<DataGrid>("sensors")})
+            Assert.All(grid.Columns,column=>Assert.Equal(column.Header!.ToString()!.ToUpperInvariant(),column.Header.ToString()));
         // Settings: the existing controls grouped into titled cards.
         var pages=Field<Dictionary<string,FrameworkElement>>("pages");
         Navigate("desktop");shell.UpdateLayout();
