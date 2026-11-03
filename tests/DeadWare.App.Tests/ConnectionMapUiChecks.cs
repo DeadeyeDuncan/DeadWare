@@ -1,6 +1,7 @@
 using System.IO;
 using System.Reflection;
 using System.Windows;
+using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using DeadWare.App;
@@ -71,6 +72,7 @@ internal static class ConnectionMapUiChecks
         CheckFineConnectionLayers();
         CheckStateBordersAndWidgetMarkers();
         CheckActivityFade();
+        CheckRefinedGlassLayers();
     }
 
     private static void CheckMapOnlyPresentationSwitch()
@@ -93,25 +95,36 @@ internal static class ConnectionMapUiChecks
         var map=new ConnectionMap {Flat=true};map.SetData([new("high",new(0,60),60000,30000,false),new("low",new(30,40),1,0,false)],new(0,-60),true,"Flow fixture");
         using var source=new OffscreenSource(map);map.RaiseEvent(new RoutedEventArgs(FrameworkElement.LoadedEvent));
         var phase=typeof(ConnectionMap).GetField("phase",BindingFlags.Instance|BindingFlags.NonPublic)!;
-        GeometryDrawing[] Ellipses()
-        {
-            static IEnumerable<GeometryDrawing> Shapes(Drawing drawing)=>drawing is GeometryDrawing shape?[shape]:drawing is DrawingGroup group?group.Children.SelectMany(Shapes):[];
-            Render(map,new(600,300),"connections-directional-fixture");return Shapes(VisualTreeHelper.GetDrawing(map)!).Where(s=>s.Geometry is EllipseGeometry).ToArray();
-        }
+        static IEnumerable<GeometryDrawing> Shapes(Drawing drawing)=>drawing is GeometryDrawing shape?[shape]:drawing is DrawingGroup group?group.Children.SelectMany(Shapes):[];
+        GeometryDrawing[] Ellipses(){Render(map,new(600,300),"connections-directional-fixture");return Shapes(VisualTreeHelper.GetDrawing(map)!).Where(s=>s.Geometry is EllipseGeometry).ToArray();}
+        // Particles are the 2.2 px dots in a direction color; nodes are the solid cores with an ink ring.
+        var downloadColor=((SolidColorBrush)Theme.Brush(Theme.GraphKey("download"))).Color;var uploadColor=((SolidColorBrush)Theme.Brush(Theme.GraphKey("upload"))).Color;
+        static bool Dot(GeometryDrawing s)=>s.Brush is SolidColorBrush&&s.Pen is null&&Math.Abs(((EllipseGeometry)s.Geometry).RadiusX-1.1)<.01;
+        static bool Core(GeometryDrawing s)=>s.Brush is SolidColorBrush&&s.Pen is not null&&((EllipseGeometry)s.Geometry).RadiusX>=2.6;
+        double X(GeometryDrawing s)=>((EllipseGeometry)s.Geometry).Center.X;double Y(GeometryDrawing s)=>((EllipseGeometry)s.Geometry).Center.Y;
         phase.SetValue(map,.5d);map.InvalidateVisual();var first=Ellipses();
-        var heads=first.Where(s=>((EllipseGeometry)s.Geometry).RadiusX<2.6).ToArray();Assert.Equal(3,heads.Length);
-        var highHeads=heads.Where(s=>Math.Abs(((EllipseGeometry)s.Geometry).Center.Y-((EllipseGeometry)heads[0].Geometry).Center.Y)<.1).ToArray();Assert.Equal(2,highHeads.Length);
-        phase.SetValue(map,1d);map.InvalidateVisual();var second=Ellipses().Where(s=>((EllipseGeometry)s.Geometry).RadiusX<2.6).ToArray();
-        // The two colors on the equatorial route travel in opposite directions.
-        double left=((EllipseGeometry)highHeads[0].Geometry).Center.X;
-        double right=((EllipseGeometry)highHeads[1].Geometry).Center.X;
-        var moved=second.Where(s=>Math.Abs(((EllipseGeometry)s.Geometry).Center.Y-((EllipseGeometry)highHeads[0].Geometry).Center.Y)<.1).ToArray();
-        Assert.True((((EllipseGeometry)moved[0].Geometry).Center.X-left)*(((EllipseGeometry)moved[1].Geometry).Center.X-right)<0);
-        var markerRadii=first.Select(s=>(EllipseGeometry)s.Geometry).Where(e=>e.RadiusX>=2.6&&e.RadiusX!=4).Select(e=>e.RadiusX).ToArray();Assert.Equal(2,markerRadii.Length);Assert.True(markerRadii.Max()>markerRadii.Min()+1);
-        map.AnimationEnabled=false;Assert.False(map.IsAnimating);Assert.Equal(3,Ellipses().Length);
+        var dots=first.Where(Dot).ToArray();
+        // Three dots per active direction at full level: two directions on "high", one on "low".
+        Assert.Equal(3*ArcParticles.Count(1),dots.Length);
+        double equator=map.PointPosition("high")!.Value.Y;
+        double[] Lane(GeometryDrawing[] shapes,Color color)=>shapes.Where(s=>Dot(s)&&Math.Abs(Y(s)-equator)<.1&&((SolidColorBrush)s.Brush).Color==color).Select(X).OrderBy(x=>x).ToArray();
+        var down=Lane(first,downloadColor);var up=Lane(first,uploadColor);
+        Assert.Equal(3,down.Length);Assert.Equal(3,up.Length);
+        // Download dots sit at 1-f where upload dots sit at f, so the two lanes mirror each other on the straight equatorial route.
+        double span=down[0]+up[2];
+        Assert.Equal(span,down[1]+up[1],0);Assert.Equal(span,down[2]+up[0],0);
+        // Advancing time moves download toward the origin (left) and upload away from it.
+        double middle=span/2;
+        double Nearest(double[] lane)=>lane.OrderBy(x=>Math.Abs(x-middle)).First();
+        double downBefore=Nearest(down),upBefore=Nearest(up);
+        phase.SetValue(map,.6d);map.InvalidateVisual();var second=Ellipses();
+        var downAfter=Lane(second,downloadColor).OrderBy(x=>Math.Abs(x-downBefore)).First();var upAfter=Lane(second,uploadColor).OrderBy(x=>Math.Abs(x-upBefore)).First();
+        Assert.True(downAfter<downBefore,$"download {downBefore}->{downAfter}");Assert.True(upAfter>upBefore,$"upload {upBefore}->{upAfter}");
+        var markerRadii=first.Where(Core).Select(s=>((EllipseGeometry)s.Geometry).RadiusX).ToArray();Assert.Equal(2,markerRadii.Length);Assert.True(markerRadii.Max()>markerRadii.Min()+1);
+        map.AnimationEnabled=false;Assert.False(map.IsAnimating);var still=Ellipses();Assert.Empty(still.Where(Dot));Assert.Equal(2,still.Count(Core));
         map.AnimationEnabled=true;map.SetData([],new(0,-60),true,"Empty");Assert.False(map.IsAnimating);
-        map.SetData([new("stale",new(0,60),60000,30000,false)],new(0,-60),false,"Stale");Assert.False(map.IsAnimating);Assert.Equal(2,Ellipses().Length);
-        map.SetData([new("quiet",new(0,60),60000,30000,false,false,false)],new(0,-60),true,"Quiet peer with old byte totals");Assert.False(map.IsAnimating);Assert.Equal(2,Ellipses().Length);
+        map.SetData([new("stale",new(0,60),60000,30000,false)],new(0,-60),false,"Stale");Assert.False(map.IsAnimating);var stale=Ellipses();Assert.Empty(stale.Where(Dot));Assert.Single(stale.Where(Core));
+        map.SetData([new("quiet",new(0,60),60000,30000,false,false,false)],new(0,-60),true,"Quiet peer with old byte totals");Assert.False(map.IsAnimating);Assert.Empty(Ellipses().Where(Dot));
         map.RaiseEvent(new RoutedEventArgs(FrameworkElement.UnloadedEvent));
     }
 
@@ -126,12 +139,11 @@ internal static class ConnectionMapUiChecks
             Render(map,new(1000,400),"connections-filaments-selected");
             return Shapes(VisualTreeHelper.GetDrawing(map)!).Where(s=>s.Geometry is StreamGeometry&&s.Pen?.Brush==Theme.Brush("Ink")&&s.Pen.Thickness<1).ToArray();
         }
-        phase.SetValue(map,1.01d);map.InvalidateVisual();var first=Filaments();Assert.Equal(2,first.Length);
-        phase.SetValue(map,1.02d);map.InvalidateVisual();var sameTick=Filaments();Assert.All(Enumerable.Range(0,2),i=>Assert.Same(first[i].Geometry,sameTick[i].Geometry));
-        string geometry=string.Join(";",first.Select(s=>s.Geometry.ToString()));
-        phase.SetValue(map,2d);map.InvalidateVisual();Assert.NotEqual(geometry,string.Join(";",Filaments().Select(s=>s.Geometry.ToString())));
-        map.AnimationEnabled=false;var stopped=string.Join(";",Filaments().Select(s=>s.Geometry.ToString()));
-        phase.SetValue(map,4d);map.InvalidateVisual();Assert.Equal(stopped,string.Join(";",Filaments().Select(s=>s.Geometry.ToString())));
+        // The selected route carries one half-pixel ink line on its arc; the arc no longer waves, so it is cached across frames.
+        phase.SetValue(map,1.01d);map.InvalidateVisual();var first=Assert.Single(Filaments());Assert.Equal(.5,first.Pen.Thickness);
+        phase.SetValue(map,2d);map.InvalidateVisual();Assert.Same(first.Geometry,Assert.Single(Filaments()).Geometry);
+        map.AnimationEnabled=false;phase.SetValue(map,4d);map.InvalidateVisual();Assert.Same(first.Geometry,Assert.Single(Filaments()).Geometry);
+        map.SetView(new(10,-20),1.5);Assert.NotSame(first.Geometry,Assert.Single(Filaments()).Geometry);map.ResetView();
         foreach(bool mapOnly in new[]{false,true})
         {
             map.MapOnly=mapOnly;Render(map,new(600,300),"connections-borders-"+mapOnly);
@@ -170,8 +182,9 @@ internal static class ConnectionMapUiChecks
         }
         map.Flat=true;map.MapOnly=false;map.SetData([new("wave",new(0,60),100,100,true)],new(0,-60),true,"Oscilloscope fixture");map.ResetView();
         var main=Draw(new(1000,400),"oscilloscope-main");
-        var waves=main.Where(s=>s.Geometry is StreamGeometry&&s.Pen?.Brush==Theme.Brush("Ink")&&s.Pen.Thickness==.45).ToArray();
-        Assert.Equal(2,waves.Length);Assert.All(waves,w=>Assert.InRange(w.Geometry.Bounds.Height,1,8));
+        // Each active direction draws a 6 px and 2.5 px glow pass plus a 1.2 px core in its own color.
+        var arcs=main.Where(s=>s.Geometry is StreamGeometry&&s.Pen?.Brush==Theme.Brush(Theme.GraphKey("download"))).Select(s=>s.Pen.Thickness).OrderBy(t=>t).ToArray();
+        Assert.Equal([1.2,2.5,6],arcs);
         Assert.DoesNotContain(main,s=>s.Pen?.DashStyle.Dashes.Count>0);
         double Marker(GeometryDrawing[] shapes)=>shapes.Where(s=>s.Geometry is EllipseGeometry&&s.Brush==Theme.Brush(Theme.GraphKey("download"))).Select(s=>((EllipseGeometry)s.Geometry).RadiusX).Single();
         double full=Marker(main);map.MapOnly=true;
@@ -206,9 +219,16 @@ internal static class ConnectionMapUiChecks
             var stopped=Shape(5);Assert.False(map.IsAnimating);Assert.Equal(.30,stopped.Alpha,10);Assert.Equal(stopped,Shape(6));
             map.SetData([peer],new(0,-60),true,"Active again");Shape(7);
             map.SetData([peer with {ReceiveActive=false}],new(0,-60),true,"Only upload active");
+            string Dots(double time)
+            {
+                phase.SetValue(map,time);map.InvalidateVisual();Render(map,new(600,300),$"activity-dots-{widget}-{time}");
+                return string.Join(";",Shapes(VisualTreeHelper.GetDrawing(map)!).Where(s=>s.Shape.Geometry is EllipseGeometry e&&Math.Abs(e.RadiusX-1.1)<.01).Select(s=>((EllipseGeometry)s.Shape.Geometry).Center));
+            }
             var download=Shape(11);var upload=Shape(11,"upload");Assert.True(map.IsAnimating);
-            Assert.Equal(download,Shape(12));Assert.NotEqual(upload.Path,Shape(12,"upload").Path);
-            map.AnimationEnabled=false;var paused=Shape(12,"upload");Assert.False(map.IsAnimating);Assert.Equal(paused,Shape(20,"upload"));
+            // Arcs are static; the moving dots carry the motion.
+            Assert.Equal(download,Shape(12));Assert.Equal(upload.Path,Shape(12,"upload").Path);
+            Assert.NotEqual(Dots(11),Dots(12));Assert.NotEmpty(Dots(12));
+            map.AnimationEnabled=false;var paused=Shape(12,"upload");Assert.False(map.IsAnimating);Assert.Equal(paused,Shape(20,"upload"));Assert.Empty(Dots(20));
             map.SetData([],null,true,"Empty");Assert.False(map.IsAnimating);
             Assert.Empty((System.Collections.IDictionary)typeof(ConnectionMap).GetField("activity",BindingFlags.Instance|BindingFlags.NonPublic)!.GetValue(map)!);
             map.RaiseEvent(new RoutedEventArgs(FrameworkElement.UnloadedEvent));
@@ -279,6 +299,60 @@ internal static class ConnectionMapUiChecks
             }));
         }
         Assert.All(failures, failure => Assert.Null(failure));
+    }
+
+    private static void CheckRefinedGlassLayers()
+    {
+        static IEnumerable<GeometryDrawing> Shapes(Drawing drawing)=>drawing is GeometryDrawing shape?[shape]:drawing is DrawingGroup group?group.Children.SelectMany(Shapes):[];
+        var map=new ConnectionMap {AnimationEnabled=false};
+        var points=new ConnectionMapPoint[]{new("both",new(51.5,-.12),2000,1000,false,true,true,"browser.exe","London · ↓ 1.0 MB/s · ↑ 0.5 MB/s"),new("down",new(35.7,139.7),500,0,false),new("up",new(-33.9,151.2),0,300,false)};
+        map.SetData(points,new(41.9,-87.6),true,"Layers fixture");map.ResetView();
+        Render(map,new(600,400),"connections-layers");
+        var shapes=Shapes(VisualTreeHelper.GetDrawing(map)!).ToArray();
+        Assert.Contains(shapes,s=>ReferenceEquals(s.Brush,Application.Current.Resources["Surface2"])&&s.Geometry is StreamGeometry&&!s.Geometry.IsEmpty());
+        Assert.Contains(shapes,s=>s.Brush is RadialGradientBrush&&s.Geometry is EllipseGeometry);
+        Assert.Contains(shapes,s=>s.Geometry is StreamGeometry&&s.Pen?.Thickness==6);
+        Assert.Contains(shapes,s=>s.Geometry is StreamGeometry&&s.Pen?.Thickness==1.2);
+        Assert.DoesNotContain(shapes,s=>s.Pen is not null&&s.Pen.DashStyle.Dashes.Count>0);
+        Assert.True(CountGlyphRuns(VisualTreeHelper.GetDrawing(map)!)>0);
+        // Hover: a node within 9 px shows a chip and a hand cursor; 20 px away shows nothing.
+        var position=map.PointPosition("both")!.Value;
+        string? raised=null;map.PointHovered+=key=>raised=key;
+        map.SetHover(position);Assert.Equal("both",map.HoveredKey);Assert.Equal("both",raised);Assert.Equal(Cursors.Hand,map.Cursor);
+        Render(map,new(600,400),"connections-layers-hover");
+        var hovered=Shapes(VisualTreeHelper.GetDrawing(map)!).ToArray();
+        Assert.Contains(hovered,s=>ReferenceEquals(s.Brush,Application.Current.Resources["GlassPopup"]));
+        Assert.Contains(hovered,s=>s.Geometry is StreamGeometry&&s.Pen?.Thickness==.5);
+        map.SetHover(new Point(position.X+20,position.Y));Assert.Null(map.HoveredKey);Assert.Null(raised);Assert.Equal(Cursors.Arrow,map.Cursor);
+        Render(map,new(600,400),"connections-layers-unhover");
+        Assert.DoesNotContain(Shapes(VisualTreeHelper.GetDrawing(map)!),s=>ReferenceEquals(s.Brush,Application.Current.Resources["GlassPopup"]));
+        map.SetHover(null);
+        // Widget: larger hit target, no chip and no text at all.
+        map.MapOnly=true;Render(map,new(600,400),"connections-layers-widget");
+        var widgetPosition=map.PointPosition("both")!.Value;
+        map.SetHover(new Point(widgetPosition.X+11,widgetPosition.Y));Assert.Equal("both",map.HoveredKey);
+        Render(map,new(600,400),"connections-layers-widget-hover");
+        Assert.DoesNotContain(Shapes(VisualTreeHelper.GetDrawing(map)!),s=>ReferenceEquals(s.Brush,Application.Current.Resources["GlassPopup"]));
+        Assert.Equal(0,CountGlyphRuns(VisualTreeHelper.GetDrawing(map)!));
+        map.SetHover(null);map.MapOnly=false;
+        // Particles need the animation clock.
+        using(var source=new OffscreenSource(map))
+        {
+            map.AnimationEnabled=true;map.RaiseEvent(new RoutedEventArgs(FrameworkElement.LoadedEvent));Assert.True(map.IsAnimating);
+            typeof(ConnectionMap).GetField("phase",BindingFlags.Instance|BindingFlags.NonPublic)!.SetValue(map,.5d);map.InvalidateVisual();
+            Render(map,new(600,400),"connections-layers-particles");
+            var dots=Shapes(VisualTreeHelper.GetDrawing(map)!).Where(s=>s.Geometry is EllipseGeometry e&&Math.Abs(e.RadiusX-1.1)<.01).ToArray();
+            Assert.True(dots.Length>=ArcParticles.Count(1),$"{dots.Length} particles");
+            map.AnimationEnabled=false;map.RaiseEvent(new RoutedEventArgs(FrameworkElement.UnloadedEvent));
+        }
+        // Missing land still paints the ocean, legend and status; nothing to draw still paints the ocean.
+        map.LandOverride=[];Render(map,new(600,400),"connections-no-land");
+        Assert.True(CountGlyphRuns(VisualTreeHelper.GetDrawing(map)!)>0);
+        Assert.Contains(Shapes(VisualTreeHelper.GetDrawing(map)!),s=>s.Brush is RadialGradientBrush&&s.Geometry is EllipseGeometry);
+        map.LandOverride=null;
+        map.SetData([],null,true,"");Render(map,new(600,400),"connections-nothing");
+        Assert.Contains(Shapes(VisualTreeHelper.GetDrawing(map)!),s=>s.Brush is RadialGradientBrush&&s.Geometry is EllipseGeometry);
+        Assert.Equal(0,map.DisplayedPointCount);
     }
 
     private sealed class OffscreenSource : PresentationSource, IDisposable

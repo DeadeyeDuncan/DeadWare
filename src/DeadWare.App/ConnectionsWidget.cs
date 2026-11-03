@@ -33,7 +33,7 @@ internal sealed class ConnectionsWidget : Grid
         string status=live.Status+(!live.Complete?" · Incomplete capture":"");
         var points=live.Connections.Where(c=>c.Location?.Point is { } point&&ConnectionProjection.IsValid(point))
             .Select(c=>new ConnectionMapPoint($"{c.Traffic.Peer.Process}:{c.Traffic.Peer.RemoteAddress}:{c.Traffic.Peer.RemotePort}:{c.Traffic.Peer.Protocol}",
-                c.Location!.Point!,c.Traffic.ReceivedBytes,c.Traffic.SentBytes,false,live.Available&&c.Traffic.DownloadBytesPerSecond>0,live.Available&&c.Traffic.UploadBytesPerSecond>0)).ToArray();
+                c.Location!.Point!,c.Traffic.ReceivedBytes,c.Traffic.SentBytes,false,live.Available&&c.Traffic.DownloadBytesPerSecond>0,live.Available&&c.Traffic.UploadBytesPerSecond>0,Label:c.Traffic.Peer.Process.Name)).ToArray();
         map.SetData(points,live.Origin,live.Available,status);
         bool northAmerica=session.Settings.WidgetConnectionsNorthAmerica;
         if(previousNorthAmerica!=northAmerica)
