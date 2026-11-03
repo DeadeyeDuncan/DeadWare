@@ -102,8 +102,8 @@ internal static class LiveRenderingUiChecks
             // The fixture holds the last 4096 s of the 6 h range: 95 % across lands on data, 1 px in does not.
             cpu.SetHover(new Point(plot.Left+plot.Width*.95,plot.Top+10));
             Assert.True(cpu.HoverIndex>=0,"Hover over recorded samples must resolve a sample.");Assert.True(HasPopup(Draw(cpu)));
-            cpu.SetHover(new Point(plot.Left+1,plot.Top+10));
-            Assert.Equal(-1,cpu.HoverIndex);Assert.False(HasPopup(Draw(cpu)));
+            // The perf fixture (DEADWARE_PERF_OUTPUT) fills the whole 6 h range, so 1 px in has data there.
+            if(output is null){cpu.SetHover(new Point(plot.Left+1,plot.Top+10));Assert.Equal(-1,cpu.HoverIndex);Assert.False(HasPopup(Draw(cpu)));}
             cpu.SetHover(null);Assert.Equal(-1,cpu.HoverIndex);
             // Hover re-renders reuse the frame's area fill instead of rebuilding it.
             cpu.SetHover(new Point(plot.Left+plot.Width*.95,plot.Top+10));
@@ -260,6 +260,30 @@ internal static class LiveRenderingUiChecks
             session.Settings.ShowCpuCoreUsage=false;session.Settings.HistorySeconds=restoreSeconds;session.Settings.GraphSmoothing=restoreSmoothing;
         }
         Measure("four-six-hour-charts",_=>{foreach(var chart in charts){chart.Refresh();Draw(chart);}});
+        // Same charts with 32 per-core traces on the smoothed six-hour range (report only, no threshold).
+        {
+            var coreHistory=new SampleHistory();
+            for(int i=0;i<=samples;i++)
+            {
+                double time=(i-samples)*.5;
+                var values=new Dictionary<string,double?>{["cpu/usage"]=30+i%31,["gpu/usage"]=i%101,["cpu/temperature"]=60+i%20,["gpu/temperature"]=55+i%30,["gpu/fan"]=1000+i%1500,["memory/usage"]=48+i%3,["network/download"]=150_000,["network/upload"]=80_000};
+                for(int core=0;core<32;core++)values[CpuCoreUsage.Key(core)]=core==3&&i%10==0?null:(core*11+i)%100;
+                coreHistory.Add(new(epoch.AddSeconds(time),time,values){PollingIntervalSeconds=.5});
+            }
+            var restoreHistory=collector.History;var restoreLatest=collector.GetType().GetField("latest",flags)!.GetValue(collector)!;
+            bool restoreCores=session.Settings.ShowCpuCoreUsage,restoreSmooth=session.Settings.GraphSmoothing;int restoreRange=session.Settings.HistorySeconds;
+            Set(collector,"<History>k__BackingField",coreHistory);
+            Set(collector,"latest",new Reading(coreHistory.Read()[^1],[new("gpu","Fixture GPU")],[],[],"Fixture CPU","","","",false){CpuCoreCount=32});
+            session.Settings.ShowCpuCoreUsage=true;session.Settings.GraphSmoothing=true;session.Settings.HistorySeconds=21600;
+            // Same four charts, with the CPU chart opted in beside the GPU so its cores draw.
+            var coreSet=new[]{"cpu","cputemp","memory","network"}.Select(k=>new HistoryChart(session,k,true){CompareDevices=k is "cpu" or "cputemp",CoresWithDevices=k=="cpu"}).ToArray();
+            foreach(var chart in coreSet){chart.Measure(new(300,120));chart.Arrange(new Rect(0,0,300,120));chart.UpdateLayout();}
+            Measure("four-six-hour-charts-32-cores",_=>{foreach(var chart in coreSet){chart.Refresh();Draw(chart);}});
+            Assert.All(coreSet,c=>Assert.False((bool)typeof(HistoryChart).GetField("preparationFailed",flags)!.GetValue(c)!));
+            Set(collector,"<History>k__BackingField",restoreHistory);Set(collector,"latest",restoreLatest);
+            session.Settings.ShowCpuCoreUsage=restoreCores;session.Settings.GraphSmoothing=restoreSmooth;session.Settings.HistorySeconds=restoreRange;
+            foreach(var chart in charts){chart.Refresh();Draw(chart);}WaitPrepared();
+        }
         Measure("map-cached",_=>Draw(map));
         Measure("map-refresh",i=>{map.SetData(points.Select(p=>p with {ReceivedBytes=100+i}).ToArray(),new(41,-87),true,"Synthetic performance fixture");Draw(map);});
         Measure("map-pan",i=>{map.SetView(new(43,-103+i*.1),2.5);Draw(map);});

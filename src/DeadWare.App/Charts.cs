@@ -132,6 +132,7 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
         var cores=Enumerable.Range(0,query.Cores).Select(CpuCoreUsage.Key).ToArray();
         // Core traces come from one pass over the samples instead of one locked scan per core.
         var coreRaw=!query.Smoothed&&cores.Length>0?query.History.SeriesMany(cores,now,query.Seconds):null;
+        var coreRanges=query.Smoothed&&cores.Length>0?query.History.ChartRangesMany(cores,now,query.Seconds,query.Columns):null;
         foreach(var metric in new[]{query.Primary,query.Secondary,query.Fan,query.Pump}.OfType<string>().Concat(cores).Distinct())
         {
             if(!query.Smoothed)
@@ -143,7 +144,7 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
             }
             else
             {
-                var values=query.History.ChartRanges(metric,now,query.Seconds,query.Columns);ranges[metric]=values;
+                var values=coreRanges is not null&&coreRanges.TryGetValue(metric,out var manyRanges)?manyRanges:query.History.ChartRanges(metric,now,query.Seconds,query.Columns);ranges[metric]=values;
                 series[metric]=values.Select(p=>new SamplePoint(DateTimeOffset.UnixEpoch,p.EndSeconds,p.Average)).ToArray();
             }
         }
@@ -191,7 +192,7 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
             });
         },TaskScheduler.Default);
     }
-    private sealed record TracePath(IReadOnlyList<SamplePoint> Points,StreamGeometry Path,PathGeometry Copy,List<IReadOnlyList<Point>> Runs,Point? Last)
+    private sealed record TracePath(IReadOnlyList<SamplePoint> Points,StreamGeometry Path,PathGeometry? Copy,List<IReadOnlyList<Point>> Runs,Point? Last)
     {
         /// <summary>Area fill and range band, built once per frame so hover re-renders only redraw.</summary>
         public PathGeometry? Area { get; set; }
@@ -279,7 +280,7 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
             for(int i=0;i<query.Cores;i++)specs.Add(new(CpuCoreUsage.Key(i),Theme.GraphKey("cpu"),false,false,maximum,0){Core=true,Brush=Theme.CoreBrush(i,query.Cores)});
             bool spline=!(query.Seconds>=3600&&!query.Smoothed);
             var paths=new Dictionary<string,TracePath>();
-            foreach(var spec in specs)paths[spec.Metric]=BuildTrace(Read(spec.Metric),built,spec.Maximum,plot,query.Seconds>=3600,spline);
+            foreach(var spec in specs)paths[spec.Metric]=BuildTrace(Read(spec.Metric),built,spec.Maximum,plot,query.Seconds>=3600,spline,glowCopy:!spec.Core);
             cache=new(query,revision,prepared,RenderSize,Theme.CurrentName,Theme.GlassEnabled,built,DateTimeOffset.Now,specs.ToArray(),paths);
             if(hover is not null)ResolveHover();
         }
@@ -344,7 +345,7 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
         if(cores.Count>shown)lines.Add(($"+{cores.Count-shown} more",-1));
         return lines;
     }
-    private TracePath BuildTrace(IReadOnlyList<SamplePoint> points,double now,double maximum,Rect plot,bool reduced,bool spline)
+    private TracePath BuildTrace(IReadOnlyList<SamplePoint> points,double now,double maximum,Rect plot,bool reduced,bool spline,bool glowCopy=true)
     {
         var runs=new List<IReadOnlyList<Point>>();List<Point>? run=null;Point? last=null;
         var drawn=reduced?points:SampleHistory.ReduceForChart(points,now,session.HistorySeconds,(int)Math.Ceiling(plot.Width));
@@ -365,7 +366,9 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
             path.Freeze();
         }
         // A PathGeometry copy (flattening drops open stroked figures) so the glow pass stays off the StreamGeometry count.
-        var copy=PathGeometry.CreateFromGeometry(path);copy.Freeze();
+        // Core traces never glow, so they skip the throw-away copy.
+        PathGeometry? copy=null;
+        if(glowCopy){copy=PathGeometry.CreateFromGeometry(path);copy.Freeze();}
         return new(drawn,path,copy,runs,last);
     }
     private void DrawTrace(DrawingContext dc,TracePath path,TraceSpec spec,Rect plot,IReadOnlyList<ChartRangePoint>? range,double now)
@@ -389,7 +392,7 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
             dc.PushOpacity(.14);dc.DrawGeometry(Theme.Brush(spec.Color),null,path.Band);dc.Pop();
         }
         var style=GraphStroke.Style(session.Settings,spec.Color);
-        if(!style.Glow)GraphDepth.UnderGlow(dc,path.Copy,spec.Color,width*style.Thickness);
+        if(!style.Glow&&path.Copy is not null)GraphDepth.UnderGlow(dc,path.Copy,spec.Color,width*style.Thickness);
         GraphStroke.Draw(dc,path.Path,session.Settings,spec.Color,width,spec.Dashed,spec.Dotted);
         RuneTrace.Draw(dc,path.Runs,plot,spec.Color,VisualTreeHelper.GetDpi(this).PixelsPerDip);
         double markerRadius=dense?1.5:2.5;
