@@ -37,7 +37,7 @@ internal static class LiveRenderingUiChecks
             var values=new Dictionary<string,double?>
             {
                 ["cpu/usage"]=30+i%31,["gpu/usage"]=i%101,["cpu/temperature"]=60+i%20,
-                ["gpu/temperature"]=55+i%30,["gpu/fan"]=1000+i%1500,["memory/usage"]=48+i%3,
+                ["cpu/pump"]=2000+i%1200,["gpu/temperature"]=55+i%30,["gpu/fan"]=1000+i%1500,["memory/usage"]=48+i%3,
                 ["network/download"]=i%181==0?20_000_000:150_000,["network/upload"]=80_000
             };
             // Eight per-core traces; core 3 drops out on every tenth sample.
@@ -122,6 +122,23 @@ internal static class LiveRenderingUiChecks
             var trace=Shapes(Draw(cpu)).First(s=>s.Geometry is StreamGeometry&&s.Pen is not null);
             Assert.Same(Application.Current.Resources["Graph/cpu"],trace.Pen.Brush);
             Theme.Apply("Midnight");cpu.Refresh();Draw(cpu);
+        }
+        // An RPM overlay draws its labels inside the plot: the plot keeps its geometry and the labels never touch the value labels.
+        {
+            var temp=new HistoryChart(session,"cputemp",false);temp.Measure(new(600,200));temp.Arrange(new Rect(0,0,600,200));temp.UpdateLayout();
+            session.Settings.ShowCpuPumpSpeed=false;temp.Refresh();Draw(temp);
+            void WaitTemp(){var wait=Stopwatch.StartNew();while((bool)typeof(HistoryChart).GetField("preparing",flags)!.GetValue(temp)!&&wait.Elapsed<TimeSpan.FromSeconds(10)){Pump();Thread.Sleep(1);}}
+            WaitTemp();Draw(temp);var plain=temp.PlotRect;
+            session.Settings.ShowCpuPumpSpeed=true;temp.Refresh();Draw(temp);WaitTemp();
+            var overlay=Draw(temp);var plot=temp.PlotRect;
+            Assert.Equal(plain.Left,plot.Left);Assert.Equal(plain.Width,plot.Width);
+            string Text(GlyphRunDrawing g)=>new string(g.GlyphRun.Characters.ToArray());
+            var rpm=Glyphs(overlay).Where(g=>Text(g).EndsWith("RPM")).ToArray();var degrees=Glyphs(overlay).Where(g=>Text(g).EndsWith('°')).ToArray();
+            Assert.NotEmpty(rpm);Assert.NotEmpty(degrees);
+            Assert.All(rpm,g=>Assert.True(plot.Contains(g.Bounds),$"RPM label {g.Bounds} lies outside the plot {plot}."));
+            Assert.All(rpm,r=>Assert.DoesNotContain(degrees,d=>r.Bounds.IntersectsWith(d.Bounds)));
+            temp.SetHover(new Point(plot.Left+plot.Width*.95,plot.Top+10));Assert.True(temp.HoverIndex>=0);temp.SetHover(null);
+            session.Settings.ShowCpuPumpSpeed=false;
         }
         IEnumerable<GlyphRunDrawing> Glyphs(Drawing drawing)=>drawing is GlyphRunDrawing glyph?[glyph]:drawing is DrawingGroup group?group.Children.SelectMany(Glyphs):[];
         bool HasGuidelines(Drawing drawing)=>drawing is DrawingGroup group&&(group.GuidelineSet is not null||group.Children.Any(HasGuidelines));

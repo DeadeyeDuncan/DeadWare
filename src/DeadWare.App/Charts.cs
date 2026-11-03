@@ -264,7 +264,6 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
         string FanAxis(double value)=>$"{value:0} RPM";
         var typeface=Theme.ChartTypeface;double pixelsPerDip=VisualTreeHelper.GetDpi(this).PixelsPerDip;
         double left=compact?3:8,top=compact?8:14;
-        if(showRpm)left=Enumerable.Range(0,3).Max(i=>Formatted(FanAxis(fanMaximum*i/2)).Width)+10;
         double right=8,bottom=Formatted("Now").Height+(compact?6:9),pw=w-left-right,ph=h-top-bottom;
         if(pw<=0||ph<=0)return;
         var plot=new Rect(left,top,pw,ph);PlotRect=plot;
