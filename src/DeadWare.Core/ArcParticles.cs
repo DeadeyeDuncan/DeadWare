@@ -18,6 +18,15 @@ public static class ArcParticles
         return result;
     }
 
+    /// <summary>The <paramref name="index"/>-th of <paramref name="count"/> fractions, without allocating the list.</summary>
+    public static double Fraction(double time, double speed, int count, int index, bool towardOrigin)
+    {
+        if (count <= 0 || index < 0 || index >= count || !double.IsFinite(time) || !double.IsFinite(speed)) return 0;
+        double phase = time * speed; phase -= Math.Floor(phase);
+        double fraction = (double)index / count + phase; fraction -= Math.Floor(fraction);
+        return towardOrigin ? 1 - fraction : fraction;
+    }
+
     /// <summary>0 for no activity, then 1, 2 or 3 dots as the level rises through a third and two thirds.</summary>
     public static int Count(double level) => !double.IsFinite(level) || level <= 0 ? 0 : level < .34 ? 1 : level < .67 ? 2 : 3;
 }

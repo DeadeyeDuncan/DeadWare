@@ -154,7 +154,7 @@ public sealed class MainWindow : Window
         System.Windows.Automation.AutomationProperties.SetName(usageRecording,"Record usage history");
         usageRecording.Checked+=(_,_)=>{if(!syncingWidgetGraphs)session.SetUsageRecording(true);};
         usageRecording.Unchecked+=(_,_)=>{if(!syncingWidgetGraphs)session.SetUsageRecording(false);};history.Children.Add(usageRecording);
-        var usageHelp=Ui.Text("Keeps day, week and month history of CPU, GPU, RAM and network usage plus per-application network totals for up to 400 days in this Windows profile. Pausing keeps what was saved. Open Usage history to browse, export or check storage.",12,"Muted");usageHelp.Margin=new(0,0,0,8);popouts.Children.Add(usageHelp);
+        var usageHelp=Ui.Text("Keeps day, week and month history of CPU, GPU, RAM and network usage plus per-application network totals for up to 400 days in this Windows profile. Pausing keeps what was saved. Open Usage history to browse, export or check storage.",12,"Muted");usageHelp.Margin=new(0,0,0,8);history.Children.Add(usageHelp);
         var usageOpen=Ui.Button("Open Usage history",()=>Navigate("usage"));usageOpen.Margin=new(0,0,0,20);history.Children.Add(usageOpen);
         history.Children.Add(Ui.Heading("Alerts",16));
         alertNotifications.IsChecked=session.Settings.AlertNotifications;
@@ -164,7 +164,7 @@ public sealed class MainWindow : Window
         var alertHelp=Ui.Text("Rules you set on the Alerts page notify from the tray once per episode and are always logged there, whether or not notifications are on. Cooling Health keeps its own notification setting.",12,"Muted");alertHelp.Margin=new(0,0,0,8);history.Children.Add(alertHelp);
         var alertOpen=Ui.Button("Open Alerts",()=>Navigate("alerts"));alertOpen.Margin=new(0,0,0,20);history.Children.Add(alertOpen);
         history.Children.Add(Ui.Heading("Connections",16));
-        popouts.Children.Add(Ui.Text("Record endpoint history, choose an optional home city, manage the offline location database and export saved traffic from Connections. Local history rolls over after 30 days or 256 MiB.",12,"Muted"));
+        history.Children.Add(Ui.Text("Record endpoint history, choose an optional home city, manage the offline location database and export saved traffic from Connections. Local history rolls over after 30 days or 256 MiB.",12,"Muted"));
         history.Children.Add(Ui.Button("Open Connections controls",()=>Navigate("connections")));
         var popoutLabel=Ui.Text("Graph pop-outs",14);popoutLabel.Margin=new(0,0,0,8);popouts.Children.Add(popoutLabel);
         joinedPopouts.IsChecked=session.Settings.JoinCpuGpuPopouts;
@@ -172,7 +172,7 @@ public sealed class MainWindow : Window
         joinedPopouts.Checked+=(_,_)=>{if(!syncingWidgetGraphs)session.SetJoinedPopouts(true);};
         joinedPopouts.Unchecked+=(_,_)=>{if(!syncingWidgetGraphs)session.SetJoinedPopouts(false);};popouts.Children.Add(joinedPopouts);
         var popoutHelp=Ui.Text("Use the overview's Pop out buttons. Joined mode puts CPU and GPU usage on one chart and both temperatures on another. Applies to new pop-outs; existing windows and remembered layouts keep their current form.",12,"Muted");popoutHelp.Margin=new(0,0,0,20);popouts.Children.Add(popoutHelp);
-        var saved=Ui.Text("Positions, sizes and Always on top choices are saved as you work. Closing the dashboard hides it to the system tray while graphs and the widget keep monitoring. Choose Quit DeadWare to save the windows left open for next time and stop collection. Close an individual graph or widget to leave it closed next time.",12,"Muted");saved.Margin=new(0,20,0,0);widgetGroup.Children.Add(saved);
+        var saved=Ui.Text("Positions, sizes and Always on top choices are saved as you work. Closing the dashboard hides it to the system tray while graphs and the widget keep monitoring. Choose Quit DeadWare to save the windows left open for next time and stop collection. Close an individual graph or widget to leave it closed next time.",12,"Muted");saved.Margin=new(0,20,0,0);popouts.Children.Add(saved);
         var restore=new CheckBox {Content="Reopen graphs and widget from the previous session",IsChecked=session.Settings.RestoreOpenWindows,Margin=new Thickness(0,18,0,8)};
         restore.Checked+=(_,_)=>session.SetRestoreOpenWindows(true);restore.Unchecked+=(_,_)=>session.SetRestoreOpenWindows(false);popouts.Children.Add(restore);
         startup.Checked+=async (_,_)=>{if(!syncingStartup)await ChangeStartupAsync(true);};
@@ -180,7 +180,7 @@ public sealed class MainWindow : Window
         startupGroup.Children.Add(startup);startupGroup.Children.Add(startupStatus);startupResult.Margin=new(0,8,0,4);startupGroup.Children.Add(startupResult);
         var startInTray=new CheckBox {Content="Start in the system tray",IsChecked=session.Settings.StartInTray,Margin=new Thickness(0,10,0,6)};
         startInTray.Checked+=(_,_)=>session.SetStartInTray(true);startInTray.Unchecked+=(_,_)=>session.SetStartInTray(false);startupGroup.Children.Add(startInTray);
-        widgetGroup.Children.Add(Ui.Text("At Windows sign-in, hide only the dashboard. Graphs and the widget still follow the reopen setting above. Manual launches show the dashboard.",12,"Muted"));
+        startupGroup.Children.Add(Ui.Text("At Windows sign-in, hide only the dashboard. Graphs and the widget still follow the reopen setting above. Manual launches show the dashboard.",12,"Muted"));
         startupRepair=Ui.Button("Enable / repair startup",()=>_ = ChangeStartupAsync(true));
         startupDisable=Ui.Button("Disable startup",()=>_ = ChangeStartupAsync(false));
         startupRefresh=Ui.Button("Refresh status",()=>_ = RefreshStartupAsync());

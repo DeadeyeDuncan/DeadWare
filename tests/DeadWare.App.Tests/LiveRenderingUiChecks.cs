@@ -79,6 +79,19 @@ internal static class LiveRenderingUiChecks
             cpu.SetHover(new Point(plot.Left+1,plot.Top+10));
             Assert.Equal(-1,cpu.HoverIndex);Assert.False(HasPopup(Draw(cpu)));
             cpu.SetHover(null);Assert.Equal(-1,cpu.HoverIndex);
+            // Hover re-renders reuse the frame's area fill instead of rebuilding it.
+            cpu.SetHover(new Point(plot.Left+plot.Width*.95,plot.Top+10));
+            var firstArea=Shapes(Draw(cpu)).FirstOrDefault(s=>s.Geometry is PathGeometry&&s.Brush is LinearGradientBrush)?.Geometry;
+            cpu.SetHover(new Point(plot.Left+plot.Width*.9,plot.Top+10));
+            var secondArea=Shapes(Draw(cpu)).FirstOrDefault(s=>s.Geometry is PathGeometry&&s.Brush is LinearGradientBrush)?.Geometry;
+            if(firstArea is not null)Assert.Same(firstArea,secondArea);
+            cpu.SetHover(null);
+            // The chip's time comes from the wall clock captured with the frame, not from the clock at hover time.
+            var wide=new HistoryChart(session,"cpu",false);wide.Measure(new(600,200));wide.Arrange(new Rect(0,0,600,200));wide.UpdateLayout();Draw(wide);
+            var widePlot=wide.PlotRect;wide.SetHover(new Point(widePlot.Left+widePlot.Width*.95,widePlot.Top+10));Assert.True(wide.HoverIndex>=0);
+            string Stamp()=>Glyphs(Draw(wide)).Select(g=>new string(g.GlyphRun.Characters.ToArray())).Single(t=>System.Text.RegularExpressions.Regex.IsMatch(t,@"^\d\d:\d\d:\d\d$"));
+            string before=Stamp();Thread.Sleep(1100);Assert.Equal(before,Stamp());
+            wide.SetHover(null);
             Theme.Apply("Ember");cpu.Refresh();
             var trace=Shapes(Draw(cpu)).First(s=>s.Geometry is StreamGeometry&&s.Pen is not null);
             Assert.Same(Application.Current.Resources["Graph/cpu"],trace.Pen.Brush);

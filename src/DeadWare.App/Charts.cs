@@ -184,9 +184,15 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
             });
         },TaskScheduler.Default);
     }
-    private sealed record TracePath(IReadOnlyList<SamplePoint> Points,StreamGeometry Path,PathGeometry Copy,List<IReadOnlyList<Point>> Runs,Point? Last);
+    private sealed record TracePath(IReadOnlyList<SamplePoint> Points,StreamGeometry Path,PathGeometry Copy,List<IReadOnlyList<Point>> Runs,Point? Last)
+    {
+        /// <summary>Area fill and range band, built once per frame so hover re-renders only redraw.</summary>
+        public PathGeometry? Area { get; set; }
+        public bool AreaBuilt { get; set; }
+        public StreamGeometry? Band { get; set; }
+    }
     private sealed record TraceSpec(string Metric,string Color,bool Dashed,bool Dotted,double Maximum,double Fill);
-    private sealed record Frame(Query Query,int Revision,ChartData Data,Size Size,string Theme,bool Glass,double Now,TraceSpec[] Specs,Dictionary<string,TracePath> Paths);
+    private sealed record Frame(Query Query,int Revision,ChartData Data,Size Size,string Theme,bool Glass,double Now,DateTimeOffset WallNow,TraceSpec[] Specs,Dictionary<string,TracePath> Paths);
     /// <summary>Geometry built once per poll, size and theme; hover re-renders reuse it.</summary>
     private Frame? cache;
     private Point? hover,hoverAnchor;
@@ -261,7 +267,7 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
             bool spline=!(query.Seconds>=3600&&!query.Smoothed);
             var paths=new Dictionary<string,TracePath>();
             foreach(var spec in specs)paths[spec.Metric]=BuildTrace(Read(spec.Metric),built,spec.Maximum,plot,query.Seconds>=3600,spline);
-            cache=new(query,revision,prepared,RenderSize,Theme.CurrentName,Theme.GlassEnabled,built,specs.ToArray(),paths);
+            cache=new(query,revision,prepared,RenderSize,Theme.CurrentName,Theme.GlassEnabled,built,DateTimeOffset.Now,specs.ToArray(),paths);
             if(hover is not null)ResolveHover();
         }
         var frame=cache!;double now=frame.Now;
@@ -272,7 +278,7 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
             double value=maximum*i/2,y=top+ph*(1-value/maximum);
             lines[i]=(y,Axis(value));if(leftLabels is not null)leftLabels[i]=(y,FanAxis(fanMaximum*i/2));
         }
-        var ticks=TimeTicks.For(session.HistorySeconds,now,DateTimeOffset.Now,pw,compact).Select(t=>(left+pw*(1-(now-t.MonotonicSeconds)/session.HistorySeconds),t.Label)).ToArray();
+        var ticks=TimeTicks.For(session.HistorySeconds,now,frame.WallNow,pw,compact,TimeZoneInfo.Local).Select(t=>(left+pw*(1-(now-t.MonotonicSeconds)/session.HistorySeconds),t.Label)).ToArray();
         ChartFrame.Grid(dc,plot,lines,ticks,typeface,pixelsPerDip,compact,leftLabels);
         dc.PushClip(new RectangleGeometry(plot));
         // Retained WPF transform scrolls the recorded trace between polls without rebuilding it each frame.
@@ -295,7 +301,7 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
         double x=plot.Left+plot.Width*(1-(now-sample.MonotonicSeconds)/session.HistorySeconds);
         var pen=new Pen(Theme.Brush("Hairline"),1);pen.Freeze();
         dc.DrawLine(pen,new(x,plot.Top),new(x,plot.Bottom));
-        if(!compact)hoverLines.Add((DateTimeOffset.Now.AddSeconds(sample.MonotonicSeconds-now).ToString("HH:mm:ss",CultureInfo.CurrentCulture),Theme.Brush("Muted")));
+        if(!compact)hoverLines.Add((TimeZoneInfo.ConvertTime(frame.WallNow.AddSeconds(sample.MonotonicSeconds-now),TimeZoneInfo.Local).ToString("HH:mm:ss",CultureInfo.CurrentCulture),Theme.Brush("Muted")));
         double tolerance=HoverTolerance(frame.Query);
         foreach(var spec in frame.Specs)
         {
@@ -335,8 +341,16 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
     private void DrawTrace(DrawingContext dc,TracePath path,TraceSpec spec,Rect plot,IReadOnlyList<ChartRangePoint>? range,double now)
     {
         bool dense=CompareDevices&&session.HistorySeconds>=3600;double width=dense?1:2;
-        if(spec.Fill>0)GraphDepth.Area(dc,path.Runs,plot,spec.Color,spec.Fill);
-        if(range is not null)DrawRange(dc,range,now,spec.Maximum,plot.Left,plot.Top,plot.Width,plot.Height,spec.Color);
+        if(spec.Fill>0)
+        {
+            if(!path.AreaBuilt){path.Area=GraphDepth.AreaGeometry(path.Runs,plot);path.AreaBuilt=true;}
+            GraphDepth.Area(dc,path.Area,plot,spec.Color,spec.Fill);
+        }
+        if(range is not null)
+        {
+            path.Band??=RangeBand(range,now,spec.Maximum,plot.Left,plot.Top,plot.Width,plot.Height);
+            dc.PushOpacity(.14);dc.DrawGeometry(Theme.Brush(spec.Color),null,path.Band);dc.Pop();
+        }
         var style=GraphStroke.Style(session.Settings,spec.Color);
         if(!style.Glow)GraphDepth.UnderGlow(dc,path.Copy,spec.Color,width*style.Thickness);
         GraphStroke.Draw(dc,path.Path,session.Settings,spec.Color,width,spec.Dashed,spec.Dotted);
@@ -344,7 +358,7 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
         double markerRadius=dense?1.5:2.5;
         if(path.Last is { } last){GraphDepth.PointHalo(dc,last,spec.Color,markerRadius);dc.DrawEllipse(Theme.Brush(spec.Color),null,last,markerRadius,markerRadius);}
     }
-    private void DrawRange(DrawingContext dc,IReadOnlyList<ChartRangePoint> points,double now,double maximum,double left,double top,double width,double height,string color)
+    private StreamGeometry RangeBand(IReadOnlyList<ChartRangePoint> points,double now,double maximum,double left,double top,double width,double height)
     {
         var band=new StreamGeometry();using(var context=band.Open())
         foreach(var point in points)
@@ -354,7 +368,7 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
             double y=top+height*(1-Math.Clamp(max/maximum,0,1)),bottom=top+height*(1-Math.Clamp(min/maximum,0,1));
             context.BeginFigure(new(x,y),true,true);context.LineTo(new(Math.Max(x+.8,end),y),true,false);context.LineTo(new(Math.Max(x+.8,end),bottom),true,false);context.LineTo(new(x,bottom),true,false);
         }
-        band.Freeze();dc.PushOpacity(.14);dc.DrawGeometry(Theme.Brush(color),null,band);dc.Pop();
+        band.Freeze();return band;
     }
     /// <summary>Draws one series directly (pop-out fixtures and tests); the dashboard path goes through the cached frame.</summary>
     private void DrawSeries(DrawingContext dc,IReadOnlyList<SamplePoint> points,double now,double maximum,double left,double top,double width,double height,string color,bool dashed,bool dotted=false,bool reduced=false,IReadOnlyList<ChartRangePoint>? range=null,double fillStrength=1)

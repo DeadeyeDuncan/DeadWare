@@ -76,6 +76,7 @@ internal static class ChartFrame
         if(texts.Length==0)return Rect.Empty;
         double width=texts.Max(t=>t.Width)+padding*2,height=texts.Sum(t=>t.Height)+padding*2+(texts.Length-1)*spacing;
         double x=anchor.X+gap;if(x+width>plot.Right)x=anchor.X-gap-width;
+        if(x<plot.Left)x=Math.Max(plot.Left,Math.Min(anchor.X+gap,plot.Right-width));
         double y=Math.Clamp(anchor.Y-height/2,plot.Top,Math.Max(plot.Top,plot.Bottom-height));
         var rect=new Rect(x,y,width,height);
         var border=new Pen(Theme.Brush("Hairline"),1);border.Freeze();

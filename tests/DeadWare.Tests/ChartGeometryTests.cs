@@ -32,6 +32,16 @@ public sealed class ChartGeometryTests
     }
     [Fact] public void One_minute_range_uses_seconds()
         =>Assert.All(TimeTicks.For(60,1000,new DateTimeOffset(2026,11,2,14,32,40,TimeSpan.Zero),600,false),t=>Assert.Matches(@"^\d\d:\d\d:\d\d$",t.Label));
+    [Fact] public void Hour_ticks_follow_local_time_across_a_dst_transition()
+    {
+        TimeZoneInfo zone;
+        try { zone=TimeZoneInfo.FindSystemTimeZoneById("Central European Standard Time"); } catch(TimeZoneNotFoundException) { return; }
+        // 03:15 CEST on 2026-03-29, just after clocks jumped from 02:00 to 03:00.
+        var now=new DateTimeOffset(2026,3,29,3,15,0,TimeSpan.FromHours(2));
+        var ticks=TimeTicks.For(21600,10000,now,900,false,zone);
+        Assert.Equal(["21:00","22:00","23:00","00:00","01:00","03:00"],ticks.Select(t=>t.Label));
+        Assert.Equal(10000-15*60,ticks[^1].MonotonicSeconds);
+    }
     [Fact] public void Nearest_sample_skips_gaps_and_respects_tolerance()
     {
         SamplePoint[] pts=[new(DateTimeOffset.UnixEpoch,10,5),new(DateTimeOffset.UnixEpoch,11,null),new(DateTimeOffset.UnixEpoch,12,7)];

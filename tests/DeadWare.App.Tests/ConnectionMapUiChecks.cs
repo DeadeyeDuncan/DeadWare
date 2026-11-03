@@ -335,6 +335,32 @@ internal static class ConnectionMapUiChecks
         Assert.DoesNotContain(Shapes(VisualTreeHelper.GetDrawing(map)!),s=>ReferenceEquals(s.Brush,Application.Current.Resources["GlassPopup"]));
         Assert.Equal(0,CountGlyphRuns(VisualTreeHelper.GetDrawing(map)!));
         map.SetHover(null);map.MapOnly=false;
+        // A poll that moves or drops the hovered node clears the hover instead of following the key.
+        Render(map,new(600,400),"connections-layers-rehover");position=map.PointPosition("both")!.Value;
+        map.SetHover(position);Assert.Equal("both",map.HoveredKey);
+        map.SetData([points[0] with {Point=new(-33.9,151.2)},points[1]],new(41.9,-87.6),true,"Moved");Render(map,new(600,400),"connections-layers-moved");
+        Assert.Null(map.HoveredKey);Assert.Null(raised);Assert.Equal(Cursors.Arrow,map.Cursor);
+        map.SetHover(null);map.SetData(points,new(41.9,-87.6),true,"Layers fixture");map.ResetView();
+        // Halos follow a custom traffic color without a theme switch.
+        if(Theme.GlassEnabled)
+        {
+            var custom=new SolidColorBrush(Color.FromRgb(255,0,255));custom.Freeze();Application.Current.Resources[Theme.GraphKey("download")]=custom;
+            map.InvalidateVisual();Render(map,new(600,400),"connections-layers-custom-color");
+            Assert.Contains(Shapes(VisualTreeHelper.GetDrawing(map)!),s=>s.Geometry is EllipseGeometry&&s.Brush is RadialGradientBrush halo&&halo.GradientStops[0].Color.R==255&&halo.GradientStops[0].Color.G==0&&halo.GradientStops[0].Color.B==255);
+            Theme.Apply("Midnight");
+        }
+        // Disabled transparency keeps the map flat: no gradient ocean, no limb shading, no glow.
+        var glassProperty=typeof(Theme).GetProperty("GlassEnabled")!;bool glassWas=Theme.GlassEnabled;
+        glassProperty.SetValue(null,false);
+        try
+        {
+            map.InvalidateVisual();Render(map,new(600,400),"connections-layers-flat");
+            var flat=Shapes(VisualTreeHelper.GetDrawing(map)!).ToArray();
+            Assert.DoesNotContain(flat,s=>s.Brush is RadialGradientBrush||s.Brush is LinearGradientBrush);
+            Assert.Contains(flat,s=>ReferenceEquals(s.Brush,Theme.Brush("Surface2"))&&s.Geometry is StreamGeometry);
+        }
+        finally { glassProperty.SetValue(null,glassWas); }
+        map.InvalidateVisual();Render(map,new(600,400),"connections-layers-restored");
         // Particles need the animation clock.
         using(var source=new OffscreenSource(map))
         {

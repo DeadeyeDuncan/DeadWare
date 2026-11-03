@@ -20,6 +20,10 @@ internal static class ChartFrameUiChecks
         var left=new DrawingGroup();Rect leftChip;
         using(var dc=left.Open())leftChip=ChartFrame.Chip(dc,new Point(plot.Left+10,plot.Top+40),plot,[("34.0 %",Theme.Brush("Graph/cpu"))],typeface,1,true);
         Assert.True(leftChip.Left>=plot.Left+10+12-.01,"Chip should sit 12 px right of its anchor when there is room.");
+        // A chip wider than half the plot is clamped to the plot's left edge instead of flipping off-screen.
+        var narrow=new Rect(0,0,200,80);var narrowGroup=new DrawingGroup();Rect clamped;
+        using(var dc=narrowGroup.Open())clamped=ChartFrame.Chip(dc,new Point(100,40),narrow,[("12:00:00 · a long download label",Theme.Brush("Muted"))],typeface,1,false);
+        Assert.True(clamped.Left>=narrow.Left-.01,$"Chip left {clamped.Left} is off the plot.");
         Point[] a=[new(0,50),new(10,40),new(20,45),new(30,10)];Point[] b=[new(50,20),new(60,25)];
         var spline=ChartFrame.Spline([a,b]);
         Assert.Equal(2,PathGeometry.CreateFromGeometry(spline).Figures.Count);
