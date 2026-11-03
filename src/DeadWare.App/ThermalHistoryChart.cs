@@ -65,61 +65,94 @@ internal sealed class ThermalHistoryChart : FrameworkElement
             Math.Abs((next.Start-previous.End).TotalSeconds-(next.StartMonotonic-previous.StartMonotonic-previous.DurationSeconds))<=3;
     }
 
+    internal Rect PlotRect { get; private set; }
+    /// <summary>Index into the ordered windows of the window under the pointer, or -1.</summary>
+    internal int HoverIndex { get; private set; } = -1;
+    private Point? hover;
+    private readonly List<(double X, double Tolerance)> targets = [];
+    private readonly List<int> targetWindows = [];
+    protected override void OnMouseMove(System.Windows.Input.MouseEventArgs e) { base.OnMouseMove(e); SetHover(e.GetPosition(this)); }
+    protected override void OnMouseLeave(System.Windows.Input.MouseEventArgs e) { base.OnMouseLeave(e); SetHover(null); }
+    internal void SetHover(Point? position)
+    {
+        hover = position; int previous = HoverIndex; ResolveHover();
+        if (HoverIndex != previous) InvalidateVisual();
+    }
+    private void ResolveHover() { int target = ChartFrame.Nearest(targets, hover, PlotRect); HoverIndex = target < 0 ? -1 : targetWindows[target]; }
+
     protected override void OnRender(DrawingContext drawing)
     {
         base.OnRender(drawing);
         if (ActualWidth < 180 || ActualHeight < 100 || to <= from) return;
-        const double left = 12, top = 15, bottom = 32;
+        drawing.DrawRectangle(Brushes.Transparent, null, new Rect(0, 0, ActualWidth, ActualHeight));
+        const double left = 12, top = 15, bottom = 32, right = 8;
         var valid = windows.Where(w => w.End >= from && w.Start <= to)
             .Where(w => Metric(w, metric).Average is double mean && double.IsFinite(mean)).ToArray();
         double maximum = metric == "load" ? 100 : Math.Max(metric == "temperature" ? 40 : 1,
             valid.Select(w => Metric(w, metric).Maximum ?? Metric(w, metric).Average!.Value).DefaultIfEmpty(0).Max() * 1.12);
         string Axis(double value) => $"{value:0.#} {Unit(metric)}";
-        double right = Math.Max(56, Text(Axis(maximum)).Width + 14);
         double width = ActualWidth - left - right, height = ActualHeight - top - bottom;
         if (width < 30 || height < 30) return;
-        GraphDepth.Surface(drawing, new Rect(left, top, width, height));
-        for (int i = 0; i <= 2; i++)
-        {
-            double value = maximum * i / 2, y = top + height * (1 - value / maximum);
-            drawing.DrawLine(new Pen(Theme.Brush("Line"), 1) { DashStyle = DashStyles.Dash }, new(left, y), new(left + width, y));
-            drawing.DrawText(Text(Axis(value)), new(left + width + 8, y - 7));
-        }
+        var plot = new Rect(left, top, width, height); PlotRect = plot;
+        var typeface = Theme.ChartTypeface; double pixelsPerDip = VisualTreeHelper.GetDpi(this).PixelsPerDip;
+        GraphDepth.Surface(drawing, plot);
+        ChartFrame.Grid(drawing, plot, Enumerable.Range(0, 3).Select(i => (top + height * (1 - i / 2.0), Axis(maximum * i / 2))).ToArray(), [], typeface, pixelsPerDip, false, null, nowLabel: null);
         var startLabel = Text(from.ToLocalTime().ToString("MMM d HH:mm", CultureInfo.CurrentCulture));
         var endLabel = Text(to.ToLocalTime().ToString("MMM d HH:mm", CultureInfo.CurrentCulture));
         drawing.DrawText(startLabel, new(left, top + height + 12));
         drawing.DrawText(endLabel, new(left + width - endLabel.Width, top + height + 12));
+        targets.Clear(); targetWindows.Clear();
         if (valid.Length == 0)
         {
+            HoverIndex = -1;
             drawing.DrawText(Text("No available readings in this range"), new(left + 12, top + height / 2));
             return;
         }
 
         var color = Theme.Brush("Accent");
-        var seriesPen = new Pen(color, 1.8);
+        var seriesPen = new Pen(color, 1.8) { LineJoin = PenLineJoin.Round };
         var spread = color.Clone(); spread.Opacity = .25;
         var spreadPen = new Pen(spread, 1);
         ThermalWindow? previous = null;
-        Point? previousPoint = null;
         double Y(double value) => top + height * (1 - Math.Clamp(value / maximum, 0, 1));
-        foreach (var window in windows.Where(w => w.End >= from && w.Start <= to))
+        var runs = new List<IReadOnlyList<Point>>(); List<Point>? run = null;
+        var points = new Dictionary<int, Point>();
+        for (int index = 0; index < windows.Count; index++)
         {
+            var window = windows[index];
+            if (window.End < from || window.Start > to) continue;
             var aggregate = Metric(window, metric);
             if (aggregate.Average is not double value || !double.IsFinite(value) || aggregate.Count <= 0)
             {
-                previous = null; previousPoint = null; continue;
+                previous = null; run = null; continue;
             }
             double middle = ((window.Start + (window.End - window.Start) / 2) - from).TotalSeconds;
             var point = new Point(left + width * Math.Clamp(middle / (to - from).TotalSeconds, 0, 1), Y(value));
+            points[index] = point;
+            targets.Add((point.X, Math.Max(6, width * (window.End - window.Start).TotalSeconds / (to - from).TotalSeconds / 2))); targetWindows.Add(index);
             if (aggregate.Minimum is double minimum && aggregate.Maximum is double upper && double.IsFinite(minimum) && double.IsFinite(upper))
                 drawing.DrawLine(spreadPen, new(point.X, Y(minimum)), new(point.X, Y(upper)));
-            if (previous is not null && previousPoint is Point last && CanConnect(previous, window, metric))
-            {
-                GraphDepth.LineShadow(drawing, last, point, seriesPen);
-                drawing.DrawLine(seriesPen, last, point);
-            }
-            drawing.DrawEllipse(color, null, point, valid.Length > 500 ? 1 : 1.8, valid.Length > 500 ? 1 : 1.8);
-            previous = window; previousPoint = point;
+            if (run is null || previous is null || !CanConnect(previous, window, metric)) { run = new(); runs.Add(run); }
+            run.Add(point);
+            previous = window;
+        }
+        var path = ChartFrame.Spline(runs);
+        if (!path.IsEmpty())
+        {
+            var copy = PathGeometry.CreateFromGeometry(path); copy.Freeze();
+            GraphDepth.UnderGlow(drawing, copy, "Accent", 1.8);
+            drawing.DrawGeometry(null, seriesPen, path);
+        }
+        double markerRadius = valid.Length > 500 ? 1 : 1.8;
+        foreach (var point in points.Values) drawing.DrawEllipse(color, null, point, markerRadius, markerRadius);
+        ResolveHover();
+        if (HoverIndex >= 0 && points.TryGetValue(HoverIndex, out var hovered))
+        {
+            var window = windows[HoverIndex];
+            var hairline = new Pen(Theme.Brush("Hairline"), 1); hairline.Freeze();
+            drawing.DrawLine(hairline, new(hovered.X, top), new(hovered.X, top + height));
+            drawing.DrawEllipse(color, null, hovered, 3, 3);
+            ChartFrame.Chip(drawing, hovered, plot, [(window.Start.ToLocalTime().ToString("MMM d HH:mm", CultureInfo.CurrentCulture), Theme.Brush("Muted")), (Axis(Metric(window, metric).Average!.Value), color)], typeface, pixelsPerDip, false);
         }
     }
 

@@ -68,6 +68,8 @@ public class BatteryUiTests
                 LiveRenderingUiChecks.Run();
                 Phase("chart frame");
                 ChartFrameUiChecks.Run();
+                Phase("thermal chart");
+                ThermalChartUiChecks.Run();
                 RuneTraceUiChecks.Run();
                 Phase("typography and range segments");
                 RangeSegmentsUiChecks.Run(app);
@@ -115,6 +117,22 @@ public class BatteryUiTests
                     Assert.NotEqual(lines[2].Pen.DashStyle.Dashes.ToArray(), lines[5].Pen.DashStyle.Dashes.ToArray());
                     // Unknown and mixed summary points must not imply a single known saver state.
                     Assert.Equal(2, drawings.Count(d => d.Geometry is EllipseGeometry && d.Brush is null && d.Pen is not null));
+                    // Refined glass: solid hairline grid, percentage labels inside the plot, hover chip over a bucket.
+                    Assert.All(drawings.Where(d => d.Geometry is LineGeometry grid && grid.StartPoint.Y == grid.EndPoint.Y && d.Pen is not null), d => Assert.Empty(d.Pen.DashStyle.Dashes));
+                    var batteryPlot = (Rect)traceType.GetProperty("PlotRect", All)!.GetValue(trace)!;
+                    IEnumerable<GlyphRunDrawing> TraceGlyphs(Drawing drawing) => drawing is GlyphRunDrawing glyph ? [glyph] : drawing is DrawingGroup group ? group.Children.SelectMany(TraceGlyphs) : [];
+                    string GlyphText(GlyphRunDrawing glyph) => new(glyph.GlyphRun.Characters.ToArray());
+                    var percentLabels = TraceGlyphs(VisualTreeHelper.GetDrawing(trace)!).Where(glyph => GlyphText(glyph) is "0%" or "25%" or "50%" or "75%" or "100%").ToArray();
+                    Assert.Equal(5, percentLabels.Length);
+                    Assert.All(percentLabels, glyph => Assert.True(batteryPlot.Contains(glyph.Bounds), $"{theme} battery label {GlyphText(glyph)} at {glyph.Bounds} outside {batteryPlot}."));
+                    traceType.GetMethod("SetHover", All)!.Invoke(trace, [new Point(batteryPlot.Left + 1, batteryPlot.Top + 20)]);
+                    Assert.Equal(0, (int)traceType.GetProperty("HoverIndex", All)!.GetValue(trace)!);
+                    trace.UpdateLayout();
+                    var hoveredBattery = VisualTreeHelper.GetDrawing(trace)!;
+                    Assert.Contains(Drawings(hoveredBattery), d => ReferenceEquals(d.Brush, app.Resources["GlassPopup"]));
+                    Assert.Contains(TraceGlyphs(hoveredBattery), glyph => GlyphText(glyph) == "90%");
+                    traceType.GetMethod("SetHover", All)!.Invoke(trace, [null]);
+                    Assert.Equal(-1, (int)traceType.GetProperty("HoverIndex", All)!.GetValue(trace)!);
                     string? traceOutput = Environment.GetEnvironmentVariable("DEADWARE_UI_OUTPUT");
                     if (traceOutput is not null)
                     {

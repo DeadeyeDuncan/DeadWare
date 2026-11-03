@@ -20,7 +20,7 @@ internal static class ChartFrame
     /// <summary>Value lines are 1 px <c>Hairline</c> strokes snapped with a <see cref="GuidelineSet"/>. Their labels sit inside the plot,
     /// right-aligned 6 px from the edge and 2 px above each line (below the top line). <paramref name="leftLabels"/> adds a second
     /// scale on the left. Tick labels go 4 px under the plot with "Now" right-aligned; ticks that would collide are skipped.</summary>
-    public static void Grid(DrawingContext dc,Rect plot,IReadOnlyList<(double Y,string Label)> lines,IReadOnlyList<(double X,string Label)> ticks,Typeface typeface,double pixelsPerDip,bool compact,IReadOnlyList<(double Y,string Label)>? leftLabels)
+    public static void Grid(DrawingContext dc,Rect plot,IReadOnlyList<(double Y,string Label)> lines,IReadOnlyList<(double X,string Label)> ticks,Typeface typeface,double pixelsPerDip,bool compact,IReadOnlyList<(double Y,string Label)>? leftLabels,string? nowLabel="Now")
     {
         if(plot.IsEmpty||plot.Width<=0||plot.Height<=0)return;
         var muted=Theme.Brush("Muted");
@@ -53,7 +53,8 @@ internal static class ChartFrame
                 var text=Text(line.Label,typeface,pixelsPerDip,muted,size);
                 dc.DrawText(text,new(plot.Left+6,LabelY(line.Y,text)));
             }
-        var now=Text("Now",typeface,pixelsPerDip,muted,size);
+        if(nowLabel is null)return;
+        var now=Text(nowLabel,typeface,pixelsPerDip,muted,size);
         double labelY=plot.Bottom+4;
         dc.DrawText(now,new(plot.Right-now.Width,labelY));
         double limit=plot.Right-now.Width-6,lastRight=double.NegativeInfinity;
@@ -82,6 +83,19 @@ internal static class ChartFrame
         double textY=y+padding;
         foreach(var text in texts){dc.DrawText(text,new(x+padding,textY));textY+=text.Height+spacing;}
         return rect;
+    }
+
+    /// <summary>Nearest hover target by X within each target's tolerance, or -1.</summary>
+    public static int Nearest(IReadOnlyList<(double X,double Tolerance)> targets,Point? position,Rect plot)
+    {
+        if(position is not { } p||!plot.Contains(p))return -1;
+        int best=-1;double bestDistance=double.PositiveInfinity;
+        for(int i=0;i<targets.Count;i++)
+        {
+            double distance=Math.Abs(targets[i].X-p.X);
+            if(distance<=targets[i].Tolerance&&distance<bestDistance){best=i;bestDistance=distance;}
+        }
+        return best;
     }
 
     /// <summary>One figure per run, each a chain of monotone cubic Béziers through the run's points. Runs under two points are skipped.</summary>
