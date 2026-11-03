@@ -20,4 +20,12 @@ public class CollectorPollingTests
         Assert.Null(collector.Latest);
         Assert.Empty(collector.History.Read());
     }
+
+    [Fact] public void PublishCores_writes_zero_based_keys_and_returns_count()
+    {
+        var values=new Dictionary<string,double?>();
+        Assert.Equal(3,Collector.PublishCores(values,[10,null,30]));
+        Assert.Equal(10d,values["cpu/core/0/usage"]);Assert.Null(values["cpu/core/1/usage"]);Assert.Equal(30d,values["cpu/core/2/usage"]);
+        Assert.Equal(0,Collector.PublishCores(new(),[]));
+    }
 }
