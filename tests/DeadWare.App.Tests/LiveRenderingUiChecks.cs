@@ -59,12 +59,26 @@ internal static class LiveRenderingUiChecks
             visual.GetType().GetMethod("OnRender",flags)!.Invoke(visual,[context]);
             return drawing;
         }
+        // Overview CPU card subtitle: core count only for the usage card, only with the switch on and cores present.
+        var cards=new[]{"cpu","cputemp"}.Select(k=>new ChartCard(session,k,false,true)).ToArray();
+        string Subtitle(ChartCard card)=>((TextBlock)typeof(ChartCard).GetField("subtitle",flags)!.GetValue(card)!).Text;
+        void RefreshCard(ChartCard card)=>typeof(ChartCard).GetMethod("Refresh",flags)!.Invoke(card,null);
         foreach(var chart in charts){chart.Measure(new(300,120));chart.Arrange(new Rect(0,0,300,120));chart.UpdateLayout();}
         map.Measure(new(300,180));map.Arrange(new Rect(0,0,300,180));map.UpdateLayout();Draw(map);
         var root=new Grid();foreach(var chart in charts)root.Children.Add(chart);
+        foreach(var card in cards)root.Children.Add(card);
         using var source=new OffscreenSource(root);
         void Pump(){var frame=new DispatcherFrame();Dispatcher.CurrentDispatcher.BeginInvoke(DispatcherPriority.Background,new Action(()=>frame.Continue=false));Dispatcher.PushFrame(frame);}
         Pump();Assert.All(charts,chart=>Assert.True(chart.IsLoaded));
+        {
+            var latest=collector.Latest!;
+            session.Settings.ShowCpuCoreUsage=true;foreach(var card in cards)RefreshCard(card);
+            Assert.EndsWith("Fixture CPU · 8 cores",Subtitle(cards[0]));Assert.Equal("Fixture CPU",Subtitle(cards[1]));
+            session.Settings.ShowCpuCoreUsage=false;RefreshCard(cards[0]);Assert.Equal("Fixture CPU",Subtitle(cards[0]));
+            session.Settings.ShowCpuCoreUsage=true;Set(collector,"latest",latest with {CpuCoreCount=0});
+            RefreshCard(cards[0]);Assert.DoesNotContain("cores",Subtitle(cards[0]));
+            Set(collector,"latest",latest);session.Settings.ShowCpuCoreUsage=false;
+        }
         bool Preparing()=>charts.Any(c=>(bool)typeof(HistoryChart).GetField("preparing",flags)!.GetValue(c)!);
         void WaitPrepared(){var wait=Stopwatch.StartNew();while(Preparing()&&wait.Elapsed<TimeSpan.FromSeconds(10)){Pump();Thread.Sleep(1);}Assert.False(Preparing());}
         // Repeated polls coalesce, and an old worker cannot overwrite a changed range.

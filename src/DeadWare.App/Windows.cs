@@ -276,6 +276,7 @@ public sealed class MainWindow : Window
         }
         else if((gpu.SelectedItem as Device)?.Id!=session.SelectedGpuId){syncingGpu=true;gpu.SelectedValue=session.SelectedGpuId;syncingGpu=false;}
         status.Text=(session.Stale?"STALE — the collector has not published a recent sample. ":"")+r.HardwareStatus+"\n"+r.NetworkStatus+"\n"+session.GraphHistory.Status+(session.SettingsStatus.Length>0?"\n"+session.SettingsStatus:"");
+        if(session.Settings.ShowCpuCoreUsage&&r.CpuCoreCount==0)status.Text+=" · Per-core CPU usage unavailable.";
         memory.Text=$"Memory  {Ui.Bytes(session.Value("memory/used"))} / {Ui.Bytes(session.Value("memory/total"))}    ·    Last sample {r.Sample.Timestamp:HH:mm:ss}";
         subtitle.Text=$"{r.CpuName} · {session.GpuName} · {Ui.Bytes(session.Value("memory/total"))} · last sample {Math.Max(0,(DateTimeOffset.Now-r.Sample.Timestamp).TotalSeconds):0.0} s ago";
         networkStatus.Text=r.EtwStatus;RefreshTables();

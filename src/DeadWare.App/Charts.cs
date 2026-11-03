@@ -532,6 +532,7 @@ internal sealed class ChartCard : Border
         {
             value.Text=Ui.Number(current,kind.Contains("temp")?" °C":" %");
             subtitle.Text=data is null?"Discovering hardware…":kind.StartsWith("cpu")?data.CpuName:session.GpuName;
+            if(data is not null&&kind=="cpu"&&session.Settings.ShowCpuCoreUsage&&data.CpuCoreCount>0)subtitle.Text+=$" · {data.CpuCoreCount} cores";
             if(current is null&&data is not null)subtitle.Text+=" · "+(session.Stale?"stale":"sensor unavailable");
         }
         if(overview)subtitle.ToolTip=subtitle.Text;
