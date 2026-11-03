@@ -135,8 +135,13 @@ internal sealed class CompactGraph : Border
         Func<double?,string> format=kind is "network" or "storage"?v=>Ui.Bytes(v,true):v=>Ui.Number(v,chartKind.Contains("temp")?" °C":" %");
         string Summary(string metric)
         {
-            var summary=session.Collector.History.Summarize(DriveId is not null?StorageMetrics.Key(DriveId,"read"):session.MetricId(metric),now,session.HistorySeconds);
+            var summary=session.Collector.History.Summarize(metric.StartsWith("storage/",StringComparison.Ordinal)?metric:session.MetricId(metric),now,session.HistorySeconds);
             return $"Min  {format(summary.Minimum)}\nAvg  {format(summary.Average)}\nMax  {format(summary.Maximum)}";
+        }
+        if(DriveId is not null)
+        {
+            stats.Text=$"Last {HistoryRanges.Label(session.HistorySeconds)}\nRead · {Summary(StorageMetrics.Key(DriveId,"read"))}\n\nWrite · {Summary(StorageMetrics.Key(DriveId,"write"))}";
+            return;
         }
         stats.Text=joined
             ?$"Last {HistoryRanges.Label(session.HistorySeconds)}\nCPU · {session.Current?.CpuName??"Unavailable"}\n{Summary(chartKind)}\n\nGPU · {session.GpuName}\n{Summary(chartKind=="cpu"?"gpu":"gputemp")}"

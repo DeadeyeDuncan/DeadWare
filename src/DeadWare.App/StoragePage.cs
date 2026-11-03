@@ -48,14 +48,29 @@ internal sealed class StoragePage : UserControl
     private StorageReading Storage=>session.Current?.Storage??StorageReading.Empty;
     private StorageDrive? Selected=>Storage.Drives.FirstOrDefault(d=>d.Id==SelectedDriveId);
 
+    private sealed record RowParts(Button Button,TextBlock Title,TextBlock Health,ProgressBar Bar,TextBlock Free);
+    private readonly Dictionary<string,RowParts> rows=new(StringComparer.Ordinal);
+    private readonly TextBlock emptyRows=Ui.Text("",12,"Muted");
+
     private void Refresh()
     {
         var storage=Storage;
-        if(SelectedDriveId is null||storage.Drives.All(d=>d.Id!=SelectedDriveId))SelectedDriveId=storage.Drives.FirstOrDefault()?.Id;
+        if(SelectedDriveId is null||storage.Drives.All(d=>d.Id!=SelectedDriveId))SelectedDriveId=storage.Drives.OrderBy(d=>d.Index).FirstOrDefault()?.Id;
         Status.Text=StatusText(session.Current);Status.Visibility=Status.Text.Length==0?Visibility.Collapsed:Visibility.Visible;
-        Rows.Children.Clear();
-        if(storage.Drives.Count==0)Rows.Children.Add(Ui.Text(session.Current is null?"Discovering drives…":"No drives detected",12,"Muted"));
-        foreach(var drive in storage.Drives)Rows.Children.Add(Row(drive,storage.Health.FirstOrDefault(h=>h.DriveId==drive.Id)));
+        // Rows are kept per drive id and updated in place, so keyboard focus survives each poll.
+        var ordered=storage.Drives.OrderBy(d=>d.Index).ToArray();
+        foreach(var gone in rows.Keys.Except(ordered.Select(d=>d.Id)).ToArray()){Rows.Children.Remove(rows[gone].Button);rows.Remove(gone);}
+        emptyRows.Text=session.Current is null?"Discovering drives…":"No drives detected";
+        if(ordered.Length==0){if(!Rows.Children.Contains(emptyRows))Rows.Children.Add(emptyRows);}
+        else Rows.Children.Remove(emptyRows);
+        for(int i=0;i<ordered.Length;i++)
+        {
+            var drive=ordered[i];
+            if(!rows.TryGetValue(drive.Id,out var parts)){parts=CreateRow(drive.Id);rows[drive.Id]=parts;}
+            int at=Rows.Children.IndexOf(parts.Button);
+            if(at!=i){if(at>=0)Rows.Children.RemoveAt(at);Rows.Children.Insert(i,parts.Button);}
+            UpdateRow(parts,drive,storage.Health.FirstOrDefault(h=>h.DriveId==drive.Id));
+        }
         RefreshDetail();
     }
 
@@ -70,22 +85,39 @@ internal sealed class StoragePage : UserControl
             .Where(part=>part.Contains("storage",StringComparison.OrdinalIgnoreCase)));
     }
 
-    private Button Row(StorageDrive drive,StorageHealth? health)
+    private RowParts CreateRow(string id)
     {
         var lines=new StackPanel();
+        var title=Ui.Text("",13);title.FontWeight=FontWeights.SemiBold;title.TextTrimming=TextTrimming.CharacterEllipsis;lines.Children.Add(title);
+        var health=Ui.Text("",12,"Muted");lines.Children.Add(health);
+        var bar=new ProgressBar {Minimum=0,Maximum=1,Height=6,Margin=new Thickness(0,6,0,3)};lines.Children.Add(bar);
+        var free=Ui.Text("",11,"Muted");lines.Children.Add(free);
+        var button=new Button {Content=lines,HorizontalContentAlignment=HorizontalAlignment.Stretch,Padding=new Thickness(12,8,12,8),Margin=new Thickness(0,0,0,6)};
+        button.Click+=(_,_)=>{SelectedDriveId=id;Refresh();};
+        return new(button,title,health,bar,free);
+    }
+
+    private void UpdateRow(RowParts row,StorageDrive drive,StorageHealth? health)
+    {
         string title=$"{drive.Model} · {drive.BusType} · {Ui.Bytes(drive.SizeBytes)}";
         if(drive.IdentityNote.Length>0)title+=$" · {drive.IdentityNote}";
         if(drive.Removable)title+=" · removable";
-        var heading=Ui.Text(title,13);heading.FontWeight=FontWeights.SemiBold;heading.TextTrimming=TextTrimming.CharacterEllipsis;lines.Children.Add(heading);
+        row.Title.Text=title;System.Windows.Automation.AutomationProperties.SetName(row.Button,title);
         string life=health?.LifePercent is { } l?$"Life {l.ToString("0",CultureInfo.CurrentCulture)}%":"Life —";
-        lines.Children.Add(Ui.Text($"{Ui.Number(health?.Temperature,"°C")} · {(string.IsNullOrEmpty(health?.Badge)?"—":health.Badge)} · {life}",12,health?.Badge=="Failing"?"Warning":"Muted"));
+        row.Health.Text=$"{Ui.Number(health?.Temperature,"°C")} · {(string.IsNullOrEmpty(health?.Badge)?"—":health.Badge)} · {life}";
+        row.Health.SetResourceReference(TextBlock.ForegroundProperty,health?.Badge=="Failing"?"Warning":"Muted");
         long size=drive.Volumes.Sum(v=>v.SizeBytes),free=drive.Volumes.Sum(v=>v.FreeBytes);
-        var bar=new ProgressBar {Minimum=0,Maximum=1,Value=size>0?(size-free)/(double)size:0,Height=6,Margin=new Thickness(0,6,0,3)};lines.Children.Add(bar);
-        lines.Children.Add(Ui.Text(size>0?$"{Ui.Bytes(free)} free of {Ui.Bytes(size)}":"No volumes",11,"Muted"));
-        var button=new Button {Content=lines,HorizontalContentAlignment=HorizontalAlignment.Stretch,Padding=new Thickness(12,8,12,8),Margin=new Thickness(0,0,0,6),Tag=drive.Id==SelectedDriveId?"active":null};
-        System.Windows.Automation.AutomationProperties.SetName(button,title);
-        button.Click+=(_,_)=>{SelectedDriveId=drive.Id;Refresh();};
-        return button;
+        row.Bar.Value=size>0?(size-free)/(double)size:0;
+        row.Free.Text=size>0?$"{Ui.Bytes(free)} free of {Ui.Bytes(size)}":"No volumes";
+        // The selected row carries the accent border and soft accent fill, like the active rail button.
+        bool selected=drive.Id==SelectedDriveId;
+        row.Button.Tag=selected?"active":null;
+        if(selected)
+        {
+            row.Button.SetResourceReference(BorderBrushProperty,"Accent");row.Button.SetResourceReference(BackgroundProperty,"AccentSoft");
+            row.Button.BorderThickness=new Thickness(3,1,1,1);
+        }
+        else {row.Button.ClearValue(BorderBrushProperty);row.Button.ClearValue(BackgroundProperty);row.Button.ClearValue(BorderThicknessProperty);}
     }
 
     private void RefreshDetail()

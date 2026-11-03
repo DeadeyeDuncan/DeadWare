@@ -34,6 +34,8 @@ internal static class StoragePageUiChecks
             Live_only_drive_shows_identity_note();
             Sensors_off_status_is_shown();
             Open_in_window_pops_out_selected_drive();
+            Refresh_keeps_row_instances_and_focus();
+            Exactly_one_row_shows_selection();
         }
         finally { CultureInfo.CurrentCulture = culture; }
     }
@@ -55,9 +57,12 @@ internal static class StoragePageUiChecks
 
     private static void Selecting_a_row_fills_detail_with_volumes()
     {
+        // Rows follow drive Index, not enumeration order.
         var page = Page(Session([Stick, Ssd], [Failing], ""));
-        Assert.Equal("live-1", page.SelectedDriveId);
+        Assert.Equal("S1", page.SelectedDriveId);
         Click(page.Rows.Children.OfType<Button>().ElementAt(1));
+        Assert.Equal("live-1", page.SelectedDriveId);
+        Click(page.Rows.Children.OfType<Button>().ElementAt(0));
         Assert.Equal("S1", page.SelectedDriveId);
         page.UpdateLayout();
         var table = Texts(page.Volumes);
@@ -111,6 +116,39 @@ internal static class StoragePageUiChecks
         Assert.Equal(page.SelectedDriveId, graph.DriveId);
         shown.Close();
     }
+
+    private static void Refresh_keeps_row_instances_and_focus()
+    {
+        // The host test forbids native windows, so focus itself cannot be taken; keeping the same
+        // button instances across polls is what preserves it (rows are never torn down).
+        var page = Page(Session([Ssd, Stick], [Failing], ""));
+        var before = page.Rows.Children.OfType<Button>().ToArray();
+        Refresh(page); Refresh(page);
+        var after = page.Rows.Children.OfType<Button>().ToArray();
+        Assert.Equal(2, after.Length);
+        Assert.Same(before[0], after[0]); Assert.Same(before[1], after[1]);
+        Click(before[1]);
+        Assert.Same(before[1], page.Rows.Children.OfType<Button>().ElementAt(1));
+    }
+
+    private static void Exactly_one_row_shows_selection()
+    {
+        var page = Page(Session([Ssd, Stick], [Failing], ""));
+        var rows = page.Rows.Children.OfType<Button>().ToArray();
+        void Expect(int index)
+        {
+            Assert.Single(rows, r => Equals(r.Tag, "active"));
+            Assert.Equal("active", rows[index].Tag);
+            var accent = ((SolidColorBrush)Application.Current.Resources["Accent"]).Color;
+            Assert.Equal(accent, ((SolidColorBrush)rows[index].BorderBrush).Color);
+            Assert.All(rows.Where((_, i) => i != index), r => Assert.NotEqual(accent, (r.BorderBrush as SolidColorBrush)?.Color));
+        }
+        Expect(0);
+        Click(rows[1]);
+        Expect(1);
+    }
+
+    private static void Refresh(StoragePage page) => typeof(StoragePage).GetMethod("Refresh", Fields)!.Invoke(page, []);
 
     private static StoragePage Page(UiSession session)
     {
