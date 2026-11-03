@@ -74,7 +74,8 @@ public sealed class Collector : IAsyncDisposable
     public string Stage=>stage;
     public Task Completion=>worker??Task.CompletedTask;
     private readonly IStorageFastSource? storage;
-    public Collector(CollectorOptions? options=null):this(options,new WindowsStorage()) {}
+    // Diagnostic isolation (HardwareEnabled:false) keeps WMI and disk counters off the poll thread.
+    public Collector(CollectorOptions? options=null):this(options,options is {HardwareEnabled:false}?null:new WindowsStorage()) {}
     internal Collector(CollectorOptions? options,IStorageFastSource? storage) {this.storage=storage;this.options=options??new();SetPollingInterval(this.options.PollingIntervalSeconds);etw=new(this.options.DiagnosticTimings);}
     private double pollingIntervalSeconds=1;
     public double PollingIntervalSeconds=>Volatile.Read(ref pollingIntervalSeconds);
@@ -289,7 +290,7 @@ public sealed class Collector : IAsyncDisposable
             try {if(worker is not null)await worker.ConfigureAwait(false);}
             finally {await networkStop.ConfigureAwait(false);}
         }
-        finally {cancellation.Dispose();}
+        finally {cancellation.Dispose();(storage as IDisposable)?.Dispose();}
     }
     /// <summary>Cancels collection and stops network capture (final drain, publication, disposal) without waiting for the hardware worker.</summary>
     internal Task StopNetworkCaptureAsync()
