@@ -55,7 +55,7 @@ public sealed class UiSession
         diagnostics?.Record("settings_loaded",new {Status=SettingsStatus,Settings.RestoreOpenWindows,OpenWindows=layout.Remembered,Settings.SelectedGpuId,Disk=LayoutDiagnostics.ReadSettingsState(settingsPath)});
         saveTimer.Tick+=async (_,_)=>{saveTimer.Stop();await SaveAsync();};
         timer.Interval=TimeSpan.FromSeconds(Math.Min(1,Settings.PollingIntervalSeconds));
-        Collector=new(new CollectorOptions(ExtendedSensors:Settings.ExtendedSensors,PollingIntervalSeconds:Settings.PollingIntervalSeconds));
+        Collector=new(new CollectorOptions(ExtendedSensors:Settings.ExtendedSensors,PollingIntervalSeconds:Settings.PollingIntervalSeconds,StorageSensors:Settings.StorageSensors));
         GraphHistory=new(Path.Combine(Path.GetDirectoryName(settingsPath)!,"live-graph-history.db"),Environment.MachineName,Collector.History);
         Collector.SampleAvailable+=GraphHistory.TryRecord;
         Cooling=new(Path.Combine(Path.GetDirectoryName(settingsPath)!,"cooling-history.db"),Environment.MachineName,Settings.CoolingConfigurationId);
@@ -111,6 +111,7 @@ public sealed class UiSession
         Theme.SetGraphColors(Settings.GraphColors);Changed?.Invoke();_ = SaveAsync();
     }
     public void SetExtendedSensors(bool enabled) {Settings.ExtendedSensors=enabled;_ = SaveAsync();}
+    public void SetStorageSensors(bool enabled) {Settings.StorageSensors=enabled;_ = SaveAsync();}
     public void SetGraphStyle(string kind,string pattern,bool glow,double thickness=1,double glowStrength=1)
     {
         if(kind=="network")kind="download";
@@ -218,7 +219,7 @@ public sealed class UiSession
         Cooling.Configure(Settings.CoolingRecording,Settings.CoolingNotifications,Settings.CoolingDetailedDays,Settings.CoolingSummaryDays,Settings.CoolingConfigurationId);
         _ = SaveAsync();
     }
-    public string MetricId(string kind)=>kind switch {"cpu"=>"cpu/usage","cputemp"=>"cpu/temperature","cpupump"=>"cpu/pump","gpu"=>(SelectedGpuId??"unavailable")+"/usage","gputemp"=>(SelectedGpuId??"unavailable")+"/temperature","gpufan"=>(SelectedGpuId??"unavailable")+"/fan","memory"=>"memory/usage",_=>"network/download"};
+    public string MetricId(string kind)=>kind switch {"cpu"=>"cpu/usage","cputemp"=>"cpu/temperature","cpupump"=>"cpu/pump","gpu"=>(SelectedGpuId??"unavailable")+"/usage","gputemp"=>(SelectedGpuId??"unavailable")+"/temperature","gpufan"=>(SelectedGpuId??"unavailable")+"/fan","memory"=>"memory/usage","storage"=>"storage/total/read",_=>"network/download"};
     public async Task SaveAsync()
     {
         Settings.OpenWindows=layout.Remembered.ToList();
@@ -332,15 +333,30 @@ public sealed class UiSession
             topmost.RemoveValueChanged(window,pinChanged);captureWindows.Remove(window);
         };
     }
+    /// <summary>Test hook: when set, an allowed pop-out is built and handed here instead of shown and remembered.</summary>
+    internal Action<Window>? ShowWindow {get;set;}
+    private Window CreateDetached(string kind)=>kind=="batteryhistory"?new BatteryHistoryWindow(this):kind=="usagehistory"?new UsageHistoryWindow(this):kind=="widget"?new WidgetWindow(this):new GraphWindow(this,kind);
     public void OpenDetached(string kind)=>OpenDetachedCore(PopoutGraphMode.Resolve(kind,Settings.JoinCpuGpuPopouts));
     private void OpenDetachedCore(string kind)
     {
-        if(layout.Ending||!DetachedWindowState.IsAllowed(kind))return;
+        if(!DetachedWindowState.IsAllowed(kind))return;
+        if(ShowWindow is { } show){show(CreateDetached(kind));return;}
+        if(layout.Ending)return;
         if(detached.TryGetValue(kind,out var existing)) {existing.WindowState=WindowState.Normal;existing.Activate();return;}
-        var window=kind=="batteryhistory"?(Window)new BatteryHistoryWindow(this):kind=="usagehistory"?(Window)new UsageHistoryWindow(this):kind=="widget"?new WidgetWindow(this):new GraphWindow(this,kind);
+        var window=CreateDetached(kind);
         detached[kind]=window;
         window.Closed+=(_,_)=>{detached.Remove(kind);layout.Close(kind);diagnostics?.Record("window_closed",new {Kind=kind,layout.Ending,OpenWindows=layout.Remembered});QueueSave();};
         window.Show();layout.Open(kind);diagnostics?.Record("window_opened",new {Kind=kind,OpenWindows=layout.Remembered});QueueSave();
+    }
+    /// <summary>Opens (or raises) one drive's pop-out; it closes with the app but is not remembered across restarts.</summary>
+    public void OpenDriveWindow(StorageDrive drive)
+    {
+        string key="storage:"+drive.Id;
+        if(layout.Ending)return;
+        if(detached.TryGetValue(key,out var existing)) {existing.WindowState=WindowState.Normal;existing.Activate();return;}
+        var window=new GraphWindow(this,drive);detached[key]=window;
+        window.Closed+=(_,_)=>detached.Remove(key);
+        window.Show();
     }
     public Task ShutdownAsync()=>shutdown??=ShutdownCoreAsync();
     private async Task ShutdownCoreAsync()

@@ -14,6 +14,12 @@ public record Reading(Snapshot Sample,IReadOnlyList<Device> Gpus,IReadOnlyList<S
     public ConnectionSample? Connections {get;init;}
     public BatteryReading Battery {get;init;}=BatteryReading.Unavailable;
     public int CpuCoreCount {get;init;}
+    public StorageReading Storage {get;init;}=StorageReading.Empty;
+}
+
+public sealed record StorageReading(IReadOnlyList<StorageDrive> Drives,IReadOnlyList<StorageHealth> Health,string Status)
+{
+    public static StorageReading Empty {get;}=new([],[],"");
 }
 
 /// <summary>Reads the first GPU RPM fan from existing publications and keeps its source through outages.</summary>
@@ -67,7 +73,16 @@ public sealed class Collector : IAsyncDisposable
     private volatile string stage="Not started";
     public string Stage=>stage;
     public Task Completion=>worker??Task.CompletedTask;
-    public Collector(CollectorOptions? options=null) {this.options=options??new();SetPollingInterval(this.options.PollingIntervalSeconds);etw=new(this.options.DiagnosticTimings);}
+    private readonly IStorageFastSource? storage;
+    private readonly IStorageHealthSource? healthSource;
+    private StorageSensorLoop? healthLoop;
+    private readonly TimeSpan healthPeriod;
+    private IReadOnlyList<StorageDrive> storageDrives=[];
+    internal static readonly TimeSpan StorageHealthPeriod=TimeSpan.FromSeconds(30);
+    private const string StorageSensorsOff="Unavailable · storage sensors off";
+    // Diagnostic isolation (HardwareEnabled:false) keeps WMI and disk counters off the poll thread.
+    public Collector(CollectorOptions? options=null):this(options,options is {HardwareEnabled:false}?null:new WindowsStorage()) {}
+    internal Collector(CollectorOptions? options,IStorageFastSource? storage,IStorageHealthSource? healthSource=null,TimeSpan? healthPeriod=null) {this.storage=storage;this.healthSource=healthSource;this.healthPeriod=healthPeriod??StorageHealthPeriod;this.options=options??new();SetPollingInterval(this.options.PollingIntervalSeconds);etw=new(this.options.DiagnosticTimings);}
     private double pollingIntervalSeconds=1;
     public double PollingIntervalSeconds=>Volatile.Read(ref pollingIntervalSeconds);
     public void SetPollingInterval(double intervalSeconds)=>Volatile.Write(ref pollingIntervalSeconds,PollingPolicy.Normalize(intervalSeconds));
@@ -114,6 +129,12 @@ public sealed class Collector : IAsyncDisposable
                 computer=new Computer {IsCpuEnabled=sources.Cpu,IsGpuEnabled=sources.Gpu,IsMemoryEnabled=sources.Memory,IsMotherboardEnabled=sources.Motherboard,IsControllerEnabled=sources.Controllers,IsStorageEnabled=sources.Storage,IsNetworkEnabled=false};
                 try { computer.Open(); } catch(Exception e) { initialization=$"Hardware discovery failed ({e.GetType().Name}). Windows counters remain available."; }
                 hardwareOpenMilliseconds=Stopwatch.GetElapsedTime(initializationStarted).TotalMilliseconds;
+            }
+            // Health has its own Computer and loop so slow SMART reads never touch the per-poll hardware read.
+            if(options.StorageSensors&&(healthSource is not null||options.HardwareEnabled)&&!cancellation.IsCancellationRequested)
+            {
+                var loop=new StorageSensorLoop(healthSource??new LibreStorageHealth(),healthPeriod,()=>Volatile.Read(ref storageDrives));
+                Volatile.Write(ref healthLoop,loop);loop.Start();
             }
             while(!cancellation.IsCancellationRequested)
             {
@@ -164,8 +185,29 @@ public sealed class Collector : IAsyncDisposable
                     providerStarted=Stopwatch.GetTimestamp();var network=windows.Network(clock.Elapsed.TotalSeconds);
                     if(timings is not null)timings["windows/network"]=Stopwatch.GetElapsedTime(providerStarted).TotalMilliseconds;
                     values["network/download"]=network.Down;values["network/upload"]=network.Up;
+                    stage="Reading storage counters";
+                    providerStarted=Stopwatch.GetTimestamp();
+                    var drives=storage?.Drives(clock.Elapsed.TotalSeconds)??[];string? storageError=null;
+                    storage?.Read(drives,values,out storageError);
+                    foreach(string metric in new[]{"read","write"})
+                    {
+                        // A total of zero would claim idle disks when no drive actually reported.
+                        var known=drives.Select(d=>values.GetValueOrDefault(StorageMetrics.Key(d.Id,metric))).OfType<double>().ToList();
+                        values[StorageMetrics.Key("total",metric)]=known.Count==0?null:known.Sum();
+                    }
+                    if(timings is not null)timings["windows/storage"]=Stopwatch.GetElapsedTime(providerStarted).TotalMilliseconds;
+                    Volatile.Write(ref storageDrives,drives);
+                    bool beyondEight=drives.Count(d=>d.Persistable)>StorageMetrics.MaximumPersistedDrives;
+                    var storageReading=new StorageReading(drives,StorageHealthFor(drives),StorageStatus(storageError,Volatile.Read(ref healthLoop)?.Status,beyondEight));
                     var battery=WindowsBattery.Read();
                     foreach(var sensor in sensors) values[sensor.Id]=sensor.Value;
+                    foreach(var health in storageReading.Health)
+                    {
+                        if(!drives.Any(d=>d.Id==health.DriveId))continue;
+                        values[StorageMetrics.Key(health.DriveId,"temperature")]=health.Temperature;
+                        values[StorageMetrics.Key(health.DriveId,"life")]=health.LifePercent;
+                        values[StorageMetrics.Key(health.DriveId,"used")]=health.UsedPercent;
+                    }
                     var now=clock.Elapsed.TotalSeconds;
                     var sample=new Snapshot(DateTimeOffset.Now,now,new System.Collections.ObjectModel.ReadOnlyDictionary<string,double?>(values)) {PollingIntervalSeconds=intervalSeconds};
                     string hardwareStatus=initialization.Length>0?initialization:!options.HardwareEnabled?"Hardware collection disabled for diagnostic isolation":$"{sensors.Count} sensors · {(IsElevated?"Administrator":"Standard user")} · {(options.ExtendedSensors?"Extended sensors enabled":"CPU/GPU sensors")}";
@@ -173,6 +215,8 @@ public sealed class Collector : IAsyncDisposable
                     if(gpus.Count==0&&options.HardwareEnabled) hardwareStatus+=" · No supported GPU discovered.";
                     if(droppedCores>0) hardwareStatus+=$" · Showing the first {CpuCoreUsage.MaximumCores} of {CpuCoreUsage.MaximumCores+droppedCores} CPU cores.";
                     if(errors.Count>0) hardwareStatus+=" · "+string.Join("; ",errors.Distinct());
+                    if(storageError is not null) hardwareStatus+=" · "+storageError;
+                    if(beyondEight) hardwareStatus+=" · "+BeyondEightNote;
                     stage="Reading ETW counters";
                     // Snapshot and delivery are one step, so the final drain never overtakes (and
                     // makes ConnectionService drop) a sample whose observations were already taken.
@@ -183,7 +227,7 @@ public sealed class Collector : IAsyncDisposable
                         if(timings is not null){timings["etw/snapshot"]=Stopwatch.GetElapsedTime(providerStarted).TotalMilliseconds;timings["poll/total"]=(clock.Elapsed.TotalSeconds-started)*1000;}
                         double elapsed=clock.Elapsed.TotalSeconds-started;
                         if(elapsed>=intervalSeconds)hardwareStatus+=$" · Slow sample ({elapsed:0.0}s); pausing before the next poll.";
-                        var reading=new Reading(sample,gpus.AsReadOnly(),sensors.AsReadOnly(),capture.Processes,cpuName,hardwareStatus,network.Status,EtwStatus,IsElevated,timings,etw.Failure) {Battery=battery,Connections=capture.Connections,CpuCoreCount=cores.Count};
+                        var reading=new Reading(sample,gpus.AsReadOnly(),sensors.AsReadOnly(),capture.Processes,cpuName,hardwareStatus,network.Status,EtwStatus,IsElevated,timings,etw.Failure) {Battery=battery,Connections=capture.Connections,CpuCoreCount=cores.Count,Storage=storageReading};
                         History.Add(sample);Volatile.Write(ref latest,reading);SampleAvailable?.Invoke(reading);
                     }
                 }
@@ -261,20 +305,46 @@ public sealed class Collector : IAsyncDisposable
         foreach(var sub in h.SubHardware) ReadHardware(sub,sensors,errors,lowLevelAvailable,timings);
     }
     private static string Unit(SensorType t)=>t switch {SensorType.Load=>"%",SensorType.Temperature=>"°C",SensorType.Clock=>"MHz",SensorType.Fan=>"RPM",SensorType.Voltage=>"V",SensorType.Current=>"A",SensorType.Power=>"W",SensorType.Data=>"GB",SensorType.SmallData=>"MB",SensorType.Throughput=>"B/s",SensorType.Control=>"%",SensorType.Frequency=>"Hz",_=>t.ToString()};
+    internal const string BeyondEightNote="Drives beyond eight are not recorded.";
+    /// <summary>The fast-path error, else the health loop's status, plus the more-than-eight-drives note.</summary>
+    internal static string StorageStatus(string? storageError,string? loopStatus,bool beyondEight)
+    {
+        var first=!string.IsNullOrWhiteSpace(storageError)?storageError:loopStatus;
+        return string.Join(" · ",new[]{first,beyondEight?BeyondEightNote:null}.Where(p=>!string.IsNullOrWhiteSpace(p)));
+    }
+    private IReadOnlyList<StorageHealth> StorageHealthFor(IReadOnlyList<StorageDrive> drives)
+    {
+        if(Volatile.Read(ref healthLoop) is {} loop)return loop.Latest;
+        if(!options.StorageSensors)return drives.Where(d=>d.Persistable).Select(d=>StorageProjection.Health(d.Id,null,StorageSensorsOff)).ToList();
+        return [];
+    }
     public ValueTask DisposeAsync()
     {
         // Stop our trace even if a hardware provider is stuck. Native stop never runs on the UI thread.
         lock(etwStopGate)return new(disposal??=Task.Run(DisposeCoreAsync));
     }
+    private static readonly TimeSpan HardwareStopBudget=TimeSpan.FromSeconds(5);
     private async Task DisposeCoreAsync()
     {
+        long stopStarted=Stopwatch.GetTimestamp();
+        // Started alongside the worker join so both run against one deadline.
+        _=cancellation.CancelAsync();
+        var healthStop=Volatile.Read(ref healthLoop)?.DisposeAsync().AsTask();
         try
         {
             var networkStop=StopNetworkCaptureAsync();
             try {if(worker is not null)await worker.ConfigureAwait(false);}
             finally {await networkStop.ConfigureAwait(false);}
         }
-        finally {cancellation.Dispose();}
+        finally
+        {
+            // A loop the worker created after cancellation began is still released.
+            healthStop??=Volatile.Read(ref healthLoop)?.DisposeAsync().AsTask();
+            // The worker never waits on the loop, so the loop's join shares the hardware budget that began at cancellation.
+            try {if(healthStop is not null)await healthStop.WaitAsync(HardwareStopBudget-Stopwatch.GetElapsedTime(stopStarted) is var left&&left>TimeSpan.Zero?left:TimeSpan.Zero).ConfigureAwait(false);}
+            catch(TimeoutException) {}
+            finally {cancellation.Dispose();(storage as IDisposable)?.Dispose();}
+        }
     }
     /// <summary>Cancels collection and stops network capture (final drain, publication, disposal) without waiting for the hardware worker.</summary>
     internal Task StopNetworkCaptureAsync()

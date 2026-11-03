@@ -34,6 +34,18 @@ public static class GraphHistoryProjection
             var metadata=reading.Sensors.FirstOrDefault(s=>s.HardwareId==gpu.Id&&s.HardwareType is "GpuAmd" or "GpuNvidia" or "GpuIntel");
             if(metadata is not null)Add(metadata.HardwareType,gpu.Name,gpu.Id,"usage","temperature","fan");
         }
+        var drives=DeadWare.Core.StorageProjection.Persisted(reading.Storage.Drives);
+        if(drives.Count>0)
+        {
+            string storageIdentity=Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
+                JsonSerializer.Serialize(new[]{"graph-v1",machineKey,"Storage",string.Join(",",drives.Select(d=>d.Id).OrderBy(i=>i,StringComparer.Ordinal))}))))[..12];
+            foreach(var drive in drives)
+            {
+                string safe=drive.Id.Replace('/','_');
+                foreach(string metric in new[]{"read","write"})
+                    result[storageIdentity+"/"+safe+"/"+metric]=DeadWare.Core.StorageMetrics.Key(drive.Id,metric);
+            }
+        }
         if(cpus.Length==1)
         {
             int nonCoreCount=result.Count;

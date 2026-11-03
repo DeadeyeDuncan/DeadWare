@@ -19,7 +19,7 @@ internal static class Theme
     private static BitmapImage? stoneTexture;
     public static Typeface ChartTypeface=>new((FontFamily)Application.Current.Resources["MetricFont"],FontStyles.Normal,FontWeights.Normal,FontStretches.Normal);
     private static IReadOnlyDictionary<string,string> graphColors=new Dictionary<string,string>();
-    public static string GraphKey(string kind)=>"Graph/"+(kind=="network"?"download":kind);
+    public static string GraphKey(string kind)=>"Graph/"+(kind switch {"network"=>"download","storage"=>"diskread",_=>kind});
     public static void SetGraphColors(IReadOnlyDictionary<string,string> colors)
     {graphColors=GraphColorSettings.Normalize(colors);ApplyGraphColors();}
     private static readonly Dictionary<(Color,int,int,bool),SolidColorBrush> coreBrushes=new();
@@ -40,7 +40,7 @@ internal static class Theme
         coreBrushes.Clear();
         foreach(string kind in GraphColorSettings.Kinds)
         {
-            string role=kind switch {"gpu" or "gputemp"=>"Gpu","gpufan"=>"Warning","cpupump"=>"Download","memory"=>"Accent","download"=>"Download",_=>"Cpu"};
+            string role=kind switch {"gpu" or "gputemp"=>"Gpu","gpufan"=>"Warning","cpupump"=>"Download","memory"=>"Accent","download" or "diskread"=>"Download",_=>"Cpu"};
             Application.Current.Resources[GraphKey(kind)]=!SystemParameters.HighContrast&&graphColors.TryGetValue(kind,out var color)
                 ?new SolidColorBrush((Color)ColorConverter.ConvertFromString(color)):Brush(role);
         }

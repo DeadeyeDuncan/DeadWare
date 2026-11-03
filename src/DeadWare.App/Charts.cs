@@ -53,7 +53,7 @@ internal static class Ui
     }
     public static Image Logo()
     {var image=new Image {Width=38,Height=38,Margin=new Thickness(0,0,9,0)};try{image.Source=new BitmapImage(new Uri("pack://application:,,,/Assets/deadware.png"));}catch(System.IO.IOException){}return image;}
-    public static string Title(string kind)=>kind switch {"cpu"=>"CPU usage","cputemp"=>"CPU temperature","cpupump"=>"CPU pump speed","gpu"=>"GPU usage","gputemp"=>"GPU temperature","gpufan"=>"GPU fan speed","usage"=>"CPU / GPU usage","temperature"=>"CPU / GPU temperature","memory"=>"RAM usage",_=>"Network activity"};
+    public static string Title(string kind)=>kind switch {"cpu"=>"CPU usage","cputemp"=>"CPU temperature","cpupump"=>"CPU pump speed","gpu"=>"GPU usage","gputemp"=>"GPU temperature","gpufan"=>"GPU fan speed","usage"=>"CPU / GPU usage","temperature"=>"CPU / GPU temperature","memory"=>"RAM usage","storage"=>"Disk activity",_=>"Network activity"};
     public static FrameworkElement Range(UiSession session)=>new RangeSegments(session);
 
     private static readonly ControlTemplate NavTemplate=SealedTemplate("""
@@ -108,7 +108,9 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
     public bool PumpWithDevices {get;init;}
     /// <summary>Lets a joined CPU/GPU usage chart carry the per-core CPU traces too (the widget).</summary>
     public bool CoresWithDevices {get;init;}
-    private sealed record Query(SampleHistory History,string Primary,string? Secondary,string? Fan,string? Pump,int Seconds,int Columns,bool Smoothed,int Cores);
+    /// <summary>Limits a storage chart to one drive: its read and write become the traces and the per-drive lines are off.</summary>
+    public string? DriveId {get;init;}
+    private sealed record Query(SampleHistory History,string Primary,string? Secondary,string? Fan,string? Pump,int Seconds,int Columns,bool Smoothed,int Cores,string Drives="");
     private sealed record ChartData(Query Query,Dictionary<string,IReadOnlyList<SamplePoint>> Series,Dictionary<string,IReadOnlyList<ChartRangePoint>> Ranges,Summary Statistics);
     public event Action<Summary>? StatisticsReady;
     private ChartData? prepared;
@@ -118,10 +120,15 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
     private Query CurrentQuery()
     {
         bool compare=CompareDevices&&kind is "cpu" or "cputemp";
-        return new(session.Collector.History,session.MetricId(kind),kind=="network"?"network/upload":compare?session.MetricId(kind=="cpu"?"gpu":"gputemp"):null,
+        bool drive=kind=="storage"&&DriveId is not null;
+        return new(session.Collector.History,drive?StorageMetrics.Key(DriveId!,"read"):session.MetricId(kind),kind=="network"?"network/upload":drive?StorageMetrics.Key(DriveId!,"write"):kind=="storage"?"storage/total/write":compare?session.MetricId(kind=="cpu"?"gpu":"gputemp"):null,
             ShowsFan(compare)?session.MetricId("gpufan"):null,ShowsPump(compare)?session.MetricId("cpupump"):null,session.HistorySeconds,Math.Max(1,(int)ActualWidth-90),session.Settings.GraphSmoothing&&session.HistorySeconds>=3600,
-            ShowsCores()?session.Current?.CpuCoreCount??0:0);
+            ShowsCores()?session.Current?.CpuCoreCount??0:0,
+            // The persisted drive set is part of the key, so a changed set rebuilds the per-drive traces.
+            kind=="storage"&&!drive?string.Join("\n",PersistedDrives().Select(d=>d.Id)):"");
     }
+    private IReadOnlyList<StorageDrive> PersistedDrives()=>StorageProjection.Persisted(session.Current?.Storage.Drives??[]);
+    private static string[] DriveIds(Query query)=>query.Drives.Length==0?[]:query.Drives.Split('\n');
     private bool ShowsCores()=>session.Settings.ShowCpuCoreUsage&&kind=="cpu"&&(!CompareDevices||CoresWithDevices);
     private bool ShowsFan(bool compare)=>session.Settings.ShowGpuFanSpeed&&(kind=="gputemp"||kind=="cputemp"&&compare);
     private bool ShowsPump(bool compare)=>session.Settings.ShowCpuPumpSpeed&&kind=="cputemp"&&(!compare||PumpWithDevices);
@@ -133,7 +140,9 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
         // Core traces come from one pass over the samples instead of one locked scan per core.
         var coreRaw=!query.Smoothed&&cores.Length>0?query.History.SeriesMany(cores,now,query.Seconds):null;
         var coreRanges=query.Smoothed&&cores.Length>0?query.History.ChartRangesMany(cores,now,query.Seconds,query.Columns):null;
-        foreach(var metric in new[]{query.Primary,query.Secondary,query.Fan,query.Pump}.OfType<string>().Concat(cores).Distinct())
+        // Per-drive write is prepared for the hover chip only; it is never drawn.
+        var drives=DriveIds(query).SelectMany(id=>new[]{StorageMetrics.Key(id,"read"),StorageMetrics.Key(id,"write")});
+        foreach(var metric in new[]{query.Primary,query.Secondary,query.Fan,query.Pump}.OfType<string>().Concat(cores).Concat(drives).Distinct())
         {
             if(!query.Smoothed)
             {
@@ -204,6 +213,8 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
         /// <summary>A per-core CPU trace: thin plain stroke in <see cref="Brush"/>, listed in the hover chip by value.</summary>
         public bool Core {get;init;}
         public Brush? Brush {get;init;}
+        /// <summary>A per-drive storage trace (drawn like a core); <see cref="Metric"/> is its read key.</summary>
+        public string? DriveId {get;init;}
     }
     private sealed record Frame(Query Query,int Revision,ChartData Data,Size Size,string Theme,bool Glass,double Now,DateTimeOffset WallNow,TraceSpec[] Specs,Dictionary<string,TracePath> Paths);
     /// <summary>Geometry built once per poll, size and theme; hover re-renders reuse it.</summary>
@@ -246,19 +257,20 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
         if(prepared?.Query!=query){prepared=Prepare(query,session.Collector.ElapsedSeconds);StatisticsReady?.Invoke(prepared.Statistics);}
         var bands=prepared.Ranges;
         IReadOnlyList<SamplePoint> Read(string metric)=>prepared.Series[metric];
-        string primaryMetric=session.MetricId(kind);var points=Read(primaryMetric);
+        string primaryMetric=query.Primary;var points=Read(primaryMetric);
         bool compare=CompareDevices&&kind is "cpu" or "cputemp";
-        string? secondaryMetric=kind=="network"?"network/upload":compare?session.MetricId(kind=="cpu"?"gpu":"gputemp"):null;
+        bool bytes=kind is "network" or "storage";
+        string? secondaryMetric=query.Secondary;
         var secondary=secondaryMetric is null?[]:Read(secondaryMetric);
         bool showFan=ShowsFan(compare),showPump=ShowsPump(compare),showRpm=showFan||showPump;
         var fan=showFan?Read(session.MetricId("gpufan")):[];
         var pump=showPump?Read(session.MetricId("cpupump")):[];
         // Smoothed network axes follow the average trace; raw peaks remain in the band and statistics.
-        double Peak(string metric,IReadOnlyList<SamplePoint> fallback)=>bands.TryGetValue(metric,out var range)?range.Max(p=>kind=="network"&&averaged?p.Average:p.Maximum)??0:fallback.Max(p=>p.Value)??0;
+        double Peak(string metric,IReadOnlyList<SamplePoint> fallback)=>bands.TryGetValue(metric,out var range)?range.Max(p=>bytes&&averaged?p.Average:p.Maximum)??0:fallback.Max(p=>p.Value)??0;
         double peak=Math.Max(Peak(primaryMetric,points),secondaryMetric is null?0:Peak(secondaryMetric,secondary));
-        double maximum=kind is "cpu" or "gpu" or "memory"?100:kind=="network"?Math.Max(1000,peak*1.15):Math.Max(100,peak*1.1);
+        double maximum=kind is "cpu" or "gpu" or "memory"?100:bytes?Math.Max(1000,peak*1.15):Math.Max(100,peak*1.1);
         if(compare&&kind=="cputemp")maximum=Math.Ceiling(maximum/20)*20;
-        string Axis(double value)=>kind=="network"?Ui.Bytes(value,true):$"{value:0}{(kind.Contains("temp")?(compare?"°C":"°"):"%")}";
+        string Axis(double value)=>bytes?Ui.Bytes(value,true):$"{value:0}{(kind.Contains("temp")?(compare?"°C":"°"):"%")}";
         // GPU fan and CPU pump share the left RPM scale when both are shown.
         double fanMaximum=Math.Max(1000,Math.Ceiling(Math.Max(showFan?Peak(session.MetricId("gpufan"),fan):0,showPump?Peak(session.MetricId("cpupump"),pump):0)/1000)*1000);
         string FanAxis(double value)=>$"{value:0} RPM";
@@ -271,12 +283,15 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
         if(!hit)
         {
             double built=session.Collector.ElapsedSeconds;
-            var specs=new List<TraceSpec> {new(primaryMetric,Theme.GraphKey(kind),false,false,maximum,(kind=="network"||compare)?.65:1)};
+            var specs=new List<TraceSpec> {new(primaryMetric,Theme.GraphKey(kind),false,false,maximum,(bytes||compare)?.65:1)};
             if(kind=="network")specs.Add(new("network/upload",Theme.GraphKey("upload"),true,false,maximum,.42));
+            else if(kind=="storage")specs.Add(new(secondaryMetric!,Theme.GraphKey("diskwrite"),true,false,maximum,.42));
             else if(compare)specs.Add(new(secondaryMetric!,Theme.GraphKey(kind=="cpu"?"gpu":"gputemp"),true,false,maximum,.45));
             if(showFan)specs.Add(new(session.MetricId("gpufan"),Theme.GraphKey("gpufan"),false,true,fanMaximum,0));
             if(showPump)specs.Add(new(session.MetricId("cpupump"),Theme.GraphKey("cpupump"),false,true,fanMaximum,0));
             for(int i=0;i<query.Cores;i++)specs.Add(new(CpuCoreUsage.Key(i),Theme.GraphKey("cpu"),false,false,maximum,0){Core=true,Brush=Theme.CoreBrush(i,query.Cores)});
+            var driveIds=DriveIds(query);
+            for(int i=0;i<driveIds.Length;i++)specs.Add(new(StorageMetrics.Key(driveIds[i],"read"),Theme.GraphKey("diskread"),false,false,maximum,0){Core=true,Brush=Theme.CoreBrush(i,driveIds.Length),DriveId=driveIds[i]});
             bool spline=!(query.Seconds>=3600&&!query.Smoothed);
             var paths=new Dictionary<string,TracePath>();
             foreach(var spec in specs)paths[spec.Metric]=BuildTrace(Read(spec.Metric),built,spec.Maximum,plot,query.Seconds>=3600,spline,glowCopy:!spec.Core);
@@ -319,10 +334,10 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
         if(!compact)hoverLines.Add((TimeZoneInfo.ConvertTime(frame.WallNow.AddSeconds(sample.MonotonicSeconds-now),TimeZoneInfo.Local).ToString("HH:mm:ss",CultureInfo.CurrentCulture),Theme.Brush("Muted")));
         double tolerance=HoverTolerance(frame.Query);
         var cores=new List<(int Core,double Value)>();var coreBrushes=new Dictionary<int,Brush>();
-        int firstCore=Array.FindIndex(frame.Specs,s=>s.Core);
+        int firstCore=Array.FindIndex(frame.Specs,s=>s.Core&&s.DriveId is null);
         for(int position=0;position<frame.Specs.Length;position++)
         {
-            var spec=frame.Specs[position];var path=frame.Paths[spec.Metric];
+            var spec=frame.Specs[position];if(spec.DriveId is not null)continue;var path=frame.Paths[spec.Metric];
             int index=spec.Metric==primaryMetric?HoverIndex:NearestSample.Find(path.Points,sample.MonotonicSeconds,tolerance);
             if(index<0||path.Points[index].Value is not { } value)continue;
             // Cores join the chip after the loop, by value, with no dot of their own.
@@ -334,6 +349,22 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
             hoverLines.Add((spec.Dotted?fanAxis(value):axis(value),brush));
         }
         foreach(var (text,core) in HoverCoreLines(cores))hoverLines.Add((text,core>=0?coreBrushes[core]:Theme.Brush("Muted")));
+        // Drives follow the totals, busiest first; a drive with neither rate at this sample is left out.
+        var models=(session.Current?.Storage.Drives??[]).GroupBy(d=>d.Id).ToDictionary(g=>g.Key,g=>g.First().Model);
+        double? At(string metric)
+        {
+            if(!frame.Data.Series.TryGetValue(metric,out var points))return null;
+            int index=NearestSample.Find(points,sample.MonotonicSeconds,tolerance);
+            return index<0?null:points[index].Value;
+        }
+        var drives=new List<(string Text,double Rate,Brush Brush)>();
+        foreach(var spec in frame.Specs.Where(s=>s.DriveId is not null))
+        {
+            double? read=At(StorageMetrics.Key(spec.DriveId!,"read")),write=At(StorageMetrics.Key(spec.DriveId!,"write"));
+            if(read is null&&write is null)continue;
+            drives.Add(($"{models.GetValueOrDefault(spec.DriveId!,spec.DriveId!)} \u00b7 {Ui.Bytes(read,true)} \u2193 {Ui.Bytes(write,true)} \u2191",(read??0)+(write??0),spec.Brush!));
+        }
+        foreach(var drive in drives.OrderByDescending(d=>d.Rate))hoverLines.Add((drive.Text,drive.Brush));
     }
     /// <summary>The hover chip's core section: the eight busiest cores, then a count of the rest.</summary>
     internal static IReadOnlyList<(string Text,int Core)> HoverCoreLines(IReadOnlyList<(int Core,double Value)> cores)
@@ -432,10 +463,11 @@ internal sealed class ChartCard : Border
     private readonly bool overview;
     private readonly Border? tint;
     private readonly TextBlock[] overviewStats=[];
+    private readonly string? driveId;
     public ChartCard(UiSession session,string kind,bool popButton=true):this(session,kind,popButton,false) {}
-    public ChartCard(UiSession session,string kind,bool popButton,bool overview)
+    public ChartCard(UiSession session,string kind,bool popButton,bool overview,string? driveId=null)
     {
-        this.session=session;this.kind=kind;this.overview=overview;SetResourceReference(StyleProperty,"Card");if(!overview)CornerRadius=new(10);Padding=overview?new(16,13,16,11):new(16,12,16,10);Margin=new(6);
+        this.session=session;this.driveId=kind=="storage"?driveId:null;this.kind=kind;this.overview=overview;SetResourceReference(StyleProperty,"Card");if(!overview)CornerRadius=new(10);Padding=overview?new(16,13,16,11):new(16,12,16,10);Margin=new(6);
         value.SetResourceReference(TextBlock.ForegroundProperty,Theme.GraphKey(kind));
         if(kind=="network")
         {
@@ -443,7 +475,7 @@ internal sealed class ChartCard : Border
             downloadValue.SetResourceReference(TextElement.ForegroundProperty,Theme.GraphKey("download"));uploadValue.SetResourceReference(TextElement.ForegroundProperty,Theme.GraphKey("upload"));
         }
         // A forced MinHeight larger than the grid's remaining row caused WPF to clip axis labels.
-        chart=new(session,kind){ClipToBounds=true};
+        chart=new(session,kind){ClipToBounds=true,DriveId=this.driveId};
         chart.StatisticsReady+=UpdateStatistics;
         var grid=new Grid();grid.RowDefinitions.Add(new(){Height=GridLength.Auto});grid.RowDefinitions.Add(new(){Height=GridLength.Auto});grid.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});grid.RowDefinitions.Add(new(){Height=GridLength.Auto});
         var header=new DockPanel {LastChildFill=true};var title=overview?Ui.Text(Ui.Title(kind),13):Ui.Heading(Ui.Title(kind),14);title.FontWeight=FontWeights.SemiBold;header.Children.Add(title);
@@ -510,8 +542,14 @@ internal sealed class ChartCard : Border
     private void Refresh()
     {
         if(!IsVisible)return;
+        UpdateReadings();
+        chart.Refresh();
+    }
+    /// <summary>The card's header text; split from <see cref="Refresh"/> so hidden fixture cards can be checked.</summary>
+    private void UpdateReadings()
+    {
         if(tint is not null)tint.Visibility=Theme.GlassEnabled?Visibility.Visible:Visibility.Collapsed;
-        string id=session.MetricId(kind);double? current=session.Stale?null:session.Value(id);var data=session.Current;
+        string id=driveId is not null?StorageMetrics.Key(driveId,"read"):session.MetricId(kind);double? current=session.Stale?null:session.Value(id);var data=session.Current;
         bool showFan=kind=="gputemp"&&session.Settings.ShowGpuFanSpeed;
         fan.Visibility=showFan?Visibility.Visible:Visibility.Collapsed;
         if(showFan)fan.Text=Ui.GpuFanText(session)+$" · {GraphStroke.Pattern(session.Settings,"gpufan",dotted:true)} · left RPM";
@@ -524,6 +562,16 @@ internal sealed class ChartCard : Border
             downloadValue.Text=(overview?"":"↓ ")+Ui.Bytes(current,true)+(overview?"":"    ");uploadValue.Text=(overview?"":"↑ ")+Ui.Bytes(session.Stale?null:session.Value("network/upload"),true);
             string Pattern(string metric,bool dashed)=>CultureInfo.CurrentCulture.TextInfo.ToTitleCase(GraphStroke.Pattern(session.Settings,metric,dashed));
             subtitle.Text=$"{Pattern("download",false)}: download    ·    {Pattern("upload",true)}: upload    ·    Shared scale";
+        }
+        else if(kind=="storage")
+        {
+            value.Text=Ui.Bytes(current,true);
+            var drives=data?.Storage.Drives??[];
+            double Rate(StorageDrive d)=>(session.Value(StorageMetrics.Key(d.Id,"read"))??0)+(session.Value(StorageMetrics.Key(d.Id,"write"))??0);
+            var only=driveId is null?null:drives.FirstOrDefault(d=>d.Id==driveId);
+            if(driveId is not null)subtitle.Text=only is null?"Drive not detected":$"{only.Model} · ↑ {Ui.Bytes(session.Stale?null:session.Value(StorageMetrics.Key(driveId,"write")),true)} write";
+            else subtitle.Text=data is null?"Discovering drives…":drives.Count==0?"No drives detected"
+                :$"{drives.OrderByDescending(Rate).First().Model} \u00b7 {drives.Count} drive{(drives.Count==1?"":"s")}";
         }
         else if(kind=="memory")
         {
@@ -538,11 +586,10 @@ internal sealed class ChartCard : Border
             if(current is null&&data is not null)subtitle.Text+=" · "+(session.Stale?"stale":"sensor unavailable");
         }
         if(overview)subtitle.ToolTip=subtitle.Text;
-        chart.Refresh();
     }
     private void UpdateStatistics(Summary summary)
     {
-        Func<double?,string> format=kind=="network"?v=>Ui.Bytes(v,true):v=>Ui.Number(v,kind.Contains("temp")?"°C":"%");
+        Func<double?,string> format=kind is "network" or "storage"?v=>Ui.Bytes(v,true):v=>Ui.Number(v,kind.Contains("temp")?"°C":"%");
         stats.Text=$"MIN  {format(summary.Minimum)}      AVG  {format(summary.Average)}      MAX  {format(summary.Maximum)}"+(kind=="network"?"    · Download":"");
         if(overview)
         {

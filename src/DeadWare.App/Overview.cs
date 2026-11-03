@@ -9,25 +9,26 @@ namespace DeadWare.App;
 /// <summary>The dashboard layout is shared by the live window and visual preview.</summary>
 internal sealed class OverviewPage : ScrollViewer
 {
+    internal const double MinimumGridHeight=4*270;
     public OverviewPage(UiSession session,TextBlock memory)
     {
         VerticalScrollBarVisibility=ScrollBarVisibility.Auto;
         HorizontalScrollBarVisibility=ScrollBarVisibility.Disabled;
         var stack=new StackPanel();
-        var cards=new UniformGrid {Columns=2,Rows=3,Height=810};
-        foreach(string kind in new[]{"cpu","gpu","cputemp","gputemp","memory","network"})
+        var cards=new UniformGrid {Columns=2,Rows=4,Height=MinimumGridHeight};
+        foreach(string kind in new[]{"cpu","gpu","cputemp","gputemp","memory","network","storage"})
             cards.Children.Add(new ChartCard(session,kind,true,true));
         stack.Children.Add(cards);
         memory.Margin=new(9,10,9,4);stack.Children.Add(memory);
         var note=Ui.Text("— indicates an unavailable reading.",11,"Muted");
         note.Margin=new(9,3,9,12);stack.Children.Add(note);Content=stack;
         // Charts take the star row of each card, so growing the grid into spare viewport height enlarges
-        // the plots; 810 stays the floor so short windows scroll instead of crushing axis labels.
+        // the plots; the floor (270 px per card row, the old 3-row 810 px) makes short windows scroll instead of crushing the plots.
         ScrollChanged+=(_,e)=>
         {
             if(e.ViewportHeightChange==0&&e.ExtentHeightChange==0)return;
             double footer=memory.ActualHeight+memory.Margin.Top+memory.Margin.Bottom+note.ActualHeight+note.Margin.Top+note.Margin.Bottom;
-            double height=Math.Max(810,Math.Floor(ViewportHeight-footer));
+            double height=Math.Max(MinimumGridHeight,Math.Floor(ViewportHeight-footer));
             if(Math.Abs(cards.Height-height)>=1)cards.Height=height;
         };
     }
@@ -67,6 +68,7 @@ internal static class OverviewVisual
             "cpu" or "gpu"=>"M 5,5 L 15,5 15,15 5,15 Z M 8,8 L 12,8 12,12 8,12 Z M 7,2 L 7,5 M 13,2 L 13,5 M 7,15 L 7,18 M 13,15 L 13,18 M 2,7 L 5,7 M 2,13 L 5,13 M 15,7 L 18,7 M 15,13 L 18,13",
             "cputemp" or "gputemp"=>"M 8,11 L 8,4 C 8,1 12,1 12,4 L 12,11 C 17,15 11,21 7,17 C 5,15 6,12 8,11 M 10,7 L 10,14 M 15,5 L 18,5 M 15,9 L 17,9",
             "memory"=>"M 2,5 L 18,5 18,15 2,15 Z M 5,8 L 8,8 8,12 5,12 Z M 12,8 L 15,8 15,12 12,12 Z M 5,15 L 5,18 M 10,15 L 10,18 M 15,15 L 15,18",
+            "storage"=>"M 2,4 L 18,4 18,16 2,16 Z M 2,12 L 18,12 M 14,14 L 15,14 M 5,14 L 9,14",
             _=>"M 6,2 L 6,16 M 2,12 L 6,16 10,12 M 14,18 L 14,4 M 10,8 L 14,4 18,8"
         };
         return Glyph(geometry,18,Theme.GraphKey(kind));
@@ -79,6 +81,7 @@ internal static class OverviewVisual
         {
             "overview"=>"M 2,2 L 9,2 9,9 2,9 Z M 11,2 L 18,2 18,9 11,9 Z M 2,11 L 9,11 9,18 2,18 Z M 11,11 L 18,11 18,18 11,18 Z",
             "network"=>"M 2,6 L 15,6 M 12,3 L 15,6 12,9 M 18,14 L 5,14 M 8,11 L 5,14 8,17",
+            "storage"=>"M 3,4 L 17,4 17,16 3,16 Z M 3,11 L 17,11 M 13.5,13.5 L 14.5,13.5 M 5,13.5 L 10,13.5",
             "connections"=>"M 10,2 A 8,8 0 1,0 10,18 A 8,8 0 1,0 10,2 M 2,10 L 18,10 M 10,2 C 6,6 6,14 10,18 M 10,2 C 14,6 14,14 10,18",
             "battery"=>"M 2,6 L 16,6 16,14 2,14 Z M 16,8 L 18,8 18,12 16,12 M 4,8 L 11,8 11,12 4,12 Z",
             "usage"=>"M 3,17 L 3,10 M 8,17 L 8,5 M 13,17 L 13,8 M 18,17 L 18,3",

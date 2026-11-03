@@ -57,7 +57,7 @@ public sealed class MainWindow : Window
         var quitButton=Ui.Button("Quit DeadWare",quit);quitButton.FontSize=11;sideBottom.Children.Add(quitButton);trayNotice.Margin=new Thickness(3,5,3,8);sideBottom.Children.Add(trayNotice);
         sideBottom.Children.Add(monitoringInfo);
         var nav=new StackPanel();sidebar.Children.Add(new ScrollViewer{Content=nav,VerticalScrollBarVisibility=ScrollBarVisibility.Auto,HorizontalScrollBarVisibility=ScrollBarVisibility.Disabled});
-        foreach(var (key,label) in new[]{("overview","Overview"),("network","Network"),("connections","Connections"),("battery","Battery history"),("usage","Usage history"),("alerts","Alerts"),("sensors","Sensors"),("cooling","Cooling Health"),("desktop","Settings"),("updates","Updates")})
+        foreach(var (key,label) in new[]{("overview","Overview"),("network","Network"),("storage","Storage"),("connections","Connections"),("battery","Battery history"),("usage","Usage history"),("alerts","Alerts"),("sensors","Sensors"),("cooling","Cooling Health"),("desktop","Settings"),("updates","Updates")})
         {var button=Ui.NavButton(key,label,()=>Navigate(key));navigation[key]=button;nav.Children.Add(button);if(key=="battery")batteryNavigation=button;}
         var main=new DockPanel {Margin=new Thickness(8,12,18,16)};Grid.SetColumn(main,1);shell.Children.Add(main);
         var footer=new StackPanel {Margin=new Thickness(4,10,4,0)};footer.Children.Add(status);DockPanel.SetDock(footer,Dock.Bottom);main.Children.Add(footer);
@@ -71,7 +71,7 @@ public sealed class MainWindow : Window
         updateNotice=new(ShowUpdates);header.Children.Add(updateNotice);
         gpu.SelectionChanged+=(_,_)=>{if(!syncingGpu)session.SetGpu((gpu.SelectedItem as Device)?.Id);};
         main.Children.Add(content);
-        pages["overview"]=Overview();pages["network"]=Network();pages["connections"]=new ConnectionsPage(session);pages["cooling"]=new CoolingHealthPage(session);pages["battery"]=new BatteryHistoryPage(session);pages["usage"]=new UsageHistoryPage(session);pages["alerts"]=new AlertsPage(session);pages["sensors"]=Sensors();pages["desktop"]=Desktop();pages["updates"]=new UpdatesPage(session);Navigate("overview");
+        pages["overview"]=Overview();pages["network"]=Network();pages["storage"]=new StoragePage(session);pages["connections"]=new ConnectionsPage(session);pages["cooling"]=new CoolingHealthPage(session);pages["battery"]=new BatteryHistoryPage(session);pages["usage"]=new UsageHistoryPage(session);pages["alerts"]=new AlertsPage(session);pages["sensors"]=Sensors();pages["desktop"]=Desktop();pages["updates"]=new UpdatesPage(session);Navigate("overview");
         session.Changed+=Refresh;session.Updates.Changed+=RefreshUpdateNotice;session.UsageDayRequested+=ShowUsageDay;
         Closed+=(_,_)=>{session.Changed-=Refresh;session.Updates.Changed-=RefreshUpdateNotice;session.UsageDayRequested-=ShowUsageDay;};Closing+=OnClosing;
         RefreshUpdateNotice();
@@ -130,7 +130,7 @@ public sealed class MainWindow : Window
         var widgetLabel=Ui.Text("Widget graphs",14);widgetLabel.Margin=new(0,0,0,8);widgetGroup.Children.Add(widgetLabel);
         var widgetOptions=new WrapPanel {Margin=new Thickness(0,0,0,6)};
         var selectedGraphs=WidgetGraphSelection.Normalize(session.Settings.WidgetGraphs);
-        foreach(var item in new[]{("cpu","CPU / GPU usage"),("cputemp","CPU / GPU temperature"),("memory","RAM usage"),("network","Network activity")})
+        foreach(var item in new[]{("cpu","CPU / GPU usage"),("cputemp","CPU / GPU temperature"),("memory","RAM usage"),("network","Network activity"),("disk","Disk activity")})
         {
             var key=item.Item1;
             var choice=new CheckBox {Content=item.Item2,Tag=key,IsChecked=selectedGraphs.Contains(key),Margin=new Thickness(0,0,20,8)};
@@ -190,6 +190,9 @@ public sealed class MainWindow : Window
         var extended=new CheckBox {Content="Extended sensors (may affect responsiveness)",IsChecked=session.Settings.ExtendedSensors,Margin=new Thickness(0,22,0,8)};
         extended.Checked+=(_,_)=>session.SetExtendedSensors(true);extended.Unchecked+=(_,_)=>session.SetExtendedSensors(false);monitoring.Children.Add(extended);
         monitoring.Children.Add(Ui.Text("Includes motherboard, controller, storage and memory sensors. Off by default. Restart DeadWare after changing this setting.",12,"Muted"));
+        var storageSensors=new CheckBox {Content="Storage sensors (temperature and health; restart to apply)",IsChecked=session.Settings.StorageSensors,Margin=new Thickness(0,14,0,8)};
+        storageSensors.Checked+=(_,_)=>session.SetStorageSensors(true);storageSensors.Unchecked+=(_,_)=>session.SetStorageSensors(false);monitoring.Children.Add(storageSensors);
+        monitoring.Children.Add(Ui.Text("Reads drive temperature, SMART health and wear from LibreHardwareMonitor every 30 seconds. Throughput and free space do not depend on this. Changing it takes effect after restarting DeadWare.",12,"Muted"));
         cpuCoreUsage.IsChecked=session.Settings.ShowCpuCoreUsage;
         System.Windows.Automation.AutomationProperties.SetName(cpuCoreUsage,"Show per-core CPU usage on usage graphs");
         cpuCoreUsage.Checked+=(_,_)=>{if(!syncingWidgetGraphs)session.SetCpuCoreUsage(true);};
@@ -240,7 +243,7 @@ public sealed class MainWindow : Window
         gpuControls.Visibility=destination=="overview"?Visibility.Visible:Visibility.Collapsed;
         liveToolbar.Visibility=destination is "cooling" or "battery" or "usage" or "alerts" or "updates" or "connections"?Visibility.Collapsed:Visibility.Visible;
         foreach(var (key,button) in navigation)button.Tag=key==destination?"active":null;
-        page=destination;content.Content=pages[destination];heading.Text=destination switch {"network"=>"Network","connections"=>"Connections","cooling"=>"Cooling Health","battery"=>"Battery history","usage"=>"Usage history","alerts"=>"Alerts","updates"=>"Keep DeadWare current","sensors"=>"Hardware sensors","desktop"=>"Settings",_=>"System overview"};
+        page=destination;content.Content=pages[destination];heading.Text=destination switch {"network"=>"Network","storage"=>"Storage","connections"=>"Connections","cooling"=>"Cooling Health","battery"=>"Battery history","usage"=>"Usage history","alerts"=>"Alerts","updates"=>"Keep DeadWare current","sensors"=>"Hardware sensors","desktop"=>"Settings",_=>"System overview"};
         RefreshUpdateNotice();Refresh();
         if(destination=="desktop")_ = RefreshStartupAsync();
     }
@@ -353,6 +356,12 @@ internal sealed class GraphWindow : Window
     {
         Title=$"DeadWare · {Ui.Title(kind)}";MinWidth=300;MinHeight=180;Ui.Icon(this);session.Place(this,kind,420,230);
         Content=new CompactGraph(session,kind,this) {Margin=new Thickness(6)};
+    }
+    /// <summary>One drive's read / write pop-out. Not placed or restored with the saved windows.</summary>
+    public GraphWindow(UiSession session,StorageDrive drive)
+    {
+        Title=$"Disk · {drive.Model}";MinWidth=300;MinHeight=180;Width=420;Height=230;Ui.Icon(this);
+        Content=new CompactGraph(session,"storage",drive.Id,this) {Margin=new Thickness(6)};
     }
 }
 internal sealed class WidgetWindow : Window

@@ -123,9 +123,18 @@ internal static class Program
             ["cpu/core/4/usage"]=Wave(36,20,29),["cpu/core/5/usage"]=Wave(24,9,17),["cpu/core/6/usage"]=Wave(33,2,31),["cpu/core/7/usage"]=Wave(42,16,7),
             ["preview-gpu/usage"]=Wave(68,17,21),["preview-gpu/temperature"]=Wave(64,6,27),["preview-gpu/fan"]=Wave(1380,180,19),
             ["memory/usage"]=Wave(47,3,39),["memory/used"]=15.04e9,["memory/total"]=32e9,
-            ["network/download"]=Wave(12.4e6,7e6,11),["network/upload"]=Wave(1.8e6,1e6,15)
+            ["network/download"]=Wave(12.4e6,7e6,11),["network/upload"]=Wave(1.8e6,1e6,15),
+            ["storage/PREVIEW-NVME-0001/read"]=Wave(42e6,30e6,13),["storage/PREVIEW-NVME-0001/write"]=Wave(9e6,6e6,17),["storage/PREVIEW-NVME-0001/active"]=Wave(18,12,13),
+            ["storage/PREVIEW-SATA-0002/read"]=Wave(6e6,4e6,19),["storage/PREVIEW-SATA-0002/write"]=Wave(2.5e6,2e6,23),["storage/PREVIEW-SATA-0002/active"]=Wave(6,4,19),
+            ["storage/total/read"]=Wave(42e6,30e6,13)+Wave(6e6,4e6,19),["storage/total/write"]=Wave(9e6,6e6,17)+Wave(2.5e6,2e6,23)
         });
     }
+
+    // Two synthetic persisted drives so the Disk card subtitle, per-drive lines and hover have data.
+    private static readonly StorageReading SampleStorage=new(
+        [new("PREVIEW-NVME-0001","PREVIEW-NVME-0001","Sample NVMe SSD",0,"NVMe",2_000_000_000_000,false,[new("C","System",2_000_000_000_000,820_000_000_000)]),
+         new("PREVIEW-SATA-0002","PREVIEW-SATA-0002","Sample SATA SSD",1,"SATA",1_000_000_000_000,false,[new("D","Data",1_000_000_000_000,410_000_000_000)])],
+        [new("PREVIEW-NVME-0001","OK",44,96,59,4120,70,null),new("PREVIEW-SATA-0002","OK",36,88,59,10230,70,null)],"");
 
     private static void UpdateSample()
     {
@@ -145,7 +154,7 @@ internal static class Program
         };
         ProcessTraffic[] processes=[new(4280,1,"Sample browser",8.4e6,1.2e6,2_400_000_000L,84_000_000L),new(9312,1,"Sample sync",2.8e6,540e3,850_000_000L,120_000_000L),new(6408,1,"Sample music",1.2e6,60e3,180_000_000L,6_000_000L)];
         Set(collector,"latest",state=="Discovering hardware"?null:new Reading(sample,[new("preview-gpu","Radeon RX 6800 XT · Preview GPU")],sensors,processes,"Ryzen 7 5800X · Preview CPU","SYNTHETIC SAMPLE DATA · no hardware monitoring","Sample interface totals · no live network accounting","Sample process traffic · ETW is not running",false)
-            {Battery=new(73,BatteryPowerState.Charging,false),CpuCoreCount=8});
+            {Battery=new(73,BatteryPowerState.Charging,false),CpuCoreCount=8,Storage=SampleStorage});
     }
 
     private static TextBlock Text(string value,double size=13,string color="Ink")=>(TextBlock)Call("Ui","Text",value,size,color,"BodyFont")!;
@@ -186,7 +195,7 @@ internal static class Program
             root.Measure(new Size(width,1040));root.Arrange(new Rect(0,0,width,1040));root.UpdateLayout();Pump();
             if(!ReferenceEquals(root.Background,Application.Current.Resources["WindowSurface"]))throw new InvalidOperationException("Glass window surface did not update with the theme.");
             var charts=Descendants(root).OfType<FrameworkElement>().Where(e=>e.GetType().Name=="HistoryChart").ToArray();
-            if(charts.Length!=6)throw new InvalidOperationException("Expected all six Overview charts.");
+            if(charts.Length!=7)throw new InvalidOperationException("Expected all seven Overview charts.");
             foreach(var chart in charts)
             {
                 if(chart.ActualWidth<160||chart.ActualHeight<65)throw new InvalidOperationException($"Chart area too small: {chart.RenderSize}");

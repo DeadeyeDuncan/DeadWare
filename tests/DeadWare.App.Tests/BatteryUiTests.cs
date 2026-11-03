@@ -66,6 +66,12 @@ public class BatteryUiTests
                 ConnectionsWidgetUiChecks.Run(app);
                 NetworkChartUiChecks.Run();
                 LiveRenderingUiChecks.Run();
+                Phase("storage chart");
+                StorageChartUiChecks.Run();
+                Phase("widget disk graph");
+                WidgetDiskUiChecks.Run();
+                Phase("storage page");
+                StoragePageUiChecks.Run();
                 Phase("chart frame");
                 ChartFrameUiChecks.Run();
                 Phase("thermal chart");
@@ -240,7 +246,7 @@ public class BatteryUiTests
                 var pages = (Dictionary<string, FrameworkElement>)typeof(MainWindow).GetField("pages", All)!.GetValue(dashboard)!;
                 pages["overview"].Measure(new Size(900, 900)); pages["overview"].Arrange(new Rect(0, 0, 900, 900)); pages["overview"].UpdateLayout();
                 var overviewCards = Descendants(pages["overview"]).OfType<FrameworkElement>().Where(element => element.GetType().Name == "ChartCard").ToArray();
-                Assert.Equal(6, overviewCards.Length);
+                Assert.Equal(7, overviewCards.Length);
                 Assert.Single(overviewCards, card => (string)card.GetType().GetField("kind", All)!.GetValue(card)! == "memory");
                 var settingsRoot = ((ScrollViewer)pages["desktop"]).Content;
                 var settings = Assert.IsType<StackPanel>(settingsRoot is Border surfaceCard ? surfaceCard.Child : settingsRoot);
@@ -1187,7 +1193,7 @@ public class BatteryUiTests
             {
                 viewport.SetResourceReference(Border.BackgroundProperty, "Background");
                 viewport.Measure(size); viewport.Arrange(new Rect(new Point(), size)); viewport.UpdateLayout();
-                var charts = Descendants(content).OfType<FrameworkElement>().Where(element => element.GetType().Name == "HistoryChart").ToArray();
+                var charts = Descendants(content).OfType<FrameworkElement>().Where(element => element.GetType().Name == "HistoryChart" && (string)element.GetType().GetField("kind", All)!.GetValue(element)! != "storage").ToArray();
                 Assert.Equal(4, charts.Length);
                 Assert.Equal(new[] { "cpu", "cputemp", "memory", "network" }, charts.Select(chart => (string)chart.GetType().GetField("kind", All)!.GetValue(chart)!));
                 foreach (var chart in charts)
@@ -1248,7 +1254,7 @@ public class BatteryUiTests
         double thermalTop = thermalGrid[0].StartPoint.Y, thermalHeight = thermalGrid[^1].StartPoint.Y - thermalTop;
         Assert.Equal(thermalTop + thermalHeight * (1 - 125.0 / 140), Drawings(thermalDrawing).First(item => item.Geometry is StreamGeometry).Geometry.Bounds.Top, 3);
         session.Settings.HistorySeconds = 3600; Changed(); content.UpdateLayout();
-        Assert.All(Descendants(content).OfType<FrameworkElement>().Where(element => element.GetType().Name == "HistoryChart"), chart =>
+        Assert.All(Descendants(content).OfType<FrameworkElement>().Where(element => element.GetType().Name == "HistoryChart" && (string)element.GetType().GetField("kind", All)!.GetValue(element)! != "storage"), chart =>
             Assert.All(Drawings(VisualTreeHelper.GetDrawing(chart)!).Where(item => item.Geometry is StreamGeometry&&item.Pen is not null), item => Assert.Equal((string)chart.GetType().GetField("kind", All)!.GetValue(chart)! is "cpu" or "cputemp" ? 1 : 2, item.Pen.Thickness)));
         session.Settings.HistorySeconds = 60;
         Set(collector, "latest", reading with { Sample = reading.Sample with { MonotonicSeconds = -10 } }); Changed();
@@ -1342,7 +1348,7 @@ public class BatteryUiTests
                     viewport.Child = null; owner.Content = null;
                 }
                 widgetViewport.Measure(new Size(284, 481)); widgetViewport.Arrange(new Rect(0, 0, 284, 481)); widgetViewport.UpdateLayout();
-                foreach (var graph in Descendants(widget).OfType<FrameworkElement>().Where(element => element.GetType().Name == "WidgetGraph"))
+                foreach (var graph in Descendants(widget).OfType<FrameworkElement>().Where(element => element.GetType().Name == "WidgetGraph" && element.Visibility == Visibility.Visible))
                 {
                     graph.GetType().GetMethod("Refresh", All)!.Invoke(graph, null); graph.UpdateLayout();
                     foreach (string field in new[] { "primary", "secondary" })
@@ -1543,6 +1549,7 @@ public class BatteryUiTests
                 {
                     graph.GetType().GetMethod("Refresh", All)!.Invoke(graph, null); graph.UpdateLayout();
                     string kind = (string)graph.GetType().GetField("kind", All)!.GetValue(graph)!;
+                    if (kind == "disk") continue;
                     string[] kinds = kind switch { "cpu" => ["cpu", "gpu"], "cputemp" => ["cputemp", "gputemp"], "network" => ["download", "upload"], _ => ["memory"] };
                     Assert.Equal(kinds.Select(Expected), Traces(Field(graph, "chart")).Select(trace => BrushColor(trace.Pen.Brush)));
                     Assert.Equal(kinds.Select(Expected), Descendants(graph).OfType<System.Windows.Shapes.Line>().Where(line => line.Parent is not UIElement { Visibility: Visibility.Collapsed }).Select(line => BrushColor(line.Stroke)));
@@ -1584,6 +1591,7 @@ public class BatteryUiTests
             foreach(var graph in Descendants(widget).OfType<FrameworkElement>().Where(element=>element.GetType().Name=="WidgetGraph"))
             {
                 string kind=(string)graph.GetType().GetField("kind",All)!.GetValue(graph)!;
+                if(kind=="disk")continue;
                 string[] kinds=kind switch {"cpu"=>["cpu","gpu"],"cputemp"=>["cputemp","gputemp"],"network"=>["download","upload"],_=>["memory"]};
                 CheckStyles(graph,kinds);
                 Assert.Equal(kinds.Select(metric=>2*session.Settings.GraphStyles[metric].Thickness),Descendants(graph).OfType<System.Windows.Shapes.Line>().Where(line=>line.Parent is not UIElement {Visibility:Visibility.Collapsed}).Select(line=>line.StrokeThickness));
@@ -1608,6 +1616,7 @@ public class BatteryUiTests
         foreach (var graph in Descendants(widget).OfType<FrameworkElement>().Where(element => element.GetType().Name == "WidgetGraph"))
         {
             string kind = (string)graph.GetType().GetField("kind", All)!.GetValue(graph)!;
+            if (kind == "disk") continue;
             string[] defaults = kind == "network" ? ["Download", "Cpu"] : kind == "memory" ? ["Accent"] : ["Cpu", "Gpu"];
             Assert.Equal(defaults.Select(key => BrushColor((Brush)Application.Current.Resources[key])), Traces(Field(graph, "chart")).Select(trace => BrushColor(trace.Pen.Brush)));
         }

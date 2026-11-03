@@ -20,10 +20,11 @@ internal sealed class WidgetGraph : Border
         this.session=session;this.kind=kind;
         SetResourceReference(StyleProperty,"Card");CornerRadius=new(10);Padding=new(10,6,10,5);Margin=new(0,5,0,0);
         bool network=kind=="network",memory=kind=="memory";
-        chart=new(session,kind,true){CompareDevices=kind is "cpu" or "cputemp",PumpWithDevices=true,CoresWithDevices=true,ClipToBounds=true};
+        chart=new(session,kind=="disk"?"storage":kind,true){CompareDevices=kind is "cpu" or "cputemp",PumpWithDevices=true,CoresWithDevices=true,ClipToBounds=true};
         var grid=new Grid();grid.RowDefinitions.Add(new(){Height=GridLength.Auto});grid.RowDefinitions.Add(new(){Height=GridLength.Auto});grid.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});
         title.TextWrapping=TextWrapping.NoWrap;title.TextTrimming=TextTrimming.CharacterEllipsis;
-        string firstColor=Theme.GraphKey(kind),secondColor=Theme.GraphKey(network?"upload":kind=="cputemp"?"gputemp":"gpu");
+        bool disk=kind=="disk";
+        string firstColor=Theme.GraphKey(disk?"diskread":kind),secondColor=Theme.GraphKey(network?"upload":disk?"diskwrite":kind=="cputemp"?"gputemp":"gpu");
         primary.SetResourceReference(TextBlock.ForegroundProperty,firstColor);secondary.SetResourceReference(TextBlock.ForegroundProperty,secondColor);
         var legend=memory?Ui.Row(Legend(primary,firstColor,false)):Ui.Row(Legend(primary,firstColor,false),Legend(secondary,secondColor,true));
         var header=new DockPanel();DockPanel.SetDock(legend,Dock.Right);header.Children.Add(legend);header.Children.Add(title);grid.Children.Add(header);
@@ -67,6 +68,12 @@ internal sealed class WidgetGraph : Border
             title.Text="Network";title.ToolTip=$"Network download ({GraphStroke.Pattern(session.Settings,"download")}) and upload ({GraphStroke.Pattern(session.Settings,"upload",true)}), in bytes per second";
             primary.Text="↓ "+Ui.Bytes(session.Stale?null:session.Value("network/download"),true);primary.ToolTip="Download rate";
             secondary.Text="↑ "+Ui.Bytes(session.Stale?null:session.Value("network/upload"),true);secondary.ToolTip="Upload rate";
+        }
+        else if(kind=="disk")
+        {
+            title.Text="Disk";title.ToolTip=$"Disk read ({GraphStroke.Pattern(session.Settings,"diskread")}) and write ({GraphStroke.Pattern(session.Settings,"diskwrite",true)}) across all drives, in bytes per second";
+            primary.Text=Ui.Bytes(Value("storage"),true)+" ↓";primary.ToolTip="Read rate";
+            secondary.Text=Ui.Bytes(session.Stale?null:session.Value("storage/total/write"),true)+" ↑";secondary.ToolTip="Write rate";
         }
         else if(kind=="memory")
         {

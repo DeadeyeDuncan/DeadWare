@@ -378,7 +378,7 @@ public sealed class UserSettings
     public bool WidgetConnectionsNorthAmerica {get;set;}
     public string? ConnectionsHomeCityId {get;set;}
     public bool ConnectionsAnimation {get;set;}=true;
-    public List<string> WidgetGraphs {get;set;}=WidgetGraphSelection.Kinds.ToList();
+    public List<string> WidgetGraphs {get;set;}=WidgetGraphSelection.Default.ToList();
     public bool WidgetAlwaysOnTop {get;set;}=true;
     public bool JoinCpuGpuPopouts {get;set;}
     public bool ShowGpuFanSpeed {get;set;}
@@ -399,6 +399,7 @@ public sealed class UserSettings
     public List<string> OpenWindows {get;set;}=new();
     public string WindowPlacementFormat {get;set;}=WindowCoordinates.Format;
     public bool ExtendedSensors {get;set;}
+    public bool StorageSensors {get;set;}=true;
     public string Theme {get;set;}="Midnight";
     public string GlassLevel {get;set;}=GlassLevels.Balanced;
     public Dictionary<string,string> GraphColors {get;set;}=new();

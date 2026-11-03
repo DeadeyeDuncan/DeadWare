@@ -392,6 +392,30 @@ public class GraphHistoryServiceTests
         Assert.Equal(stamps.Count,records.Count);
         Assert.All(records,r=>Assert.Contains(r.Values.Keys,k=>k.Contains("/c")));
     }
+    private static StorageDrive Drive(string? serial,int index,bool removable=false)=>new(StorageProjection.DriveId(serial,"USB",index),StorageProjection.Normalize(serial),"USB",index,"NVMe",1000,removable,[]);
+    private static Reading ReadingWithDrives(params StorageDrive[] drives)=>Reading(DateTimeOffset.UtcNow,1) with {Storage=new StorageReading(drives,[],"")};
+    [Fact] public void Persistable_drives_map_read_and_write(){ var m=GraphHistoryProjection.Mappings(ReadingWithDrives(Drive("S1",0),Drive("S2",1)),"m");
+        Assert.Contains("storage/S1/read",m.Values);Assert.Contains("storage/S2/write",m.Values);}
+    [Fact] public void Live_only_drives_are_not_mapped()=>Assert.DoesNotContain("storage/USB#1/read",GraphHistoryProjection.Mappings(ReadingWithDrives(Drive(null,1,removable:true)),"m").Values);
+    [Fact] public void Ninth_drive_is_dropped(){ var m=GraphHistoryProjection.Mappings(ReadingWithDrives(Enumerable.Range(0,9).Select(i=>Drive("S"+i,i)).ToArray()),"m");
+        Assert.Equal(16,m.Values.Count(v=>v.StartsWith("storage/")));}
+    [Fact] public void Plugging_a_removable_drive_keeps_fixed_drive_keys(){ var before=GraphHistoryProjection.Mappings(ReadingWithDrives(Drive("S1",0)),"m");
+        var after=GraphHistoryProjection.Mappings(ReadingWithDrives(Drive("S1",0),Drive(null,1,removable:true)),"m");
+        Assert.Equal(before.Single(kv=>kv.Value=="storage/S1/read").Key,after.Single(kv=>kv.Value=="storage/S1/read").Key);}
+    [Fact] public async Task Drive_traces_restore_after_restart()
+    {
+        using var fixture=new Fixture();var now=DateTimeOffset.UtcNow.AddSeconds(-2);
+        Reading Make(DateTimeOffset t,double mono,double v){var r=ReadingWithDrives(Drive("S1",0));var values=Reading(t,mono).Sample.Values.ToDictionary(p=>p.Key,p=>p.Value);
+            values["storage/S1/read"]=v;values["storage/S1/write"]=v+1;return r with {Sample=r.Sample with {Timestamp=t,MonotonicSeconds=mono,Values=values}};}
+        var first=new GraphHistoryService(fixture.Path,"machine",new SampleHistory());first.Start();
+        for(int i=0;i<6;i++)first.TryRecord(Make(now.AddSeconds(-20+i),i+1,100+i));
+        await first.StopAsync();
+        var history=new SampleHistory();var live=Make(now,50,7);history.Add(live.Sample);
+        var second=new GraphHistoryService(fixture.Path,"machine",history);second.Start();second.TryRecord(live);await second.StopAsync();
+        var series=history.Series("storage/S1/read",50,21600);
+        Assert.Contains(series,p=>p.Value==100);Assert.Contains(series,p=>p.Value==105);Assert.Equal(7,series[^1].Value);
+    }
+
     private static Reading WithCores(Reading reading,int count)
     {
         var values=reading.Sample.Values.ToDictionary(p=>p.Key,p=>p.Value);
