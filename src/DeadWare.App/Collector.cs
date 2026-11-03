@@ -14,6 +14,12 @@ public record Reading(Snapshot Sample,IReadOnlyList<Device> Gpus,IReadOnlyList<S
     public ConnectionSample? Connections {get;init;}
     public BatteryReading Battery {get;init;}=BatteryReading.Unavailable;
     public int CpuCoreCount {get;init;}
+    public StorageReading Storage {get;init;}=StorageReading.Empty;
+}
+
+public sealed record StorageReading(IReadOnlyList<StorageDrive> Drives,IReadOnlyList<StorageHealth> Health,string Status)
+{
+    public static StorageReading Empty {get;}=new([],[],"");
 }
 
 /// <summary>Reads the first GPU RPM fan from existing publications and keeps its source through outages.</summary>
@@ -67,7 +73,9 @@ public sealed class Collector : IAsyncDisposable
     private volatile string stage="Not started";
     public string Stage=>stage;
     public Task Completion=>worker??Task.CompletedTask;
-    public Collector(CollectorOptions? options=null) {this.options=options??new();SetPollingInterval(this.options.PollingIntervalSeconds);etw=new(this.options.DiagnosticTimings);}
+    private readonly IStorageFastSource? storage;
+    public Collector(CollectorOptions? options=null):this(options,new WindowsStorage()) {}
+    internal Collector(CollectorOptions? options,IStorageFastSource? storage) {this.storage=storage;this.options=options??new();SetPollingInterval(this.options.PollingIntervalSeconds);etw=new(this.options.DiagnosticTimings);}
     private double pollingIntervalSeconds=1;
     public double PollingIntervalSeconds=>Volatile.Read(ref pollingIntervalSeconds);
     public void SetPollingInterval(double intervalSeconds)=>Volatile.Write(ref pollingIntervalSeconds,PollingPolicy.Normalize(intervalSeconds));
@@ -164,6 +172,12 @@ public sealed class Collector : IAsyncDisposable
                     providerStarted=Stopwatch.GetTimestamp();var network=windows.Network(clock.Elapsed.TotalSeconds);
                     if(timings is not null)timings["windows/network"]=Stopwatch.GetElapsedTime(providerStarted).TotalMilliseconds;
                     values["network/download"]=network.Down;values["network/upload"]=network.Up;
+                    stage="Reading storage counters";
+                    providerStarted=Stopwatch.GetTimestamp();
+                    var drives=storage?.Drives(clock.Elapsed.TotalSeconds)??[];string? storageError=null;
+                    storage?.Read(drives,values,out storageError);
+                    if(timings is not null)timings["windows/storage"]=Stopwatch.GetElapsedTime(providerStarted).TotalMilliseconds;
+                    var storageReading=new StorageReading(drives,[],storageError??"");
                     var battery=WindowsBattery.Read();
                     foreach(var sensor in sensors) values[sensor.Id]=sensor.Value;
                     var now=clock.Elapsed.TotalSeconds;
@@ -173,6 +187,7 @@ public sealed class Collector : IAsyncDisposable
                     if(gpus.Count==0&&options.HardwareEnabled) hardwareStatus+=" · No supported GPU discovered.";
                     if(droppedCores>0) hardwareStatus+=$" · Showing the first {CpuCoreUsage.MaximumCores} of {CpuCoreUsage.MaximumCores+droppedCores} CPU cores.";
                     if(errors.Count>0) hardwareStatus+=" · "+string.Join("; ",errors.Distinct());
+                    if(storageError is not null) hardwareStatus+=" · "+storageError;
                     stage="Reading ETW counters";
                     // Snapshot and delivery are one step, so the final drain never overtakes (and
                     // makes ConnectionService drop) a sample whose observations were already taken.
@@ -183,7 +198,7 @@ public sealed class Collector : IAsyncDisposable
                         if(timings is not null){timings["etw/snapshot"]=Stopwatch.GetElapsedTime(providerStarted).TotalMilliseconds;timings["poll/total"]=(clock.Elapsed.TotalSeconds-started)*1000;}
                         double elapsed=clock.Elapsed.TotalSeconds-started;
                         if(elapsed>=intervalSeconds)hardwareStatus+=$" · Slow sample ({elapsed:0.0}s); pausing before the next poll.";
-                        var reading=new Reading(sample,gpus.AsReadOnly(),sensors.AsReadOnly(),capture.Processes,cpuName,hardwareStatus,network.Status,EtwStatus,IsElevated,timings,etw.Failure) {Battery=battery,Connections=capture.Connections,CpuCoreCount=cores.Count};
+                        var reading=new Reading(sample,gpus.AsReadOnly(),sensors.AsReadOnly(),capture.Processes,cpuName,hardwareStatus,network.Status,EtwStatus,IsElevated,timings,etw.Failure) {Battery=battery,Connections=capture.Connections,CpuCoreCount=cores.Count,Storage=storageReading};
                         History.Add(sample);Volatile.Write(ref latest,reading);SampleAvailable?.Invoke(reading);
                     }
                 }
