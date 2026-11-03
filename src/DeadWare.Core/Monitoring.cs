@@ -312,6 +312,7 @@ public sealed class UserSettings
     public bool JoinCpuGpuPopouts {get;set;}
     public bool ShowGpuFanSpeed {get;set;}
     public bool ShowCpuPumpSpeed {get;set;}
+    public bool ShowCpuCoreUsage {get;set;}
     public double PollingIntervalSeconds {get;set;}=1;
     public bool BatteryRecording {get;set;}=true;
     public bool UsageRecording {get;set;}=true;

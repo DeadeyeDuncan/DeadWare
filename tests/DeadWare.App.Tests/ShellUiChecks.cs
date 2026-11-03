@@ -71,6 +71,21 @@ internal static class ShellUiChecks
         Assert.Equal("History and alerts",CardOf("Keeps day, week and month history"));Assert.Equal("History and alerts",CardOf("Record endpoint history"));
         Assert.Equal("History and alerts",CardOf("Rules you set on the Alerts page"));Assert.Equal("Widget",CardOf("Choose the graphs shown in the widget"));
         Assert.Equal("Pop-outs",CardOf("Positions, sizes and Always on top"));Assert.Equal("Monitoring",CardOf("Includes motherboard"));
+        // Per-core CPU usage: a Monitoring checkbox that drives the session setting.
+        const string coreName="Show per-core CPU usage on usage graphs";
+        var coreBox=Descendants(pages["desktop"]).OfType<CheckBox>().Single(box=>AutomationProperties.GetName(box)==coreName);
+        Assert.Equal("Monitoring",Descendants(cards.Single(c=>Descendants(c).Contains(coreBox))).OfType<TextBlock>().First().Text);
+        Assert.Equal("Monitoring",CardOf("One thin line per core"));
+        var session=Field<UiSession>("session");int changes=0;void OnChanged()=>changes++;session.Changed+=OnChanged;
+        try
+        {
+            bool before=session.Settings.ShowCpuCoreUsage;
+            coreBox.IsChecked=!before;
+            Assert.Equal(!before,session.Settings.ShowCpuCoreUsage);Assert.True(changes>=1);
+            coreBox.IsChecked=before;
+            Assert.Equal(before,session.Settings.ShowCpuCoreUsage);
+        }
+        finally{session.Changed-=OnChanged;}
         Navigate("overview");
     }
 

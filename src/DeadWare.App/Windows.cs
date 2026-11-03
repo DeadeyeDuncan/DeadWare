@@ -31,6 +31,7 @@ public sealed class MainWindow : Window
     private readonly CheckBox joinedPopouts=new() {Content="Join CPU and GPU graphs in pop-outs",Margin=new Thickness(0,0,0,8)};
     private readonly CheckBox gpuFanSpeed=new() {Content="Show GPU fan speed on temperature graphs",Margin=new Thickness(0,0,0,8)};
     private readonly CheckBox cpuPumpSpeed=new() {Content="Show CPU pump speed on CPU temperature graphs",Margin=new Thickness(0,0,0,8)};
+    private readonly CheckBox cpuCoreUsage=new() {Content="Show per-core CPU usage on usage graphs",Margin=new Thickness(0,12,0,8)};
     private readonly ComboBox glass=new() {MinWidth=160};
     private readonly CheckBox graphSmoothing=new() {Content="Smooth long-range graphs (1, 3 and 6 hours)",Margin=new Thickness(0,0,0,8)};
     private readonly CheckBox usageRecording=new() {Content="Record usage history on this device",Margin=new Thickness(0,8,0,8)};
@@ -189,6 +190,11 @@ public sealed class MainWindow : Window
         var extended=new CheckBox {Content="Extended sensors (may affect responsiveness)",IsChecked=session.Settings.ExtendedSensors,Margin=new Thickness(0,22,0,8)};
         extended.Checked+=(_,_)=>session.SetExtendedSensors(true);extended.Unchecked+=(_,_)=>session.SetExtendedSensors(false);monitoring.Children.Add(extended);
         monitoring.Children.Add(Ui.Text("Includes motherboard, controller, storage and memory sensors. Off by default. Restart DeadWare after changing this setting.",12,"Muted"));
+        cpuCoreUsage.IsChecked=session.Settings.ShowCpuCoreUsage;
+        System.Windows.Automation.AutomationProperties.SetName(cpuCoreUsage,"Show per-core CPU usage on usage graphs");
+        cpuCoreUsage.Checked+=(_,_)=>{if(!syncingWidgetGraphs)session.SetCpuCoreUsage(true);};
+        cpuCoreUsage.Unchecked+=(_,_)=>{if(!syncingWidgetGraphs)session.SetCpuCoreUsage(false);};monitoring.Children.Add(cpuCoreUsage);
+        monitoring.Children.Add(Ui.Text("One thin line per core under the total on the CPU usage card, its pop-out and the widget. Core traces are kept in the six-hour graph history.",12,"Muted"));
         foreach(var (title,group) in new[]{("Monitoring",monitoring),("Appearance",appearance),("Widget",widgetGroup),("Pop-outs",popouts),("Startup",startupGroup),("History and alerts",history)})stack.Children.Add(SettingsCard(title,group));
         return new ScrollViewer {Content=stack,VerticalScrollBarVisibility=ScrollBarVisibility.Auto,HorizontalScrollBarVisibility=ScrollBarVisibility.Disabled};
     }
@@ -252,6 +258,7 @@ public sealed class MainWindow : Window
             joinedPopouts.IsChecked=session.Settings.JoinCpuGpuPopouts;
             gpuFanSpeed.IsChecked=session.Settings.ShowGpuFanSpeed;
             cpuPumpSpeed.IsChecked=session.Settings.ShowCpuPumpSpeed;
+            cpuCoreUsage.IsChecked=session.Settings.ShowCpuCoreUsage;
             graphSmoothing.IsChecked=session.Settings.GraphSmoothing;
             usageRecording.IsChecked=session.Settings.UsageRecording;
             alertNotifications.IsChecked=session.Settings.AlertNotifications;
