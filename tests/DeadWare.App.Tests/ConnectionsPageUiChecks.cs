@@ -304,7 +304,7 @@ internal static class ConnectionsPageUiChecks
         var shell = (Grid)dashboard.Content;
         var sidebar = Assert.IsType<DockPanel>(shell.Children[0] is Border surface ? surface.Child : shell.Children[0]);
         var nav = (StackPanel)sidebar.Children.OfType<ScrollViewer>().Single().Content;
-        Assert.Contains(nav.Children.OfType<Button>(), b => b.Content?.ToString()?.Contains("Connections") == true);
+        Assert.Contains(nav.Children.OfType<Button>(), b => System.Windows.Automation.AutomationProperties.GetName(b) == "Connections");
         typeof(MainWindow).GetMethod("Navigate", All)!.Invoke(dashboard, ["connections"]);
         Assert.Equal(Visibility.Collapsed, ((FrameworkElement)typeof(MainWindow).GetField("liveToolbar", All)!.GetValue(dashboard)!).Visibility);
         typeof(MainWindow).GetMethod("Navigate", All)!.Invoke(dashboard, ["overview"]);

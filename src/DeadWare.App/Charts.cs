@@ -55,6 +55,47 @@ internal static class Ui
     {var image=new Image {Width=38,Height=38,Margin=new Thickness(0,0,9,0)};try{image.Source=new BitmapImage(new Uri("pack://application:,,,/Assets/deadware.png"));}catch(System.IO.IOException){}return image;}
     public static string Title(string kind)=>kind switch {"cpu"=>"CPU usage","cputemp"=>"CPU temperature","cpupump"=>"CPU pump speed","gpu"=>"GPU usage","gputemp"=>"GPU temperature","gpufan"=>"GPU fan speed","usage"=>"CPU / GPU usage","temperature"=>"CPU / GPU temperature","memory"=>"RAM usage",_=>"Network activity"};
     public static FrameworkElement Range(UiSession session)=>new RangeSegments(session);
+
+    private static readonly ControlTemplate NavTemplate=SealedTemplate("""
+        <ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" TargetType="Button">
+          <Grid>
+            <Border x:Name="Frame" Background="Transparent" BorderBrush="Transparent" BorderThickness="1" CornerRadius="9" Padding="{TemplateBinding Padding}" SnapsToDevicePixels="True">
+              <ContentPresenter HorizontalAlignment="Left" VerticalAlignment="Center" RecognizesAccessKey="True"/>
+            </Border>
+            <Border x:Name="Bar" Width="3" HorizontalAlignment="Left" Margin="0,8,0,8" CornerRadius="1.5" Background="{DynamicResource Accent}" Visibility="Collapsed"/>
+          </Grid>
+          <ControlTemplate.Triggers>
+            <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Frame" Property="Background" Value="{DynamicResource GlassHover}"/><Setter Property="Foreground" Value="{DynamicResource Ink}"/></Trigger>
+            <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="Frame" Property="BorderBrush" Value="{DynamicResource Accent}"/></Trigger>
+            <Trigger Property="Tag" Value="active"><Setter TargetName="Frame" Property="Background" Value="{DynamicResource AccentSoft}"/><Setter TargetName="Bar" Property="Visibility" Value="Visible"/><Setter Property="Foreground" Value="{DynamicResource Ink}"/></Trigger>
+          </ControlTemplate.Triggers>
+        </ControlTemplate>
+        """);
+    private static ControlTemplate SealedTemplate(string xaml){var template=(ControlTemplate)System.Windows.Markup.XamlReader.Parse(xaml);template.Seal();return template;}
+    private static readonly Style NavStyle=NavButtonStyle();
+    private static Style NavButtonStyle()
+    {
+        var style=new Style(typeof(Button));
+        style.Setters.Add(new Setter(Control.TemplateProperty,NavTemplate));
+        style.Setters.Add(new Setter(Control.ForegroundProperty,new DynamicResourceExtension("Muted")));
+        style.Setters.Add(new Setter(Control.FontFamilyProperty,new DynamicResourceExtension("BodyFont")));
+        style.Setters.Add(new Setter(Control.PaddingProperty,new Thickness(12,9,10,9)));
+        style.Setters.Add(new Setter(FrameworkElement.MarginProperty,new Thickness(0,2,0,2)));
+        style.Setters.Add(new Setter(FrameworkElement.CursorProperty,System.Windows.Input.Cursors.Hand));
+        style.Setters.Add(new Setter(Control.HorizontalContentAlignmentProperty,HorizontalAlignment.Left));
+        style.Seal();return style;
+    }
+    /// <summary>A rail button: vector glyph plus label. <c>Tag=="active"</c> shows the accent bar and soft fill.</summary>
+    public static Button NavButton(string route,string label,Action click)
+    {
+        var glyph=OverviewVisual.NavGlyph(route);glyph.Margin=new Thickness(0,0,11,0);glyph.VerticalAlignment=VerticalAlignment.Center;
+        var text=new TextBlock {Text=label,FontSize=13,VerticalAlignment=VerticalAlignment.Center,TextTrimming=TextTrimming.CharacterEllipsis};
+        var row=new DockPanel();row.Children.Add(glyph);row.Children.Add(text);
+        var button=new Button {Content=row,Style=NavStyle,HorizontalAlignment=HorizontalAlignment.Stretch};
+        System.Windows.Automation.AutomationProperties.SetName(button,label);
+        button.Click+=(_,_)=>click();
+        return button;
+    }
 }
 
 /// <summary>Native WPF drawing; real timestamps set X coordinates and missing readings split the line.</summary>
@@ -282,7 +323,7 @@ internal sealed class ChartCard : Border
         if(overview)
         {
             title.TextWrapping=TextWrapping.NoWrap;title.TextTrimming=TextTrimming.CharacterEllipsis;title.ToolTip=Ui.Title(kind);
-            var glyph=OverviewVisual.MetricGlyph(kind);glyph.Margin=new(0,0,9,0);DockPanel.SetDock(glyph,Dock.Left);header.Children.Insert(header.Children.Count-1,glyph);
+            var glyph=OverviewVisual.IconTile(kind);glyph.Margin=new(0,0,9,0);DockPanel.SetDock(glyph,Dock.Left);header.Children.Insert(header.Children.Count-1,glyph);
             value.FontSize=34;
             subtitle.TextWrapping=TextWrapping.NoWrap;subtitle.TextTrimming=TextTrimming.CharacterEllipsis;
             fan.TextWrapping=TextWrapping.NoWrap;fan.TextTrimming=TextTrimming.CharacterEllipsis;

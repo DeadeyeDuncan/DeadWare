@@ -211,10 +211,12 @@ public class BatteryUiTests
                 var lifetime = new ApplicationLifetime();
                 var dashboard = new MainWindow(session, lifetime, () => true, () => { });
                 ConnectionsPageUiChecks.CheckNavigation(dashboard);
+                Phase("shell chrome");
+                ShellUiChecks.Run(dashboard);
                 var shell = (Grid)dashboard.Content;
                 var sidebar = Assert.IsType<DockPanel>(shell.Children[0] is Border surface ? surface.Child : shell.Children[0]);
                 var navigation = (StackPanel)sidebar.Children.OfType<ScrollViewer>().Single().Content;
-                var batteryNavigation = navigation.Children.OfType<Button>().Single(b => b.Content?.ToString()?.Contains("Battery history") == true);
+                var batteryNavigation = navigation.Children.OfType<Button>().Single(b => System.Windows.Automation.AutomationProperties.GetName(b) == "Battery history");
                 var pages = (Dictionary<string, FrameworkElement>)typeof(MainWindow).GetField("pages", All)!.GetValue(dashboard)!;
                 pages["overview"].Measure(new Size(900, 900)); pages["overview"].Arrange(new Rect(0, 0, 900, 900)); pages["overview"].UpdateLayout();
                 var overviewCards = Descendants(pages["overview"]).OfType<FrameworkElement>().Where(element => element.GetType().Name == "ChartCard").ToArray();
@@ -222,15 +224,15 @@ public class BatteryUiTests
                 Assert.Single(overviewCards, card => (string)card.GetType().GetField("kind", All)!.GetValue(card)! == "memory");
                 var settingsRoot = ((ScrollViewer)pages["desktop"]).Content;
                 var settings = Assert.IsType<StackPanel>(settingsRoot is Border surfaceCard ? surfaceCard.Child : settingsRoot);
-                var widgetChoices = settings.Children.OfType<WrapPanel>().SelectMany(panel => panel.Children.OfType<CheckBox>()).Where(box => box.Tag is string kind && new[] { "cpu", "cputemp", "memory", "network" }.Contains(kind)).ToArray();
+                var widgetChoices = Descendants(settings).OfType<CheckBox>().Where(box => box.Tag is string kind && new[] { "cpu", "cputemp", "memory", "network" }.Contains(kind)).ToArray();
                 Assert.Equal(4, widgetChoices.Length);
                 Assert.All(widgetChoices, choice => Assert.True(choice.IsChecked));
-                var widgetPin = Assert.Single(settings.Children.OfType<CheckBox>(), box => box.Content?.ToString() == "Widget always on top");
+                var widgetPin = Assert.Single(Descendants(settings).OfType<CheckBox>(), box => box.Content?.ToString() == "Widget always on top");
                 Assert.True(widgetPin.IsChecked);
-                Assert.DoesNotContain(settings.Children.OfType<Button>(), button => button.Content?.ToString()?.StartsWith("↗") == true);
-                var joinedPopouts = Assert.Single(settings.Children.OfType<CheckBox>(), box => box.Content?.ToString() == "Join CPU and GPU graphs in pop-outs");
+                Assert.DoesNotContain(Descendants(settings).OfType<Button>(), button => button.Content?.ToString()?.StartsWith("↗") == true);
+                var joinedPopouts = Assert.Single(Descendants(settings).OfType<CheckBox>(), box => box.Content?.ToString() == "Join CPU and GPU graphs in pop-outs");
                 Assert.False(joinedPopouts.IsChecked);
-                var polling = Assert.Single(settings.Children.OfType<StackPanel>().SelectMany(panel => panel.Children.OfType<ComboBox>()),
+                var polling = Assert.Single(Descendants(settings).OfType<ComboBox>(),
                     combo => System.Windows.Automation.AutomationProperties.GetName(combo) == "Data polling interval");
                 Assert.Equal(new[] { "0.5 seconds", "1 second (default)", "2 seconds", "5 seconds", "10 seconds" }, polling.Items.Cast<object>().Select(item => item.ToString()));
                 Assert.Equal(1d, polling.SelectedValue);
@@ -395,7 +397,7 @@ public class BatteryUiTests
         var sensors = (DataGrid)typeof(MainWindow).GetField("sensors", All)!.GetValue(dashboard)!;
         var originalApps = apps.ItemsSource; var originalSensors = sensors.ItemsSource;
         shell.Measure(new Size(1220, 900)); shell.Arrange(new Rect(0, 0, 1220, 900)); shell.UpdateLayout();
-        var button = Descendants(shell).OfType<Button>().First(item => item.Content?.ToString()?.Contains("Overview") == true);
+        var button = Descendants(shell).OfType<Button>().First(item => System.Windows.Automation.AutomationProperties.GetName(item) == "Overview");
         // A closed ToolTip has no window resource owner. Share the real app
         // dictionary so this offscreen control receives live resource changes.
         var tip = new ToolTip { Content = appSearch.ToolTip, Resources = Application.Current.Resources };
@@ -527,7 +529,7 @@ public class BatteryUiTests
 
     private static void VerifyGraphSmoothing(UiSession session,StackPanel settings,string settingsPath)
     {
-        var toggle=Assert.Single(settings.Children.OfType<CheckBox>(),choice=>choice.Content?.ToString()=="Smooth long-range graphs (1, 3 and 6 hours)");
+        var toggle=Assert.Single(Descendants(settings).OfType<CheckBox>(),choice=>choice.Content?.ToString()=="Smooth long-range graphs (1, 3 and 6 hours)");
         Assert.Equal("Graph smoothing",System.Windows.Automation.AutomationProperties.GetName(toggle));
         Assert.True(toggle.IsChecked);int notifications=0;void Changed()=>notifications++;
         int range=session.HistorySeconds;session.Changed+=Changed;
@@ -547,7 +549,7 @@ public class BatteryUiTests
 
     private static void VerifyUsageRecording(UiSession session,StackPanel settings,string settingsPath)
     {
-        var toggle=Assert.Single(settings.Children.OfType<CheckBox>(),choice=>choice.Content?.ToString()=="Record usage history on this device");
+        var toggle=Assert.Single(Descendants(settings).OfType<CheckBox>(),choice=>choice.Content?.ToString()=="Record usage history on this device");
         Assert.Equal("Record usage history",System.Windows.Automation.AutomationProperties.GetName(toggle));
         Assert.True(toggle.IsChecked);int notifications=0;void Changed()=>notifications++;
         session.Changed+=Changed;
@@ -558,13 +560,13 @@ public class BatteryUiTests
             CompleteSettingsSave(session);Assert.False(SettingsCodec.Read(File.ReadAllText(settingsPath)).Settings.UsageRecording);
             session.SetUsageRecording(true);Assert.True(toggle.IsChecked);Assert.Equal(2,notifications);
             CompleteSettingsSave(session);Assert.True(SettingsCodec.Read(File.ReadAllText(settingsPath)).Settings.UsageRecording);
-            Assert.Contains(settings.Children.OfType<Button>(),button=>button.Content?.ToString()=="Open Usage history");
+            Assert.Contains(Descendants(settings).OfType<Button>(),button=>button.Content?.ToString()=="Open Usage history");
         }
         finally {session.Changed-=Changed;session.SetUsageRecording(true);CompleteSettingsSave(session);}
     }
     private static void VerifyAlertNotifications(UiSession session,StackPanel settings,string settingsPath)
     {
-        var toggle=Assert.Single(settings.Children.OfType<CheckBox>(),choice=>choice.Content?.ToString()=="Show tray notifications for alerts");
+        var toggle=Assert.Single(Descendants(settings).OfType<CheckBox>(),choice=>choice.Content?.ToString()=="Show tray notifications for alerts");
         Assert.Equal("Alert notifications",System.Windows.Automation.AutomationProperties.GetName(toggle));
         Assert.True(toggle.IsChecked);int notifications=0;void Changed()=>notifications++;
         session.Changed+=Changed;
@@ -576,13 +578,13 @@ public class BatteryUiTests
             var rule=new AlertRule("ui-rule",AlertKind.Metric,"cpu",90,5,true,DateTimeOffset.UtcNow);
             session.SetAlertRules([rule]);Assert.Equal(3,notifications);Assert.Equal("ui-rule",Assert.Single(session.Alerts.Rules).Id);
             CompleteSettingsSave(session);Assert.Equal("ui-rule",Assert.Single(SettingsCodec.Read(File.ReadAllText(settingsPath)).Settings.Alerts).Id);
-            Assert.Contains(settings.Children.OfType<Button>(),button=>button.Content?.ToString()=="Open Alerts");
+            Assert.Contains(Descendants(settings).OfType<Button>(),button=>button.Content?.ToString()=="Open Alerts");
         }
         finally {session.Changed-=Changed;session.SetAlertRules([]);session.SetAlertNotifications(true);CompleteSettingsSave(session);}
     }
     private static void VerifyGpuFanSpeed(UiSession session, Collector collector, Assembly assembly, StackPanel settings, string settingsPath)
     {
-        var toggle = Assert.Single(settings.Children.OfType<CheckBox>(), choice => choice.Content?.ToString() == "Show GPU fan speed on temperature graphs");
+        var toggle = Assert.Single(Descendants(settings).OfType<CheckBox>(), choice => choice.Content?.ToString() == "Show GPU fan speed on temperature graphs");
         Assert.False(toggle.IsChecked);
         var originalHistory = collector.History; var originalReading = collector.Latest;
         string? originalGpu = session.Settings.SelectedGpuId;
@@ -756,7 +758,7 @@ public class BatteryUiTests
 
     private static void VerifyCpuPumpSpeed(UiSession session, Collector collector, Assembly assembly, StackPanel settings, string settingsPath)
     {
-        var toggle = Assert.Single(settings.Children.OfType<CheckBox>(), choice => choice.Content?.ToString() == "Show CPU pump speed on CPU temperature graphs");
+        var toggle = Assert.Single(Descendants(settings).OfType<CheckBox>(), choice => choice.Content?.ToString() == "Show CPU pump speed on CPU temperature graphs");
         Assert.False(toggle.IsChecked); Assert.False(session.Settings.ShowGpuFanSpeed);
         var originalHistory = collector.History; var originalReading = collector.Latest;
         string? originalGpu = session.Settings.SelectedGpuId;
@@ -857,7 +859,7 @@ public class BatteryUiTests
     private static void VerifyRangeDropdown(UiSession session, MainWindow dashboard, Assembly assembly, string settingsPath)
     {
         var toolbar = (DockPanel)typeof(MainWindow).GetField("liveToolbar", All)!.GetValue(dashboard)!;
-        var main = Assert.IsType<RangeSegments>(toolbar.Children[0]);
+        var main = toolbar.Children.OfType<RangeSegments>().Single();
         var second = Assert.IsType<RangeSegments>(assembly.GetType("DeadWare.App.Ui")!.GetMethod("Range", All)!.Invoke(null, [session]));
         static ToggleButton[] Segments(RangeSegments control) => Descendants(control).OfType<ToggleButton>().ToArray();
         static int Selected(RangeSegments control) => (int)Assert.Single(Segments(control), segment => segment.IsChecked == true).Tag;
@@ -1104,7 +1106,7 @@ public class BatteryUiTests
         dashboard.Dispatcher.Invoke(() => { }, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
         Assert.Equal(Visibility.Collapsed, notice.Visibility);
         Navigate("overview"); Assert.Equal(Visibility.Visible, notice.Visibility);
-        navigation.Children.OfType<Button>().Single(button => button.Content?.ToString()?.Contains("Updates") == true).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        navigation.Children.OfType<Button>().Single(button => System.Windows.Automation.AutomationProperties.GetName(button) == "Updates").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
         Assert.Same(pages["updates"], content.Content); Assert.Equal(Visibility.Collapsed, notice.Visibility);
         State(new UpdateState("0.6.0")); Assert.Equal(Visibility.Collapsed, notice.Visibility);
         Navigate("overview"); Assert.Equal(Visibility.Collapsed, notice.Visibility);
