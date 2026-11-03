@@ -37,6 +37,17 @@ public sealed class ThermalStoreTests : IDisposable
         Assert.True(reopened.StorageBytes > 0);
     }
 
+    [Fact] public void Devices_list_most_recently_recorded_first_including_summary_only_history()
+    {
+        // A sensor-map change gives the same hardware a new identity; the stale one must not be chosen by default.
+        var stale = Device with { Id = "a-stale" }; var current = Device with { Id = "z-current" }; var expired = Device with { Id = "m-expired" };
+        var store = Store();
+        store.Append([Window(0) with { Device = expired }], epoch.AddMinutes(1));
+        store.Append([], epoch.AddDays(31));
+        store.Append([Window(31 * 1440) with { Device = stale }, Window(31 * 1440 + 60) with { Device = current }], epoch.AddDays(31).AddHours(2));
+        Assert.Equal(new[] { "z-current", "a-stale", "m-expired" }, store.Devices().Select(d => d.Id));
+    }
+
     [Fact] public void Sparse_cadence_roundtrips_and_rollups_preserve_intended_intervals_and_real_gaps()
     {
         ThermalWindow Sparse(int minute)=>Window(minute,count:6) with
