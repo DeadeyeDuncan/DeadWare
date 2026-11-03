@@ -4,6 +4,7 @@ using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Markup;
@@ -444,12 +445,14 @@ public class BatteryUiTests
                     {
                         var headers = Descendants(destination == "network" ? apps : sensors).OfType<System.Windows.Controls.Primitives.DataGridColumnHeader>().Where(item => item.Column is not null).ToArray();
                         Assert.NotEmpty(headers);
-                        Assert.All(headers, item => AssertFont(item.FontFamily, header));
-                        Assert.All(headers, item => Assert.Equal(ResourceColor("Heading"), ((SolidColorBrush)item.Foreground).Color));
+                        // Refined glass: table headers are small muted body-font captions, not headings.
+                        Assert.All(headers, item => AssertFont(item.FontFamily, body));
+                        Assert.All(headers, item => Assert.Equal(ResourceColor("Muted"), ((SolidColorBrush)item.Foreground).Color));
+                        Assert.All(headers, item => Assert.Equal(10, item.FontSize));
                         foreach (var columnHeader in headers)
                             foreach (var text in Descendants(columnHeader).OfType<TextBlock>())
                             {
-                                AssertFont(text.FontFamily, header); Assert.Equal(ResourceColor("Heading"), ((SolidColorBrush)text.Foreground).Color);
+                                AssertFont(text.FontFamily, body); Assert.Equal(ResourceColor("Muted"), ((SolidColorBrush)text.Foreground).Color);
                                 var ink = text.TransformToAncestor(columnHeader).TransformBounds(VisualTreeHelper.GetDrawing(text)!.Bounds);
                                 Assert.True(ink.Left >= -.01 && ink.Right <= columnHeader.ActualWidth + .01, $"{theme} table header {text.Text} clipped.");
                             }
@@ -854,13 +857,16 @@ public class BatteryUiTests
     private static void VerifyRangeDropdown(UiSession session, MainWindow dashboard, Assembly assembly, string settingsPath)
     {
         var toolbar = (DockPanel)typeof(MainWindow).GetField("liveToolbar", All)!.GetValue(dashboard)!;
-        var main = Assert.IsType<ComboBox>(toolbar.Children[0]);
-        var second = Assert.IsType<ComboBox>(assembly.GetType("DeadWare.App.Ui")!.GetMethod("Range", All)!.Invoke(null, [session]));
+        var main = Assert.IsType<RangeSegments>(toolbar.Children[0]);
+        var second = Assert.IsType<RangeSegments>(assembly.GetType("DeadWare.App.Ui")!.GetMethod("Range", All)!.Invoke(null, [session]));
+        static ToggleButton[] Segments(RangeSegments control) => Descendants(control).OfType<ToggleButton>().ToArray();
+        static int Selected(RangeSegments control) => (int)Assert.Single(Segments(control), segment => segment.IsChecked == true).Tag;
+        static void Pick(RangeSegments control, int seconds) => Assert.Single(Segments(control), segment => (int)segment.Tag == seconds).IsChecked = true;
         int original = session.HistorySeconds;
-        Assert.Equal(original, main.SelectedValue); Assert.Equal(original, second.SelectedValue);
+        Assert.Equal(original, Selected(main)); Assert.Equal(original, Selected(second));
         Assert.Equal("Graph history range", System.Windows.Automation.AutomationProperties.GetName(main));
-        Assert.Equal(HistoryRanges.Seconds, main.Items.Cast<object>().Select(item => (int)item.GetType().GetProperty("Seconds")!.GetValue(item)!));
-        Assert.Equal(HistoryRanges.Seconds.Select(HistoryRanges.Label), main.Items.Cast<object>().Select(item => (string)item.GetType().GetProperty("Label")!.GetValue(item)!));
+        Assert.Equal(HistoryRanges.Seconds, Segments(main).Select(segment => (int)segment.Tag));
+        Assert.Equal(HistoryRanges.Seconds.Select(HistoryRanges.Label), Segments(main).Select(segment => (string)segment.Content));
         main.RaiseEvent(new RoutedEventArgs(FrameworkElement.LoadedEvent)); second.RaiseEvent(new RoutedEventArgs(FrameworkElement.LoadedEvent));
         int notifications = 0; void Changed() => notifications++;
         Window? previewOwner = null;
@@ -870,19 +876,19 @@ public class BatteryUiTests
             foreach (int seconds in HistoryRanges.Seconds)
             {
                 int expected = session.HistorySeconds == seconds ? 0 : 1;
-                notifications = 0; main.SelectedValue = seconds;
-                Assert.Equal(seconds, session.HistorySeconds); Assert.Equal(seconds, second.SelectedValue);
+                notifications = 0; Pick(main, seconds);
+                Assert.Equal(seconds, session.HistorySeconds); Assert.Equal(seconds, Selected(second));
                 Assert.Equal(expected, notifications);
             }
-            notifications = 0; second.SelectedValue = 10800;
-            Assert.Equal(10800, main.SelectedValue); Assert.Equal(1, notifications);
+            notifications = 0; Pick(second, 10800);
+            Assert.Equal(10800, Selected(main)); Assert.Equal(1, notifications);
             notifications = 0; session.SetRange(300);
-            Assert.Equal(300, main.SelectedValue); Assert.Equal(300, second.SelectedValue); Assert.Equal(1, notifications);
+            Assert.Equal(300, Selected(main)); Assert.Equal(300, Selected(second)); Assert.Equal(1, notifications);
             CompleteSettingsSave(session); Assert.Equal(300, SettingsCodec.Read(File.ReadAllText(settingsPath)).Settings.HistorySeconds);
             main.RaiseEvent(new RoutedEventArgs(FrameworkElement.UnloadedEvent)); second.RaiseEvent(new RoutedEventArgs(FrameworkElement.UnloadedEvent));
-            session.SetRange(60); Assert.Equal(300, main.SelectedValue); Assert.Equal(300, second.SelectedValue);
+            session.SetRange(60); Assert.Equal(300, Selected(main)); Assert.Equal(300, Selected(second));
             main.RaiseEvent(new RoutedEventArgs(FrameworkElement.LoadedEvent)); second.RaiseEvent(new RoutedEventArgs(FrameworkElement.LoadedEvent));
-            Assert.Equal(60, main.SelectedValue); Assert.Equal(60, second.SelectedValue);
+            Assert.Equal(60, Selected(main)); Assert.Equal(60, Selected(second));
             var themeType = assembly.GetType("DeadWare.App.Theme")!;
             var preview = new Border { Child = second };
             previewOwner = new Window { Content = preview };
@@ -890,16 +896,18 @@ public class BatteryUiTests
             {
                 themeType.GetMethod("Apply", All)!.Invoke(null, [theme]);
                 preview.SetResourceReference(Border.BackgroundProperty, "Background");
-                preview.Measure(new Size(160, 44)); preview.Arrange(new Rect(0, 0, 160, 44)); preview.UpdateLayout();
+                preview.Measure(new Size(400, 44)); preview.Arrange(new Rect(0, 0, 400, 44)); preview.UpdateLayout();
                 Color ColorOf(string key) => ((SolidColorBrush)Application.Current.Resources[key]).Color;
-                Assert.Equal(ColorOf("Control"), ((SolidColorBrush)second.Background).Color);
-                Assert.Equal(ColorOf("Ink"), ((SolidColorBrush)second.Foreground).Color);
+                Assert.Same(Application.Current.Resources["GlassControl"], second.Background);
+                Assert.Same(Application.Current.Resources["Hairline"], second.BorderBrush);
+                var active = Assert.Single(Segments(second), segment => segment.IsChecked == true);
+                Assert.Equal(ColorOf("Ink"), ((SolidColorBrush)active.Foreground).Color);
                 Assert.Contains(Descendants(second).OfType<TextBlock>(), block => block.Text == HistoryRanges.Label(session.HistorySeconds));
-                Assert.True(second.ActualHeight < 45); Assert.True(second.ActualWidth < 150);
+                Assert.True(second.ActualHeight < 45 && second.ActualWidth < 400, $"Range segments measure {second.ActualWidth:0}x{second.ActualHeight:0} in {theme}.");
                 string? output = Environment.GetEnvironmentVariable("DEADWARE_UI_OUTPUT");
                 if (output is not null)
                 {
-                    var bitmap = new RenderTargetBitmap(160, 44, 96, 96, PixelFormats.Pbgra32); bitmap.Render(preview);
+                    var bitmap = new RenderTargetBitmap(400, 44, 96, 96, PixelFormats.Pbgra32); bitmap.Render(preview);
                     using var file = File.Create(Path.Combine(output, $"history-range-{theme}.png"));
                     var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap)); encoder.Save(file);
                 }

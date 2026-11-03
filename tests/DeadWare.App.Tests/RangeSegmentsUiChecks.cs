@@ -37,6 +37,8 @@ internal static class RangeSegmentsUiChecks
         var first=new RangeSegments(session);var second=new RangeSegments(session);
         var host=new StackPanel();host.Children.Add(first);host.Children.Add(second);
         host.Measure(new Size(600,200));host.Arrange(new Rect(0,0,600,200));host.UpdateLayout();
+        // No window hosts the panel, so Loaded never fires on its own; the controls subscribe to the session there.
+        first.RaiseEvent(new RoutedEventArgs(FrameworkElement.LoadedEvent));second.RaiseEvent(new RoutedEventArgs(FrameworkElement.LoadedEvent));
         Assert.Equal("Graph history range",AutomationProperties.GetName(first));
         ToggleButton[] Buttons(DependencyObject root)=>Descendants(root).OfType<ToggleButton>().ToArray();
         var buttons=Buttons(first);
