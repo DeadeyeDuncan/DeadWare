@@ -294,6 +294,15 @@ internal static class ConnectionsWidgetUiChecks
                 if(count==0)Assert.Equal(284,map.ActualWidth);
                 var graphs=Elements(content).OfType<WidgetGraph>().Where(g=>g.Visibility==Visibility.Visible).ToArray();
                 Assert.Equal(count,graphs.Length);Assert.All(graphs,g=>Assert.True(g.ActualHeight>=120));
+                foreach(var graph in graphs)
+                {
+                    Assert.Same(Application.Current.Resources["Card"],graph.Style);
+                    var chart=(HistoryChart)typeof(WidgetGraph).GetField("chart",All)!.GetValue(graph)!;
+                    chart.SetHover(null);Assert.Equal(-1,chart.HoverIndex);
+                    var drawing=VisualTreeHelper.GetDrawing(chart);
+                    static IEnumerable<GeometryDrawing> Shapes(Drawing d)=>d is GeometryDrawing shape?[shape]:d is DrawingGroup group?group.Children.SelectMany(Shapes):[];
+                    if(drawing is not null)Assert.DoesNotContain(Shapes(drawing),shape=>ReferenceEquals(shape.Brush,Application.Current.Resources["GlassPopup"]));
+                }
                 var scroll=Assert.Single(Elements(content).OfType<ScrollViewer>());
                 Assert.Equal(count==0?ScrollBarVisibility.Disabled:ScrollBarVisibility.Auto,scroll.VerticalScrollBarVisibility);
                 if(count==0)

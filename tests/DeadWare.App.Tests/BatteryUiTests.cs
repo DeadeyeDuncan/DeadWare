@@ -682,6 +682,16 @@ public class BatteryUiTests
                 Assert.True(chart.ActualHeight >= 48, $"{spec.Item1}/{spec.Item2} chart height: {chart.ActualHeight}");
                 Assert.Equal(spec.Item2 is "temperature" or "cputemp" ? 3 : 2, Traces(chart).Length);
                 if (output is not null) Capture(viewport, Path.Combine(output, "gpu-fan-compact-" + spec.Item1 + "-" + spec.Item2 + ".png"));
+                if (spec.Item1 == "CompactGraph")
+                {
+                    // Refined glass: one-row chrome keeps the trace tall even in a 260x140 pop-out.
+                    viewport.Measure(new Size(260, 140)); viewport.Arrange(new Rect(0, 0, 260, 140)); viewport.UpdateLayout();
+                    var rows = ((Grid)((Border)surface).Child).RowDefinitions;
+                    Assert.True(rows[0].ActualHeight <= 34, $"CompactGraph/{spec.Item2} header height: {rows[0].ActualHeight}");
+                    Assert.True(chart.ActualHeight >= 80, $"CompactGraph/{spec.Item2} chart height at 260x140: {chart.ActualHeight}");
+                    Assert.Same(Application.Current.Resources["Card"], ((Border)surface).Style);
+                    viewport.Measure(compactSize); viewport.Arrange(new Rect(new Point(), compactSize)); viewport.UpdateLayout();
+                }
             }
         }
         var fanCard = fanSurfaces.Single(view => view.Surface.GetType().Name == "ChartCard").Surface;
@@ -1633,7 +1643,7 @@ public class BatteryUiTests
                     viewport.SetResourceReference(Border.BackgroundProperty, "Background");
                     viewport.Measure(size); viewport.Arrange(new Rect(new Point(), size)); viewport.UpdateLayout();
                     Assert.True(chart.ActualHeight >= 48, $"Joined {kind} clipped at {size}: {chart.ActualHeight}");
-                    Assert.True(cpu.ActualWidth >= cpu.DesiredSize.Width - .01); Assert.True(gpu.ActualWidth >= gpu.DesiredSize.Width - .01);
+                    Assert.True(cpu.ActualWidth >= cpu.DesiredSize.Width - .01, $"cpu {cpu.ActualWidth} < desired {cpu.DesiredSize.Width} at {size} ({cpu.Text})"); Assert.True(gpu.ActualWidth >= gpu.DesiredSize.Width - .01, $"gpu {gpu.ActualWidth} < desired {gpu.DesiredSize.Width} at {size}");
                     var traces = Traces(); Assert.Equal(2, traces.Length);
                     Assert.Equal(((SolidColorBrush)Application.Current.Resources["Cpu"]).Color, ((SolidColorBrush)traces[0].Pen.Brush).Color);
                     Assert.Equal(((SolidColorBrush)Application.Current.Resources["Gpu"]).Color, ((SolidColorBrush)traces[1].Pen.Brush).Color);

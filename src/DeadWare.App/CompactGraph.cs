@@ -28,18 +28,19 @@ internal sealed class CompactGraph : Border
         this.session=session;this.kind=kind;
         joined=kind is "usage" or "temperature";
         chartKind=kind switch {"usage"=>"cpu","temperature"=>"cputemp",_=>kind};
-        Padding=new Thickness(8,3,8,3);CornerRadius=new CornerRadius(8);BorderThickness=new Thickness(1);
-        SetResourceReference(BackgroundProperty,"GlassPanel");SetResourceReference(BorderBrushProperty,"GlassBorder");
+        SetResourceReference(StyleProperty,"Card");Padding=new Thickness(10,4,10,4);CornerRadius=new CornerRadius(10);
         var grid=new Grid();grid.RowDefinitions.Add(new(){Height=GridLength.Auto});grid.RowDefinitions.Add(new(){Height=GridLength.Auto});grid.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});Child=grid;
         var header=new Grid();header.ColumnDefinitions.Add(new(){Width=new GridLength(1,GridUnitType.Star)});header.ColumnDefinitions.Add(new(){Width=GridLength.Auto});header.ColumnDefinitions.Add(new(){Width=GridLength.Auto});grid.Children.Add(header);
         var title=Ui.Text(kind switch {"usage"=>"Usage","temperature"=>"Temp","cputemp"=>"CPU temp","gputemp"=>"GPU temp","network"=>"Network",_=>Ui.Title(kind)},12,"Heading",font:"HeadingFont");
         title.FontWeight=FontWeights.SemiBold;title.TextWrapping=TextWrapping.NoWrap;title.TextTrimming=TextTrimming.CharacterEllipsis;title.Margin=new Thickness(0,0,6,0);header.Children.Add(title);
         AutomationProperties.SetName(title,Ui.Title(kind));
         value.TextWrapping=TextWrapping.NoWrap;upload.TextWrapping=TextWrapping.NoWrap;
-        var readings=new StackPanel {VerticalAlignment=VerticalAlignment.Center};readings.Children.Add(value);
-        if(kind=="network"||joined){value.FontSize=18;readings.Children.Add(upload);}
+        // One-row chrome: title, readings side by side, options. The trace keeps the height.
+        var readings=new StackPanel {Orientation=Orientation.Horizontal,VerticalAlignment=VerticalAlignment.Center};value.FontSize=22;readings.Children.Add(value);
+        if(kind=="network"||joined){value.FontSize=14;upload.FontSize=14;readings.Children.Add(new Border {Width=8});readings.Children.Add(upload);}
         Grid.SetColumn(readings,1);header.Children.Add(readings);
-        options=Ui.Button("⋯",OpenOptions);options.Width=28;options.Height=28;options.FontSize=18;options.Padding=new Thickness(0);options.Margin=new Thickness(6,0,0,0);options.ToolTip="Graph options";
+        options=Ui.Button("⋯",OpenOptions);options.Width=24;options.Height=24;options.FontSize=15;options.Padding=new Thickness(0);options.Margin=new Thickness(6,0,0,0);options.ToolTip="Graph options";
+        options.SetResourceReference(Control.ForegroundProperty,"Muted");
         AutomationProperties.SetName(options,"Graph options");Grid.SetColumn(options,2);header.Children.Add(options);
         var annotations=new StackPanel();status.Visibility=Visibility.Collapsed;status.TextWrapping=TextWrapping.NoWrap;status.TextTrimming=TextTrimming.CharacterEllipsis;annotations.Children.Add(status);
         fan.Visibility=Visibility.Collapsed;fan.ToolTip="Selected GPU's first reported fan · separate left RPM scale";annotations.Children.Add(fan);

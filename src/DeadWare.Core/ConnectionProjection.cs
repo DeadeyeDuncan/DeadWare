@@ -3,7 +3,7 @@ namespace DeadWare.Core;
 public sealed record MapCamera(double Longitude, double Latitude, double Zoom, bool Flat);
 public readonly record struct MapCoordinate(double X, double Y, double Depth, bool Visible);
 public sealed record ConnectionMapPoint(string Key, GeoPoint Point, long ReceivedBytes, long SentBytes, bool Selected,
-    bool ReceiveActive = true, bool SendActive = true);
+    bool ReceiveActive = true, bool SendActive = true, string? Label = null, string? Detail = null);
 public sealed record ConnectionMapGroups(IReadOnlyList<ConnectionMapPoint> Points, int Overflow);
 
 public static class ConnectionProjection
@@ -32,6 +32,22 @@ public static class ConnectionProjection
         return new(Math.Cos(lat) * Math.Sin(lon) * camera.Zoom,
             (Math.Sin(center) * Math.Cos(lat) * Math.Cos(lon) - Math.Cos(center) * Math.Sin(lat)) * camera.Zoom,
             depth, depth >= -1e-10);
+    }
+
+    /// <summary>Projects a closed land ring. On the globe, back-hemisphere points land on the limb at their own azimuth
+    /// (still marked invisible) so a filled polygon keeps a clean horizon; the flat map projects each point as is.</summary>
+    public static IReadOnlyList<MapCoordinate> ProjectRing(IReadOnlyList<GeoPoint> ring, MapCamera camera)
+    {
+        camera = Normalize(camera);
+        var result = new MapCoordinate[ring.Count];
+        for (int i = 0; i < ring.Count; i++)
+        {
+            var projected = IsValid(ring[i]) ? ProjectNormalized(ring[i], camera) : default;
+            if (camera.Flat || projected.Visible || !IsValid(ring[i])) { result[i] = projected; continue; }
+            double azimuth = Math.Atan2(projected.Y, projected.X);
+            result[i] = new(Math.Cos(azimuth) * camera.Zoom, Math.Sin(azimuth) * camera.Zoom, projected.Depth, false);
+        }
+        return Array.AsReadOnly(result);
     }
 
     public static IReadOnlyList<GeoPoint> GreatCircle(GeoPoint from, GeoPoint to, int steps = 48)

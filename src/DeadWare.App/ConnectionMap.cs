@@ -24,22 +24,36 @@ public sealed class ConnectionMap : FrameworkElement
     private readonly Dictionary<(string Key,GeoPoint Point),Activity> activity = [];
     private Size cachedSize;
     private MapCamera? cachedCamera;
-    private StreamGeometry? coast, borders, stateBorders, grid;
+    private StreamGeometry? coast, borders, stateBorders, grid, landFill;
+    private IReadOnlyList<IReadOnlyList<GeoPoint>>? landOverride;
     private sealed record Route(ConnectionMapPoint Data,MapCoordinate[] Samples,Point[][] Segments,double Radius,double Width,double Seed,Activity Activity)
     {
-        public (double DownloadTime,double UploadTime,double DownloadLevel,double UploadLevel)? StrandState { get; set; }
-        public StreamGeometry[] Strands { get; set; } = [];
+        /// <summary>The arc through the projected samples, built once per projection.</summary>
+        public StreamGeometry? Arc { get; set; }
+        /// <summary>Two hairline lanes offset ±1 px when both directions are active.</summary>
+        public StreamGeometry? DownloadLane { get; set; }
+        public StreamGeometry? UploadLane { get; set; }
     }
     private readonly Dictionary<(Brush Brush,double Width),Pen> pens = [];
+    private readonly Dictionary<string,Brush> brushes = [];
+    private string brushTheme = "";
     private readonly List<Route> routes = [];
     private readonly List<(Point Center, string Key)> hitPoints = [];
     private bool routesDirty = true;
     private bool projectionDirty = true;
+    private Point? hoverPosition;
+
+    internal const double HitRadius = 9, WidgetHitRadius = 12;
+    /// <summary>Key of the node under the pointer, or null.</summary>
+    public string? HoveredKey { get; private set; }
+    public event Action<string?>? PointHovered;
+    /// <summary>Tests substitute the embedded land rings (an empty list simulates a failed asset).</summary>
+    internal IReadOnlyList<IReadOnlyList<GeoPoint>>? LandOverride { get => landOverride; set { landOverride = value; cachedCamera = null; InvalidateVisual(); } }
 
     public ConnectionMap()
     {
         Focusable = true; ClipToBounds = true;
-        Cursor = Cursors.Hand;
+        Cursor = Cursors.Arrow;
         ToolTip = "Drag to move · wheel or +/− to zoom · Home to reset · select a location";
         Loaded += (_, _) => { loaded = true; UpdateAnimation(); };
         Unloaded += (_, _) => { loaded = false; UpdateAnimation(); };
@@ -146,12 +160,17 @@ public sealed class ConnectionMap : FrameworkElement
 
     private Rect MapBounds => MapOnly ? new(3, 3, Math.Max(1, ActualWidth - 6), Math.Max(1, ActualHeight - 6)) :
         new(10, 21, Math.Max(1, ActualWidth - 20), Math.Max(1, ActualHeight - 55));
-    private Point Pixel(MapCoordinate coordinate)
+    private (double X, double Y) Scales()
     {
         var bounds = MapBounds;
         double yScale = Flat ? Math.Min(bounds.Height / 2, bounds.Width / 4) : Math.Min(bounds.Width, bounds.Height) / 2;
         double xScale = Flat ? yScale * 2 : yScale;
         if (Flat && MapOnly) { xScale = bounds.Width / 2; yScale = bounds.Height / 2; }
+        return (xScale, yScale);
+    }
+    private Point Pixel(MapCoordinate coordinate)
+    {
+        var bounds = MapBounds; var (xScale, yScale) = Scales();
         return new(bounds.X + bounds.Width / 2 + coordinate.X * xScale, bounds.Y + bounds.Height / 2 + coordinate.Y * yScale);
     }
     private StreamGeometry Geometry(IEnumerable<IReadOnlyList<GeoPoint>> paths)
@@ -163,6 +182,29 @@ public sealed class ConnectionMap : FrameworkElement
         {
             context.BeginFigure(Pixel(segment[0]), false, false);
             for (int i = 1; i < segment.Count; i++) context.LineTo(Pixel(segment[i]), true, false);
+        }
+        geometry.Freeze(); return geometry;
+    }
+    /// <summary>Closed, filled land rings. On the globe, back-hemisphere points sit on the limb; on the flat map a ring that
+    /// crosses the seam is unwrapped so the seam copies drawn at ±360° cover it.</summary>
+    private StreamGeometry LandGeometry(IEnumerable<IReadOnlyList<GeoPoint>> rings)
+    {
+        var geometry = new StreamGeometry { FillRule = FillRule.Nonzero };
+        using (var context = geometry.Open())
+        foreach (var ring in rings)
+        {
+            if (ring.Count < 3) continue;
+            var projected = ConnectionProjection.ProjectRing(ring, camera);
+            if (!Flat && projected.All(p => !p.Visible)) continue;
+            double shift = 0; MapCoordinate previous = projected[0];
+            context.BeginFigure(Pixel(previous), true, true);
+            for (int i = 1; i < projected.Count; i++)
+            {
+                var point = projected[i];
+                if (Flat && Math.Abs(point.X - previous.X) > camera.Zoom) shift += point.X > previous.X ? -2 * camera.Zoom : 2 * camera.Zoom;
+                previous = point;
+                context.LineTo(Pixel(point with { X = point.X + shift }), false, false);
+            }
         }
         geometry.Freeze(); return geometry;
     }
@@ -178,7 +220,8 @@ public sealed class ConnectionMap : FrameworkElement
         if (cachedSize != RenderSize || cachedCamera != camera)
         {
             cachedSize = RenderSize; cachedCamera = camera;
-            coast = Geometry(ConnectionAssets.Land); borders = Geometry(ConnectionAssets.Borders); grid = Geometry(Graticules()); routesDirty = true;
+            var land = landOverride ?? ConnectionAssets.Land;
+            coast = Geometry(land); landFill = LandGeometry(land); borders = Geometry(ConnectionAssets.Borders); grid = Geometry(Graticules()); routesDirty = true;
             stateBorders = camera.Zoom > 1.25 ? Geometry(ConnectionAssets.StateBorders) : null;
             projectionDirty=true;
         }
@@ -201,22 +244,39 @@ public sealed class ConnectionMap : FrameworkElement
         }
         routesDirty = false;projectionDirty=false;
     }
-    private void DrawFlow(DrawingContext dc,Route route,Brush brush,bool received)
+    /// <summary>A polyline through the route's screen segments, shifted <paramref name="offset"/> px along the local normal.</summary>
+    private static StreamGeometry Polyline(Point[][] segments, double offset)
     {
-        if(!subscribed||route.Samples.Length<2)return;
-        var motion=received?route.Activity.Download:route.Activity.Upload;
-        if(motion.Level<=0)return;
-        double fraction=(motion.Time/3)%1;if(fraction<0)fraction+=1;if(received)fraction=1-fraction;
-        double position=fraction*(route.Samples.Length-1);int index=Math.Min(route.Samples.Length-2,(int)position);
+        var geometry = new StreamGeometry();
+        using (var context = geometry.Open())
+        foreach (var segment in segments)
+        {
+            if (segment.Length < 2) continue;
+            for (int i = 0; i < segment.Length; i++)
+            {
+                var position = segment[i];
+                if (offset != 0)
+                {
+                    var tangent = segment[Math.Min(i + 1, segment.Length - 1)] - segment[Math.Max(0, i - 1)];
+                    if (tangent.Length > 0) position += new Vector(-tangent.Y, tangent.X) / tangent.Length * offset;
+                }
+                if (i == 0) context.BeginFigure(position, false, false); else context.LineTo(position, true, false);
+            }
+        }
+        geometry.Freeze(); return geometry;
+    }
+    /// <summary>Screen position at a fraction of the route, or null across the rear hemisphere or the flat seam.</summary>
+    private Point? Sample(Route route, double fraction)
+    {
+        if (route.Samples.Length < 2) return null;
+        double position=Math.Clamp(fraction,0,1)*(route.Samples.Length-1);int index=Math.Min(route.Samples.Length-2,(int)position);
         var a=route.Samples[index];var b=route.Samples[index+1];
-        // Never interpolate a highlight through the rear hemisphere or across the flat seam.
-        if(!a.Visible||!b.Visible)return;
+        if(!a.Visible||!b.Visible)return null;
         double progress=position-index,x=b.X;
         if(Flat&&Math.Abs(a.X-x)>camera.Zoom)x+=a.X>0?2*camera.Zoom:-2*camera.Zoom;
         x=a.X+(x-a.X)*progress;
         if(Flat){if(x>camera.Zoom)x-=2*camera.Zoom;else if(x< -camera.Zoom)x+=2*camera.Zoom;}
-        var center=Pixel(new(x,a.Y+(b.Y-a.Y)*progress,1,true));
-        double radius=MapOnly?1:1.5;dc.PushOpacity(motion.Level);dc.DrawEllipse(brush,null,center,radius,radius);dc.Pop();
+        return Pixel(new(x,a.Y+(b.Y-a.Y)*progress,1,true));
     }
     private Pen Stroke(Brush brush, double width)
     {
@@ -224,64 +284,86 @@ public sealed class ConnectionMap : FrameworkElement
         var pen = new Pen(brush, width) {StartLineCap=PenLineCap.Round,EndLineCap=PenLineCap.Round,LineJoin=PenLineJoin.Round};
         if (pen.CanFreeze) pen.Freeze();if(pens.Count>=128)pens.Clear();pens[key]=pen;return pen;
     }
-    private void DrawConnection(DrawingContext dc,Route route,Brush download,Brush upload,Brush ink)
+    private static Color ColorOf(string resource) => Theme.Brush(resource) is SolidColorBrush solid ? solid.Color : Colors.Transparent;
+    private static Color WithAlpha(Color color, double opacity) => Color.FromArgb((byte)Math.Clamp(Math.Round(255 * opacity), 0, 255), color.R, color.G, color.B);
+    /// <summary>Gradient brushes are rebuilt once per theme and cached; a frozen brush per role keeps rendering allocation-free.</summary>
+    private Brush Cached(string key, Func<Brush> build)
     {
-        if(route.Samples.Length==0)return;
-        bool selected=route.Data.Selected;
-        // DeadEye Lantern's breathing oscilloscope wave, in screen pixels along the geographic arc.
-        // Direction colors and opposite wave travel replace the straight solid/dashed overlay.
-        var downloadMotion=route.Activity.Download;var uploadMotion=route.Activity.Upload;
-        var state=(Math.Floor(downloadMotion.Time*30)/30,Math.Floor(uploadMotion.Time*30)/30,downloadMotion.Level,uploadMotion.Level);
-        if(route.StrandState!=state)
+        string theme = Theme.CurrentName + "|" + Theme.GlassEnabled + "|" + Flat + "|" + MapOnly;
+        if (theme != brushTheme) { brushes.Clear(); brushTheme = theme; }
+        if (!brushes.TryGetValue(key, out var brush)) { brush = build(); if (brush.CanFreeze) brush.Freeze(); brushes[key] = brush; }
+        return brush;
+    }
+    private Brush OceanBrush(bool highContrast, bool blackout)
+    {
+        if (highContrast) return Theme.Brush("Panel");
+        if (blackout) return Theme.Brush("Background");
+        if (Flat) return Cached("ocean-flat", () => new LinearGradientBrush(ColorOf("Surface1"), ColorOf("Background"), 90));
+        return Cached("ocean-globe", () => new RadialGradientBrush(ColorOf("Surface1"), ColorOf("Background")) { GradientOrigin = new(.38, .32), Center = new(.5, .5), RadiusX = .55, RadiusY = .55 });
+    }
+    private Brush LandBrush(bool blackout) => blackout ? Cached("land-blackout", () => new SolidColorBrush(WithAlpha(ColorOf("Ink"), .10))) : Theme.Brush("Surface2");
+    private Brush LimbBrush() => Cached("limb", () =>
+    {
+        var brush = new RadialGradientBrush();
+        brush.GradientStops.Add(new(Colors.Transparent, 0)); brush.GradientStops.Add(new(Colors.Transparent, .8));
+        brush.GradientStops.Add(new(Color.FromArgb(Theme.IsDark ? (byte)140 : (byte)70, 0, 0, 0), 1));
+        return brush;
+    });
+    private Brush AtmosphereBrush() => Cached("atmosphere", () =>
+    {
+        var glow = ColorOf("Glow"); var brush = new RadialGradientBrush();
+        brush.GradientStops.Add(new(Colors.Transparent, 0)); brush.GradientStops.Add(new(Colors.Transparent, .86));
+        brush.GradientStops.Add(new(glow, .90)); brush.GradientStops.Add(new(Colors.Transparent, 1));
+        return brush;
+    });
+    private Brush Halo(Brush source, double opacity, string role) => Cached("halo-" + role + "-" + opacity, () =>
+        new RadialGradientBrush(WithAlpha(source is SolidColorBrush solid ? solid.Color : ColorOf("Accent"), opacity), Colors.Transparent));
+
+    private void DrawConnection(DrawingContext dc,Route route,Brush download,Brush upload,Brush ink,bool glow)
+    {
+        if(route.Samples.Length==0||route.Segments.Length==0)return;
+        route.Arc??=Polyline(route.Segments,0);
+        bool selected=route.Data.Selected||route.Data.Key==HoveredKey;
+        // A silent peer keeps a faint download-colored arc so its location still connects to the origin.
+        bool hasDownload=route.Data.ReceivedBytes>0||route.Data.SentBytes==0,hasUpload=route.Data.SentBytes>0,both=hasDownload&&hasUpload;
+        foreach(bool received in new[]{true,false})
         {
-            route.StrandState=state;var strands=new List<StreamGeometry>();
-            const int count=2;
-            for(int strand=0;strand<count;strand++)
+            if(received?!hasDownload:!hasUpload)continue;
+            var motion=received?route.Activity.Download:route.Activity.Upload;
+            var brush=received?download:upload;
+            Geometry core=both?(received?route.DownloadLane??=Polyline(route.Segments,1):route.UploadLane??=Polyline(route.Segments,-1)):route.Arc;
+            if(glow)
             {
-                double waveTime=strand==0?state.Item1:state.Item2;
-                double level=strand==0?downloadMotion.Level:uploadMotion.Level;
-                var geometry=new StreamGeometry();using(var context=geometry.Open())
-                foreach(var segment in route.Segments)
-                {
-                    double length=0;for(int i=1;i<segment.Length;i++)length+=(segment[i]-segment[i-1]).Length;
-                    if(length<.001)continue;
-                    double amplitude=Math.Min(3.4,length*.08)*(.45+.55*level);
-                    double cycles=Math.Clamp(length/24,2,10);
-                    double distance=0;
-                    for(int i=0;i<segment.Length;i++)
-                    {
-                        if(i>0)distance+=(segment[i]-segment[i-1]).Length;
-                        double u=distance/length;
-                        var tangent=segment[Math.Min(i+1,segment.Length-1)]-segment[Math.Max(0,i-1)];
-                        double seed=route.Seed+strand*.5;
-                        double x=u*Math.Tau*cycles*.6+(strand==0?1:-1)*waveTime/0.520+seed*6;
-                        double cycle=x/Math.Tau-Math.Floor(x/Math.Tau);
-                        double wave=(int)route.Seed%2==0?Math.Sin(x):cycle<.5?4*cycle-1:3-4*cycle;
-                        double offset=amplitude*wave*(.72+.28*Math.Sin(waveTime/.9+seed*3))*Math.Sin(Math.PI*u);
-                        var position=segment[i]+(tangent.Length>0?new Vector(-tangent.Y,tangent.X)/tangent.Length*offset:new Vector());
-                        if(i==0)context.BeginFigure(position,false,false);else context.LineTo(position,true,false);
-                    }
-                }
-                geometry.Freeze();strands.Add(geometry);
+                dc.PushOpacity(selected?.12:.06);dc.DrawGeometry(null,Stroke(brush,6),route.Arc);dc.Pop();
+                dc.PushOpacity(selected?.30:.18);dc.DrawGeometry(null,Stroke(brush,2.5),route.Arc);dc.Pop();
             }
-            route.Strands=strands.ToArray();
+            dc.PushOpacity(selected?.95:.30+.50*motion.Level);dc.DrawGeometry(null,Stroke(brush,1.2),core);dc.Pop();
         }
-        for(int i=0;i<route.Strands.Length;i++)
+        if(selected){dc.PushOpacity(.65);dc.DrawGeometry(null,Stroke(ink,.5),route.Arc);dc.Pop();}
+    }
+    private void DrawParticles(DrawingContext dc,Route route,Brush brush,bool received,bool glow,string role)
+    {
+        var motion=received?route.Activity.Download:route.Activity.Upload;
+        if(motion.Level<=0)return;
+        int count=ArcParticles.Count(motion.Level);if(MapOnly)count=Math.Max(1,count/2);
+        foreach(double fraction in ArcParticles.Fractions(motion.Time,.33,count,received))
         {
-            if(i==0&&route.Data.ReceivedBytes==0&&route.Data.SentBytes>0||i==1&&route.Data.SentBytes==0)continue;
-            Brush brush=i==0?download:upload;
-            double level=i==0?downloadMotion.Level:uploadMotion.Level;
-            dc.PushOpacity(selected?.20:.04+.09*level);
-            dc.DrawGeometry(null,Stroke(brush,route.Width+2),route.Strands[i]);dc.Pop();
-            dc.PushOpacity(selected?.85:.30+.42*level);
-            dc.DrawGeometry(null,Stroke(brush,route.Width),route.Strands[i]);dc.Pop();
-            if(selected)
-            {
-                dc.PushOpacity(.65);dc.DrawGeometry(null,Stroke(ink,.45),route.Strands[i]);dc.Pop();
-            }
+            if(Sample(route,fraction) is not { } center)continue;
+            dc.PushOpacity(motion.Level);
+            if(glow)dc.DrawEllipse(Halo(brush,1,role),null,center,3.5,3.5);
+            dc.DrawEllipse(brush,null,center,1.1,1.1);
+            dc.Pop();
         }
-        if(route.Data.ReceivedBytes>0)DrawFlow(dc,route,download,true);
-        if(route.Data.SentBytes>0)DrawFlow(dc,route,upload,false);
+    }
+    private FormattedText Formatted(string text,double size,Brush brush)=>new(text,CultureInfo.CurrentUICulture,FlowDirection.LeftToRight,Theme.ChartTypeface,size,brush,VisualTreeHelper.GetDpi(this).PixelsPerDip);
+    private double LegendChip(DrawingContext dc,double x,string label,Brush dot,Brush hairline,Brush fill,Brush text)
+    {
+        var formatted=Formatted(label,10,text);
+        var rect=new Rect(x,2,8+8+6+formatted.Width+8,18);
+        dc.DrawRoundedRectangle(fill,Stroke(hairline,1),rect,9,9);
+        dc.DrawRoundedRectangle(dot,null,new Rect(x+8,7,8,8),4,4);
+        dc.DrawText(formatted,new(x+22,rect.Top+(rect.Height-formatted.Height)/2));
+        return rect.Width;
     }
     private void Text(DrawingContext dc, string text, Point at, double width, double height, Brush brush)
     {
@@ -297,17 +379,14 @@ public sealed class ConnectionMap : FrameworkElement
         base.OnRender(dc);
         if (ActualWidth < 20 || ActualHeight < 60) return;
         var bounds = MapBounds;
-        var ink = Theme.Brush("Ink"); var muted = Theme.Brush("Muted");
+        bool highContrast = SystemParameters.HighContrast, blackout = Theme.CurrentName == "Blackout";
+        bool glow = !highContrast && (Theme.GlassEnabled || blackout);
+        var ink = Theme.Brush("Ink"); var muted = Theme.Brush("Muted"); var hairline = Theme.Brush("Hairline");
         var download = Theme.Brush(Theme.GraphKey("download")); var upload = Theme.Brush(Theme.GraphKey("upload"));
         dc.DrawRectangle(Theme.Brush("Background"), null, new Rect(RenderSize));
-        if (!MapOnly)
-        {
-            Text(dc, "↓ Download ∿", new(8, 2), Math.Min(115, ActualWidth / 2 - 8), 17, download);
-            Text(dc, "↑ Upload ∿", new(Math.Min(131, ActualWidth / 2), 2), ActualWidth / 2 - 8, 17, upload);
-        }
         StepMotion();UpdateAnimation();EnsureGeometry(); hitPoints.Clear();
         dc.PushClip(new RectangleGeometry(bounds));
-        Geometry clip;
+        Geometry clip; Point globeCenter = default; double globeRadius = 0;
         if (Flat)
         {
             var topLeft = Pixel(new(-camera.Zoom, (camera.Latitude / 90 - 1) * camera.Zoom, 1, true));
@@ -316,52 +395,115 @@ public sealed class ConnectionMap : FrameworkElement
         }
         else
         {
-            var center = Pixel(new(0, 0, 1, true)); double radius = Math.Min(bounds.Width, bounds.Height) / 2 * camera.Zoom;
-            clip = new EllipseGeometry(center, radius, radius);
+            globeCenter = Pixel(new(0, 0, 1, true)); globeRadius = Math.Min(bounds.Width, bounds.Height) / 2 * camera.Zoom;
+            clip = new EllipseGeometry(globeCenter, globeRadius, globeRadius);
         }
-        dc.DrawGeometry(Theme.Brush("Panel"), Stroke(Theme.Brush("Line"), 1), clip);
+        // Ocean, graticule, land, coast, borders.
+        dc.DrawGeometry(OceanBrush(highContrast, blackout), Stroke(hairline, 1), clip);
         dc.PushClip(clip);
-        dc.DrawGeometry(null, Stroke(Theme.Brush("Line"), .6), grid);
+        dc.PushOpacity(.2); dc.DrawGeometry(null, Stroke(hairline, .6), grid); dc.Pop();
+        var land = LandBrush(blackout);
+        if (Flat)
+        {
+            double shift = 2 * camera.Zoom * Scales().X;
+            foreach (double offset in new[] { -shift, 0, shift })
+            {
+                if (offset != 0) dc.PushTransform(new TranslateTransform(offset, 0));
+                dc.DrawGeometry(land, null, landFill);
+                if (offset != 0) dc.Pop();
+            }
+        }
+        else dc.DrawGeometry(land, null, landFill);
+        dc.DrawGeometry(null, Stroke(hairline, 1), coast);
         if(stateBorders is not null)
         {
             dc.PushOpacity(.48*Math.Clamp((camera.Zoom-1.25)/1.25,0,1));
             dc.DrawGeometry(null,Stroke(muted,.5),stateBorders);dc.Pop();
         }
-        dc.PushOpacity(.55);dc.DrawGeometry(null,Stroke(muted,.65),borders);dc.Pop();
-        // Open coastlines avoid an invented closing chord across the horizon or seam.
-        dc.DrawGeometry(null, Stroke(muted, 1), coast);
+        dc.PushOpacity(.28);dc.DrawGeometry(null,Stroke(muted,.65),borders);dc.Pop();
+        if (!Flat && !highContrast) dc.DrawGeometry(LimbBrush(), null, clip);
+        // Arcs, then particles on the busiest routes, then nodes.
+        foreach (var route in routes) DrawConnection(dc, route, download, upload, ink, glow);
+        if (subscribed)
+            foreach (var route in routes.OrderByDescending(r => (double)r.Data.ReceivedBytes + r.Data.SentBytes).Take(40))
+            {
+                if (route.Data.ReceivedBytes > 0) DrawParticles(dc, route, download, true, glow, "download");
+                if (route.Data.SentBytes > 0) DrawParticles(dc, route, upload, false, glow, "upload");
+            }
+        double scale = MapOnly ? .5 : 1;
         foreach (var route in routes)
         {
-            DrawConnection(dc,route,download,upload,ink);
             var projected = ConnectionProjection.Project(route.Data.Point, camera);
             if (!projected.Visible) continue;
             var center = Pixel(projected); if (!bounds.Contains(center)) continue;
             hitPoints.Add((center, route.Data.Key));
-            double scale=MapOnly?.5:1;
-            double radius = (route.Radius+(route.Data.Selected?1.5:0))*scale;
-            if(subscribed)radius+=.25*scale*Math.Max(route.Activity.Download.Level,route.Activity.Upload.Level)*Math.Sin(phase*2);
-            dc.DrawEllipse(route.Data.ReceivedBytes > 0 ? download : upload, Stroke(ink, (route.Data.Selected ? 1.5 : .7)*scale), center, radius, radius);
+            bool selected = route.Data.Selected || route.Data.Key == HoveredKey;
+            double level = Math.Max(route.Activity.Download.Level, route.Activity.Upload.Level);
+            double radius = (route.Radius + (selected ? 1.5 : 0)) * scale;
+            if (subscribed) radius += .25 * scale * level * Math.Sin(phase * 2);
+            var brush = route.Data.ReceivedBytes > 0 ? download : upload; string role = route.Data.ReceivedBytes > 0 ? "download" : "upload";
+            if (glow) dc.DrawEllipse(Halo(brush, .25, role), null, center, radius * 3, radius * 3);
+            dc.DrawEllipse(brush, Stroke(ink, (selected ? 1.2 : .6) * scale), center, radius, radius);
+            if (subscribed && level > 0)
+            {
+                double pulse = phase / 1.6 - Math.Floor(phase / 1.6);
+                dc.PushOpacity(.35 * (1 - pulse)); dc.DrawEllipse(null, Stroke(brush, 1), center, radius + 6 * pulse * scale, radius + 6 * pulse * scale); dc.Pop();
+            }
         }
         if (origin is not null)
         {
             var projected = ConnectionProjection.Project(origin, camera);
             if (projected.Visible)
             {
-                var center = Pixel(projected);
-                double radius=MapOnly?2.5:4,arm=MapOnly?4:6;
-                dc.DrawEllipse(Theme.Brush("Panel"), Stroke(ink, MapOnly?.8:1.3), center, radius, radius);
-                dc.DrawLine(Stroke(ink, 1), new(center.X - arm, center.Y), new(center.X + arm, center.Y));
-                dc.DrawLine(Stroke(ink, 1), new(center.X, center.Y - arm), new(center.X, center.Y + arm));
+                var center = Pixel(projected); double s = MapOnly ? .6 : 1;
+                if (glow) dc.DrawEllipse(Cached("origin-glow", () => new RadialGradientBrush(ColorOf("Glow"), Colors.Transparent)), null, center, 22 * s, 22 * s);
+                dc.PushOpacity(.6); dc.DrawEllipse(null, Stroke(ink, 1), center, 8 * s, 8 * s); dc.Pop();
+                dc.PushOpacity(.3); dc.DrawEllipse(null, Stroke(ink, 1), center, 13 * s, 13 * s); dc.Pop();
+                if (subscribed)
+                {
+                    double pulse = phase / 2 - Math.Floor(phase / 2);
+                    dc.PushOpacity(.5 * (1 - pulse)); dc.DrawEllipse(null, Stroke(ink, 1), center, (8 + 10 * pulse) * s, (8 + 10 * pulse) * s); dc.Pop();
+                }
+                dc.DrawEllipse(ink, null, center, 3.6 * s, 3.6 * s);
             }
         }
-        dc.Pop(); dc.Pop();
-        if (!MapOnly) Text(dc, StatusSummary, new(8, ActualHeight - 30), ActualWidth - 16, 28, muted);
+        dc.Pop();
+        // Atmosphere sits just outside the limb; it needs the bounds clip only.
+        if (glow && !Flat) dc.DrawEllipse(AtmosphereBrush(), null, globeCenter, globeRadius * 1.11, globeRadius * 1.11);
+        dc.Pop();
+        if (!MapOnly)
+        {
+            var chipFill = Theme.Brush("Surface1");
+            double next = 8 + LegendChip(dc, 8, "Download", download, hairline, chipFill, ink) + 6;
+            LegendChip(dc, next, "Upload", upload, hairline, chipFill, ink);
+            if (HoveredKey is { } hoveredKey && hitPoints.FirstOrDefault(h => h.Key == hoveredKey) is { Key: not null } hit)
+            {
+                var data = points.FirstOrDefault(p => p.Key == hoveredKey);
+                var lines = new List<(string Text, Brush Color)> { (data?.Label ?? hoveredKey, ink) };
+                if (data?.Detail is { } detail) lines.Add((detail, muted));
+                ChartFrame.Chip(dc, hit.Center, bounds, lines, Theme.ChartTypeface, VisualTreeHelper.GetDpi(this).PixelsPerDip, false);
+            }
+            Text(dc, StatusSummary, new(8, ActualHeight - 30), ActualWidth - 16, 28, muted);
+        }
     }
 
-    private void SelectAt(Point position)
+    private (Point Center, string Key)? Hit(Point position)
     {
         var hit = hitPoints.OrderBy(p => (p.Center - position).LengthSquared).FirstOrDefault();
-        if (hit.Key is not null && (hit.Center - position).Length <= 10) PointSelected?.Invoke(hit.Key);
+        return hit.Key is not null && (hit.Center - position).Length <= (MapOnly ? WidgetHitRadius : HitRadius) ? hit : null;
+    }
+    /// <summary>Resolves the node under <paramref name="position"/> (null clears), raises <see cref="PointHovered"/> and sets the cursor.</summary>
+    internal void SetHover(Point? position)
+    {
+        hoverPosition = position;
+        string? key = position is { } p && dragStart is null ? Hit(p)?.Key : null;
+        Cursor = dragStart is not null && dragged ? Cursors.SizeAll : key is not null ? Cursors.Hand : Cursors.Arrow;
+        if (key == HoveredKey) return;
+        HoveredKey = key; PointHovered?.Invoke(key); InvalidateVisual();
+    }
+    private void SelectAt(Point position)
+    {
+        if (Hit(position) is { } hit) PointSelected?.Invoke(hit.Key);
     }
     protected override void OnMouseLeftButtonDown(MouseButtonEventArgs e)
     {
@@ -370,18 +512,23 @@ public sealed class ConnectionMap : FrameworkElement
     protected override void OnMouseMove(MouseEventArgs e)
     {
         base.OnMouseMove(e);
-        if (dragStart is not Point start || dragCamera is null || e.LeftButton != MouseButtonState.Pressed) return;
+        if (dragStart is not Point start || dragCamera is null || e.LeftButton != MouseButtonState.Pressed) { SetHover(e.GetPosition(this)); return; }
         var delta = e.GetPosition(this) - start; if (delta.Length > 3) dragged = true;
-        if (dragged) ChangeCamera(dragCamera with { Longitude = dragCamera.Longitude - delta.X / Math.Max(1, MapBounds.Width) * 360 / camera.Zoom,
-            Latitude = dragCamera.Latitude + delta.Y / Math.Max(1, MapBounds.Height) * 180 / camera.Zoom });
+        if (dragged)
+        {
+            Cursor = Cursors.SizeAll;
+            ChangeCamera(dragCamera with { Longitude = dragCamera.Longitude - delta.X / Math.Max(1, MapBounds.Width) * 360 / camera.Zoom,
+                Latitude = dragCamera.Latitude + delta.Y / Math.Max(1, MapBounds.Height) * 180 / camera.Zoom });
+        }
         e.Handled = true;
     }
     protected override void OnMouseLeftButtonUp(MouseButtonEventArgs e)
     {
         base.OnMouseLeftButtonUp(e); if (dragStart is not null && !dragged) SelectAt(e.GetPosition(this));
-        dragStart = null; dragCamera = null; ReleaseMouseCapture(); e.Handled = true;
+        dragStart = null; dragCamera = null; ReleaseMouseCapture(); SetHover(e.GetPosition(this)); e.Handled = true;
     }
-    protected override void OnLostMouseCapture(MouseEventArgs e) { base.OnLostMouseCapture(e); dragStart = null; dragCamera = null; }
+    protected override void OnMouseLeave(MouseEventArgs e) { base.OnMouseLeave(e); if (dragStart is null) SetHover(null); }
+    protected override void OnLostMouseCapture(MouseEventArgs e) { base.OnLostMouseCapture(e); dragStart = null; dragCamera = null; SetHover(hoverPosition); }
     protected override void OnMouseWheel(MouseWheelEventArgs e) { base.OnMouseWheel(e); ZoomBy(e.Delta > 0 ? 1.2 : 1 / 1.2); e.Handled = true; }
     protected override void OnKeyDown(KeyEventArgs e)
     {
