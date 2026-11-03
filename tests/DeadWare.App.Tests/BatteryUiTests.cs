@@ -68,6 +68,8 @@ public class BatteryUiTests
                 LiveRenderingUiChecks.Run();
                 Phase("storage chart");
                 StorageChartUiChecks.Run();
+                Phase("storage page");
+                StoragePageUiChecks.Run();
                 Phase("chart frame");
                 ChartFrameUiChecks.Run();
                 Phase("thermal chart");

@@ -25,7 +25,10 @@ internal static class ShellUiChecks
 
         // Rail: ten vector buttons, no glyph characters, exactly one active after navigating.
         var navigation=Field<Dictionary<string,Button>>("navigation");
-        Assert.Equal(10,navigation.Count);
+        Assert.Equal(11,navigation.Count);
+        var order=navigation.Keys.ToList();
+        Assert.Equal(order.IndexOf("network")+1,order.IndexOf("storage"));
+        Assert.True(order.IndexOf("network")>=0);
         foreach(var (route,button) in navigation)
         {
             Assert.NotEmpty(Descendants(button).OfType<Path>());

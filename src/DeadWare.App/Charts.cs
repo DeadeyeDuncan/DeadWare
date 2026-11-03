@@ -108,6 +108,8 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
     public bool PumpWithDevices {get;init;}
     /// <summary>Lets a joined CPU/GPU usage chart carry the per-core CPU traces too (the widget).</summary>
     public bool CoresWithDevices {get;init;}
+    /// <summary>Limits a storage chart to one drive: its read and write become the traces and the per-drive lines are off.</summary>
+    public string? DriveId {get;init;}
     private sealed record Query(SampleHistory History,string Primary,string? Secondary,string? Fan,string? Pump,int Seconds,int Columns,bool Smoothed,int Cores,string Drives="");
     private sealed record ChartData(Query Query,Dictionary<string,IReadOnlyList<SamplePoint>> Series,Dictionary<string,IReadOnlyList<ChartRangePoint>> Ranges,Summary Statistics);
     public event Action<Summary>? StatisticsReady;
@@ -118,11 +120,12 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
     private Query CurrentQuery()
     {
         bool compare=CompareDevices&&kind is "cpu" or "cputemp";
-        return new(session.Collector.History,session.MetricId(kind),kind=="network"?"network/upload":kind=="storage"?"storage/total/write":compare?session.MetricId(kind=="cpu"?"gpu":"gputemp"):null,
+        bool drive=kind=="storage"&&DriveId is not null;
+        return new(session.Collector.History,drive?StorageMetrics.Key(DriveId!,"read"):session.MetricId(kind),kind=="network"?"network/upload":drive?StorageMetrics.Key(DriveId!,"write"):kind=="storage"?"storage/total/write":compare?session.MetricId(kind=="cpu"?"gpu":"gputemp"):null,
             ShowsFan(compare)?session.MetricId("gpufan"):null,ShowsPump(compare)?session.MetricId("cpupump"):null,session.HistorySeconds,Math.Max(1,(int)ActualWidth-90),session.Settings.GraphSmoothing&&session.HistorySeconds>=3600,
             ShowsCores()?session.Current?.CpuCoreCount??0:0,
             // The persisted drive set is part of the key, so a changed set rebuilds the per-drive traces.
-            kind=="storage"?string.Join("\n",PersistedDrives().Select(d=>d.Id)):"");
+            kind=="storage"&&!drive?string.Join("\n",PersistedDrives().Select(d=>d.Id)):"");
     }
     private IReadOnlyList<StorageDrive> PersistedDrives()=>StorageProjection.Persisted(session.Current?.Storage.Drives??[]);
     private static string[] DriveIds(Query query)=>query.Drives.Length==0?[]:query.Drives.Split('\n');
@@ -254,10 +257,10 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
         if(prepared?.Query!=query){prepared=Prepare(query,session.Collector.ElapsedSeconds);StatisticsReady?.Invoke(prepared.Statistics);}
         var bands=prepared.Ranges;
         IReadOnlyList<SamplePoint> Read(string metric)=>prepared.Series[metric];
-        string primaryMetric=session.MetricId(kind);var points=Read(primaryMetric);
+        string primaryMetric=query.Primary;var points=Read(primaryMetric);
         bool compare=CompareDevices&&kind is "cpu" or "cputemp";
         bool bytes=kind is "network" or "storage";
-        string? secondaryMetric=kind=="network"?"network/upload":kind=="storage"?"storage/total/write":compare?session.MetricId(kind=="cpu"?"gpu":"gputemp"):null;
+        string? secondaryMetric=query.Secondary;
         var secondary=secondaryMetric is null?[]:Read(secondaryMetric);
         bool showFan=ShowsFan(compare),showPump=ShowsPump(compare),showRpm=showFan||showPump;
         var fan=showFan?Read(session.MetricId("gpufan")):[];
@@ -282,7 +285,7 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
             double built=session.Collector.ElapsedSeconds;
             var specs=new List<TraceSpec> {new(primaryMetric,Theme.GraphKey(kind),false,false,maximum,(bytes||compare)?.65:1)};
             if(kind=="network")specs.Add(new("network/upload",Theme.GraphKey("upload"),true,false,maximum,.42));
-            else if(kind=="storage")specs.Add(new("storage/total/write",Theme.GraphKey("diskwrite"),true,false,maximum,.42));
+            else if(kind=="storage")specs.Add(new(secondaryMetric!,Theme.GraphKey("diskwrite"),true,false,maximum,.42));
             else if(compare)specs.Add(new(secondaryMetric!,Theme.GraphKey(kind=="cpu"?"gpu":"gputemp"),true,false,maximum,.45));
             if(showFan)specs.Add(new(session.MetricId("gpufan"),Theme.GraphKey("gpufan"),false,true,fanMaximum,0));
             if(showPump)specs.Add(new(session.MetricId("cpupump"),Theme.GraphKey("cpupump"),false,true,fanMaximum,0));
@@ -460,10 +463,11 @@ internal sealed class ChartCard : Border
     private readonly bool overview;
     private readonly Border? tint;
     private readonly TextBlock[] overviewStats=[];
+    private readonly string? driveId;
     public ChartCard(UiSession session,string kind,bool popButton=true):this(session,kind,popButton,false) {}
-    public ChartCard(UiSession session,string kind,bool popButton,bool overview)
+    public ChartCard(UiSession session,string kind,bool popButton,bool overview,string? driveId=null)
     {
-        this.session=session;this.kind=kind;this.overview=overview;SetResourceReference(StyleProperty,"Card");if(!overview)CornerRadius=new(10);Padding=overview?new(16,13,16,11):new(16,12,16,10);Margin=new(6);
+        this.session=session;this.driveId=kind=="storage"?driveId:null;this.kind=kind;this.overview=overview;SetResourceReference(StyleProperty,"Card");if(!overview)CornerRadius=new(10);Padding=overview?new(16,13,16,11):new(16,12,16,10);Margin=new(6);
         value.SetResourceReference(TextBlock.ForegroundProperty,Theme.GraphKey(kind));
         if(kind=="network")
         {
@@ -471,7 +475,7 @@ internal sealed class ChartCard : Border
             downloadValue.SetResourceReference(TextElement.ForegroundProperty,Theme.GraphKey("download"));uploadValue.SetResourceReference(TextElement.ForegroundProperty,Theme.GraphKey("upload"));
         }
         // A forced MinHeight larger than the grid's remaining row caused WPF to clip axis labels.
-        chart=new(session,kind){ClipToBounds=true};
+        chart=new(session,kind){ClipToBounds=true,DriveId=this.driveId};
         chart.StatisticsReady+=UpdateStatistics;
         var grid=new Grid();grid.RowDefinitions.Add(new(){Height=GridLength.Auto});grid.RowDefinitions.Add(new(){Height=GridLength.Auto});grid.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});grid.RowDefinitions.Add(new(){Height=GridLength.Auto});
         var header=new DockPanel {LastChildFill=true};var title=overview?Ui.Text(Ui.Title(kind),13):Ui.Heading(Ui.Title(kind),14);title.FontWeight=FontWeights.SemiBold;header.Children.Add(title);
@@ -545,7 +549,7 @@ internal sealed class ChartCard : Border
     private void UpdateReadings()
     {
         if(tint is not null)tint.Visibility=Theme.GlassEnabled?Visibility.Visible:Visibility.Collapsed;
-        string id=session.MetricId(kind);double? current=session.Stale?null:session.Value(id);var data=session.Current;
+        string id=driveId is not null?StorageMetrics.Key(driveId,"read"):session.MetricId(kind);double? current=session.Stale?null:session.Value(id);var data=session.Current;
         bool showFan=kind=="gputemp"&&session.Settings.ShowGpuFanSpeed;
         fan.Visibility=showFan?Visibility.Visible:Visibility.Collapsed;
         if(showFan)fan.Text=Ui.GpuFanText(session)+$" · {GraphStroke.Pattern(session.Settings,"gpufan",dotted:true)} · left RPM";
@@ -564,7 +568,9 @@ internal sealed class ChartCard : Border
             value.Text=Ui.Bytes(current,true);
             var drives=data?.Storage.Drives??[];
             double Rate(StorageDrive d)=>(session.Value(StorageMetrics.Key(d.Id,"read"))??0)+(session.Value(StorageMetrics.Key(d.Id,"write"))??0);
-            subtitle.Text=data is null?"Discovering drives…":drives.Count==0?"No drives detected"
+            var only=driveId is null?null:drives.FirstOrDefault(d=>d.Id==driveId);
+            if(driveId is not null)subtitle.Text=only is null?"Drive not detected":$"{only.Model} · ↑ {Ui.Bytes(session.Stale?null:session.Value(StorageMetrics.Key(driveId,"write")),true)} write";
+            else subtitle.Text=data is null?"Discovering drives…":drives.Count==0?"No drives detected"
                 :$"{drives.OrderByDescending(Rate).First().Model} \u00b7 {drives.Count} drive{(drives.Count==1?"":"s")}";
         }
         else if(kind=="memory")

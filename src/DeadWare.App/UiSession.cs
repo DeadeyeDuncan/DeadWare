@@ -343,6 +343,16 @@ public sealed class UiSession
         window.Closed+=(_,_)=>{detached.Remove(kind);layout.Close(kind);diagnostics?.Record("window_closed",new {Kind=kind,layout.Ending,OpenWindows=layout.Remembered});QueueSave();};
         window.Show();layout.Open(kind);diagnostics?.Record("window_opened",new {Kind=kind,OpenWindows=layout.Remembered});QueueSave();
     }
+    /// <summary>Opens (or raises) one drive's pop-out; it closes with the app but is not remembered across restarts.</summary>
+    public void OpenDriveWindow(StorageDrive drive)
+    {
+        string key="storage:"+drive.Id;
+        if(layout.Ending)return;
+        if(detached.TryGetValue(key,out var existing)) {existing.WindowState=WindowState.Normal;existing.Activate();return;}
+        var window=new GraphWindow(this,drive);detached[key]=window;
+        window.Closed+=(_,_)=>detached.Remove(key);
+        window.Show();
+    }
     public Task ShutdownAsync()=>shutdown??=ShutdownCoreAsync();
     private async Task ShutdownCoreAsync()
     {
