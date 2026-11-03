@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.10.1 — Polish
+
+- Temperature graphs that show a GPU fan or CPU pump overlay now span the full card like the usage graphs. A left margin reserved for the RPM axis before 0.9.0 was still being kept even though the RPM labels have drawn inside the plot since the refined-glass redesign, so the widget Temp graph, the dashboard temperature cards and the temperature pop-outs started about 60 px in. When a card is too narrow for an RPM label and the °C label on the same line, the RPM label is skipped.
+- Per-core CPU usage: a single failed per-core poll now keeps the core count and shows a one-sample gap instead of dropping every core line and the `· N cores` subtitle for a moment. The dashboard status says **Showing the first 64 of N CPU cores.** when a chip reports more cores than are drawn. Restored six-hour core history no longer carries one reading across an unbounded run of thinned records. Per-core tints for low-saturation CPU colours blend smoothly instead of jumping at one saturation value.
+
 ## 0.10.0 — Per-core CPU usage
 
 - Add **Settings → Monitoring → Show per-core CPU usage on usage graphs**. One thin solid line per core, tinted from the CPU graph colour, draws under the bold total on the dashboard CPU usage card, the separate CPU usage pop-out and the widget Usage graph; hover a graph to see the eight busiest cores. Core lines have no fill, glow or min/max band and follow the smoothing setting on 1–6 hour ranges. Core traces are saved in the six-hour graph history (up to 48 cores, once a second, or every two seconds above 32 cores). Off by default; the joined CPU/GPU pop-out, Usage history, Alerts and Cooling Health are unchanged.
