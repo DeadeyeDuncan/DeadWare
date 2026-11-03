@@ -9,7 +9,8 @@ internal static class GraphDepth
 {
     public static void Surface(DrawingContext dc,Rect plot)
     {
-        if(!Theme.GlassEnabled||plot.IsEmpty||plot.Width<=0||plot.Height<=0)return;
+        // Blackout keeps a flat black plot: no recessed tray, no highlight wash.
+        if(!Theme.GlassEnabled||Theme.CurrentName=="Blackout"||plot.IsEmpty||plot.Width<=0||plot.Height<=0)return;
         bool light=!Theme.IsDark;
         var surface=new LinearGradientBrush {StartPoint=new(0,0),EndPoint=new(0,1)};
         surface.GradientStops.Add(new(Color.FromArgb(light?(byte)17:(byte)48,0,0,0),0));
@@ -47,6 +48,15 @@ internal static class GraphDepth
         fill.GradientStops.Add(new(Color.FromArgb(Alpha(Theme.IsDark ? .075 : .055),source.R,source.G,source.B),.65));
         fill.GradientStops.Add(new(Color.FromArgb(Alpha(.012),source.R,source.G,source.B),1));fill.Freeze();
         dc.DrawGeometry(fill,null,area);
+    }
+
+    /// <summary>One wide, faint stroke in the trace's own color underneath it. Blackout keeps this glow; High Contrast and
+    /// disabled transparency stay flat.</summary>
+    public static void UnderGlow(DrawingContext dc,Geometry geometry,string color,double width)
+    {
+        if(SystemParameters.HighContrast||!(Theme.GlassEnabled||Theme.CurrentName=="Blackout")||geometry.IsEmpty())return;
+        var pen=new Pen(Theme.Brush(color),width+4) {LineJoin=PenLineJoin.Round,StartLineCap=PenLineCap.Round,EndLineCap=PenLineCap.Round};pen.Freeze();
+        dc.PushOpacity(.10);dc.DrawGeometry(null,pen,geometry);dc.Pop();
     }
 
     public static void TraceShadow(DrawingContext dc,Geometry geometry,UserSettings settings,string color,double width,bool dashed=false,bool dotted=false)

@@ -59,6 +59,33 @@ internal static class LiveRenderingUiChecks
         foreach(var chart in charts)Draw(chart);
         for(int i=0;i<20;i++)foreach(var chart in charts)chart.Refresh();
         WaitPrepared();
+        // Refined glass frame: solid 1 px hairline grid under a GuidelineSet, value labels inside the plot,
+        // hover crosshair with a GlassPopup chip only over real samples, and a cache keyed on the theme.
+        {
+            var cpu=charts[0];var frame=Draw(cpu);
+            object hairline=Application.Current.Resources["Hairline"],lineBrush=Application.Current.Resources["Line"];
+            var pens=Shapes(frame).Where(s=>s.Pen is not null).Select(s=>s.Pen).ToArray();
+            Assert.Contains(pens,pen=>ReferenceEquals(pen.Brush,hairline));
+            Assert.All(pens.Where(pen=>ReferenceEquals(pen.Brush,hairline)||ReferenceEquals(pen.Brush,lineBrush)),pen=>{Assert.Empty(pen.DashStyle.Dashes);Assert.Equal(1,pen.Thickness);});
+            Assert.True(HasGuidelines(frame),"Grid lines need a GuidelineSet to stay crisp at fractional DPI.");
+            var plot=cpu.PlotRect;Assert.True(plot.Width>100&&plot.Height>30,$"Plot {plot}");
+            foreach(var glyph in Glyphs(frame).Where(g=>new string(g.GlyphRun.Characters.ToArray()).EndsWith('%')))
+                Assert.True(plot.Contains(glyph.Bounds),$"Value label {glyph.Bounds} lies outside the plot {plot}.");
+            bool HasPopup(Drawing d)=>Shapes(d).Any(s=>ReferenceEquals(s.Brush,Application.Current.Resources["GlassPopup"]));
+            Assert.False(HasPopup(frame));Assert.Equal(-1,cpu.HoverIndex);
+            // The fixture holds the last 4096 s of the 6 h range: 95 % across lands on data, 1 px in does not.
+            cpu.SetHover(new Point(plot.Left+plot.Width*.95,plot.Top+10));
+            Assert.True(cpu.HoverIndex>=0,"Hover over recorded samples must resolve a sample.");Assert.True(HasPopup(Draw(cpu)));
+            cpu.SetHover(new Point(plot.Left+1,plot.Top+10));
+            Assert.Equal(-1,cpu.HoverIndex);Assert.False(HasPopup(Draw(cpu)));
+            cpu.SetHover(null);Assert.Equal(-1,cpu.HoverIndex);
+            Theme.Apply("Ember");cpu.Refresh();
+            var trace=Shapes(Draw(cpu)).First(s=>s.Geometry is StreamGeometry&&s.Pen is not null);
+            Assert.Same(Application.Current.Resources["Graph/cpu"],trace.Pen.Brush);
+            Theme.Apply("Midnight");cpu.Refresh();Draw(cpu);
+        }
+        IEnumerable<GlyphRunDrawing> Glyphs(Drawing drawing)=>drawing is GlyphRunDrawing glyph?[glyph]:drawing is DrawingGroup group?group.Children.SelectMany(Glyphs):[];
+        bool HasGuidelines(Drawing drawing)=>drawing is DrawingGroup group&&(group.GuidelineSet is not null||group.Children.Any(HasGuidelines));
         var preparedField=typeof(HistoryChart).GetField("prepared",flags)!;
         object Prepared(HistoryChart chart)=>preparedField.GetValue(chart)!;
         var expected=history.Summarize("cpu/usage",0,21600);
@@ -137,7 +164,7 @@ internal static class LiveRenderingUiChecks
                 typeof(HistoryChart).GetMethod("DrawSeries",flags)!.Invoke(charts[0],[context,rolling,now,100d,0d,0d,600d,120d,"Graph/cpu",false,false,true,null,1d]);
             var path=PathGeometry.CreateFromGeometry(Shapes(drawing).Single(shape=>shape.Geometry is StreamGeometry).Geometry);
             return path.Figures.SelectMany(figure=>new[]{figure.StartPoint}.Concat(figure.Segments.SelectMany(segment=>segment switch
-                {PolyLineSegment poly=>poly.Points.AsEnumerable(),LineSegment line=>new[]{line.Point},_=>Array.Empty<Point>()}))).ToArray();
+                {PolyLineSegment poly=>poly.Points.AsEnumerable(),LineSegment line=>new[]{line.Point},BezierSegment bezier=>new[]{bezier.Point1,bezier.Point2,bezier.Point3},PolyBezierSegment curve=>curve.Points.AsEnumerable(),_=>Array.Empty<Point>()}))).ToArray();
         }
         var earlier=RollingTrace(0);var later=RollingTrace(2);Assert.True(earlier.Length>20,$"Points: {earlier.Length}; ranges: {history.ChartRanges("cpu/usage",0,3600,200).Count}; history: {history.Count}");Assert.Equal(earlier.Length,later.Length);
         for(int i=0;i<earlier.Length;i++){Assert.Equal(earlier[i].Y,later[i].Y,8);Assert.Equal(earlier[i].X-600d*2/3600,later[i].X,8);}
