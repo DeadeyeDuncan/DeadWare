@@ -17,13 +17,15 @@ Spec: `docs/superpowers/specs/2026-11-02-refined-glass-redesign-design.md`. Plan
 - Plots under four label heights (the ~55 px overview card plots) label only the outer two value lines; chart bottom margin is the label height plus 6 px (compact) or 9 px.
 - Core arc opacity is `.30 + .50 × level` (spec `.35 + .55`), keeping the existing activity-fade contract; glow passes are `.06`/`.18` (`.12`/`.30` selected or hovered) as specified.
 - Blackout land uses `Ink` at 10 % (its `Surface2` is black); limb darkening is 55 % on dark themes and 27 % on Daylight; particle dots are drawn in the direction color with a radial halo only under glass; legend chips are measured rather than fixed at x = 92.
-- Hover tolerance on history charts is `max(6 px, half a bucket)`; on live charts `max(1.5 × polling, one column of the range)`.
+- Hover tolerance is `max(6 px, half a window)` on the thermal and battery charts, `max(1 px, half a bucket)` on the usage chart so a missing bucket never borrows a neighbour, and `max(1.5 × polling, one column of the range)` on live charts.
+- Tick labels and hover times come from the wall clock captured with the chart frame and are converted through the local time zone, so they neither drift between polls nor shift across a daylight-saving change (`TimeTicks.For` zone overload).
 - The segmented pill hugs its content (`HorizontalAlignment=Left`); the GPU picker is capped at 240 px and the page title trims with an ellipsis at the 900 px minimum width.
 
 ## Evidence
 
 - `dotnet test DeadWare.slnx -c Release --nologo`: 882 passed, 1 skipped (new: `ThemeTokenTests`, `ChartGeometryTests`, `MapGeometryTests`, `ShellUiChecks`, `ChartFrameUiChecks`, `ThermalChartUiChecks`, extended `RangeSegmentsUiChecks`, `LiveRenderingUiChecks`, `ConnectionMapUiChecks`, `ConnectionsPageUiChecks`, `ConnectionsWidgetUiChecks`, battery and usage checks).
 - Preview renders: `--render` (21 overview frames plus `checks.json`) and `--render-shell` (9 themes × 10 routes = 90 frames, 18 frames at the 900 × 640 minimum, `shell-checks.json` with 108 checks and `"failures": []`). The Windows build workflow uploads both sets as the `DeadWare-previews` artifact.
+- A blind Codex adversarial review of the branch produced twelve verified findings (cached wall clock, DST labels, hover-path geometry rebuilds, map per-frame allocations, stale map hover after a poll, gradients with transparency off, halo color cache, chip clamping, usage gap hover, Settings help placement, land fill at the horizon); all were fixed with a failing test first in the final commit.
 - `Geometry.GetFlattenedPathGeometry()` returns no figures for open stroked figures; the glow pass strokes a `PathGeometry` copy and the old trace-shadow pass, which relied on that call and never drew, is no longer invoked by live charts.
 
 ## Not verified from CI
