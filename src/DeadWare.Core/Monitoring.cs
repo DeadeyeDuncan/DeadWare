@@ -399,6 +399,7 @@ public sealed class UserSettings
     public List<string> OpenWindows {get;set;}=new();
     public string WindowPlacementFormat {get;set;}=WindowCoordinates.Format;
     public bool ExtendedSensors {get;set;}
+    public bool StorageSensors {get;set;}=true;
     public string Theme {get;set;}="Midnight";
     public string GlassLevel {get;set;}=GlassLevels.Balanced;
     public Dictionary<string,string> GraphColors {get;set;}=new();

@@ -55,7 +55,7 @@ public sealed class UiSession
         diagnostics?.Record("settings_loaded",new {Status=SettingsStatus,Settings.RestoreOpenWindows,OpenWindows=layout.Remembered,Settings.SelectedGpuId,Disk=LayoutDiagnostics.ReadSettingsState(settingsPath)});
         saveTimer.Tick+=async (_,_)=>{saveTimer.Stop();await SaveAsync();};
         timer.Interval=TimeSpan.FromSeconds(Math.Min(1,Settings.PollingIntervalSeconds));
-        Collector=new(new CollectorOptions(ExtendedSensors:Settings.ExtendedSensors,PollingIntervalSeconds:Settings.PollingIntervalSeconds));
+        Collector=new(new CollectorOptions(ExtendedSensors:Settings.ExtendedSensors,PollingIntervalSeconds:Settings.PollingIntervalSeconds,StorageSensors:Settings.StorageSensors));
         GraphHistory=new(Path.Combine(Path.GetDirectoryName(settingsPath)!,"live-graph-history.db"),Environment.MachineName,Collector.History);
         Collector.SampleAvailable+=GraphHistory.TryRecord;
         Cooling=new(Path.Combine(Path.GetDirectoryName(settingsPath)!,"cooling-history.db"),Environment.MachineName,Settings.CoolingConfigurationId);
@@ -111,6 +111,7 @@ public sealed class UiSession
         Theme.SetGraphColors(Settings.GraphColors);Changed?.Invoke();_ = SaveAsync();
     }
     public void SetExtendedSensors(bool enabled) {Settings.ExtendedSensors=enabled;_ = SaveAsync();}
+    public void SetStorageSensors(bool enabled) {Settings.StorageSensors=enabled;_ = SaveAsync();}
     public void SetGraphStyle(string kind,string pattern,bool glow,double thickness=1,double glowStrength=1)
     {
         if(kind=="network")kind="download";
