@@ -147,7 +147,10 @@ internal sealed class CoolingHealthPage : ScrollViewer
     {
         view = result;
         syncing = true;
-        var devices = result.Devices.Select(d => new Choice<ThermalDevice>(DeviceLabel(d), d)).ToArray();
+        // Devices arrive most recently recorded first; a repeated label is an older sensor map of the same hardware.
+        var seen = new HashSet<string>();
+        var devices = result.Devices.Select(d => (Label: DeviceLabel(d), Device: d))
+            .Select(d => new Choice<ThermalDevice>(seen.Add(d.Label) ? d.Label : $"{d.Label} · older sensor map {d.Device.Id[..Math.Min(6, d.Device.Id.Length)]}", d.Device)).ToArray();
         device.ItemsSource = devices;
         device.SelectedItem = devices.FirstOrDefault(c => c.Value.Id == result.SelectedDevice?.Id && c.Value.ConfigurationId == result.SelectedDevice?.ConfigurationId);
         var priorReference = (references.SelectedItem as Choice<ThermalReference>)?.Value.Id;

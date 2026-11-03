@@ -100,7 +100,14 @@ public sealed class ThermalStore
     public IReadOnlyList<ThermalDevice> Devices()
     {
         EnsureInitialized(); using var db = Open(true);
-        return ReadPayloads<ThermalDevice>(db, "SELECT payload FROM devices ORDER BY device,configuration LIMIT 512");
+        // Most recently recorded first: a sensor-map change gives the same hardware a new identity with the
+        // same name, and callers pick the first match. MAX(start) stays on the (device,configuration,start) indexes.
+        return ReadPayloads<ThermalDevice>(db, """
+            SELECT payload FROM devices d ORDER BY COALESCE(
+                (SELECT MAX(start) FROM windows w WHERE w.device=d.device AND w.configuration=d.configuration),
+                (SELECT MAX(start) FROM summaries s WHERE s.device=d.device AND s.configuration=d.configuration), 0) DESC,
+                device,configuration LIMIT 512
+            """);
     }
 
     public IReadOnlyList<ThermalWindow> Read(string deviceId, string configurationId, DateTimeOffset from,
