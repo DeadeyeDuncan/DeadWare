@@ -55,8 +55,9 @@ internal sealed partial class LibreStorageHealth : IStorageHealthSource
             if(disposed)return;disposed=true;
             if(!opened)return;
         }
-        // Close only after every stray update has left native/SMART IO.
-        updates.Outstanding().ContinueWith(_=>computer.Close(),CancellationToken.None,TaskContinuationOptions.ExecuteSynchronously,TaskScheduler.Default);
+        // Close only after every stray update has left native/SMART IO. An update that never returns means
+        // Close never runs: deliberate, quit must never block on a stuck drive.
+        updates.Close().ContinueWith(_=>computer.Close(),CancellationToken.None,TaskContinuationOptions.ExecuteSynchronously,TaskScheduler.Default);
     }
 }
 
@@ -65,18 +66,25 @@ internal sealed class HardwareUpdates
 {
     private readonly Dictionary<object,Task> running=new(ReferenceEqualityComparer.Instance);
     private readonly object gate=new();
+    private bool closed;
     /// <summary>Returns null on timeout (or while a previous update is still pending), else whether the update succeeded.</summary>
     public bool? Run(object key,Action update,TimeSpan timeout)
     {
         Task task;
         lock(gate)
         {
+            if(closed)return null;
             if(running.TryGetValue(key,out var previous)&&!previous.IsCompleted)return null;
             task=Task.Run(update);running[key]=task;
         }
         bool finished;
         try {finished=task.Wait(timeout);} catch(AggregateException) {finished=true;}
         return finished?task.IsCompletedSuccessfully:null;
+    }
+    /// <summary>Refuses new updates from now on and returns a task that completes when the running ones finish.</summary>
+    public Task Close()
+    {
+        lock(gate){closed=true;return Outstanding();}
     }
     public Task Outstanding()
     {

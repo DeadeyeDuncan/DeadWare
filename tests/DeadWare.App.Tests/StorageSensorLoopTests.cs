@@ -103,4 +103,16 @@ public class StorageSensorLoopTests
         Assert.True(outstanding.Wait(TimeSpan.FromSeconds(5)));
         Assert.True(updates.Run(key,()=>{},TimeSpan.FromSeconds(5)));
     }
+
+    [Fact] public void Close_between_hardware_refuses_new_updates_and_waits_for_outstanding()
+    {
+        var updates=new HardwareUpdates();var gate=new ManualResetEventSlim();int secondStarted=0;
+        Assert.Null(updates.Run(new object(),()=>gate.Wait(),TimeSpan.FromMilliseconds(50)));
+        var closed=updates.Close();
+        Assert.Null(updates.Run(new object(),()=>Interlocked.Increment(ref secondStarted),TimeSpan.FromSeconds(1)));
+        Assert.Equal(0,Volatile.Read(ref secondStarted));
+        Assert.False(closed.Wait(100));
+        gate.Set();
+        Assert.True(closed.Wait(TimeSpan.FromSeconds(5)));
+    }
 }
