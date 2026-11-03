@@ -101,8 +101,9 @@ public sealed class GraphHistoryService
                 if(previous is not null&&(Math.Abs((sample.Timestamp-previous.Timestamp).TotalSeconds-
                     (sample.MonotonicSeconds-previous.MonotonicSeconds))>3||seenDrops!=queued.DropGeneration||skippedFrame))segment=Guid.NewGuid().ToString("N");
                 previous=sample;seenDrops=queued.DropGeneration;skippedFrame=false;
-                bool includeCores=sample.Timestamp-lastCoreStamp>=GraphHistoryProjection.CoreCadence(reading.CpuCoreCount);
-                if(includeCores)lastCoreStamp=sample.Timestamp;
+                var sinceCores=sample.Timestamp-lastCoreStamp;
+                bool includeCores=sinceCores<TimeSpan.Zero||sinceCores>=GraphHistoryProjection.CoreCadence(reading.CpuCoreCount);
+                if(includeCores&&mappings.Values.Any(GraphHistoryProjection.IsCore))lastCoreStamp=sample.Timestamp;
                 var projected=mappings.Where(p=>includeCores||!GraphHistoryProjection.IsCore(p.Value)).ToDictionary(p=>p.Key,p=>SampleHistory.Finite(sample.Values.GetValueOrDefault(p.Value)),StringComparer.Ordinal);
                 pending.Add(new(segment,sample.Timestamp.ToUniversalTime(),sample.MonotonicSeconds,projected)
                     {PollingIntervalSeconds=sample.PollingIntervalSeconds});

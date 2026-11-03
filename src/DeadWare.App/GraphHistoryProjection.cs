@@ -27,18 +27,21 @@ public static class GraphHistoryProjection
         // CPU graph values are machine-wide. Multiple sockets cannot be assigned a
         // physical identity from the collector's single current CPU label.
         if(cpus.Length==1)
-        {
             Add("Cpu",cpus[0].First().Hardware,"cpu","usage","temperature","pump");
-            string cpuIdentity=Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
-                JsonSerializer.Serialize(new[]{"graph-v1",machineKey,"Cpu",cpus[0].First().Hardware}))))[..12];
-            for(int i=0;i<Math.Min(reading.CpuCoreCount,MaximumPersistedCores);i++)
-                result[cpuIdentity+"/c"+i]=CpuCoreUsage.Key(i);
-        }
         foreach(var gpu in reading.Gpus.Take(16))
         {
             if(string.IsNullOrWhiteSpace(gpu.Name)||reading.Gpus.Count(g=>g.Name.Equals(gpu.Name,StringComparison.OrdinalIgnoreCase))!=1)continue;
             var metadata=reading.Sensors.FirstOrDefault(s=>s.HardwareId==gpu.Id&&s.HardwareType is "GpuAmd" or "GpuNvidia" or "GpuIntel");
             if(metadata is not null)Add(metadata.HardwareType,gpu.Name,gpu.Id,"usage","temperature","fan");
+        }
+        if(cpus.Length==1)
+        {
+            int nonCoreCount=result.Count;
+            string cpuIdentity=Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
+                JsonSerializer.Serialize(new[]{"graph-v1",machineKey,"Cpu",cpus[0].First().Hardware}))))[..12];
+            int cores=Math.Max(0,Math.Min(Math.Min(reading.CpuCoreCount,MaximumPersistedCores),64-nonCoreCount));
+            for(int i=0;i<cores;i++)
+                result[cpuIdentity+"/c"+i]=CpuCoreUsage.Key(i);
         }
         return result;
     }

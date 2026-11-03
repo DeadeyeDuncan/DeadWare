@@ -291,7 +291,9 @@ public class GraphHistoryServiceTests
         Assert.All(records,r=>Assert.True(r.Values.Count<=64));
         Assert.All(records,r=>Assert.Contains(r.Values.Keys,k=>!k.Contains("/c")));
         var withCores=records.Where(r=>r.Values.Keys.Any(k=>k.Contains("/c"))).ToArray();
-        Assert.True(withCores.Length>=2);
+        Assert.Equal(6,withCores.Length);
+        Assert.Equal(origin.AddSeconds(2).UtcDateTime,withCores[1].Timestamp.UtcDateTime);
+        Assert.Contains(withCores[1].Values,p=>p.Key.EndsWith("/c47")&&p.Value is not null);
         for(int i=1;i<withCores.Length;i++)Assert.True((withCores[i].Timestamp-withCores[i-1].Timestamp).TotalSeconds>=2);
         Assert.True(withCores.Length<records.Length);
     }
@@ -307,6 +309,25 @@ public class GraphHistoryServiceTests
         Assert.True(restored.Values.ContainsKey("cpu/core/7/usage"));
         Assert.False(restored.Values.ContainsKey("cpu/core/8/usage"));
         Assert.DoesNotContain("unavailable",second.Status);
+    }
+
+    [Fact] public void Many_gpus_leave_the_record_within_the_value_limit_and_keep_cpu_usage()
+    {
+        var reading=WithCores(Reading(DateTimeOffset.UtcNow,1),64);
+        var gpus=Enumerable.Range(0,8).Select(i=>new Device($"/gpu/{i}",$"Model {i}")).ToArray();
+        reading=reading with {Gpus=gpus,Sensors=[..reading.Sensors,..gpus.Select(g=>new SensorReading(g.Id+"/load",g.Name,"GPU Core","%",1,g.Id,"GpuAmd","Load","Available"))]};
+        var mappings=GraphHistoryProjection.Mappings(reading,"machine");
+        Assert.True(mappings.Count<=64);Assert.Contains("cpu/usage",mappings.Values);
+    }
+    [Fact] public async Task Backwards_clock_step_still_carries_core_keys()
+    {
+        using var fixture=new Fixture();var now=DateTimeOffset.UtcNow.AddSeconds(-5);
+        var service=new GraphHistoryService(fixture.Path,"machine",new SampleHistory());service.Start();
+        service.TryRecord(WithCores(Reading(now,1),4));service.TryRecord(WithCores(Reading(now.AddHours(-1),2),4));
+        await service.StopAsync();
+        var store=new GraphHistoryStore(fixture.Path);store.Initialize();
+        var records=store.Read(DateTimeOffset.UtcNow);
+        Assert.Equal(2,records.Count);Assert.All(records,r=>Assert.Contains(r.Values.Keys,k=>k.Contains("/c")));
     }
 
     private static Reading WithCores(Reading reading,int count)
