@@ -22,8 +22,21 @@ internal static class Theme
     public static string GraphKey(string kind)=>"Graph/"+(kind=="network"?"download":kind);
     public static void SetGraphColors(IReadOnlyDictionary<string,string> colors)
     {graphColors=GraphColorSettings.Normalize(colors);ApplyGraphColors();}
+    private static readonly Dictionary<(Color,int,int),SolidColorBrush> coreBrushes=new();
+    public static SolidColorBrush CoreBrush(int index,int count)
+    {
+        var cpu=((SolidColorBrush)Brush("Graph/cpu")).Color;
+        var key=(cpu,index,count);
+        if(!coreBrushes.TryGetValue(key,out var brush))
+        {
+            brush=new SolidColorBrush(ThemeTokens.CoreTint(cpu,index,count,SystemParameters.HighContrast));
+            brush.Freeze();coreBrushes[key]=brush;
+        }
+        return brush;
+    }
     private static void ApplyGraphColors()
     {
+        coreBrushes.Clear();
         foreach(string kind in GraphColorSettings.Kinds)
         {
             string role=kind switch {"gpu" or "gputemp"=>"Gpu","gpufan"=>"Warning","cpupump"=>"Download","memory"=>"Accent","download"=>"Download",_=>"Cpu"};
