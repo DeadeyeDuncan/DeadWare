@@ -8,8 +8,10 @@ public static class CpuCoreUsage
     public const int MaximumCores=64;
     private static readonly Regex CoreName=new(@"^(CPU Core|P-Core|E-Core)(?: #([0-9]{1,4}))?(?: Thread #([0-9]{1,4}))?$",RegexOptions.Compiled|RegexOptions.IgnoreCase|RegexOptions.CultureInvariant);
     public static string Key(int index)=>$"cpu/core/{index}/usage";
-    public static IReadOnlyList<double?> FromSensors(IReadOnlyList<SensorReading> sensors)
+    public static IReadOnlyList<double?> FromSensors(IReadOnlyList<SensorReading> sensors)=>FromSensors(sensors,out _);
+    public static IReadOnlyList<double?> FromSensors(IReadOnlyList<SensorReading> sensors,out int dropped)
     {
+        dropped=0;
         var groups=new SortedDictionary<(int Group,int K),(double? Plain,bool HasPlain,SortedDictionary<int,double?> Threads)>();
         foreach(var s in sensors)
         {
@@ -31,7 +33,7 @@ public static class CpuCoreUsage
         foreach(var g in groups.Values)
             foreach(var v in g.HasPlain?new[]{g.Plain}:g.Threads.Values.ToArray())
             {
-                if(result.Count>=MaximumCores)return result;
+                if(result.Count>=MaximumCores){dropped++;continue;}
                 result.Add(v is null?null:Math.Round(v.Value,1));
             }
         return result;

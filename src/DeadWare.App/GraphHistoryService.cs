@@ -95,11 +95,12 @@ public sealed class GraphHistoryService
                         foreach(var pair in newMappings)
                             if(record.Values.TryGetValue(pair.Key,out var value))values[pair.Value]=value;
                         string sessionKey=record.SessionId??"";
-                        if(lastBySession.TryGetValue(sessionKey,out var last)&&record.Timestamp-last.Stamp<=fillWindow)
-                            foreach(var core in last.Cores)values.TryAdd(core.Key,core.Value);
+                        // Only a record's own core keys (before fill) become a fill source, so a filled record never chains further.
                         var cores=new Dictionary<string,double?>(StringComparer.Ordinal);
                         foreach(var pair in values)if(GraphHistoryProjection.IsCore(pair.Key))cores[pair.Key]=pair.Value;
-                        lastBySession[sessionKey]=(record.Timestamp,cores);
+                        if(lastBySession.TryGetValue(sessionKey,out var last)&&record.Timestamp-last.Stamp<=fillWindow)
+                            foreach(var core in last.Cores)values.TryAdd(core.Key,core.Value);
+                        if(cores.Count>0)lastBySession[sessionKey]=(record.Timestamp,cores);
                         if(values.Count==0)continue;
                         restored.Add(new(record.Timestamp,anchor.MonotonicSeconds+(record.Timestamp-anchor.Timestamp).TotalSeconds,values)
                             {SessionId=record.SessionId,PollingIntervalSeconds=record.PollingIntervalSeconds});

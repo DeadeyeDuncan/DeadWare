@@ -61,4 +61,16 @@ public sealed class ThemeTokenTests
             Assert.All(tints,t=>Assert.Equal(255,t.A));
         }
     }
+
+    [Fact] public void Grey_tint_saturation_has_no_cliff_at_the_quarter_boundary()
+    {
+        // HSL with saturation .249 vs .251 around the same hue/lightness; build both from a base hue.
+        Color Grey(double s){double l=.5,c=(1-Math.Abs(2*l-1))*s,m=l-c/2;return Color.FromRgb((byte)Math.Round((c+m)*255),(byte)Math.Round(m*255),(byte)Math.Round(m*255));}
+        var a=Grey(.249);var b=Grey(.251);
+        foreach(int i in new[]{0,3,7})
+        {
+            var x=ThemeTokens.CoreTint(a,i,8,false);var y=ThemeTokens.CoreTint(b,i,8,false);
+            Assert.True(Math.Abs(x.R-y.R)<8&&Math.Abs(x.G-y.G)<8&&Math.Abs(x.B-y.B)<8,$"i={i} {x} vs {y}");
+        }
+    }
 }

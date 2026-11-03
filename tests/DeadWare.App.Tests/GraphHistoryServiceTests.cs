@@ -365,6 +365,20 @@ public class GraphHistoryServiceTests
         Assert.False(restored[1].Values.ContainsKey("cpu/core/0/usage"));
         Assert.Null(history.Series("cpu/core/0/usage",1,21600)[1].Value);
     }
+    [Fact] public async Task Restore_fill_does_not_chain_through_filled_records()
+    {
+        using var fixture=new Fixture();var origin=DateTimeOffset.UtcNow.AddSeconds(-30);
+        var first=new GraphHistoryService(fixture.Path,"machine",new SampleHistory());first.Start();
+        first.TryRecord(WithCores(Reading(origin,1),64));
+        for(int i=1;i<=8;i++)first.TryRecord(Reading(origin.AddSeconds(i*.5),i+1));
+        await first.StopAsync();
+        var history=new SampleHistory();var live=WithCores(Reading(DateTimeOffset.UtcNow,1),64);history.Add(live.Sample);
+        var second=new GraphHistoryService(fixture.Path,"machine",history);second.Start();second.TryRecord(live);await second.StopAsync();
+        var restored=history.Read().Where(s=>s.SessionId is not null).OrderBy(s=>s.MonotonicSeconds).ToArray();
+        Assert.Equal(9,restored.Length);
+        // fillWindow = 2 s cadence + 0.5 s: records up to +2.5 s are filled from the real record, later ones must not be.
+        for(int i=0;i<restored.Length;i++)Assert.Equal(i<=5,restored[i].Values.ContainsKey("cpu/core/0/usage"));
+    }
     [Fact] public async Task One_second_polling_with_jitter_writes_cores_on_every_record()
     {
         using var fixture=new Fixture();var origin=DateTimeOffset.UtcNow.AddSeconds(-30);

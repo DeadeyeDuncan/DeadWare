@@ -35,7 +35,7 @@ internal static class ThemeTokens
         if(Math.Abs(to-from)<0.2){var other=Ramp(-dir);if(Math.Abs(other.To-other.From)>Math.Abs(to-from))(from,to)=other;}
         double lightness=from+(to-from)*p;
         // A grey has no hue to fan and too few 8-bit levels in the clamped range, so give it a faint one.
-        return FromHsl(h+(-18+36*p),s<0.25?Math.Max(s*0.85,0.7):s*0.85,lightness);
+        return FromHsl(h+(-18+36*p),s<0.25?0.7+(0.25*0.85-0.7)*(s/0.25):s*0.85,lightness);
     }
 
     private static (double H,double S,double L) ToHsl(Color c)
