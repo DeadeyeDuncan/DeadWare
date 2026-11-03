@@ -63,6 +63,7 @@ public sealed class GraphHistoryService
             Snapshot? anchor=null,previous=null;
             string segment=Guid.NewGuid().ToString("N");
             long seenDrops=0;
+            DateTimeOffset lastCoreStamp=DateTimeOffset.MinValue;
             bool skippedFrame=false;
             void Flush()
             {
@@ -100,7 +101,9 @@ public sealed class GraphHistoryService
                 if(previous is not null&&(Math.Abs((sample.Timestamp-previous.Timestamp).TotalSeconds-
                     (sample.MonotonicSeconds-previous.MonotonicSeconds))>3||seenDrops!=queued.DropGeneration||skippedFrame))segment=Guid.NewGuid().ToString("N");
                 previous=sample;seenDrops=queued.DropGeneration;skippedFrame=false;
-                var projected=mappings.ToDictionary(p=>p.Key,p=>SampleHistory.Finite(sample.Values.GetValueOrDefault(p.Value)),StringComparer.Ordinal);
+                bool includeCores=sample.Timestamp-lastCoreStamp>=GraphHistoryProjection.CoreCadence(reading.CpuCoreCount);
+                if(includeCores)lastCoreStamp=sample.Timestamp;
+                var projected=mappings.Where(p=>includeCores||!GraphHistoryProjection.IsCore(p.Value)).ToDictionary(p=>p.Key,p=>SampleHistory.Finite(sample.Values.GetValueOrDefault(p.Value)),StringComparer.Ordinal);
                 pending.Add(new(segment,sample.Timestamp.ToUniversalTime(),sample.MonotonicSeconds,projected)
                     {PollingIntervalSeconds=sample.PollingIntervalSeconds});
                 if(pending.Count==120)Flush();

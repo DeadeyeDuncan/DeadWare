@@ -6,6 +6,10 @@ namespace DeadWare.App;
 
 public static class GraphHistoryProjection
 {
+    public const int MaximumPersistedCores=48;
+    internal static bool IsCore(string liveKey)=>liveKey.StartsWith("cpu/core/",StringComparison.Ordinal);
+    internal static TimeSpan CoreCadence(int coreCount)=>coreCount>32?TimeSpan.FromSeconds(2):TimeSpan.FromSeconds(1);
+
     /// <summary>Stable graph keys contain no names and do not depend on GPU enumeration order.</summary>
     public static IReadOnlyDictionary<string,string> Mappings(Reading reading,string machineKey)
     {
@@ -23,7 +27,13 @@ public static class GraphHistoryProjection
         // CPU graph values are machine-wide. Multiple sockets cannot be assigned a
         // physical identity from the collector's single current CPU label.
         if(cpus.Length==1)
+        {
             Add("Cpu",cpus[0].First().Hardware,"cpu","usage","temperature","pump");
+            string cpuIdentity=Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
+                JsonSerializer.Serialize(new[]{"graph-v1",machineKey,"Cpu",cpus[0].First().Hardware}))))[..12];
+            for(int i=0;i<Math.Min(reading.CpuCoreCount,MaximumPersistedCores);i++)
+                result[cpuIdentity+"/c"+i]=CpuCoreUsage.Key(i);
+        }
         foreach(var gpu in reading.Gpus.Take(16))
         {
             if(string.IsNullOrWhiteSpace(gpu.Name)||reading.Gpus.Count(g=>g.Name.Equals(gpu.Name,StringComparison.OrdinalIgnoreCase))!=1)continue;
