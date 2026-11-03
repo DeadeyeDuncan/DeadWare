@@ -135,6 +135,11 @@ public sealed class UiSession
         if(Settings.ShowCpuPumpSpeed==enabled)return;
         Settings.ShowCpuPumpSpeed=enabled;Changed?.Invoke();_ = SaveAsync();
     }
+    public void SetCpuCoreUsage(bool enabled)
+    {
+        if(Settings.ShowCpuCoreUsage==enabled)return;
+        Settings.ShowCpuCoreUsage=enabled;Changed?.Invoke();_ = SaveAsync();
+    }
     public void SetJoinedPopouts(bool enabled)
     {
         if(Settings.JoinCpuGpuPopouts==enabled)return;

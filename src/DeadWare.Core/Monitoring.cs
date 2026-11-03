@@ -103,6 +103,26 @@ public sealed class SampleHistory
             return points;
         }
     }
+    /// <summary>Several <see cref="Series"/> reads in one pass under the lock; a missing id yields null points.</summary>
+    public IReadOnlyDictionary<string,IReadOnlyList<SamplePoint>> SeriesMany(IReadOnlyList<string> ids,double now,int seconds)
+    {
+        lock(gate)
+        {
+            var lists=new Dictionary<string,List<SamplePoint>>(StringComparer.Ordinal);
+            foreach(var id in ids)lists.TryAdd(id,[]);
+            Snapshot? previous=null;
+            foreach(var sample in samples)
+            {
+                if(sample.MonotonicSeconds<now-seconds||sample.MonotonicSeconds>now)continue;
+                bool breakBefore=previous is not null&&previous.SessionId!=sample.SessionId;
+                double interval=PollingPolicy.Normalize(sample.PollingIntervalSeconds);
+                foreach(var pair in lists)
+                    pair.Value.Add(new(sample.Timestamp,sample.MonotonicSeconds,sample.Values.GetValueOrDefault(pair.Key)){BreakBefore=breakBefore,PollingIntervalSeconds=interval});
+                previous=sample;
+            }
+            return lists.ToDictionary(p=>p.Key,p=>(IReadOnlyList<SamplePoint>)p.Value,StringComparer.Ordinal);
+        }
+    }
     private Snapshot[] Capture(double now,int seconds)
     {
         lock(gate)return samples.Where(s=>s.MonotonicSeconds>=now-seconds&&s.MonotonicSeconds<=now).ToArray();
@@ -142,6 +162,57 @@ public sealed class SampleHistory
             end=time;min=Math.Min(min,value);max=Math.Max(max,value);total+=value;count++;
         }
         Flush();return result;
+    }
+    /// <summary>Several <see cref="ChartRanges"/> reads from one pass over the captured snapshots; results match per-id calls.</summary>
+    public IReadOnlyDictionary<string,IReadOnlyList<ChartRangePoint>> ChartRangesMany(IReadOnlyList<string> ids,double now,int seconds,int pixelWidth)
+    {
+        if(!double.IsFinite(now)||seconds<=0||pixelWidth<=0)throw new ArgumentOutOfRangeException(nameof(now));
+        ArgumentNullException.ThrowIfNull(ids);
+        Snapshot[] captured;lock(gate)captured=chartSnapshot??=samples.ToArray();
+        var states=new Dictionary<string,RangeState>(StringComparer.Ordinal);
+        foreach(var id in ids)states.TryAdd(id,new RangeState(Math.Min(pixelWidth,4096)));
+        var all=states.ToArray();
+        double bucketSeconds=seconds/(double)pixelWidth;
+        Snapshot? previous=null;double previousInterval=1;
+        foreach(var sample in captured)
+        {
+            double time=sample.MonotonicSeconds;
+            if(time<now-seconds||time>now)continue;
+            double interval=PollingPolicy.Normalize(sample.PollingIntervalSeconds);
+            bool gap=previous is not null&&(sample.SessionId!=previous.SessionId||time-previous.MonotonicSeconds>Math.Max(previousInterval,interval)+1.5);
+            previous=sample;previousInterval=interval;
+            double column=Math.Floor(time/bucketSeconds);
+            foreach(var pair in all)
+            {
+                var state=pair.Value;
+                if(gap)state.Gap(time);
+                if(Finite(sample.Values.GetValueOrDefault(pair.Key)) is not { } value){state.Gap(time);continue;}
+                state.Add(column,time,value);
+            }
+        }
+        var result=new Dictionary<string,IReadOnlyList<ChartRangePoint>>(StringComparer.Ordinal);
+        foreach(var pair in all){pair.Value.Flush();result[pair.Key]=pair.Value.Result;}
+        return result;
+    }
+    private sealed class RangeState(int capacity)
+    {
+        public readonly List<ChartRangePoint> Result=new(capacity);
+        private int count;private double bucket=double.NaN,total,min,max,start,end;
+        public void Flush()
+        {
+            if(count==0)return;
+            Result.Add(new(start,end,total/count,min,max,count));count=0;bucket=double.NaN;
+        }
+        public void Gap(double time)
+        {
+            Flush();if(Result.Count==0||Result[^1].Average.HasValue)Result.Add(new(time,time,null,null,null,0));
+        }
+        public void Add(double column,double time,double value)
+        {
+            if(column!=bucket)Flush();
+            if(count==0){bucket=column;start=time;min=max=value;total=0;}
+            end=time;min=Math.Min(min,value);max=Math.Max(max,value);total+=value;count++;
+        }
     }
     public Summary Summarize(string id,double now,int seconds)
     {
@@ -312,6 +383,7 @@ public sealed class UserSettings
     public bool JoinCpuGpuPopouts {get;set;}
     public bool ShowGpuFanSpeed {get;set;}
     public bool ShowCpuPumpSpeed {get;set;}
+    public bool ShowCpuCoreUsage {get;set;}
     public double PollingIntervalSeconds {get;set;}=1;
     public bool BatteryRecording {get;set;}=true;
     public bool UsageRecording {get;set;}=true;

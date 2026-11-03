@@ -1,5 +1,17 @@
 # Release validation
 
+## Per-core CPU usage (0.10.0, 2026-11-03)
+
+Per-core CPU usage adds an opt-in set of thin core traces under the CPU total. The collector turns LibreHardwareMonitor load sensors (`CPU Core #k`, `P-Core #k`, `E-Core #k`, and threads where exposed) into positional core series, falling back to Windows per-processor counters (locked for the session once hardware cores appear). Core traces ride the existing six-hour live graph history under short keys for up to 48 cores, once a second (every two seconds above 32 cores). The dashboard CPU card, separate CPU pop-out and widget Usage graph draw them; the joined CPU/GPU pop-out, Usage history, Alerts and Cooling Health do not.
+
+Automated coverage added on the `claude/cpu-per-core` branch: `CpuCoreUsageTests` (sensor naming, ordering, thread handling, the 64-line cap), `WindowsCpuCoresTests` (fallback-counter delta arithmetic, the native struct size, a core-count change and the empty first read), `PublishCores` in the collector tests, `GraphHistoryServiceTests` (core persistence, one-second and two-second cadence, backwards-clock reset, restore, and the cap on persisted cores by GPU count), `CpuCoreSettingsTests` (setting round trip and default off), the `ShellUiChecks` Monitoring card, `ThemeTokenTests` (core tint derivation and near-grey separation), `MonitoringTests` (`SeriesMany`), and `LiveRenderingUiChecks` for standalone, widget and joined graphs, raw and smoothed, with the toggle on and off, plus the CPU card subtitle and the unavailable-cores status. The restore fill that carries core values across cadence-thinned history records (and leaves longer gaps open) is covered by the new `GraphHistoryServiceTests` restore and jitter tests.
+
+Results: `dotnet build DeadWare.slnx -c Release --nologo` finished with 0 errors (the only warnings are pre-existing xUnit2031 analyzer notes in the test projects). `dotnet test DeadWare.slnx -c Release --nologo` passed 641 core/update tests with 1 skipped and 278 Windows app tests with 0 failures, on the development machine on 2026-11-03.
+
+The preview tool rendered 22 overview frames (nine themes at 1000 px and 660 px plus the discovering, stale and unavailable states) into ignored `artifacts/ui-cpu-cores/` with the switch on and an eight-core fixture; the Midnight, Blackout and Daylight frames were inspected by eye and show eight thin family-tinted core lines under the bold total and the `· 8 cores` subtitle. The shell render in `artifacts/ui-cpu-cores-shell/` reported `"failures": []`. Local packaging with `scripts/publish.ps1` was not run on this machine (it needs PowerShell 7, which is not installed); the Release workflow packages the tagged build.
+
+Not verified in this release: a physical-hardware soak, hosts with more than 64 logical processors, hybrid (P/E) chips in the flesh, and High Contrast by eye.
+
 ## Refined glass redesign (0.9.0, 2026-11-02)
 
 A presentation-only restyle on the existing WPF app: derived theme tokens and restyled stock controls, a vector navigation rail and one-row header, grouped Settings cards, spline traces with a hairline grid, inside labels, wall-clock ticks and hover chips on every chart, a filled globe with glowing arcs, particles and hover chips on Connections, and card chrome on the remaining pages, pop-outs and the widget. New pure helpers in `DeadWare.Core` (`MonotoneSpline`, `TimeTicks`, `NearestSample`, `ConnectionProjection.ProjectRing`, `ArcParticles`) are unit-tested without a window; the renderers consume them through `DrawingContext`.

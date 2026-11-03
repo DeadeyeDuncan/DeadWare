@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.10.0 — Per-core CPU usage
+
+- Add **Settings → Monitoring → Show per-core CPU usage on usage graphs**. One thin solid line per core, tinted from the CPU graph colour, draws under the bold total on the dashboard CPU usage card, the separate CPU usage pop-out and the widget Usage graph; hover a graph to see the eight busiest cores. Core lines have no fill, glow or min/max band and follow the smoothing setting on 1–6 hour ranges. Core traces are saved in the six-hour graph history (up to 48 cores, once a second, or every two seconds above 32 cores). Off by default; the joined CPU/GPU pop-out, Usage history, Alerts and Cooling Health are unchanged.
+- A line is one LibreHardwareMonitor load sensor (`CPU Core #k`, `P-Core #k`, `E-Core #k`, or each thread where the chip exposes them), labelled `Core 1…N`, up to 64 live. With no per-core loads from LibreHardwareMonitor, Windows per-processor counters are used instead; those persist only when a single CPU identity exists and are otherwise live-only. The CPU card subtitle shows `· N cores`, and the dashboard status says `Per-core CPU usage unavailable.` when the option is on but no cores are reported.
+
 ## 0.9.1 — Thermal history and overview sizing
 
 - Fix Cooling Health opening an empty thermal history. Adding pump speed to the CPU sensor map changed the CPU's history identity, and devices were listed by identity hash, so the page defaulted to the stale entry. Devices are now ordered by their most recent recorded window (or hourly summary once minute detail has expired), and a repeated device label gains **· older sensor map** and a short identifier.

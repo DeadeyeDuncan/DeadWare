@@ -79,7 +79,7 @@ internal static class Program
         Set(collector,"clock",Clock);Set(collector,"<History>k__BackingField",new SampleHistory());
         session=(UiSession)RuntimeHelpers.GetUninitializedObject(typeof(UiSession));
         Set(session,"<Collector>k__BackingField",collector);
-        Set(session,"<Settings>k__BackingField",new UserSettings {HistorySeconds=300,SelectedGpuId="preview-gpu",ShowGpuFanSpeed=true,ConnectionsAnimation=false});
+        Set(session,"<Settings>k__BackingField",new UserSettings {HistorySeconds=300,SelectedGpuId="preview-gpu",ShowGpuFanSpeed=true,ShowCpuCoreUsage=true,ConnectionsAnimation=false});
         Set(session,"<SettingsStatus>k__BackingField","");
         Set(session,"settingsPath",Path.Combine(Scratch,"settings.json"));Set(session,"writer",new SettingsSnapshotWriter(Path.Combine(Scratch,"settings.json")));
         Set(session,"layout",new DetachedWindowState([]));Set(session,"captureWindows",new Dictionary<Window,Action>());Set(session,"detached",new Dictionary<string,Window>());
@@ -119,6 +119,8 @@ internal static class Program
         return new(DateTimeOffset.UtcNow.AddSeconds(second-Clock.Elapsed.TotalSeconds),second,new Dictionary<string,double?>
         {
             ["cpu/usage"]=Wave(34,19,17),["cpu/temperature"]=Wave(56,5,23),
+            ["cpu/core/0/usage"]=Wave(40,22,13),["cpu/core/1/usage"]=Wave(31,18,19),["cpu/core/2/usage"]=Wave(46,24,11),["cpu/core/3/usage"]=Wave(28,14,23),
+            ["cpu/core/4/usage"]=Wave(36,20,29),["cpu/core/5/usage"]=Wave(24,9,17),["cpu/core/6/usage"]=Wave(33,2,31),["cpu/core/7/usage"]=Wave(42,16,7),
             ["preview-gpu/usage"]=Wave(68,17,21),["preview-gpu/temperature"]=Wave(64,6,27),["preview-gpu/fan"]=Wave(1380,180,19),
             ["memory/usage"]=Wave(47,3,39),["memory/used"]=15.04e9,["memory/total"]=32e9,
             ["network/download"]=Wave(12.4e6,7e6,11),["network/upload"]=Wave(1.8e6,1e6,15)
@@ -143,7 +145,7 @@ internal static class Program
         };
         ProcessTraffic[] processes=[new(4280,1,"Sample browser",8.4e6,1.2e6,2_400_000_000L,84_000_000L),new(9312,1,"Sample sync",2.8e6,540e3,850_000_000L,120_000_000L),new(6408,1,"Sample music",1.2e6,60e3,180_000_000L,6_000_000L)];
         Set(collector,"latest",state=="Discovering hardware"?null:new Reading(sample,[new("preview-gpu","Radeon RX 6800 XT · Preview GPU")],sensors,processes,"Ryzen 7 5800X · Preview CPU","SYNTHETIC SAMPLE DATA · no hardware monitoring","Sample interface totals · no live network accounting","Sample process traffic · ETW is not running",false)
-            {Battery=new(73,BatteryPowerState.Charging,false)});
+            {Battery=new(73,BatteryPowerState.Charging,false),CpuCoreCount=8});
     }
 
     private static TextBlock Text(string value,double size=13,string color="Ink")=>(TextBlock)Call("Ui","Text",value,size,color,"BodyFont")!;

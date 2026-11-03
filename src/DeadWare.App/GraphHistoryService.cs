@@ -63,6 +63,7 @@ public sealed class GraphHistoryService
             Snapshot? anchor=null,previous=null;
             string segment=Guid.NewGuid().ToString("N");
             long seenDrops=0;
+            DateTimeOffset lastCoreStamp=DateTimeOffset.MinValue;
             bool skippedFrame=false;
             void Flush()
             {
@@ -84,12 +85,21 @@ public sealed class GraphHistoryService
                 if(newMappings.Count>0)
                 {
                     var restored=new List<Snapshot>();
+                    // Core keys are written on a thinned cadence; carry them across the thinned records so restored traces stay continuous.
+                    var fillWindow=GraphHistoryProjection.CoreCadence(reading.CpuCoreCount)+TimeSpan.FromSeconds(0.5);
+                    var lastBySession=new Dictionary<string,(DateTimeOffset Stamp,Dictionary<string,double?> Cores)>(StringComparer.Ordinal);
                     foreach(var record in saved)
                     {
                         if(record.Timestamp>anchor.Timestamp||record.Timestamp>now||record.Timestamp<now.AddHours(-6))continue;
                         var values=new Dictionary<string,double?>(StringComparer.Ordinal);
                         foreach(var pair in newMappings)
                             if(record.Values.TryGetValue(pair.Key,out var value))values[pair.Value]=value;
+                        string sessionKey=record.SessionId??"";
+                        if(lastBySession.TryGetValue(sessionKey,out var last)&&record.Timestamp-last.Stamp<=fillWindow)
+                            foreach(var core in last.Cores)values.TryAdd(core.Key,core.Value);
+                        var cores=new Dictionary<string,double?>(StringComparer.Ordinal);
+                        foreach(var pair in values)if(GraphHistoryProjection.IsCore(pair.Key))cores[pair.Key]=pair.Value;
+                        lastBySession[sessionKey]=(record.Timestamp,cores);
                         if(values.Count==0)continue;
                         restored.Add(new(record.Timestamp,anchor.MonotonicSeconds+(record.Timestamp-anchor.Timestamp).TotalSeconds,values)
                             {SessionId=record.SessionId,PollingIntervalSeconds=record.PollingIntervalSeconds});
@@ -100,7 +110,10 @@ public sealed class GraphHistoryService
                 if(previous is not null&&(Math.Abs((sample.Timestamp-previous.Timestamp).TotalSeconds-
                     (sample.MonotonicSeconds-previous.MonotonicSeconds))>3||seenDrops!=queued.DropGeneration||skippedFrame))segment=Guid.NewGuid().ToString("N");
                 previous=sample;seenDrops=queued.DropGeneration;skippedFrame=false;
-                var projected=mappings.ToDictionary(p=>p.Key,p=>SampleHistory.Finite(sample.Values.GetValueOrDefault(p.Value)),StringComparer.Ordinal);
+                var sinceCores=sample.Timestamp-lastCoreStamp;
+                bool includeCores=sinceCores<TimeSpan.Zero||sinceCores>=GraphHistoryProjection.CoreCadence(reading.CpuCoreCount)-TimeSpan.FromMilliseconds(100);
+                if(includeCores&&mappings.Values.Any(GraphHistoryProjection.IsCore))lastCoreStamp=sample.Timestamp;
+                var projected=mappings.Where(p=>includeCores||!GraphHistoryProjection.IsCore(p.Value)).ToDictionary(p=>p.Key,p=>SampleHistory.Finite(sample.Values.GetValueOrDefault(p.Value)),StringComparer.Ordinal);
                 pending.Add(new(segment,sample.Timestamp.ToUniversalTime(),sample.MonotonicSeconds,projected)
                     {PollingIntervalSeconds=sample.PollingIntervalSeconds});
                 if(pending.Count==120)Flush();

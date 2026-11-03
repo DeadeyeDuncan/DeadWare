@@ -106,7 +106,9 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
     public bool CompareDevices {get;init;}
     /// <summary>Lets a joined CPU/GPU temperature chart carry the CPU pump line too (the widget).</summary>
     public bool PumpWithDevices {get;init;}
-    private sealed record Query(SampleHistory History,string Primary,string? Secondary,string? Fan,string? Pump,int Seconds,int Columns,bool Smoothed);
+    /// <summary>Lets a joined CPU/GPU usage chart carry the per-core CPU traces too (the widget).</summary>
+    public bool CoresWithDevices {get;init;}
+    private sealed record Query(SampleHistory History,string Primary,string? Secondary,string? Fan,string? Pump,int Seconds,int Columns,bool Smoothed,int Cores);
     private sealed record ChartData(Query Query,Dictionary<string,IReadOnlyList<SamplePoint>> Series,Dictionary<string,IReadOnlyList<ChartRangePoint>> Ranges,Summary Statistics);
     public event Action<Summary>? StatisticsReady;
     private ChartData? prepared;
@@ -117,26 +119,32 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
     {
         bool compare=CompareDevices&&kind is "cpu" or "cputemp";
         return new(session.Collector.History,session.MetricId(kind),kind=="network"?"network/upload":compare?session.MetricId(kind=="cpu"?"gpu":"gputemp"):null,
-            ShowsFan(compare)?session.MetricId("gpufan"):null,ShowsPump(compare)?session.MetricId("cpupump"):null,session.HistorySeconds,Math.Max(1,(int)ActualWidth-90),session.Settings.GraphSmoothing&&session.HistorySeconds>=3600);
+            ShowsFan(compare)?session.MetricId("gpufan"):null,ShowsPump(compare)?session.MetricId("cpupump"):null,session.HistorySeconds,Math.Max(1,(int)ActualWidth-90),session.Settings.GraphSmoothing&&session.HistorySeconds>=3600,
+            ShowsCores()?session.Current?.CpuCoreCount??0:0);
     }
+    private bool ShowsCores()=>session.Settings.ShowCpuCoreUsage&&kind=="cpu"&&(!CompareDevices||CoresWithDevices);
     private bool ShowsFan(bool compare)=>session.Settings.ShowGpuFanSpeed&&(kind=="gputemp"||kind=="cputemp"&&compare);
     private bool ShowsPump(bool compare)=>session.Settings.ShowCpuPumpSpeed&&kind=="cputemp"&&(!compare||PumpWithDevices);
     private static ChartData Prepare(Query query,double now)
     {
         var series=new Dictionary<string,IReadOnlyList<SamplePoint>>();var ranges=new Dictionary<string,IReadOnlyList<ChartRangePoint>>();
         Summary rawStatistics=new(null,null,null);
-        foreach(var metric in new[]{query.Primary,query.Secondary,query.Fan,query.Pump}.OfType<string>().Distinct())
+        var cores=Enumerable.Range(0,query.Cores).Select(CpuCoreUsage.Key).ToArray();
+        // Core traces come from one pass over the samples instead of one locked scan per core.
+        var coreRaw=!query.Smoothed&&cores.Length>0?query.History.SeriesMany(cores,now,query.Seconds):null;
+        var coreRanges=query.Smoothed&&cores.Length>0?query.History.ChartRangesMany(cores,now,query.Seconds,query.Columns):null;
+        foreach(var metric in new[]{query.Primary,query.Secondary,query.Fan,query.Pump}.OfType<string>().Concat(cores).Distinct())
         {
             if(!query.Smoothed)
             {
-                var raw=query.History.Series(metric,now,query.Seconds);
+                var raw=coreRaw is not null&&coreRaw.TryGetValue(metric,out var many)?many:query.History.Series(metric,now,query.Seconds);
                 if(metric==query.Primary)rawStatistics=SampleHistory.Statistics(raw);
                 // Keep raw peaks/gaps while preparing dense traces off the UI thread too.
                 series[metric]=query.Seconds>=3600?SampleHistory.ReduceForChart(raw,now,query.Seconds,query.Columns):raw;
             }
             else
             {
-                var values=query.History.ChartRanges(metric,now,query.Seconds,query.Columns);ranges[metric]=values;
+                var values=coreRanges is not null&&coreRanges.TryGetValue(metric,out var manyRanges)?manyRanges:query.History.ChartRanges(metric,now,query.Seconds,query.Columns);ranges[metric]=values;
                 series[metric]=values.Select(p=>new SamplePoint(DateTimeOffset.UnixEpoch,p.EndSeconds,p.Average)).ToArray();
             }
         }
@@ -184,14 +192,19 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
             });
         },TaskScheduler.Default);
     }
-    private sealed record TracePath(IReadOnlyList<SamplePoint> Points,StreamGeometry Path,PathGeometry Copy,List<IReadOnlyList<Point>> Runs,Point? Last)
+    private sealed record TracePath(IReadOnlyList<SamplePoint> Points,StreamGeometry Path,PathGeometry? Copy,List<IReadOnlyList<Point>> Runs,Point? Last)
     {
         /// <summary>Area fill and range band, built once per frame so hover re-renders only redraw.</summary>
         public PathGeometry? Area { get; set; }
         public bool AreaBuilt { get; set; }
         public StreamGeometry? Band { get; set; }
     }
-    private sealed record TraceSpec(string Metric,string Color,bool Dashed,bool Dotted,double Maximum,double Fill);
+    private sealed record TraceSpec(string Metric,string Color,bool Dashed,bool Dotted,double Maximum,double Fill)
+    {
+        /// <summary>A per-core CPU trace: thin plain stroke in <see cref="Brush"/>, listed in the hover chip by value.</summary>
+        public bool Core {get;init;}
+        public Brush? Brush {get;init;}
+    }
     private sealed record Frame(Query Query,int Revision,ChartData Data,Size Size,string Theme,bool Glass,double Now,DateTimeOffset WallNow,TraceSpec[] Specs,Dictionary<string,TracePath> Paths);
     /// <summary>Geometry built once per poll, size and theme; hover re-renders reuse it.</summary>
     private Frame? cache;
@@ -264,9 +277,10 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
             else if(compare)specs.Add(new(secondaryMetric!,Theme.GraphKey(kind=="cpu"?"gpu":"gputemp"),true,false,maximum,.45));
             if(showFan)specs.Add(new(session.MetricId("gpufan"),Theme.GraphKey("gpufan"),false,true,fanMaximum,0));
             if(showPump)specs.Add(new(session.MetricId("cpupump"),Theme.GraphKey("cpupump"),false,true,fanMaximum,0));
+            for(int i=0;i<query.Cores;i++)specs.Add(new(CpuCoreUsage.Key(i),Theme.GraphKey("cpu"),false,false,maximum,0){Core=true,Brush=Theme.CoreBrush(i,query.Cores)});
             bool spline=!(query.Seconds>=3600&&!query.Smoothed);
             var paths=new Dictionary<string,TracePath>();
-            foreach(var spec in specs)paths[spec.Metric]=BuildTrace(Read(spec.Metric),built,spec.Maximum,plot,query.Seconds>=3600,spline);
+            foreach(var spec in specs)paths[spec.Metric]=BuildTrace(Read(spec.Metric),built,spec.Maximum,plot,query.Seconds>=3600,spline,glowCopy:!spec.Core);
             cache=new(query,revision,prepared,RenderSize,Theme.CurrentName,Theme.GlassEnabled,built,DateTimeOffset.Now,specs.ToArray(),paths);
             if(hover is not null)ResolveHover();
         }
@@ -284,11 +298,13 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
         // Retained WPF transform scrolls the recorded trace between polls without rebuilding it each frame.
         var scroll=new TranslateTransform();
         double interval=Math.Min(1,session.Settings.PollingIntervalSeconds);
-        bool anyPoints=frame.Paths.Values.Any(path=>path.Points.Count>0);
+        bool anyPoints=frame.Specs.Where(s=>!s.Core).Any(s=>frame.Paths[s.Metric].Points.Count>0);
         if(!hit&&IsLoaded&&IsVisible&&anyPoints)scroll.BeginAnimation(TranslateTransform.XProperty,new DoubleAnimation(0,-pw/session.HistorySeconds*interval,TimeSpan.FromSeconds(interval)));
         else if(hit)scroll.X=-pw/session.HistorySeconds*Math.Clamp(session.Collector.ElapsedSeconds-now,0,interval);
         dc.PushTransform(scroll);
-        foreach(var spec in frame.Specs)DrawTrace(dc,frame.Paths[spec.Metric],spec,plot,bands.GetValueOrDefault(spec.Metric),now);
+        // Cores sit underneath the primary and comparison traces.
+        foreach(var spec in frame.Specs.Where(s=>s.Core))DrawTrace(dc,frame.Paths[spec.Metric],spec,plot,null,now);
+        foreach(var spec in frame.Specs.Where(s=>!s.Core))DrawTrace(dc,frame.Paths[spec.Metric],spec,plot,bands.GetValueOrDefault(spec.Metric),now);
         hoverAnchor=null;hoverLines=[];
         if(HoverIndex>=0&&frame.Paths[primaryMetric].Points.Count>HoverIndex)DrawHover(dc,frame,primaryMetric,plot,now,Axis,FanAxis);
         dc.Pop();dc.Pop();
@@ -303,18 +319,33 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
         dc.DrawLine(pen,new(x,plot.Top),new(x,plot.Bottom));
         if(!compact)hoverLines.Add((TimeZoneInfo.ConvertTime(frame.WallNow.AddSeconds(sample.MonotonicSeconds-now),TimeZoneInfo.Local).ToString("HH:mm:ss",CultureInfo.CurrentCulture),Theme.Brush("Muted")));
         double tolerance=HoverTolerance(frame.Query);
-        foreach(var spec in frame.Specs)
+        var cores=new List<(int Core,double Value)>();var coreBrushes=new Dictionary<int,Brush>();
+        int firstCore=Array.FindIndex(frame.Specs,s=>s.Core);
+        for(int position=0;position<frame.Specs.Length;position++)
         {
-            var path=frame.Paths[spec.Metric];
+            var spec=frame.Specs[position];var path=frame.Paths[spec.Metric];
             int index=spec.Metric==primaryMetric?HoverIndex:NearestSample.Find(path.Points,sample.MonotonicSeconds,tolerance);
             if(index<0||path.Points[index].Value is not { } value)continue;
+            // Cores join the chip after the loop, by value, with no dot of their own.
+            if(spec.Core){int core=position-firstCore;cores.Add((core,value));coreBrushes[core]=spec.Brush!;continue;}
+            var brush=spec.Brush??Theme.Brush(spec.Color);
             double y=plot.Top+plot.Height*(1-Math.Clamp(value/spec.Maximum,0,1));
-            dc.DrawEllipse(Theme.Brush(spec.Color),null,new(x,y),3,3);
+            dc.DrawEllipse(brush,null,new(x,y),3,3);
             hoverAnchor??=new(x,y);
-            hoverLines.Add((spec.Dotted?fanAxis(value):axis(value),Theme.Brush(spec.Color)));
+            hoverLines.Add((spec.Dotted?fanAxis(value):axis(value),brush));
         }
+        foreach(var (text,core) in HoverCoreLines(cores))hoverLines.Add((text,core>=0?coreBrushes[core]:Theme.Brush("Muted")));
     }
-    private TracePath BuildTrace(IReadOnlyList<SamplePoint> points,double now,double maximum,Rect plot,bool reduced,bool spline)
+    /// <summary>The hover chip's core section: the eight busiest cores, then a count of the rest.</summary>
+    internal static IReadOnlyList<(string Text,int Core)> HoverCoreLines(IReadOnlyList<(int Core,double Value)> cores)
+    {
+        const int shown=8;
+        var lines=cores.OrderByDescending(c=>c.Value).ThenBy(c=>c.Core).Take(shown)
+            .Select(c=>(string.Create(CultureInfo.CurrentCulture,$"Core {c.Core+1} \u00b7 {c.Value:0}%"),c.Core)).ToList();
+        if(cores.Count>shown)lines.Add(($"+{cores.Count-shown} more",-1));
+        return lines;
+    }
+    private TracePath BuildTrace(IReadOnlyList<SamplePoint> points,double now,double maximum,Rect plot,bool reduced,bool spline,bool glowCopy=true)
     {
         var runs=new List<IReadOnlyList<Point>>();List<Point>? run=null;Point? last=null;
         var drawn=reduced?points:SampleHistory.ReduceForChart(points,now,session.HistorySeconds,(int)Math.Ceiling(plot.Width));
@@ -335,12 +366,21 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
             path.Freeze();
         }
         // A PathGeometry copy (flattening drops open stroked figures) so the glow pass stays off the StreamGeometry count.
-        var copy=PathGeometry.CreateFromGeometry(path);copy.Freeze();
+        // Core traces never glow, so they skip the throw-away copy.
+        PathGeometry? copy=null;
+        if(glowCopy){copy=PathGeometry.CreateFromGeometry(path);copy.Freeze();}
         return new(drawn,path,copy,runs,last);
     }
     private void DrawTrace(DrawingContext dc,TracePath path,TraceSpec spec,Rect plot,IReadOnlyList<ChartRangePoint>? range,double now)
     {
         bool dense=CompareDevices&&session.HistorySeconds>=3600;double width=dense?1:2;
+        if(spec.Core)
+        {
+            // Thin, plain and unmarked: half the CPU trace's own stroke, and no range band (eight bands would pile up).
+            width=.5*width*GraphStroke.Style(session.Settings,Theme.GraphKey("cpu")).Thickness;
+            GraphStroke.DrawPlain(dc,path.Path,spec.Brush!,width);
+            return;
+        }
         if(spec.Fill>0)
         {
             if(!path.AreaBuilt){path.Area=GraphDepth.AreaGeometry(path.Runs,plot);path.AreaBuilt=true;}
@@ -352,7 +392,7 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
             dc.PushOpacity(.14);dc.DrawGeometry(Theme.Brush(spec.Color),null,path.Band);dc.Pop();
         }
         var style=GraphStroke.Style(session.Settings,spec.Color);
-        if(!style.Glow)GraphDepth.UnderGlow(dc,path.Copy,spec.Color,width*style.Thickness);
+        if(!style.Glow&&path.Copy is not null)GraphDepth.UnderGlow(dc,path.Copy,spec.Color,width*style.Thickness);
         GraphStroke.Draw(dc,path.Path,session.Settings,spec.Color,width,spec.Dashed,spec.Dotted);
         RuneTrace.Draw(dc,path.Runs,plot,spec.Color,VisualTreeHelper.GetDpi(this).PixelsPerDip);
         double markerRadius=dense?1.5:2.5;
@@ -495,6 +535,7 @@ internal sealed class ChartCard : Border
         {
             value.Text=Ui.Number(current,kind.Contains("temp")?" °C":" %");
             subtitle.Text=data is null?"Discovering hardware…":kind.StartsWith("cpu")?data.CpuName:session.GpuName;
+            if(data is not null&&kind=="cpu"&&session.Settings.ShowCpuCoreUsage&&data.CpuCoreCount>0)subtitle.Text+=$" · {data.CpuCoreCount} cores";
             if(current is null&&data is not null)subtitle.Text+=" · "+(session.Stale?"stale":"sensor unavailable");
         }
         if(overview)subtitle.ToolTip=subtitle.Text;

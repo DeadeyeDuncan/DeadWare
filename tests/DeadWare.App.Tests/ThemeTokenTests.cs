@@ -34,4 +34,31 @@ public sealed class ThemeTokenTests
         Assert.Equal(Colors.Black,t.Surface1);Assert.Equal(Colors.Black,t.Surface2);
         Assert.Equal(56,t.Glow.A);Assert.Equal(115,t.Hairline.A);
     }
+
+    [Fact] public void Core_tints_are_distinct_for_every_count_and_endpoint_colour()
+    {
+        foreach(var cpu in new[]{Color.FromRgb(0x5B,0xC8,0xFF),Color.FromRgb(0xFF,0x7A,0x3D),Colors.White,Colors.Black,Color.FromRgb(0x30,0xD1,0x58)})
+        foreach(bool hc in new[]{false,true})
+        foreach(int count in new[]{1,8,64})
+        {
+            var tints=Enumerable.Range(0,count).Select(i=>ThemeTokens.CoreTint(cpu,i,count,hc)).ToArray();
+            Assert.Equal(count,tints.Distinct().Count());
+            Assert.All(tints,t=>Assert.Equal(255,t.A));
+        }
+        Assert.Equal(Colors.White,ThemeTokens.CoreTint(Colors.White,0,1,false));
+    }
+
+    [Fact] public void High_contrast_tints_stay_off_white_and_black()
+        =>Assert.All(Enumerable.Range(0,16).Select(i=>ThemeTokens.CoreTint(Colors.White,i,16,true)),t=>Assert.True(t.R<250&&t.R>40));
+
+    [Fact] public void Core_tints_stay_distinct_for_near_grey_colours()
+    {
+        foreach(var cpu in new[]{Color.FromRgb(0x8A,0x80,0x78),Color.FromRgb(0x7F,0x80,0x81),Color.FromRgb(0x40,0x42,0x44),Color.FromRgb(0xC0,0xBF,0xBE),Color.FromRgb(0x10,0x10,0x10),Color.FromRgb(0x80,0x80,0x80)})
+        foreach(bool hc in new[]{false,true})
+        {
+            var tints=Enumerable.Range(0,64).Select(i=>ThemeTokens.CoreTint(cpu,i,64,hc)).ToArray();
+            Assert.True(64==tints.Distinct().Count(),$"{cpu} hc={hc} got {tints.Distinct().Count()}");
+            Assert.All(tints,t=>Assert.Equal(255,t.A));
+        }
+    }
 }

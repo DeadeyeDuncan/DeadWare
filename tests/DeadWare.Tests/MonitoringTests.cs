@@ -6,6 +6,44 @@ public class MonitoringTests
 {
     static readonly DateTimeOffset Epoch = DateTimeOffset.UnixEpoch;
     static Snapshot S(double seconds, double? value) => new(Epoch.AddSeconds(seconds), seconds, new Dictionary<string,double?> { ["cpu"] = value });
+    [Fact] public void SeriesMany_matches_Series_per_id()
+    {
+        var h=new SampleHistory();
+        for(int i=0;i<5;i++)h.Add(new Snapshot(Epoch.AddSeconds(i),i,new Dictionary<string,double?>{["a"]=i,["b"]=i%2==0?null:i*10}){SessionId=i<3?"s1":"s2"});
+        var many=h.SeriesMany(["a","b","missing"],4,60);
+        Assert.Equal(h.Series("a",4,60),many["a"]);
+        Assert.Equal(h.Series("b",4,60),many["b"]);
+        Assert.Equal(5,many["missing"].Count);
+        Assert.All(many["missing"],p=>Assert.Null(p.Value));
+        Assert.Contains(many["a"],p=>p.BreakBefore);
+    }
+    [Fact] public void ChartRangesMany_matches_ChartRanges_per_id()
+    {
+        var h=new SampleHistory();
+        for(int i=0;i<400;i++)
+        {
+            if(i is >=120 and <130)continue; // elapsed-time gap
+            double t=i*.5;
+            h.Add(new Snapshot(Epoch.AddSeconds(t),t,new Dictionary<string,double?>{["a"]=i%7,["b"]=i%9==0?null:i*1.5,["c"]=i%50<5?null:100-i%13}){SessionId=i<300?"s1":"s2",PollingIntervalSeconds=.5});
+        }
+        string[] ids=["a","b","c"];
+        var many=h.ChartRangesMany(ids,200,180,37);
+        foreach(var id in ids)
+        {
+            var single=h.ChartRanges(id,200,180,37);
+            Assert.Equal(single.Count,many[id].Count);
+            for(int i=0;i<single.Count;i++)
+            {
+                Assert.Equal(single[i].StartSeconds,many[id][i].StartSeconds);Assert.Equal(single[i].EndSeconds,many[id][i].EndSeconds);
+                Assert.Equal(single[i].Average,many[id][i].Average);Assert.Equal(single[i].Minimum,many[id][i].Minimum);
+                Assert.Equal(single[i].Maximum,many[id][i].Maximum);Assert.Equal(single[i].Samples,many[id][i].Samples);
+            }
+            Assert.Contains(single,p=>p.Average is null);
+        }
+        Assert.Throws<ArgumentOutOfRangeException>(()=>h.ChartRangesMany(ids,double.NaN,180,37));
+        Assert.Throws<ArgumentOutOfRangeException>(()=>h.ChartRangesMany(ids,200,0,37));
+        Assert.Throws<ArgumentOutOfRangeException>(()=>h.ChartRangesMany(ids,200,180,0));
+    }
     [Fact] public void HistoryBoundsByTimeAndCountAndUsesActualTimestamps()
     {
         var h = new SampleHistory();

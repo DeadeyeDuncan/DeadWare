@@ -5,6 +5,7 @@ using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Shapes;
 using DeadWare.App;
+using DeadWare.Core;
 using Xunit;
 
 namespace DeadWare.App.Tests;
@@ -71,6 +72,37 @@ internal static class ShellUiChecks
         Assert.Equal("History and alerts",CardOf("Keeps day, week and month history"));Assert.Equal("History and alerts",CardOf("Record endpoint history"));
         Assert.Equal("History and alerts",CardOf("Rules you set on the Alerts page"));Assert.Equal("Widget",CardOf("Choose the graphs shown in the widget"));
         Assert.Equal("Pop-outs",CardOf("Positions, sizes and Always on top"));Assert.Equal("Monitoring",CardOf("Includes motherboard"));
+        // Per-core CPU usage: a Monitoring checkbox that drives the session setting.
+        const string coreName="Show per-core CPU usage on usage graphs";
+        var coreBox=Descendants(pages["desktop"]).OfType<CheckBox>().Single(box=>AutomationProperties.GetName(box)==coreName);
+        Assert.Equal("Monitoring",Descendants(cards.Single(c=>Descendants(c).Contains(coreBox))).OfType<TextBlock>().First().Text);
+        Assert.Equal("Monitoring",CardOf("One thin line per core"));
+        var session=Field<UiSession>("session");int changes=0;void OnChanged()=>changes++;session.Changed+=OnChanged;
+        try
+        {
+            bool before=session.Settings.ShowCpuCoreUsage;
+            coreBox.IsChecked=!before;
+            Assert.Equal(!before,session.Settings.ShowCpuCoreUsage);Assert.True(changes>=1);
+            coreBox.IsChecked=before;
+            Assert.Equal(before,session.Settings.ShowCpuCoreUsage);
+        }
+        finally{session.Changed-=OnChanged;}
+        // Dashboard status line: unavailable notice when the switch is on and no cores were read.
+        {
+            var collector=session.Collector;var latestField=collector.GetType().GetField("latest",All)!;
+            var previous=latestField.GetValue(collector);bool switchBefore=session.Settings.ShowCpuCoreUsage;
+            var history=new SampleHistory();history.Add(new(DateTimeOffset.UtcNow,0,new Dictionary<string,double?>{["cpu/usage"]=10}));
+            var status=Field<TextBlock>("status");var refresh=typeof(MainWindow).GetMethod("Refresh",All)!;
+            try
+            {
+                latestField.SetValue(collector,new Reading(history.Read()[^1],[new("gpu","Fixture GPU")],[],[],"Fixture CPU","","","",false){CpuCoreCount=0});
+                session.Settings.ShowCpuCoreUsage=true;refresh.Invoke(dashboard,null);
+                Assert.Contains("Per-core CPU usage unavailable.",status.Text);
+                session.Settings.ShowCpuCoreUsage=false;refresh.Invoke(dashboard,null);
+                Assert.DoesNotContain("Per-core CPU usage unavailable.",status.Text);
+            }
+            finally{latestField.SetValue(collector,previous);session.Settings.ShowCpuCoreUsage=switchBefore;}
+        }
         Navigate("overview");
     }
 

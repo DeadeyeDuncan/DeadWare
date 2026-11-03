@@ -268,6 +268,122 @@ public class GraphHistoryServiceTests
         Assert.Equal(50,history.Summarize("memory/usage",1,60).Average);
     }
 
+    [Fact] public void Core_metrics_join_the_unchanged_cpu_identity_with_short_keys()
+    {
+        var reading=Reading(DateTimeOffset.UtcNow,1) with {CpuCoreCount=50};
+        var mappings=GraphHistoryProjection.Mappings(reading,"machine");
+        string identity=Assert.Single(mappings,p=>p.Value=="cpu/usage").Key[..^"/usage".Length];
+        Assert.Equal("cpu/core/47/usage",mappings[identity[..12]+"/c47"]);
+        Assert.DoesNotContain(mappings.Values,v=>v=="cpu/core/48/usage");
+        Assert.Equal(identity,Assert.Single(GraphHistoryProjection.Mappings(reading with {CpuCoreCount=0},"machine"),p=>p.Value=="cpu/usage").Key[..^"/usage".Length]);
+        Assert.True(mappings.Count<=64);
+    }
+    [Fact] public async Task Core_values_are_written_at_the_cadence_and_never_exceed_the_record_limit()
+    {
+        using var fixture=new Fixture();var origin=DateTimeOffset.UtcNow.AddSeconds(-30);
+        var service=new GraphHistoryService(fixture.Path,"machine",new SampleHistory());
+        service.Start();
+        for(int i=0;i<=20;i++)service.TryRecord(WithCores(Reading(origin.AddSeconds(i*0.5),i+1),64));
+        await service.StopAsync();
+        var store=new GraphHistoryStore(fixture.Path);store.Initialize();
+        var records=store.Read(DateTimeOffset.UtcNow).OrderBy(r=>r.Timestamp).ToArray();
+        Assert.Equal(21,records.Length);
+        Assert.All(records,r=>Assert.True(r.Values.Count<=64));
+        Assert.All(records,r=>Assert.Contains(r.Values.Keys,k=>!k.Contains("/c")));
+        var withCores=records.Where(r=>r.Values.Keys.Any(k=>k.Contains("/c"))).ToArray();
+        Assert.Equal(6,withCores.Length);
+        Assert.Equal(origin.AddSeconds(2).UtcDateTime,withCores[1].Timestamp.UtcDateTime);
+        Assert.Contains(withCores[1].Values,p=>p.Key.EndsWith("/c47")&&p.Value is not null);
+        for(int i=1;i<withCores.Length;i++)Assert.True((withCores[i].Timestamp-withCores[i-1].Timestamp).TotalSeconds>=2);
+        Assert.True(withCores.Length<records.Length);
+    }
+    [Fact] public async Task Restore_returns_only_the_cores_present_in_the_current_reading()
+    {
+        using var fixture=new Fixture();var now=DateTimeOffset.UtcNow.AddSeconds(-2);
+        var first=new GraphHistoryService(fixture.Path,"machine",new SampleHistory());
+        first.Start();first.TryRecord(WithCores(Reading(now.AddSeconds(-10),10),16));await first.StopAsync();
+        var history=new SampleHistory();var live=WithCores(Reading(now,1),8);history.Add(live.Sample);
+        var second=new GraphHistoryService(fixture.Path,"machine",history);
+        second.Start();second.TryRecord(live);await second.StopAsync();
+        var restored=Assert.Single(history.Read().Where(s=>s.SessionId is not null));
+        Assert.True(restored.Values.ContainsKey("cpu/core/7/usage"));
+        Assert.False(restored.Values.ContainsKey("cpu/core/8/usage"));
+        Assert.DoesNotContain("unavailable",second.Status);
+    }
+
+    [Fact] public void Many_gpus_leave_the_record_within_the_value_limit_and_keep_cpu_usage()
+    {
+        var reading=WithCores(Reading(DateTimeOffset.UtcNow,1),64);
+        var gpus=Enumerable.Range(0,8).Select(i=>new Device($"/gpu/{i}",$"Model {i}")).ToArray();
+        reading=reading with {Gpus=gpus,Sensors=[..reading.Sensors,..gpus.Select(g=>new SensorReading(g.Id+"/load",g.Name,"GPU Core","%",1,g.Id,"GpuAmd","Load","Available"))]};
+        var mappings=GraphHistoryProjection.Mappings(reading,"machine");
+        Assert.True(mappings.Count<=64);Assert.Contains("cpu/usage",mappings.Values);
+    }
+    [Fact] public async Task Backwards_clock_step_still_carries_core_keys()
+    {
+        using var fixture=new Fixture();var now=DateTimeOffset.UtcNow.AddSeconds(-5);
+        var service=new GraphHistoryService(fixture.Path,"machine",new SampleHistory());service.Start();
+        service.TryRecord(WithCores(Reading(now,1),4));service.TryRecord(WithCores(Reading(now.AddHours(-1),2),4));
+        await service.StopAsync();
+        var store=new GraphHistoryStore(fixture.Path);store.Initialize();
+        var records=store.Read(DateTimeOffset.UtcNow);
+        Assert.Equal(2,records.Count);Assert.All(records,r=>Assert.Contains(r.Values.Keys,k=>k.Contains("/c")));
+    }
+
+    private static async Task<SampleHistory> RestoreCores(Fixture fixture,IReadOnlyList<DateTimeOffset> stamps,int cores)
+    {
+        var first=new GraphHistoryService(fixture.Path,"machine",new SampleHistory());first.Start();
+        for(int i=0;i<stamps.Count;i++)first.TryRecord(WithCores(Reading(stamps[i],i+1),cores));
+        await first.StopAsync();
+        var history=new SampleHistory();var live=WithCores(Reading(DateTimeOffset.UtcNow,1),cores);history.Add(live.Sample);
+        var second=new GraphHistoryService(fixture.Path,"machine",history);second.Start();second.TryRecord(live);await second.StopAsync();
+        return history;
+    }
+    [Fact] public async Task Restored_core_history_fills_cadence_thinned_records_without_gaps()
+    {
+        using var fixture=new Fixture();var origin=DateTimeOffset.UtcNow.AddSeconds(-30);
+        var history=await RestoreCores(fixture,Enumerable.Range(0,21).Select(i=>origin.AddSeconds(i*.5)).ToArray(),64);
+        double end=history.Read().Where(s=>s.SessionId is not null).Max(s=>s.MonotonicSeconds);
+        var restored=history.Series("cpu/core/0/usage",1,21600).Where(p=>p.MonotonicSeconds<=end).ToArray();
+        Assert.Equal(21,restored.Length);Assert.All(restored,p=>Assert.NotNull(p.Value));
+        var ranges=history.ChartRanges("cpu/core/0/usage",1,21600,2000).Where(r=>r.EndSeconds<=end).ToArray();
+        Assert.NotEmpty(ranges);Assert.All(ranges,r=>Assert.NotNull(r.Average));
+        Assert.All(history.Read().Where(s=>s.SessionId is not null),s=>Assert.True(s.Values.ContainsKey("cpu/usage")));
+    }
+    [Fact] public async Task Restore_does_not_fill_cores_across_a_gap_longer_than_the_cadence()
+    {
+        using var fixture=new Fixture();var origin=DateTimeOffset.UtcNow.AddSeconds(-30);
+        // A record 5 s after the last core reading is beyond cadence + 0.5 s, so it stays a gap.
+        var first=new GraphHistoryService(fixture.Path,"machine",new SampleHistory());first.Start();
+        first.TryRecord(WithCores(Reading(origin,1),64));first.TryRecord(Reading(origin.AddSeconds(5),6));
+        await first.StopAsync();
+        var history=new SampleHistory();var live=WithCores(Reading(DateTimeOffset.UtcNow,1),64);history.Add(live.Sample);
+        var second=new GraphHistoryService(fixture.Path,"machine",history);second.Start();second.TryRecord(live);await second.StopAsync();
+        var restored=history.Read().Where(s=>s.SessionId is not null).OrderBy(s=>s.MonotonicSeconds).ToArray();
+        Assert.Equal(2,restored.Length);
+        Assert.True(restored[0].Values.ContainsKey("cpu/core/0/usage"));
+        Assert.False(restored[1].Values.ContainsKey("cpu/core/0/usage"));
+        Assert.Null(history.Series("cpu/core/0/usage",1,21600)[1].Value);
+    }
+    [Fact] public async Task One_second_polling_with_jitter_writes_cores_on_every_record()
+    {
+        using var fixture=new Fixture();var origin=DateTimeOffset.UtcNow.AddSeconds(-30);
+        double[] steps={.98,1.02,.99,1.01,.98,1.0,.985,1.02};var stamps=new List<DateTimeOffset>{origin};
+        foreach(double step in steps)stamps.Add(stamps[^1].AddSeconds(step));
+        var service=new GraphHistoryService(fixture.Path,"machine",new SampleHistory());service.Start();
+        for(int i=0;i<stamps.Count;i++)service.TryRecord(WithCores(Reading(stamps[i],i+1),16));
+        await service.StopAsync();
+        var store=new GraphHistoryStore(fixture.Path);store.Initialize();
+        var records=store.Read(DateTimeOffset.UtcNow);
+        Assert.Equal(stamps.Count,records.Count);
+        Assert.All(records,r=>Assert.Contains(r.Values.Keys,k=>k.Contains("/c")));
+    }
+    private static Reading WithCores(Reading reading,int count)
+    {
+        var values=reading.Sample.Values.ToDictionary(p=>p.Key,p=>p.Value);
+        for(int i=0;i<count;i++)values[CpuCoreUsage.Key(i)]=i+reading.Sample.MonotonicSeconds;
+        return reading with {Sample=reading.Sample with {Values=values},CpuCoreCount=count};
+    }
     private static Reading Reading(DateTimeOffset time,double mono,double? cpu=40,double? temperature=60,double? download=100,double? upload=20)=>new(
         new(time,mono,new Dictionary<string,double?>{{"cpu/usage",cpu},{"cpu/temperature",temperature},{"network/download",download},{"network/upload",upload},{"private-extra",999}}),
         [],[new("cpu-load","Test CPU","CPU Total","%",cpu,"/cpu/0","Cpu","Load","Available")],

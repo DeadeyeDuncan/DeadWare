@@ -20,7 +20,7 @@ internal sealed class WidgetGraph : Border
         this.session=session;this.kind=kind;
         SetResourceReference(StyleProperty,"Card");CornerRadius=new(10);Padding=new(10,6,10,5);Margin=new(0,5,0,0);
         bool network=kind=="network",memory=kind=="memory";
-        chart=new(session,kind,true){CompareDevices=kind is "cpu" or "cputemp",PumpWithDevices=true,ClipToBounds=true};
+        chart=new(session,kind,true){CompareDevices=kind is "cpu" or "cputemp",PumpWithDevices=true,CoresWithDevices=true,ClipToBounds=true};
         var grid=new Grid();grid.RowDefinitions.Add(new(){Height=GridLength.Auto});grid.RowDefinitions.Add(new(){Height=GridLength.Auto});grid.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});
         title.TextWrapping=TextWrapping.NoWrap;title.TextTrimming=TextTrimming.CharacterEllipsis;
         string firstColor=Theme.GraphKey(kind),secondColor=Theme.GraphKey(network?"upload":kind=="cputemp"?"gputemp":"gpu");

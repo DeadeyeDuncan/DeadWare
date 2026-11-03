@@ -13,6 +13,7 @@ public record Reading(Snapshot Sample,IReadOnlyList<Device> Gpus,IReadOnlyList<S
     [System.Text.Json.Serialization.JsonIgnore]
     public ConnectionSample? Connections {get;init;}
     public BatteryReading Battery {get;init;}=BatteryReading.Unavailable;
+    public int CpuCoreCount {get;init;}
 }
 
 /// <summary>Reads the first GPU RPM fan from existing publications and keeps its source through outages.</summary>
@@ -73,6 +74,8 @@ public sealed class Collector : IAsyncDisposable
     private readonly CancellationTokenSource cancellation=new();
     private readonly Stopwatch clock=Stopwatch.StartNew();
     private readonly WindowsCounters windows=new();
+    private readonly WindowsCpuCores windowsCores=new();
+    private bool hardwareCores;
     private readonly GpuFanSpeed gpuFanSpeed=new();
     private readonly CpuPumpSpeed cpuPumpSpeed=new();
     private readonly EtwNetwork etw;
@@ -148,6 +151,9 @@ public sealed class Collector : IAsyncDisposable
                     long providerStarted=Stopwatch.GetTimestamp();var fallbackCpu=windows.Cpu();
                     if(timings is not null)timings["windows/cpu"]=Stopwatch.GetElapsedTime(providerStarted).TotalMilliseconds;
                     values["cpu/usage"]=cpuLoad??fallbackCpu;
+                    var cores=CpuCoreUsage.FromSensors(sensors);
+                    if(cores.Count>0)hardwareCores=true;else if(!hardwareCores)cores=windowsCores.Read();
+                    PublishCores(values,cores);
                     values["cpu/temperature"]=cpuTemp;
                     values["cpu/pump"]=cpuPumpSpeed.Read(sensors,sensors.Where(s=>s.HardwareType=="Cpu"&&s.HardwareId.Length>0).Select(s=>s.HardwareId).Distinct(StringComparer.Ordinal).Count());
                     providerStarted=Stopwatch.GetTimestamp();var memory=windows.Memory();values["memory/used"]=memory.Used;values["memory/total"]=memory.Total;
@@ -174,7 +180,7 @@ public sealed class Collector : IAsyncDisposable
                         if(timings is not null){timings["etw/snapshot"]=Stopwatch.GetElapsedTime(providerStarted).TotalMilliseconds;timings["poll/total"]=(clock.Elapsed.TotalSeconds-started)*1000;}
                         double elapsed=clock.Elapsed.TotalSeconds-started;
                         if(elapsed>=intervalSeconds)hardwareStatus+=$" · Slow sample ({elapsed:0.0}s); pausing before the next poll.";
-                        var reading=new Reading(sample,gpus.AsReadOnly(),sensors.AsReadOnly(),capture.Processes,cpuName,hardwareStatus,network.Status,EtwStatus,IsElevated,timings,etw.Failure) {Battery=battery,Connections=capture.Connections};
+                        var reading=new Reading(sample,gpus.AsReadOnly(),sensors.AsReadOnly(),capture.Processes,cpuName,hardwareStatus,network.Status,EtwStatus,IsElevated,timings,etw.Failure) {Battery=battery,Connections=capture.Connections,CpuCoreCount=cores.Count};
                         History.Add(sample);Volatile.Write(ref latest,reading);SampleAvailable?.Invoke(reading);
                     }
                 }
@@ -207,6 +213,11 @@ public sealed class Collector : IAsyncDisposable
             try {computer?.Close();} finally {await StopEtwAsync();}
             stage="Stopped";
         }
+    }
+    internal static int PublishCores(Dictionary<string,double?> values,IReadOnlyList<double?> cores)
+    {
+        for(int i=0;i<cores.Count;i++)values[CpuCoreUsage.Key(i)]=cores[i];
+        return cores.Count;
     }
     private static double? Choose(List<SensorReading> sensors,string unit,params string[] names)
     {
