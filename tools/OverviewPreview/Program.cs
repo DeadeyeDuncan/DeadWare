@@ -152,7 +152,7 @@ internal static class Program
         AutomationProperties.SetName(themes,"Preview color theme");themes.SelectionChanged+=(_,_)=>{if(themes.SelectedItem is string name)session.SetTheme(name);};DockPanel.SetDock(themes,Dock.Right);title.Children.Add(themes);
         var heading=(TextBlock)Call("Ui","Heading","System overview",28d)!;heading.Margin=new(6,0,0,0);title.Children.Add(heading);top.Children.Add(title);
         var toolbar=new DockPanel {Margin=new(6,14,6,12)};
-        var range=(ComboBox)Call("Ui","Range",session)!;DockPanel.SetDock(range,Dock.Right);toolbar.Children.Add(range);
+        var range=(FrameworkElement)Call("Ui","Range",session)!;DockPanel.SetDock(range,Dock.Right);toolbar.Children.Add(range);
         var gpuLabel=Text("GPU  ·  Radeon RX 6800 XT",12,"Muted");toolbar.Children.Add(gpuLabel);top.Children.Add(toolbar);
         var footer=new WrapPanel {Margin=new(6,12,6,0)};DockPanel.SetDock(footer,Dock.Bottom);layout.Children.Add(footer);
         var states=new ComboBox {ItemsSource=new[]{"Sample readings","Unavailable sensors","Stale readings","Discovering hardware"},SelectedIndex=0,Width=188};AutomationProperties.SetName(states,"Preview reading state");

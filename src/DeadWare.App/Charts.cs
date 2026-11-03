@@ -13,12 +13,18 @@ internal static class Ui
     public static TextBlock Text(string value,double size=13,string color="Ink",string font="BodyFont")
     {var t=new TextBlock {Text=value,FontSize=size,TextWrapping=TextWrapping.Wrap,VerticalAlignment=VerticalAlignment.Center};t.SetResourceReference(TextBlock.ForegroundProperty,color);t.SetResourceReference(TextBlock.FontFamilyProperty,font);return t;}
     public static TextBlock Heading(string value,double size=16)=>Text(value,size,"Heading","HeadingFont");
+    /// <summary>A large reading. Tabular numerals keep the digits from shifting as values change.</summary>
+    public static TextBlock Metric(string value,double size=34,string color="Ink")
+    {var t=Text(value,size,color,"MetricFont");t.FontWeight=FontWeights.SemiBold;t.TextWrapping=TextWrapping.NoWrap;Typography.SetNumeralAlignment(t,FontNumeralAlignment.Tabular);return t;}
+    /// <summary>A small uppercase label above a value or section (MIN / AVG / MAX, group titles).</summary>
+    public static TextBlock Caption(string value,string color="Muted")
+    {var t=Text(value.ToUpperInvariant(),9.5,color);t.TextWrapping=TextWrapping.NoWrap;return t;}
     public static Button Button(string value,Action action)
     {var b=new Button {Content=value};b.Click+=(_,_)=>action();return b;}
     public static StackPanel Row(params UIElement[] children)
     {var p=new StackPanel {Orientation=Orientation.Horizontal};foreach(var c in children)p.Children.Add(c);return p;}
     public static Border Panel(UIElement child,Thickness? padding=null)
-    {var b=new Border {Child=child,Padding=padding??new Thickness(18),CornerRadius=new CornerRadius(14),BorderThickness=new Thickness(1)};b.SetResourceReference(Border.BackgroundProperty,"GlassPanel");b.SetResourceReference(Border.BorderBrushProperty,"GlassBorder");return b;}
+    {var b=new Border {Child=child,Padding=padding??new Thickness(18)};b.SetResourceReference(FrameworkElement.StyleProperty,"Card");return b;}
     public static string Number(double? value,string unit="")=>value.HasValue&&double.IsFinite(value.Value)?$"{value.Value:0.0}{unit}":"—";
     public static string GpuFanText(UiSession session)
     {
@@ -48,19 +54,7 @@ internal static class Ui
     public static Image Logo()
     {var image=new Image {Width=38,Height=38,Margin=new Thickness(0,0,9,0)};try{image.Source=new BitmapImage(new Uri("pack://application:,,,/Assets/deadware.png"));}catch(System.IO.IOException){}return image;}
     public static string Title(string kind)=>kind switch {"cpu"=>"CPU usage","cputemp"=>"CPU temperature","cpupump"=>"CPU pump speed","gpu"=>"GPU usage","gputemp"=>"GPU temperature","gpufan"=>"GPU fan speed","usage"=>"CPU / GPU usage","temperature"=>"CPU / GPU temperature","memory"=>"RAM usage",_=>"Network activity"};
-    private sealed record RangeChoice(int Seconds,string Label)
-    {public override string ToString()=>Label;}
-    public static ComboBox Range(UiSession session)
-    {
-        var range=new ComboBox {Width=140,VerticalAlignment=VerticalAlignment.Center,
-            ItemsSource=HistoryRanges.Seconds.Select(seconds=>new RangeChoice(seconds,HistoryRanges.Label(seconds))).ToArray(),
-            DisplayMemberPath=nameof(RangeChoice.Label),SelectedValuePath=nameof(RangeChoice.Seconds),SelectedValue=session.HistorySeconds,
-            ToolTip="Choose how much graph history to show"};
-        System.Windows.Automation.AutomationProperties.SetName(range,"Graph history range");
-        range.SelectionChanged+=(_,_)=>{if(range.SelectedValue is int seconds&&seconds!=session.HistorySeconds)session.SetRange(seconds);};
-        void Refresh()=>range.SelectedValue=session.HistorySeconds;
-        range.Loaded+=(_,_)=>{session.Changed+=Refresh;Refresh();};range.Unloaded+=(_,_)=>session.Changed-=Refresh;return range;
-    }
+    public static FrameworkElement Range(UiSession session)=>new RangeSegments(session);
 }
 
 /// <summary>Native WPF drawing; real timestamps set X coordinates and missing readings split the line.</summary>
@@ -260,7 +254,7 @@ internal sealed class ChartCard : Border
 {
     private readonly UiSession session;
     private readonly string kind;
-    private readonly TextBlock value=Ui.Text("—",30,font:"MetricFont"),subtitle=Ui.Text("Waiting for hardware…",11,"Muted"),stats=Ui.Text("",11,"Muted",font:"MetricFont");
+    private readonly TextBlock value=Ui.Metric("—",30),subtitle=Ui.Text("Waiting for hardware…",11,"Muted"),stats=Ui.Text("",11,"Muted",font:"MetricFont");
     private readonly TextBlock fan=Ui.Text("",11,Theme.GraphKey("gpufan"),font:"MetricFont");
     private readonly TextBlock pump=Ui.Text("",11,Theme.GraphKey("cpupump"),font:"MetricFont");
     private readonly Run downloadValue=new(),uploadValue=new();
@@ -271,7 +265,7 @@ internal sealed class ChartCard : Border
     public ChartCard(UiSession session,string kind,bool popButton=true):this(session,kind,popButton,false) {}
     public ChartCard(UiSession session,string kind,bool popButton,bool overview)
     {
-        this.session=session;this.kind=kind;this.overview=overview;CornerRadius=new(overview?14:10);BorderThickness=new(1);Padding=overview?new(16,13,16,11):new(16,12,16,10);Margin=new(6);SetResourceReference(BackgroundProperty,"GlassPanel");SetResourceReference(BorderBrushProperty,"GlassBorder");
+        this.session=session;this.kind=kind;this.overview=overview;SetResourceReference(StyleProperty,"Card");if(!overview)CornerRadius=new(10);Padding=overview?new(16,13,16,11):new(16,12,16,10);Margin=new(6);
         value.SetResourceReference(TextBlock.ForegroundProperty,Theme.GraphKey(kind));
         if(kind=="network")
         {
@@ -289,7 +283,7 @@ internal sealed class ChartCard : Border
         {
             title.TextWrapping=TextWrapping.NoWrap;title.TextTrimming=TextTrimming.CharacterEllipsis;title.ToolTip=Ui.Title(kind);
             var glyph=OverviewVisual.MetricGlyph(kind);glyph.Margin=new(0,0,9,0);DockPanel.SetDock(glyph,Dock.Left);header.Children.Insert(header.Children.Count-1,glyph);
-            value.FontSize=34;value.FontWeight=FontWeights.SemiBold;
+            value.FontSize=34;
             subtitle.TextWrapping=TextWrapping.NoWrap;subtitle.TextTrimming=TextTrimming.CharacterEllipsis;
             fan.TextWrapping=TextWrapping.NoWrap;fan.TextTrimming=TextTrimming.CharacterEllipsis;
             pump.TextWrapping=TextWrapping.NoWrap;pump.TextTrimming=TextTrimming.CharacterEllipsis;
@@ -306,7 +300,7 @@ internal sealed class ChartCard : Border
             foreach(var (run,column,label) in new[]{(downloadValue,0,"DOWNLOAD"),(uploadValue,1,"UPLOAD")})
             {
                 var columnPanel=new StackPanel {Margin=new Thickness(0,0,column==0?8:0,0)};
-                var caption=Ui.Text(label,9,"Muted");caption.Margin=new(0,1,0,0);columnPanel.Children.Add(caption);
+                var caption=Ui.Caption(label);caption.Margin=new(0,1,0,0);columnPanel.Children.Add(caption);
                 var reading=Ui.Text("",26,font:"MetricFont");reading.TextWrapping=TextWrapping.NoWrap;reading.Inlines.Add(run);
                 columnPanel.Children.Add(new Viewbox {Child=reading,Stretch=Stretch.Uniform,StretchDirection=StretchDirection.DownOnly,HorizontalAlignment=HorizontalAlignment.Left,Height=34});
                 Grid.SetColumn(columnPanel,column);rates.Children.Add(columnPanel);
@@ -322,7 +316,7 @@ internal sealed class ChartCard : Border
             for(int i=0;i<3;i++)
             {
                 footer.ColumnDefinitions.Add(new());var cell=new StackPanel();
-                cell.Children.Add(Ui.Text((kind=="network"?"↓ ":"")+labels[i],9,"Muted"));overviewStats[i]=Ui.Text("—",11,"Muted",font:"MetricFont");overviewStats[i].TextWrapping=TextWrapping.NoWrap;
+                cell.Children.Add(Ui.Caption((kind=="network"?"↓ ":"")+labels[i]));overviewStats[i]=Ui.Text("—",11,"Muted",font:"MetricFont");overviewStats[i].TextWrapping=TextWrapping.NoWrap;
                 overviewStats[i].TextTrimming=TextTrimming.CharacterEllipsis;cell.Children.Add(overviewStats[i]);Grid.SetColumn(cell,i);footer.Children.Add(cell);
             }
             if(kind=="network")footer.ToolTip="Download statistics over the selected history range";

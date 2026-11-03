@@ -66,6 +66,8 @@ public class BatteryUiTests
                 NetworkChartUiChecks.Run();
                 LiveRenderingUiChecks.Run();
                 RuneTraceUiChecks.Run();
+                Phase("typography and range segments");
+                RangeSegmentsUiChecks.Run(app);
                 Phase("usage history");
                 UsageHistoryUiChecks.Run(app);
                 Phase("alerts");
