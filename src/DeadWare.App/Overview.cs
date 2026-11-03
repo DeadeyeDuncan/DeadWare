@@ -26,7 +26,7 @@ internal sealed class OverviewPage : ScrollViewer
 
 internal static class OverviewVisual
 {
-    private static readonly ControlTemplate IconButtonTemplate=(ControlTemplate)XamlReader.Parse("""
+    private static readonly ControlTemplate IconButtonTemplate=Sealed((ControlTemplate)XamlReader.Parse("""
         <ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" TargetType="Button">
           <Border x:Name="Frame" Background="{DynamicResource GlassControl}" BorderBrush="{DynamicResource GlassBorder}" BorderThickness="1" CornerRadius="7">
             <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
@@ -37,12 +37,14 @@ internal static class OverviewVisual
             <Trigger Property="IsPressed" Value="True"><Setter TargetName="Frame" Property="Background" Value="{DynamicResource GlassHover}"/></Trigger>
           </ControlTemplate.Triggers>
         </ControlTemplate>
-        """);
+        """));
+
+    private static ControlTemplate Sealed(ControlTemplate template){template.Seal();return template;}
 
     public static Button PopOut(UiSession session,string kind)
     {
         var button=Ui.Button("",()=>session.OpenDetached(kind));
-        button.Width=28;button.Height=28;button.Padding=new(0);button.Margin=new(5,0,0,0);button.Template=IconButtonTemplate;
+        button.Width=26;button.Height=26;button.Padding=new(0);button.Margin=new(5,0,0,0);button.Template=IconButtonTemplate;
         button.Content=Glyph("M 3,8 L 3,14 14,14 14,10 M 8,3 L 16,3 16,11 M 16,3 L 8,11",14,"Muted");
         button.ToolTip="Pop out "+Ui.Title(kind);
         System.Windows.Automation.AutomationProperties.SetName(button,(string)button.ToolTip);
@@ -59,6 +61,36 @@ internal static class OverviewVisual
             _=>"M 6,2 L 6,16 M 2,12 L 6,16 10,12 M 14,18 L 14,4 M 10,8 L 14,4 18,8"
         };
         return Glyph(geometry,18,Theme.GraphKey(kind));
+    }
+
+    /// <summary>A 16 px stroked glyph for a navigation route. Its stroke follows the hosting button's foreground.</summary>
+    public static FrameworkElement NavGlyph(string route)
+    {
+        string geometry=route switch
+        {
+            "overview"=>"M 2,2 L 9,2 9,9 2,9 Z M 11,2 L 18,2 18,9 11,9 Z M 2,11 L 9,11 9,18 2,18 Z M 11,11 L 18,11 18,18 11,18 Z",
+            "network"=>"M 2,6 L 15,6 M 12,3 L 15,6 12,9 M 18,14 L 5,14 M 8,11 L 5,14 8,17",
+            "connections"=>"M 10,2 A 8,8 0 1,0 10,18 A 8,8 0 1,0 10,2 M 2,10 L 18,10 M 10,2 C 6,6 6,14 10,18 M 10,2 C 14,6 14,14 10,18",
+            "battery"=>"M 2,6 L 16,6 16,14 2,14 Z M 16,8 L 18,8 18,12 16,12 M 4,8 L 11,8 11,12 4,12 Z",
+            "usage"=>"M 3,17 L 3,10 M 8,17 L 8,5 M 13,17 L 13,8 M 18,17 L 18,3",
+            "alerts"=>"M 10,2 L 18,17 2,17 Z M 10,8 L 10,12 M 10,14.4 L 10,14.6",
+            "sensors"=>"M 3,5 L 17,5 M 3,10 L 17,10 M 3,15 L 17,15",
+            "cooling"=>"M 10,10 C 7,3 13,3 10,10 M 10,10 C 17,7 16,14 10,10 M 10,10 C 4,13 6,18 10,10 M 10,8.5 A 1.5,1.5 0 1,0 10,11.5 A 1.5,1.5 0 1,0 10,8.5",
+            "desktop"=>"M 10,7 A 3,3 0 1,0 10,13 A 3,3 0 1,0 10,7 M 10,2 L 10,4.5 M 10,15.5 L 10,18 M 2,10 L 4.5,10 M 15.5,10 L 18,10 M 4.3,4.3 L 6.1,6.1 M 13.9,13.9 L 15.7,15.7 M 4.3,15.7 L 6.1,13.9 M 13.9,6.1 L 15.7,4.3",
+            _=>"M 10,2 L 10,14 M 5,9 L 10,14 15,9 M 3,18 L 17,18"
+        };
+        var path=(System.Windows.Shapes.Path)Glyph(geometry,16,"Muted");
+        path.SetBinding(System.Windows.Shapes.Shape.StrokeProperty,new System.Windows.Data.Binding("Foreground") {RelativeSource=new System.Windows.Data.RelativeSource(System.Windows.Data.RelativeSourceMode.FindAncestor,typeof(Button),1)});
+        return path;
+    }
+
+    /// <summary>A 24 px rounded tile tinted with the metric's graph color (14 %) holding its glyph. The tint is a resource reference so theme changes follow.</summary>
+    public static FrameworkElement IconTile(string kind)
+    {
+        var tint=new Border {CornerRadius=new CornerRadius(7),Opacity=.14};tint.SetResourceReference(Border.BackgroundProperty,Theme.GraphKey(kind));
+        var glyph=MetricGlyph(kind);glyph.Width=15;glyph.Height=15;glyph.HorizontalAlignment=HorizontalAlignment.Center;glyph.VerticalAlignment=VerticalAlignment.Center;
+        var layers=new Grid();layers.Children.Add(tint);layers.Children.Add(glyph);
+        return new Border {Width=24,Height=24,Child=layers};
     }
 
     private static FrameworkElement Glyph(string data,double size,string color)

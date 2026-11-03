@@ -31,52 +31,68 @@ internal sealed class UsageHistoryChart : FrameworkElement
     internal static bool CanConnect(UsageHistoryBucket a, UsageHistoryBucket b, long bucketMilliseconds)
         => IsFull(a, bucketMilliseconds) && IsFull(b, bucketMilliseconds) && b.Start == a.End;
 
+    internal Rect PlotRect { get; private set; }
+    /// <summary>Index into the first trace's buckets of the bucket under the pointer, or -1.</summary>
+    internal int HoverIndex { get; private set; } = -1;
+    private Point? hover;
+    private readonly List<(double X, double Tolerance)> targets = [];
+    protected override void OnMouseMove(System.Windows.Input.MouseEventArgs e) { base.OnMouseMove(e); SetHover(e.GetPosition(this)); }
+    protected override void OnMouseLeave(System.Windows.Input.MouseEventArgs e) { base.OnMouseLeave(e); SetHover(null); }
+    internal void SetHover(Point? position)
+    {
+        hover = position; int previous = HoverIndex; HoverIndex = ChartFrame.Nearest(targets, hover, PlotRect);
+        if (HoverIndex != previous) InvalidateVisual();
+    }
+
     protected override void OnRender(DrawingContext dc)
     {
         base.OnRender(dc);
         double w = ActualWidth, h = ActualHeight;
         if (w < 160 || h < 120) return;
-        const double left = 12, right = 78, top = 12, bottom = 30;
+        dc.DrawRectangle(Brushes.Transparent, null, new Rect(0, 0, w, h));
+        const double left = 12, right = 8, top = 12, bottom = 30;
         double width = w - left - right, height = h - top - bottom;
-        var plot = new Rect(left, top, width, height);
+        var plot = new Rect(left, top, width, height); PlotRect = plot;
+        var typeface = Theme.ChartTypeface; double pixelsPerDip = VisualTreeHelper.GetDpi(this).PixelsPerDip;
         GraphDepth.Surface(dc, plot);
         var first = traces.FirstOrDefault();
-        if (first is null) return;
+        if (first is null) { targets.Clear(); HoverIndex = -1; return; }
         var from = first.View.From; var to = first.View.To;
         double seconds = Math.Max(60, (to - from).TotalSeconds);
         double maximum = fixedMaximum ?? Math.Max(1, traces.SelectMany(t => t.View.Buckets).Select(b => b.Maximum).DefaultIfEmpty(0).Max() * 1.15);
         if (fixedMaximum is null && unit == "°C") maximum = Math.Max(maximum, 40);
         double X(DateTimeOffset time) => left + width * Math.Clamp((time - from).TotalSeconds / seconds, 0, 1);
         double Y(double value) => top + height * (1 - Math.Clamp(value / maximum, 0, 1));
-        var grid = new Pen(Theme.Brush("Line"), 1) { DashStyle = DashStyles.Dot };
-        for (int i = 0; i <= 4; i++)
-        {
-            double value = maximum * i / 4, y = Y(value);
-            dc.DrawLine(grid, new(left, y), new(left + width, y));
-            Label(dc, Format(value), left + width + 8, y - 7);
-        }
+        ChartFrame.Grid(dc, plot, Enumerable.Range(0, 5).Select(i => (Y(maximum * i / 4), Format(maximum * i / 4))).ToArray(), [], typeface, pixelsPerDip, false, null, nowLabel: null);
+        targets.Clear();
         bool any = false;
         foreach (var trace in traces)
         {
             var color = Theme.Brush(trace.ColorKey);
             var band = color.Clone(); band.Opacity = 0.18; band.Freeze();
-            var pen = new Pen(color, 1.8) { DashStyle = trace.Dashed ? DashStyles.Dash : DashStyles.Solid, DashCap = PenLineCap.Round };
+            var pen = new Pen(color, 1.8) { DashStyle = trace.Dashed ? DashStyles.Dash : DashStyles.Solid, DashCap = PenLineCap.Round, LineJoin = PenLineJoin.Round };
             long bucketWidth = trace.View.BucketMilliseconds;
+            var runs = new List<IReadOnlyList<Point>>(); List<Point>? run = null;
             UsageHistoryBucket? previous = null;
             foreach (var bucket in trace.View.Buckets)
             {
                 any = true;
                 double x0 = X(bucket.Start), x1 = Math.Max(x0 + 1, X(bucket.End)), mid = (x0 + x1) / 2;
+                if (ReferenceEquals(trace, first)) targets.Add((mid, Math.Max(6, (x1 - x0) / 2)));
                 dc.DrawRectangle(band, null, new Rect(x0, Y(bucket.Maximum), x1 - x0, Math.Max(1, Y(bucket.Minimum) - Y(bucket.Maximum))));
-                if (previous is not null && CanConnect(previous, bucket, bucketWidth))
-                {
-                    var start = new Point((X(previous.Start) + X(previous.End)) / 2, Y(previous.Average));
-                    var end = new Point(mid, Y(bucket.Average));
-                    GraphDepth.LineShadow(dc, start, end, pen);
-                    dc.DrawLine(pen, start, end);
-                }
-                else dc.DrawEllipse(color, null, new(mid, Y(bucket.Average)), 1.6, 1.6);
+                var point = new Point(mid, Y(bucket.Average));
+                if (run is null || previous is null || !CanConnect(previous, bucket, bucketWidth)) { run = new(); runs.Add(run); }
+                run.Add(point);
                 previous = bucket;
+            }
+            // Runs of adjacent full buckets become one spline each; a lone bucket stays a dot.
+            foreach (var lone in runs.Where(r => r.Count == 1)) dc.DrawEllipse(color, null, lone[0], 1.6, 1.6);
+            var path = ChartFrame.Spline(runs);
+            if (!path.IsEmpty())
+            {
+                var copy = PathGeometry.CreateFromGeometry(path); copy.Freeze();
+                GraphDepth.UnderGlow(dc, copy, trace.ColorKey, 1.8);
+                dc.DrawGeometry(null, pen, path);
             }
         }
         string DateLabel(DateTimeOffset time) => (to - from).TotalDays <= 2
@@ -86,6 +102,25 @@ internal sealed class UsageHistoryChart : FrameworkElement
         string finish = DateLabel(to);
         Label(dc, finish, left + width - Formatted(finish).Width, top + height + 8);
         if (!any) Label(dc, "No history in this range yet", left + 10, top + height / 2 - 7);
+        HoverIndex = ChartFrame.Nearest(targets, hover, plot);
+        if (HoverIndex >= 0 && HoverIndex < first.View.Buckets.Count)
+        {
+            var bucket = first.View.Buckets[HoverIndex];
+            double x = targets[HoverIndex].X;
+            var hairline = new Pen(Theme.Brush("Hairline"), 1); hairline.Freeze();
+            dc.DrawLine(hairline, new(x, top), new(x, top + height));
+            var lines = new List<(string Text, Brush Color)> { (DateLabel(bucket.Start), Theme.Brush("Muted")) };
+            Point? anchor = null;
+            foreach (var trace in traces)
+            {
+                var match = trace.View.Buckets.FirstOrDefault(b => b.Start == bucket.Start);
+                if (match is null) continue;
+                var brush = Theme.Brush(trace.ColorKey); var point = new Point(x, Y(match.Average));
+                dc.DrawEllipse(brush, null, point, 3, 3); anchor ??= point;
+                lines.Add((Format(match.Average), brush));
+            }
+            if (anchor is { } at) ChartFrame.Chip(dc, at, plot, lines, typeface, pixelsPerDip, false);
+        }
     }
     private string Format(double value) => unit switch
     {

@@ -109,11 +109,29 @@ internal static class UsageHistoryUiChecks
         ChartType.GetMethod("SetData", All)!.Invoke(chart, [traces, "%", 100d]);
         Layout(chart, 620, 180);
         var drawings = Drawings(VisualTreeHelper.GetDrawing(chart)!).ToArray();
-        var lines = drawings.Where(d => d.Geometry is LineGeometry && d.Pen is not null && d.Pen.Thickness > 1.5).ToArray();
-        // 34 adjacent pairs among 35 buckets; the pair spanning the missing slot and the two pairs touching the partial slot stay unconnected.
-        Assert.Equal(31, lines.Length);
-        Assert.Equal(35, drawings.Count(d => d.Geometry is RectangleGeometry && d.Brush is not null && d.Pen is null));
+        // The average line is one spline with a figure per run of connected full buckets: the missing slot and the
+        // partial slot split 35 buckets into runs of 10, 9, 1 and 15; 31 Bézier curves join the 34 adjacent pairs minus three.
+        var average = Assert.Single(drawings, d => d.Geometry is StreamGeometry && d.Pen is not null && d.Pen.Thickness > 1.5);
+        var figures = PathGeometry.CreateFromGeometry(average.Geometry).Figures;
+        Assert.Equal(3, figures.Count);
+        Assert.Equal(31, figures.Sum(figure => figure.Segments.Sum(segment => segment switch { BezierSegment => 1, PolyBezierSegment poly => poly.Points.Count / 3, _ => 0 })));
+        Assert.All(drawings.Where(d => d.Geometry is LineGeometry line && line.StartPoint.Y == line.EndPoint.Y && d.Pen is not null), d => Assert.Empty(d.Pen.DashStyle.Dashes));
+        // The chart paints a transparent hit-test surface first; the bands are the other filled rectangles.
+        Assert.Equal(35, drawings.Count(d => d.Geometry is RectangleGeometry && d.Brush is not null && !ReferenceEquals(d.Brush, Brushes.Transparent) && d.Pen is null));
         Assert.Contains(drawings, d => d.Geometry is EllipseGeometry);
+        var plot = (Rect)ChartType.GetProperty("PlotRect", All)!.GetValue(chart)!;
+        foreach (var glyph in Glyphs(VisualTreeHelper.GetDrawing(chart)!).Where(g => RunText(g).EndsWith('%')))
+            Assert.True(plot.Contains(glyph.Bounds), $"{theme} usage label {RunText(glyph)} at {glyph.Bounds} outside {plot}.");
+        // Bucket index 2 covers minutes 10–15 of the 180-minute range; its centre is at 12.5 minutes.
+        ChartType.GetMethod("SetHover", All)!.Invoke(chart, [new Point(plot.Left + plot.Width * (12.5 / 180), plot.Top + 20)]);
+        Assert.Equal(2, (int)ChartType.GetProperty("HoverIndex", All)!.GetValue(chart)!);
+        Layout(chart, 620, 180);
+        var hovered = VisualTreeHelper.GetDrawing(chart)!;
+        Assert.Contains(Drawings(hovered), d => ReferenceEquals(d.Brush, Application.Current.Resources["GlassPopup"]));
+        Assert.Contains(Glyphs(hovered), g => RunText(g) == "42%");
+        ChartType.GetMethod("SetHover", All)!.Invoke(chart, [null]);
+        Assert.Equal(-1, (int)ChartType.GetProperty("HoverIndex", All)!.GetValue(chart)!);
+        Layout(chart, 620, 180);
         if (output is not null)
         {
             Directory.CreateDirectory(output);
@@ -167,4 +185,6 @@ internal static class UsageHistoryUiChecks
         if (drawing is DrawingGroup group) foreach (var child in group.Children) foreach (var item in Drawings(child)) yield return item;
         else if (drawing is GeometryDrawing geometry) yield return geometry;
     }
+    private static string RunText(GlyphRunDrawing glyph) => new(glyph.GlyphRun.Characters.ToArray());
+    private static IEnumerable<GlyphRunDrawing> Glyphs(Drawing drawing) => drawing is GlyphRunDrawing glyph ? [glyph] : drawing is DrawingGroup group ? group.Children.SelectMany(Glyphs) : [];
 }

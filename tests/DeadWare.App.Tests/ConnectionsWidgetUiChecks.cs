@@ -246,7 +246,7 @@ internal static class ConnectionsWidgetUiChecks
 
     internal static void CheckSettings(UiSession session,Panel settings,string path)
     {
-        var choice=Assert.Single(settings.Children.OfType<WrapPanel>().SelectMany(p=>p.Children.OfType<CheckBox>()),c=>c.Content?.ToString()=="Connections map (live)");
+        var choice=Assert.Single(Elements(settings).OfType<CheckBox>(),c=>c.Content?.ToString()=="Connections map (live)");
         Assert.False(choice.IsChecked);Assert.False(session.Settings.WidgetConnectionsMap);
         choice.IsChecked=true;Assert.True(session.Settings.WidgetConnectionsMap);
         Assert.True(ReadSavedSettings(session,path).WidgetConnectionsMap);

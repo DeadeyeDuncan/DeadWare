@@ -55,6 +55,47 @@ internal static class Ui
     {var image=new Image {Width=38,Height=38,Margin=new Thickness(0,0,9,0)};try{image.Source=new BitmapImage(new Uri("pack://application:,,,/Assets/deadware.png"));}catch(System.IO.IOException){}return image;}
     public static string Title(string kind)=>kind switch {"cpu"=>"CPU usage","cputemp"=>"CPU temperature","cpupump"=>"CPU pump speed","gpu"=>"GPU usage","gputemp"=>"GPU temperature","gpufan"=>"GPU fan speed","usage"=>"CPU / GPU usage","temperature"=>"CPU / GPU temperature","memory"=>"RAM usage",_=>"Network activity"};
     public static FrameworkElement Range(UiSession session)=>new RangeSegments(session);
+
+    private static readonly ControlTemplate NavTemplate=SealedTemplate("""
+        <ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" TargetType="Button">
+          <Grid>
+            <Border x:Name="Frame" Background="Transparent" BorderBrush="Transparent" BorderThickness="1" CornerRadius="9" Padding="{TemplateBinding Padding}" SnapsToDevicePixels="True">
+              <ContentPresenter HorizontalAlignment="Left" VerticalAlignment="Center" RecognizesAccessKey="True"/>
+            </Border>
+            <Border x:Name="Bar" Width="3" HorizontalAlignment="Left" Margin="0,8,0,8" CornerRadius="1.5" Background="{DynamicResource Accent}" Visibility="Collapsed"/>
+          </Grid>
+          <ControlTemplate.Triggers>
+            <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Frame" Property="Background" Value="{DynamicResource GlassHover}"/><Setter Property="Foreground" Value="{DynamicResource Ink}"/></Trigger>
+            <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="Frame" Property="BorderBrush" Value="{DynamicResource Accent}"/></Trigger>
+            <Trigger Property="Tag" Value="active"><Setter TargetName="Frame" Property="Background" Value="{DynamicResource AccentSoft}"/><Setter TargetName="Bar" Property="Visibility" Value="Visible"/><Setter Property="Foreground" Value="{DynamicResource Ink}"/></Trigger>
+          </ControlTemplate.Triggers>
+        </ControlTemplate>
+        """);
+    private static ControlTemplate SealedTemplate(string xaml){var template=(ControlTemplate)System.Windows.Markup.XamlReader.Parse(xaml);template.Seal();return template;}
+    private static readonly Style NavStyle=NavButtonStyle();
+    private static Style NavButtonStyle()
+    {
+        var style=new Style(typeof(Button));
+        style.Setters.Add(new Setter(Control.TemplateProperty,NavTemplate));
+        style.Setters.Add(new Setter(Control.ForegroundProperty,new DynamicResourceExtension("Muted")));
+        style.Setters.Add(new Setter(Control.FontFamilyProperty,new DynamicResourceExtension("BodyFont")));
+        style.Setters.Add(new Setter(Control.PaddingProperty,new Thickness(12,9,10,9)));
+        style.Setters.Add(new Setter(FrameworkElement.MarginProperty,new Thickness(0,2,0,2)));
+        style.Setters.Add(new Setter(FrameworkElement.CursorProperty,System.Windows.Input.Cursors.Hand));
+        style.Setters.Add(new Setter(Control.HorizontalContentAlignmentProperty,HorizontalAlignment.Left));
+        style.Seal();return style;
+    }
+    /// <summary>A rail button: vector glyph plus label. <c>Tag=="active"</c> shows the accent bar and soft fill.</summary>
+    public static Button NavButton(string route,string label,Action click)
+    {
+        var glyph=OverviewVisual.NavGlyph(route);glyph.Margin=new Thickness(0,0,11,0);glyph.VerticalAlignment=VerticalAlignment.Center;
+        var text=new TextBlock {Text=label,FontSize=13,VerticalAlignment=VerticalAlignment.Center,TextTrimming=TextTrimming.CharacterEllipsis};
+        var row=new DockPanel();row.Children.Add(glyph);row.Children.Add(text);
+        var button=new Button {Content=row,Style=NavStyle,HorizontalAlignment=HorizontalAlignment.Stretch};
+        System.Windows.Automation.AutomationProperties.SetName(button,label);
+        button.Click+=(_,_)=>click();
+        return button;
+    }
 }
 
 /// <summary>Native WPF drawing; real timestamps set X coordinates and missing readings split the line.</summary>
@@ -143,71 +184,165 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
             });
         },TaskScheduler.Default);
     }
+    private sealed record TracePath(IReadOnlyList<SamplePoint> Points,StreamGeometry Path,PathGeometry Copy,List<IReadOnlyList<Point>> Runs,Point? Last);
+    private sealed record TraceSpec(string Metric,string Color,bool Dashed,bool Dotted,double Maximum,double Fill);
+    private sealed record Frame(Query Query,int Revision,ChartData Data,Size Size,string Theme,bool Glass,double Now,TraceSpec[] Specs,Dictionary<string,TracePath> Paths);
+    /// <summary>Geometry built once per poll, size and theme; hover re-renders reuse it.</summary>
+    private Frame? cache;
+    private Point? hover,hoverAnchor;
+    private List<(string Text,Brush Color)> hoverLines=[];
+    internal Rect PlotRect {get;private set;}
+    /// <summary>Index into the primary series of the sample under the pointer, or -1 (no pointer, a gap, or nothing nearby).</summary>
+    internal int HoverIndex {get;private set;}=-1;
+
+    protected override void OnMouseMove(System.Windows.Input.MouseEventArgs e){base.OnMouseMove(e);SetHover(e.GetPosition(this));}
+    protected override void OnMouseLeave(System.Windows.Input.MouseEventArgs e){base.OnMouseLeave(e);SetHover(null);}
+    internal void SetHover(Point? position)
+    {
+        hover=position;
+        int previous=HoverIndex;
+        ResolveHover();
+        if(HoverIndex!=previous)InvalidateVisual();
+    }
+    private double HoverTolerance(Query query)=>Math.Max(1.5*Math.Max(1,session.Settings.PollingIntervalSeconds),session.HistorySeconds/(double)Math.Max(1,query.Columns));
+    private void ResolveHover()
+    {
+        HoverIndex=-1;
+        if(hover is not { } p||cache is not { } frame||!PlotRect.Contains(p)||frame.Specs.Length==0)return;
+        var primary=frame.Paths[frame.Specs[0].Metric];
+        if(primary.Points.Count==0)return;
+        double seconds=frame.Now-(PlotRect.Right-p.X)/PlotRect.Width*session.HistorySeconds;
+        HoverIndex=NearestSample.Find(primary.Points,seconds,HoverTolerance(frame.Query));
+    }
+
     protected override void OnRender(DrawingContext dc)
     {
         base.OnRender(dc);
         double w=ActualWidth,h=ActualHeight;if(w<90||h<(compact?48:65))return;
+        // A transparent surface so the pointer reaches this element for hover.
+        dc.DrawRectangle(Brushes.Transparent,null,new Rect(0,0,w,h));
         if(preparationFailed){Label(dc,"Chart temporarily unavailable",8,8);return;}
-        var axisLabel=Formatted("Now");
         var sample=session.Current?.Sample;
-        double now=session.Collector.ElapsedSeconds;
         var query=CurrentQuery();bool averaged=query.Smoothed;
-        if(prepared?.Query!=query){prepared=Prepare(query,now);StatisticsReady?.Invoke(prepared.Statistics);}
+        if(prepared?.Query!=query){prepared=Prepare(query,session.Collector.ElapsedSeconds);StatisticsReady?.Invoke(prepared.Statistics);}
         var bands=prepared.Ranges;
         IReadOnlyList<SamplePoint> Read(string metric)=>prepared.Series[metric];
-        var points=Read(session.MetricId(kind));
+        string primaryMetric=session.MetricId(kind);var points=Read(primaryMetric);
         bool compare=CompareDevices&&kind is "cpu" or "cputemp";
-        var secondary=kind=="network"?Read("network/upload"):compare?Read(session.MetricId(kind=="cpu"?"gpu":"gputemp")):[];
+        string? secondaryMetric=kind=="network"?"network/upload":compare?session.MetricId(kind=="cpu"?"gpu":"gputemp"):null;
+        var secondary=secondaryMetric is null?[]:Read(secondaryMetric);
         bool showFan=ShowsFan(compare),showPump=ShowsPump(compare),showRpm=showFan||showPump;
         var fan=showFan?Read(session.MetricId("gpufan")):[];
         var pump=showPump?Read(session.MetricId("cpupump")):[];
         // Smoothed network axes follow the average trace; raw peaks remain in the band and statistics.
         double Peak(string metric,IReadOnlyList<SamplePoint> fallback)=>bands.TryGetValue(metric,out var range)?range.Max(p=>kind=="network"&&averaged?p.Average:p.Maximum)??0:fallback.Max(p=>p.Value)??0;
-        double peak=Math.Max(Peak(session.MetricId(kind),points),Peak(kind=="network"?"network/upload":session.MetricId(kind=="cpu"?"gpu":"gputemp"),secondary));
+        double peak=Math.Max(Peak(primaryMetric,points),secondaryMetric is null?0:Peak(secondaryMetric,secondary));
         double maximum=kind is "cpu" or "gpu" or "memory"?100:kind=="network"?Math.Max(1000,peak*1.15):Math.Max(100,peak*1.1);
         if(compare&&kind=="cputemp")maximum=Math.Ceiling(maximum/20)*20;
         string Axis(double value)=>kind=="network"?Ui.Bytes(value,true):$"{value:0}{(kind.Contains("temp")?(compare?"°C":"°"):"%")}";
         // GPU fan and CPU pump share the left RPM scale when both are shown.
         double fanMaximum=Math.Max(1000,Math.Ceiling(Math.Max(showFan?Peak(session.MetricId("gpufan"),fan):0,showPump?Peak(session.MetricId("cpupump"),pump):0)/1000)*1000);
         string FanAxis(double value)=>$"{value:0} RPM";
-        double left=compact?3:12,top=compact?8:18;
+        var typeface=Theme.ChartTypeface;double pixelsPerDip=VisualTreeHelper.GetDpi(this).PixelsPerDip;
+        double left=compact?3:8,top=compact?8:14;
         if(showRpm)left=Enumerable.Range(0,3).Max(i=>Formatted(FanAxis(fanMaximum*i/2)).Width)+10;
-        double right=compact?Enumerable.Range(0,3).Max(i=>Formatted(Axis(maximum*i/2)).Width)+10:74;
-        double bottom=axisLabel.Height+(compact?10:18),pw=w-left-right,ph=h-top-bottom;
+        double right=8,bottom=Formatted("Now").Height+(compact?6:9),pw=w-left-right,ph=h-top-bottom;
         if(pw<=0||ph<=0)return;
-        var plot=new Rect(left,top,pw,ph);GraphDepth.Surface(dc,plot);
+        var plot=new Rect(left,top,pw,ph);PlotRect=plot;
+        bool hit=cache is { } current&&current.Query==query&&current.Revision==revision&&ReferenceEquals(current.Data,prepared)&&current.Size==RenderSize&&current.Theme==Theme.CurrentName&&current.Glass==Theme.GlassEnabled;
+        if(!hit)
+        {
+            double built=session.Collector.ElapsedSeconds;
+            var specs=new List<TraceSpec> {new(primaryMetric,Theme.GraphKey(kind),false,false,maximum,(kind=="network"||compare)?.65:1)};
+            if(kind=="network")specs.Add(new("network/upload",Theme.GraphKey("upload"),true,false,maximum,.42));
+            else if(compare)specs.Add(new(secondaryMetric!,Theme.GraphKey(kind=="cpu"?"gpu":"gputemp"),true,false,maximum,.45));
+            if(showFan)specs.Add(new(session.MetricId("gpufan"),Theme.GraphKey("gpufan"),false,true,fanMaximum,0));
+            if(showPump)specs.Add(new(session.MetricId("cpupump"),Theme.GraphKey("cpupump"),false,true,fanMaximum,0));
+            bool spline=!(query.Seconds>=3600&&!query.Smoothed);
+            var paths=new Dictionary<string,TracePath>();
+            foreach(var spec in specs)paths[spec.Metric]=BuildTrace(Read(spec.Metric),built,spec.Maximum,plot,query.Seconds>=3600,spline);
+            cache=new(query,revision,prepared,RenderSize,Theme.CurrentName,Theme.GlassEnabled,built,specs.ToArray(),paths);
+            if(hover is not null)ResolveHover();
+        }
+        var frame=cache!;double now=frame.Now;
+        GraphDepth.Surface(dc,plot);
+        var lines=new (double Y,string Label)[3];var leftLabels=showRpm?new (double Y,string Label)[3]:null;
         for(int i=0;i<3;i++)
         {
             double value=maximum*i/2,y=top+ph*(1-value/maximum);
-            dc.DrawLine(new Pen(Theme.Brush("Line"),1){DashStyle=new DashStyle([3,5],0)},new(left,y),new(left+pw,y));
-            Label(dc,Axis(value),left+pw+7,y-7);
-            if(showRpm)
-            {
-                string text=FanAxis(fanMaximum*i/2);
-                Label(dc,text,left-Formatted(text).Width-7,y-7);
-            }
+            lines[i]=(y,Axis(value));if(leftLabels is not null)leftLabels[i]=(y,FanAxis(fanMaximum*i/2));
         }
-        double timeLabelY=h-axisLabel.Height-(compact?2:6);
-        Label(dc,$"{HistoryRanges.Label(session.HistorySeconds)} ago"+(averaged?" · avg + range":query.Seconds>=3600?" · raw":""),left,timeLabelY);Label(dc,"Now",left+pw-axisLabel.Width,timeLabelY);
-        dc.PushClip(new RectangleGeometry(new Rect(left,top,pw,ph)));
+        var ticks=TimeTicks.For(session.HistorySeconds,now,DateTimeOffset.Now,pw,compact).Select(t=>(left+pw*(1-(now-t.MonotonicSeconds)/session.HistorySeconds),t.Label)).ToArray();
+        ChartFrame.Grid(dc,plot,lines,ticks,typeface,pixelsPerDip,compact,leftLabels);
+        dc.PushClip(new RectangleGeometry(plot));
         // Retained WPF transform scrolls the recorded trace between polls without rebuilding it each frame.
         var scroll=new TranslateTransform();
-        if(IsLoaded&&IsVisible&&points.Count+secondary.Count+fan.Count+pump.Count>0)
-            scroll.BeginAnimation(TranslateTransform.XProperty,new DoubleAnimation(0,-pw/session.HistorySeconds*Math.Min(1,session.Settings.PollingIntervalSeconds),TimeSpan.FromSeconds(Math.Min(1,session.Settings.PollingIntervalSeconds))));
+        double interval=Math.Min(1,session.Settings.PollingIntervalSeconds);
+        bool anyPoints=frame.Paths.Values.Any(path=>path.Points.Count>0);
+        if(!hit&&IsLoaded&&IsVisible&&anyPoints)scroll.BeginAnimation(TranslateTransform.XProperty,new DoubleAnimation(0,-pw/session.HistorySeconds*interval,TimeSpan.FromSeconds(interval)));
+        else if(hit)scroll.X=-pw/session.HistorySeconds*Math.Clamp(session.Collector.ElapsedSeconds-now,0,interval);
         dc.PushTransform(scroll);
-        void Trace(IReadOnlyList<SamplePoint> values,string metric,string color,bool dashed,bool dotted=false,double? scale=null,double fillStrength=1)
-        {
-            double maximumValue=scale??maximum;
-            bands.TryGetValue(metric,out var range);
-            DrawSeries(dc,values,now,maximumValue,left,top,pw,ph,color,dashed,dotted,query.Seconds>=3600,range,dotted?0:fillStrength);
-        }
-        Trace(points,session.MetricId(kind),Theme.GraphKey(kind),false,fillStrength:(kind=="network"||compare) ? .65 : 1);
-        if(kind=="network")Trace(secondary,"network/upload",Theme.GraphKey("upload"),true,fillStrength:.42);
-        else if(compare)Trace(secondary,session.MetricId(kind=="cpu"?"gpu":"gputemp"),Theme.GraphKey(kind=="cpu"?"gpu":"gputemp"),true,fillStrength:.45);
-        if(showFan)Trace(fan,session.MetricId("gpufan"),Theme.GraphKey("gpufan"),false,true,fanMaximum);
-        if(showPump)Trace(pump,session.MetricId("cpupump"),Theme.GraphKey("cpupump"),false,true,fanMaximum);
+        foreach(var spec in frame.Specs)DrawTrace(dc,frame.Paths[spec.Metric],spec,plot,bands.GetValueOrDefault(spec.Metric),now);
+        hoverAnchor=null;hoverLines=[];
+        if(HoverIndex>=0&&frame.Paths[primaryMetric].Points.Count>HoverIndex)DrawHover(dc,frame,primaryMetric,plot,now,Axis,FanAxis);
         dc.Pop();dc.Pop();
+        if(hoverAnchor is { } anchor)ChartFrame.Chip(dc,anchor,plot,hoverLines,typeface,pixelsPerDip,compact);
         if(!points.Concat(secondary).Concat(fan).Concat(pump).Any(p=>p.Value.HasValue)) Label(dc,sample is null?(compact?"Waiting for data…":"Waiting for first sample…"):(compact?"No readings in this range":"No available readings in this range"),left+(compact?4:15),top+ph/2);
+    }
+    private void DrawHover(DrawingContext dc,Frame frame,string primaryMetric,Rect plot,double now,Func<double,string> axis,Func<double,string> fanAxis)
+    {
+        var primary=frame.Paths[primaryMetric];var sample=primary.Points[HoverIndex];
+        double x=plot.Left+plot.Width*(1-(now-sample.MonotonicSeconds)/session.HistorySeconds);
+        var pen=new Pen(Theme.Brush("Hairline"),1);pen.Freeze();
+        dc.DrawLine(pen,new(x,plot.Top),new(x,plot.Bottom));
+        if(!compact)hoverLines.Add((DateTimeOffset.Now.AddSeconds(sample.MonotonicSeconds-now).ToString("HH:mm:ss",CultureInfo.CurrentCulture),Theme.Brush("Muted")));
+        double tolerance=HoverTolerance(frame.Query);
+        foreach(var spec in frame.Specs)
+        {
+            var path=frame.Paths[spec.Metric];
+            int index=spec.Metric==primaryMetric?HoverIndex:NearestSample.Find(path.Points,sample.MonotonicSeconds,tolerance);
+            if(index<0||path.Points[index].Value is not { } value)continue;
+            double y=plot.Top+plot.Height*(1-Math.Clamp(value/spec.Maximum,0,1));
+            dc.DrawEllipse(Theme.Brush(spec.Color),null,new(x,y),3,3);
+            hoverAnchor??=new(x,y);
+            hoverLines.Add((spec.Dotted?fanAxis(value):axis(value),Theme.Brush(spec.Color)));
+        }
+    }
+    private TracePath BuildTrace(IReadOnlyList<SamplePoint> points,double now,double maximum,Rect plot,bool reduced,bool spline)
+    {
+        var runs=new List<IReadOnlyList<Point>>();List<Point>? run=null;Point? last=null;
+        var drawn=reduced?points:SampleHistory.ReduceForChart(points,now,session.HistorySeconds,(int)Math.Ceiling(plot.Width));
+        foreach(var point in drawn)
+        {
+            if(!point.Value.HasValue){run=null;continue;}
+            var p=new Point(plot.Left+plot.Width*(1-(now-point.MonotonicSeconds)/session.HistorySeconds),plot.Top+plot.Height*(1-Math.Clamp(point.Value.Value/maximum,0,1)));
+            if(run is null){run=new();runs.Add(run);}
+            run.Add(p);last=p;
+        }
+        StreamGeometry path;
+        if(spline)path=ChartFrame.Spline(runs);
+        else
+        {
+            path=new StreamGeometry();
+            using(var context=path.Open())
+                foreach(var r in runs){context.BeginFigure(r[0],false,false);for(int i=1;i<r.Count;i++)context.LineTo(r[i],true,false);}
+            path.Freeze();
+        }
+        // A PathGeometry copy (flattening drops open stroked figures) so the glow pass stays off the StreamGeometry count.
+        var copy=PathGeometry.CreateFromGeometry(path);copy.Freeze();
+        return new(drawn,path,copy,runs,last);
+    }
+    private void DrawTrace(DrawingContext dc,TracePath path,TraceSpec spec,Rect plot,IReadOnlyList<ChartRangePoint>? range,double now)
+    {
+        bool dense=CompareDevices&&session.HistorySeconds>=3600;double width=dense?1:2;
+        if(spec.Fill>0)GraphDepth.Area(dc,path.Runs,plot,spec.Color,spec.Fill);
+        if(range is not null)DrawRange(dc,range,now,spec.Maximum,plot.Left,plot.Top,plot.Width,plot.Height,spec.Color);
+        var style=GraphStroke.Style(session.Settings,spec.Color);
+        if(!style.Glow)GraphDepth.UnderGlow(dc,path.Copy,spec.Color,width*style.Thickness);
+        GraphStroke.Draw(dc,path.Path,session.Settings,spec.Color,width,spec.Dashed,spec.Dotted);
+        RuneTrace.Draw(dc,path.Runs,plot,spec.Color,VisualTreeHelper.GetDpi(this).PixelsPerDip);
+        double markerRadius=dense?1.5:2.5;
+        if(path.Last is { } last){GraphDepth.PointHalo(dc,last,spec.Color,markerRadius);dc.DrawEllipse(Theme.Brush(spec.Color),null,last,markerRadius,markerRadius);}
     }
     private void DrawRange(DrawingContext dc,IReadOnlyList<ChartRangePoint> points,double now,double maximum,double left,double top,double width,double height,string color)
     {
@@ -221,30 +356,12 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
         }
         band.Freeze();dc.PushOpacity(.14);dc.DrawGeometry(Theme.Brush(color),null,band);dc.Pop();
     }
+    /// <summary>Draws one series directly (pop-out fixtures and tests); the dashboard path goes through the cached frame.</summary>
     private void DrawSeries(DrawingContext dc,IReadOnlyList<SamplePoint> points,double now,double maximum,double left,double top,double width,double height,string color,bool dashed,bool dotted=false,bool reduced=false,IReadOnlyList<ChartRangePoint>? range=null,double fillStrength=1)
     {
-        var geometry=new StreamGeometry();bool open=false;Point? lastPoint=null;
-        List<IReadOnlyList<Point>>? segments=(Theme.GlassEnabled&&fillStrength>0)||RuneTrace.Enabled?new():null;List<Point>? segment=null;
-        using(var context=geometry.Open())
-        {
-            foreach(var point in reduced?points:SampleHistory.ReduceForChart(points,now,session.HistorySeconds,(int)Math.Ceiling(width)))
-            {
-                if(!point.Value.HasValue){open=false;segment=null;continue;}
-                var p=new Point(left+width*(1-(now-point.MonotonicSeconds)/session.HistorySeconds),top+height*(1-Math.Clamp(point.Value.Value/maximum,0,1)));
-                if(!open){context.BeginFigure(p,false,false);open=true;if(segments is not null){segment=new();segments.Add(segment);}}else context.LineTo(p,true,false);
-                segment?.Add(p);
-                lastPoint=p;
-            }
-        }
-        bool dense=CompareDevices&&session.HistorySeconds>=3600;
-        geometry.Freeze();
-        if(segments is not null)GraphDepth.Area(dc,segments,new(left,top,width,height),color,fillStrength);
-        if(range is not null)DrawRange(dc,range,now,maximum,left,top,width,height,color);
-        GraphDepth.TraceShadow(dc,geometry,session.Settings,color,dense?1:2,dashed,dotted);
-        GraphStroke.Draw(dc,geometry,session.Settings,color,dense?1:2,dashed,dotted);
-        if(segments is not null)RuneTrace.Draw(dc,segments,new(left,top,width,height),color,VisualTreeHelper.GetDpi(this).PixelsPerDip);
-        double markerRadius=dense?1.5:2.5;
-        if(lastPoint.HasValue){GraphDepth.PointHalo(dc,lastPoint.Value,color,markerRadius);dc.DrawEllipse(Theme.Brush(color),null,lastPoint.Value,markerRadius,markerRadius);}
+        var plot=new Rect(left,top,width,height);
+        bool spline=!(session.HistorySeconds>=3600&&!session.Settings.GraphSmoothing);
+        DrawTrace(dc,BuildTrace(points,now,maximum,plot,reduced,spline),new("",color,dashed,dotted,maximum,dotted?0:fillStrength),plot,range,now);
     }
     private void Label(DrawingContext dc,string text,double x,double y)
     {dc.DrawText(Formatted(text),new(x,y));}
@@ -282,7 +399,7 @@ internal sealed class ChartCard : Border
         if(overview)
         {
             title.TextWrapping=TextWrapping.NoWrap;title.TextTrimming=TextTrimming.CharacterEllipsis;title.ToolTip=Ui.Title(kind);
-            var glyph=OverviewVisual.MetricGlyph(kind);glyph.Margin=new(0,0,9,0);DockPanel.SetDock(glyph,Dock.Left);header.Children.Insert(header.Children.Count-1,glyph);
+            var glyph=OverviewVisual.IconTile(kind);glyph.Margin=new(0,0,9,0);DockPanel.SetDock(glyph,Dock.Left);header.Children.Insert(header.Children.Count-1,glyph);
             value.FontSize=34;
             subtitle.TextWrapping=TextWrapping.NoWrap;subtitle.TextTrimming=TextTrimming.CharacterEllipsis;
             fan.TextWrapping=TextWrapping.NoWrap;fan.TextTrimming=TextTrimming.CharacterEllipsis;
