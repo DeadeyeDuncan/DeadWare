@@ -2,11 +2,13 @@ namespace DeadWare.Core;
 
 public static class WidgetGraphSelection
 {
-    public static IReadOnlyList<string> Kinds {get;}=Array.AsReadOnly(new[]{"cpu","cputemp","memory","network"});
+    public static IReadOnlyList<string> Kinds {get;}=Array.AsReadOnly(new[]{"cpu","cputemp","memory","network","disk"});
+    /// <summary>What a layout with no saved selection shows; Disk is opt-in.</summary>
+    public static IReadOnlyList<string> Default {get;}=Array.AsReadOnly(new[]{"cpu","cputemp","memory","network"});
 
     public static List<string> Normalize(IEnumerable<string>? kinds)
     {
-        if(kinds is null)return Kinds.ToList();
+        if(kinds is null)return Default.ToList();
         var selected=new HashSet<string>(kinds,StringComparer.Ordinal);
         return Kinds.Where(selected.Contains).ToList();
     }

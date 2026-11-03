@@ -347,7 +347,7 @@ internal static class ConnectionsWidgetUiChecks
             settings.WidgetConnectionsMap=false;settings.WidgetGraphs=[];Changed(session);Layout(viewport,300,171);
             Assert.Equal(Visibility.Collapsed,map.Visibility);
             Assert.Contains(Elements(content).OfType<TextBlock>(),t=>t.Visibility==Visibility.Visible&&t.Text.StartsWith("No graphs selected"));
-            settings.WidgetGraphs=WidgetGraphSelection.Kinds.ToList();Changed(session);
+            settings.WidgetGraphs=WidgetGraphSelection.Default.ToList();Changed(session);
             Assert.Equal(520,window.MinHeight);
             window.Close();
             settings.WidgetConnectionsMap=true;

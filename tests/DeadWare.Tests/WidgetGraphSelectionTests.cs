@@ -9,12 +9,12 @@ public class WidgetGraphSelectionTests
     public void Legacy_settings_default_to_all_graphs_with_independent_lists()
     {
         var first=new UserSettings();var second=new UserSettings();
-        Assert.Equal(WidgetGraphSelection.Kinds,first.WidgetGraphs);
+        Assert.Equal(WidgetGraphSelection.Default,first.WidgetGraphs);
         Assert.NotSame(first.WidgetGraphs,second.WidgetGraphs);
         first.WidgetGraphs.Clear();
-        Assert.Equal(WidgetGraphSelection.Kinds,second.WidgetGraphs);
+        Assert.Equal(WidgetGraphSelection.Default,second.WidgetGraphs);
         var loaded=SettingsCodec.Read("{}");
-        Assert.Equal(WidgetGraphSelection.Kinds,loaded.Settings.WidgetGraphs);
+        Assert.Equal(WidgetGraphSelection.Default,loaded.Settings.WidgetGraphs);
         Assert.Null(loaded.Error);
     }
 
@@ -23,6 +23,7 @@ public class WidgetGraphSelectionTests
     [InlineData(4)] [InlineData(5)] [InlineData(6)] [InlineData(7)]
     [InlineData(8)] [InlineData(9)] [InlineData(10)] [InlineData(11)]
     [InlineData(12)] [InlineData(13)] [InlineData(14)] [InlineData(15)]
+    [InlineData(16)] [InlineData(17)] [InlineData(24)] [InlineData(31)]
     public void Every_graph_subset_survives_settings_roundtrip(int mask)
     {
         var expected=WidgetGraphSelection.Kinds.Where((_,index)=>(mask&(1<<index))!=0).ToList();
@@ -37,7 +38,7 @@ public class WidgetGraphSelectionTests
         Assert.Equal(new[]{"cpu","network"},WidgetGraphSelection.Normalize(["network",null!,"cpu","network","invalid"]));
         Assert.Empty(WidgetGraphSelection.Normalize([]));
         Assert.Empty(WidgetGraphSelection.Normalize(["invalid","CPU"]));
-        Assert.Equal(WidgetGraphSelection.Kinds,WidgetGraphSelection.Normalize(null));
+        Assert.Equal(WidgetGraphSelection.Default,WidgetGraphSelection.Normalize(null));
     }
 
     [Theory]
@@ -60,4 +61,18 @@ public class WidgetGraphSelectionTests
         Assert.Equal(minimum,WidgetGraphSelection.MinimumHeight(count));
         Assert.Equal(defaultHeight,WidgetGraphSelection.DefaultHeight(count));
     }
+
+    [Fact]
+    public void Disk_is_a_kind_but_not_in_the_default_selection()
+    {
+        Assert.Contains("disk",WidgetGraphSelection.Kinds);
+        Assert.Equal("disk",WidgetGraphSelection.Kinds[^1]);
+        Assert.DoesNotContain("disk",WidgetGraphSelection.Normalize(null));
+        Assert.Equal(new[]{"cpu","cputemp","memory","network"},WidgetGraphSelection.Default);
+    }
+
+    [Fact]
+    public void A_saved_selection_with_disk_keeps_it_last()=>Assert.Equal(new[]{"cpu","disk"},WidgetGraphSelection.Normalize(["disk","cpu"]));
+
+    [Fact] public void Heights_account_for_five_kinds()=>Assert.Equal(40+120*5,WidgetGraphSelection.MinimumHeight(5));
 }

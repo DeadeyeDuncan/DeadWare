@@ -378,7 +378,7 @@ public sealed class UserSettings
     public bool WidgetConnectionsNorthAmerica {get;set;}
     public string? ConnectionsHomeCityId {get;set;}
     public bool ConnectionsAnimation {get;set;}=true;
-    public List<string> WidgetGraphs {get;set;}=WidgetGraphSelection.Kinds.ToList();
+    public List<string> WidgetGraphs {get;set;}=WidgetGraphSelection.Default.ToList();
     public bool WidgetAlwaysOnTop {get;set;}=true;
     public bool JoinCpuGpuPopouts {get;set;}
     public bool ShowGpuFanSpeed {get;set;}

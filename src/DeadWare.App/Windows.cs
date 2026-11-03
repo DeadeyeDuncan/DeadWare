@@ -130,7 +130,7 @@ public sealed class MainWindow : Window
         var widgetLabel=Ui.Text("Widget graphs",14);widgetLabel.Margin=new(0,0,0,8);widgetGroup.Children.Add(widgetLabel);
         var widgetOptions=new WrapPanel {Margin=new Thickness(0,0,0,6)};
         var selectedGraphs=WidgetGraphSelection.Normalize(session.Settings.WidgetGraphs);
-        foreach(var item in new[]{("cpu","CPU / GPU usage"),("cputemp","CPU / GPU temperature"),("memory","RAM usage"),("network","Network activity")})
+        foreach(var item in new[]{("cpu","CPU / GPU usage"),("cputemp","CPU / GPU temperature"),("memory","RAM usage"),("network","Network activity"),("disk","Disk activity")})
         {
             var key=item.Item1;
             var choice=new CheckBox {Content=item.Item2,Tag=key,IsChecked=selectedGraphs.Contains(key),Margin=new Thickness(0,0,20,8)};

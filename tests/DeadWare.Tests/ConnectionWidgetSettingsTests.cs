@@ -12,7 +12,7 @@ public class ConnectionWidgetSettingsTests
     public void Legacy_graph_choices_keep_the_map_disabled(string json)
     {
         var settings=SettingsCodec.Read(json).Settings;
-        Assert.Equal(WidgetGraphSelection.Kinds,settings.WidgetGraphs);
+        Assert.Equal(WidgetGraphSelection.Default,settings.WidgetGraphs);
         Assert.False(settings.WidgetConnectionsMap);
         using var saved=JsonDocument.Parse(SettingsCodec.Write(settings));
         Assert.True(saved.RootElement.TryGetProperty("WidgetConnectionsNorthAmerica",out var region));
