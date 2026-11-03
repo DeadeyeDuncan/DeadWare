@@ -45,4 +45,22 @@ public class CollectorStorageTests
         var r=await First(new FakeStorage([],false));
         Assert.Empty(r.Storage.Drives);
     }
+
+    private sealed class FakeHealth : IStorageHealthSource
+    {
+        public IReadOnlyList<(string? Serial,string Model,int? Index,SmartSummary Summary)> Read(TimeSpan perHardwareTimeout)=>
+            [("S1","NVMe A",0,new SmartSummary(true,false,null,41,70,0,0,0,10,55,false))];
+        public void Dispose() {}
+    }
+    [Fact] public async Task Slow_health_is_published_as_drive_keys()
+    {
+        await using var collector=new Collector(new(HardwareEnabled:false,EtwEnabled:false,PollingIntervalSeconds:0.5),new FakeStorage([Drive],false),new FakeHealth(),TimeSpan.FromMilliseconds(50));
+        var tcs=new TaskCompletionSource<Reading>(TaskCreationOptions.RunContinuationsAsynchronously);
+        collector.SampleAvailable+=r=>{if(r.Storage.Health.Count>0)tcs.TrySetResult(r);};
+        collector.Start();
+        var r=await tcs.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal(41,r.Sample.Values["storage/S1/temperature"]);
+        Assert.Null(r.Sample.Values["storage/S1/life"]);
+        Assert.Equal(55,r.Sample.Values["storage/S1/used"]);
+    }
 }

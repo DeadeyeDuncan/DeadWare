@@ -5,7 +5,7 @@ namespace DeadWare.App;
 /// <summary>Reads SMART-style storage health off the poll thread.</summary>
 internal interface IStorageHealthSource : IDisposable
 {
-    IReadOnlyList<(string Serial,string Model,int? Index,SmartSummary Summary)> Read(TimeSpan perHardwareTimeout);
+    IReadOnlyList<(string? Serial,string Model,int? Index,SmartSummary Summary)> Read(TimeSpan perHardwareTimeout);
 }
 
 /// <summary>Polls an <see cref="IStorageHealthSource"/> on its own task and publishes matched health; never blocks the collector.</summary>
@@ -21,11 +21,12 @@ internal sealed class StorageSensorLoop : IAsyncDisposable
     private readonly CancellationTokenSource cancellation=new();
     private Task? worker;
     private Task? pendingRead;
-    private IReadOnlyList<StorageHealth> latest=[];
+    private IReadOnlyList<(string? Serial,string Model,int? Index,SmartSummary Summary)> readings=[];
     private string status="Storage health not read yet";
     public StorageSensorLoop(IStorageHealthSource source,TimeSpan period,Func<IReadOnlyList<StorageDrive>> drives)
     {this.source=source;this.period=period;this.drives=drives;}
-    public IReadOnlyList<StorageHealth> Latest=>Volatile.Read(ref latest);
+    /// <summary>The last read, matched against the current drive list so drives discovered after the read still match.</summary>
+    public IReadOnlyList<StorageHealth> Latest=>Match(Volatile.Read(ref readings),drives());
     public string Status=>Volatile.Read(ref status);
     public void Start()=>worker??=Task.Run(RunAsync);
     private async Task RunAsync()
@@ -39,8 +40,7 @@ internal sealed class StorageSensorLoop : IAsyncDisposable
                 {
                     var read=Task.Run(()=>source.Read(PerHardwareTimeout));
                     Volatile.Write(ref pendingRead,read);
-                    var readings=await read.WaitAsync(token).ConfigureAwait(false);
-                    Volatile.Write(ref latest,Match(readings,drives()));
+                    Volatile.Write(ref readings,await read.WaitAsync(token).ConfigureAwait(false));
                     Volatile.Write(ref status,"");
                 }
                 catch(OperationCanceledException) when(token.IsCancellationRequested) {throw;}
@@ -50,20 +50,24 @@ internal sealed class StorageSensorLoop : IAsyncDisposable
         }
         catch(OperationCanceledException) when(token.IsCancellationRequested) {}
     }
-    internal static IReadOnlyList<StorageHealth> Match(IReadOnlyList<(string Serial,string Model,int? Index,SmartSummary Summary)> readings,IReadOnlyList<StorageDrive> drives)
+    internal static IReadOnlyList<StorageHealth> Match(IReadOnlyList<(string? Serial,string Model,int? Index,SmartSummary Summary)> readings,IReadOnlyList<StorageDrive> drives)
     {
         var result=new List<StorageHealth>(readings.Count);
+        // One reading per drive and one drive per reading: a drive already claimed is not matched again.
+        var free=drives.ToList();
         foreach(var r in readings)
         {
             var serial=StorageProjection.Normalize(r.Serial);
-            StorageDrive? drive=serial is null?null:drives.FirstOrDefault(d=>StorageProjection.Normalize(d.Serial)==serial);
-            if(drive is null&&r.Index is{} index)drive=drives.FirstOrDefault(d=>d.Index==index);
+            StorageDrive? drive=serial is null?null:free.FirstOrDefault(d=>StorageProjection.Normalize(d.Serial)==serial);
+            if(drive is null&&r.Index is{} index)drive=free.FirstOrDefault(d=>d.Index==index);
             if(drive is null)
             {
-                var models=drives.Where(d=>string.Equals(d.Model,r.Model,StringComparison.Ordinal)).Take(2).ToList();
+                var models=free.Where(d=>string.Equals(d.Model,r.Model,StringComparison.Ordinal)).Take(2).ToList();
                 if(models.Count==1)drive=models[0];
             }
+            if(drive is not null){free.Remove(drive);}
             var id=drive?.Id??"unmatched:"+r.Model;
+            if(drive is null){int n=1;var baseId=id;while(result.Any(x=>x.DriveId==id))id=$"{baseId}#{++n}";}
             result.Add(ReferenceEquals(r.Summary,TimedOut)?StorageProjection.Health(id,null,"Unavailable · sensor timeout"):StorageProjection.Health(id,r.Summary,null));
         }
         return result;

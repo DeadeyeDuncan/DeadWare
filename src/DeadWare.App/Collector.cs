@@ -194,6 +194,13 @@ public sealed class Collector : IAsyncDisposable
                     var storageReading=new StorageReading(drives,StorageHealthFor(drives),storageError??"");
                     var battery=WindowsBattery.Read();
                     foreach(var sensor in sensors) values[sensor.Id]=sensor.Value;
+                    foreach(var health in storageReading.Health)
+                    {
+                        if(!drives.Any(d=>d.Id==health.DriveId))continue;
+                        values[StorageMetrics.Key(health.DriveId,"temperature")]=health.Temperature;
+                        values[StorageMetrics.Key(health.DriveId,"life")]=health.LifePercent;
+                        values[StorageMetrics.Key(health.DriveId,"used")]=health.UsedPercent;
+                    }
                     var now=clock.Elapsed.TotalSeconds;
                     var sample=new Snapshot(DateTimeOffset.Now,now,new System.Collections.ObjectModel.ReadOnlyDictionary<string,double?>(values)) {PollingIntervalSeconds=intervalSeconds};
                     string hardwareStatus=initialization.Length>0?initialization:!options.HardwareEnabled?"Hardware collection disabled for diagnostic isolation":$"{sensors.Count} sensors · {(IsElevated?"Administrator":"Standard user")} · {(options.ExtendedSensors?"Extended sensors enabled":"CPU/GPU sensors")}";
@@ -301,8 +308,13 @@ public sealed class Collector : IAsyncDisposable
         // Stop our trace even if a hardware provider is stuck. Native stop never runs on the UI thread.
         lock(etwStopGate)return new(disposal??=Task.Run(DisposeCoreAsync));
     }
+    private static readonly TimeSpan HardwareStopBudget=TimeSpan.FromSeconds(5);
     private async Task DisposeCoreAsync()
     {
+        long stopStarted=Stopwatch.GetTimestamp();
+        // Started alongside the worker join so both run against one deadline.
+        _=cancellation.CancelAsync();
+        var healthStop=Volatile.Read(ref healthLoop)?.DisposeAsync().AsTask();
         try
         {
             var networkStop=StopNetworkCaptureAsync();
@@ -311,7 +323,10 @@ public sealed class Collector : IAsyncDisposable
         }
         finally
         {
-            try {if(Volatile.Read(ref healthLoop) is {} loop)await loop.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);}
+            // A loop the worker created after cancellation began is still released.
+            healthStop??=Volatile.Read(ref healthLoop)?.DisposeAsync().AsTask();
+            // The worker never waits on the loop, so the loop's join shares the hardware budget that began at cancellation.
+            try {if(healthStop is not null)await healthStop.WaitAsync(HardwareStopBudget-Stopwatch.GetElapsedTime(stopStarted) is var left&&left>TimeSpan.Zero?left:TimeSpan.Zero).ConfigureAwait(false);}
             catch(TimeoutException) {}
             finally {cancellation.Dispose();(storage as IDisposable)?.Dispose();}
         }

@@ -12,7 +12,8 @@ internal sealed partial class LibreStorageHealth : IStorageHealthSource
     private readonly Computer computer=new() {IsStorageEnabled=true};
     private readonly object gate=new();
     private bool opened,disposed;
-    public IReadOnlyList<(string Serial,string Model,int? Index,SmartSummary Summary)> Read(TimeSpan perHardwareTimeout)
+    private readonly HardwareUpdates updates=new();
+    public IReadOnlyList<(string? Serial,string Model,int? Index,SmartSummary Summary)> Read(TimeSpan perHardwareTimeout)
     {
         IHardware[] hardware;
         lock(gate)
@@ -21,15 +22,13 @@ internal sealed partial class LibreStorageHealth : IStorageHealthSource
             if(!opened){computer.Open();opened=true;}
             hardware=computer.Hardware.Where(h=>h.HardwareType==HardwareType.Storage).ToArray();
         }
-        var result=new List<(string,string,int?,SmartSummary)>(hardware.Length);
+        var result=new List<(string?,string,int?,SmartSummary)>(hardware.Length);
         foreach(var h in hardware)
         {
             int? index=Index(h.Identifier.ToString());
-            var update=Task.Run(h.Update);
-            bool finished;
-            try {finished=update.Wait(perHardwareTimeout);} catch(AggregateException) {finished=true;}
-            if(!finished){result.Add((null!,h.Name,index,StorageSensorLoop.TimedOut));continue;}
-            result.Add((null!,h.Name,index,Summary(h,update.IsCompletedSuccessfully)));
+            var outcome=updates.Run(h,h.Update,perHardwareTimeout);
+            if(outcome is null){result.Add((null,h.Name,index,StorageSensorLoop.TimedOut));continue;}
+            result.Add((null,h.Name,index,Summary(h,outcome.Value)));
         }
         return result;
     }
@@ -54,7 +53,33 @@ internal sealed partial class LibreStorageHealth : IStorageHealthSource
         lock(gate)
         {
             if(disposed)return;disposed=true;
-            if(opened)computer.Close();
+            if(!opened)return;
         }
+        // Close only after every stray update has left native/SMART IO.
+        updates.Outstanding().ContinueWith(_=>computer.Close(),CancellationToken.None,TaskContinuationOptions.ExecuteSynchronously,TaskScheduler.Default);
+    }
+}
+
+/// <summary>Runs at most one update per hardware; an update still running from an earlier read is never started again.</summary>
+internal sealed class HardwareUpdates
+{
+    private readonly Dictionary<object,Task> running=new(ReferenceEqualityComparer.Instance);
+    private readonly object gate=new();
+    /// <summary>Returns null on timeout (or while a previous update is still pending), else whether the update succeeded.</summary>
+    public bool? Run(object key,Action update,TimeSpan timeout)
+    {
+        Task task;
+        lock(gate)
+        {
+            if(running.TryGetValue(key,out var previous)&&!previous.IsCompleted)return null;
+            task=Task.Run(update);running[key]=task;
+        }
+        bool finished;
+        try {finished=task.Wait(timeout);} catch(AggregateException) {finished=true;}
+        return finished?task.IsCompletedSuccessfully:null;
+    }
+    public Task Outstanding()
+    {
+        lock(gate)return Task.WhenAll(running.Values.Select(t=>t.ContinueWith(_=>{},TaskScheduler.Default)));
     }
 }
