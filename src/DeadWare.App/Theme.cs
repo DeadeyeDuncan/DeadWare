@@ -97,9 +97,22 @@ internal static class Theme
         Application.Current.Resources["Heading"]=SystemParameters.HighContrast?SystemColors.WindowTextBrush:Brush(CurrentName switch {"Skyrim"=>"Ink","Mage"=>"Warning",_=>"Accent"});
         Application.Current.Resources["ScrollThumbHover"]=SystemParameters.HighContrast?SystemColors.HighlightBrush:Brush("Muted");
         ScrollCorner.Color=((SolidColorBrush)Brush("Panel")).Color;
+        ApplyDerivedTokens();
         ApplyGlassResources();
         ApplyGraphColors();
         NativeTheme.RefreshOpenWindows();
+    }
+    // Shared tokens: every border, selection tint, elevation layer and halo reads these instead of
+    // re-deriving its own alpha, so the nine palettes stay consistent with each other.
+    private static void ApplyDerivedTokens()
+    {
+        Color ColorOf(string key)=>Brush(key) is SolidColorBrush solid?solid.Color:Colors.Transparent;
+        var tokens=ThemeTokens.Derive(ColorOf("Line"),ColorOf("Accent"),ColorOf("Panel"),SystemParameters.HighContrast,CurrentName=="Blackout");
+        var resources=Application.Current.Resources;
+        foreach(var (key,color) in new[]{("Hairline",tokens.Hairline),("AccentSoft",tokens.AccentSoft),("Surface1",tokens.Surface1),("Surface2",tokens.Surface2),("Glow",tokens.Glow)})
+        {
+            var brush=new SolidColorBrush(color);brush.Freeze();resources[key]=brush;
+        }
     }
     private static bool TransparencyAllowed()
     {

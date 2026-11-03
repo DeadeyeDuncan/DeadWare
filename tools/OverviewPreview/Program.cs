@@ -22,7 +22,9 @@ internal static class Program
 {
     private const BindingFlags All=BindingFlags.Instance|BindingFlags.Static|BindingFlags.Public|BindingFlags.NonPublic;
     private static readonly Assembly AppAssembly=typeof(UiSession).Assembly;
-    private static readonly string[] Themes=["Midnight","Ember","Glacier","Amethyst","Neon","Blackout","Daylight"];
+    // Every production theme, read from the app so a new palette is rendered automatically.
+    private static readonly string[] Themes=(string[])AppAssembly.GetType("DeadWare.App.Theme")!.GetField("Names",All)!.GetValue(null)!;
+    private static readonly string[] Routes=["overview","network","connections","battery","usage","alerts","sensors","cooling","desktop","updates"];
     private static readonly string Scratch=Path.Combine(Path.GetTempPath(),"DeadWare-GlassPreview",Guid.NewGuid().ToString("N"));
     private static UiSession session=null!;
     private static Collector collector=null!;
@@ -101,6 +103,10 @@ internal static class Program
             ReleaseNotes=[new(new Version(0,0,0),"Glass UI · sample release notes","Frosted surfaces, gentle highlights and a shared palette across every page. These notes are synthetic preview content.")]
         });
         Set(session,"<Updates>k__BackingField",updates);
+        // Usage history and Alerts allocate their stores lazily; nothing is opened until a page loads, which never happens offscreen.
+        var usage=new UsageHistoryService(Path.Combine(Scratch,"usage.db"),"synthetic-preview");
+        Set(session,"<Usage>k__BackingField",usage);
+        Set(session,"<Alerts>k__BackingField",new AlertService(Path.Combine(Scratch,"alerts.db"),"synthetic-preview",usage,()=>"preview-gpu"));
         var saveTimer=new DispatcherTimer {Interval=TimeSpan.FromMilliseconds(500)};
         saveTimer.Tick+=async (_,_)=>{saveTimer.Stop();await session.SaveAsync();};Set(session,"saveTimer",saveTimer);
         for(int second=-21600;second<0;second++)collector.History.Add(Sample(second));
@@ -152,7 +158,7 @@ internal static class Program
         AutomationProperties.SetName(themes,"Preview color theme");themes.SelectionChanged+=(_,_)=>{if(themes.SelectedItem is string name)session.SetTheme(name);};DockPanel.SetDock(themes,Dock.Right);title.Children.Add(themes);
         var heading=(TextBlock)Call("Ui","Heading","System overview",28d)!;heading.Margin=new(6,0,0,0);title.Children.Add(heading);top.Children.Add(title);
         var toolbar=new DockPanel {Margin=new(6,14,6,12)};
-        var range=(ComboBox)Call("Ui","Range",session)!;DockPanel.SetDock(range,Dock.Right);toolbar.Children.Add(range);
+        var range=(FrameworkElement)Call("Ui","Range",session)!;DockPanel.SetDock(range,Dock.Right);toolbar.Children.Add(range);
         var gpuLabel=Text("GPU  ·  Radeon RX 6800 XT",12,"Muted");toolbar.Children.Add(gpuLabel);top.Children.Add(toolbar);
         var footer=new WrapPanel {Margin=new(6,12,6,0)};DockPanel.SetDock(footer,Dock.Bottom);layout.Children.Add(footer);
         var states=new ComboBox {ItemsSource=new[]{"Sample readings","Unavailable sensors","Stale readings","Discovering hardware"},SelectedIndex=0,Width=188};AutomationProperties.SetName(states,"Preview reading state");
@@ -232,11 +238,11 @@ internal static class Program
         try
         {
             ApplySampleHistoryPages(pages);
-            var themeChoice=Descendants(shell).OfType<ComboBox>().Single(combo=>combo.Items.Cast<object>().Select(item=>item.ToString()).SequenceEqual(Themes));
+            var themeChoice=Field<object>(dashboard,"themePicker");
             foreach(string theme in Themes)
             {
-                themeChoice.SelectedItem=theme;Call("Theme","Apply",theme);
-                foreach(string route in new[]{"overview","network","connections","battery","sensors","cooling","desktop","updates"})
+                Invoke(themeChoice,"SetSelection",theme);Call("Theme","Apply",theme);
+                foreach(string route in Routes)
                 {
                     Invoke(dashboard,"Navigate",route);
                     // No Window is shown. History/update pages never receive a presentation

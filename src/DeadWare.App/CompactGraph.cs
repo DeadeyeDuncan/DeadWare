@@ -55,7 +55,7 @@ internal sealed class CompactGraph : Border
         popup=new Popup {Child=menuBorder,PlacementTarget=options,Placement=PlacementMode.Bottom,StaysOpen=false,AllowsTransparency=true};
         popup.Opened+=(_,_)=>ranges.Focus();
         popup.Closed+=(_,_)=>{if(IsLoaded)options.Focus();};
-        menu.PreviewKeyDown+=(_,e)=>{if(e.Key==Key.Escape&&!ranges.IsDropDownOpen){popup.IsOpen=false;e.Handled=true;}};
+        menu.PreviewKeyDown+=(_,e)=>{if(e.Key==Key.Escape){popup.IsOpen=false;e.Handled=true;}};
         Loaded+=(_,_)=>{session.Changed+=Refresh;Refresh();};
         Unloaded+=(_,_)=>{session.Changed-=Refresh;popup.IsOpen=false;};
         Refresh();
