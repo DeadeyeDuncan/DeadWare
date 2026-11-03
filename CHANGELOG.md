@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.9.1 — Thermal history and overview sizing
+
+- Fix Cooling Health opening an empty thermal history. Adding pump speed to the CPU sensor map changed the CPU's history identity, and devices were listed by identity hash, so the page defaulted to the stale entry. Devices are now ordered by their most recent recorded window (or hourly summary once minute detail has expired), and a repeated device label gains **· older sensor map** and a short identifier.
+- Let the overview card grid fill the window height above the footer, enlarging each graph; 810 px remains the minimum so short windows scroll.
+
 ## 0.9.0 — Refined glass
 
 - Restyle the dashboard, pop-outs, widget and Connections as refined glass: cards with hairline borders, a navigation rail with vector icons and an accent bar on the current page, a one-row page header with a hardware subtitle (CPU, GPU, RAM, last sample age), Settings grouped into Monitoring, Appearance, Widget, Pop-outs, Startup and History and alerts cards, and a segmented history-range control in place of the dropdown. Every theme keeps its palette and fonts; derived hairline, accent, surface and glow tones come from each palette, and Blackout keeps pure-black surfaces.
