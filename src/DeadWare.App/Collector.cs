@@ -189,6 +189,12 @@ public sealed class Collector : IAsyncDisposable
                     providerStarted=Stopwatch.GetTimestamp();
                     var drives=storage?.Drives(clock.Elapsed.TotalSeconds)??[];string? storageError=null;
                     storage?.Read(drives,values,out storageError);
+                    foreach(string metric in new[]{"read","write"})
+                    {
+                        // A total of zero would claim idle disks when no drive actually reported.
+                        var known=drives.Select(d=>values.GetValueOrDefault(StorageMetrics.Key(d.Id,metric))).OfType<double>().ToList();
+                        values[StorageMetrics.Key("total",metric)]=known.Count==0?null:known.Sum();
+                    }
                     if(timings is not null)timings["windows/storage"]=Stopwatch.GetElapsedTime(providerStarted).TotalMilliseconds;
                     Volatile.Write(ref storageDrives,drives);
                     var storageReading=new StorageReading(drives,StorageHealthFor(drives),storageError??"");

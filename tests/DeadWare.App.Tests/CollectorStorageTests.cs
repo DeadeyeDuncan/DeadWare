@@ -40,6 +40,15 @@ public class CollectorStorageTests
         var r=await First(new FakeStorage([Drive],true));
         Assert.Null(r.Sample.Values["storage/S1/read"]);Assert.Contains("Disk counters unavailable",r.HardwareStatus);
     }
+    [Fact] public async Task Collector_total_is_null_when_all_drives_null()
+    {
+        var failed=await First(new FakeStorage([Drive],true));
+        Assert.Null(failed.Sample.Values["storage/total/read"]);Assert.Null(failed.Sample.Values["storage/total/write"]);
+        var none=await First(new FakeStorage([],false));
+        Assert.Null(none.Sample.Values["storage/total/read"]);
+        var two=await First(new FakeStorage([Drive,Drive with {Id="S2",Serial="S2",Index=1}],false));
+        Assert.Equal(200,two.Sample.Values["storage/total/read"]);Assert.Equal(100,two.Sample.Values["storage/total/write"]);
+    }
     [Fact] public async Task No_drives_yields_empty_storage_reading()
     {
         var r=await First(new FakeStorage([],false));

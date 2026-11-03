@@ -66,6 +66,8 @@ public class BatteryUiTests
                 ConnectionsWidgetUiChecks.Run(app);
                 NetworkChartUiChecks.Run();
                 LiveRenderingUiChecks.Run();
+                Phase("storage chart");
+                StorageChartUiChecks.Run();
                 Phase("chart frame");
                 ChartFrameUiChecks.Run();
                 Phase("thermal chart");
@@ -240,7 +242,7 @@ public class BatteryUiTests
                 var pages = (Dictionary<string, FrameworkElement>)typeof(MainWindow).GetField("pages", All)!.GetValue(dashboard)!;
                 pages["overview"].Measure(new Size(900, 900)); pages["overview"].Arrange(new Rect(0, 0, 900, 900)); pages["overview"].UpdateLayout();
                 var overviewCards = Descendants(pages["overview"]).OfType<FrameworkElement>().Where(element => element.GetType().Name == "ChartCard").ToArray();
-                Assert.Equal(6, overviewCards.Length);
+                Assert.Equal(7, overviewCards.Length);
                 Assert.Single(overviewCards, card => (string)card.GetType().GetField("kind", All)!.GetValue(card)! == "memory");
                 var settingsRoot = ((ScrollViewer)pages["desktop"]).Content;
                 var settings = Assert.IsType<StackPanel>(settingsRoot is Border surfaceCard ? surfaceCard.Child : settingsRoot);

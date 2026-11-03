@@ -5,6 +5,8 @@ namespace DeadWare.Tests;
 
 public class GraphColorSettingsTests
 {
+    [Fact] public void Disk_colour_kinds_exist(){ Assert.Contains("diskread",GraphColorSettings.Kinds);Assert.Contains("diskwrite",GraphColorSettings.Kinds);}
+
     [Fact]
     public void Every_series_keeps_its_independent_color_after_reopening_settings()
     {

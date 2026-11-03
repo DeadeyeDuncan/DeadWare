@@ -14,8 +14,8 @@ internal sealed class OverviewPage : ScrollViewer
         VerticalScrollBarVisibility=ScrollBarVisibility.Auto;
         HorizontalScrollBarVisibility=ScrollBarVisibility.Disabled;
         var stack=new StackPanel();
-        var cards=new UniformGrid {Columns=2,Rows=3,Height=810};
-        foreach(string kind in new[]{"cpu","gpu","cputemp","gputemp","memory","network"})
+        var cards=new UniformGrid {Columns=2,Rows=4,Height=810};
+        foreach(string kind in new[]{"cpu","gpu","cputemp","gputemp","memory","network","storage"})
             cards.Children.Add(new ChartCard(session,kind,true,true));
         stack.Children.Add(cards);
         memory.Margin=new(9,10,9,4);stack.Children.Add(memory);
@@ -67,6 +67,7 @@ internal static class OverviewVisual
             "cpu" or "gpu"=>"M 5,5 L 15,5 15,15 5,15 Z M 8,8 L 12,8 12,12 8,12 Z M 7,2 L 7,5 M 13,2 L 13,5 M 7,15 L 7,18 M 13,15 L 13,18 M 2,7 L 5,7 M 2,13 L 5,13 M 15,7 L 18,7 M 15,13 L 18,13",
             "cputemp" or "gputemp"=>"M 8,11 L 8,4 C 8,1 12,1 12,4 L 12,11 C 17,15 11,21 7,17 C 5,15 6,12 8,11 M 10,7 L 10,14 M 15,5 L 18,5 M 15,9 L 17,9",
             "memory"=>"M 2,5 L 18,5 18,15 2,15 Z M 5,8 L 8,8 8,12 5,12 Z M 12,8 L 15,8 15,12 12,12 Z M 5,15 L 5,18 M 10,15 L 10,18 M 15,15 L 15,18",
+            "storage"=>"M 2,4 L 18,4 18,16 2,16 Z M 2,12 L 18,12 M 14,14 L 15,14 M 5,14 L 9,14",
             _=>"M 6,2 L 6,16 M 2,12 L 6,16 10,12 M 14,18 L 14,4 M 10,8 L 14,4 18,8"
         };
         return Glyph(geometry,18,Theme.GraphKey(kind));
