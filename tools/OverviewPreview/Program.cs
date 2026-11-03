@@ -22,7 +22,9 @@ internal static class Program
 {
     private const BindingFlags All=BindingFlags.Instance|BindingFlags.Static|BindingFlags.Public|BindingFlags.NonPublic;
     private static readonly Assembly AppAssembly=typeof(UiSession).Assembly;
-    private static readonly string[] Themes=["Midnight","Ember","Glacier","Amethyst","Neon","Blackout","Daylight"];
+    // Every production theme, read from the app so a new palette is rendered automatically.
+    private static readonly string[] Themes=(string[])AppAssembly.GetType("DeadWare.App.Theme")!.GetField("Names",All)!.GetValue(null)!;
+    private static readonly string[] Routes=["overview","network","connections","battery","usage","alerts","sensors","cooling","desktop","updates"];
     private static readonly string Scratch=Path.Combine(Path.GetTempPath(),"DeadWare-GlassPreview",Guid.NewGuid().ToString("N"));
     private static UiSession session=null!;
     private static Collector collector=null!;
@@ -101,6 +103,10 @@ internal static class Program
             ReleaseNotes=[new(new Version(0,0,0),"Glass UI · sample release notes","Frosted surfaces, gentle highlights and a shared palette across every page. These notes are synthetic preview content.")]
         });
         Set(session,"<Updates>k__BackingField",updates);
+        // Usage history and Alerts allocate their stores lazily; nothing is opened until a page loads, which never happens offscreen.
+        var usage=new UsageHistoryService(Path.Combine(Scratch,"usage.db"),"synthetic-preview");
+        Set(session,"<Usage>k__BackingField",usage);
+        Set(session,"<Alerts>k__BackingField",new AlertService(Path.Combine(Scratch,"alerts.db"),"synthetic-preview",usage,()=>"preview-gpu"));
         var saveTimer=new DispatcherTimer {Interval=TimeSpan.FromMilliseconds(500)};
         saveTimer.Tick+=async (_,_)=>{saveTimer.Stop();await session.SaveAsync();};Set(session,"saveTimer",saveTimer);
         for(int second=-21600;second<0;second++)collector.History.Add(Sample(second));
@@ -232,11 +238,11 @@ internal static class Program
         try
         {
             ApplySampleHistoryPages(pages);
-            var themeChoice=Descendants(shell).OfType<ComboBox>().Single(combo=>combo.Items.Cast<object>().Select(item=>item.ToString()).SequenceEqual(Themes));
+            var themeChoice=Field<object>(dashboard,"themePicker");
             foreach(string theme in Themes)
             {
-                themeChoice.SelectedItem=theme;Call("Theme","Apply",theme);
-                foreach(string route in new[]{"overview","network","connections","battery","sensors","cooling","desktop","updates"})
+                Invoke(themeChoice,"SetSelection",theme);Call("Theme","Apply",theme);
+                foreach(string route in Routes)
                 {
                     Invoke(dashboard,"Navigate",route);
                     // No Window is shown. History/update pages never receive a presentation
