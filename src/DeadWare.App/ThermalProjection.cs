@@ -57,6 +57,20 @@ public static class ThermalProjection
                 Valid(temperature), utilization, Valid(power), Valid(clock), Valid(fan), throttled, unavailable)
                 { PollingIntervalSeconds = reading.Sample.PollingIntervalSeconds });
         }
+        foreach (var drive in StorageProjection.Persisted(reading.Storage.Drives))
+        {
+            var health = reading.Storage.Health.FirstOrDefault(h => h.DriveId == drive.Id);
+            if (health is null) continue;
+            string id = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(machineKey + "|Storage|" + drive.Id + "|temperature")));
+            var device = new ThermalDevice(id, drive.Model, "Storage", configurationId, "{\"Version\":1,\"Storage\":\"temperature\"}")
+            { ComparisonAllowed = true, IdentityNote = "" };
+            double? temperature = SampleHistory.Finite(health.Temperature);
+            double? active = SampleHistory.Finite(reading.Sample.Values.GetValueOrDefault(StorageMetrics.Key(drive.Id, "active")));
+            result.Add(new(device, sessionId, reading.Sample.Timestamp.ToUniversalTime(), reading.Sample.MonotonicSeconds,
+                temperature, active, null, null, null, false,
+                temperature is null ? health.Unavailable ?? "Drive temperature unavailable." : health.Unavailable)
+                { PollingIntervalSeconds = reading.Sample.PollingIntervalSeconds });
+        }
         return result;
     }
 }

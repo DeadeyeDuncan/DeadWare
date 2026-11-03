@@ -100,4 +100,30 @@ public class ThermalProjectionTests
         Assert.NotEqual(original.Device.Id,Assert.Single(ThermalProjection.Project(r with {Sensors=[r.Sensors[0] with {Id="other"}]},"s","m","c")).Device.Id);
         Assert.Equal("new",Assert.Single(ThermalProjection.Project(r,"s","m","new")).Device.ConfigurationId);
     }
+
+    internal static Reading ReadingWithStorage(params (string id,string? model,double? temp,double? active)[] drives)
+    {
+        var values=new Dictionary<string,double?>{["cpu/usage"]=40};
+        var list=new List<StorageDrive>();var health=new List<StorageHealth>();
+        int i=0;
+        foreach(var d in drives)
+        {
+            bool live=d.model is null;
+            list.Add(new StorageDrive(d.id,live?null:d.id,d.model??"Live drive",i++,"NVMe",1000,live,[]));
+            health.Add(new StorageHealth(d.id,"OK",d.temp,null,null,null,null,null));
+            values[StorageMetrics.Key(d.id,"active")]=d.active;
+        }
+        return new Reading(new(DateTimeOffset.UtcNow,100,values),[],[],[],"Test CPU","","","",false){Storage=new StorageReading(list,health,"")};
+    }
+    [Fact] public void Persisted_drives_with_temperature_become_storage_devices(){ var s=ThermalProjection.Project(ReadingWithStorage(("S1","NVMe A",42.0,12.0)),"run","m","c").Single(x=>x.Device.Kind=="Storage");
+        Assert.Equal("NVMe A",s.Device.Name);Assert.Equal(42,s.Temperature);Assert.Equal(12,s.Load);Assert.Null(s.FanRpm);Assert.True(s.Device.ComparisonAllowed);}
+    [Fact] public void Live_only_drives_are_excluded()=>Assert.DoesNotContain(ThermalProjection.Project(ReadingWithStorage(("USB#1",null,40.0,0.0)),"r","m","c"),x=>x.Device.Kind=="Storage");
+    [Fact] public void Sensors_off_keeps_device_with_unavailable_reason(){
+        var r=ReadingWithStorage(("S1","NVMe A",null,5.0));
+        r=r with{Storage=r.Storage with{Health=[r.Storage.Health[0] with{Unavailable="Unavailable · storage sensors off"}]}};
+        var s=ThermalProjection.Project(r,"run","m","c").Single(x=>x.Device.Kind=="Storage");
+        Assert.Equal("Unavailable · storage sensors off",s.UnavailableReason);Assert.Null(s.Temperature);}
+    [Fact] public void Storage_device_id_is_stable_across_sessions(){
+        string Id(string run)=>ThermalProjection.Project(ReadingWithStorage(("S1","NVMe A",42.0,1.0)),run,"m","c").Single(x=>x.Device.Kind=="Storage").Device.Id;
+        Assert.Equal(Id("run1"),Id("run2"));}
 }
