@@ -37,6 +37,7 @@ internal static class ConnectionsPageUiChecks
             new(new(peer with { RemoteAddress="9.9.9.9" }, now, now, 300, 400, 0, 0), null)], null, true, false, "Incomplete capture");
         Call(page, "ApplyLive", live);
         Layout(page, 671, 440);
+        CheckCards(page);
         Assert.Empty(Elements(page).OfType<DataGrid>());
         string text = Text(page);
         Assert.Contains("Live", text);
@@ -312,6 +313,24 @@ internal static class ConnectionsPageUiChecks
     private static void Call(object target, string name, object? value) => PageType.GetMethod(name, All)!.Invoke(target, value is null ? null : [value]);
     private static void Layout(FrameworkElement page, double width, double height) { page.Measure(new(width, height)); page.Arrange(new(0, 0, width, height)); page.UpdateLayout(); }
     private static string Text(DependencyObject root) => string.Join("\n", Elements(root).OfType<TextBlock>().Select(t => t.Text));
+    /// <summary>Refined glass: the controls strip, the map and the detail box each sit in a Card; the strip is above the map.</summary>
+    private static void CheckCards(FrameworkElement page)
+    {
+        var card = Application.Current.Resources["Card"];
+        static Border? NearestBorder(DependencyObject element)
+        {
+            for (var parent = VisualTreeHelper.GetParent(element); parent is not null; parent = VisualTreeHelper.GetParent(parent))
+                if (parent is Border border) return border;
+            return null;
+        }
+        var map = Field<ConnectionMap>(page, "map");
+        var mapCard = NearestBorder(map); Assert.NotNull(mapCard); Assert.Same(card, mapCard!.Style);
+        var stripCard = NearestBorder(Field<ComboBox>(page, "mode")); Assert.NotNull(stripCard); Assert.Same(card, stripCard!.Style);
+        Assert.NotSame(mapCard, stripCard);
+        Assert.True(stripCard.TransformToAncestor(page).Transform(new Point()).Y < mapCard.TransformToAncestor(page).Transform(new Point()).Y, "The controls strip sits above the map card.");
+        Assert.Same(card, Field<Border>(page, "nodeDetails").Style);
+        Assert.True(map.ActualHeight >= 280, $"Map height {map.ActualHeight} with card padding.");
+    }
     private static IEnumerable<DependencyObject> Elements(DependencyObject root)
     { for (int i = 0; i < VisualTreeHelper.GetChildrenCount(root); i++) { var child = VisualTreeHelper.GetChild(root, i); yield return child; foreach (var descendant in Elements(child)) yield return descendant; } }
 }

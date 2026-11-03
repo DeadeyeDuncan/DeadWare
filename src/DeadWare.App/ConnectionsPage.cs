@@ -89,9 +89,12 @@ internal sealed class ConnectionsPage : Grid
         var timeline = new WrapPanel(); timeline.Children.Add(minute); Named(cursor, "History minute cursor"); timeline.Children.Add(cursor); timeline.Children.Add(cursorTime); play = Button("Play", TogglePlayback); timeline.Children.Add(play); historical.Children.Add(timeline); controls.Children.Add(historical);
         var filters = new WrapPanel(); Named(search, "Search application or IP"); search.ToolTip = "Application name, PID or remote IP"; filters.Children.Add(Label("Application / IP", search, "Search application or IP")); country.ToolTip = "ISO country code; blank for all"; Named(country, "Country code"); filters.Children.Add(Label("Country code", country, "Country code"));
         direction.ItemsSource = Enum.GetValues<ConnectionDirection>(); direction.SelectedIndex = 0; Named(direction, "Traffic direction"); filters.Children.Add(Label("Direction", direction, "Traffic direction")); filters.Children.Add(Button("Filter", () => FiltersChanged())); controls.Children.Add(filters);
-        var header=layoutHeader=new StackPanel();header.Children.Add(controls);header.Children.Add(summary);header.Children.Add(capture);body.Children.Add(header);
-        var mapHost = new Grid(); mapHost.Children.Add(map); mapHost.Children.Add(mapOverlay); Grid.SetRow(mapHost, 1); body.Children.Add(mapHost);
-        nodeDetails.SetResourceReference(Border.BackgroundProperty, "GlassPanel"); nodeDetails.SetResourceReference(Border.BorderBrushProperty, "GlassBorder");
+        // Refined glass: the controls sit in a card strip above the map card; the detail box is a card too.
+        var strip = Ui.Panel(controls, new Thickness(12, 6, 12, 6)); strip.Margin = new(0, 4, 0, 8);
+        var header=layoutHeader=new StackPanel();header.Children.Add(strip);header.Children.Add(summary);header.Children.Add(capture);body.Children.Add(header);
+        var mapHost = new Grid(); mapHost.Children.Add(map); mapHost.Children.Add(mapOverlay);
+        var mapCard = Ui.Panel(mapHost, new Thickness(6)); mapCard.Margin = new(0, 2, 0, 2); Grid.SetRow(mapCard, 1); body.Children.Add(mapCard);
+        nodeDetails.SetResourceReference(StyleProperty, "Card"); nodeDetails.CornerRadius = new(10);
         nodeText.TextWrapping = TextWrapping.Wrap;
         var detailsLayout = new StackPanel(); var detailHeader = new DockPanel(); var close = Button("Close", ClearSelection); DockPanel.SetDock(close, Dock.Right); detailHeader.Children.Add(close); detailHeader.Children.Add(Ui.Text("Connection details", 13)); detailsLayout.Children.Add(detailHeader);
         detailsLayout.Children.Add(new ScrollViewer { Content = nodeText, MaxHeight = 175, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled }); nodeDetails.Child = detailsLayout; mapOverlay.Children.Add(nodeDetails); Named(nodeDetails, "Selected map connection details");
