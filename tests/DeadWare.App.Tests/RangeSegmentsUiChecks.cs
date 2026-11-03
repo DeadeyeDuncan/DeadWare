@@ -6,6 +6,7 @@ using System.Windows.Automation;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Documents;
+using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
 using DeadWare.App;
@@ -52,6 +53,22 @@ internal static class RangeSegmentsUiChecks
         Pump();
         Assert.Equal(3600,Assert.Single(Buttons(first).Where(b=>b.IsChecked==true)).Tag);
         Assert.Equal(3600,Assert.Single(Buttons(second).Where(b=>b.IsChecked==true)).Tag);
+        // Focusing the control (the pop-out menu does this when it opens) lands on the checked segment so Left/Right and Escape work at once.
+        // Offscreen there is no keyboard device, so the contract is observed through logical focus in a scope.
+        FocusManager.SetIsFocusScope(host,true);
+        first.FocusChecked();
+        Assert.Same(Assert.Single(Buttons(first).Where(b=>b.IsChecked==true)),FocusManager.GetFocusedElement(host));
+        Assert.False(first.Focusable,"Tab stops on the segments, not on the pill itself.");
+    }
+
+    private sealed class OffscreenSource : PresentationSource,IDisposable
+    {
+        private Visual? root;
+        public OffscreenSource(Visual visual){AddSource();RootVisual=visual;}
+        public override Visual RootVisual {get=>root!;set{var previous=root;root=value;RootChanged(previous,root);}}
+        protected override CompositionTarget GetCompositionTargetCore()=>null!;
+        public override bool IsDisposed=>false;
+        public void Dispose(){RootVisual=null!;RemoveSource();}
     }
 
     private static IEnumerable<DependencyObject> Descendants(DependencyObject root)

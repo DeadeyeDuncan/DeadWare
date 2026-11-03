@@ -48,6 +48,9 @@ internal static class ShellUiChecks
         Assert.True(subtitle.FontSize<=12);Assert.False(string.IsNullOrWhiteSpace(subtitle.Text));
         Assert.Equal(26,Field<TextBlock>("heading").FontSize);
 
+        // Table headers are small uppercase captions (spec: 10 px uppercase, Muted).
+        foreach(var grid in new[]{Field<DataGrid>("apps"),Field<DataGrid>("sensors")})
+            Assert.All(grid.Columns,column=>Assert.Equal(column.Header!.ToString()!.ToUpperInvariant(),column.Header.ToString()));
         // Settings: the existing controls grouped into titled cards.
         var pages=Field<Dictionary<string,FrameworkElement>>("pages");
         Navigate("desktop");shell.UpdateLayout();
@@ -57,6 +60,17 @@ internal static class ShellUiChecks
         var titles=cards.Select(card=>Descendants(card).OfType<TextBlock>().First().Text).ToArray();
         foreach(string title in SettingsCards)Assert.Contains(title,titles);
         Assert.Contains(Descendants(pages["desktop"]).OfType<TextBlock>(),block=>ReferenceEquals(block,Field<TextBlock>("startupStatus")));
+        // Help text sits in the card of the control it explains.
+        string CardOf(string prefix)
+        {
+            var block=Descendants(pages["desktop"]).OfType<TextBlock>().First(b=>b.Text.StartsWith(prefix,StringComparison.Ordinal));
+            var card=cards.Single(c=>Descendants(c).Contains(block));
+            return Descendants(card).OfType<TextBlock>().First().Text;
+        }
+        Assert.Equal("Startup",CardOf("At Windows sign-in"));Assert.Equal("Startup",CardOf("Windows asks for administrator"));
+        Assert.Equal("History and alerts",CardOf("Keeps day, week and month history"));Assert.Equal("History and alerts",CardOf("Record endpoint history"));
+        Assert.Equal("History and alerts",CardOf("Rules you set on the Alerts page"));Assert.Equal("Widget",CardOf("Choose the graphs shown in the widget"));
+        Assert.Equal("Pop-outs",CardOf("Positions, sizes and Always on top"));Assert.Equal("Monitoring",CardOf("Includes motherboard"));
         Navigate("overview");
     }
 

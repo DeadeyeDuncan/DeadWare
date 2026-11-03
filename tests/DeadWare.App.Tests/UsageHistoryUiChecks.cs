@@ -132,6 +132,18 @@ internal static class UsageHistoryUiChecks
         ChartType.GetMethod("SetHover", All)!.Invoke(chart, [null]);
         Assert.Equal(-1, (int)ChartType.GetProperty("HoverIndex", All)!.GetValue(chart)!);
         Layout(chart, 620, 180);
+        // Narrow one-minute buckets with slot 90 missing: hovering the hole shows nothing rather than a neighbour.
+        var dense = (FrameworkElement)Activator.CreateInstance(ChartType, true)!;
+        var minuteBuckets = Enumerable.Range(0, 180).Where(i => i != 90).Select(i => new UsageHistoryBucket(start.AddMinutes(i), start.AddMinutes(i + 1), 40, 30, 50, 1, 1, 60)).ToArray();
+        var denseView = new UsageHistoryView(start, now, 60_000, minuteBuckets, new(30, 50, 40), 179, start, 4096);
+        var denseTraces = Array.CreateInstance(TraceType, 1); denseTraces.SetValue(Activator.CreateInstance(TraceType, denseView, "Graph/cpu", false, "CPU usage")!, 0);
+        ChartType.GetMethod("SetData", All)!.Invoke(dense, [denseTraces, "%", 100d]);
+        Layout(dense, 620, 180);
+        var densePlot = (Rect)ChartType.GetProperty("PlotRect", All)!.GetValue(dense)!;
+        ChartType.GetMethod("SetHover", All)!.Invoke(dense, [new Point(densePlot.Left + densePlot.Width * (90.5 / 180), densePlot.Top + 20)]);
+        Assert.Equal(-1, (int)ChartType.GetProperty("HoverIndex", All)!.GetValue(dense)!);
+        ChartType.GetMethod("SetHover", All)!.Invoke(dense, [new Point(densePlot.Left + densePlot.Width * (91.5 / 180), densePlot.Top + 20)]);
+        Assert.Equal(90, (int)ChartType.GetProperty("HoverIndex", All)!.GetValue(dense)!);
         if (output is not null)
         {
             Directory.CreateDirectory(output);

@@ -41,20 +41,28 @@ public static class TimeTicks
     /// <summary>Ticks sit on wall-clock multiples of the step, ascending, labelled HH:mm (HH:mm:ss below a minute).
     /// The step doubles until labels are at least 48 px apart; compact charts and plots under 200 px keep the two nearest "Now".</summary>
     public static IReadOnlyList<TimeTick> For(int historySeconds,double nowMonotonic,DateTimeOffset nowWallClock,double plotWidth,bool compact)
+        =>For(historySeconds,nowMonotonic,nowWallClock,plotWidth,compact,null);
+
+    /// <summary>With a <paramref name="zone"/>, every tick instant is converted through that zone so labels stay right across a
+    /// daylight-saving change; without one, the fixed offset of <paramref name="nowWallClock"/> is used.</summary>
+    public static IReadOnlyList<TimeTick> For(int historySeconds,double nowMonotonic,DateTimeOffset nowWallClock,double plotWidth,bool compact,TimeZoneInfo? zone)
     {
         if(historySeconds<=0||plotWidth<=0||!double.IsFinite(plotWidth))return [];
         int step=historySeconds switch {<=60=>15,<=300=>60,<=900=>300,<=3600=>900,_=>3600};
         while(step/(double)historySeconds*plotWidth<MinimumSpacing&&step<historySeconds)step*=2;
         if(step>=historySeconds)return [];
         string format=step<60?"HH:mm:ss":"HH:mm";
-        // Align to local wall-clock multiples of the step (so hour ticks fall on local hours).
-        long local=nowWallClock.ToUnixTimeSeconds()+(long)nowWallClock.Offset.TotalSeconds;
+        // Align to wall-clock multiples of the step (so hour ticks fall on local hours), then step back in real instants.
+        var offset=zone?.GetUtcOffset(nowWallClock)??nowWallClock.Offset;
+        long utc=nowWallClock.ToUnixTimeSeconds();
+        long local=utc+(long)offset.TotalSeconds;
         long first=local-((local%step)+step)%step;
         var ticks=new List<TimeTick>();
         for(long t=first;t>=local-historySeconds;t-=step)
         {
             double age=local-t;
-            var wall=nowWallClock.AddSeconds(-age);
+            var instant=DateTimeOffset.FromUnixTimeSeconds(utc-(long)age);
+            var wall=zone is null?instant.ToOffset(nowWallClock.Offset):TimeZoneInfo.ConvertTime(instant,zone);
             ticks.Add(new(nowMonotonic-age,wall.ToString(format,System.Globalization.CultureInfo.InvariantCulture)));
         }
         ticks.Reverse();

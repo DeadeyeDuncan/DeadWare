@@ -38,6 +38,8 @@ public sealed class ConnectionMap : FrameworkElement
     private readonly Dictionary<string,Brush> brushes = [];
     private string brushTheme = "";
     private readonly List<Route> routes = [];
+    /// <summary>The forty routes carrying the most bytes, recomputed with the routes rather than per frame.</summary>
+    private Route[] busiest = [];
     private readonly List<(Point Center, string Key)> hitPoints = [];
     private bool routesDirty = true;
     private bool projectionDirty = true;
@@ -202,6 +204,9 @@ public sealed class ConnectionMap : FrameworkElement
             {
                 var point = projected[i];
                 if (Flat && Math.Abs(point.X - previous.X) > camera.Zoom) shift += point.X > previous.X ? -2 * camera.Zoom : 2 * camera.Zoom;
+                // On the globe an edge that crosses the horizon passes through its true crossing before the limb point,
+                // so the fill never bulges past the coastline.
+                if (!Flat && point.Visible != previous.Visible) context.LineTo(Pixel(ConnectionProjection.HorizonCrossing(ring[i - 1], ring[i], camera)), false, false);
                 previous = point;
                 context.LineTo(Pixel(point with { X = point.X + shift }), false, false);
             }
@@ -242,6 +247,7 @@ public sealed class ConnectionMap : FrameworkElement
             routes.Add(new(point,samples.Select(p=>ConnectionProjection.Project(p,camera)).ToArray(),
                 ConnectionProjection.ProjectPath(samples,camera).Select(s=>s.Select(Pixel).ToArray()).ToArray(),3+relative*3,.6+Math.Round(relative*4)*.15,seed%1000/100d,activity[(point.Key,point.Point)]));
         }
+        busiest = routes.OrderByDescending(r => (double)r.Data.ReceivedBytes + r.Data.SentBytes).Take(40).ToArray();
         routesDirty = false;projectionDirty=false;
     }
     /// <summary>A polyline through the route's screen segments, shifted <paramref name="offset"/> px along the local normal.</summary>
@@ -289,15 +295,13 @@ public sealed class ConnectionMap : FrameworkElement
     /// <summary>Gradient brushes are rebuilt once per theme and cached; a frozen brush per role keeps rendering allocation-free.</summary>
     private Brush Cached(string key, Func<Brush> build)
     {
-        string theme = Theme.CurrentName + "|" + Theme.GlassEnabled + "|" + Flat + "|" + MapOnly;
-        if (theme != brushTheme) { brushes.Clear(); brushTheme = theme; }
         if (!brushes.TryGetValue(key, out var brush)) { brush = build(); if (brush.CanFreeze) brush.Freeze(); brushes[key] = brush; }
         return brush;
     }
-    private Brush OceanBrush(bool highContrast, bool blackout)
+    private Brush OceanBrush(bool flat, bool blackout)
     {
-        if (highContrast) return Theme.Brush("Panel");
         if (blackout) return Theme.Brush("Background");
+        if (flat) return SystemParameters.HighContrast ? Theme.Brush("Panel") : Theme.Brush("Surface1");
         if (Flat) return Cached("ocean-flat", () => new LinearGradientBrush(ColorOf("Surface1"), ColorOf("Background"), 90));
         return Cached("ocean-globe", () => new RadialGradientBrush(ColorOf("Surface1"), ColorOf("Background")) { GradientOrigin = new(.38, .32), Center = new(.5, .5), RadiusX = .55, RadiusY = .55 });
     }
@@ -316,8 +320,11 @@ public sealed class ConnectionMap : FrameworkElement
         brush.GradientStops.Add(new(glow, .90)); brush.GradientStops.Add(new(Colors.Transparent, 1));
         return brush;
     });
-    private Brush Halo(Brush source, double opacity, string role) => Cached("halo-" + role + "-" + opacity, () =>
-        new RadialGradientBrush(WithAlpha(source is SolidColorBrush solid ? solid.Color : ColorOf("Accent"), opacity), Colors.Transparent));
+    private Brush Halo(Brush source, double opacity, string role)
+    {
+        var color = source is SolidColorBrush solid ? solid.Color : ColorOf("Accent");
+        return Cached("halo-" + role + "-" + opacity + "-" + color, () => new RadialGradientBrush(WithAlpha(color, opacity), Colors.Transparent));
+    }
 
     private void DrawConnection(DrawingContext dc,Route route,Brush download,Brush upload,Brush ink,bool glow)
     {
@@ -326,12 +333,15 @@ public sealed class ConnectionMap : FrameworkElement
         bool selected=route.Data.Selected||route.Data.Key==HoveredKey;
         // A silent peer keeps a faint download-colored arc so its location still connects to the origin.
         bool hasDownload=route.Data.ReceivedBytes>0||route.Data.SentBytes==0,hasUpload=route.Data.SentBytes>0,both=hasDownload&&hasUpload;
-        foreach(bool received in new[]{true,false})
+        if(hasDownload)DrawDirection(dc,route,true,download,both,selected,glow);
+        if(hasUpload)DrawDirection(dc,route,false,upload,both,selected,glow);
+        if(selected){dc.PushOpacity(.65);dc.DrawGeometry(null,Stroke(ink,.5),route.Arc);dc.Pop();}
+    }
+    private void DrawDirection(DrawingContext dc,Route route,bool received,Brush brush,bool both,bool selected,bool glow)
+    {
         {
-            if(received?!hasDownload:!hasUpload)continue;
             var motion=received?route.Activity.Download:route.Activity.Upload;
-            var brush=received?download:upload;
-            Geometry core=both?(received?route.DownloadLane??=Polyline(route.Segments,1):route.UploadLane??=Polyline(route.Segments,-1)):route.Arc;
+            Geometry core=both?(received?route.DownloadLane??=Polyline(route.Segments,1):route.UploadLane??=Polyline(route.Segments,-1)):route.Arc!;
             if(glow)
             {
                 dc.PushOpacity(selected?.12:.06);dc.DrawGeometry(null,Stroke(brush,6),route.Arc);dc.Pop();
@@ -339,18 +349,17 @@ public sealed class ConnectionMap : FrameworkElement
             }
             dc.PushOpacity(selected?.95:.30+.50*motion.Level);dc.DrawGeometry(null,Stroke(brush,1.2),core);dc.Pop();
         }
-        if(selected){dc.PushOpacity(.65);dc.DrawGeometry(null,Stroke(ink,.5),route.Arc);dc.Pop();}
     }
-    private void DrawParticles(DrawingContext dc,Route route,Brush brush,bool received,bool glow,string role)
+    private void DrawParticles(DrawingContext dc,Route route,Brush brush,Brush? spark,bool received)
     {
         var motion=received?route.Activity.Download:route.Activity.Upload;
         if(motion.Level<=0)return;
         int count=ArcParticles.Count(motion.Level);if(MapOnly)count=Math.Max(1,count/2);
-        foreach(double fraction in ArcParticles.Fractions(motion.Time,.33,count,received))
+        for(int i=0;i<count;i++)
         {
-            if(Sample(route,fraction) is not { } center)continue;
+            if(Sample(route,ArcParticles.Fraction(motion.Time,.33,count,i,received)) is not { } center)continue;
             dc.PushOpacity(motion.Level);
-            if(glow)dc.DrawEllipse(Halo(brush,1,role),null,center,3.5,3.5);
+            if(spark is not null)dc.DrawEllipse(spark,null,center,3.5,3.5);
             dc.DrawEllipse(brush,null,center,1.1,1.1);
             dc.Pop();
         }
@@ -381,8 +390,15 @@ public sealed class ConnectionMap : FrameworkElement
         var bounds = MapBounds;
         bool highContrast = SystemParameters.HighContrast, blackout = Theme.CurrentName == "Blackout";
         bool glow = !highContrast && (Theme.GlassEnabled || blackout);
+        // Gradients (ocean, limb) need glass or Blackout too: disabled transparency stays flat.
+        bool gradients = glow;
         var ink = Theme.Brush("Ink"); var muted = Theme.Brush("Muted"); var hairline = Theme.Brush("Hairline");
         var download = Theme.Brush(Theme.GraphKey("download")); var upload = Theme.Brush(Theme.GraphKey("upload"));
+        // One cache key and four halo brushes per render; the node and particle loops allocate nothing.
+        string theme = Theme.CurrentName + "|" + Theme.GlassEnabled + "|" + Flat + "|" + MapOnly;
+        if (theme != brushTheme) { brushes.Clear(); brushTheme = theme; }
+        Brush? downloadHalo = glow ? Halo(download, .25, "download") : null, uploadHalo = glow ? Halo(upload, .25, "upload") : null;
+        Brush? downloadSpark = glow ? Halo(download, 1, "download") : null, uploadSpark = glow ? Halo(upload, 1, "upload") : null;
         dc.DrawRectangle(Theme.Brush("Background"), null, new Rect(RenderSize));
         StepMotion();UpdateAnimation();EnsureGeometry(); hitPoints.Clear();
         dc.PushClip(new RectangleGeometry(bounds));
@@ -399,7 +415,7 @@ public sealed class ConnectionMap : FrameworkElement
             clip = new EllipseGeometry(globeCenter, globeRadius, globeRadius);
         }
         // Ocean, graticule, land, coast, borders.
-        dc.DrawGeometry(OceanBrush(highContrast, blackout), Stroke(hairline, 1), clip);
+        dc.DrawGeometry(OceanBrush(highContrast || !gradients, blackout), Stroke(hairline, 1), clip);
         dc.PushClip(clip);
         dc.PushOpacity(.2); dc.DrawGeometry(null, Stroke(hairline, .6), grid); dc.Pop();
         var land = LandBrush(blackout);
@@ -421,14 +437,14 @@ public sealed class ConnectionMap : FrameworkElement
             dc.DrawGeometry(null,Stroke(muted,.5),stateBorders);dc.Pop();
         }
         dc.PushOpacity(.28);dc.DrawGeometry(null,Stroke(muted,.65),borders);dc.Pop();
-        if (!Flat && !highContrast) dc.DrawGeometry(LimbBrush(), null, clip);
+        if (!Flat && gradients) dc.DrawGeometry(LimbBrush(), null, clip);
         // Arcs, then particles on the busiest routes, then nodes.
         foreach (var route in routes) DrawConnection(dc, route, download, upload, ink, glow);
         if (subscribed)
-            foreach (var route in routes.OrderByDescending(r => (double)r.Data.ReceivedBytes + r.Data.SentBytes).Take(40))
+            foreach (var route in busiest)
             {
-                if (route.Data.ReceivedBytes > 0) DrawParticles(dc, route, download, true, glow, "download");
-                if (route.Data.SentBytes > 0) DrawParticles(dc, route, upload, false, glow, "upload");
+                if (route.Data.ReceivedBytes > 0) DrawParticles(dc, route, download, downloadSpark, true);
+                if (route.Data.SentBytes > 0) DrawParticles(dc, route, upload, uploadSpark, false);
             }
         double scale = MapOnly ? .5 : 1;
         foreach (var route in routes)
@@ -441,14 +457,20 @@ public sealed class ConnectionMap : FrameworkElement
             double level = Math.Max(route.Activity.Download.Level, route.Activity.Upload.Level);
             double radius = (route.Radius + (selected ? 1.5 : 0)) * scale;
             if (subscribed) radius += .25 * scale * level * Math.Sin(phase * 2);
-            var brush = route.Data.ReceivedBytes > 0 ? download : upload; string role = route.Data.ReceivedBytes > 0 ? "download" : "upload";
-            if (glow) dc.DrawEllipse(Halo(brush, .25, role), null, center, radius * 3, radius * 3);
+            bool receives = route.Data.ReceivedBytes > 0; var brush = receives ? download : upload; var halo = receives ? downloadHalo : uploadHalo;
+            if (halo is not null) dc.DrawEllipse(halo, null, center, radius * 3, radius * 3);
             dc.DrawEllipse(brush, Stroke(ink, (selected ? 1.2 : .6) * scale), center, radius, radius);
             if (subscribed && level > 0)
             {
                 double pulse = phase / 1.6 - Math.Floor(phase / 1.6);
                 dc.PushOpacity(.35 * (1 - pulse)); dc.DrawEllipse(null, Stroke(brush, 1), center, radius + 6 * pulse * scale, radius + 6 * pulse * scale); dc.Pop();
             }
+        }
+        // A poll can move or drop the hovered node; the hover follows the pointer, never the key.
+        if (hoverPosition is { } pointer && dragStart is null)
+        {
+            string? key = Hit(pointer)?.Key;
+            if (key != HoveredKey) { HoveredKey = key; Cursor = key is not null ? Cursors.Hand : Cursors.Arrow; PointHovered?.Invoke(key); }
         }
         if (origin is not null)
         {
@@ -489,8 +511,13 @@ public sealed class ConnectionMap : FrameworkElement
 
     private (Point Center, string Key)? Hit(Point position)
     {
-        var hit = hitPoints.OrderBy(p => (p.Center - position).LengthSquared).FirstOrDefault();
-        return hit.Key is not null && (hit.Center - position).Length <= (MapOnly ? WidgetHitRadius : HitRadius) ? hit : null;
+        double limit = MapOnly ? WidgetHitRadius : HitRadius, best = limit * limit; (Point Center, string Key)? hit = null;
+        foreach (var candidate in hitPoints)
+        {
+            double distance = (candidate.Center - position).LengthSquared;
+            if (distance <= best) { best = distance; hit = candidate; }
+        }
+        return hit;
     }
     /// <summary>Resolves the node under <paramref name="position"/> (null clears), raises <see cref="PointHovered"/> and sets the cursor.</summary>
     internal void SetHover(Point? position)

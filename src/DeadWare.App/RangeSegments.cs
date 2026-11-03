@@ -45,6 +45,7 @@ internal sealed class RangeSegments : Border
     {
         this.session=session;
         CornerRadius=new(9);BorderThickness=new(1);Padding=new(2);VerticalAlignment=VerticalAlignment.Center;HorizontalAlignment=HorizontalAlignment.Left;
+
         SetResourceReference(BackgroundProperty,"GlassControl");SetResourceReference(BorderBrushProperty,"Hairline");
         ToolTip="Choose how much graph history to show";
         AutomationProperties.SetName(this,"Graph history range");
@@ -68,6 +69,9 @@ internal sealed class RangeSegments : Border
         Loaded+=(_,_)=>{session.Changed+=Refresh;Refresh();};
         Unloaded+=(_,_)=>session.Changed-=Refresh;
     }
+
+    /// <summary>Puts focus on the checked segment (the pop-out menu does this on open) so arrow keys and Escape work at once.</summary>
+    internal bool FocusChecked()=>segments.Count>0&&(segments.FirstOrDefault(s=>s.IsChecked==true)??segments[0]).Focus();
 
     private void Choose(int seconds)
     {

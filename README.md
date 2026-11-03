@@ -13,12 +13,12 @@ Connections is available starting with version 0.6.21.
 
 ## Features
 
-- CPU and GPU utilization and temperature graphs with detected device names.
+- CPU and GPU utilization and temperature graphs with detected device names, drawn as smooth curves on a hairline grid with wall-clock time ticks and a hover readout of the time and values at any sample.
 - Optional GPU fan RPM on temperature graphs, with a separate scale and saved history.
 - Optional CPU pump RPM on CPU temperature graphs, with its own setting, the same left RPM scale and saved history.
 - A combined download/upload graph with a shared scale and distinct line styles.
 - Per-application network rates when Windows permits ETW capture.
-- Connections: a native globe or 2D map, visible-node list and connection detail boxes, local saved history and an optional live widget map.
+- Connections: a filled native globe or 2D map with glowing traffic arcs, moving dots on busy routes and hover chips, a visible-node list and connection detail boxes, local saved history and an optional live widget map.
 - Searchable sensor readings with minimum, maximum and average values.
 - Selectable graphics adapters on multi-GPU systems.
 - Separate or joined CPU/GPU graph windows and a compact widget with usage, temperature, RAM and network charts and always-on-top controls.
@@ -26,7 +26,7 @@ Connections is available starting with version 0.6.21.
 - Close the dashboard to the system tray and keep graphs, the widget and monitoring running independently.
 - Restore the graphs and widget left open, including their saved positions and sizes.
 - Optional administrator startup at your Windows sign-in, available only from a protected folder such as `C:\Program Files\DeadWare`.
-- Shared 1-, 5- and 15-minute plus 1-, 3- and 6-hour graph ranges; all windows use one collector. Choose a range from the dropdown above the dashboard or in a pop-out's **⋯** menu. The dropdown follows the selected app theme, and its selected range stays synchronized across windows. The choice and recent CPU/GPU/RAM/network traces are saved locally across quits and computer restarts. Cooling Health's longer saved history is separate. At 1–6 hours, a per-pixel average line shows the trend and a faint min/max band retains spikes and variation. Missing readings remain gaps, and displayed statistics use the actual readings. Short ranges retain their detailed traces. In **Settings**, turn **Smooth long-range graphs (1, 3 and 6 hours)** off to use raw traces across the dashboard, pop-outs and widget. The choice is saved; raw traces retain observed peaks and gaps without the average/range band.
+- Shared 1-, 5- and 15-minute plus 1-, 3- and 6-hour graph ranges; all windows use one collector. Choose a range from the segmented control in the dashboard header or in a pop-out's **⋯** menu. The control follows the selected app theme, and its selected range stays synchronized across windows. The choice and recent CPU/GPU/RAM/network traces are saved locally across quits and computer restarts. Cooling Health's longer saved history is separate. At 1–6 hours, a per-pixel average line shows the trend and a faint min/max band retains spikes and variation. Missing readings remain gaps, and displayed statistics use the actual readings. Short ranges retain their detailed traces. In **Settings**, turn **Smooth long-range graphs (1, 3 and 6 hours)** off to use raw traces across the dashboard, pop-outs and widget. The choice is saved; raw traces retain observed peaks and gaps without the average/range band.
 - Local Cooling Health history, fixed reference comparisons, CSV export and optional sustained-change warnings. With **Extended sensors** on, CPU fan speed comes from a labeled pump or CPU Fan header.
 - Lifetime battery-percentage history with recorded charging and Windows battery-saver periods, Day/Week/Month/Year/All views, CSV export and a separate remembered window.
 - Usage history: Day/Week/Month views of CPU and GPU usage and temperature, RAM and network, per-application download/upload totals, CSV exports and a separate remembered window, kept for up to 400 days.
@@ -36,12 +36,12 @@ Connections is available starting with version 0.6.21.
 - Nine saved themes: **Midnight**, **Ember**, **Glacier**, **Amethyst**, **Neon**, **Blackout**, **Skyrim**, **Mage**, and **Daylight**. Open the sidebar's **Color theme** menu and hover over **Elder Scrolls Themes** to choose **Skyrim** (charcoal, silver and frost blue) or **Mage** (violet, arcane cyan and antique gold). Both add readable Nordic lettering, subtle stone surfaces and runes along live graph traces while keeping numeric readings clear. Use arrow keys and Enter to navigate the menu with a keyboard. Custom graph colors remain in effect when switching themes.
 - Scrollbars follow the selected theme across all windows, with matching native title bars on Windows 11.
 - Themes coordinate text colors and fonts across headings, controls, tables, graph labels and tooltips, and update open windows immediately.
-- See-through glass windows: choose **Settings → Window glass** (**Off**, **Subtle**, **Balanced** or **Strong**) to let the blurred desktop show through the dashboard, pop-outs and widget behind palette-tinted panels with highlighted edges. Requires Windows 11 22H2 or later; the focused window shows the glass and unfocused windows use the solid theme surface. **Off** keeps solid glass-style panels. Blackout keeps pure-black backgrounds and panels; Windows High Contrast and disabled Windows transparency use solid surfaces.
+- See-through glass windows: choose **Settings → Window glass** (**Off**, **Subtle**, **Balanced** or **Strong**) to let the blurred desktop show through the dashboard, pop-outs and widget behind palette-tinted panels with highlighted edges. Requires Windows 11 22H2 or later; the focused window shows the glass and unfocused windows use the solid theme surface. **Off** keeps solid glass-style panels. Blackout keeps pure-black backgrounds and panels; Windows High Contrast and disabled Windows transparency use solid surfaces. Panels are cards with hairline borders, the sidebar uses vector icons with an accent bar on the current page, the page header is one toolbar row with a hardware subtitle, and Settings groups its options into cards.
 - Use the filled circles in each Overview graph's corner to choose its line color, **Default / Solid / Dashed / Dotted** pattern, **Line thickness** (50–300%) and optional **Neon glow** with **Glow strength** (0–300%). 100% preserves the original thickness/glow. Choices are saved and shared with pop-outs, widget traces and legends; download and upload have separate colors. Choose **Theme default** to clear a custom color; choose **Default** under Line style, return both sliders to 100%, and turn off glow to restore the original trace style.
 
 ## Download and run
 
-Get the Windows x64 ZIP from [v0.8.0](https://github.com/DeadeyeDuncan/DeadWare/releases/tag/v0.8.0) or browse [all releases](https://github.com/DeadeyeDuncan/DeadWare/releases). Extract the **entire** archive and run `DeadWare.exe` inside the `DeadWare` folder. The .NET runtime is bundled. The app is portable and unsigned. Version 0.6.0 adds manual update and rollback controls; older installations need one complete ZIP upgrade to gain those controls.
+Get the Windows x64 ZIP from [v0.9.0](https://github.com/DeadeyeDuncan/DeadWare/releases/tag/v0.9.0) or browse [all releases](https://github.com/DeadeyeDuncan/DeadWare/releases). Extract the **entire** archive and run `DeadWare.exe` inside the `DeadWare` folder. The .NET runtime is bundled. The app is portable and unsigned. Version 0.6.0 adds manual update and rollback controls; older installations need one complete ZIP upgrade to gain those controls.
 
 Windows 10/11 x64 is the target. ARM64 and other operating systems are not validated. Hardware coverage varies by device.
 
@@ -107,9 +107,9 @@ The compact widget has a **Usage** graph with CPU and selected-GPU utilization t
 
 ## Connections
 
-Both the main map and widget include subtle offline country borders. Connection arcs use fine layered filaments with restrained glow; selecting a connection highlights its strands. Active strands drift gently, while stopped animation, quiet traffic and unavailable capture remain static. Upload/download colors and direction markers remain distinct.
+Both the main map and widget include subtle offline country borders. Connection arcs glow in their direction colors with a thin core line per active direction (two lanes when traffic flows both ways), moving dots travel along the busiest routes while traffic is active, nodes pulse and the origin shows as a radar mark; selecting or hovering a connection brightens its arc and shows its process, location and rates.
 
-Open **Connections** beside Network for live observed destinations on a rotatable globe or a 2D world map. Drag, zoom, reset the view or pause animation, and filter by application, country and traffic direction. The compact list shows only nodes visible in the current map view, following rotation, zoom and the selected Live or History mode. Click a node or its list entry to open a detail box beside it with application/PID, remote IP/port, TCP/UDP, approximate location, observed bytes, rates, coverage and observation times. The box follows the node, hides when it moves out of view, and closes with **Close** or **Escape**. Private/LAN, special and unlocated addresses remain in summary totals and saved-history CSV exports. This is observed traffic, so an idle socket need not appear.
+Open **Connections** beside Network for live observed destinations on a rotatable globe or a 2D world map. Drag, zoom, reset the view or pause animation, and filter by application, country and traffic direction. The compact list shows only nodes visible in the current map view, following rotation, zoom and the selected Live or History mode. Hover a node to see its application, location and current rates; click a node or its list entry to open a detail box beside it with application/PID, remote IP/port, TCP/UDP, approximate location, observed bytes, rates, coverage and observation times. The box follows the node, hides when it moves out of view, and closes with **Close** or **Escape**. Private/LAN, special and unlocated addresses remain in summary totals and saved-history CSV exports. This is observed traffic, so an idle socket need not appear.
 
 Download/upload colors and moving highlights show observed direction; bounded marker sizes and path widths indicate relative volume. Quiet or stale traffic stays static, and stopped History does not animate. Live totals cover currently active peers since their first retained observation, rather than all session traffic. The map draws at most 256 grouped locations and discloses omitted groups. List entries show grouped-location byte totals; detail boxes identify a representative connection with its own rates and bytes, separately from location totals. Selecting a saved node reads its representative directly, including observations beyond the former table's first page. IPv6 endpoints use `[address]:port` notation.
 
@@ -200,7 +200,7 @@ dotnet run --project src/DeadWare.App/DeadWare.App.csproj
 Create a self-contained portable ZIP and SHA-256 checksum:
 
 ```powershell
-pwsh -File scripts/publish.ps1 -Version 0.8.0
+pwsh -File scripts/publish.ps1 -Version 0.9.0
 ```
 
 The packaging script runs tests before publishing, bundles the independent self-contained update helper, and records all managed file hashes in `deadware-package.json`. Output goes under `artifacts/`. GitHub Actions runs the same script. Pushing a normal three-part version tag such as `v0.6.0` builds and publishes a normal release after tests pass, using the matching `docs/releases/v0.6.0.md` notes. Workflows use pinned action commits.

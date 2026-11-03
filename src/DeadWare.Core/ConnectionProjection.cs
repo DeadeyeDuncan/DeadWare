@@ -50,6 +50,22 @@ public static class ConnectionProjection
         return Array.AsReadOnly(result);
     }
 
+    /// <summary>The point where the great-circle edge from <paramref name="from"/> to <paramref name="to"/> crosses the globe's horizon
+    /// (depth 0, on the limb). Returns the visible endpoint's projection when both ends are on the same side.</summary>
+    public static MapCoordinate HorizonCrossing(GeoPoint from, GeoPoint to, MapCamera camera)
+    {
+        camera = Normalize(camera);
+        var a = ProjectNormalized(from, camera); var b = ProjectNormalized(to, camera);
+        if (a.Visible == b.Visible) return a.Visible ? a : b;
+        double low = 0, high = 1;
+        for (int iteration = 0; iteration < 40; iteration++)
+        {
+            double mid = (low + high) / 2;
+            if (ProjectNormalized(Interpolate(from, to, mid), camera).Visible == a.Visible) low = mid; else high = mid;
+        }
+        return ProjectNormalized(Interpolate(from, to, (low + high) / 2), camera) with { Visible = true, Depth = 0 };
+    }
+
     public static IReadOnlyList<GeoPoint> GreatCircle(GeoPoint from, GeoPoint to, int steps = 48)
     {
         if (!IsValid(from) || !IsValid(to)) return [];

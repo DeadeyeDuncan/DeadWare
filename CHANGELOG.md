@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.9.0 — Refined glass
+
+- Restyle the dashboard, pop-outs, widget and Connections as refined glass: cards with hairline borders, a navigation rail with vector icons and an accent bar on the current page, a one-row page header with a hardware subtitle (CPU, GPU, RAM, last sample age), Settings grouped into Monitoring, Appearance, Widget, Pop-outs, Startup and History and alerts cards, and a segmented history-range control in place of the dropdown. Every theme keeps its palette and fonts; derived hairline, accent, surface and glow tones come from each palette, and Blackout keeps pure-black surfaces.
+- Draw live graphs as monotone splines through the recorded readings (raw 1–6 hour traces stay exact polylines), on a crisp 1 px hairline grid with value labels inside the plot, wall-clock time ticks (`HH:mm`, seconds on the 1-minute range) and a right-aligned **Now**. A faint under-glow follows each trace. Move the pointer over a graph for a crosshair and a chip with the sample time and each series' value; nothing is shown over a gap. Cooling Health, Battery history and Usage history charts share the grid and the hover chip; thermal windows and usage buckets that connect are splines, battery percent stays a polyline.
+- Paint the Connections map as a filled globe: gradient ocean, filled continents, hairline coast and graticule, limb shading and an atmosphere glow (a vertical gradient and seam copies on the 2D map). Traffic routes are static arcs with glow passes and a core line per active direction, moving dots on the forty busiest routes, pulsing nodes with halos, a radar-style origin and legend chips. Hover a node for its process, location and rates; the widget map keeps a larger hit target and no labels. High Contrast and disabled transparency stay flat.
+- Give pages their card chrome: Connections controls in a card strip above the map card, Network and Sensors toolbar strips, compact pop-outs with one-row chrome so the trace stays tall, and card-styled widget graphs. No control moves to another window and no setting, history or window behaviour changes.
+- The Windows build workflow renders every theme and route with the preview tool and uploads the frames as `DeadWare-previews`.
+
 ## 0.8.0 — Alerts
 
 - Add **Alerts** to the sidebar: user-set rules that notify from the tray when observed data crosses a threshold. Four kinds: a device metric (CPU usage, CPU temperature, the selected GPU's usage or temperature, RAM usage) at or above a value for 1, 5, 15 or 60 consecutive recorded minutes; download or upload at or above a rate for the same durations; an application's download plus upload at or above a byte budget within one local day; and battery charge at or below a percentage while on battery.

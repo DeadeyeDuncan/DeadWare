@@ -35,6 +35,19 @@ public sealed class MapGeometryTests
     }
     [Fact] public void Particle_count_follows_activity_level()
     {Assert.Equal(0,ArcParticles.Count(0));Assert.Equal(1,ArcParticles.Count(.2));Assert.Equal(2,ArcParticles.Count(.5));Assert.Equal(3,ArcParticles.Count(1));Assert.Equal(0,ArcParticles.Count(double.NaN));}
+    [Fact] public void Scalar_fraction_matches_the_array_form()
+    {
+        Assert.Equal(ArcParticles.Fractions(1.7,.33,3,true)[2],ArcParticles.Fraction(1.7,.33,3,2,true),10);
+        Assert.Equal(ArcParticles.Fractions(4.2,.25,2,false)[1],ArcParticles.Fraction(4.2,.25,2,1,false),10);
+    }
+    [Fact] public void Horizon_crossing_lies_on_the_limb()
+    {
+        var camera=new MapCamera(0,0,1,false);
+        var crossing=ConnectionProjection.HorizonCrossing(new GeoPoint(0,60),new GeoPoint(60,120),camera);
+        Assert.True(crossing.Visible);Assert.Equal(0,crossing.Depth,5);Assert.Equal(1,Math.Sqrt(crossing.X*crossing.X+crossing.Y*crossing.Y),3);
+        var reversed=ConnectionProjection.HorizonCrossing(new GeoPoint(60,120),new GeoPoint(0,60),camera);
+        Assert.Equal(crossing.X,reversed.X,3);Assert.Equal(crossing.Y,reversed.Y,3);
+    }
     [Fact] public void Map_point_labels_default_to_null()
     {var p=new ConnectionMapPoint("k",new GeoPoint(1,2),1,1,false);Assert.Null(p.Label);Assert.Null(p.Detail);}
 }

@@ -29,8 +29,12 @@ internal static class GraphDepth
     }
 
     public static void Area(DrawingContext dc,IReadOnlyList<IReadOnlyList<Point>> segments,Rect plot,string color,double strength=1)
+        =>Area(dc,AreaGeometry(segments,plot),plot,color,strength);
+
+    /// <summary>The filled area under a trace's runs, frozen so a frame cache can reuse it across hover re-renders.</summary>
+    public static PathGeometry? AreaGeometry(IReadOnlyList<IReadOnlyList<Point>> segments,Rect plot)
     {
-        if(!Theme.GlassEnabled||strength<=0||plot.IsEmpty||plot.Width<=0||plot.Height<=0)return;
+        if(plot.IsEmpty||plot.Width<=0||plot.Height<=0)return null;
         // Filled paths remain separate from foreground data geometry and range bands.
         var area=new PathGeometry {FillRule=FillRule.Nonzero};
         foreach(var points in segments)
@@ -40,7 +44,12 @@ internal static class GraphDepth
             var edge=new PolyLineSegment();foreach(var p in points)edge.Points.Add(p);
             edge.Points.Add(new(points[^1].X,plot.Bottom));figure.Segments.Add(edge);area.Figures.Add(figure);
         }
-        if(area.Figures.Count==0)return;area.Freeze();
+        if(area.Figures.Count==0)return null;area.Freeze();return area;
+    }
+
+    public static void Area(DrawingContext dc,PathGeometry? area,Rect plot,string color,double strength=1)
+    {
+        if(!Theme.GlassEnabled||strength<=0||area is null||plot.IsEmpty||plot.Width<=0||plot.Height<=0)return;
         var source=((SolidColorBrush)Theme.Brush(color)).Color;
         byte Alpha(double opacity)=>(byte)Math.Clamp(Math.Round(255*opacity*Math.Clamp(strength,0,1)),0,255);
         var fill=new LinearGradientBrush {StartPoint=new(plot.Left,plot.Top),EndPoint=new(plot.Left,plot.Bottom),MappingMode=BrushMappingMode.Absolute};

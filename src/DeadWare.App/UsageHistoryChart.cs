@@ -78,7 +78,8 @@ internal sealed class UsageHistoryChart : FrameworkElement
             {
                 any = true;
                 double x0 = X(bucket.Start), x1 = Math.Max(x0 + 1, X(bucket.End)), mid = (x0 + x1) / 2;
-                if (ReferenceEquals(trace, first)) targets.Add((mid, Math.Max(6, (x1 - x0) / 2)));
+                // Only the bucket's own width counts, so a missing neighbour never borrows a value.
+                if (ReferenceEquals(trace, first)) targets.Add((mid, Math.Max(1, (x1 - x0) / 2)));
                 dc.DrawRectangle(band, null, new Rect(x0, Y(bucket.Maximum), x1 - x0, Math.Max(1, Y(bucket.Minimum) - Y(bucket.Maximum))));
                 var point = new Point(mid, Y(bucket.Average));
                 if (run is null || previous is null || !CanConnect(previous, bucket, bucketWidth)) { run = new(); runs.Add(run); }
