@@ -81,8 +81,8 @@ internal sealed class StoragePage : UserControl
         if(!string.IsNullOrWhiteSpace(reading.Storage.Status))return reading.Storage.Status;
         var notes=reading.Storage.Health.Select(h=>h.Unavailable).OfType<string>().Where(n=>n.Length>0).Distinct().ToArray();
         if(notes.Length>0)return string.Join(" · ",notes);
-        return string.Join(" · ",(reading.HardwareStatus??"").Split(['\n',';'],StringSplitOptions.RemoveEmptyEntries|StringSplitOptions.TrimEntries)
-            .Where(part=>part.Contains("storage",StringComparison.OrdinalIgnoreCase)));
+        return string.Join(" · ",(reading.HardwareStatus??"").Split(" · ",StringSplitOptions.RemoveEmptyEntries|StringSplitOptions.TrimEntries)
+            .Where(part=>part.Contains("drive",StringComparison.OrdinalIgnoreCase)||part.Contains("disk",StringComparison.OrdinalIgnoreCase)||part.Contains("storage",StringComparison.OrdinalIgnoreCase)));
     }
 
     private RowParts CreateRow(string id)

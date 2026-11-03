@@ -34,6 +34,8 @@ internal static class StoragePageUiChecks
             Live_only_drive_shows_identity_note();
             Sensors_off_status_is_shown();
             Open_in_window_pops_out_selected_drive();
+            Overview_disk_card_pops_out();
+            Nine_drive_note_is_shown();
             Refresh_keeps_row_instances_and_focus();
             Exactly_one_row_shows_selection();
         }
@@ -115,6 +117,30 @@ internal static class StoragePageUiChecks
         Assert.Equal("live-1", graph.DriveId);
         Assert.Equal(page.SelectedDriveId, graph.DriveId);
         shown.Close();
+    }
+
+    private static void Overview_disk_card_pops_out()
+    {
+        var session = Session([Ssd], [Failing], "");
+        session.GetType().GetField("captureWindows", Fields)!.SetValue(session, new Dictionary<Window, Action>());
+        Window? shown = null;
+        session.ShowWindow = w => shown = w;
+        var card = new ChartCard(session, "storage", true, true);
+        card.Measure(new Size(600, 300)); card.Arrange(new Rect(0, 0, 600, 300)); card.UpdateLayout();
+        var pop = Descendants(card).OfType<Button>().Single(b => (b.ToolTip as string)?.StartsWith("Pop out", StringComparison.Ordinal) == true);
+        Click(pop);
+        Assert.IsType<GraphWindow>(shown);
+        Assert.Equal("DeadWare · " + Ui.Title("storage"), shown!.Title);
+        shown.Close();
+    }
+
+    private static void Nine_drive_note_is_shown()
+    {
+        var reading = new Reading(new(DateTimeOffset.Now, 0, new Dictionary<string, double?>()), [], [], [], "", "8 sensors · Standard user · Drives beyond eight are not recorded.", "", "", false);
+        Assert.Equal("Drives beyond eight are not recorded.", StoragePage.StatusText(reading));
+        var nine = Enumerable.Range(0, 9).Select(i => Ssd with { Id = "S" + i, Serial = "S" + i, Index = i }).ToList();
+        var page = Page(Session(nine, [], "Drives beyond eight are not recorded."));
+        Assert.Contains("Drives beyond eight are not recorded.", page.Status.Text);
     }
 
     private static void Refresh_keeps_row_instances_and_focus()

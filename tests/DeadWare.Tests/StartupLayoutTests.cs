@@ -22,6 +22,12 @@ public class StartupLayoutTests
         Assert.Contains("usagehistory",SettingsCodec.Read("""{"OpenWindows":["usagehistory","bogus"]}""").Settings.OpenWindows);
         Assert.True(DetachedWindowState.IsAllowed("usagehistory"));
     }
+    [Fact] public void EveryOverviewPopoutKindIsAllowedAndRemembered()
+    {
+        foreach(var kind in new[]{"cpu","gpu","cputemp","gputemp","memory","network","storage"})Assert.True(DetachedWindowState.IsAllowed(kind),kind);
+        Assert.Contains("storage",SettingsCodec.Read("""{"OpenWindows":["storage"]}""").Settings.OpenWindows);
+        var state=new DetachedWindowState(null);state.Open("storage");Assert.Equal(["storage"],state.Remembered);
+    }
     [Fact] public void OldPlacementHistoryDoesNotReopenClosedWindows()
     {
         var settings=SettingsCodec.Read("""{"WindowPlacementFormat":"physical-pixels-v1","Windows":{"cpu":{"Left":10,"Top":10,"Width":600,"Height":400}}}""").Settings;

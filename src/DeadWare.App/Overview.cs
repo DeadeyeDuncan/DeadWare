@@ -9,12 +9,13 @@ namespace DeadWare.App;
 /// <summary>The dashboard layout is shared by the live window and visual preview.</summary>
 internal sealed class OverviewPage : ScrollViewer
 {
+    internal const double MinimumGridHeight=4*270;
     public OverviewPage(UiSession session,TextBlock memory)
     {
         VerticalScrollBarVisibility=ScrollBarVisibility.Auto;
         HorizontalScrollBarVisibility=ScrollBarVisibility.Disabled;
         var stack=new StackPanel();
-        var cards=new UniformGrid {Columns=2,Rows=4,Height=810};
+        var cards=new UniformGrid {Columns=2,Rows=4,Height=MinimumGridHeight};
         foreach(string kind in new[]{"cpu","gpu","cputemp","gputemp","memory","network","storage"})
             cards.Children.Add(new ChartCard(session,kind,true,true));
         stack.Children.Add(cards);
@@ -22,12 +23,12 @@ internal sealed class OverviewPage : ScrollViewer
         var note=Ui.Text("— indicates an unavailable reading.",11,"Muted");
         note.Margin=new(9,3,9,12);stack.Children.Add(note);Content=stack;
         // Charts take the star row of each card, so growing the grid into spare viewport height enlarges
-        // the plots; 810 stays the floor so short windows scroll instead of crushing axis labels.
+        // the plots; the floor (270 px per card row, the old 3-row 810 px) makes short windows scroll instead of crushing the plots.
         ScrollChanged+=(_,e)=>
         {
             if(e.ViewportHeightChange==0&&e.ExtentHeightChange==0)return;
             double footer=memory.ActualHeight+memory.Margin.Top+memory.Margin.Bottom+note.ActualHeight+note.Margin.Top+note.Margin.Bottom;
-            double height=Math.Max(810,Math.Floor(ViewportHeight-footer));
+            double height=Math.Max(MinimumGridHeight,Math.Floor(ViewportHeight-footer));
             if(Math.Abs(cards.Height-height)>=1)cards.Height=height;
         };
     }

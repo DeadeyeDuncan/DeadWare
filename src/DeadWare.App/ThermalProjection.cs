@@ -61,8 +61,9 @@ public static class ThermalProjection
         {
             var health = reading.Storage.Health.FirstOrDefault(h => h.DriveId == drive.Id);
             if (health is null) continue;
+            // The name carries the drive id tail so two drives of the same model get distinct picker labels.
             string id = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(machineKey + "|Storage|" + drive.Id + "|temperature")));
-            var device = new ThermalDevice(id, drive.Model, "Storage", configurationId, "{\"Version\":1,\"Storage\":\"temperature\"}")
+            var device = new ThermalDevice(id, $"{drive.Model} · {drive.Id[Math.Max(0, drive.Id.Length - 4)..]}", "Storage", configurationId, "{\"Version\":1,\"Storage\":\"temperature\"}")
             { ComparisonAllowed = true, IdentityNote = "" };
             double? temperature = SampleHistory.Finite(health.Temperature);
             double? active = SampleHistory.Finite(reading.Sample.Values.GetValueOrDefault(StorageMetrics.Key(drive.Id, "active")));

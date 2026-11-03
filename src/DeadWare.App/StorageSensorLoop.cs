@@ -6,6 +6,8 @@ namespace DeadWare.App;
 internal interface IStorageHealthSource : IDisposable
 {
     IReadOnlyList<(string? Serial,string Model,int? Index,SmartSummary Summary)> Read(TimeSpan perHardwareTimeout);
+    /// <summary>Per-hardware problems from the last read (exception type names); empty when every drive read.</summary>
+    string Status=>"";
 }
 
 /// <summary>Polls an <see cref="IStorageHealthSource"/> on its own task and publishes matched health; never blocks the collector.</summary>
@@ -41,7 +43,7 @@ internal sealed class StorageSensorLoop : IAsyncDisposable
                     var read=Task.Run(()=>source.Read(PerHardwareTimeout));
                     Volatile.Write(ref pendingRead,read);
                     Volatile.Write(ref readings,await read.WaitAsync(token).ConfigureAwait(false));
-                    Volatile.Write(ref status,"");
+                    Volatile.Write(ref status,source.Status??"");
                 }
                 catch(OperationCanceledException) when(token.IsCancellationRequested) {throw;}
                 catch(Exception e) {Volatile.Write(ref status,$"Storage health unavailable ({e.GetType().Name})");}

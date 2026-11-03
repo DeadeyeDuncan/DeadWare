@@ -115,4 +115,39 @@ public class StorageSensorLoopTests
         gate.Set();
         Assert.True(closed.Wait(TimeSpan.FromSeconds(5)));
     }
+
+    private sealed record FakeSmart(bool HasSmart=true,bool StatusBad=false,int? Temperature=38,int? TemperatureWarning=70,int? TemperatureCritical=null,double? Life=90,ulong PowerOnHours=1234,
+        IReadOnlyList<SmartAttributeReading>? Readings=null,string? Serial="SN1",int? DriveNumber=0) : ISmartDevice
+    {
+        public IReadOnlyList<SmartAttributeReading> Attributes=>Readings??[];
+    }
+    [Fact] public void Smart_summary_reads_counts_limits_hours_and_critical_state()
+    {
+        var healthy=LibreStorageHealth.Summary(null,null,40,false,false,new FakeSmart(Readings:[new(0x05,100,10,3),new(0xC5,100,0,2),new(0xC6,100,0,1)]));
+        Assert.True(healthy.Readable);Assert.False(healthy.CriticalWarning);Assert.Equal(3,healthy.Reallocated);Assert.Equal(2,healthy.Pending);Assert.Equal(1,healthy.Uncorrectable);
+        Assert.Equal(70,healthy.MaxTemperature);Assert.Equal(1234,healthy.PowerOnHours);Assert.Equal(38,healthy.Temperature);Assert.Equal(90,healthy.LifePercent);Assert.Equal(40,healthy.UsedPercent);
+        // Sensor values win over SMART values; critical limit wins over warning.
+        var preferred=LibreStorageHealth.Summary(41,80,null,true,false,new FakeSmart(TemperatureCritical:85));
+        Assert.Equal(41,preferred.Temperature);Assert.Equal(80,preferred.LifePercent);Assert.Equal(85,preferred.MaxTemperature);Assert.Equal(0,preferred.Reallocated);
+        Assert.True(LibreStorageHealth.Summary(null,null,null,false,false,new FakeSmart(StatusBad:true)).CriticalWarning);
+        Assert.True(LibreStorageHealth.Summary(null,null,null,false,false,new FakeSmart(Readings:[new(0x01,5,6,0)])).CriticalWarning);
+        Assert.Null(LibreStorageHealth.Summary(null,null,null,false,false,new FakeSmart(PowerOnHours:0)).PowerOnHours);
+        Assert.NotEqual("OK",StorageProjection.Health("S",LibreStorageHealth.Summary(null,null,null,false,false,new FakeSmart(StatusBad:true)),null).Badge);
+    }
+    [Fact] public void Without_smart_the_sensor_fallback_is_kept()
+    {
+        foreach(var smart in new ISmartDevice?[]{null,new FakeSmart(HasSmart:false)})
+        {
+            var s=LibreStorageHealth.Summary(42,77,10,true,false,smart);
+            Assert.True(s.Readable);Assert.False(s.CriticalWarning);Assert.Equal(42,s.Temperature);Assert.Equal(77,s.LifePercent);Assert.Null(s.MaxTemperature);Assert.Null(s.PowerOnHours);
+        }
+        Assert.False(LibreStorageHealth.Summary(null,null,null,false,false,null).Readable);
+    }
+    [Fact] public void Hardware_update_failure_reports_the_exception_type()
+    {
+        var updates=new HardwareUpdates();
+        Assert.False(updates.Run(new object(),()=>throw new UnauthorizedAccessException(),TimeSpan.FromSeconds(5),out var error));
+        Assert.Equal("UnauthorizedAccessException",error);
+        Assert.True(updates.Run(new object(),()=>{},TimeSpan.FromSeconds(5),out error));Assert.Null(error);
+    }
 }

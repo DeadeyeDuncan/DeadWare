@@ -116,7 +116,10 @@ public class ThermalProjectionTests
         return new Reading(new(DateTimeOffset.UtcNow,100,values),[],[],[],"Test CPU","","","",false){Storage=new StorageReading(list,health,"")};
     }
     [Fact] public void Persisted_drives_with_temperature_become_storage_devices(){ var s=ThermalProjection.Project(ReadingWithStorage(("S1","NVMe A",42.0,12.0)),"run","m","c").Single(x=>x.Device.Kind=="Storage");
-        Assert.Equal("NVMe A",s.Device.Name);Assert.Equal(42,s.Temperature);Assert.Equal(12,s.Load);Assert.Null(s.FanRpm);Assert.True(s.Device.ComparisonAllowed);}
+        Assert.Equal("NVMe A · S1",s.Device.Name);Assert.Equal(42,s.Temperature);Assert.Equal(12,s.Load);Assert.Null(s.FanRpm);Assert.True(s.Device.ComparisonAllowed);}
+    [Fact] public void Same_model_drives_get_distinct_names(){
+        var names=ThermalProjection.Project(ReadingWithStorage(("SN-AAAA1111","NVMe A",40.0,1.0),("SN-BBBB2222","NVMe A",41.0,1.0)),"run","m","c").Where(x=>x.Device.Kind=="Storage").Select(x=>x.Device.Name).ToArray();
+        Assert.Equal(["NVMe A · 1111","NVMe A · 2222"],names);}
     [Fact] public void Live_only_drives_are_excluded()=>Assert.DoesNotContain(ThermalProjection.Project(ReadingWithStorage(("USB#1",null,40.0,0.0)),"r","m","c"),x=>x.Device.Kind=="Storage");
     [Fact] public void Sensors_off_keeps_device_with_unavailable_reason(){
         var r=ReadingWithStorage(("S1","NVMe A",null,5.0));

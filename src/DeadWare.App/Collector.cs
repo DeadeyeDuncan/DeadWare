@@ -197,7 +197,8 @@ public sealed class Collector : IAsyncDisposable
                     }
                     if(timings is not null)timings["windows/storage"]=Stopwatch.GetElapsedTime(providerStarted).TotalMilliseconds;
                     Volatile.Write(ref storageDrives,drives);
-                    var storageReading=new StorageReading(drives,StorageHealthFor(drives),storageError??"");
+                    bool beyondEight=drives.Count(d=>d.Persistable)>StorageMetrics.MaximumPersistedDrives;
+                    var storageReading=new StorageReading(drives,StorageHealthFor(drives),StorageStatus(storageError,Volatile.Read(ref healthLoop)?.Status,beyondEight));
                     var battery=WindowsBattery.Read();
                     foreach(var sensor in sensors) values[sensor.Id]=sensor.Value;
                     foreach(var health in storageReading.Health)
@@ -215,7 +216,7 @@ public sealed class Collector : IAsyncDisposable
                     if(droppedCores>0) hardwareStatus+=$" · Showing the first {CpuCoreUsage.MaximumCores} of {CpuCoreUsage.MaximumCores+droppedCores} CPU cores.";
                     if(errors.Count>0) hardwareStatus+=" · "+string.Join("; ",errors.Distinct());
                     if(storageError is not null) hardwareStatus+=" · "+storageError;
-                    if(drives.Count(d=>d.Persistable)>StorageMetrics.MaximumPersistedDrives) hardwareStatus+=" · Drives beyond eight are not recorded.";
+                    if(beyondEight) hardwareStatus+=" · "+BeyondEightNote;
                     stage="Reading ETW counters";
                     // Snapshot and delivery are one step, so the final drain never overtakes (and
                     // makes ConnectionService drop) a sample whose observations were already taken.
@@ -304,6 +305,13 @@ public sealed class Collector : IAsyncDisposable
         foreach(var sub in h.SubHardware) ReadHardware(sub,sensors,errors,lowLevelAvailable,timings);
     }
     private static string Unit(SensorType t)=>t switch {SensorType.Load=>"%",SensorType.Temperature=>"°C",SensorType.Clock=>"MHz",SensorType.Fan=>"RPM",SensorType.Voltage=>"V",SensorType.Current=>"A",SensorType.Power=>"W",SensorType.Data=>"GB",SensorType.SmallData=>"MB",SensorType.Throughput=>"B/s",SensorType.Control=>"%",SensorType.Frequency=>"Hz",_=>t.ToString()};
+    internal const string BeyondEightNote="Drives beyond eight are not recorded.";
+    /// <summary>The fast-path error, else the health loop's status, plus the more-than-eight-drives note.</summary>
+    internal static string StorageStatus(string? storageError,string? loopStatus,bool beyondEight)
+    {
+        var first=!string.IsNullOrWhiteSpace(storageError)?storageError:loopStatus;
+        return string.Join(" · ",new[]{first,beyondEight?BeyondEightNote:null}.Where(p=>!string.IsNullOrWhiteSpace(p)));
+    }
     private IReadOnlyList<StorageHealth> StorageHealthFor(IReadOnlyList<StorageDrive> drives)
     {
         if(Volatile.Read(ref healthLoop) is {} loop)return loop.Latest;

@@ -104,7 +104,7 @@ internal sealed class CompactGraph : Border
             double? write=session.Stale?null:session.Value(writeId);
             value.Text=$"↓ {Ui.Bytes(current,true)}";upload.Text=$"↑ {Ui.Bytes(write,true)}";
             var drive=DriveId is null?null:data?.Storage.Drives.FirstOrDefault(d=>d.Id==DriveId);
-            details.Text=(DriveId is null?"All drives":drive?.Model??"Drive not detected")+$"\n↓ Read: {GraphStroke.Pattern(session.Settings,"storage")} line\n↑ Write: {GraphStroke.Pattern(session.Settings,"diskwrite",true)} line\nBoth directions share the same scale.";
+            details.Text=(DriveId is null?"All drives":drive?.Model??"Drive not detected")+$"\n↓ Read: {GraphStroke.Pattern(session.Settings,"diskread")} line\n↑ Write: {GraphStroke.Pattern(session.Settings,"diskwrite",true)} line\nBoth directions share the same scale.";
             AutomationProperties.SetName(value,$"Read {Ui.Bytes(current,true)}");AutomationProperties.SetName(upload,$"Write {Ui.Bytes(write,true)}");
         }
         else if(kind=="memory")

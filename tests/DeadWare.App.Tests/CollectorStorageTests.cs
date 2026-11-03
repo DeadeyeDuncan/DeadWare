@@ -78,4 +78,39 @@ public class CollectorStorageTests
         Assert.Null(r.Sample.Values["storage/S1/life"]);
         Assert.Equal(55,r.Sample.Values["storage/S1/used"]);
     }
+
+    private sealed class ThrowingHealth : IStorageHealthSource
+    {
+        public IReadOnlyList<(string? Serial,string Model,int? Index,SmartSummary Summary)> Read(TimeSpan perHardwareTimeout)=>throw new UnauthorizedAccessException();
+        public void Dispose() {}
+    }
+    private sealed class PartialHealth : IStorageHealthSource
+    {
+        public IReadOnlyList<(string? Serial,string Model,int? Index,SmartSummary Summary)> Read(TimeSpan perHardwareTimeout)=>[];
+        public string Status=>"Storage health unavailable for NVMe A (IOException)";
+        public void Dispose() {}
+    }
+    private static async Task<Reading> FirstWithStatus(IStorageFastSource fast,IStorageHealthSource health,string expected)
+    {
+        await using var collector=new Collector(new(HardwareEnabled:false,EtwEnabled:false,PollingIntervalSeconds:0.5),fast,health,TimeSpan.FromMilliseconds(50));
+        var tcs=new TaskCompletionSource<Reading>(TaskCreationOptions.RunContinuationsAsynchronously);
+        collector.SampleAvailable+=r=>{if(r.Storage.Status.Contains(expected))tcs.TrySetResult(r);};
+        collector.Start();
+        return await tcs.Task.WaitAsync(TimeSpan.FromSeconds(10));
+    }
+    [Fact] public async Task Health_loop_failure_is_published_in_storage_status()
+    {
+        var r=await FirstWithStatus(new FakeStorage([Drive],false),new ThrowingHealth(),"UnauthorizedAccessException");
+        Assert.Contains("Storage health unavailable",r.Storage.Status);
+        var partial=await FirstWithStatus(new FakeStorage([Drive],false),new PartialHealth(),"IOException");
+        Assert.Contains("NVMe A",partial.Storage.Status);
+    }
+    [Fact] public async Task Nine_drive_note_is_in_storage_status()
+    {
+        var nine=Enumerable.Range(0,9).Select(i=>Drive with {Id="S"+i,Serial="S"+i,Index=i}).ToList();
+        Assert.Contains("Drives beyond eight are not recorded.",(await First(new FakeStorage(nine,false))).Storage.Status);
+        Assert.Equal("Disk counters unavailable · Drives beyond eight are not recorded.",Collector.StorageStatus("Disk counters unavailable","Storage health unavailable (X)",true));
+        Assert.Equal("Storage health unavailable (X)",Collector.StorageStatus(null,"Storage health unavailable (X)",false));
+        Assert.Equal("",Collector.StorageStatus(null,"",false));
+    }
 }

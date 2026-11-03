@@ -49,7 +49,8 @@ internal sealed class WindowsStorage : IStorageFastSource, IDisposable
 
     internal static IReadOnlyList<StorageDrive> Parse(IEnumerable<WmiDisk> disks)=>
         disks.OrderBy(d=>d.Index).Select(d=>new StorageDrive(StorageProjection.DriveId(d.Serial,d.Model,d.Index),StorageProjection.Normalize(d.Serial),d.Model,d.Index,d.BusType,d.Size,d.Removable,
-            d.Volumes.Select(v=>new StorageVolume(v.Letter,v.Label,v.Size,v.Free)).ToList())).ToList();
+            d.Volumes.Select(v=>new StorageVolume(v.Letter,v.Label,v.Size,v.Free)).ToList())
+        {IdentityNote=StorageProjection.Normalize(d.Serial) is null?"no serial number":d.Removable?"removable drive":""}).ToList();
 
     /// <summary>Also sets the clock that <see cref="Read"/> uses for its retry and error grace.</summary>
     public IReadOnlyList<StorageDrive> Drives(double now)
@@ -58,7 +59,13 @@ internal sealed class WindowsStorage : IStorageFastSource, IDisposable
         if(enumerationAttempted is {} last&&now-last<EnumerationSeconds)return drives;
         // The attempt time is recorded on failure too, so a broken WMI is retried once per interval, not every poll.
         enumerationAttempted=now;
-        try {drives=Parse(enumerate());enumerationFailing=false;DisposeCounters();counterAttempted=null;}
+        try
+        {
+            var previous=drives.Select(d=>d.Index).Order().ToArray();
+            drives=Parse(enumerate());enumerationFailing=false;
+            // Counters survive a re-enumeration; they are re-opened only when the set of physical disks changed.
+            if(!previous.SequenceEqual(drives.Select(d=>d.Index).Order())){DisposeCounters();counterAttempted=null;}
+        }
         catch(Exception e) {enumerationFailing=true;enumerationError=$"Drive enumeration failed ({e.GetType().Name})";}
         return drives;
     }
@@ -66,16 +73,18 @@ internal sealed class WindowsStorage : IStorageFastSource, IDisposable
     public void Read(IReadOnlyList<StorageDrive> list,Dictionary<string,double?> values,out string? error)
     {
         // Open at most once per Read, and after a failure only once per enumeration interval.
+        bool opened=false;
         if(counters is null&&list.Count>0&&(counterAttempted is not {} tried||now-tried>=EnumerationSeconds))
         {
             counterAttempted=now;
-            try {counters=openCounters();countersFailing=false;}
+            try {counters=openCounters();countersFailing=false;opened=true;}
             catch(Exception e) {countersFailing=true;counterError=$"Disk counters unavailable ({e.GetType().Name})";}
         }
         foreach(var drive in list)
         {
             double? read=null,write=null,active=null;
-            if(counters is not null&&counters.TryGetValue(drive.Index.ToString(CultureInfo.InvariantCulture),out var c))
+            // A counter primed in this same poll would read over a near-zero interval (0 or a spike): publish null instead.
+            if(!opened&&counters is not null&&counters.TryGetValue(drive.Index.ToString(CultureInfo.InvariantCulture),out var c))
             {
                 try {read=c.Read();write=c.Write();active=Math.Clamp(100-c.Idle(),0,100);}
                 catch(Exception e) {read=write=active=null;countersFailing=true;counterError=$"Disk counters unavailable ({e.GetType().Name})";DisposeCounters();}

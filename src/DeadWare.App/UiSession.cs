@@ -333,12 +333,17 @@ public sealed class UiSession
             topmost.RemoveValueChanged(window,pinChanged);captureWindows.Remove(window);
         };
     }
+    /// <summary>Test hook: when set, an allowed pop-out is built and handed here instead of shown and remembered.</summary>
+    internal Action<Window>? ShowWindow {get;set;}
+    private Window CreateDetached(string kind)=>kind=="batteryhistory"?new BatteryHistoryWindow(this):kind=="usagehistory"?new UsageHistoryWindow(this):kind=="widget"?new WidgetWindow(this):new GraphWindow(this,kind);
     public void OpenDetached(string kind)=>OpenDetachedCore(PopoutGraphMode.Resolve(kind,Settings.JoinCpuGpuPopouts));
     private void OpenDetachedCore(string kind)
     {
-        if(layout.Ending||!DetachedWindowState.IsAllowed(kind))return;
+        if(!DetachedWindowState.IsAllowed(kind))return;
+        if(ShowWindow is { } show){show(CreateDetached(kind));return;}
+        if(layout.Ending)return;
         if(detached.TryGetValue(kind,out var existing)) {existing.WindowState=WindowState.Normal;existing.Activate();return;}
-        var window=kind=="batteryhistory"?(Window)new BatteryHistoryWindow(this):kind=="usagehistory"?(Window)new UsageHistoryWindow(this):kind=="widget"?new WidgetWindow(this):new GraphWindow(this,kind);
+        var window=CreateDetached(kind);
         detached[kind]=window;
         window.Closed+=(_,_)=>{detached.Remove(kind);layout.Close(kind);diagnostics?.Record("window_closed",new {Kind=kind,layout.Ending,OpenWindows=layout.Remembered});QueueSave();};
         window.Show();layout.Open(kind);diagnostics?.Record("window_opened",new {Kind=kind,OpenWindows=layout.Remembered});QueueSave();
