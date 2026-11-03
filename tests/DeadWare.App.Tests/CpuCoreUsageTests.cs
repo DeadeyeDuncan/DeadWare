@@ -20,7 +20,11 @@ public class CpuCoreUsageTests
     [Fact] public void Total_max_cores_other_units_and_other_hardware_do_not_count()
         =>Assert.Empty(CpuCoreUsage.FromSensors([Load("CPU Total",50),Load("CPU Core Max",90),Load("CPU Cores",40),Load("CPU Core #1",3000) with {Unit="MHz",SensorType="Clock"},Load("CPU Core #1",40) with {HardwareType="GpuNvidia"}]));
     [Fact] public void More_than_sixty_four_entries_are_capped()
-        =>Assert.Equal(64,CpuCoreUsage.FromSensors(Enumerable.Range(1,70).Select(k=>Load($"CPU Core #{k}",k)).ToArray()).Count);
+    {
+        var cores=CpuCoreUsage.FromSensors(Enumerable.Range(1,70).Select(k=>Load($"CPU Core #{k}",k)).ToArray(),out int dropped);
+        Assert.Equal(64,cores.Count);Assert.Equal(6,dropped);
+        CpuCoreUsage.FromSensors([Load("CPU Core #1",1)],out dropped);Assert.Equal(0,dropped);
+    }
     [Fact] public void Non_ascii_and_overlong_core_numbers_are_ignored_without_throwing()=>
         Assert.Equal(new double?[]{5},CpuCoreUsage.FromSensors([Load("CPU Core #٣",1),Load("CPU Core #99999999999",2),Load("CPU Core #1 Thread #99999999999",3),Load("CPU Core #2",5)]));
     [Fact] public void Key_is_zero_based()=>Assert.Equal("cpu/core/0/usage",CpuCoreUsage.Key(0));

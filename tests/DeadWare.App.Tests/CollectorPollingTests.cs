@@ -28,4 +28,15 @@ public class CollectorPollingTests
         Assert.Equal(10d,values["cpu/core/0/usage"]);Assert.Null(values["cpu/core/1/usage"]);Assert.Equal(30d,values["cpu/core/2/usage"]);
         Assert.Equal(0,Collector.PublishCores(new(),[]));
     }
+    [Fact] public void HoldCores_holds_the_last_count_for_one_empty_poll_only()
+    {
+        int held=0;IReadOnlyList<double?> read=[1,2,3];
+        Assert.Same(read,Collector.HoldCores(read,ref held));Assert.Equal(3,held);
+        var gap=Collector.HoldCores([],ref held);Assert.Equal(3,gap.Count);Assert.All(gap,v=>Assert.Null(v));Assert.Equal(0,held);
+        Assert.Empty(Collector.HoldCores([],ref held));
+    }
+    [Fact] public void HoldCores_yields_three_nulls_once_then_empty_after_a_held_count_of_three()
+    {
+        int held=3;var gap=Collector.HoldCores([],ref held);Assert.Equal(3,gap.Count);Assert.All(gap,v=>Assert.Null(v));Assert.Empty(Collector.HoldCores([],ref held));
+    }
 }

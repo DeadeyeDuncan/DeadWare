@@ -76,6 +76,7 @@ public sealed class Collector : IAsyncDisposable
     private readonly WindowsCounters windows=new();
     private readonly WindowsCpuCores windowsCores=new();
     private bool hardwareCores;
+    private int heldCores;
     private readonly GpuFanSpeed gpuFanSpeed=new();
     private readonly CpuPumpSpeed cpuPumpSpeed=new();
     private readonly EtwNetwork etw;
@@ -151,8 +152,9 @@ public sealed class Collector : IAsyncDisposable
                     long providerStarted=Stopwatch.GetTimestamp();var fallbackCpu=windows.Cpu();
                     if(timings is not null)timings["windows/cpu"]=Stopwatch.GetElapsedTime(providerStarted).TotalMilliseconds;
                     values["cpu/usage"]=cpuLoad??fallbackCpu;
-                    var cores=CpuCoreUsage.FromSensors(sensors);
-                    if(cores.Count>0)hardwareCores=true;else if(!hardwareCores)cores=windowsCores.Read();
+                    var cores=CpuCoreUsage.FromSensors(sensors,out int droppedCores);
+                    if(cores.Count>0)hardwareCores=true;else if(!hardwareCores){cores=windowsCores.Read(out int windowsDropped);droppedCores=windowsDropped;}
+                    cores=HoldCores(cores,ref heldCores);
                     PublishCores(values,cores);
                     values["cpu/temperature"]=cpuTemp;
                     values["cpu/pump"]=cpuPumpSpeed.Read(sensors,sensors.Where(s=>s.HardwareType=="Cpu"&&s.HardwareId.Length>0).Select(s=>s.HardwareId).Distinct(StringComparer.Ordinal).Count());
@@ -169,6 +171,7 @@ public sealed class Collector : IAsyncDisposable
                     string hardwareStatus=initialization.Length>0?initialization:!options.HardwareEnabled?"Hardware collection disabled for diagnostic isolation":$"{sensors.Count} sensors · {(IsElevated?"Administrator":"Standard user")} · {(options.ExtendedSensors?"Extended sensors enabled":"CPU/GPU sensors")}";
                     if(cpuTemp is null) hardwareStatus+=" · CPU temperature unavailable (hardware support, elevation or PawnIO may be required).";
                     if(gpus.Count==0&&options.HardwareEnabled) hardwareStatus+=" · No supported GPU discovered.";
+                    if(droppedCores>0) hardwareStatus+=$" · Showing the first {CpuCoreUsage.MaximumCores} of {CpuCoreUsage.MaximumCores+droppedCores} CPU cores.";
                     if(errors.Count>0) hardwareStatus+=" · "+string.Join("; ",errors.Distinct());
                     stage="Reading ETW counters";
                     // Snapshot and delivery are one step, so the final drain never overtakes (and
@@ -213,6 +216,13 @@ public sealed class Collector : IAsyncDisposable
             try {computer?.Close();} finally {await StopEtwAsync();}
             stage="Stopped";
         }
+    }
+    /// <summary>Holds the last good core count for one empty poll (as nulls) so a transient sensor miss shows a gap, not a disappearance.</summary>
+    internal static IReadOnlyList<double?> HoldCores(IReadOnlyList<double?> read,ref int held)
+    {
+        if(read.Count>0){held=read.Count;return read;}
+        if(held==0)return read;
+        int count=held;held=0;return new double?[count];
     }
     internal static int PublishCores(Dictionary<string,double?> values,IReadOnlyList<double?> cores)
     {

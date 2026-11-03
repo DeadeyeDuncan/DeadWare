@@ -51,7 +51,17 @@ internal static class ChartFrame
                 var line=leftLabels[i];
                 if(string.IsNullOrEmpty(line.Label)||!Labelled(i,leftLabels.Count))continue;
                 var text=Text(line.Label,typeface,pixelsPerDip,muted,size);
-                dc.DrawText(text,new(plot.Left+6,LabelY(line.Y,text)));
+                double labelTop=LabelY(line.Y,text);
+                // Skip a left label whose right edge would reach a right-hand value label on the same line.
+                bool collides=false;
+                for(int j=0;j<lines.Count;j++)
+                {
+                    if(string.IsNullOrEmpty(lines[j].Label)||!Labelled(j,lines.Count))continue;
+                    var other=Text(lines[j].Label,typeface,pixelsPerDip,muted,size);
+                    if(Math.Abs(LabelY(lines[j].Y,other)-labelTop)<text.Height&&plot.Left+6+text.Width+4>plot.Right-6-other.Width)collides=true;
+                }
+                if(collides)continue;
+                dc.DrawText(text,new(plot.Left+6,labelTop));
             }
         if(nowLabel is null)return;
         var now=Text(nowLabel,typeface,pixelsPerDip,muted,size);

@@ -1,5 +1,15 @@
 # Release validation
 
+## Polish (0.10.1, 2026-11-03)
+
+A small release on 0.10.0: the pre-0.9.0 left RPM gutter is removed from `HistoryChart` so `PlotRect` starts at the same edge with and without a fan or pump overlay, with an overlap guard in `ChartFrame.Grid` that skips a left RPM label that would reach the right value label; the collector holds the last good per-core count for one empty poll (`Collector.HoldCores`, for LibreHardwareMonitor and Windows-counter cores alike), reports cores dropped above 64 in the hardware status from either source, the per-core tint saturation is continuous across s = 0.25, and the graph-history restore fill only uses a record's own core keys as a fill source.
+
+Automated coverage added on `claude/polish-0.10.1`: the `LiveRenderingUiChecks` fixture renders a CPU temperature chart with and without the pump overlay and asserts an identical plot left edge and width, RPM glyphs inside the plot that do not intersect the °C glyphs, and a resolving hover; `CollectorPollingTests` cover `HoldCores`; `WindowsCpuCoresTests` cover the fallback's dropped count; `CpuCoreUsageTests` assert the dropped count above 64; `ThemeTokenTests` assert tints either side of the saturation boundary stay close; `GraphHistoryServiceTests` assert a run of coreless records beyond the fill window stays open. Each new test was observed failing on the 0.10.0 code before the fix.
+
+Results: `dotnet build DeadWare.slnx -c Release --nologo` finished with 0 errors (the only warnings are the pre-existing xUnit2031 analyzer notes in the test projects). `dotnet test DeadWare.slnx -c Release --nologo` passed 641 core/update tests with 1 skipped and 283 Windows app tests with 0 failures, on the development machine on 2026-11-03.
+
+Not verified in this release: the narrow-width label skip by eye, the >64-core status and the one-poll hold on physical hardware.
+
 ## Per-core CPU usage (0.10.0, 2026-11-03)
 
 Per-core CPU usage adds an opt-in set of thin core traces under the CPU total. The collector turns LibreHardwareMonitor load sensors (`CPU Core #k`, `P-Core #k`, `E-Core #k`, and threads where exposed) into positional core series, falling back to Windows per-processor counters (locked for the session once hardware cores appear). Core traces ride the existing six-hour live graph history under short keys for up to 48 cores, once a second (every two seconds above 32 cores). The dashboard CPU card, separate CPU pop-out and widget Usage graph draw them; the joined CPU/GPU pop-out, Usage history, Alerts and Cooling Health do not.
