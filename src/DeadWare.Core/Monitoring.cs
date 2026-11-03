@@ -103,6 +103,26 @@ public sealed class SampleHistory
             return points;
         }
     }
+    /// <summary>Several <see cref="Series"/> reads in one pass under the lock; a missing id yields null points.</summary>
+    public IReadOnlyDictionary<string,IReadOnlyList<SamplePoint>> SeriesMany(IReadOnlyList<string> ids,double now,int seconds)
+    {
+        lock(gate)
+        {
+            var lists=new Dictionary<string,List<SamplePoint>>(StringComparer.Ordinal);
+            foreach(var id in ids)lists.TryAdd(id,[]);
+            Snapshot? previous=null;
+            foreach(var sample in samples)
+            {
+                if(sample.MonotonicSeconds<now-seconds||sample.MonotonicSeconds>now)continue;
+                bool breakBefore=previous is not null&&previous.SessionId!=sample.SessionId;
+                double interval=PollingPolicy.Normalize(sample.PollingIntervalSeconds);
+                foreach(var pair in lists)
+                    pair.Value.Add(new(sample.Timestamp,sample.MonotonicSeconds,sample.Values.GetValueOrDefault(pair.Key)){BreakBefore=breakBefore,PollingIntervalSeconds=interval});
+                previous=sample;
+            }
+            return lists.ToDictionary(p=>p.Key,p=>(IReadOnlyList<SamplePoint>)p.Value,StringComparer.Ordinal);
+        }
+    }
     private Snapshot[] Capture(double now,int seconds)
     {
         lock(gate)return samples.Where(s=>s.MonotonicSeconds>=now-seconds&&s.MonotonicSeconds<=now).ToArray();

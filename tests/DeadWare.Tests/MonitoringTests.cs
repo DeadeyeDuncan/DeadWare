@@ -6,6 +6,17 @@ public class MonitoringTests
 {
     static readonly DateTimeOffset Epoch = DateTimeOffset.UnixEpoch;
     static Snapshot S(double seconds, double? value) => new(Epoch.AddSeconds(seconds), seconds, new Dictionary<string,double?> { ["cpu"] = value });
+    [Fact] public void SeriesMany_matches_Series_per_id()
+    {
+        var h=new SampleHistory();
+        for(int i=0;i<5;i++)h.Add(new Snapshot(Epoch.AddSeconds(i),i,new Dictionary<string,double?>{["a"]=i,["b"]=i%2==0?null:i*10}){SessionId=i<3?"s1":"s2"});
+        var many=h.SeriesMany(["a","b","missing"],4,60);
+        Assert.Equal(h.Series("a",4,60),many["a"]);
+        Assert.Equal(h.Series("b",4,60),many["b"]);
+        Assert.Equal(5,many["missing"].Count);
+        Assert.All(many["missing"],p=>Assert.Null(p.Value));
+        Assert.Contains(many["a"],p=>p.BreakBefore);
+    }
     [Fact] public void HistoryBoundsByTimeAndCountAndUsesActualTimestamps()
     {
         var h = new SampleHistory();

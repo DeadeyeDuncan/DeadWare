@@ -27,4 +27,10 @@ internal static class GraphStroke
         }
         dc.DrawGeometry(null,pen,geometry);
     }
+    /// <summary>A solid round-joined stroke with no glow or dashes (per-core CPU traces).</summary>
+    public static void DrawPlain(DrawingContext dc,Geometry geometry,Brush brush,double width)
+    {
+        var pen=new Pen(brush,width){LineJoin=PenLineJoin.Round};pen.Freeze();
+        dc.DrawGeometry(null,pen,geometry);
+    }
 }

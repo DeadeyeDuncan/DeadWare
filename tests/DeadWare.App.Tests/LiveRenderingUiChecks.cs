@@ -13,6 +13,15 @@ using DeadWare.Core;
 
 namespace DeadWare.App.Tests;
 
+public class HoverCoreLineTests
+{
+    [Fact] public void Hover_core_lines_take_the_eight_highest_and_count_the_rest()
+    {
+        var lines=HistoryChart.HoverCoreLines(Enumerable.Range(0,12).Select(i=>(i,(double)i*5)).ToArray());
+        Assert.Equal(9,lines.Count);Assert.Equal("Core 12 · 55%",lines[0].Text);Assert.Equal("Core 5 · 20%",lines[7].Text);Assert.Equal(("+4 more",-1),lines[8]);
+        Assert.Equal(3,HistoryChart.HoverCoreLines([(0,1),(1,2),(2,3)]).Count);
+    }
+}
 internal static class LiveRenderingUiChecks
 {
     internal static void Run()
@@ -25,16 +34,19 @@ internal static class LiveRenderingUiChecks
         for(int i=0;i<=samples;i++)
         {
             double time=(i-samples)*.5;
-            history.Add(new(epoch.AddSeconds(time),time,new Dictionary<string,double?>
+            var values=new Dictionary<string,double?>
             {
                 ["cpu/usage"]=30+i%31,["gpu/usage"]=i%101,["cpu/temperature"]=60+i%20,
                 ["gpu/temperature"]=55+i%30,["gpu/fan"]=1000+i%1500,["memory/usage"]=48+i%3,
                 ["network/download"]=i%181==0?20_000_000:150_000,["network/upload"]=80_000
-            }){PollingIntervalSeconds=.5});
+            };
+            // Eight per-core traces; core 3 drops out on every tenth sample.
+            for(int core=0;core<8;core++)values[CpuCoreUsage.Key(core)]=core==3&&i%10==0?null:(core*11+i)%100;
+            history.Add(new(epoch.AddSeconds(time),time,values){PollingIntervalSeconds=.5});
         }
         var collector=(Collector)RuntimeHelpers.GetUninitializedObject(typeof(Collector));
         Set(collector,"clock",new Stopwatch());Set(collector,"<History>k__BackingField",history);
-        Set(collector,"latest",new Reading(history.Read()[^1],[new("gpu","Fixture GPU")],[],[],"Fixture CPU","","","",false));
+        Set(collector,"latest",new Reading(history.Read()[^1],[new("gpu","Fixture GPU")],[],[],"Fixture CPU","","","",false){CpuCoreCount=8});
         var session=(UiSession)RuntimeHelpers.GetUninitializedObject(typeof(UiSession));
         Set(session,"<Collector>k__BackingField",collector);Set(session,"<Settings>k__BackingField",new UserSettings {HistorySeconds=21600,SelectedGpuId="gpu",ShowGpuFanSpeed=true});
         var charts=new[]{"cpu","cputemp","memory","network"}.Select(k=>new HistoryChart(session,k,true){CompareDevices=k is "cpu" or "cputemp"}).ToArray();
@@ -193,6 +205,41 @@ internal static class LiveRenderingUiChecks
                 WaitPrepared();
             }
             results.Add(new {Name=name,MedianMs=times.Order().ElementAt(times.Count/2),MaxMs=times.Max(),MedianAllocatedBytes=allocations.Order().ElementAt(allocations.Count/2)});
+        }
+        // Per-core CPU traces: thin core-tinted strokes, only on a standalone chart or one that opts in beside the GPU.
+        {
+            var coreCharts=new[]{new HistoryChart(session,"cpu",true),new HistoryChart(session,"cpu",true){CompareDevices=true,CoresWithDevices=true},new HistoryChart(session,"cpu",true){CompareDevices=true}};
+            foreach(var chart in coreCharts){chart.Measure(new(300,120));chart.Arrange(new Rect(0,0,300,120));chart.UpdateLayout();}
+            var coreBrushes=Enumerable.Range(0,8).Select(i=>(object)Theme.CoreBrush(i,8)).ToHashSet(ReferenceEqualityComparer.Instance);
+            Pen[] CoreStrokes(Drawing drawing)=>Shapes(drawing).Where(s=>s.Pen is not null&&coreBrushes.Contains(s.Pen.Brush)).Select(s=>s.Pen).ToArray();
+            double PrimaryThickness(Drawing drawing)=>Shapes(drawing).Where(s=>s.Geometry is StreamGeometry&&s.Pen is not null&&ReferenceEquals(s.Pen.Brush,Application.Current.Resources["Graph/cpu"])).Min(s=>s.Pen.Thickness);
+            int restoreSeconds=session.Settings.HistorySeconds;
+            foreach(int seconds in new[]{60,21600})
+            {
+                session.Settings.HistorySeconds=seconds;
+                session.Settings.ShowCpuCoreUsage=false;
+                foreach(var chart in coreCharts){chart.Refresh();Assert.Empty(CoreStrokes(Draw(chart)));}
+                session.Settings.ShowCpuCoreUsage=true;
+                for(int c=0;c<coreCharts.Length;c++)
+                {
+                    coreCharts[c].Refresh();var drawing=Draw(coreCharts[c]);var cores=CoreStrokes(drawing);
+                    if(c==2){Assert.Empty(cores);continue;}
+                    Assert.Equal(8,cores.Length);
+                    Assert.Equal(8,cores.Select(pen=>pen.Brush).Distinct(ReferenceEqualityComparer.Instance).Count());
+                    double primary=PrimaryThickness(drawing);
+                    Assert.All(cores,pen=>{Assert.Equal(primary/2,pen.Thickness,6);Assert.Empty(pen.DashStyle.Dashes);});
+                }
+                session.Settings.ShowCpuCoreUsage=false;
+                foreach(var chart in coreCharts){chart.Refresh();Assert.Empty(CoreStrokes(Draw(chart)));}
+            }
+            // The hover chip lists cores by value under the device lines.
+            session.Settings.HistorySeconds=60;session.Settings.ShowCpuCoreUsage=true;
+            var hovered=coreCharts[0];hovered.Refresh();Draw(hovered);
+            var hp=hovered.PlotRect;hovered.SetHover(new Point(hp.Left+hp.Width*.5,hp.Top+10));Assert.True(hovered.HoverIndex>=0);
+            var texts=Glyphs(Draw(hovered)).Select(g=>new string(g.GlyphRun.Characters.ToArray())).ToArray();
+            Assert.Contains(texts,t=>t.StartsWith("Core ",StringComparison.Ordinal));
+            hovered.SetHover(null);
+            session.Settings.ShowCpuCoreUsage=false;session.Settings.HistorySeconds=restoreSeconds;
         }
         Measure("four-six-hour-charts",_=>{foreach(var chart in charts){chart.Refresh();Draw(chart);}});
         Measure("map-cached",_=>Draw(map));
