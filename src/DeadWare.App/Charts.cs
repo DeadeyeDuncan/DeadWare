@@ -302,7 +302,7 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
         else if(hit)scroll.X=-pw/session.HistorySeconds*Math.Clamp(session.Collector.ElapsedSeconds-now,0,interval);
         dc.PushTransform(scroll);
         // Cores sit underneath the primary and comparison traces.
-        foreach(var spec in frame.Specs.Where(s=>s.Core))DrawTrace(dc,frame.Paths[spec.Metric],spec,plot,bands.GetValueOrDefault(spec.Metric),now);
+        foreach(var spec in frame.Specs.Where(s=>s.Core))DrawTrace(dc,frame.Paths[spec.Metric],spec,plot,null,now);
         foreach(var spec in frame.Specs.Where(s=>!s.Core))DrawTrace(dc,frame.Paths[spec.Metric],spec,plot,bands.GetValueOrDefault(spec.Metric),now);
         hoverAnchor=null;hoverLines=[];
         if(HoverIndex>=0&&frame.Paths[primaryMetric].Points.Count>HoverIndex)DrawHover(dc,frame,primaryMetric,plot,now,Axis,FanAxis);
@@ -373,13 +373,8 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
         bool dense=CompareDevices&&session.HistorySeconds>=3600;double width=dense?1:2;
         if(spec.Core)
         {
-            // Thin, plain and unmarked: half the CPU trace's own stroke, its band tinted like the core.
+            // Thin, plain and unmarked: half the CPU trace's own stroke, and no range band (eight bands would pile up).
             width=.5*width*GraphStroke.Style(session.Settings,Theme.GraphKey("cpu")).Thickness;
-            if(range is not null)
-            {
-                path.Band??=RangeBand(range,now,spec.Maximum,plot.Left,plot.Top,plot.Width,plot.Height);
-                dc.PushOpacity(.14);dc.DrawGeometry(spec.Brush,null,path.Band);dc.Pop();
-            }
             GraphStroke.DrawPlain(dc,path.Path,spec.Brush!,width);
             return;
         }

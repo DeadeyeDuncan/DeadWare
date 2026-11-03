@@ -210,13 +210,17 @@ internal static class LiveRenderingUiChecks
         {
             var coreCharts=new[]{new HistoryChart(session,"cpu",true),new HistoryChart(session,"cpu",true){CompareDevices=true,CoresWithDevices=true},new HistoryChart(session,"cpu",true){CompareDevices=true}};
             foreach(var chart in coreCharts){chart.Measure(new(300,120));chart.Arrange(new Rect(0,0,300,120));chart.UpdateLayout();}
+            // Counting by brush identity relies on Theme.CoreBrush caching one frozen brush per (colour, index, count).
+            Assert.Same(Theme.CoreBrush(0,8),Theme.CoreBrush(0,8));
             var coreBrushes=Enumerable.Range(0,8).Select(i=>(object)Theme.CoreBrush(i,8)).ToHashSet(ReferenceEqualityComparer.Instance);
             Pen[] CoreStrokes(Drawing drawing)=>Shapes(drawing).Where(s=>s.Pen is not null&&coreBrushes.Contains(s.Pen.Brush)).Select(s=>s.Pen).ToArray();
             double PrimaryThickness(Drawing drawing)=>Shapes(drawing).Where(s=>s.Geometry is StreamGeometry&&s.Pen is not null&&ReferenceEquals(s.Pen.Brush,Application.Current.Resources["Graph/cpu"])).Min(s=>s.Pen.Thickness);
             int restoreSeconds=session.Settings.HistorySeconds;
-            foreach(int seconds in new[]{60,21600})
+            bool restoreSmoothing=session.Settings.GraphSmoothing;
+            // 60 s raw; 21600 s smoothed (per-core ChartRanges); 21600 s unsmoothed (reduced raw polylines).
+            foreach(var (seconds,smoothing) in new[]{(60,true),(21600,true),(21600,false)})
             {
-                session.Settings.HistorySeconds=seconds;
+                session.Settings.HistorySeconds=seconds;session.Settings.GraphSmoothing=smoothing;
                 session.Settings.ShowCpuCoreUsage=false;
                 foreach(var chart in coreCharts){chart.Refresh();Assert.Empty(CoreStrokes(Draw(chart)));}
                 session.Settings.ShowCpuCoreUsage=true;
@@ -233,13 +237,13 @@ internal static class LiveRenderingUiChecks
                 foreach(var chart in coreCharts){chart.Refresh();Assert.Empty(CoreStrokes(Draw(chart)));}
             }
             // The hover chip lists cores by value under the device lines.
-            session.Settings.HistorySeconds=60;session.Settings.ShowCpuCoreUsage=true;
+            session.Settings.HistorySeconds=60;session.Settings.GraphSmoothing=true;session.Settings.ShowCpuCoreUsage=true;
             var hovered=coreCharts[0];hovered.Refresh();Draw(hovered);
             var hp=hovered.PlotRect;hovered.SetHover(new Point(hp.Left+hp.Width*.5,hp.Top+10));Assert.True(hovered.HoverIndex>=0);
             var texts=Glyphs(Draw(hovered)).Select(g=>new string(g.GlyphRun.Characters.ToArray())).ToArray();
             Assert.Contains(texts,t=>t.StartsWith("Core ",StringComparison.Ordinal));
             hovered.SetHover(null);
-            session.Settings.ShowCpuCoreUsage=false;session.Settings.HistorySeconds=restoreSeconds;
+            session.Settings.ShowCpuCoreUsage=false;session.Settings.HistorySeconds=restoreSeconds;session.Settings.GraphSmoothing=restoreSmoothing;
         }
         Measure("four-six-hour-charts",_=>{foreach(var chart in charts){chart.Refresh();Draw(chart);}});
         Measure("map-cached",_=>Draw(map));
