@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.11.0 — Storage
+
+- Add a **Disk** card to the overview: total read (solid) and write (dashed) throughput on a shared scale, with one thin line per drive when more than one is present. The subtitle shows the busiest drive's model and `· N drives`.
+- Add a **Storage** page with one row per drive (model, bus, size, temperature, health badge, wear and a free-space bar across its volumes). Selecting a row shows that drive's read/write graph, a volume table, a SMART summary and its identity note; **Open in window** pops the graph out.
+- Add an optional **Disk** graph to the widget.
+- Add **Settings → Monitoring → Storage sensors (temperature and health; restart to apply)**. On by default; it reads drive temperature, SMART health and wear from LibreHardwareMonitor every 30 seconds. Throughput and free space come from Windows counters and do not depend on it. Changing it takes effect after restarting DeadWare.
+- Drive throughput and free space are saved in the six-hour graph history per drive, for up to 8 drives. Only drives with a serial number are recorded; removable drives are live-only, and the dashboard says **Drives beyond eight are not recorded.** when more are present. LibreHardwareMonitorLib 0.9.6 exposes no drive serial, so health is matched to a drive by disk index and then by a unique model.
+- Drive temperatures appear as **Storage** devices in Cooling Health.
+- ATA SMART health and wear may be unavailable to a standard user; run DeadWare as administrator for full drive health. NVMe temperature is generally available either way.
+- Per-application disk I/O is not in this release; it is planned for 0.12.
+
 ## 0.10.1 — Polish
 
 - Temperature graphs that show a GPU fan or CPU pump overlay now span the full card like the usage graphs. A left margin reserved for the RPM axis before 0.9.0 was still being kept even though the RPM labels have drawn inside the plot since the refined-glass redesign, so the widget Temp graph, the dashboard temperature cards and the temperature pop-outs started about 60 px in. When a card is too narrow for an RPM label and the °C label on the same line, the RPM label is skipped.

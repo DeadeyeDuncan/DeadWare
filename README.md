@@ -17,6 +17,7 @@ Connections is available starting with version 0.6.21.
 - Optional GPU fan RPM on temperature graphs, with a separate scale and saved history.
 - Optional CPU pump RPM on CPU temperature graphs, with its own setting, the same left RPM scale and saved history.
 - Optional per-core CPU usage: thin lines under the bold total on the usage graphs, with a hover list of the busiest cores.
+- Drive monitoring: a Disk card with total and per-drive read/write throughput, a Storage page with temperature, health, wear and free space per volume, an optional widget Disk graph, a six-hour per-drive history (up to 8 drives) and drive temperatures as Storage devices in Cooling Health. Temperature and health come from the **Storage sensors** switch (on by default).
 - A combined download/upload graph with a shared scale and distinct line styles.
 - Per-application network rates when Windows permits ETW capture.
 - Connections: a filled native globe or 2D map with glowing traffic arcs, moving dots on busy routes and hover chips, a visible-node list and connection detail boxes, local saved history and an optional live widget map.
@@ -130,7 +131,7 @@ History normally retains 30 days, with a 256 MiB primary-database cap and a boun
 
 DeadWare discovers hardware rather than assuming a particular PC. [LibreHardwareMonitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor) supplies supported sensor data; Windows counters provide basic fallbacks. Support varies by CPU, GPU, motherboard, laptop firmware, drivers and permissions. Missing sensors are shown as unavailable, and missing history remains a graph gap.
 
-The default hardware scan focuses on CPU and GPU sensors. Extended motherboard, controller, storage and memory-device sensors are optional and off by default, since low-level polling can affect responsiveness on some machines. Changing this setting requires restarting DeadWare. Windows memory usage remains available without extended scanning.
+The default hardware scan focuses on CPU and GPU sensors. Extended motherboard, controller, storage and memory-device sensors are optional and off by default, since low-level polling can affect responsiveness on some machines. Changing this setting requires restarting DeadWare. Windows memory usage remains available without extended scanning. Drive temperature and health have their own **Storage sensors** switch under Settings → Monitoring, on by default, read every 30 seconds and applied after a restart; drive throughput and free space do not depend on it. ATA SMART health may need administrator rights.
 
 This first release is **not complete HWiNFO sensor parity**. A successful launch on one PC is not evidence that every sensor works on every device. Please report compatibility findings through the hardware issue template with device models and the capability message, without serial numbers.
 

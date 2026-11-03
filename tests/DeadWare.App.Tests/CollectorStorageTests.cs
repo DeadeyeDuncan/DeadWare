@@ -49,6 +49,12 @@ public class CollectorStorageTests
         var two=await First(new FakeStorage([Drive,Drive with {Id="S2",Serial="S2",Index=1}],false));
         Assert.Equal(200,two.Sample.Values["storage/total/read"]);Assert.Equal(100,two.Sample.Values["storage/total/write"]);
     }
+    [Fact] public async Task Nine_persistable_drives_add_status_note()
+    {
+        var nine=Enumerable.Range(0,9).Select(i=>Drive with {Id="S"+i,Serial="S"+i,Index=i}).ToList();
+        Assert.Contains("Drives beyond eight are not recorded.",(await First(new FakeStorage(nine,false))).HardwareStatus);
+        Assert.DoesNotContain("Drives beyond eight",(await First(new FakeStorage(nine.Take(8).ToList(),false))).HardwareStatus);
+    }
     [Fact] public async Task No_drives_yields_empty_storage_reading()
     {
         var r=await First(new FakeStorage([],false));

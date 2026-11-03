@@ -215,6 +215,7 @@ public sealed class Collector : IAsyncDisposable
                     if(droppedCores>0) hardwareStatus+=$" · Showing the first {CpuCoreUsage.MaximumCores} of {CpuCoreUsage.MaximumCores+droppedCores} CPU cores.";
                     if(errors.Count>0) hardwareStatus+=" · "+string.Join("; ",errors.Distinct());
                     if(storageError is not null) hardwareStatus+=" · "+storageError;
+                    if(drives.Count(d=>d.Persistable)>StorageMetrics.MaximumPersistedDrives) hardwareStatus+=" · Drives beyond eight are not recorded.";
                     stage="Reading ETW counters";
                     // Snapshot and delivery are one step, so the final drain never overtakes (and
                     // makes ConnectionService drop) a sample whose observations were already taken.

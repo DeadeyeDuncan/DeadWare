@@ -575,3 +575,14 @@ After the user confirmed tray Quit, v0.4.2 was installed at the existing portabl
 Independent read-only SQLite connections to the installed app's new `%LOCALAPPDATA%\DeadWare\live-graph-history.db` confirmed schema 1 and successive periodic writes: the row count and latest timestamp increased between checks. Saved rows contain eight graph metrics on this machine; seven were available in the inspected latest record, preserving the unavailable reading. The app remained running throughout. This confirms actual disk recording, while cross-session restoration is covered by the synthetic service/database tests above; a physical reboot and another user-confirmed quit/reopen were not performed. Evidence includes `deployment.json`, `startup-check.json`, `installed-hashes.json`, and `installed-cache-first.json` / `installed-cache-second.json` under `.superpowers/sdd/2026-10-25-persistent-graphs/`.
 
 The public [v0.4.2 preview](https://github.com/DeadeyeDuncan/DeadWare/releases/tag/v0.4.2) was published on 2026-10-25 from product commit `3c4e78d`. The [Windows build](https://github.com/DeadeyeDuncan/DeadWare/actions/runs/40266362420) and [release workflow](https://github.com/DeadeyeDuncan/DeadWare/actions/runs/40267451379) succeeded. The downloaded archive contains 573 entries and 85,129,210 bytes. SHA-256 `58e9fe53a2f6af29d358271042a0716ee6ab4eeee81ca18ca538a0322f333ee6` matches the checksum file and GitHub asset digest. Required app/runtime/SQLite/license files are present; no settings, databases, SQLite journals or restore/build cache are included. The archived executable reports `0.4.2+3c4e78d68266056ec91f04343ad71df88595f0d4`. Evidence is under `.superpowers/sdd/2026-10-25-persistent-graphs/public-release-check/`. The installed app was left recording with its restored graphs open.
+
+## Storage manual checks (0.11.0)
+
+Pending until run on a physical machine; automated tests do not cover real drives.
+
+- Machine with an NVMe and a SATA drive: Overview Disk card and Storage page show both, with plausible throughput, free space, temperature, health and wear.
+- Standard user versus administrator: record which ATA SMART fields are present for each and that the page shows Unknown or a note rather than errors.
+- Storage sensors switch off, restart: temperature and health read unavailable, throughput and free space still update, no LibreHardwareMonitor storage scan.
+- USB drive plug and unplug: the row appears and disappears, the removable drive is not recorded in history, and nothing hangs.
+- Quit while a drive is mid-update (large copy): quit completes within the session-ending deadline and the next start restores the six-hour per-drive history.
+- More than eight drives, if available: the dashboard says Drives beyond eight are not recorded.

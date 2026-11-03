@@ -190,6 +190,9 @@ public sealed class MainWindow : Window
         var extended=new CheckBox {Content="Extended sensors (may affect responsiveness)",IsChecked=session.Settings.ExtendedSensors,Margin=new Thickness(0,22,0,8)};
         extended.Checked+=(_,_)=>session.SetExtendedSensors(true);extended.Unchecked+=(_,_)=>session.SetExtendedSensors(false);monitoring.Children.Add(extended);
         monitoring.Children.Add(Ui.Text("Includes motherboard, controller, storage and memory sensors. Off by default. Restart DeadWare after changing this setting.",12,"Muted"));
+        var storageSensors=new CheckBox {Content="Storage sensors (temperature and health; restart to apply)",IsChecked=session.Settings.StorageSensors,Margin=new Thickness(0,14,0,8)};
+        storageSensors.Checked+=(_,_)=>session.SetStorageSensors(true);storageSensors.Unchecked+=(_,_)=>session.SetStorageSensors(false);monitoring.Children.Add(storageSensors);
+        monitoring.Children.Add(Ui.Text("Reads drive temperature, SMART health and wear from LibreHardwareMonitor every 30 seconds. Throughput and free space do not depend on this. Changing it takes effect after restarting DeadWare.",12,"Muted"));
         cpuCoreUsage.IsChecked=session.Settings.ShowCpuCoreUsage;
         System.Windows.Automation.AutomationProperties.SetName(cpuCoreUsage,"Show per-core CPU usage on usage graphs");
         cpuCoreUsage.Checked+=(_,_)=>{if(!syncingWidgetGraphs)session.SetCpuCoreUsage(true);};

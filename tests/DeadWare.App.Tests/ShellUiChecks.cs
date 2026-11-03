@@ -90,6 +90,14 @@ internal static class ShellUiChecks
             Assert.Equal(before,session.Settings.ShowCpuCoreUsage);
         }
         finally{session.Changed-=OnChanged;}
+        // Storage sensors switch: a Monitoring checkbox bound to the session setting.
+        {
+            var box=Descendants(pages["desktop"]).OfType<CheckBox>().Single(b=>b.Content is string t&&t.StartsWith("Storage sensors"));
+            Assert.Equal("Monitoring",Descendants(cards.Single(c=>Descendants(c).Contains(box))).OfType<TextBlock>().First().Text);
+            bool was=session.Settings.StorageSensors;
+            try{box.IsChecked=false;Assert.False(session.Settings.StorageSensors);box.IsChecked=true;Assert.True(session.Settings.StorageSensors);}
+            finally{box.IsChecked=was;}
+        }
         // Dashboard status line: unavailable notice when the switch is on and no cores were read.
         {
             var collector=session.Collector;var latestField=collector.GetType().GetField("latest",All)!;
