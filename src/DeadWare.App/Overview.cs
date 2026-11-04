@@ -6,31 +6,64 @@ using System.Windows.Markup;
 
 namespace DeadWare.App;
 
-/// <summary>The dashboard layout is shared by the live window and visual preview.</summary>
+/// <summary>The dashboard layout is shared by the live window and visual preview. Seven fixed cards are followed by one
+/// Disk card per present drive (by disk index), added and removed as drives come and go.</summary>
 internal sealed class OverviewPage : ScrollViewer
 {
-    internal const double MinimumGridHeight=4*270;
+    internal const double RowHeight=270;
+    internal const double MinimumGridHeight=4*RowHeight;
+    private readonly UiSession session;
+    private readonly UniformGrid cards=new() {Columns=2,Rows=4,Height=MinimumGridHeight};
+    private readonly TextBlock memory,note;
+    private readonly List<ChartCard> driveCards=[];
+    private string[] driveIds=[];
+    /// <summary>Two columns: the row count that holds <paramref name="count"/> cards.</summary>
+    internal static int Rows(int count)=>Math.Max(1,(count+1)/2);
     public OverviewPage(UiSession session,TextBlock memory)
     {
+        this.session=session;this.memory=memory;
         VerticalScrollBarVisibility=ScrollBarVisibility.Auto;
         HorizontalScrollBarVisibility=ScrollBarVisibility.Disabled;
         var stack=new StackPanel();
-        var cards=new UniformGrid {Columns=2,Rows=4,Height=MinimumGridHeight};
         foreach(string kind in new[]{"cpu","gpu","cputemp","gputemp","memory","network","storage"})
             cards.Children.Add(new ChartCard(session,kind,true,true));
         stack.Children.Add(cards);
         memory.Margin=new(9,10,9,4);stack.Children.Add(memory);
-        var note=Ui.Text("— indicates an unavailable reading.",11,"Muted");
+        note=Ui.Text("— indicates an unavailable reading.",11,"Muted");
         note.Margin=new(9,3,9,12);stack.Children.Add(note);Content=stack;
         // Charts take the star row of each card, so growing the grid into spare viewport height enlarges
         // the plots; the floor (270 px per card row, the old 3-row 810 px) makes short windows scroll instead of crushing the plots.
-        ScrollChanged+=(_,e)=>
-        {
-            if(e.ViewportHeightChange==0&&e.ExtentHeightChange==0)return;
-            double footer=memory.ActualHeight+memory.Margin.Top+memory.Margin.Bottom+note.ActualHeight+note.Margin.Top+note.Margin.Bottom;
-            double height=Math.Max(MinimumGridHeight,Math.Floor(ViewportHeight-footer));
-            if(Math.Abs(cards.Height-height)>=1)cards.Height=height;
-        };
+        ScrollChanged+=(_,e)=>{if(e.ViewportHeightChange!=0||e.ExtentHeightChange!=0)Fit();};
+        Loaded+=(_,_)=>{session.Changed+=OnChanged;SyncDrives();};
+        Unloaded+=(_,_)=>session.Changed-=OnChanged;
+        SyncDrives();
+    }
+    private void OnChanged()
+    {
+        if(Dispatcher.HasShutdownStarted)return;
+        if(!Dispatcher.CheckAccess()){Dispatcher.InvokeAsync(OnChanged);return;}
+        SyncDrives();
+    }
+    /// <summary>Sizes the grid to its rows, growing into spare viewport height.</summary>
+    private void Fit()
+    {
+        int rows=Rows(cards.Children.Count);
+        if(cards.Rows!=rows)cards.Rows=rows;
+        double footer=memory.ActualHeight+memory.Margin.Top+memory.Margin.Bottom+note.ActualHeight+note.Margin.Top+note.Margin.Bottom;
+        double height=Math.Max(rows*RowHeight,Math.Floor(ViewportHeight-footer));
+        if(Math.Abs(cards.Height-height)>=1)cards.Height=height;
+    }
+    /// <summary>One card per present drive after the fixed cards; the set is rebuilt only when the drive ids change.</summary>
+    private void SyncDrives()
+    {
+        var drives=(session.Current?.Storage.Drives??[]).OrderBy(d=>d.Index).ToList();
+        var ids=drives.Select(d=>d.Id).ToArray();
+        if(ids.SequenceEqual(driveIds,StringComparer.Ordinal))return;
+        driveIds=ids;
+        foreach(var card in driveCards)cards.Children.Remove(card);
+        driveCards.Clear();
+        foreach(var drive in drives){var card=new ChartCard(session,"storage",true,true,drive.Id);driveCards.Add(card);cards.Children.Add(card);}
+        Fit();
     }
 }
 
@@ -51,12 +84,13 @@ internal static class OverviewVisual
 
     private static ControlTemplate Sealed(ControlTemplate template){template.Seal();return template;}
 
-    public static Button PopOut(UiSession session,string kind)
+    /// <summary>The header pop-out button; <paramref name="open"/> and <paramref name="label"/> replace the kind's window and tooltip (a drive card).</summary>
+    public static Button PopOut(UiSession session,string kind,Action? open=null,string? label=null)
     {
-        var button=Ui.Button("",()=>session.OpenDetached(kind));
+        var button=Ui.Button("",open??(()=>session.OpenDetached(kind)));
         button.Width=26;button.Height=26;button.Padding=new(0);button.Margin=new(5,0,0,0);button.Template=IconButtonTemplate;
         button.Content=Glyph("M 3,8 L 3,14 14,14 14,10 M 8,3 L 16,3 16,11 M 16,3 L 8,11",14,"Muted");
-        button.ToolTip="Pop out "+Ui.Title(kind);
+        button.ToolTip=label??"Pop out "+Ui.Title(kind);
         System.Windows.Automation.AutomationProperties.SetName(button,(string)button.ToolTip);
         return button;
     }

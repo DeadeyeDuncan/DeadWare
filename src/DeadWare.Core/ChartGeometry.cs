@@ -39,7 +39,8 @@ public static class TimeTicks
     private const double MinimumSpacing=48;
 
     /// <summary>Ticks sit on wall-clock multiples of the step, ascending, labelled HH:mm (HH:mm:ss below a minute).
-    /// The step doubles until labels are at least 48 px apart; compact charts and plots under 200 px keep the two nearest "Now".</summary>
+    /// The step doubles until labels are at least 48 px apart; plots under 200 px keep the two nearest "Now".
+    /// Compact charts (the widget) label the full width like the dashboard; <paramref name="compact"/> is kept for callers.</summary>
     public static IReadOnlyList<TimeTick> For(int historySeconds,double nowMonotonic,DateTimeOffset nowWallClock,double plotWidth,bool compact)
         =>For(historySeconds,nowMonotonic,nowWallClock,plotWidth,compact,null);
 
@@ -66,7 +67,8 @@ public static class TimeTicks
             ticks.Add(new(nowMonotonic-age,wall.ToString(format,System.Globalization.CultureInfo.InvariantCulture)));
         }
         ticks.Reverse();
-        int keep=compact||plotWidth<200?2:int.MaxValue;
+        // The widget used to keep only the two ticks nearest "Now"; the nearer one then collided with the "Now" label, leaving one.
+        int keep=plotWidth<200?2:int.MaxValue;
         return ticks.Count>keep?ticks.Skip(ticks.Count-keep).ToArray():ticks;
     }
 }

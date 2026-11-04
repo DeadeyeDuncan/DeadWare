@@ -595,6 +595,18 @@ Pending until run on a physical machine; automated tests use synthetic traffic.
 - Run non-elevated, with per-app capture unavailable: the Network graph is unchanged and no local figure appears.
 - Per-core CPU usage on: the aggregate CPU line is not drawn; the GPU trace, header percentage and hover total remain.
 
+## Widget time axis and per-drive cards (0.12.1)
+
+Root cause of the single widget tick: `TimeTicks.For` kept only the two ticks nearest "Now" for compact charts, and the nearer one was then skipped by `ChartFrame.Grid` because it overlapped the "Now" label. Compact charts now keep every tick; only plots under 200 px keep two. The overview rebuilds its drive cards from `OverviewPage.SyncDrives` whenever the ordered drive-id set changes and sizes the `UniformGrid` to `Rows(count)` rows of 270 px, growing into spare viewport height as before. Per-drive traces on the Disk card come from every present drive (`HistoryChart.TracedDrives`) instead of the persisted eight.
+
+Automated (added on `claude/determined-keller-uggb29`; this change was authored in a Linux container without a .NET SDK, so the build and both test projects run on the Windows CI of the pull request): `ChartGeometryTests` asserts a compact 560 px one-minute plot labels every 15-second tick exactly like the dashboard and that a 180 px plot still keeps two; `StorageChartUiChecks` asserts seven cards and four rows with no drives, ten cards and five rows with three drives (removable stick included, by index), card instances surviving an unchanged set, the ninth card dropping with its drive, a drive card titled with its model with a `USB · 1.0 KB · removable · ↑ 10.0 KB/s write` subtitle and no colour picker, its pop-out opening `Disk · USB Stick` through the `ShowWindow` hook, and the Disk card's specs and hover chip listing the removable drive.
+
+Pending until checked by eye on a physical machine:
+
+- Widget: every graph shows ticks across its width (four on the 1-minute range at the default width) and none overlaps **Now**.
+- Overview with two or more drives: one card per drive after Disk, each titled with the model; plug in a USB stick and its card appears within a minute, unplug it and the card goes.
+- The per-drive pop-out button opens `Disk · <model>` and a second click raises the same window.
+
 ## Per-core line styles and overview layout manual checks (0.12.0)
 
 Automated: `dotnet build DeadWare.slnx -c Release` 0 errors; `DeadWare.Tests` 693 passed / 1 skipped; `DeadWare.App.Tests` 321 passed / 0 failed, on the development machine on 2026-11-04. Covered by tests: `cpucore/N` key validation and settings round-trip, `Theme.CoreBrush` overrides, a styled core drawn dashed at twice its siblings' width with the CPU line at 150%, the picker opening the popup or the window by the per-core switch, four core cards, apply-to-all, reset-all and outside-edit re-sync, and overview stats sharing the value's row.

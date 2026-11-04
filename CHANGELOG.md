@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.12.1 — Full widget time axis and a card per drive
+
+- **Full time axis on the widget.** Widget graphs label the whole width with wall-clock ticks like the dashboard cards. They used to keep only the two ticks nearest **Now**, and the nearer one then collided with the **Now** label, so a widget graph showed a single time; only plots under 200 px keep the two-tick rule.
+- **A card per drive on the overview.** After the seven fixed cards, the dashboard adds one Disk card per present drive, in disk-index order: titled with the drive's model, its subtitle carries the bus, size (and `removable`) and the live write rate, its graph is that drive's own read / write and its pop-out button opens that drive's window. Cards appear and disappear as drives are plugged in or removed, and the grid grows a row when there is a ninth card. Drive cards share the Disk card's read and write colours and have no picker of their own.
+- **Removable drives in the Disk traces.** The overview Disk card's thin per-drive lines and its hover chip now include drives without a serial number (USB sticks and the like) from their live samples; they are still not kept in the six-hour graph history.
+
 ## 0.12.0 — Per-core line styles and roomier overview graphs
 
 - **Per-core line colours and styles.** With per-core CPU usage on, the CPU card's colour button opens a **CPU core lines** window instead of the popup: the CPU total's colour and line style at the top, then one card per core with its own colour (swatches, More colors…, **Auto tint** to return to the tint derived from the CPU colour), pattern, thickness, neon glow and glow strength. **Apply style to all cores** copies the CPU line's pattern, thickness and glow to every core while colours keep their tints; **Make all cores the CPU color** also gives them the CPU colour; **Reset all cores to auto** drops every per-core setting. A core's thickness is relative to the thin core width, so 100% keeps it matching its siblings. Per-core settings are saved under `cpucore/N` keys in the existing graph colour and style settings and apply on the dashboard card, the CPU pop-out and the widget. With per-core usage off, the button opens the usual popup.
