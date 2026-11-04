@@ -100,7 +100,7 @@ public sealed class UiSession
     public void SetGraphColor(string kind,string? color)
     {
         if(kind=="network")kind="download";
-        if(!GraphColorSettings.Kinds.Contains(kind)||color is not null&&!GraphColorSettings.IsColor(color))return;
+        if(!GraphColorSettings.IsKind(kind)||color is not null&&!GraphColorSettings.IsColor(color))return;
         if(color is null) {if(!Settings.GraphColors.Remove(kind))return;}
         else
         {
@@ -115,11 +115,38 @@ public sealed class UiSession
     public void SetGraphStyle(string kind,string pattern,bool glow,double thickness=1,double glowStrength=1)
     {
         if(kind=="network")kind="download";
-        if(!GraphColorSettings.Kinds.Contains(kind)||!GraphLineStyles.IsPattern(pattern))return;
+        if(!GraphColorSettings.IsKind(kind)||!GraphLineStyles.IsPattern(pattern))return;
         var style=GraphLineStyles.Normalize(new GraphLineStyle(pattern,glow,thickness,glowStrength));
         if(Settings.GraphStyles.GetValueOrDefault(kind,new())==style)return;
         if(style==new GraphLineStyle())Settings.GraphStyles.Remove(kind);else Settings.GraphStyles[kind]=style;
         Changed?.Invoke();_ = SaveAsync();
+    }
+    /// <summary>Drops every per-core colour and line style so cores follow the CPU line again.</summary>
+    public void ResetCpuCoreStyles()
+    {
+        bool removed=false;
+        foreach(string key in Settings.GraphColors.Keys.Where(key=>GraphColorSettings.TryCoreIndex(key,out _)).ToArray())removed|=Settings.GraphColors.Remove(key);
+        foreach(string key in Settings.GraphStyles.Keys.Where(key=>GraphColorSettings.TryCoreIndex(key,out _)).ToArray())removed|=Settings.GraphStyles.Remove(key);
+        if(!removed)return;
+        Theme.SetGraphColors(Settings.GraphColors);Changed?.Invoke();_ = SaveAsync();
+    }
+    /// <summary>Copies the CPU line style (and optionally its colour) onto cores 0..count-1.</summary>
+    public void ApplyStyleToAllCores(int count,bool copyColor)
+    {
+        count=Math.Clamp(count,0,GraphColorSettings.MaxCores);
+        var style=Settings.GraphStyles.GetValueOrDefault("cpu",new());string? color=Settings.GraphColors.GetValueOrDefault("cpu");
+        bool changed=false;
+        for(int i=0;i<count;i++)
+        {
+            string key=GraphColorSettings.CoreKey(i);
+            if(style==new GraphLineStyle())changed|=Settings.GraphStyles.Remove(key);
+            else if(Settings.GraphStyles.GetValueOrDefault(key)!=style) {Settings.GraphStyles[key]=style;changed=true;}
+            if(!copyColor)continue;
+            if(color is null)changed|=Settings.GraphColors.Remove(key);
+            else if(Settings.GraphColors.GetValueOrDefault(key)!=color) {Settings.GraphColors[key]=color;changed=true;}
+        }
+        if(!changed)return;
+        Theme.SetGraphColors(Settings.GraphColors);Changed?.Invoke();_ = SaveAsync();
     }
     public void SetGraphSmoothing(bool enabled)
     {
@@ -355,6 +382,17 @@ public sealed class UiSession
         if(layout.Ending)return;
         if(detached.TryGetValue(key,out var existing)) {existing.WindowState=WindowState.Normal;existing.Activate();return;}
         var window=new GraphWindow(this,drive);detached[key]=window;
+        window.Closed+=(_,_)=>detached.Remove(key);
+        window.Show();
+    }
+    /// <summary>Opens (or raises) the CPU core line editor; it closes with the app but is not remembered across restarts.</summary>
+    public void OpenCpuCoreStyles()
+    {
+        const string key="cpucorestyles";
+        if(ShowWindow is { } show){show(new CpuCoreStyleWindow(this));return;}
+        if(layout.Ending)return;
+        if(detached.TryGetValue(key,out var existing)) {existing.WindowState=WindowState.Normal;existing.Activate();return;}
+        var window=new CpuCoreStyleWindow(this);detached[key]=window;
         window.Closed+=(_,_)=>detached.Remove(key);
         window.Show();
     }

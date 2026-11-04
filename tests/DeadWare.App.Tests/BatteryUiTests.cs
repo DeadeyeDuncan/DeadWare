@@ -83,6 +83,9 @@ public class BatteryUiTests
                 UsageHistoryUiChecks.Run(app);
                 Phase("alerts");
                 AlertsUiChecks.Run(app);
+                Phase("cpu core styles");
+                CpuCoreStyleUiChecks.Run();
+                CpuCoreStyleUiChecks.RunWindow();
                 Phase("battery history");
                 var assembly = typeof(Collector).Assembly;
                 var pageType = assembly.GetType("DeadWare.App.BatteryHistoryPage"); Assert.NotNull(pageType);

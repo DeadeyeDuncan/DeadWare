@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.12.0 — Per-core line styles and roomier overview graphs
+
+- **Per-core line colours and styles.** With per-core CPU usage on, the CPU card's colour button opens a **CPU core lines** window instead of the popup: the CPU total's colour and line style at the top, then one card per core with its own colour (swatches, More colors…, **Auto tint** to return to the tint derived from the CPU colour), pattern, thickness, neon glow and glow strength. **Apply style to all cores** copies the CPU line's pattern, thickness and glow to every core while colours keep their tints; **Make all cores the CPU color** also gives them the CPU colour; **Reset all cores to auto** drops every per-core setting. A core's thickness is relative to the thin core width, so 100% keeps it matching its siblings. Per-core settings are saved under `cpucore/N` keys in the existing graph colour and style settings and apply on the dashboard card, the CPU pop-out and the widget. With per-core usage off, the button opens the usual popup.
+- **Roomier overview graphs.** Dashboard cards no longer carry a MIN / AVG / MAX footer row; the three figures sit on one line beside a slightly smaller headline value (under the two rate columns on the Network card), and the graph takes the freed height.
+
 ## 0.11.1 — Network local-traffic split
 
 - The **Network** graph now shows the local-network share of traffic: LAN, loopback and link-local peers from the per-app capture are drawn as muted traces under the download and upload totals, so the gap between them is the internet share. The widget and compact headers add `· local ↓ x ↑ y`, and the hover chip adds a **Local** line. When per-app capture is unavailable the graph is unchanged.

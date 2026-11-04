@@ -594,3 +594,17 @@ Pending until run on a physical machine; automated tests use synthetic traffic.
 - Run elevated with LAN traffic: muted local traces appear under the download and upload totals, and the widget and compact headers show `· local ↓ x ↑ y`.
 - Run non-elevated, with per-app capture unavailable: the Network graph is unchanged and no local figure appears.
 - Per-core CPU usage on: the aggregate CPU line is not drawn; the GPU trace, header percentage and hover total remain.
+
+## Per-core line styles and overview layout manual checks (0.12.0)
+
+Automated: `dotnet build DeadWare.slnx -c Release` 0 errors; `DeadWare.Tests` 693 passed / 1 skipped; `DeadWare.App.Tests` 321 passed / 0 failed, on the development machine on 2026-11-04. Covered by tests: `cpucore/N` key validation and settings round-trip, `Theme.CoreBrush` overrides, a styled core drawn dashed at twice its siblings' width with the CPU line at 150%, the picker opening the popup or the window by the per-core switch, four core cards, apply-to-all, reset-all and outside-edit re-sync, and overview stats sharing the value's row.
+
+Pending until checked by eye on a physical machine:
+
+- Per-core usage on, click the CPU colour button: the CPU core lines window opens once (a second click raises it), one card per core, Esc closes it.
+- Pick a swatch for one core: that line and its hover-chip row change colour; Auto tint returns it to the tint.
+- Set one core to Dashed with the CPU line at 200%: the core stays as wide as its siblings.
+- Make all cores the CPU color, then Reset all cores to auto: the lines flatten to one colour and fan back out.
+- Open the window within the first second after launch: it shows Waiting for the first CPU reading… and fills in on the first sample.
+- Overview: MIN / AVG / MAX sit beside the headline value on every card, under the two rate columns on Network, and the graphs are visibly taller than in 0.11.1.
+

@@ -9,7 +9,7 @@ public static class GraphLineStyles
         double.IsFinite(style.Thickness)?Math.Clamp(style.Thickness,.5,3):1,
         double.IsFinite(style.GlowStrength)?Math.Clamp(style.GlowStrength,0,3):1);
     public static Dictionary<string,GraphLineStyle> Normalize(IReadOnlyDictionary<string,GraphLineStyle>? styles)
-        =>styles?.Where(p=>GraphColorSettings.Kinds.Contains(p.Key)&&p.Value is not null)
+        =>styles?.Where(p=>GraphColorSettings.IsKind(p.Key)&&p.Value is not null)
             .Select(p=>new KeyValuePair<string,GraphLineStyle>(p.Key,Normalize(p.Value)))
             .Where(p=>p.Value!=new GraphLineStyle()).ToDictionary(p=>p.Key,p=>p.Value)??new();
 }

@@ -22,15 +22,17 @@ internal static class Theme
     public static string GraphKey(string kind)=>"Graph/"+(kind switch {"network"=>"download","storage"=>"diskread",_=>kind});
     public static void SetGraphColors(IReadOnlyDictionary<string,string> colors)
     {graphColors=GraphColorSettings.Normalize(colors);ApplyGraphColors();}
-    private static readonly Dictionary<(Color,int,int,bool),SolidColorBrush> coreBrushes=new();
+    private static readonly Dictionary<(Color,int,int,bool,string?),SolidColorBrush> coreBrushes=new();
+    /// <summary>The core's trace brush: its cpucore/N colour override when set (not in high contrast), else the auto tint of the CPU colour.</summary>
     public static SolidColorBrush CoreBrush(int index,int count)
     {
         var cpu=((SolidColorBrush)Brush("Graph/cpu")).Color;
         bool highContrast=SystemParameters.HighContrast;
-        var key=(cpu,index,count,highContrast);
+        string? overrideColor=highContrast?null:graphColors.GetValueOrDefault(GraphColorSettings.CoreKey(index));
+        var key=(cpu,index,count,highContrast,overrideColor);
         if(!coreBrushes.TryGetValue(key,out var brush))
         {
-            brush=new SolidColorBrush(ThemeTokens.CoreTint(cpu,index,count,highContrast));
+            brush=new SolidColorBrush(overrideColor is null?ThemeTokens.CoreTint(cpu,index,count,highContrast):(Color)ColorConverter.ConvertFromString(overrideColor));
             brush.Freeze();coreBrushes[key]=brush;
         }
         return brush;

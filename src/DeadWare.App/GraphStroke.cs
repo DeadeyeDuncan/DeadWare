@@ -16,8 +16,12 @@ internal static class GraphStroke
     public static void Draw(DrawingContext dc,Geometry geometry,UserSettings settings,string color,double width,bool dashed,bool dotted)
     {
         var style=Style(settings,color);
-        width*=style.Thickness;
-        var pen=new Pen(Theme.Brush(color),width){DashStyle=new(Dashes(style,dashed,dotted),0),LineJoin=PenLineJoin.Round};
+        DrawStyled(dc,geometry,Theme.Brush(color),style,width*style.Thickness,dashed,dotted);
+    }
+    /// <summary>The one pen/halo pass: <paramref name="width"/> is final (thickness already applied), the brush is the caller's.</summary>
+    public static void DrawStyled(DrawingContext dc,Geometry geometry,Brush brush,GraphLineStyle style,double width,bool dashed=false,bool dotted=false)
+    {
+        var pen=new Pen(brush,width){DashStyle=new(Dashes(style,dashed,dotted),0),LineJoin=PenLineJoin.Round};
         pen.Freeze();
         if(style.Glow&&style.GlowStrength>0&&!SystemParameters.HighContrast)
         {

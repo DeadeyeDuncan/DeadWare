@@ -37,6 +37,13 @@ public sealed class GraphLineStyleTests
         Assert.Equal(new GraphLineStyle("default",false,3,0),GraphLineStyles.Normalize(new GraphLineStyle("oops",false,100,-1)));
         Assert.Equal(new GraphLineStyle(),GraphLineStyles.Normalize(new GraphLineStyle(Thickness:double.NaN,GlowStrength:double.PositiveInfinity)));
     }
+    [Fact] public void Core_styles_normalize_like_fixed_kinds()
+    {
+        var styles=GraphLineStyles.Normalize(new Dictionary<string,GraphLineStyle>{{"cpucore/5",new("dotted",true)},{"cpucore/64",new("dotted",true)},{"cpucore/0",new()},{"cpucore/x",new("solid")}});
+        Assert.Equal(new GraphLineStyle("dotted",true),Assert.Single(styles).Value);Assert.True(styles.ContainsKey("cpucore/5"));
+        var loaded=SettingsCodec.Read("""{"GraphStyles":{"cpucore/7":{"Pattern":"dashed","Glow":true,"Thickness":2},"cpucore/64":{"Pattern":"dashed"}}}""").Settings;
+        Assert.Equal(new GraphLineStyle("dashed",true,2),Assert.Single(loaded.GraphStyles).Value);
+    }
     [Fact] public void Custom_thickness_and_disabled_glow_strength_are_preserved()
     {
         var settings=new UserSettings {GraphStyles=new(){{"cpu",new(Thickness:2,GlowStrength:2.5)}}};

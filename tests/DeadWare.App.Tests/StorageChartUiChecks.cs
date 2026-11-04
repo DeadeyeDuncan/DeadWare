@@ -26,6 +26,7 @@ internal static class StorageChartUiChecks
         {
             CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
             Overview_has_seven_cards_in_four_rows();
+            Overview_card_stats_sit_beside_value();
             Storage_card_draws_read_and_write_and_per_drive_lines();
             Storage_card_without_drives_shows_no_drives_detected();
             Storage_hover_lists_drives_by_rate();
@@ -43,6 +44,47 @@ internal static class StorageChartUiChecks
         var kinds = grid.Children.OfType<FrameworkElement>().Where(c => c.GetType().Name == "ChartCard")
             .Select(c => (string)c.GetType().GetField("kind", Fields)!.GetValue(c)!).ToArray();
         Assert.Equal(new[] { "cpu", "gpu", "cputemp", "gputemp", "memory", "network", "storage" }, kinds);
+    }
+
+    private static void Overview_card_stats_sit_beside_value()
+    {
+        // Overview cards have no MIN/AVG/MAX footer row: the three stats sit on one line beside the 28px value
+        // (under the two rate columns on the network card), and the chart row is the only star row.
+        var session = Session([Hdd, Nvme]);
+        foreach (string kind in new[] { "storage", "network" })
+        {
+            var card = new ChartCard(session, kind, false, true);
+            card.Measure(new Size(480, 300)); card.Arrange(new Rect(0, 0, 480, 300)); card.UpdateLayout();
+            Rect Bounds(FrameworkElement e) => new(e.TranslatePoint(new Point(0, 0), card), new Size(e.ActualWidth, e.ActualHeight));
+            var rows = Descendants(card).OfType<Grid>().First(g => g.RowDefinitions.Count > 0).RowDefinitions;
+            Assert.Equal(3, rows.Count); Assert.Equal(GridUnitType.Star, rows[2].Height.GridUnitType);
+            var value = (TextBlock)card.GetType().GetField("value", Fields)!.GetValue(card)!;
+            var subtitle = (TextBlock)card.GetType().GetField("subtitle", Fields)!.GetValue(card)!;
+            var chart = (FrameworkElement)card.GetType().GetField("chart", Fields)!.GetValue(card)!;
+            var stats = (TextBlock[])card.GetType().GetField("overviewStats", Fields)!.GetValue(card)!;
+            Assert.Equal(3, stats.Length);
+            Assert.Single(stats.Select(s => ((FrameworkElement)s.Parent).Parent).Distinct());
+            Assert.True(chart.ActualHeight >= 120, $"{kind} chart {chart.ActualHeight}");
+            string prefix = kind == "network" ? "↓ " : "";
+            foreach (string label in new[] { "MIN", "AVG", "MAX" })
+                Assert.Contains(Descendants(card).OfType<TextBlock>(), t => t.Text == prefix + label && t.FontSize < 11);
+            var bounds = stats.Select(Bounds).ToArray();
+            Assert.All(bounds, b => Assert.True(b.Width > 0 && b.Height > 0));
+            Assert.All(bounds, b => Assert.True(Math.Abs(b.Bottom - bounds[0].Bottom) < .5, $"{kind} stats not on one line"));
+            Assert.True(bounds[0].Right <= bounds[1].Left && bounds[1].Right <= bounds[2].Left);
+            if (kind == "network")
+            {
+                var rates = Descendants(card).OfType<Grid>().First(g => g.ColumnDefinitions.Count == 2 && g.RowDefinitions.Count == 0);
+                Assert.True(bounds[0].Top >= Bounds(rates).Bottom - .5, $"stats {bounds[0].Top} rates {Bounds(rates).Bottom}");
+                Assert.True(bounds[0].Bottom <= Bounds(subtitle).Top + .5, $"stats {bounds[0].Bottom} subtitle {Bounds(subtitle).Top}");
+            }
+            else
+            {
+                Assert.Equal(28, value.FontSize);
+                var v = Bounds(value);
+                Assert.All(bounds, b => Assert.True(b.Top >= v.Top - .5 && b.Bottom <= v.Bottom + .5 && b.Left >= v.Right, $"{kind} stat {b} value {v}"));
+            }
+        }
     }
 
     private static void Storage_card_draws_read_and_write_and_per_drive_lines()
