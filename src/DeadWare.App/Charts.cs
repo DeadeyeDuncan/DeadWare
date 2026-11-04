@@ -514,7 +514,7 @@ internal sealed class ChartCard : Border
         // A forced MinHeight larger than the grid's remaining row caused WPF to clip axis labels.
         chart=new(session,kind){ClipToBounds=true,DriveId=this.driveId};
         chart.StatisticsReady+=UpdateStatistics;
-        var grid=new Grid();grid.RowDefinitions.Add(new(){Height=GridLength.Auto});grid.RowDefinitions.Add(new(){Height=GridLength.Auto});grid.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});grid.RowDefinitions.Add(new(){Height=GridLength.Auto});
+        var grid=new Grid();grid.RowDefinitions.Add(new(){Height=GridLength.Auto});grid.RowDefinitions.Add(new(){Height=GridLength.Auto});grid.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});if(!overview)grid.RowDefinitions.Add(new(){Height=GridLength.Auto});
         var header=new DockPanel {LastChildFill=true};var title=overview?Ui.Text(Ui.Title(kind),13):Ui.Heading(Ui.Title(kind),14);title.FontWeight=FontWeights.SemiBold;header.Children.Add(title);
         if(popButton){var pop=overview?OverviewVisual.PopOut(session,kind):Ui.Button("Pop out ↗",()=>session.OpenDetached(kind));pop.HorizontalAlignment=HorizontalAlignment.Right;DockPanel.SetDock(pop,Dock.Right);header.Children.Insert(0,pop);}
         var colors=GraphColorPicker.Create(session,kind);DockPanel.SetDock(colors,Dock.Right);header.Children.Insert(0,colors);
@@ -522,13 +522,35 @@ internal sealed class ChartCard : Border
         {
             title.TextWrapping=TextWrapping.NoWrap;title.TextTrimming=TextTrimming.CharacterEllipsis;title.ToolTip=Ui.Title(kind);
             var glyph=OverviewVisual.IconTile(kind);glyph.Margin=new(0,0,9,0);DockPanel.SetDock(glyph,Dock.Left);header.Children.Insert(header.Children.Count-1,glyph);
-            value.FontSize=34;
+            value.FontSize=28;
             subtitle.TextWrapping=TextWrapping.NoWrap;subtitle.TextTrimming=TextTrimming.CharacterEllipsis;
             fan.TextWrapping=TextWrapping.NoWrap;fan.TextTrimming=TextTrimming.CharacterEllipsis;
             pump.TextWrapping=TextWrapping.NoWrap;pump.TextTrimming=TextTrimming.CharacterEllipsis;
         }
         grid.Children.Add(header);
-        var metric=new StackPanel {Margin=new Thickness(0,5,0,5)};metric.Children.Add(value);metric.Children.Add(subtitle);
+        var metric=new StackPanel {Margin=new Thickness(0,5,0,5)};
+        StackPanel? statsLine=null;
+        if(overview)
+        {
+            // MIN/AVG/MAX share the value's line instead of a footer row, so the star chart row absorbs the height.
+            statsLine=new StackPanel {Orientation=Orientation.Horizontal,VerticalAlignment=VerticalAlignment.Bottom};
+            overviewStats=new TextBlock[3];string[] labels=["MIN","AVG","MAX"];
+            for(int i=0;i<3;i++)
+            {
+                var pair=new StackPanel {Orientation=Orientation.Horizontal,Margin=new Thickness(i==0?0:14,0,0,0)};
+                var caption=Ui.Caption((kind=="network"?"↓ ":"")+labels[i]);caption.VerticalAlignment=VerticalAlignment.Bottom;caption.Margin=new(0,0,4,1);pair.Children.Add(caption);
+                overviewStats[i]=Ui.Text("—",11,"Muted",font:"MetricFont");overviewStats[i].TextWrapping=TextWrapping.NoWrap;overviewStats[i].TextTrimming=TextTrimming.CharacterEllipsis;overviewStats[i].VerticalAlignment=VerticalAlignment.Bottom;
+                pair.Children.Add(overviewStats[i]);statsLine.Children.Add(pair);
+            }
+            if(kind=="network")statsLine.ToolTip="Download statistics over the selected history range";
+        }
+        if(statsLine is not null&&kind!="network")
+        {
+            var line=new DockPanel {LastChildFill=false};DockPanel.SetDock(value,Dock.Left);line.Children.Add(value);
+            statsLine.Margin=new(14,0,0,5);DockPanel.SetDock(statsLine,Dock.Left);line.Children.Add(statsLine);metric.Children.Add(line);
+        }
+        else metric.Children.Add(value);
+        metric.Children.Add(subtitle);
         fan.Visibility=Visibility.Collapsed;fan.ToolTip="Selected GPU's first reported fan · separate left RPM scale";metric.Children.Add(fan);
         pump.Visibility=Visibility.Collapsed;pump.ToolTip="CPU cooler pump, or the CPU Fan header · separate left RPM scale";metric.Children.Add(pump);Grid.SetRow(metric,1);grid.Children.Add(metric);
         if(overview&&kind=="network")
@@ -544,22 +566,11 @@ internal sealed class ChartCard : Border
                 columnPanel.Children.Add(new Viewbox {Child=reading,Stretch=Stretch.Uniform,StretchDirection=StretchDirection.DownOnly,HorizontalAlignment=HorizontalAlignment.Left,Height=34});
                 Grid.SetColumn(columnPanel,column);rates.Children.Add(columnPanel);
             }
-            metric.Children.Insert(0,rates);subtitle.FontSize=10;
+            metric.Children.Insert(0,rates);statsLine!.Margin=new(0,2,0,0);metric.Children.Insert(1,statsLine);subtitle.FontSize=10;
         }
         Grid.SetRow(chart,2);grid.Children.Add(chart);
         if(overview)
         {
-            var footer=new Grid();
-            overviewStats=new TextBlock[3];
-            string[] labels=["MIN","AVG","MAX"];
-            for(int i=0;i<3;i++)
-            {
-                footer.ColumnDefinitions.Add(new());var cell=new StackPanel();
-                cell.Children.Add(Ui.Caption((kind=="network"?"↓ ":"")+labels[i]));overviewStats[i]=Ui.Text("—",11,"Muted",font:"MetricFont");overviewStats[i].TextWrapping=TextWrapping.NoWrap;
-                overviewStats[i].TextTrimming=TextTrimming.CharacterEllipsis;cell.Children.Add(overviewStats[i]);Grid.SetColumn(cell,i);footer.Children.Add(cell);
-            }
-            if(kind=="network")footer.ToolTip="Download statistics over the selected history range";
-            var divider=new Border {BorderThickness=new Thickness(0,1,0,0),Padding=new Thickness(0,7,0,0),Margin=new Thickness(0,4,0,0),Child=footer};divider.SetResourceReference(BorderBrushProperty,"Line");Grid.SetRow(divider,3);grid.Children.Add(divider);
             tint=new Border {CornerRadius=new(13),Opacity=.035,IsHitTestVisible=false,OpacityMask=new LinearGradientBrush(Colors.White,Colors.Transparent,new Point(0,0),new Point(.85,1))};
             tint.SetResourceReference(BackgroundProperty,Theme.GraphKey(kind));
             var layers=new Grid();layers.Children.Add(tint);layers.Children.Add(grid);Child=layers;
