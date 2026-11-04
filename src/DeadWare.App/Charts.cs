@@ -110,7 +110,9 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
     public bool CoresWithDevices {get;init;}
     /// <summary>Limits a storage chart to one drive: its read and write become the traces and the per-drive lines are off.</summary>
     public string? DriveId {get;init;}
-    private sealed record Query(SampleHistory History,string Primary,string? Secondary,string? Fan,string? Pump,int Seconds,int Columns,bool Smoothed,int Cores,string Drives="");
+    private sealed record Query(SampleHistory History,string Primary,string? Secondary,string? Fan,string? Pump,int Seconds,int Columns,bool Smoothed,int Cores,string Drives="",bool Local=false);
+    /// <summary>The local-network share of the network totals (per-app capture); drawn muted under the totals.</summary>
+    private const string LocalDownload="network/download/local",LocalUpload="network/upload/local";
     private sealed record ChartData(Query Query,Dictionary<string,IReadOnlyList<SamplePoint>> Series,Dictionary<string,IReadOnlyList<ChartRangePoint>> Ranges,Summary Statistics);
     public event Action<Summary>? StatisticsReady;
     private ChartData? prepared;
@@ -125,7 +127,7 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
             ShowsFan(compare)?session.MetricId("gpufan"):null,ShowsPump(compare)?session.MetricId("cpupump"):null,session.HistorySeconds,Math.Max(1,(int)ActualWidth-90),session.Settings.GraphSmoothing&&session.HistorySeconds>=3600,
             ShowsCores()?session.Current?.CpuCoreCount??0:0,
             // The persisted drive set is part of the key, so a changed set rebuilds the per-drive traces.
-            kind=="storage"&&!drive?string.Join("\n",PersistedDrives().Select(d=>d.Id)):"");
+            kind=="storage"&&!drive?string.Join("\n",PersistedDrives().Select(d=>d.Id)):"",kind=="network");
     }
     private IReadOnlyList<StorageDrive> PersistedDrives()=>StorageProjection.Persisted(session.Current?.Storage.Drives??[]);
     private static string[] DriveIds(Query query)=>query.Drives.Length==0?[]:query.Drives.Split('\n');
@@ -142,7 +144,8 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
         var coreRanges=query.Smoothed&&cores.Length>0?query.History.ChartRangesMany(cores,now,query.Seconds,query.Columns):null;
         // Per-drive write is prepared for the hover chip only; it is never drawn.
         var drives=DriveIds(query).SelectMany(id=>new[]{StorageMetrics.Key(id,"read"),StorageMetrics.Key(id,"write")});
-        foreach(var metric in new[]{query.Primary,query.Secondary,query.Fan,query.Pump}.OfType<string>().Concat(cores).Concat(drives).Distinct())
+        string[] local=query.Local?[LocalDownload,LocalUpload]:[];
+        foreach(var metric in new[]{query.Primary,query.Secondary,query.Fan,query.Pump}.OfType<string>().Concat(cores).Concat(drives).Concat(local).Distinct())
         {
             if(!query.Smoothed)
             {
@@ -213,8 +216,12 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
         /// <summary>A per-core CPU trace: thin plain stroke in <see cref="Brush"/>, listed in the hover chip by value.</summary>
         public bool Core {get;init;}
         public Brush? Brush {get;init;}
+        /// <summary>Built and hovered but not drawn: the aggregate CPU trace once the per-core traces replace it.</summary>
+        public bool Hidden {get;init;}
         /// <summary>A per-drive storage trace (drawn like a core); <see cref="Metric"/> is its read key.</summary>
         public string? DriveId {get;init;}
+        /// <summary>The local-network share of a network total: muted, thinner, under the totals; one shared "Local" chip line.</summary>
+        public bool Local {get;init;}
     }
     private sealed record Frame(Query Query,int Revision,ChartData Data,Size Size,string Theme,bool Glass,double Now,DateTimeOffset WallNow,TraceSpec[] Specs,Dictionary<string,TracePath> Paths);
     /// <summary>Geometry built once per poll, size and theme; hover re-renders reuse it.</summary>
@@ -283,8 +290,15 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
         if(!hit)
         {
             double built=session.Collector.ElapsedSeconds;
-            var specs=new List<TraceSpec> {new(primaryMetric,Theme.GraphKey(kind),false,false,maximum,(bytes||compare)?.65:1)};
-            if(kind=="network")specs.Add(new("network/upload",Theme.GraphKey("upload"),true,false,maximum,.42));
+            // With per-core traces the aggregate CPU line is hidden (the cores replace it) but still built for hover and the chip.
+            var specs=new List<TraceSpec> {new(primaryMetric,Theme.GraphKey(kind),false,false,maximum,(bytes||compare)?.65:1){Hidden=query.Cores>0}};
+            if(kind=="network")
+            {
+                specs.Add(new("network/upload",Theme.GraphKey("upload"),true,false,maximum,.42));
+                // Local share never exceeds its total, so it rides the totals' axis without driving it.
+                specs.Add(new(LocalDownload,Theme.GraphKey("download"),false,false,maximum,.3){Local=true});
+                specs.Add(new(LocalUpload,Theme.GraphKey("upload"),true,false,maximum,.2){Local=true});
+            }
             else if(kind=="storage")specs.Add(new(secondaryMetric!,Theme.GraphKey("diskwrite"),true,false,maximum,.42));
             else if(compare)specs.Add(new(secondaryMetric!,Theme.GraphKey(kind=="cpu"?"gpu":"gputemp"),true,false,maximum,.45));
             if(showFan)specs.Add(new(session.MetricId("gpufan"),Theme.GraphKey("gpufan"),false,true,fanMaximum,0));
@@ -294,7 +308,7 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
             for(int i=0;i<driveIds.Length;i++)specs.Add(new(StorageMetrics.Key(driveIds[i],"read"),Theme.GraphKey("diskread"),false,false,maximum,0){Core=true,Brush=Theme.CoreBrush(i,driveIds.Length),DriveId=driveIds[i]});
             bool spline=!(query.Seconds>=3600&&!query.Smoothed);
             var paths=new Dictionary<string,TracePath>();
-            foreach(var spec in specs)paths[spec.Metric]=BuildTrace(Read(spec.Metric),built,spec.Maximum,plot,query.Seconds>=3600,spline,glowCopy:!spec.Core);
+            foreach(var spec in specs)paths[spec.Metric]=BuildTrace(Read(spec.Metric),built,spec.Maximum,plot,query.Seconds>=3600,spline,glowCopy:!spec.Core&&!spec.Local);
             cache=new(query,revision,prepared,RenderSize,Theme.CurrentName,Theme.GlassEnabled,built,DateTimeOffset.Now,specs.ToArray(),paths);
             if(hover is not null)ResolveHover();
         }
@@ -312,13 +326,16 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
         // Retained WPF transform scrolls the recorded trace between polls without rebuilding it each frame.
         var scroll=new TranslateTransform();
         double interval=Math.Min(1,session.Settings.PollingIntervalSeconds);
-        bool anyPoints=frame.Specs.Where(s=>!s.Core).Any(s=>frame.Paths[s.Metric].Points.Count>0);
+        // The hidden aggregate trace still counts: its points mean the cores it stands in for have data to scroll.
+        bool anyPoints=frame.Specs.Where(s=>!s.Core&&!s.Local).Any(s=>frame.Paths[s.Metric].Points.Count>0);
         if(!hit&&IsLoaded&&IsVisible&&anyPoints)scroll.BeginAnimation(TranslateTransform.XProperty,new DoubleAnimation(0,-pw/session.HistorySeconds*interval,TimeSpan.FromSeconds(interval)));
         else if(hit)scroll.X=-pw/session.HistorySeconds*Math.Clamp(session.Collector.ElapsedSeconds-now,0,interval);
         dc.PushTransform(scroll);
         // Cores sit underneath the primary and comparison traces.
         foreach(var spec in frame.Specs.Where(s=>s.Core))DrawTrace(dc,frame.Paths[spec.Metric],spec,plot,null,now);
-        foreach(var spec in frame.Specs.Where(s=>!s.Core))DrawTrace(dc,frame.Paths[spec.Metric],spec,plot,bands.GetValueOrDefault(spec.Metric),now);
+        // The local share sits under its total: the gap between the two is the internet share.
+        foreach(var spec in frame.Specs.Where(s=>s.Local))DrawTrace(dc,frame.Paths[spec.Metric],spec,plot,null,now);
+        foreach(var spec in frame.Specs.Where(s=>!s.Core&&!s.Local&&!s.Hidden))DrawTrace(dc,frame.Paths[spec.Metric],spec,plot,bands.GetValueOrDefault(spec.Metric),now);
         hoverAnchor=null;hoverLines=[];
         if(HoverIndex>=0&&frame.Paths[primaryMetric].Points.Count>HoverIndex)DrawHover(dc,frame,primaryMetric,plot,now,Axis,FanAxis);
         dc.Pop();dc.Pop();
@@ -335,6 +352,7 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
         double tolerance=HoverTolerance(frame.Query);
         var cores=new List<(int Core,double Value)>();var coreBrushes=new Dictionary<int,Brush>();
         int firstCore=Array.FindIndex(frame.Specs,s=>s.Core&&s.DriveId is null);
+        Point? hiddenAnchor=null;double? localDown=null,localUp=null;
         for(int position=0;position<frame.Specs.Length;position++)
         {
             var spec=frame.Specs[position];if(spec.DriveId is not null)continue;var path=frame.Paths[spec.Metric];
@@ -342,12 +360,17 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
             if(index<0||path.Points[index].Value is not { } value)continue;
             // Cores join the chip after the loop, by value, with no dot of their own.
             if(spec.Core){int core=position-firstCore;cores.Add((core,value));coreBrushes[core]=spec.Brush!;continue;}
+            // The two local shares make one muted chip line after the totals, with no dot of their own.
+            if(spec.Local){if(spec.Metric==LocalDownload)localDown=value;else localUp=value;continue;}
             var brush=spec.Brush??Theme.Brush(spec.Color);
             double y=plot.Top+plot.Height*(1-Math.Clamp(value/spec.Maximum,0,1));
-            dc.DrawEllipse(brush,null,new(x,y),3,3);
-            hoverAnchor??=new(x,y);
+            // A hidden trace keeps its chip line but draws no dot; it anchors the chip only when nothing drawn can.
+            if(spec.Hidden)hiddenAnchor??=new(x,y);
+            else{dc.DrawEllipse(brush,null,new(x,y),3,3);hoverAnchor??=new(x,y);}
             hoverLines.Add((spec.Dotted?fanAxis(value):axis(value),brush));
         }
+        hoverAnchor??=hiddenAnchor;
+        if(localDown is not null||localUp is not null)hoverLines.Add(($"Local ↓ {Ui.Bytes(localDown,true)} ↑ {Ui.Bytes(localUp,true)}",Theme.Brush("Muted")));
         foreach(var (text,core) in HoverCoreLines(cores))hoverLines.Add((text,core>=0?coreBrushes[core]:Theme.Brush("Muted")));
         // Drives follow the totals, busiest first; a drive with neither rate at this sample is left out.
         var models=(session.Current?.Storage.Drives??[]).GroupBy(d=>d.Id).ToDictionary(g=>g.Key,g=>g.First().Model);
@@ -409,6 +432,16 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
             // Thin, plain and unmarked: half the CPU trace's own stroke, and no range band (eight bands would pile up).
             width=.5*width*GraphStroke.Style(session.Settings,Theme.GraphKey("cpu")).Thickness;
             GraphStroke.DrawPlain(dc,path.Path,spec.Brush!,width);
+            return;
+        }
+        if(spec.Local)
+        {
+            // Muted and half-width in the total's own colour and pattern; no glow, band or end marker.
+            // With the per-app capture off the series is all gaps, and nothing is drawn.
+            if(path.Runs.Count==0)return;
+            if(!path.AreaBuilt){path.Area=GraphDepth.AreaGeometry(path.Runs,plot);path.AreaBuilt=true;}
+            GraphDepth.Area(dc,path.Area,plot,spec.Color,spec.Fill);
+            dc.PushOpacity(.55);GraphStroke.Draw(dc,path.Path,session.Settings,spec.Color,.5*width,spec.Dashed,spec.Dotted);dc.Pop();
             return;
         }
         if(spec.Fill>0)

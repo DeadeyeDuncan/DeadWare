@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- The **Network** graph now shows the local-network share of traffic: LAN, loopback and link-local peers from the per-app capture are drawn as muted traces under the download and upload totals, so the gap between them is the internet share. The widget and compact headers add `· local ↓ x ↑ y`, and the hover chip adds a **Local** line. When per-app capture is unavailable the graph is unchanged.
+- When per-core CPU usage is shown, the aggregate CPU line is no longer drawn over the cores; the GPU comparison trace, the header percentage and the hover total remain.
+
 ## 0.11.0 — Storage
 
 - Add a **Disk** card to the overview: total read (solid) and write (dashed) throughput on a shared scale, with one thin line per drive when more than one is present. The subtitle shows the busiest drive's model and `· N drives`.
