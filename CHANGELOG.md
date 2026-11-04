@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.11.1 — Network local-traffic split
 
 - The **Network** graph now shows the local-network share of traffic: LAN, loopback and link-local peers from the per-app capture are drawn as muted traces under the download and upload totals, so the gap between them is the internet share. The widget and compact headers add `· local ↓ x ↑ y`, and the hover chip adds a **Local** line. When per-app capture is unavailable the graph is unchanged.
 - When per-core CPU usage is shown, the aggregate CPU line is no longer drawn over the cores; the GPU comparison trace, the header percentage and the hover total remain.
