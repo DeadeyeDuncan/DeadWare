@@ -216,6 +216,8 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
         /// <summary>A per-core CPU trace: thin plain stroke in <see cref="Brush"/>, listed in the hover chip by value.</summary>
         public bool Core {get;init;}
         public Brush? Brush {get;init;}
+        /// <summary>The CPU core index behind a <see cref="Core"/> trace (its cpucore/N style key); -1 for per-drive traces.</summary>
+        public int CoreIndex {get;init;}=-1;
         /// <summary>Built and hovered but not drawn: the aggregate CPU trace once the per-core traces replace it.</summary>
         public bool Hidden {get;init;}
         /// <summary>A per-drive storage trace (drawn like a core); <see cref="Metric"/> is its read key.</summary>
@@ -303,7 +305,7 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
             else if(compare)specs.Add(new(secondaryMetric!,Theme.GraphKey(kind=="cpu"?"gpu":"gputemp"),true,false,maximum,.45));
             if(showFan)specs.Add(new(session.MetricId("gpufan"),Theme.GraphKey("gpufan"),false,true,fanMaximum,0));
             if(showPump)specs.Add(new(session.MetricId("cpupump"),Theme.GraphKey("cpupump"),false,true,fanMaximum,0));
-            for(int i=0;i<query.Cores;i++)specs.Add(new(CpuCoreUsage.Key(i),Theme.GraphKey("cpu"),false,false,maximum,0){Core=true,Brush=Theme.CoreBrush(i,query.Cores)});
+            for(int i=0;i<query.Cores;i++)specs.Add(new(CpuCoreUsage.Key(i),Theme.GraphKey("cpu"),false,false,maximum,0){Core=true,Brush=Theme.CoreBrush(i,query.Cores),CoreIndex=i});
             var driveIds=DriveIds(query);
             for(int i=0;i<driveIds.Length;i++)specs.Add(new(StorageMetrics.Key(driveIds[i],"read"),Theme.GraphKey("diskread"),false,false,maximum,0){Core=true,Brush=Theme.CoreBrush(i,driveIds.Length),DriveId=driveIds[i]});
             bool spline=!(query.Seconds>=3600&&!query.Smoothed);
@@ -429,9 +431,11 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
         bool dense=CompareDevices&&session.HistorySeconds>=3600;double width=dense?1:2;
         if(spec.Core)
         {
-            // Thin, plain and unmarked: half the CPU trace's own stroke, and no range band (eight bands would pile up).
-            width=.5*width*GraphStroke.Style(session.Settings,Theme.GraphKey("cpu")).Thickness;
-            GraphStroke.DrawPlain(dc,path.Path,spec.Brush!,width);
+            // Thin and unmarked: half the CPU trace's stroke, and no range band (eight bands would pile up).
+            // A core with its own cpucore/N style takes that style's thickness, pattern and glow in the core brush instead.
+            if(spec.CoreIndex>=0&&session.Settings.GraphStyles.TryGetValue(GraphColorSettings.CoreKey(spec.CoreIndex),out var coreStyle))
+                GraphStroke.DrawStyled(dc,path.Path,spec.Brush!,coreStyle,.5*width*coreStyle.Thickness);
+            else GraphStroke.DrawPlain(dc,path.Path,spec.Brush!,.5*width*GraphStroke.Style(session.Settings,Theme.GraphKey("cpu")).Thickness);
             return;
         }
         if(spec.Local)

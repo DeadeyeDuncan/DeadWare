@@ -385,6 +385,17 @@ public sealed class UiSession
         window.Closed+=(_,_)=>detached.Remove(key);
         window.Show();
     }
+    /// <summary>Opens (or raises) the CPU core line editor; it closes with the app but is not remembered across restarts.</summary>
+    public void OpenCpuCoreStyles()
+    {
+        const string key="cpucorestyles";
+        if(ShowWindow is { } show){show(new CpuCoreStyleWindow(this));return;}
+        if(layout.Ending)return;
+        if(detached.TryGetValue(key,out var existing)) {existing.WindowState=WindowState.Normal;existing.Activate();return;}
+        var window=new CpuCoreStyleWindow(this);detached[key]=window;
+        window.Closed+=(_,_)=>detached.Remove(key);
+        window.Show();
+    }
     public Task ShutdownAsync()=>shutdown??=ShutdownCoreAsync();
     private async Task ShutdownCoreAsync()
     {

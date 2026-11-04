@@ -271,8 +271,38 @@ internal static class LiveRenderingUiChecks
                 session.Settings.ShowCpuCoreUsage=false;
                 foreach(var chart in coreCharts){chart.Refresh();Assert.Empty(CoreStrokes(Draw(chart)));}
             }
-            // The hover chip lists cores by value under the device lines.
+            // Per-core overrides: cpucore/N colours replace the auto tint (cached, frozen) and revert when cleared.
+            var autoTint2=Theme.CoreBrush(2,8);var autoTint3=Theme.CoreBrush(3,8);
+            Theme.SetGraphColors(new Dictionary<string,string>{{"cpucore/2","#ABCDEF"}});
+            if(!SystemParameters.HighContrast)
+            {
+                Assert.Equal((Color)ColorConverter.ConvertFromString("#ABCDEF"),Theme.CoreBrush(2,8).Color);Assert.True(Theme.CoreBrush(2,8).IsFrozen);
+                Assert.Same(Theme.CoreBrush(2,8),Theme.CoreBrush(2,8));Assert.NotEqual(autoTint2.Color,Theme.CoreBrush(2,8).Color);
+            }
+            Assert.Equal(autoTint3.Color,Theme.CoreBrush(3,8).Color);
+            Theme.SetGraphColors(new Dictionary<string,string>());Assert.Equal(autoTint2.Color,Theme.CoreBrush(2,8).Color);
+            // Per-core styles: core 0 dashed at twice the base thin width; core 1 keeps the plain stroke.
             session.Settings.HistorySeconds=60;session.Settings.GraphSmoothing=true;session.Settings.ShowCpuCoreUsage=true;
+            session.Settings.GraphStyles["cpucore/0"]=new("dashed",false,2);
+            {
+                var chart=coreCharts[0];chart.Refresh();var drawing=Draw(chart);
+                Pen Core(int i)=>Shapes(drawing).Single(s=>s.Pen is not null&&ReferenceEquals(s.Pen.Brush,Theme.CoreBrush(i,8))).Pen;
+                Assert.Equal(new double[]{4,3},Core(0).DashStyle.Dashes);Assert.Equal(2*Core(1).Thickness,Core(0).Thickness,6);Assert.Empty(Core(1).DashStyle.Dashes);
+                // A glow adds a wider halo pass in the same core brush, dashed to match the stroke.
+                session.Settings.GraphStyles["cpucore/0"]=new("dashed",true,2,1);chart.Refresh();drawing=Draw(chart);
+                var halo=Shapes(drawing).Where(s=>s.Pen is not null&&ReferenceEquals(s.Pen.Brush,Theme.CoreBrush(0,8))).Select(s=>s.Pen).OrderBy(p=>p.Thickness).ToArray();
+                Assert.Equal(SystemParameters.HighContrast?1:2,halo.Length);
+                if(!SystemParameters.HighContrast){Assert.Equal(halo[0].Thickness+4,halo[1].Thickness,6);Assert.Equal(4,halo[1].DashStyle.Dashes[0]*halo[1].Thickness/halo[0].Thickness,6);}
+                session.Settings.GraphStyles.Clear();
+            }
+            // DrawStyled is the one pen/halo implementation behind Draw: a bare brush, no theme lookup.
+            {
+                var bare=new DrawingGroup();using(var context=bare.Open())GraphStroke.DrawStyled(context,geometry,Brushes.Red,new("dotted",true,1,2),3);
+                var bareStrokes=Shapes(bare).ToArray();Assert.Equal(SystemParameters.HighContrast?1:2,bareStrokes.Length);
+                Assert.Same(Brushes.Red,bareStrokes[^1].Pen.Brush);Assert.Equal(3,bareStrokes[^1].Pen.Thickness);Assert.Equal(new double[]{1,3},bareStrokes[^1].Pen.DashStyle.Dashes);
+                if(!SystemParameters.HighContrast){Assert.Equal(11,bareStrokes[0].Pen.Thickness);Assert.Contains(bare.Children.OfType<DrawingGroup>(),group=>Math.Abs(group.Opacity-.32)<.0001);}
+            }
+            // The hover chip lists cores by value under the device lines.
             var hovered=coreCharts[0];hovered.Refresh();Draw(hovered);
             var hp=hovered.PlotRect;hovered.SetHover(new Point(hp.Left+hp.Width*.5,hp.Top+10));Assert.True(hovered.HoverIndex>=0);
             var texts=Glyphs(Draw(hovered)).Select(g=>new string(g.GlyphRun.Characters.ToArray())).ToArray();
