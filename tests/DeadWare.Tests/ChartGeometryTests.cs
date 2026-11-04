@@ -24,11 +24,19 @@ public sealed class ChartGeometryTests
         Assert.Equal(["14:28","14:29","14:30","14:31","14:32"],ticks.Select(t=>t.Label));
         Assert.Equal(1000-40,ticks[^1].MonotonicSeconds);
     }
-    [Fact] public void Narrow_plots_double_the_step_and_compact_keeps_two()
+    [Fact] public void Narrow_plots_double_the_step_and_keep_two_ticks()
     {
         var now=new DateTimeOffset(2026,11,2,14,32,40,TimeSpan.Zero);
         Assert.True(TimeTicks.For(300,1000,now,120,false).Count<=3);
-        Assert.Equal(2,TimeTicks.For(300,1000,now,330,true).Count);
+        Assert.Equal(2,TimeTicks.For(300,1000,now,180,true).Count);
+    }
+    [Fact] public void Compact_charts_label_the_full_width_like_the_dashboard()
+    {
+        // The widget's 60-second range at a typical width: every 15-second tick, not just the two nearest "Now".
+        var now=new DateTimeOffset(2026,11,2,17,19,33,TimeSpan.Zero);
+        var compact=TimeTicks.For(60,1000,now,560,true);
+        Assert.Equal(TimeTicks.For(60,1000,now,560,false).Select(t=>t.Label),compact.Select(t=>t.Label));
+        Assert.Equal(["17:18:45","17:19:00","17:19:15","17:19:30"],compact.Select(t=>t.Label));
     }
     [Fact] public void One_minute_range_uses_seconds()
         =>Assert.All(TimeTicks.For(60,1000,new DateTimeOffset(2026,11,2,14,32,40,TimeSpan.Zero),600,false),t=>Assert.Matches(@"^\d\d:\d\d:\d\d$",t.Label));
