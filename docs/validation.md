@@ -586,3 +586,11 @@ Pending until run on a physical machine; automated tests do not cover real drive
 - USB drive plug and unplug: the row appears and disappears, the removable drive is not recorded in history, and nothing hangs.
 - Quit while a drive is mid-update (large copy): quit completes within the session-ending deadline and the next start restores the six-hour per-drive history.
 - More than eight drives, if available: the dashboard says Drives beyond eight are not recorded.
+
+## Network local-traffic manual checks (0.11.1)
+
+Pending until run on a physical machine; automated tests use synthetic traffic.
+
+- Run elevated with LAN traffic: muted local traces appear under the download and upload totals, and the widget and compact headers show `· local ↓ x ↑ y`.
+- Run non-elevated, with per-app capture unavailable: the Network graph is unchanged and no local figure appears.
+- Per-core CPU usage on: the aggregate CPU line is not drawn; the GPU trace, header percentage and hover total remain.
