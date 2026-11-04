@@ -126,10 +126,12 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
         return new(session.Collector.History,drive?StorageMetrics.Key(DriveId!,"read"):session.MetricId(kind),kind=="network"?"network/upload":drive?StorageMetrics.Key(DriveId!,"write"):kind=="storage"?"storage/total/write":compare?session.MetricId(kind=="cpu"?"gpu":"gputemp"):null,
             ShowsFan(compare)?session.MetricId("gpufan"):null,ShowsPump(compare)?session.MetricId("cpupump"):null,session.HistorySeconds,Math.Max(1,(int)ActualWidth-90),session.Settings.GraphSmoothing&&session.HistorySeconds>=3600,
             ShowsCores()?session.Current?.CpuCoreCount??0:0,
-            // The persisted drive set is part of the key, so a changed set rebuilds the per-drive traces.
-            kind=="storage"&&!drive?string.Join("\n",PersistedDrives().Select(d=>d.Id)):"",kind=="network");
+            // The drive set is part of the key, so a changed set rebuilds the per-drive traces.
+            kind=="storage"&&!drive?string.Join("\n",TracedDrives().Select(d=>d.Id)):"",kind=="network");
     }
-    private IReadOnlyList<StorageDrive> PersistedDrives()=>StorageProjection.Persisted(session.Current?.Storage.Drives??[]);
+    /// <summary>Every present drive by disk index, removable ones included: their live samples are traced even though only
+    /// persistable drives reach the six-hour graph history.</summary>
+    private IReadOnlyList<StorageDrive> TracedDrives()=>(session.Current?.Storage.Drives??[]).OrderBy(d=>d.Index).ToList();
     private static string[] DriveIds(Query query)=>query.Drives.Length==0?[]:query.Drives.Split('\n');
     private bool ShowsCores()=>session.Settings.ShowCpuCoreUsage&&kind=="cpu"&&(!CompareDevices||CoresWithDevices);
     private bool ShowsFan(bool compare)=>session.Settings.ShowGpuFanSpeed&&(kind=="gputemp"||kind=="cputemp"&&compare);
@@ -496,6 +498,7 @@ internal sealed class ChartCard : Border
     private readonly UiSession session;
     private readonly string kind;
     private readonly TextBlock value=Ui.Metric("—",30),subtitle=Ui.Text("Waiting for hardware…",11,"Muted"),stats=Ui.Text("",11,"Muted",font:"MetricFont");
+    private readonly TextBlock title;
     private readonly TextBlock fan=Ui.Text("",11,Theme.GraphKey("gpufan"),font:"MetricFont");
     private readonly TextBlock pump=Ui.Text("",11,Theme.GraphKey("cpupump"),font:"MetricFont");
     private readonly Run downloadValue=new(),uploadValue=new();
@@ -518,9 +521,13 @@ internal sealed class ChartCard : Border
         chart=new(session,kind){ClipToBounds=true,DriveId=this.driveId};
         chart.StatisticsReady+=UpdateStatistics;
         var grid=new Grid();grid.RowDefinitions.Add(new(){Height=GridLength.Auto});grid.RowDefinitions.Add(new(){Height=GridLength.Auto});grid.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});if(!overview)grid.RowDefinitions.Add(new(){Height=GridLength.Auto});
-        var header=new DockPanel {LastChildFill=true};var title=overview?Ui.Text(Ui.Title(kind),13):Ui.Heading(Ui.Title(kind),14);title.FontWeight=FontWeights.SemiBold;header.Children.Add(title);
-        if(popButton){var pop=overview?OverviewVisual.PopOut(session,kind):Ui.Button("Pop out ↗",()=>session.OpenDetached(kind));pop.HorizontalAlignment=HorizontalAlignment.Right;DockPanel.SetDock(pop,Dock.Right);header.Children.Insert(0,pop);}
-        var colors=GraphColorPicker.Create(session,kind);DockPanel.SetDock(colors,Dock.Right);header.Children.Insert(0,colors);
+        // An overview drive card is titled with the drive's model and pops out that drive's own window.
+        bool driveCard=overview&&this.driveId is not null;
+        title=overview?Ui.Text(driveCard?"Disk":Ui.Title(kind),13):Ui.Heading(Ui.Title(kind),14);title.FontWeight=FontWeights.SemiBold;
+        var header=new DockPanel {LastChildFill=true};header.Children.Add(title);
+        if(popButton){var pop=driveCard?OverviewVisual.PopOut(session,kind,OpenDrive,"Pop out this drive"):overview?OverviewVisual.PopOut(session,kind):Ui.Button("Pop out ↗",()=>session.OpenDetached(kind));pop.HorizontalAlignment=HorizontalAlignment.Right;DockPanel.SetDock(pop,Dock.Right);header.Children.Insert(0,pop);}
+        // Drive cards share the Disk card's read/write colours, so they carry no picker of their own.
+        if(!driveCard){var colors=GraphColorPicker.Create(session,kind);DockPanel.SetDock(colors,Dock.Right);header.Children.Insert(0,colors);}
         if(overview)
         {
             title.TextWrapping=TextWrapping.NoWrap;title.TextTrimming=TextTrimming.CharacterEllipsis;title.ToolTip=Ui.Title(kind);
@@ -596,6 +603,8 @@ internal sealed class ChartCard : Border
         UpdateReadings();
         chart.Refresh();
     }
+    private StorageDrive? Drive=>driveId is null?null:session.Current?.Storage.Drives.FirstOrDefault(d=>d.Id==driveId);
+    private void OpenDrive(){if(Drive is { } drive)session.OpenDriveWindow(drive);}
     /// <summary>The card's header text; split from <see cref="Refresh"/> so hidden fixture cards can be checked.</summary>
     private void UpdateReadings()
     {
@@ -620,7 +629,14 @@ internal sealed class ChartCard : Border
             var drives=data?.Storage.Drives??[];
             double Rate(StorageDrive d)=>(session.Value(StorageMetrics.Key(d.Id,"read"))??0)+(session.Value(StorageMetrics.Key(d.Id,"write"))??0);
             var only=driveId is null?null:drives.FirstOrDefault(d=>d.Id==driveId);
-            if(driveId is not null)subtitle.Text=only is null?"Drive not detected":$"{only.Model} · ↑ {Ui.Bytes(session.Stale?null:session.Value(StorageMetrics.Key(driveId,"write")),true)} write";
+            if(driveId is not null&&overview)
+            {
+                // The model is the title, so the subtitle carries the bus, size and write rate instead.
+                title.Text=only?.Model??"Disk";title.ToolTip=title.Text;
+                string write=$"↑ {Ui.Bytes(session.Stale?null:session.Value(StorageMetrics.Key(driveId,"write")),true)} write";
+                subtitle.Text=only is null?"Drive not detected":$"{only.BusType} · {Ui.Bytes(only.SizeBytes)}{(only.Removable?" · removable":"")} · {write}";
+            }
+            else if(driveId is not null)subtitle.Text=only is null?"Drive not detected":$"{only.Model} · ↑ {Ui.Bytes(session.Stale?null:session.Value(StorageMetrics.Key(driveId,"write")),true)} write";
             else subtitle.Text=data is null?"Discovering drives…":drives.Count==0?"No drives detected"
                 :$"{drives.OrderByDescending(Rate).First().Model} \u00b7 {drives.Count} drive{(drives.Count==1?"":"s")}";
         }

@@ -379,6 +379,7 @@ public sealed class UiSession
     public void OpenDriveWindow(StorageDrive drive)
     {
         string key="storage:"+drive.Id;
+        if(ShowWindow is { } show){show(new GraphWindow(this,drive));return;}
         if(layout.Ending)return;
         if(detached.TryGetValue(key,out var existing)) {existing.WindowState=WindowState.Normal;existing.Activate();return;}
         var window=new GraphWindow(this,drive);detached[key]=window;
