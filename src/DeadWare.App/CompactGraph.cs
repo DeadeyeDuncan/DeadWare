@@ -20,6 +20,8 @@ internal sealed class CompactGraph : Border
     private readonly TextBlock fan=Ui.Text("",10,Theme.GraphKey("gpufan"),font:"MetricFont");
     private readonly TextBlock pump=Ui.Text("",10,Theme.GraphKey("cpupump"),font:"MetricFont");
     private readonly TextBlock details=Ui.Text("Discovering hardware…",12,"Muted"),stats=Ui.Text("",12,"Muted");
+    /// <summary>The network header's local-network share; collapsed while the per-app capture publishes none.</summary>
+    private readonly TextBlock local=Ui.Text("",11,"Muted",font:"MetricFont");
     private readonly Button options;
     private readonly Popup popup;
 
@@ -41,6 +43,7 @@ internal sealed class CompactGraph : Border
         // One-row chrome: title, readings side by side, options. The trace keeps the height.
         var readings=new StackPanel {Orientation=Orientation.Horizontal,VerticalAlignment=VerticalAlignment.Center};value.FontSize=22;readings.Children.Add(value);
         if(kind is "network" or "storage"||joined){value.FontSize=14;upload.FontSize=14;readings.Children.Add(new Border {Width=8});readings.Children.Add(upload);}
+        if(kind=="network"){local.Visibility=Visibility.Collapsed;local.TextWrapping=TextWrapping.NoWrap;local.Margin=new Thickness(8,0,0,0);local.ToolTip="Local-network share: LAN, loopback and link-local peers, from per-app capture";readings.Children.Add(local);}
         Grid.SetColumn(readings,1);header.Children.Add(readings);
         options=Ui.Button("⋯",OpenOptions);options.Width=24;options.Height=24;options.FontSize=15;options.Padding=new Thickness(0);options.Margin=new Thickness(6,0,0,0);options.ToolTip="Graph options";
         options.SetResourceReference(Control.ForegroundProperty,"Muted");
@@ -96,7 +99,10 @@ internal sealed class CompactGraph : Border
         else if(kind=="network")
         {
             value.Text=$"↓ {Ui.Bytes(current,true)}";upload.Text=$"↑ {Ui.Bytes(session.Stale?null:session.Value("network/upload"),true)}";
-            details.Text=$"↓ Download: {GraphStroke.Pattern(session.Settings,"download")} line\n↑ Upload: {GraphStroke.Pattern(session.Settings,"upload",true)} line\nBoth directions share the same scale.";
+            double? localDown=session.Stale?null:session.Value("network/download/local");
+            local.Visibility=localDown is null?Visibility.Collapsed:Visibility.Visible;
+            if(localDown is not null)local.Text=$"· local ↓ {Ui.Bytes(localDown,true)} ↑ {Ui.Bytes(session.Value("network/upload/local"),true)}";
+            details.Text=$"↓ Download: {GraphStroke.Pattern(session.Settings,"download")} line\n↑ Upload: {GraphStroke.Pattern(session.Settings,"upload",true)} line\nBoth directions share the same scale."+(localDown is null?"":"\nMuted traces: local-network share (LAN, loopback, link-local) from per-app capture.");
             AutomationProperties.SetName(value,$"Download {Ui.Bytes(current,true)}");AutomationProperties.SetName(upload,$"Upload {Ui.Bytes(session.Stale?null:session.Value("network/upload"),true)}");
         }
         else if(kind=="storage")

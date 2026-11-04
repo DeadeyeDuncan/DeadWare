@@ -245,7 +245,8 @@ internal static class LiveRenderingUiChecks
             Assert.Same(Theme.CoreBrush(0,8),Theme.CoreBrush(0,8));
             var coreBrushes=Enumerable.Range(0,8).Select(i=>(object)Theme.CoreBrush(i,8)).ToHashSet(ReferenceEqualityComparer.Instance);
             Pen[] CoreStrokes(Drawing drawing)=>Shapes(drawing).Where(s=>s.Pen is not null&&coreBrushes.Contains(s.Pen.Brush)).Select(s=>s.Pen).ToArray();
-            double PrimaryThickness(Drawing drawing)=>Shapes(drawing).Where(s=>s.Geometry is StreamGeometry&&s.Pen is not null&&ReferenceEquals(s.Pen.Brush,Application.Current.Resources["Graph/cpu"])).Min(s=>s.Pen.Thickness);
+            Pen[] Strokes(Drawing drawing,string key)=>Shapes(drawing).Where(s=>s.Geometry is StreamGeometry&&s.Pen is not null&&ReferenceEquals(s.Pen.Brush,Application.Current.Resources[key])).Select(s=>s.Pen).ToArray();
+            double PrimaryThickness(Drawing drawing)=>Strokes(drawing,"Graph/cpu").Min(pen=>pen.Thickness);
             int restoreSeconds=session.Settings.HistorySeconds;
             bool restoreSmoothing=session.Settings.GraphSmoothing;
             // 60 s raw; 21600 s smoothed (per-core ChartRanges); 21600 s unsmoothed (reduced raw polylines).
@@ -253,16 +254,19 @@ internal static class LiveRenderingUiChecks
             {
                 session.Settings.HistorySeconds=seconds;session.Settings.GraphSmoothing=smoothing;
                 session.Settings.ShowCpuCoreUsage=false;
-                foreach(var chart in coreCharts){chart.Refresh();Assert.Empty(CoreStrokes(Draw(chart)));}
+                var primaryThickness=new double[coreCharts.Length];
+                for(int c=0;c<coreCharts.Length;c++){coreCharts[c].Refresh();var drawing=Draw(coreCharts[c]);Assert.Empty(CoreStrokes(drawing));primaryThickness[c]=PrimaryThickness(drawing);}
                 session.Settings.ShowCpuCoreUsage=true;
                 for(int c=0;c<coreCharts.Length;c++)
                 {
                     coreCharts[c].Refresh();var drawing=Draw(coreCharts[c]);var cores=CoreStrokes(drawing);
-                    if(c==2){Assert.Empty(cores);continue;}
+                    if(c==2){Assert.Empty(cores);Assert.NotEmpty(Strokes(drawing,"Graph/cpu"));continue;}
                     Assert.Equal(8,cores.Length);
                     Assert.Equal(8,cores.Select(pen=>pen.Brush).Distinct(ReferenceEqualityComparer.Instance).Count());
-                    double primary=PrimaryThickness(drawing);
-                    Assert.All(cores,pen=>{Assert.Equal(primary/2,pen.Thickness,6);Assert.Empty(pen.DashStyle.Dashes);});
+                    // The cores replace the aggregate CPU trace; the GPU comparison trace stays.
+                    Assert.Empty(Strokes(drawing,"Graph/cpu"));
+                    if(c==1)Assert.NotEmpty(Strokes(drawing,"Graph/gpu"));
+                    Assert.All(cores,pen=>{Assert.Equal(primaryThickness[c]/2,pen.Thickness,6);Assert.Empty(pen.DashStyle.Dashes);});
                 }
                 session.Settings.ShowCpuCoreUsage=false;
                 foreach(var chart in coreCharts){chart.Refresh();Assert.Empty(CoreStrokes(Draw(chart)));}
@@ -273,6 +277,8 @@ internal static class LiveRenderingUiChecks
             var hp=hovered.PlotRect;hovered.SetHover(new Point(hp.Left+hp.Width*.5,hp.Top+10));Assert.True(hovered.HoverIndex>=0);
             var texts=Glyphs(Draw(hovered)).Select(g=>new string(g.GlyphRun.Characters.ToArray())).ToArray();
             Assert.Contains(texts,t=>t.StartsWith("Core ",StringComparison.Ordinal));
+            // The hidden aggregate trace still anchors the hover and keeps its CPU total line in the chip.
+            Assert.Contains(Glyphs(Draw(hovered)),g=>ReferenceEquals(g.ForegroundBrush,Application.Current.Resources["Graph/cpu"]));
             hovered.SetHover(null);
             session.Settings.ShowCpuCoreUsage=false;session.Settings.HistorySeconds=restoreSeconds;session.Settings.GraphSmoothing=restoreSmoothing;
         }

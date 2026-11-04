@@ -208,8 +208,6 @@ public sealed class Collector : IAsyncDisposable
                         values[StorageMetrics.Key(health.DriveId,"life")]=health.LifePercent;
                         values[StorageMetrics.Key(health.DriveId,"used")]=health.UsedPercent;
                     }
-                    var now=clock.Elapsed.TotalSeconds;
-                    var sample=new Snapshot(DateTimeOffset.Now,now,new System.Collections.ObjectModel.ReadOnlyDictionary<string,double?>(values)) {PollingIntervalSeconds=intervalSeconds};
                     string hardwareStatus=initialization.Length>0?initialization:!options.HardwareEnabled?"Hardware collection disabled for diagnostic isolation":$"{sensors.Count} sensors · {(IsElevated?"Administrator":"Standard user")} · {(options.ExtendedSensors?"Extended sensors enabled":"CPU/GPU sensors")}";
                     if(cpuTemp is null) hardwareStatus+=" · CPU temperature unavailable (hardware support, elevation or PawnIO may be required).";
                     if(gpus.Count==0&&options.HardwareEnabled) hardwareStatus+=" · No supported GPU discovered.";
@@ -223,7 +221,12 @@ public sealed class Collector : IAsyncDisposable
                     lock(publicationGate)
                     {
                         providerStarted=Stopwatch.GetTimestamp();
-                        var capture=etw.TakeSnapshot(sample.Timestamp,now,options.EtwEnabled);
+                        var timestamp=DateTimeOffset.Now;var now=clock.Elapsed.TotalSeconds;
+                        var capture=etw.TakeSnapshot(timestamp,now,options.EtwEnabled);
+                        // The local-network share comes from the per-app capture, so it joins the sample after the ETW snapshot.
+                        var local=NetworkTrafficSplit.Local(capture.Connections,network.Down,network.Up);
+                        values["network/download/local"]=local.Down;values["network/upload/local"]=local.Up;
+                        var sample=new Snapshot(timestamp,now,new System.Collections.ObjectModel.ReadOnlyDictionary<string,double?>(values)) {PollingIntervalSeconds=intervalSeconds};
                         if(timings is not null){timings["etw/snapshot"]=Stopwatch.GetElapsedTime(providerStarted).TotalMilliseconds;timings["poll/total"]=(clock.Elapsed.TotalSeconds-started)*1000;}
                         double elapsed=clock.Elapsed.TotalSeconds-started;
                         if(elapsed>=intervalSeconds)hardwareStatus+=$" · Slow sample ({elapsed:0.0}s); pausing before the next poll.";

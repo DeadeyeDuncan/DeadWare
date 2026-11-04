@@ -9,6 +9,8 @@ internal sealed class WidgetGraph : Border
     private readonly UiSession session;
     private readonly string kind;
     private readonly TextBlock title=Ui.Text("",12,"Heading",font:"HeadingFont"),primary=Ui.Text("",11,font:"MetricFont"),secondary=Ui.Text("",11,font:"MetricFont");
+    /// <summary>The network header's local-network share; collapsed while the per-app capture publishes none.</summary>
+    private readonly TextBlock local=Ui.Text("",11,"Muted",font:"MetricFont");
     private readonly TextBlock fan=Ui.Text("",11,Theme.GraphKey("gpufan"),font:"MetricFont");
     private readonly StackPanel fanLegend;
     private readonly TextBlock pump=Ui.Text("",11,Theme.GraphKey("cpupump"),font:"MetricFont");
@@ -27,6 +29,7 @@ internal sealed class WidgetGraph : Border
         string firstColor=Theme.GraphKey(disk?"diskread":kind),secondColor=Theme.GraphKey(network?"upload":disk?"diskwrite":kind=="cputemp"?"gputemp":"gpu");
         primary.SetResourceReference(TextBlock.ForegroundProperty,firstColor);secondary.SetResourceReference(TextBlock.ForegroundProperty,secondColor);
         var legend=memory?Ui.Row(Legend(primary,firstColor,false)):Ui.Row(Legend(primary,firstColor,false),Legend(secondary,secondColor,true));
+        if(network){local.Visibility=Visibility.Collapsed;local.TextWrapping=TextWrapping.NoWrap;local.Margin=new(0,0,10,0);local.ToolTip="Local-network share: LAN, loopback and link-local peers, from per-app capture";legend.Children.Add(local);}
         var header=new DockPanel();DockPanel.SetDock(legend,Dock.Right);header.Children.Add(legend);header.Children.Add(title);grid.Children.Add(header);
         fanLegend=Legend(fan,Theme.GraphKey("gpufan"),false,true);fanLegend.Visibility=Visibility.Collapsed;
         pumpLegend=Legend(pump,Theme.GraphKey("cpupump"),false,true);pumpLegend.Visibility=Visibility.Collapsed;
@@ -68,6 +71,9 @@ internal sealed class WidgetGraph : Border
             title.Text="Network";title.ToolTip=$"Network download ({GraphStroke.Pattern(session.Settings,"download")}) and upload ({GraphStroke.Pattern(session.Settings,"upload",true)}), in bytes per second";
             primary.Text="↓ "+Ui.Bytes(session.Stale?null:session.Value("network/download"),true);primary.ToolTip="Download rate";
             secondary.Text="↑ "+Ui.Bytes(session.Stale?null:session.Value("network/upload"),true);secondary.ToolTip="Upload rate";
+            double? localDown=session.Stale?null:session.Value("network/download/local");
+            local.Visibility=localDown is null?Visibility.Collapsed:Visibility.Visible;
+            if(localDown is not null)local.Text=$"· local ↓ {Ui.Bytes(localDown,true)} ↑ {Ui.Bytes(session.Value("network/upload/local"),true)}";
         }
         else if(kind=="disk")
         {

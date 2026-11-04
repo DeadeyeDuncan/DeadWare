@@ -65,6 +65,41 @@ internal static class NetworkChartUiChecks
                     AssertAxis(Render(seconds, false), "575.0 KB/s", "1.2 MB/s");
                 }
             }
+            // Local-network share: muted traces under the totals, no effect on the axis, a "Local" chip line.
+            foreach (bool local in new[] { true, false })
+            {
+                var history = new SampleHistory();
+                var epoch = new DateTimeOffset(2026, 10, 31, 12, 0, 0, TimeSpan.Zero);
+                for (int second = -60; second <= 0; second++)
+                {
+                    var values = new Dictionary<string, double?> { ["network/download"] = 300_000, ["network/upload"] = 200_000 };
+                    if (local) { values["network/download/local"] = 100_000; values["network/upload/local"] = 50_000; }
+                    history.Add(new(epoch.AddSeconds(second), second, values));
+                }
+                var session = Session(history);
+                session.Settings.HistorySeconds = 60; session.Settings.GraphSmoothing = false;
+                var chart = new HistoryChart(session, "network");
+                chart.Measure(new Size(620, 240)); chart.Arrange(new Rect(0, 0, 620, 240)); chart.UpdateLayout();
+                chart.Refresh();
+                var drawing = Draw(chart);
+                AssertAxis(drawing, "172.5 KB/s", "345.0 KB/s");
+                var download = Strokes(drawing, "Graph/download"); var upload = Strokes(drawing, "Graph/upload");
+                if (local)
+                {
+                    Assert.Equal(2, download.Length); Assert.Equal(2, upload.Length);
+                    // The local trace is the thinner one in each direction and the local upload stays dashed.
+                    Assert.True(download.Min(p => p.Thickness) < download.Max(p => p.Thickness));
+                    Assert.True(upload.Min(p => p.Thickness) < upload.Max(p => p.Thickness));
+                    Assert.All(upload, p => Assert.NotEmpty(p.DashStyle.Dashes));
+                    Capture(drawing, "network-local-split.png");
+                }
+                else { Assert.Single(download); Assert.Single(upload); }
+                var plot = chart.PlotRect; chart.SetHover(new Point(plot.Left + plot.Width * .5, plot.Top + 10)); Assert.True(chart.HoverIndex >= 0);
+                var texts = Glyphs(Draw(chart)).Select(g => new string(g.GlyphRun.Characters.ToArray())).ToArray();
+                if (local) Assert.Contains(texts, t => t.StartsWith("Local ↓ 100.0 KB/s", StringComparison.Ordinal) && t.Contains("↑ 50.0 KB/s", StringComparison.Ordinal));
+                else Assert.DoesNotContain(texts, t => t.StartsWith("Local", StringComparison.Ordinal));
+                chart.SetHover(null);
+            }
             foreach (double? idle in new double?[] { 0, null })
             {
                 var history = new SampleHistory();
@@ -103,10 +138,16 @@ internal static class NetworkChartUiChecks
         return drawing;
     }
 
+    private static IEnumerable<GlyphRunDrawing> Glyphs(Drawing value) => value is GlyphRunDrawing glyph ? [glyph]
+        : value is DrawingGroup group ? group.Children.SelectMany(Glyphs) : [];
+    private static IEnumerable<GeometryDrawing> Shapes(Drawing value) => value is GeometryDrawing shape ? [shape]
+        : value is DrawingGroup group ? group.Children.SelectMany(Shapes) : [];
+    private static Pen[] Strokes(Drawing drawing, string key) => Shapes(drawing)
+        .Where(s => s.Geometry is StreamGeometry && s.Pen is not null && ReferenceEquals(s.Pen.Brush, Application.Current.Resources[key]))
+        .Select(s => s.Pen).ToArray();
+
     private static void AssertAxis(Drawing drawing, string middle, string maximum)
     {
-        IEnumerable<GlyphRunDrawing> Glyphs(Drawing value) => value is GlyphRunDrawing glyph ? [glyph]
-            : value is DrawingGroup group ? group.Children.SelectMany(Glyphs) : [];
         var labels = Glyphs(drawing).Select(glyph => new string(glyph.GlyphRun.Characters.ToArray()))
             .Where(label => label.EndsWith("/s", StringComparison.Ordinal)).ToArray();
         Assert.Equal(new[] { "0.0 B/s", middle, maximum }, labels);
