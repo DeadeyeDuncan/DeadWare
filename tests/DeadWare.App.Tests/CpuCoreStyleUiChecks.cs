@@ -117,7 +117,7 @@ internal static class CpuCoreStyleUiChecks
             Assert.DoesNotContain(Descendants(root).OfType<TextBlock>(),t=>t.Text=="Per-core CPU usage unavailable.");
             // (d) apply style and colour to all cores.
             session.SetGraphColor("cpu","#123456");session.SetGraphStyle("cpu","dashed",true,2,1.5);
-            Click(Descendants(root).OfType<Button>().Single(b=>b.Content as string=="Apply style and color to all cores"));
+            Click(Descendants(root).OfType<Button>().Single(b=>b.Content as string=="Make all cores the CPU color"));
             for(int i=0;i<4;i++)
             {
                 Assert.Equal("#123456",session.Settings.GraphColors[GraphColorSettings.CoreKey(i)]);
@@ -130,6 +130,9 @@ internal static class CpuCoreStyleUiChecks
             Click(Descendants(root).OfType<Button>().Single(b=>b.Content as string=="Reset all cores to auto"));
             Assert.Equal(["cpu"],session.Settings.GraphColors.Keys);Assert.Equal(["cpu"],session.Settings.GraphStyles.Keys);
             Assert.Equal(1,Descendants(root).OfType<RadioButton>().Count(r=>r.Content as string=="Dashed"&&r.IsChecked==true));
+            // (f) an edit made elsewhere (the card popup, another window) re-syncs the open editors.
+            session.SetGraphStyle("cpucore/2","dotted",false,1,1);
+            Assert.Equal(1,Descendants(root).OfType<RadioButton>().Count(r=>r.Content as string=="Dotted"&&r.IsChecked==true));
             window.Close();
             // Zero cores: the unavailable note instead of the list.
             var empty=new CpuCoreStyleWindow(Session(0));

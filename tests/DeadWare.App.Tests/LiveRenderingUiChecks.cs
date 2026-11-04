@@ -283,7 +283,8 @@ internal static class LiveRenderingUiChecks
             Theme.SetGraphColors(new Dictionary<string,string>());Assert.Equal(autoTint2.Color,Theme.CoreBrush(2,8).Color);
             // Per-core styles: core 0 dashed at twice the base thin width; core 1 keeps the plain stroke.
             session.Settings.HistorySeconds=60;session.Settings.GraphSmoothing=true;session.Settings.ShowCpuCoreUsage=true;
-            session.Settings.GraphStyles["cpucore/0"]=new("dashed",false,2);
+            // The CPU line at 150% sets the cores' thin width; a core's own thickness stays relative to it (M1).
+            session.Settings.GraphStyles["cpu"]=new("default",false,1.5);session.Settings.GraphStyles["cpucore/0"]=new("dashed",false,2);
             {
                 var chart=coreCharts[0];chart.Refresh();var drawing=Draw(chart);
                 Pen Core(int i)=>Shapes(drawing).Single(s=>s.Pen is not null&&ReferenceEquals(s.Pen.Brush,Theme.CoreBrush(i,8))).Pen;

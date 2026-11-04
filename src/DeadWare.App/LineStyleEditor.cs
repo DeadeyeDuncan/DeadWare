@@ -51,6 +51,7 @@ internal static class LineStyleEditor
             using var dialog=new System.Windows.Forms.ColorDialog {FullOpen=true,Color=System.Drawing.Color.FromArgb(current.R,current.G,current.B)};
             if(dialog.ShowDialog()==System.Windows.Forms.DialogResult.OK)
                 session.SetGraphColor(kind,$"#{dialog.Color.R:X2}{dialog.Color.G:X2}{dialog.Color.B:X2}");
+            closeAfterPick?.Invoke();
         }));
         menu.Children.Add(Ui.Button(autoLabel??"Theme default",()=>{session.SetGraphColor(kind,null);closeAfterPick?.Invoke();}));
         menu.Children.Add(Ui.Heading("Line style",12));

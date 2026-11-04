@@ -28,11 +28,12 @@ internal sealed class GraphColorPicker : Button
         {
             // Popup children are logical descendants. Ignore their bubbling Click events.
             if(!ReferenceEquals(e.OriginalSource,this))return;
+            if(kind=="cpu")Describe();
             if(Cores()){session.OpenCpuCoreStyles();return;}
             editor.Sync();popup.IsOpen=!popup.IsOpen;if(popup.IsOpen)menu.MoveFocus(new TraversalRequest(FocusNavigationDirection.First));
         };
         menu.PreviewKeyDown+=(_,e)=>{if(e.Key==Key.Escape){popup.IsOpen=false;Focus();e.Handled=true;}};
-        if(kind=="cpu"){session.Changed+=Describe;Unloaded+=(_,_)=>session.Changed-=Describe;Loaded+=(_,_)=>{session.Changed-=Describe;session.Changed+=Describe;Describe();};}
+        if(kind=="cpu"){Unloaded+=(_,_)=>session.Changed-=Describe;Loaded+=(_,_)=>{session.Changed-=Describe;session.Changed+=Describe;Describe();};}
         Unloaded+=(_,_)=>popup.IsOpen=false;
     }
 
