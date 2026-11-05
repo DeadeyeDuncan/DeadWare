@@ -43,7 +43,7 @@ Connections is available starting with version 0.6.21.
 
 ## Download and run
 
-Get the Windows x64 ZIP from [v0.12.1](https://github.com/DeadeyeDuncan/DeadWare/releases/tag/v0.12.1) or browse [all releases](https://github.com/DeadeyeDuncan/DeadWare/releases). Extract the **entire** archive and run `DeadWare.exe` inside the `DeadWare` folder. The .NET runtime is bundled. The app is portable and unsigned. Version 0.6.0 adds manual update and rollback controls; older installations need one complete ZIP upgrade to gain those controls.
+Get the Windows x64 ZIP from [v0.12.2](https://github.com/DeadeyeDuncan/DeadWare/releases/tag/v0.12.2) or browse [all releases](https://github.com/DeadeyeDuncan/DeadWare/releases). Extract the **entire** archive and run `DeadWare.exe` inside the `DeadWare` folder. The .NET runtime is bundled. The app is portable and unsigned. Version 0.6.0 adds manual update and rollback controls; older installations need one complete ZIP upgrade to gain those controls.
 
 Windows 10/11 x64 is the target. ARM64 and other operating systems are not validated. Hardware coverage varies by device.
 

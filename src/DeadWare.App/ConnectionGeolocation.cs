@@ -98,7 +98,9 @@ public sealed class ConnectionGeolocation : IConnectionGeolocation, IDisposable
         }
     }
 
-    internal static bool IsDatabaseFailure(Exception error) => error is IOException or InvalidDatabaseException or
+    // InvalidDataException is what the size limit and Validate throw for a wrong-type, truncated or oversized file;
+    // it derives from SystemException, not IOException, so it is listed on its own.
+    internal static bool IsDatabaseFailure(Exception error) => error is IOException or InvalidDataException or InvalidDatabaseException or
         UnauthorizedAccessException or ArgumentException or InvalidOperationException or OverflowException or InvalidCastException;
 
     internal static ConnectionLocation? Parse(IDictionary<string, object>? record)

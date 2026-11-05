@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.12.2 — Connections fixes
+
+- **Location database that fails to load no longer silences lookups.** A wrong-type, truncated or oversized `dbip-city-lite.mmdb` at startup used to take the lookup worker down: peers stayed unlocated, the status read "Location lookup has not started." and **Download / update locations** hung at 90 %. The failure is now reported as "Local location database could not be read." and a later download or reload recovers.
+- **CSV export keeps negative numbers numeric.** The formula guard that prefixes `'` to text starting with `=`, `+`, `-` or `@` no longer touches numeric columns, so latitudes and longitudes in the southern and western hemispheres export as numbers rather than `'-87.6`.
+- **Connections export never offers an overwrite it cannot do.** The save dialog no longer asks to overwrite; choosing an existing file reports "That file already exists; exports never overwrite." instead of failing after the prompt.
+- The Live search box trims surrounding whitespace like the History query, so a pasted "chrome " matches in both views; and a corrected history interval clears its own "Choose valid local times…" warning.
+
 ## 0.12.1 — Full widget time axis and a card per drive
 
 - **Full time axis on the widget.** Widget graphs label the whole width with wall-clock ticks like the dashboard cards. They used to keep only the two ticks nearest **Now**, and the nearer one then collided with the **Now** label, so a widget graph showed a single time; only plots under 200 px keep the two-tick rule.

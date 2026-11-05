@@ -60,7 +60,9 @@ internal static class ConnectionsPageUiChecks
         CheckWholePageLayout(page);
         CheckHistoryQueries(session,now);
         CheckBoundaryDates();
+        CheckIntervalWarning(session);
         CheckExportBusy(session,now);
+        CheckExportRefusesExistingFile(session,now);
         CheckDownloadControls(now);
         CheckThemes(app, page, live, history);
     }
@@ -78,7 +80,10 @@ internal static class ConnectionsPageUiChecks
         Call(page,"ApplyLive",live with {Connections=live.Connections.Select(c=>c with {Traffic=c.Traffic with {ReceivedBytes=4096,DownloadBytesPerSecond=256}}).ToArray()});
         Assert.Contains("4.1 KB",Field<TextBlock>(page,"nodeText").Text);
         Field<TextBox>(page,"search").Text="192.168"; Assert.Empty(list.Items); Assert.Equal(Visibility.Collapsed,Field<Border>(page,"nodeDetails").Visibility);
-        Assert.Contains("1 local",Field<TextBlock>(page,"summary").Text); Field<TextBox>(page,"search").Text="";
+        Assert.Contains("1 local",Field<TextBlock>(page,"summary").Text);
+        // Surrounding whitespace is trimmed like the history query, so a pasted "Browser " still matches.
+        Field<TextBox>(page,"search").Text=" 8.8.8 "; Assert.Single(list.Items.Cast<object>()); Assert.Contains("1 destinations",Field<TextBlock>(page,"summary").Text);
+        Field<TextBox>(page,"search").Text="   "; Assert.Contains("3 destinations",Field<TextBlock>(page,"summary").Text); Field<TextBox>(page,"search").Text="";
         Field<TextBox>(page,"country").Text="JP"; Assert.Empty(list.Items); Field<TextBox>(page,"country").Text="";
         Call(page,"ApplyLive",live with {Available=false,Status="Permission denied"}); list.SelectedIndex=0;
         Assert.Contains("Permission denied",Field<TextBlock>(page,"capture").Text);Assert.Contains("—",Field<TextBlock>(page,"nodeText").Text);
@@ -229,6 +234,31 @@ internal static class ConnectionsPageUiChecks
         Assert.False(Parse("0001-01-01 00:00",6,out _));
         Assert.True(Parse("9999-12-31 17:59",-6,out var maximum));Assert.Equal(new DateTimeOffset(9999,12,31,23,59,0,TimeSpan.Zero),maximum);
         Assert.True(Parse("0001-01-01 06:00",6,out var minimum));Assert.Equal(DateTimeOffset.MinValue,minimum);
+    }
+    private static void CheckIntervalWarning(UiSession session)
+    {
+        var page=new ConnectionsPage(session);Field<ComboBox>(page,"mode").SelectedIndex=1;
+        var tryInterval=PageType.GetMethod("TryInterval",All)!;
+        bool Interval(){object?[] args=[null,null];return (bool)tryInterval.Invoke(page,args)!;}
+        var status=Field<TextBlock>(page,"actionStatus");
+        Field<TextBox>(page,"from").Text="2026-11-04 25:00";Assert.False(Interval());Assert.Contains("Choose valid local times",status.Text);
+        Field<TextBox>(page,"from").Text="2026-11-04 10:00";Field<TextBox>(page,"to").Text="2026-11-04 11:00";Assert.True(Interval());Assert.Equal("",status.Text);
+        // Only the interval warning clears itself; an unrelated action message survives a valid interval.
+        status.Text="CSV exported to a new file. Saved history is unchanged.";Assert.True(Interval());Assert.Contains("CSV exported",status.Text);
+    }
+    private static void CheckExportRefusesExistingFile(UiSession session,DateTimeOffset now)
+    {
+        var page=new ConnectionsPage(session);Field<ComboBox>(page,"mode").SelectedIndex=1;
+        int calls=0;Func<string,ConnectionHistoryQuery,Task> export=(_,_)=>{calls++;return Task.CompletedTask;};
+        PageType.GetField("exportHistory",All)!.SetValue(page,export);
+        string existing=System.IO.Path.Combine(System.IO.Path.GetTempPath(),"DeadWare-export-"+Guid.NewGuid().ToString("N")+".csv");System.IO.File.WriteAllText(existing,"keep");
+        try
+        {
+            var exporting=(Task)PageType.GetMethod("ExportToPathAsync",All)!.Invoke(page,[existing,new ConnectionHistoryQuery(now.AddMinutes(-1),now)])!;
+            Assert.True(exporting.IsCompleted);Assert.Equal(0,calls);Assert.Equal("keep",System.IO.File.ReadAllText(existing));
+            Assert.Contains("never overwrite",Field<TextBlock>(page,"actionStatus").Text);Assert.True(Field<Button>(page,"export").IsEnabled);
+        }
+        finally {System.IO.File.Delete(existing);}
     }
     private static void CheckExportBusy(UiSession session,DateTimeOffset now)
     {

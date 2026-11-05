@@ -70,6 +70,7 @@ internal sealed class ConnectionsPage : Grid
     private bool syncing, busy, playing, active, exportInProgress, historyMinuteReady;
     private string? selectedKey;
     private string historyStorage = "";
+    private const string IntervalWarning = "Choose valid local times (yyyy-MM-dd HH:mm), from before exclusive to, at most 31 days. Avoid ambiguous or skipped daylight-saving minutes.";
     private bool IsHistory => mode.SelectedIndex == 1;
 
     public ConnectionsPage(UiSession session)
@@ -177,7 +178,9 @@ internal sealed class ConnectionsPage : Grid
     private bool TryInterval(out DateTimeOffset start, out DateTimeOffset end)
     {
         start = end = default;
-        if (!TryParseLocalTime(from.Text,TimeZoneInfo.Local, out start) || !TryParseLocalTime(to.Text,TimeZoneInfo.Local, out end) || end <= start || (end - start).TotalDays > 31) { actionStatus.Text = "Choose valid local times (yyyy-MM-dd HH:mm), from before exclusive to, at most 31 days. Avoid ambiguous or skipped daylight-saving minutes."; return false; }
+        if (!TryParseLocalTime(from.Text,TimeZoneInfo.Local, out start) || !TryParseLocalTime(to.Text,TimeZoneInfo.Local, out end) || end <= start || (end - start).TotalDays > 31) { actionStatus.Text = IntervalWarning; return false; }
+        // A corrected interval clears its own warning; other action messages stay.
+        if (actionStatus.Text == IntervalWarning) actionStatus.Text = "";
         syncing = true; cursor.Maximum = Math.Max(0, Math.Ceiling((end - start).TotalMinutes) - 1); cursor.Value = Math.Min(cursor.Value, cursor.Maximum); syncing = false; return true;
     }
     private static bool TryParseLocalTime(string text,TimeZoneInfo zone,out DateTimeOffset utc)
@@ -308,7 +311,8 @@ internal sealed class ConnectionsPage : Grid
         Canvas.SetLeft(nodeDetails,Math.Clamp(x,8,Math.Max(8,map.ActualWidth-nodeDetails.Width-8)));
         Canvas.SetTop(nodeDetails,Math.Clamp(anchor.Y-20,8,Math.Max(8,map.ActualHeight-nodeDetails.DesiredSize.Height-8)));
     }
-    private bool Matches(ProcessIdentity process, string address, ConnectionLocation? location, long received, long sent) => (search.Text.Length == 0 || $"{process.Name} {process.Pid} {address}".Contains(search.Text, StringComparison.OrdinalIgnoreCase)) && (string.IsNullOrWhiteSpace(country.Text) || string.Equals(location?.CountryCode, country.Text.Trim(), StringComparison.OrdinalIgnoreCase)) && (direction.SelectedItem is not ConnectionDirection selected || selected == ConnectionDirection.Both || selected == ConnectionDirection.Received && received > 0 || selected == ConnectionDirection.Sent && sent > 0);
+    // Trimmed like the history query, so the same text filters both views alike.
+    private bool Matches(ProcessIdentity process, string address, ConnectionLocation? location, long received, long sent) => (search.Text.Trim() is not { Length: > 0 } text || $"{process.Name} {process.Pid} {address}".Contains(text, StringComparison.OrdinalIgnoreCase)) && (string.IsNullOrWhiteSpace(country.Text) || string.Equals(location?.CountryCode, country.Text.Trim(), StringComparison.OrdinalIgnoreCase)) && (direction.SelectedItem is not ConnectionDirection selected || selected == ConnectionDirection.Both || selected == ConnectionDirection.Received && received > 0 || selected == ConnectionDirection.Sent && sent > 0);
     private static string Key(ConnectionPeer peer) => "live:"+JsonSerializer.Serialize(peer);
     private static string Endpoint(string address,int port,ConnectionProtocol protocol)=>$"{(IPAddress.TryParse(address,out var ip)&&ip.AddressFamily==System.Net.Sockets.AddressFamily.InterNetworkV6?$"[{address}]":address)}:{port} {protocol}";
     // Match the store's grouping identity; aggregates and first/last observations may change on refresh.
@@ -323,12 +327,14 @@ internal sealed class ConnectionsPage : Grid
     {
         if(exportInProgress)return;
         if (session.Connections is null) { actionStatus.Text = "Connection export unavailable."; return; }
-        var query = BuildQuery(true); if (query is null) return; var dialog = new SaveFileDialog { Filter = "CSV files (*.csv)|*.csv", FileName = $"connections-{DateTime.Now:yyyyMMdd-HHmmss}.csv", OverwritePrompt = true }; if (dialog.ShowDialog() != true) return;
+        // The service only ever writes a new file, so the dialog must not promise an overwrite it cannot deliver.
+        var query = BuildQuery(true); if (query is null) return; var dialog = new SaveFileDialog { Filter = "CSV files (*.csv)|*.csv", FileName = $"connections-{DateTime.Now:yyyyMMdd-HHmmss}.csv", OverwritePrompt = false }; if (dialog.ShowDialog() != true) return;
         await ExportToPathAsync(dialog.FileName,query);
     }
     private async Task ExportToPathAsync(string path,ConnectionHistoryQuery query)
     {
         if(exportInProgress)return;
+        if(System.IO.File.Exists(path)){actionStatus.Text="That file already exists; exports never overwrite. Choose a new file name.";return;}
         exportInProgress=true;UpdateExportEnabled();
         try {await exportHistory(path,query);actionStatus.Text="CSV exported to a new file. Saved history is unchanged.";}
         catch(Exception error) {actionStatus.Text=$"Export failed ({error.GetType().Name}); choose a new writable file.";}

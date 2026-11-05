@@ -595,6 +595,14 @@ Pending until run on a physical machine; automated tests use synthetic traffic.
 - Run non-elevated, with per-app capture unavailable: the Network graph is unchanged and no local figure appears.
 - Per-core CPU usage on: the aggregate CPU line is not drawn; the GPU trace, header percentage and hover total remain.
 
+## Connections review fixes (0.12.2)
+
+A static review of the connections pipeline (ETW capture, ledger, service, history store, page, widget, map) found five small defects, fixed here: `ConnectionGeolocation.IsDatabaseFailure` now includes `InvalidDataException` and `ConnectionService.LookupLoopAsync` guards the first reload, so a wrong-type or oversized database reports instead of faulting the lookup worker; `ConnectionHistoryStore.Csv` applies the formula guard to text only; `ConnectionsPage` refuses an existing export file before calling the service and no longer asks the dialog to confirm an overwrite, trims the live search text and clears its own interval warning. Two further findings are left for a decision because they change persisted or test-pinned behaviour: the monotonic `expiry` metadata (a forward clock jump hides history until the clock catches up) and the history summary counting local peers as unlocated.
+
+Automated (authored in a Linux container without a .NET SDK, so the build and both test projects run on the pull request's Windows CI): `Csv_keeps_negative_coordinates_and_rates_numeric`, `Wrong_type_or_oversized_database_is_reported_not_thrown`, `Lookup_worker_survives_a_database_that_fails_to_load_at_start`, and in `ConnectionsPageUiChecks` the trimmed live search, `CheckIntervalWarning` and `CheckExportRefusesExistingFile`.
+
+Pending until checked by eye: copy a GeoLite2 `.mmdb` over `dbip-city-lite.mmdb`, start DeadWare and confirm the Connections page says the database could not be read and that **Download / update locations** completes and resolves peers afterwards.
+
 ## Widget time axis and per-drive cards (0.12.1)
 
 Root cause of the single widget tick: `TimeTicks.For` kept only the two ticks nearest "Now" for compact charts, and the nearer one was then skipped by `ChartFrame.Grid` because it overlapped the "Now" label. Compact charts now keep every tick; only plots under 200 px keep two. The overview rebuilds its drive cards from `OverviewPage.SyncDrives` whenever the ordered drive-id set changes and sizes the `UniformGrid` to `Rows(count)` rows of 270 px, growing into spare viewport height as before. Per-drive traces on the Disk card come from every present drive (`HistoryChart.TracedDrives`) instead of the persisted eight.
