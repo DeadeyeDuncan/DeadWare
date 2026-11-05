@@ -595,6 +595,14 @@ Pending until run on a physical machine; automated tests use synthetic traffic.
 - Run non-elevated, with per-app capture unavailable: the Network graph is unchanged and no local figure appears.
 - Per-core CPU usage on: the aggregate CPU line is not drawn; the GPU trace, header percentage and hover total remain.
 
+## Gliding time labels and Disk subtitle hold (0.12.3)
+
+`HistoryChart` now builds the trace scroll transform before the frame and hands it to the new `ChartFrame.ScrollingTicks`, which draws the tick labels inside that transform under a clip from the plot's left edge to just before the right-aligned "Now"; `ChartFrame.Grid` keeps the static value lines. `TimeTick` gains an `Ordinal` (wall-clock seconds divided by the step) and labels are thinned by ordinal (every k-th tick, k from the widest label and the tick spacing) so the kept labels are the same from one poll to the next. `ChartCard.Busiest` names the Disk card's drive with hysteresis (`BusiestHold` = 5 polls; a tie keeps the current drive).
+
+Automated (authored without a .NET SDK; the pull request's Windows CI builds and runs both test projects): `Tick_ordinals_are_wall_clock_multiples_of_the_step_and_stable_across_polls`; a `LiveRenderingUiChecks` block asserting the labels sit in a group carrying the scroll transform, "Now" outside it, a clip ending before "Now", a thinning stride of at least two and an identical kept set after the oldest tick drops; `Storage_card_subtitle_holds_the_busiest_drive`.
+
+Pending until checked by eye on a physical machine: the labels move continuously with the traces on the widget and the overview at the 1-minute and 5-minute ranges with no jump at the poll, and the Disk subtitle holds its model through bursty activity on several drives.
+
 ## Connections review fixes (0.12.2)
 
 A static review of the connections pipeline (ETW capture, ledger, service, history store, page, widget, map) found five small defects, fixed here: `ConnectionGeolocation.IsDatabaseFailure` now includes `InvalidDataException` and `ConnectionService.LookupLoopAsync` guards the first reload, so a wrong-type or oversized database reports instead of faulting the lookup worker; `ConnectionHistoryStore.Csv` applies the formula guard to text only; `ConnectionsPage` refuses an existing export file before calling the service and no longer asks the dialog to confirm an overwrite, trims the live search text and clears its own interval warning. Two further findings are left for a decision because they change persisted or test-pinned behaviour: the monotonic `expiry` metadata (a forward clock jump hides history until the clock catches up) and the history summary counting local peers as unlocated.

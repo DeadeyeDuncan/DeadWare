@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.12.3 — Gliding time labels and a steadier Disk subtitle
+
+- **Time labels glide with the graphs.** The wall-clock ticks under every live graph (dashboard cards, pop-outs and the widget) now ride the same scroll as the traces instead of jumping to new positions at each poll: labels slide in under **Now** and out at the left edge. Which labels are shown is decided from the tick's wall-clock time, so the set does not change as ticks enter and leave.
+- **The Disk card's named drive stops flickering.** Its subtitle names the busiest drive; another drive now takes over only after it has been busier for five polls in a row, and an idle tie keeps the current name, so bursty I/O across several drives no longer flips the model every second.
+
 ## 0.12.2 — Connections fixes
 
 - **Location database that fails to load no longer silences lookups.** A wrong-type, truncated or oversized `dbip-city-lite.mmdb` at startup used to take the lookup worker down: peers stayed unlocated, the status read "Location lookup has not started." and **Download / update locations** hung at 90 %. The failure is now reported as "Local location database could not be read." and a later download or reload recovers.
