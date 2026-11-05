@@ -1386,16 +1386,23 @@ public class BatteryUiTests
 
     private static void AssertChartText(FrameworkElement chart, string family)
     {
-        static IEnumerable<GlyphRunDrawing> Glyphs(Drawing drawing)
+        // Each glyph's bounds are carried through its groups' transforms and intersected with their clips: the scrolling
+        // time labels are deliberately clipped to a band under the plot, so only the visible part has to lie inside the chart.
+        static IEnumerable<(GlyphRunDrawing Glyph, Rect Visible)> Glyphs(Drawing drawing, Transform transform, Rect clip)
         {
-            if (drawing is GlyphRunDrawing glyph) yield return glyph;
+            if (drawing is GlyphRunDrawing glyph) { var visible = transform.TransformBounds(glyph.Bounds); visible.Intersect(clip); yield return (glyph, visible); }
             if (drawing is DrawingGroup group)
+            {
+                var inner = clip;
+                if (group.ClipGeometry is { } geometry) inner.Intersect(transform.TransformBounds(geometry.Bounds));
+                var next = group.Transform is { } local ? new MatrixTransform(local.Value * transform.Value) : transform;
                 foreach (var child in group.Children)
-                    foreach (var nested in Glyphs(child)) yield return nested;
+                    foreach (var nested in Glyphs(child, next, inner)) yield return nested;
+            }
         }
-        var text = Glyphs(VisualTreeHelper.GetDrawing(chart)!).ToArray(); Assert.NotEmpty(text);
+        var text = Glyphs(VisualTreeHelper.GetDrawing(chart)!, Transform.Identity, new Rect(-1e9, -1e9, 2e9, 2e9)).ToArray(); Assert.NotEmpty(text);
         bool installed = Fonts.SystemFontFamilies.Any(font => font.FamilyNames.Values.Any(name => name.Equals(family, StringComparison.OrdinalIgnoreCase)));
-        foreach (var glyph in text)
+        foreach (var (glyph, visible) in text)
         {
             bool runic = glyph.GlyphRun.GlyphTypeface.FamilyNames.Values.Contains("Noto Sans Runic");
             if (runic) Assert.True(Theme.ElderScrolls && !SystemParameters.HighContrast);
@@ -1405,8 +1412,9 @@ public class BatteryUiTests
                 Assert.Contains(glyph.GlyphRun.GlyphTypeface.FamilyNames.Values, name => name.Equals(expected, StringComparison.OrdinalIgnoreCase));
                 Assert.Equal(ResourceColor("Muted"), ((SolidColorBrush)glyph.ForegroundBrush).Color);
             }
-            Assert.True(glyph.Bounds.Left >= -.01 && glyph.Bounds.Right <= chart.ActualWidth + .01 && glyph.Bounds.Top >= -.01 && glyph.Bounds.Bottom <= chart.ActualHeight + .01,
-                $"{chart.GetType().Name} {family} text clipped: {glyph.Bounds} in {chart.RenderSize}.");
+            if (visible.IsEmpty) continue; // Entirely inside a clip band: nothing of it shows.
+            Assert.True(visible.Left >= -.01 && visible.Right <= chart.ActualWidth + .01 && visible.Top >= -.01 && visible.Bottom <= chart.ActualHeight + .01,
+                $"{chart.GetType().Name} {family} text clipped: {visible} in {chart.RenderSize}.");
         }
     }
 
