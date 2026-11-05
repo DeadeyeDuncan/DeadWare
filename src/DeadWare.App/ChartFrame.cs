@@ -77,6 +77,35 @@ internal static class ChartFrame
         }
     }
 
+    /// <summary>Tick labels that scroll with the traces: drawn 4 px under the plot inside <paramref name="scroll"/> (the same
+    /// transform the traces ride), clipped to the band left of the right-aligned "Now" so they slide in under it and out at the
+    /// left edge instead of jumping at each poll. Labels are thinned by ordinal (every k-th tick, k from the widest label and the
+    /// tick spacing), so the kept set is the same from one poll to the next.</summary>
+    public static void ScrollingTicks(DrawingContext dc,Rect plot,IReadOnlyList<(double X,string Label,long Ordinal)> ticks,Typeface typeface,double pixelsPerDip,bool compact,Transform scroll,string nowLabel="Now")
+    {
+        if(plot.IsEmpty||plot.Width<=0||plot.Height<=0)return;
+        var muted=Theme.Brush("Muted");
+        double size=compact?10:FontSize;
+        var now=Text(nowLabel,typeface,pixelsPerDip,muted,size);
+        double labelY=plot.Bottom+4;
+        dc.DrawText(now,new(plot.Right-now.Width,labelY));
+        if(ticks.Count==0)return;
+        var texts=new FormattedText[ticks.Count];double widest=0,height=0;
+        for(int i=0;i<ticks.Count;i++){texts[i]=Text(ticks[i].Label,typeface,pixelsPerDip,muted,size);widest=Math.Max(widest,texts[i].Width);height=Math.Max(height,texts[i].Height);}
+        double spacing=ticks.Count>1?Math.Abs(ticks[1].X-ticks[0].X):double.PositiveInfinity;
+        long stride=spacing>0&&double.IsFinite(spacing)?Math.Max(1,(long)Math.Ceiling((widest+6)/spacing)):1;
+        double limit=plot.Right-now.Width-6;
+        if(limit<=plot.Left)return;
+        dc.PushClip(new RectangleGeometry(new Rect(plot.Left,labelY,limit-plot.Left,height+2)));
+        dc.PushTransform(scroll);
+        for(int i=0;i<ticks.Count;i++)
+        {
+            if(ticks[i].Ordinal%stride!=0)continue;
+            dc.DrawText(texts[i],new(ticks[i].X-texts[i].Width/2,labelY));
+        }
+        dc.Pop();dc.Pop();
+    }
+
     /// <summary>Draws the hover chip 12 px beside <paramref name="anchor"/>, flipped to the left when it would cross the plot's right edge,
     /// clamped vertically inside the plot. Returns the chip rectangle.</summary>
     public static Rect Chip(DrawingContext dc,Point anchor,Rect plot,IReadOnlyList<(string Text,Brush Color)> lines,Typeface typeface,double pixelsPerDip,bool compact)

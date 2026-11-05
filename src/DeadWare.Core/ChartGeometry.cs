@@ -2,7 +2,9 @@ namespace DeadWare.Core;
 
 public readonly record struct ChartPoint(double X,double Y);
 public readonly record struct CubicSegment(ChartPoint Control1,ChartPoint Control2,ChartPoint End);
-public readonly record struct TimeTick(double MonotonicSeconds,string Label);
+/// <summary><paramref name="Ordinal"/> is the tick's wall-clock time divided by the step: stable across polls, so a renderer
+/// that draws every k-th label keeps the same labels while the ticks slide.</summary>
+public readonly record struct TimeTick(double MonotonicSeconds,string Label,long Ordinal=0);
 
 /// <summary>Fritsch–Carlson monotone cubic interpolation: curves never overshoot the samples they pass through.</summary>
 public static class MonotoneSpline
@@ -64,7 +66,7 @@ public static class TimeTicks
             double age=local-t;
             var instant=DateTimeOffset.FromUnixTimeSeconds(utc-(long)age);
             var wall=zone is null?instant.ToOffset(nowWallClock.Offset):TimeZoneInfo.ConvertTime(instant,zone);
-            ticks.Add(new(nowMonotonic-age,wall.ToString(format,System.Globalization.CultureInfo.InvariantCulture)));
+            ticks.Add(new(nowMonotonic-age,wall.ToString(format,System.Globalization.CultureInfo.InvariantCulture),t/step));
         }
         ticks.Reverse();
         // The widget used to keep only the two ticks nearest "Now"; the nearer one then collided with the "Now" label, leaving one.

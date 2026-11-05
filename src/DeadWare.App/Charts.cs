@@ -326,9 +326,6 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
             double value=maximum*i/2,y=top+ph*(1-value/maximum);
             lines[i]=(y,Axis(value));if(leftLabels is not null)leftLabels[i]=(y,FanAxis(fanMaximum*i/2));
         }
-        var ticks=TimeTicks.For(session.HistorySeconds,now,frame.WallNow,pw,compact,TimeZoneInfo.Local).Select(t=>(left+pw*(1-(now-t.MonotonicSeconds)/session.HistorySeconds),t.Label)).ToArray();
-        ChartFrame.Grid(dc,plot,lines,ticks,typeface,pixelsPerDip,compact,leftLabels);
-        dc.PushClip(new RectangleGeometry(plot));
         // Retained WPF transform scrolls the recorded trace between polls without rebuilding it each frame.
         var scroll=new TranslateTransform();
         double interval=Math.Min(1,session.Settings.PollingIntervalSeconds);
@@ -336,6 +333,11 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
         bool anyPoints=frame.Specs.Where(s=>!s.Core&&!s.Local).Any(s=>frame.Paths[s.Metric].Points.Count>0);
         if(!hit&&IsLoaded&&IsVisible&&anyPoints)scroll.BeginAnimation(TranslateTransform.XProperty,new DoubleAnimation(0,-pw/session.HistorySeconds*interval,TimeSpan.FromSeconds(interval)));
         else if(hit)scroll.X=-pw/session.HistorySeconds*Math.Clamp(session.Collector.ElapsedSeconds-now,0,interval);
+        // Value lines stay put; the time labels ride the same scroll as the traces so they never jump at a poll.
+        var ticks=TimeTicks.For(session.HistorySeconds,now,frame.WallNow,pw,compact,TimeZoneInfo.Local).Select(t=>(left+pw*(1-(now-t.MonotonicSeconds)/session.HistorySeconds),t.Label,t.Ordinal)).ToArray();
+        ChartFrame.Grid(dc,plot,lines,[],typeface,pixelsPerDip,compact,leftLabels,nowLabel:null);
+        ChartFrame.ScrollingTicks(dc,plot,ticks,typeface,pixelsPerDip,compact,scroll);
+        dc.PushClip(new RectangleGeometry(plot));
         dc.PushTransform(scroll);
         // Cores sit underneath the primary and comparison traces.
         foreach(var spec in frame.Specs.Where(s=>s.Core))DrawTrace(dc,frame.Paths[spec.Metric],spec,plot,null,now);
@@ -507,6 +509,11 @@ internal sealed class ChartCard : Border
     private readonly Border? tint;
     private readonly TextBlock[] overviewStats=[];
     private readonly string? driveId;
+    /// <summary>The drive named in the Disk card's subtitle; another drive takes over only after it has been busier for
+    /// <see cref="BusiestHold"/> consecutive polls, so bursty I/O across many drives does not flip the name every second.</summary>
+    private string? busiestId;
+    private int busiestStreak;
+    internal const int BusiestHold=5;
     public ChartCard(UiSession session,string kind,bool popButton=true):this(session,kind,popButton,false) {}
     public ChartCard(UiSession session,string kind,bool popButton,bool overview,string? driveId=null)
     {
@@ -627,7 +634,6 @@ internal sealed class ChartCard : Border
         {
             value.Text=Ui.Bytes(current,true);
             var drives=data?.Storage.Drives??[];
-            double Rate(StorageDrive d)=>(session.Value(StorageMetrics.Key(d.Id,"read"))??0)+(session.Value(StorageMetrics.Key(d.Id,"write"))??0);
             var only=driveId is null?null:drives.FirstOrDefault(d=>d.Id==driveId);
             if(driveId is not null&&overview)
             {
@@ -638,7 +644,7 @@ internal sealed class ChartCard : Border
             }
             else if(driveId is not null)subtitle.Text=only is null?"Drive not detected":$"{only.Model} · ↑ {Ui.Bytes(session.Stale?null:session.Value(StorageMetrics.Key(driveId,"write")),true)} write";
             else subtitle.Text=data is null?"Discovering drives…":drives.Count==0?"No drives detected"
-                :$"{drives.OrderByDescending(Rate).First().Model} \u00b7 {drives.Count} drive{(drives.Count==1?"":"s")}";
+                :$"{Busiest(drives).Model} \u00b7 {drives.Count} drive{(drives.Count==1?"":"s")}";
         }
         else if(kind=="memory")
         {
@@ -653,6 +659,18 @@ internal sealed class ChartCard : Border
             if(current is null&&data is not null)subtitle.Text+=" · "+(session.Stale?"stale":"sensor unavailable");
         }
         if(overview)subtitle.ToolTip=subtitle.Text;
+    }
+    /// <summary>The drive to name: the current one while it is present, until a different drive has led for <see cref="BusiestHold"/> polls in a row.</summary>
+    private StorageDrive Busiest(IReadOnlyList<StorageDrive> drives)
+    {
+        double Rate(StorageDrive d)=>(session.Value(StorageMetrics.Key(d.Id,"read"))??0)+(session.Value(StorageMetrics.Key(d.Id,"write"))??0);
+        var leader=drives.OrderByDescending(Rate).ThenBy(d=>d.Index).First();
+        var current=busiestId is null?null:drives.FirstOrDefault(d=>d.Id==busiestId);
+        if(current is null||leader.Id==current.Id){busiestId=leader.Id;busiestStreak=0;return current??leader;}
+        // A tie (both idle) keeps the current drive; a strictly busier drive has to hold the lead.
+        if(Rate(leader)<=Rate(current)){busiestStreak=0;return current;}
+        if(++busiestStreak<BusiestHold)return current;
+        busiestId=leader.Id;busiestStreak=0;return leader;
     }
     private void UpdateStatistics(Summary summary)
     {

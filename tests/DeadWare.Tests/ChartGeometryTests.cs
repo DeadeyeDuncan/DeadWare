@@ -24,6 +24,16 @@ public sealed class ChartGeometryTests
         Assert.Equal(["14:28","14:29","14:30","14:31","14:32"],ticks.Select(t=>t.Label));
         Assert.Equal(1000-40,ticks[^1].MonotonicSeconds);
     }
+    [Fact] public void Tick_ordinals_are_wall_clock_multiples_of_the_step_and_stable_across_polls()
+    {
+        var now=new DateTimeOffset(2026,11,2,14,32,40,TimeSpan.Zero);
+        var ticks=TimeTicks.For(300,1000,now,330,false);
+        Assert.Equal(new DateTimeOffset(2026,11,2,14,32,0,TimeSpan.Zero).ToUnixTimeSeconds()/60,ticks[^1].Ordinal);
+        for(int i=1;i<ticks.Count;i++)Assert.Equal(ticks[i-1].Ordinal+1,ticks[i].Ordinal);
+        // A poll later the same wall-clock ticks keep their ordinals, so a renderer thinning by ordinal keeps the same labels.
+        var later=TimeTicks.For(300,1001,now.AddSeconds(1),330,false);
+        Assert.Equal(ticks.Select(t=>t.Ordinal),later.Select(t=>t.Ordinal));
+    }
     [Fact] public void Narrow_plots_double_the_step_and_keep_two_ticks()
     {
         var now=new DateTimeOffset(2026,11,2,14,32,40,TimeSpan.Zero);
