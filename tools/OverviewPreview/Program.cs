@@ -195,7 +195,9 @@ internal static class Program
             root.Measure(new Size(width,1040));root.Arrange(new Rect(0,0,width,1040));root.UpdateLayout();Pump();
             if(!ReferenceEquals(root.Background,Application.Current.Resources["WindowSurface"]))throw new InvalidOperationException("Glass window surface did not update with the theme.");
             var charts=Descendants(root).OfType<FrameworkElement>().Where(e=>e.GetType().Name=="HistoryChart").ToArray();
-            if(charts.Length!=7)throw new InvalidOperationException("Expected all seven Overview charts.");
+            // Seven fixed cards, then one Disk card per drive the sample storage reports (0.12.1).
+            int expectedCharts=7+SampleStorage.Drives.Count;
+            if(charts.Length!=expectedCharts)throw new InvalidOperationException($"Expected {expectedCharts} Overview charts (seven cards plus one per sample drive), found {charts.Length}.");
             foreach(var chart in charts)
             {
                 if(chart.ActualWidth<160||chart.ActualHeight<65)throw new InvalidOperationException($"Chart area too small: {chart.RenderSize}");

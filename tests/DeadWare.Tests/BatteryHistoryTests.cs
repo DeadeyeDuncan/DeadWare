@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using DeadWare.Core;
 using Xunit;
 
@@ -16,6 +17,46 @@ public class BatteryHistoryTests
         var result = BatteryReading.FromWindows(ac, flags, percent, saver);
         Assert.Equal(expected, result.Percentage); Assert.Equal(state, result.PowerState);
         Assert.Equal(saving, result.SaverEnabled);
+    }
+
+    [Theory]
+    [InlineData((byte)0, 1, true)]   // Energy saver standard: Windows 11 24H2+ leaves the legacy flag at 0
+    [InlineData((byte)0, 2, true)]   // high savings
+    [InlineData((byte)1, 2, true)]
+    [InlineData((byte)0, 0, false)]
+    [InlineData((byte)1, 0, true)]   // the legacy flag still counts when it reports on
+    [InlineData((byte)255, 0, false)] // a reported level settles an unknown legacy flag
+    [InlineData((byte)255, 1, true)]
+    public void Energy_saver_level_decides_saver_where_the_legacy_flag_stays_off(byte legacy, int energySaver, bool saving)
+        => Assert.Equal(saving, BatteryReading.FromWindows(0, 1, 60, legacy, energySaver).SaverEnabled);
+
+    [Fact]
+    public void Without_an_energy_saver_level_the_legacy_flag_decides_alone()
+    {
+        Assert.False(BatteryReading.FromWindows(0, 1, 60, 0, null).SaverEnabled);
+        Assert.True(BatteryReading.FromWindows(0, 1, 60, 1, null).SaverEnabled);
+        Assert.Null(BatteryReading.FromWindows(0, 1, 60, 3, null).SaverEnabled);
+    }
+
+    [Fact]
+    public void Energy_saver_setting_is_read_from_its_own_guid_and_dword()
+    {
+        // POWERBROADCAST_SETTING: the setting GUID, a DWORD DataLength, then the data (here the ENERGY_SAVER_STATUS DWORD).
+        static byte[] Setting(Guid guid, uint length, uint level)
+        {
+            var bytes = new byte[24]; Assert.True(guid.TryWriteBytes(bytes));
+            BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(16), length);
+            BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(20), level);
+            return bytes;
+        }
+        Assert.Equal(new Guid("550E8400-E29B-41D4-A716-446655440000"), EnergySaver.StatusSetting);
+        Assert.Equal(0, EnergySaver.Parse(Setting(EnergySaver.StatusSetting, 4, 0)));
+        Assert.Equal(1, EnergySaver.Parse(Setting(EnergySaver.StatusSetting, 4, 1)));
+        Assert.Equal(2, EnergySaver.Parse(Setting(EnergySaver.StatusSetting, 4, 2)));
+        Assert.Null(EnergySaver.Parse(Setting(EnergySaver.StatusSetting, 4, 3)));   // unknown level
+        Assert.Null(EnergySaver.Parse(Setting(EnergySaver.StatusSetting, 2, 1)));   // no DWORD of data
+        Assert.Null(EnergySaver.Parse(Setting(new Guid("E00958C0-C213-4ACE-AC77-FECCED2EEEA5"), 4, 1))); // legacy battery-saver setting
+        Assert.Null(EnergySaver.Parse(Setting(EnergySaver.StatusSetting, 4, 1).AsSpan(0, 23)));
     }
 
     [Fact]
