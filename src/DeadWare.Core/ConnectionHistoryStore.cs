@@ -455,6 +455,8 @@ public sealed class ConnectionHistoryStore
     private static string Csv(object? value)
     {
         string text=Convert.ToString(value,CultureInfo.InvariantCulture)??"";
+        // Only text can carry a formula; a negative coordinate or rate keeps its leading minus.
+        if(value is not string) return "\""+text+"\"";
         // Neutralize before quoting, including formulas hidden behind whitespace or control characters.
         bool formula=text.TrimStart().FirstOrDefault() is '=' or '+' or '-' or '@';
         bool control=text.Any(char.IsControl);

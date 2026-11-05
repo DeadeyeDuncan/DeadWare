@@ -291,6 +291,16 @@ public class ConnectionServiceTests
         service.TryRecord(Reading(1,1).Connections! with {DroppedEvents=3,LostEvents=2,Complete=false});
         Assert.Contains("3 dropped",service.Live.Status);Assert.Contains("2 lost",service.Live.Status);await service.StopAsync();
     }
+    [Fact] public async Task Lookup_worker_survives_a_database_that_fails_to_load_at_start()
+    {
+        // A faulting first Reload used to take the worker down: lookups never resolved and ReloadGeolocationAsync never completed.
+        var resolver=new ConnectionGeolocation("unused",_=>throw new System.IO.InvalidDataException("Expected a DB-IP City Lite MMDB database."));
+        var service=Service((_,_)=>{},resolver);service.Start();
+        await service.ReloadGeolocationAsync().WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Contains("could not be read",service.LookupStatus);
+        service.TryRecord(Reading(1,1));await service.ReloadGeolocationAsync().WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Null(Assert.Single(service.Live.Connections).Location);await service.StopAsync();
+    }
     [Fact] public async Task Export_refuses_to_overwrite_an_existing_file_and_preserves_its_bytes()
     {
         string root=System.IO.Path.Combine(System.IO.Path.GetTempPath(),"DeadWare-connections-"+Guid.NewGuid().ToString("N"));System.IO.Directory.CreateDirectory(root);

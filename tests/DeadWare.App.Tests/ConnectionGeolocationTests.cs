@@ -65,6 +65,17 @@ public sealed class ConnectionGeolocationTests
     }
 
     [Fact]
+    public void Wrong_type_or_oversized_database_is_reported_not_thrown()
+    {
+        // MmdbReader and Validate throw InvalidDataException (not an IOException); Reload must report it, not propagate it.
+        int opens = 0;
+        using var resolver = new ConnectionGeolocation("unused", _ => { opens++; throw new InvalidDataException("Expected a DB-IP City Lite MMDB database."); });
+        resolver.Reload();
+        Assert.Equal(1, opens); Assert.Contains("could not be read", resolver.Status); Assert.Null(resolver.DatabaseDate); Assert.Null(resolver.Lookup("8.8.8.8"));
+        Assert.True(ConnectionGeolocation.IsDatabaseFailure(new InvalidDataException()));
+    }
+
+    [Fact]
     public async Task Reload_and_dispose_wait_for_an_active_lookup_and_failed_reload_retains_old_reader()
     {
         using var entered = new ManualResetEventSlim(); using var release = new ManualResetEventSlim();

@@ -167,7 +167,9 @@ public sealed class ConnectionService
     {
         try
         {
-            if(resolver is ConnectionGeolocation geo)geo.Reload();
+            // The first load must never take the worker down: an unreadable file leaves lookups answering null until a reload.
+            try {if(resolver is ConnectionGeolocation geo)geo.Reload();}
+            catch(Exception error){lock(gate)lookupStatus=$"Location lookup unavailable ({error.GetType().Name}); traffic remains available.";}
             RefreshLookupStatus();
             await foreach(var request in lookups.Reader.ReadAllAsync().ConfigureAwait(false))
             {

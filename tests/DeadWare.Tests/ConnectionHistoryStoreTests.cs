@@ -172,6 +172,14 @@ public sealed class ConnectionHistoryStoreTests(ITestOutputHelper testOutput) : 
         foreach(string prefix in new[]{"=","+","-","@"}) Assert.Contains("\"'"+prefix+"formula\"",csv);
         Assert.Contains("\"' =hidden\"",csv); Assert.Contains("\"safe,\"\"quoted\"\"\"",csv); Assert.DoesNotContain('\t',csv);
     }
+    [Fact] public void Csv_keeps_negative_coordinates_and_rates_numeric()
+    {
+        // Chicago's longitude and the origin's are negative; the formula guard must leave numbers alone.
+        var store=Store(); store.Append([Row(name:"-formula")],[],Epoch.AddMinutes(1));
+        using var output=new StringWriter(); store.ExportCsv(output,Query()); string csv=output.ToString();
+        string row=csv.Split(Environment.NewLine,StringSplitOptions.RemoveEmptyEntries)[1];
+        Assert.Contains("\"'-formula\"",row); Assert.Contains("\"-87\"",row); Assert.Contains("\"-80\"",row); Assert.DoesNotContain("\"'-8",row);
+    }
     [Fact] public void Markers_are_bounded_while_full_summaries_include_local_unlocated_and_every_country()
     {
         var store=Store(); var rows=Enumerable.Range(0,300).Select(i=>Row(i,"b"+i,address:"8.9."+(i/250)+"."+(i%250+1)) with {Location=Place with {City="City "+i,Point=new(i%90,i%180)}}).ToList();
