@@ -123,6 +123,28 @@ internal static class LiveRenderingUiChecks
             Assert.Same(Application.Current.Resources["Graph/cpu"],trace.Pen.Brush);
             Theme.Apply("Midnight");cpu.Refresh();Draw(cpu);
         }
+        // Time labels ride the trace scroll: they sit in a group carrying the scroll transform, clipped left of a static "Now",
+        // and are thinned by ordinal so the kept labels do not change when the oldest tick leaves at the next poll.
+        {
+            var plot=new Rect(10,10,300,100);var scroll=new TranslateTransform(-17,0);
+            (double X,string Label,long Ordinal)[] Ticks(int skip)=>Enumerable.Range(skip,12-skip).Select(i=>(plot.Left+i*18.0,$"{i:00}:00",1000L+i)).ToArray();
+            IEnumerable<Drawing> All(Drawing d)=>d is DrawingGroup g?g.Children.SelectMany(All).Prepend(d):[d];
+            string Text(GlyphRunDrawing g)=>new string(g.GlyphRun.Characters.ToArray());
+            long[] Kept(int skip)
+            {
+                var group=new DrawingGroup();
+                using(var context=group.Open())ChartFrame.ScrollingTicks(context,plot,Ticks(skip),Theme.ChartTypeface,1,false,scroll);
+                var scrolled=All(group).OfType<DrawingGroup>().Single(g=>ReferenceEquals(g.Transform,scroll));
+                Assert.Contains(Glyphs(group),g=>Text(g)=="Now");Assert.DoesNotContain(Glyphs(scrolled),g=>Text(g)=="Now");
+                Assert.Contains(All(group).OfType<DrawingGroup>(),g=>g.ClipGeometry is RectangleGeometry clip&&clip.Rect.Left==plot.Left&&clip.Rect.Right<plot.Right-20&&clip.Rect.Top>=plot.Bottom);
+                return Glyphs(scrolled).Select(g=>1000L+int.Parse(Text(g)[..2])).ToArray();
+            }
+            var kept=Kept(0);
+            Assert.True(kept.Length>=2&&kept.Length<12,$"Labels 18 px apart must be thinned: {kept.Length} of 12 kept.");
+            long stride=kept[1]-kept[0];Assert.True(stride>=2);Assert.All(kept,o=>Assert.Equal(0,o%stride));
+            // Dropping the oldest tick (the next poll) keeps exactly the same labels, minus that tick if it was one of them.
+            Assert.Equal(kept.Where(o=>o!=1000),Kept(1));
+        }
         // An RPM overlay draws its labels inside the plot: the plot keeps its geometry and the labels never touch the value labels.
         {
             var temp=new HistoryChart(session,"cputemp",false);temp.Measure(new(600,200));temp.Arrange(new Rect(0,0,600,200));temp.UpdateLayout();

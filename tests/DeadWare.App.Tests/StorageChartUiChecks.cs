@@ -34,6 +34,7 @@ internal static class StorageChartUiChecks
             Storage_card_draws_read_and_write_and_per_drive_lines();
             Storage_card_traces_removable_drives_too();
             Storage_card_without_drives_shows_no_drives_detected();
+            Storage_card_subtitle_holds_the_busiest_drive();
             Storage_hover_lists_drives_by_rate();
         }
         finally { CultureInfo.CurrentCulture = culture; }
@@ -195,6 +196,31 @@ internal static class StorageChartUiChecks
         Assert.Contains("No drives detected", ((TextBlock)empty.GetType().GetField("subtitle", Fields)!.GetValue(empty)!).Text);
         var busy = Card(Session([Hdd, Nvme]));
         Assert.Equal("Fast NVMe · 2 drives", ((TextBlock)busy.GetType().GetField("subtitle", Fields)!.GetValue(busy)!).Text);
+    }
+
+    private static void Storage_card_subtitle_holds_the_busiest_drive()
+    {
+        // The named drive changes only after another drive has led for BusiestHold polls; an idle tie keeps the current one.
+        var session = Session([Hdd, Nvme]); var card = Card(session);
+        string Subtitle() => ((TextBlock)card.GetType().GetField("subtitle", Fields)!.GetValue(card)!).Text;
+        void Update() => typeof(ChartCard).GetMethod("UpdateReadings", Fields)!.Invoke(card, []);
+        Assert.Equal("Fast NVMe · 2 drives", Subtitle());
+        SetRates(session, hdd: 9_000_000, nvme: 1_000);
+        for (int i = 0; i < ChartCard.BusiestHold - 1; i++) { Update(); Assert.Equal("Fast NVMe · 2 drives", Subtitle()); }
+        Update(); Assert.Equal("Slow HDD · 2 drives", Subtitle());
+        SetRates(session, hdd: 1_000, nvme: 9_000_000);
+        for (int i = 0; i < ChartCard.BusiestHold; i++) Update();
+        Assert.Equal("Fast NVMe · 2 drives", Subtitle());
+        SetRates(session, hdd: 0, nvme: 0);
+        for (int i = 0; i < ChartCard.BusiestHold + 1; i++) { Update(); Assert.Equal("Fast NVMe · 2 drives", Subtitle()); }
+    }
+
+    private static void SetRates(UiSession session, double hdd, double nvme)
+    {
+        var collector = session.Collector;
+        var latest = (Reading)collector.GetType().GetField("latest", Fields)!.GetValue(collector)!;
+        var values = new Dictionary<string, double?>(latest.Sample.Values) { ["storage/HDD1/read"] = hdd, ["storage/HDD1/write"] = 0, ["storage/NVME1/read"] = nvme, ["storage/NVME1/write"] = 0 };
+        collector.GetType().GetField("latest", Fields)!.SetValue(collector, latest with { Sample = latest.Sample with { Values = values } });
     }
 
     private static void Storage_hover_lists_drives_by_rate()

@@ -67,7 +67,22 @@ internal static class CpuCoreStyleUiChecks
             session.ApplyStyleToAllCores(-5,true);Assert.Equal(11,changes);
             session.ResetCpuCoreStyles();Assert.Equal(["cpu"],session.Settings.GraphColors.Keys);Assert.Empty(session.Settings.GraphStyles);
         }
-        finally {session.SetGraphColor("cpu",null);Theme.SetGraphColors(new Dictionary<string,string>());Directory.Delete(Path.GetDirectoryName(settingsPath)!,true);}
+        finally
+        {
+            session.SetGraphColor("cpu",null);Theme.SetGraphColors(new Dictionary<string,string>());
+            // Every setter above queued a fire-and-forget save; the writer serialises them and skips stale revisions, so one
+            // awaited save means no settings.json.*.tmp is still being written when the folder goes.
+            CompleteSettingsSave(session);
+            DeleteWithRetry(Path.GetDirectoryName(settingsPath)!);
+        }
+    }
+    private static void DeleteWithRetry(string directory)
+    {
+        for(int attempt=1;;attempt++)
+        {
+            try {Directory.Delete(directory,true);return;}
+            catch(Exception e) when(attempt<10&&e is IOException or UnauthorizedAccessException) {Thread.Sleep(50);}
+        }
     }
     /// <summary>The CPU card's colour button opens the popup without cores and the CpuCoreStyleWindow with them; the window's cards and bulk buttons.</summary>
     internal static void RunWindow()
