@@ -31,9 +31,12 @@ jobs:
           retention-days: 14
       - name: Render previews
         shell: pwsh
+        # pwsh reports only the last command's exit code, so check each render or an earlier failure is masked.
         run: |
           dotnet run --project tools/OverviewPreview -c Release -- --render artifacts/preview-overview
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           dotnet run --project tools/OverviewPreview -c Release -- --render-shell artifacts/preview-shell
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: always()
         with:

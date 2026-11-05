@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.12.4 — Energy saver in battery history
+
+- **Energy saver turns the battery line amber.** On Windows 11 24H2 and later, Energy saver replaced battery saver, and its standard level is not reported through the older battery-saver flag DeadWare read. Periods with Energy saver on were therefore recorded as saver off, and the Battery history charge line stayed its normal colour. DeadWare now also reads Windows' own Energy saver status, without administrator access, so the line turns amber and the Saver marks fill while Energy saver is on, on battery or plugged in. Earlier Windows versions keep using the battery-saver flag. Periods recorded before this update keep the state they were saved with.
+
 ## 0.12.3 — Gliding time labels and a steadier Disk subtitle
 
 - **Time labels glide with the graphs.** The wall-clock ticks under every live graph (dashboard cards, pop-outs and the widget) now ride the same scroll as the traces instead of jumping to new positions at each poll: labels slide in under **Now** and out at the left edge. Which labels are shown is decided from the tick's wall-clock time, so the set does not change as ticks enter and leave.

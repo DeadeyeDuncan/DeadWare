@@ -50,7 +50,7 @@ internal sealed class BatteryHistoryPage : ScrollViewer
         hint.Margin = new(0, 10, 0, 0); history.Children.Add(hint); body.Children.Add(Card(history));
         var settings = new StackPanel(); settings.Children.Add(Ui.Heading("Keep a lasting record", 16)); recording.Margin = new(0, 12, 0, 8); settings.Children.Add(recording);
         settings.Children.Add(recordingStatus); storage.Margin = new(0, 8, 0, 8); settings.Children.Add(storage);
-        settings.Children.Add(Ui.Text("One observation per minute, plus charging and battery-saver changes, retained indefinitely. Recording begins with this version while DeadWare runs; sleep and stopped monitoring leave gaps. Summarizing the chart keeps the original observations. Export the selected range as a new CSV file to keep a backup.", 12, "Muted"));
+        settings.Children.Add(Ui.Text("One observation per minute, plus charging and energy saver (battery saver) changes, retained indefinitely. Recording begins with this version while DeadWare runs; sleep and stopped monitoring leave gaps. Summarizing the chart keeps the original observations. Export the selected range as a new CSV file to keep a backup.", 12, "Muted"));
         var local = Ui.Text("History stays in this Windows profile and survives app upgrades. Copy battery-history.db while DeadWare is fully quit to back it up. A device reset or profile removal needs your own backup.", 11, "Muted"); local.Margin = new(0, 8, 0, 0); settings.Children.Add(local);
         body.Children.Add(Card(settings)); body.Children.Add(actionStatus);
         recording.IsChecked = session.Settings.BatteryRecording;
