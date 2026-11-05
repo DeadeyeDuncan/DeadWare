@@ -601,6 +601,8 @@ Pending until run on a physical machine; automated tests use synthetic traffic.
 
 Automated (authored without a .NET SDK; the pull request's Windows CI builds and runs both test projects): `Tick_ordinals_are_wall_clock_multiples_of_the_step_and_stable_across_polls`; a `LiveRenderingUiChecks` block asserting the labels sit in a group carrying the scroll transform, "Now" outside it, a clip ending before "Now", a thinning stride of at least two and an identical kept set after the oldest tick drops; `Storage_card_subtitle_holds_the_busiest_drive`.
 
+Two existing checks were adjusted for this change: `BatteryUiTests.AssertChartText` now carries each glyph through its drawing groups' transforms and clips and asserts only the visible part lies inside the chart, since a label sliding in under "Now" is deliberately clipped; and `CpuCoreStyleUiChecks` completes its last queued settings save before deleting its temporary folder (a pre-existing race with the snapshot writer's `settings.json.*.tmp` that CI hit on this branch).
+
 Pending until checked by eye on a physical machine: the labels move continuously with the traces on the widget and the overview at the 1-minute and 5-minute ranges with no jump at the poll, and the Disk subtitle holds its model through bursty activity on several drives.
 
 ## Connections review fixes (0.12.2)
