@@ -595,6 +595,18 @@ Pending until run on a physical machine; automated tests use synthetic traffic.
 - Run non-elevated, with per-app capture unavailable: the Network graph is unchanged and no local figure appears.
 - Per-core CPU usage on: the aggregate CPU line is not drawn; the GPU trace, header percentage and hover total remain.
 
+## Shutdown test clocks and warm stores (tests only, 2026-11-05)
+
+Two `CoolingShutdownTests` failed on the first Windows CI attempt of pull request #75 (run 42058957793) while the core test assembly ran alongside. Both were test defects exposed by slow first SQLite opens on a busy runner, not faults in the code under test, and no production code changed.
+
+`Normal_quit_is_bounded_and_publishes_final_connections_while_hardware_worker_is_stuck` saved 0 of 71 bytes. The test captured its wall-clock `now`, waited for the connection store's first open, then took the ledger's baseline snapshot with that `now` and the collector's monotonic time read after the open. At the final drain `ConnectionLedger.Take` found the wall-clock and monotonic intervals differing by the open's duration and, beyond its 2 s limit, broke the ledger and discarded the pending bytes. The `Observe` helper now reads both clocks itself, together, immediately before the snapshot; `now` only bounds the ±1-minute history query, which still covers the observation. Three more tests had the same latent pairing (the sign-out drain with a faulting subscriber, the synchronous history stop failure and the worker sample before the final drain), and every caller now uses the helper. `Hung_native_capture_stop_still_flushes_buffered_connections_within_the_deadline` already read both clocks together, before its store open; it now takes the pair from the helper after the open.
+
+`Session_ending_drains_history_even_when_hardware_worker_is_stuck` found the cooling drain unfinished when the 3 s session-ending window closed: inside that window the cooling, graph and battery services were each creating their database for the first time as well as draining. At a real sign-out the stores opened at startup, so the window only has to cover the drain. Before starting its stopwatch, the test now waits until each service has taken its record off its queue, which a worker does only after opening its store; the record stays in memory (an open minute, a 15-second batch) until the drain writes it. The 3 s deadline, the 2.8–4.5 s bound and every assertion are unchanged. The cancellation and cooling assertions, which shared a line, now sit on separate lines so a failure names its check.
+
+The 0.7.1 entry attributes earlier failures of these shutdown tests to thread-pool starvation. The clock pairing and the cold store creation inside the timed window are separate causes that the 0.7.1 changes did not address.
+
+Automated (authored without a .NET SDK; the pull request's Windows CI builds and runs both test projects): the existing `CoolingShutdownTests`, with no new tests. CI results for the final commit are recorded on the pull request.
+
 ## Gliding time labels and Disk subtitle hold (0.12.3)
 
 `HistoryChart` now builds the trace scroll transform before the frame and hands it to the new `ChartFrame.ScrollingTicks`, which draws the tick labels inside that transform under a clip from the plot's left edge to just before the right-aligned "Now"; `ChartFrame.Grid` keeps the static value lines. `TimeTick` gains an `Ordinal` (wall-clock seconds divided by the step) and labels are thinned by ordinal (every k-th tick, k from the widest label and the tick spacing) so the kept labels are the same from one poll to the next. `ChartCard.Busiest` names the Disk card's drive with hysteresis (`BusiestHold` = 5 polls; a tie keeps the current drive).
