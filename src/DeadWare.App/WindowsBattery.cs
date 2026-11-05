@@ -40,21 +40,27 @@ internal static class EnergySaverStatus
     private static readonly object gate = new();
     // The native registration holds a pointer to this delegate for the life of the process, so it stays rooted here.
     private static readonly PowerSettingCallback callback = OnChange;
+    // Set by the first reported level. Windows delivers the current level on a system thread just after registering.
+    private static readonly ManualResetEventSlim reported = new(false);
     private static IntPtr parameters, registration;
-    private static int level = -1;
+    private static int level = -1, attempts;
     private static bool attempted;
 
     /// <summary>The latest reported level (0 off, 1 standard, 2 high savings), or null before Windows reports one.</summary>
     public static int? Current => Volatile.Read(ref level) is >= 0 and var value ? value : null;
 
-    /// <summary>Registers once per process. Windows calls back immediately with the current level, then on every change.
-    /// A failed registration leaves <see cref="Current"/> null and is not retried.</summary>
+    /// <summary>Registration attempts this process has made: one after the first battery read, never more.</summary>
+    internal static int Attempts => Volatile.Read(ref attempts);
+
+    /// <summary>Registers once per process. Windows calls back with the current level just after registering, then on every
+    /// change. A failed registration leaves <see cref="Current"/> null and is not retried.</summary>
     public static void EnsureStarted()
     {
         if (Volatile.Read(ref attempted)) return;
         lock (gate)
         {
             if (attempted) return;
+            Volatile.Write(ref attempts, attempts + 1);
             try
             {
                 // DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS { Callback, Context }, kept for the life of the registration.
@@ -62,7 +68,14 @@ internal static class EnergySaverStatus
                 Marshal.WriteIntPtr(parameters, Marshal.GetFunctionPointerForDelegate(callback));
                 Marshal.WriteIntPtr(parameters, IntPtr.Size, IntPtr.Zero);
                 var setting = EnergySaver.StatusSetting;
-                if (PowerSettingRegisterNotification(ref setting, DeviceNotifyCallback, parameters, out var handle) == 0) registration = handle;
+                if (PowerSettingRegisterNotification(ref setting, DeviceNotifyCallback, parameters, out var handle) == 0)
+                {
+                    registration = handle;
+                    // The first level arrives on another thread after the call returns. Wait for it once, briefly, so the first
+                    // reading is not decided by the legacy flag alone (which would record a false "off" at every launch).
+                    // Windows without Energy saver never reports, and pays this once. The callback never takes the gate.
+                    reported.Wait(TimeSpan.FromMilliseconds(250));
+                }
             }
             catch (Exception error) when (error is DllNotFoundException or EntryPointNotFoundException) { }
             finally
@@ -76,7 +89,7 @@ internal static class EnergySaverStatus
     private static uint OnChange(IntPtr context, uint type, IntPtr setting)
     {
         // Runs on a system thread: an exception must never unwind into the native caller.
-        try { if (ReadSetting(type, setting) is { } value) Volatile.Write(ref level, value); }
+        try { if (ReadSetting(type, setting) is { } value) { Volatile.Write(ref level, value); reported.Set(); } }
         catch (Exception) { }
         return 0;
     }

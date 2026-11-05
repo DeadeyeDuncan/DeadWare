@@ -38,9 +38,9 @@ public sealed class WindowsBatteryTests
     [Fact]
     public void Reading_the_battery_subscribes_once_and_never_throws()
     {
-        // The runner may have no battery and may predate Energy saver: the level is then absent and the legacy flag decides.
-        var first = WindowsBattery.Read(); var second = WindowsBattery.Read();
-        Assert.NotNull(first); Assert.NotNull(second);
-        Assert.True(EnergySaverStatus.Current is null or >= 0 and <= 2, $"Energy saver level {EnergySaverStatus.Current}");
+        // Process-wide: however many reads (including other tests' collector polls), one registration attempt is made.
+        // The runner may have no battery and no Energy saver; the attempt counts whether or not Windows accepts it.
+        WindowsBattery.Read(); WindowsBattery.Read();
+        Assert.Equal(1, EnergySaverStatus.Attempts);
     }
 }
