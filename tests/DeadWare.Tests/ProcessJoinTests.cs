@@ -21,6 +21,30 @@ public class ProcessJoinTests
     [Fact] public void Exactly_half_misses_do_not_trip_the_guard()=>Assert.True(ProcessJoins.Network(Procs(4),[T(1,1,1,1),T(2,1,1,1),T(3,2,1,1),T(4,2,1,1)],true,"").State.Available);
     [Fact] public void Three_rows_never_trip_the_guard()=>Assert.True(ProcessJoins.Network(Procs(3),[T(1,2,1,1),T(2,2,1,1),T(3,2,1,1)],true,"").State.Available);
     [Fact] public void Capture_rows_for_pids_outside_the_scan_are_not_counted(){ var r=ProcessJoins.Network(Procs(4),[T(1,1,1,1),T(2,1,1,1),T(3,1,1,1),T(4,1,1,1),T(90,1,1,1),T(91,1,1,1),T(92,1,1,1)],true,"");Assert.True(r.State.Available);Assert.Equal(0,r.Misses);}
+    // EtwNetwork's status after a loss; it stays set on later takes, so the status alone never marks a take lossy.
+    const string NetworkLoss="ETW lost 12 events · attribution reset; totals cover activity since the latest loss";
+    // A lossy take resets the attribution ledger, so the capture is available but lists no rows: absent PIDs must not read as 0 B/s.
+    [Fact] public void Network_lossy_take_nulls_every_row_with_the_capture_status(){ var r=ProcessJoins.Network([P(8,1),P(9,1)],[],true,NetworkLoss,lossy:true);
+        Assert.False(r.State.Available);Assert.Equal(NetworkLoss,r.State.Status);Assert.Equal(0,r.Misses);
+        Assert.All(r.Processes,p=>{Assert.Null(p.DownloadPerSecond);Assert.Null(p.UploadPerSecond);Assert.Equal(ProcessGap.None,p.NetworkGap);});
+        var rows=ProcessJoins.Network([P(8,1)],[T(8,1,null,null)],true,NetworkLoss,lossy:true);
+        Assert.False(rows.State.Available);Assert.Null(rows.Processes[0].DownloadPerSecond);Assert.Equal(ProcessGap.None,rows.Processes[0].NetworkGap);}
+    [Fact] public void Network_take_that_is_not_lossy_is_unchanged(){ var r=ProcessJoins.Network([P(8,1),P(9,1)],[T(8,1,100,50)],true,NetworkLoss,lossy:false);
+        Assert.True(r.State.Available);Assert.Equal(100,r.Processes[0].DownloadPerSecond);Assert.Equal(50,r.Processes[0].UploadPerSecond);
+        Assert.Equal(0,r.Processes[1].DownloadPerSecond);Assert.Equal(0,r.Processes[1].UploadPerSecond);Assert.Equal(ProcessGap.None,r.Processes[1].NetworkGap);}
+    [Fact] public void Network_very_first_take_nulls_matched_rows_and_keeps_absent_pids_at_zero(){ var watch=new NetworkLossWatch();
+        var r=ProcessJoins.Network([P(8,1),P(9,1)],[T(8,1,null,null)],true,"",lossy:watch.Lossy(0));
+        Assert.True(r.State.Available);Assert.Null(r.Processes[0].DownloadPerSecond);Assert.Equal(ProcessGap.FirstSample,r.Processes[0].NetworkGap);
+        Assert.Equal(0,r.Processes[1].DownloadPerSecond);Assert.Equal(ProcessGap.None,r.Processes[1].NetworkGap);}
+    // CoverageFrom is null on the very first take too, and Complete is false after a drop that lost no events: only a growing loss count marks the reset.
+    [Fact] public void Loss_watch_flags_only_takes_whose_lost_count_grew(){ var ledger=new ConnectionLedger();var watch=new NetworkLossWatch();var t=new DateTimeOffset(2026,11,5,12,0,0,TimeSpan.Zero);
+        var first=ledger.Take(t,1);Assert.Null(first.CoverageFrom);Assert.False(watch.Lossy(first.LostEvents));
+        ledger.Record(null!,t.AddSeconds(1),10,true);var dropped=ledger.Take(t.AddSeconds(1),2);
+        Assert.False(dropped.Complete);Assert.Equal(1,dropped.DroppedEvents);Assert.False(watch.Lossy(dropped.LostEvents));
+        ledger.Break(3);var lossy=ledger.Take(t.AddSeconds(2),3);Assert.Equal(3,lossy.LostEvents);Assert.True(watch.Lossy(lossy.LostEvents));
+        Assert.False(watch.Lossy(ledger.Take(t.AddSeconds(3),4).LostEvents));
+        ledger.Break(2);Assert.True(watch.Lossy(ledger.Take(t.AddSeconds(4),5).LostEvents));}
+    [Fact] public void Loss_watch_flags_a_very_first_take_that_already_lost_events()=>Assert.True(new NetworkLossWatch().Lossy(5));
     [Fact] public void Disk_warm_up_is_first_sample_for_every_row(){ var r=ProcessJoins.Disk([P(8,1),P(9,1)],Take(warm:false));Assert.All(r.Processes,p=>{Assert.Null(p.DiskReadPerSecond);Assert.Equal(ProcessGap.FirstSample,p.DiskGap);});Assert.True(r.State.Available);}
     [Fact] public void Lossy_take_nulls_with_status(){ var r=ProcessJoins.Disk([P(8,1)],Take(lossy:true,status:"Windows dropped disk events",rates:[R(8,1,5,5)]));
         Assert.Equal("Windows dropped disk events",r.State.Status);Assert.False(r.State.Available);Assert.Null(r.Processes[0].DiskReadPerSecond);}

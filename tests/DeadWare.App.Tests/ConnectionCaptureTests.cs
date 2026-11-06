@@ -40,6 +40,24 @@ public class ConnectionCaptureTests
         var rejected=capture.TakeSnapshot(Time.AddSeconds(3),4).Connections;
         Assert.Equal(1,rejected.UnattributedEvents);Assert.False(rejected.Complete);
     }
+    // A take whose loss resets attribution stays available with no rows. CoverageFrom is null on the very first take too,
+    // so only the growing lost count marks it, and the process join then nulls every row with the ETW status.
+    [Fact] public void A_lossy_take_grows_the_lost_count_so_the_process_join_nulls_it_with_the_etw_status()
+    {
+        long loss=0;var watch=new NetworkLossWatch();
+        var capture=new EtwNetwork(_=>new(11,Time.Ticks,"fixture"),readLoss:()=>loss);
+        void Send(int second)=>capture.RecordEndpoint(11,Time.AddSeconds(second),25,true,IPAddress.Loopback,1,IPAddress.Parse("8.8.8.8"),443,ConnectionProtocol.Tcp);
+        ProcessSample[] scan=[new ProcessSample(11,Time.Ticks,"fixture",1,null,0,null,null,ProcessGap.None,null),new ProcessSample(12,Time.Ticks,"idle",1,null,0,null,null,ProcessGap.None,null)];
+        Send(0);var first=capture.TakeSnapshot(Time,1);
+        Assert.Null(first.Connections.CoverageFrom);Assert.False(watch.Lossy(first.Connections.LostEvents));
+        Send(1);loss=4;var lossy=capture.TakeSnapshot(Time.AddSeconds(1),2);
+        Assert.True(lossy.Connections.Available);Assert.Empty(lossy.Processes);Assert.True(watch.Lossy(lossy.Connections.LostEvents));
+        var join=ProcessJoins.Network(scan,lossy.Processes,lossy.Connections.Available,capture.Status,lossy:true);
+        Assert.False(join.State.Available);Assert.StartsWith("ETW lost 4 events",join.State.Status);Assert.All(join.Processes,p=>Assert.Null(p.DownloadPerSecond));
+        Send(2);var next=capture.TakeSnapshot(Time.AddSeconds(2),3);
+        Assert.False(watch.Lossy(next.Connections.LostEvents));Assert.Equal(25,Assert.Single(next.Processes).UploadBytesPerSecond);
+        Assert.True(ProcessJoins.Network(scan,next.Processes,next.Connections.Available,capture.Status,lossy:false).State.Available);
+    }
     [Fact] public async Task Loss_waits_for_the_accepted_process_and_endpoint_decision()
     {
         using var entered=new ManualResetEventSlim();using var release=new ManualResetEventSlim();
