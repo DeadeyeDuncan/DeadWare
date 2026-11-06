@@ -1,14 +1,27 @@
 namespace DeadWare.Core;
 public sealed record ProcessJoinResult(IReadOnlyList<ProcessSample> Processes,ProcessColumnState State,int Misses);
+/// <summary>Marks a network take whose ETW loss reset the per-app attribution: the capture's cumulative lost-event count grew since the previous take it saw.
+/// CoverageFrom cannot tell, because it is also null on the very first take, and neither can Complete, which a drop that lost no events also clears.</summary>
+public sealed class NetworkLossWatch
+{
+    long seen;
+    public bool Lossy(long cumulativeLostEvents)
+    {
+        bool lossy=cumulativeLostEvents>seen;
+        seen=cumulativeLostEvents;
+        return lossy;
+    }
+}
 /// <summary>Joins per-app network and disk rates to scanned processes by (Pid, Generation).</summary>
 public static class ProcessJoins
 {
     public const int MinimumMatchedRows=4;
     public const string NetworkUnmatched="Per-app traffic could not be matched to processes";
     public const string DiskUnmatched="Per-app disk activity could not be matched to processes";
-    public static ProcessJoinResult Network(IReadOnlyList<ProcessSample> processes,IReadOnlyList<ProcessTraffic> capture,bool captureAvailable,string captureStatus)
+    /// <param name="lossy">The take lost events, which reset the per-app attribution (see <see cref="NetworkLossWatch"/>): its capture lists no rows, so an absent PID is unknown rather than 0 B/s, and the column carries the capture status.</param>
+    public static ProcessJoinResult Network(IReadOnlyList<ProcessSample> processes,IReadOnlyList<ProcessTraffic> capture,bool captureAvailable,string captureStatus,bool lossy=false)
     {
-        if(!captureAvailable)return new(Map(processes,p=>p with{DownloadPerSecond=null,UploadPerSecond=null,NetworkGap=ProcessGap.None}),new(false,captureStatus),0);
+        if(!captureAvailable||lossy)return new(Map(processes,p=>p with{DownloadPerSecond=null,UploadPerSecond=null,NetworkGap=ProcessGap.None}),new(false,captureStatus),0);
         var rows=Latest(capture,c=>c.Pid);
         CountMisses(processes,rows,(c,gen)=>c.Generation==gen,out int rowsInScan,out int misses);
         if(Tripped(rowsInScan,misses,0))return new(Map(processes,p=>p with{DownloadPerSecond=null,UploadPerSecond=null,NetworkGap=ProcessGap.None}),new(false,NetworkUnmatched),misses);

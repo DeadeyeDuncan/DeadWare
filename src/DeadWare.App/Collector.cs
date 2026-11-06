@@ -157,6 +157,9 @@ public sealed class Collector : IAsyncDisposable
             // Built once, outside the pass, so a source that cannot even count processors stops the collector visibly.
             int processorCount=processes.ProcessorCount;
             var tracker=new ProcessActivityTracker(processorCount);
+            // Fed by every successful pass's take, monitoring on or off, so a loss marks only the take that reset attribution. A loss first
+            // seen by a failed pass's take marks the next successful one, whose attribution was also reset since the previous successful take.
+            var networkLoss=new NetworkLossWatch();
             while(!cancellation.IsCancellationRequested)
             {
                 intervalSeconds=PollingIntervalSeconds;
@@ -263,11 +266,12 @@ public sealed class Collector : IAsyncDisposable
                         providerStarted=Stopwatch.GetTimestamp();
                         var timestamp=DateTimeOffset.Now;var now=clock.Elapsed.TotalSeconds;
                         var capture=etw.TakeSnapshot(timestamp,now,options.EtwEnabled);
+                        bool networkLossy=networkLoss.Lossy(capture.Connections.LostEvents);
                         // The local-network share comes from the per-app capture, so it joins the sample after the ETW snapshot.
                         var local=NetworkTrafficSplit.Local(capture.Connections,network.Down,network.Up);
                         values["network/download/local"]=local.Down;values["network/upload/local"]=local.Up;
                         if(timings is not null)timings["etw/snapshot"]=Stopwatch.GetElapsedTime(providerStarted).TotalMilliseconds;
-                        var processActivity=PublishProcesses(monitoring,tracked,processFailure,processorCount,capture,now,timings);
+                        var processActivity=PublishProcesses(monitoring,tracked,processFailure,processorCount,capture,networkLossy,now,timings);
                         var sample=new Snapshot(timestamp,now,new System.Collections.ObjectModel.ReadOnlyDictionary<string,double?>(values)) {PollingIntervalSeconds=intervalSeconds};
                         if(timings is not null)timings["poll/total"]=(clock.Elapsed.TotalSeconds-started)*1000;
                         double elapsed=clock.Elapsed.TotalSeconds-started;
@@ -310,7 +314,7 @@ public sealed class Collector : IAsyncDisposable
     private const string ProcessScanUnavailable="Process scan unavailable";
     private static ProcessActivity FailedActivity(bool monitoring,Exception e)=>monitoring?ProcessActivity.Unavailable(e.GetType().Name):ProcessActivity.Off;
     /// <summary>Process block 2, inside the publication lock after the poll's only ETW snapshot: takes the disk trace and joins the scan to per-app traffic and disk. It never throws, so the reading is always published.</summary>
-    private ProcessActivity PublishProcesses(bool monitoring,TrackedScan? tracked,string? failure,int processorCount,NetworkCaptureSnapshot capture,double now,Dictionary<string,double>? timings)
+    private ProcessActivity PublishProcesses(bool monitoring,TrackedScan? tracked,string? failure,int processorCount,NetworkCaptureSnapshot capture,bool networkLossy,double now,Dictionary<string,double>? timings)
     {
         if(!monitoring)return ProcessActivity.Off;
         if(failure is not null||tracked is null)return ProcessActivity.Unavailable(failure??ProcessScanUnavailable);
@@ -325,7 +329,7 @@ public sealed class Collector : IAsyncDisposable
                 // Only once a session has opened, so the keys mean the disk session ran.
                 if(timings is not null&&disk.LastOpenMilliseconds is {} opened) {timings["open/etwdisk"]=opened;timings["etw/disk"]=Stopwatch.GetElapsedTime(diskStarted).TotalMilliseconds;}
             }
-            var network=ProcessJoins.Network(tracked.Processes,capture.Processes,capture.Connections.Available,EtwStatus);
+            var network=ProcessJoins.Network(tracked.Processes,capture.Processes,capture.Connections.Available,EtwStatus,networkLossy);
             var joined=ProcessJoins.Disk(network.Processes,diskTake);
             var scan=tracked.Scan;
             return new ProcessActivity(ProcessActivityKind.Available,++processSequence,scan.UtcTime,scan.MonotonicSeconds,scan.PollingIntervalSeconds,processorCount,joined.Processes,tracked.Omitted,tracked.TotalProcesses,tracked.DeltaSeconds)
