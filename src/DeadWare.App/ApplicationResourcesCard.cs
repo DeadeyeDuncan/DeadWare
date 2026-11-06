@@ -41,8 +41,6 @@ internal sealed class ApplicationResourcesCard : StackPanel
     // The Device-chart slot asked for, and the one the shown view was read for; null means the period.
     private (DateTimeOffset From, DateTimeOffset To)? slot, shownSlot;
     private (string App, ProcessRank Rank, DateTimeOffset From, DateTimeOffset To)? charted;
-    // The Device chart that listed the slot, which takes the focus back from Clear.
-    private UIElement? lister;
     // The CPU chart's point count, so the selected app's series has the Device charts' bucket grid; 600 until the page says.
     private int points = 600;
     // The retention cutoff when the shown view was applied: minutes before it are never kept, so they are neither recorded nor gaps.
@@ -119,11 +117,10 @@ internal sealed class ApplicationResourcesCard : StackPanel
     internal event Action? SlotCleared;
 
     /// <summary>Lists the busiest apps whose minutes start in [<paramref name="slotStart"/>, <paramref name="slotEnd"/>), ranked by
-    /// <paramref name="ranking"/>, until <see cref="ClearSlot"/>. The slot is read at once; while it is shown the page's refresh reads it again.
-    /// <paramref name="source"/> is the chart that listed it, which Clear hands its focus to.</summary>
-    internal void ShowSlot(DateTimeOffset slotStart, DateTimeOffset slotEnd, ProcessRank ranking, UIElement? source = null)
+    /// <paramref name="ranking"/>, until <see cref="ClearSlot"/>. The slot is read at once; while it is shown the page's refresh reads it again.</summary>
+    internal void ShowSlot(DateTimeOffset slotStart, DateTimeOffset slotEnd, ProcessRank ranking)
     {
-        slot = (slotStart, slotEnd); lister = source;
+        slot = (slotStart, slotEnd);
         // Until the read returns the heading names every minute that starts in the slot.
         heading.Text = SlotHeading(CeilingMinute(slotStart), CeilingMinute(slotEnd), WithDate); clear.Visibility = Visibility.Visible;
         // A new Rank by switches the selected app's chart at once; the slot does not wait for Rank by to settle.
@@ -136,15 +133,13 @@ internal sealed class ApplicationResourcesCard : StackPanel
     internal void ClearSlot()
     {
         bool listed = slot is not null;
-        // Clear is about to collapse: if it holds the focus, the chart that listed the slot (or Rank by) takes it, so Tab stays in place
-        // instead of starting again at the top of the page. Without keyboard focus (an inactive window) the logical focus moves.
+        // Clear is about to collapse: if it holds the focus (a click gives it keyboard focus too), Rank by just below it takes the focus,
+        // so Tab stays in the card and the page does not scroll, whichever chart listed the slot. Without keyboard focus (an inactive
+        // window) the logical focus moves.
         var scope = FocusManager.GetFocusScope(clear);
-        if (clear.IsKeyboardFocused || ReferenceEquals(FocusManager.GetFocusedElement(scope), clear))
-        {
-            IInputElement target = lister ?? rank;
-            if (!target.Focus()) FocusManager.SetFocusedElement(scope, target);
-        }
-        slot = null; lister = null; heading.Text = Title; clear.Visibility = Visibility.Collapsed;
+        if ((clear.IsKeyboardFocused || ReferenceEquals(FocusManager.GetFocusedElement(scope), clear)) && !rank.Focus())
+            FocusManager.SetFocusedElement(scope, rank);
+        slot = null; heading.Text = Title; clear.Visibility = Visibility.Collapsed;
         SlotCleared?.Invoke();
         if (listed) ReadWhenSettled();
     }

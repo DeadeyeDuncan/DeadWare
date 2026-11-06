@@ -88,7 +88,7 @@ internal static class ApplicationResourcesUiChecks
             Clicking_a_point_brings_the_card_into_view(page, card);
             Clicking_a_cpu_point_lists_the_busiest_apps_in_its_slot(page, card);
             Both_charts_show_the_hairline_and_clear_removes_it(page, card);
-            Clear_hands_its_focus_to_the_chart_that_listed_the_slot(page, card);
+            Clear_hands_its_focus_to_rank_by_after_a_chart_listed_the_slot(page, card);
             Ram_click_ranks_by_average_memory(page, card);
             Arrow_keys_move_the_selection_and_enter_lists_it(page, card);
             The_minute_refresh_keeps_the_slot_and_moves_its_hairlines_with_the_grid(page, card);
@@ -460,17 +460,18 @@ internal static class ApplicationResourcesUiChecks
         Shows_the_day_ranking(card, ["chrome.exe", "Code.exe", "steam.exe", "explorer.exe", "Everything else"]);
     }
 
-    private static void Clear_hands_its_focus_to_the_chart_that_listed_the_slot(UsageHistoryPage page, ApplicationResourcesCard card)
+    private static void Clear_hands_its_focus_to_rank_by_after_a_chart_listed_the_slot(UsageHistoryPage page, ApplicationResourcesCard card)
     {
         var cpu = page.Chart("cpu"); var bucket = Bucket(cpu, 1);
         Activate(cpu, 1);
         WaitFor(() => !card.Loading && card.View is { } shown && shown.From == bucket.Start);
-        // Clear collapses once pressed: holding the focus, it hands it to the chart that listed the slot, so Tab stays where it was.
+        // Clear collapses once pressed. Holding the focus, it hands it to Rank by just below it, inside the card, never back to the chart
+        // that listed the slot: focusing that chart would scroll the page up to the Device card, away from the ranking Clear restores.
         var clear = Button(card, "Clear"); var scope = FocusManager.GetFocusScope(clear);
         FocusManager.SetFocusedElement(scope, clear);
         Click(clear);
         Assert.False(IsShown(clear, card));
-        Assert.Same(cpu, FocusManager.GetFocusedElement(scope));
+        Assert.Same(RankBy(card), FocusManager.GetFocusedElement(scope));
         Shows_the_day_ranking(card, ["chrome.exe", "Code.exe", "steam.exe", "explorer.exe", "Everything else"]);
         FocusManager.SetFocusedElement(scope, null);
     }
@@ -691,8 +692,7 @@ internal static class ApplicationResourcesUiChecks
         FocusManager.SetFocusedElement(scope, clear);
         Click(clear);
         Assert.False(IsShown(clear, card));
-        Assert.Same(Descendants(card).OfType<ComboBox>().Single(c => AutomationProperties.GetName(c) == "Rank application resources by"),
-            FocusManager.GetFocusedElement(scope));
+        Assert.Same(RankBy(card), FocusManager.GetFocusedElement(scope));
     }
 
     private static void Status_line_follows_the_recording_switches_without_a_read(string folder)
@@ -889,9 +889,11 @@ internal static class ApplicationResourcesUiChecks
     private static void Select(ApplicationResourcesCard card, string name) => Table(card).SelectedItem = Rows(card).Single(r => Cell(r, "Name") == name);
     private static void SetSearch(ApplicationResourcesCard card, string text)
         => Descendants(card).OfType<TextBox>().Single(t => AutomationProperties.GetName(t) == "Find application in application resources").Text = text;
+    private static ComboBox RankBy(ApplicationResourcesCard card)
+        => Descendants(card).OfType<ComboBox>().Single(c => AutomationProperties.GetName(c) == "Rank application resources by");
     private static void SetRank(ApplicationResourcesCard card, ProcessRank rank)
     {
-        var box = Descendants(card).OfType<ComboBox>().Single(c => AutomationProperties.GetName(c) == "Rank application resources by");
+        var box = RankBy(card);
         box.SelectedItem = box.Items.Cast<object>().Single(item => (ProcessRank)item.GetType().GetProperty("Rank")!.GetValue(item)! == rank);
     }
     private static string ChartUnit(ApplicationResourcesCard card) => (string)typeof(UsageHistoryChart).GetField("unit", All)!.GetValue(card.Chart)!;

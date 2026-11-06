@@ -158,7 +158,7 @@ internal sealed class UsageHistoryPage : ScrollViewer
     {
         if (data?.Metrics.GetValueOrDefault(kind) is not { } view || index >= view.Buckets.Count) return;
         var bucket = view.Buckets[index];
-        resources.ShowSlot(bucket.Start, bucket.End, ranking, charts[kind]);
+        resources.ShowSlot(bucket.Start, bucket.End, ranking);
         MarkMoment();
         // The card sits below the Device charts, out of view at a window's height: a click or Enter scrolls it in. Only activation does
         // this (never the minute refresh), and keyboard focus stays on the chart, so Left, Right and Enter keep working.
