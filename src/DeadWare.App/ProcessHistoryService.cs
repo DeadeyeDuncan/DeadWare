@@ -150,7 +150,7 @@ public sealed class ProcessHistoryService
     /// <see cref="Status"/> and returns an empty view; an invalid range or rank throws <see cref="ArgumentOutOfRangeException"/>.</summary>
     public async Task<ProcessResourceView> ReadApplicationsAsync(DateTimeOffset from, DateTimeOffset to, ProcessRank rank)
         => await TryReadApplicationsAsync(from, to, rank).ConfigureAwait(false)
-            ?? new(from, to, [], new(ProcessHistory.EverythingElse, 0, 0, 0, 0, 0, 0, true, 0), 0, 0, null, null, null, 0);
+            ?? new(from, to, [], 0, new(ProcessHistory.EverythingElse, 0, 0, 0, 0, 0, 0, true, 0), 0, 0, null, null, null, 0);
     /// <summary>Like <see cref="ReadApplicationsAsync"/>, but null when the store cannot be read, so a caller can tell a failure from an
     /// empty period; <see cref="Status"/> then says why.</summary>
     public async Task<ProcessResourceView?> TryReadApplicationsAsync(DateTimeOffset from, DateTimeOffset to, ProcessRank rank)

@@ -673,7 +673,7 @@ internal static class ApplicationResourcesUiChecks
         string path = Path.Combine(junk, "process-history.db"); File.WriteAllText(path, "not a database");
         var card = new ApplicationResourcesCard(Session(new ProcessHistoryService(path, Machine), folder));
         var to = DateTimeOffset.UtcNow; var from = to.AddDays(-1);
-        card.Apply(View(from, to, 50), to);
+        card.Apply(View(from, to, 50), to); Layout(card);
         Select(card, "a.exe");
         Assert.Equal("a.exe CPU history", AutomationProperties.GetName(card.Chart));
         WaitFor(() => Texts(card).Contains("a.exe · CPU % of all logical processors · could not be read"));

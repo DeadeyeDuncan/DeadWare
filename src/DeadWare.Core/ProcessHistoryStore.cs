@@ -18,7 +18,9 @@ public sealed record ProcessResourceRow(string Name, double CpuSeconds, double A
     };
 }
 
-public sealed record ProcessResourceView(DateTimeOffset From, DateTimeOffset To, IReadOnlyList<ProcessResourceRow> Rows,
+/// <summary>A period's ranking. <see cref="Rows"/> holds the top applications read; <see cref="ApplicationCount"/> is how many distinct
+/// applications (Everything else aside) the period holds, so it exceeds the rows' count when the read's limit cut the list.</summary>
+public sealed record ProcessResourceView(DateTimeOffset From, DateTimeOffset To, IReadOnlyList<ProcessResourceRow> Rows, long ApplicationCount,
     ProcessResourceRow EverythingElse, double RankTotal, long RecordedMinutes, DateTimeOffset? FirstMinute, DateTimeOffset? LastMinuteEnd,
     DateTimeOffset? EarliestRetained, long StorageBytes);
 
@@ -206,11 +208,12 @@ public sealed class ProcessHistoryStore(string path, long maximumDatabaseBytes =
             FROM app_minutes a JOIN minutes m ON m.machine=a.machine AND m.minute=a.minute JOIN names n ON n.id=a.name_id
             WHERE a.machine=$machine AND a.minute>=$from AND a.minute<$to
             """;
-        var rows = new List<ProcessResourceRow>();
-        using (var command = Command(db, $"SELECT n.display,{Columns} {From} AND a.everything_else=0 GROUP BY a.name_id ORDER BY {order} DESC,n.display LIMIT $limit",
+        var rows = new List<ProcessResourceRow>(); long applications = 0;
+        // The window count sees every group before LIMIT, so the same pass also counts the applications beyond the rows read.
+        using (var command = Command(db, $"SELECT n.display,{Columns},COUNT(*) OVER () {From} AND a.everything_else=0 GROUP BY a.name_id ORDER BY {order} DESC,n.display LIMIT $limit",
             transaction, [.. args, ("$limit", limit)]))
         using (var reader = command.ExecuteReader())
-            while (reader.Read()) rows.Add(Row(reader.GetString(0), reader, 1, capacity, false));
+            while (reader.Read()) { rows.Add(Row(reader.GetString(0), reader, 1, capacity, false)); applications = reader.GetInt64(7); }
         ProcessResourceRow other;
         using (var command = Command(db, $"SELECT {Columns} {From} AND a.everything_else=1", transaction, args))
         using (var reader = command.ExecuteReader())
@@ -225,7 +228,7 @@ public sealed class ProcessHistoryStore(string path, long maximumDatabaseBytes =
             reader.Read();
             total = rank switch { ProcessRank.CpuTime => reader.GetDouble(0) / TicksPerSecond, ProcessRank.AverageMemory => reader.GetDouble(2), _ => reader.GetDouble(1) };
         }
-        return new(from, to, rows, other, total, recorded, first is { } f ? Stamp(f) : null, last is { } l ? Stamp(l + MinuteMilliseconds) : null,
+        return new(from, to, rows, applications, other, total, recorded, first is { } f ? Stamp(f) : null, last is { } l ? Stamp(l + MinuteMilliseconds) : null,
             Earliest(db, transaction, machine, cutoff), StorageBytes);
     }
 

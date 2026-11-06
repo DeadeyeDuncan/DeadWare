@@ -31,13 +31,24 @@ internal sealed class UsageHistoryChart : FrameworkElement
     internal static bool CanConnect(UsageHistoryBucket a, UsageHistoryBucket b, long bucketMilliseconds)
         => IsFull(a, bucketMilliseconds) && IsFull(b, bucketMilliseconds) && b.Start == a.End;
 
-    private bool selectable;
+    /// <summary>When true, % values under 10 keep one decimal ("0.4%"): an app's share of all logical processors is often under 1 %.
+    /// Off by default, so the Device charts keep whole percents.</summary>
+    public bool TenthsBelowTenPercent { get; init; }
+
+    private bool selectable, keyboardFocused;
     private int? selectedIndex;
-    /// <summary>When true the chart takes focus, a click or Enter activates a bucket and Left/Right move <see cref="SelectedIndex"/>. Off by default.</summary>
+    /// <summary>When true the chart takes focus, a click or Enter activates a bucket and Left/Right move <see cref="SelectedIndex"/>. Off by default.
+    /// While it has keyboard focus it draws an Accent frame in place of the default focus rectangle.</summary>
     public bool Selectable
     {
         get => selectable;
         set { if (selectable == value) return; selectable = value; Focusable = value; FocusVisualStyle = null; InvalidateVisual(); }
+    }
+    protected override void OnIsKeyboardFocusedChanged(DependencyPropertyChangedEventArgs e)
+    {
+        base.OnIsKeyboardFocusedChanged(e);
+        keyboardFocused = (bool)e.NewValue;
+        if (selectable) InvalidateVisual();
     }
     /// <summary>Index into the first trace's buckets drawn with an accent hairline; null draws nothing. Ignored unless <see cref="Selectable"/>.</summary>
     public int? SelectedIndex
@@ -98,6 +109,12 @@ internal sealed class UsageHistoryChart : FrameworkElement
         double w = ActualWidth, h = ActualHeight;
         if (w < 160 || h < 120) return;
         dc.DrawRectangle(Brushes.Transparent, null, new Rect(0, 0, w, h));
+        // A Tab stop shows keyboard focus with an Accent frame, as the app's other focusable controls do.
+        if (selectable && keyboardFocused)
+        {
+            var focus = new Pen(Theme.Brush("Accent"), 1); focus.Freeze();
+            dc.DrawRoundedRectangle(null, focus, new Rect(0.5, 0.5, w - 1, h - 1), 7, 7);
+        }
         const double left = 12, right = 8, top = 12, bottom = 30;
         double width = w - left - right, height = h - top - bottom;
         var plot = new Rect(left, top, width, height); PlotRect = plot;
@@ -176,9 +193,9 @@ internal sealed class UsageHistoryChart : FrameworkElement
             if (anchor is { } at) ChartFrame.Chip(dc, at, plot, lines, typeface, pixelsPerDip, false);
         }
     }
-    private string Format(double value) => unit switch
+    internal string Format(double value) => unit switch
     {
-        "%" => $"{value:0}%",
+        "%" => TenthsBelowTenPercent && Math.Abs(value) < 10 ? $"{value:0.#}%" : $"{value:0}%",
         "°C" => $"{value:0}°C",
         "B/s" => Ui.Bytes(value, true),
         "B" => Ui.Bytes(value),

@@ -126,11 +126,13 @@ internal sealed class UsageHistoryPage : ScrollViewer
         => applications.Columns.Add(new DataGridTextColumn { Header = title, Binding = new Binding(binding), Width = new DataGridLength(weight, DataGridLengthUnitType.Star) });
     private static Border Card(UIElement content) { var card = Ui.Panel(content, new(16)); card.Margin = new(0, 0, 0, 12); return card; }
     private void ChangeRecording(bool enabled)
-    { if (syncing) return; session.SetUsageRecording(enabled); recordingStatus.Text = session.Usage.Status; }
+    { if (syncing) return; session.SetUsageRecording(enabled); recordingStatus.Text = session.Usage.Status; resources.RefreshStatus(); }
+    /// <summary>Follows settings changed elsewhere (session.Changed), such as Per-process monitoring on the Processes page.</summary>
     private void RefreshCurrent()
     {
         syncing = true; recording.IsChecked = session.Settings.UsageRecording; syncing = false;
         if (data is null) recordingStatus.Text = session.Usage.Status;
+        resources.RefreshStatus();
         string gpu = session.GpuName;
         titles["gpu"].Text = gpu == "GPU unavailable" ? "GPU usage" : $"GPU usage · {gpu}";
         titles["gputemp"].Text = gpu == "GPU unavailable" ? "GPU temperature" : $"GPU temperature · {gpu}";
@@ -156,7 +158,7 @@ internal sealed class UsageHistoryPage : ScrollViewer
     {
         if (data?.Metrics.GetValueOrDefault(kind) is not { } view || index >= view.Buckets.Count) return;
         var bucket = view.Buckets[index];
-        resources.ShowSlot(bucket.Start, bucket.End, ranking);
+        resources.ShowSlot(bucket.Start, bucket.End, ranking, charts[kind]);
         MarkMoment();
         // The card sits below the Device charts, out of view at a window's height: a click or Enter scrolls it in. Only activation does
         // this (never the minute refresh), and keyboard focus stays on the chart, so Left, Right and Enter keep working.
@@ -209,10 +211,11 @@ internal sealed class UsageHistoryPage : ScrollViewer
     private async Task<UsagePageData> LoadAsync()
     {
         var (from, to) = Period();
-        // The card reads on its own, so the Device charts never wait for a month of process history (about a second).
-        resources.Load(from, to);
-        string? gpu = session.GpuName is var name && name != "GPU unavailable" ? name : null;
         int points = (int)Math.Clamp(charts["cpu"].ActualWidth > 0 ? charts["cpu"].ActualWidth : 600, 60, 1500);
+        // The card reads on its own, so the Device charts never wait for a month of process history (about a second). It reads the
+        // selected app's series with the same point count, so that chart's buckets are the CPU and RAM charts' slots.
+        resources.Load(from, to, points);
+        string? gpu = session.GpuName is var name && name != "GPU unavailable" ? name : null;
         var service = session.Usage;
         var reads = new Dictionary<string, Task<UsageHistoryView>>(StringComparer.Ordinal)
         {

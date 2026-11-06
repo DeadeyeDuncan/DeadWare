@@ -3,6 +3,7 @@ using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
 using System.Windows.Data;
+using System.Windows.Input;
 using System.Windows.Shapes;
 using System.Windows.Threading;
 using DeadWare.Core;
@@ -18,6 +19,7 @@ internal sealed class ApplicationResourcesCard : StackPanel
     private sealed record RankChoice(string Label, ProcessRank Rank) { public override string ToString() => Label; }
     private sealed record ResourceRow(string Name, string CpuTime, string AverageCpu, string AverageMemory, string IoRead, string IoWritten, string MinutesListed);
     private const string Title = "Application resources", LoadingText = "Loading application resources…";
+    private const string NotKept = "Application resources are kept for 30 days; earlier minutes are not kept.";
     private static readonly TimeSpan Settle = TimeSpan.FromMilliseconds(250);
     // Share-bar colours are theme resources; Everything else is always Muted.
     private static readonly string[] Palette = ["Graph/cpu", "Graph/memory", "Graph/download", "Graph/upload", "Graph/gpu", "Graph/diskread", "Graph/cputemp", "Graph/gputemp", "Accent"];
@@ -30,7 +32,7 @@ internal sealed class ApplicationResourcesCard : StackPanel
     private readonly Grid shareBar = new() { Height = 14, Margin = new(0, 6, 0, 10), Visibility = Visibility.Collapsed };
     private readonly DataGrid table = new() { AutoGenerateColumns = false, IsReadOnly = true, HeadersVisibility = DataGridHeadersVisibility.Column, MaxHeight = 420,
         CanUserSortColumns = false, SelectionMode = DataGridSelectionMode.Single };
-    private readonly TextBlock summary = Ui.Text(LoadingText, 12, "Muted"), gapNotice = Ui.Text("", 12, "Warning");
+    private readonly TextBlock summary = Ui.Text(LoadingText, 12, "Muted"), retention = Ui.Text("", 12, "Muted"), gapNotice = Ui.Text("", 12, "Warning");
     private readonly TextBlock chartHint = Ui.Text("", 11, "Muted"), chartTitle = Ui.Text("", 13, "Heading", "HeadingFont");
     private readonly TextBlock status = Ui.Text("", 11, "Muted"), storage = Ui.Text("", 11, "Muted");
     private readonly StackPanel chart = new() { Visibility = Visibility.Collapsed };
@@ -39,6 +41,12 @@ internal sealed class ApplicationResourcesCard : StackPanel
     // The Device-chart slot asked for, and the one the shown view was read for; null means the period.
     private (DateTimeOffset From, DateTimeOffset To)? slot, shownSlot;
     private (string App, ProcessRank Rank, DateTimeOffset From, DateTimeOffset To)? charted;
+    // The Device chart that listed the slot, which takes the focus back from Clear.
+    private UIElement? lister;
+    // The CPU chart's point count, so the selected app's series has the Device charts' bucket grid; 600 until the page says.
+    private int points = 600;
+    // The retention cutoff when the shown view was applied: minutes before it are never kept, so they are neither recorded nor gaps.
+    private DateTimeOffset retainedFrom = DateTimeOffset.MinValue;
     // Loading or failure text shown in place of the summary until the next view arrives.
     private string? pending = LoadingText;
     private ProcessRank shownRank;
@@ -60,7 +68,7 @@ internal sealed class ApplicationResourcesCard : StackPanel
         AutomationProperties.SetName(search, "Find application in application resources"); controls.Children.Add(search);
         Children.Add(controls);
         AutomationProperties.SetName(shareBar, "Share of period total"); Children.Add(shareBar);
-        Children.Add(summary); gapNotice.Margin = new(0, 4, 0, 4); Note(gapNotice, ""); Children.Add(gapNotice);
+        Children.Add(summary); Note(retention, ""); Children.Add(retention); gapNotice.Margin = new(0, 4, 0, 4); Note(gapNotice, ""); Children.Add(gapNotice);
         Column("Application", nameof(ResourceRow.Name), 2.4); Column("CPU time", nameof(ResourceRow.CpuTime), 1.1);
         Column("Avg CPU", nameof(ResourceRow.AverageCpu), 0.9); Column("Avg memory while listed", nameof(ResourceRow.AverageMemory), 1.5);
         Column("I/O read", nameof(ResourceRow.IoRead), 1); Column("I/O written", nameof(ResourceRow.IoWritten), 1); Column("Minutes listed", nameof(ResourceRow.MinutesListed), 1);
@@ -86,7 +94,7 @@ internal sealed class ApplicationResourcesCard : StackPanel
     internal ProcessRank Rank => (rank.SelectedItem as RankChoice)?.Rank ?? ProcessRank.CpuTime;
     /// <summary>The application whose chart is shown; it stays while a search hides its row.</summary>
     internal string? SelectedApp { get; private set; }
-    internal UsageHistoryChart Chart { get; } = new() { Height = 170, Margin = new(0, 6, 0, 4) };
+    internal UsageHistoryChart Chart { get; } = new() { Height = 170, Margin = new(0, 6, 0, 4), TenthsBelowTenPercent = true };
     /// <summary>The last view applied.</summary>
     internal ProcessResourceView? View { get; private set; }
     /// <summary>True while the latest ranking read is waiting or has not returned.</summary>
@@ -95,8 +103,15 @@ internal sealed class ApplicationResourcesCard : StackPanel
     internal int ReadsReturned { get; private set; }
 
     /// <summary>Reads the ranking for the page's period off the UI thread. A later call, or a Rank by change, makes an earlier read stale and
-    /// its result is dropped. The rows on screen stay until the new ones arrive.</summary>
-    internal void Load(DateTimeOffset from, DateTimeOffset to) { period = (from, to); rankDelay.Stop(); _ = ReloadAsync(); }
+    /// its result is dropped. The rows on screen stay until the new ones arrive. <paramref name="devicePoints"/> is the CPU chart's point
+    /// count: the selected app's series is read with it (at most <see cref="ProcessHistoryStore.MaximumRows"/>), so it shares that grid.</summary>
+    internal void Load(DateTimeOffset from, DateTimeOffset to, int devicePoints)
+    {
+        period = (from, to); points = Math.Clamp(devicePoints, 1, ProcessHistoryStore.MaximumRows); rankDelay.Stop(); _ = ReloadAsync();
+    }
+
+    /// <summary>Shows the history's current status (recording, paused or failed) without reading the file, for a switch that changes it.</summary>
+    internal void RefreshStatus() { if (session.ProcessHistory is { } service) status.Text = service.Status; }
 
     /// <summary>The Device-chart slot being listed, or null while the card shows the period ranking.</summary>
     internal (DateTimeOffset From, DateTimeOffset To)? Slot => slot;
@@ -104,10 +119,11 @@ internal sealed class ApplicationResourcesCard : StackPanel
     internal event Action? SlotCleared;
 
     /// <summary>Lists the busiest apps whose minutes start in [<paramref name="slotStart"/>, <paramref name="slotEnd"/>), ranked by
-    /// <paramref name="ranking"/>, until <see cref="ClearSlot"/>. The slot is read at once; while it is shown the page's refresh reads it again.</summary>
-    internal void ShowSlot(DateTimeOffset slotStart, DateTimeOffset slotEnd, ProcessRank ranking)
+    /// <paramref name="ranking"/>, until <see cref="ClearSlot"/>. The slot is read at once; while it is shown the page's refresh reads it again.
+    /// <paramref name="source"/> is the chart that listed it, which Clear hands its focus to.</summary>
+    internal void ShowSlot(DateTimeOffset slotStart, DateTimeOffset slotEnd, ProcessRank ranking, UIElement? source = null)
     {
-        slot = (slotStart, slotEnd);
+        slot = (slotStart, slotEnd); lister = source;
         // Until the read returns the heading names every minute that starts in the slot.
         heading.Text = SlotHeading(CeilingMinute(slotStart), CeilingMinute(slotEnd), WithDate); clear.Visibility = Visibility.Visible;
         // A new Rank by switches the selected app's chart at once; the slot does not wait for Rank by to settle.
@@ -120,7 +136,15 @@ internal sealed class ApplicationResourcesCard : StackPanel
     internal void ClearSlot()
     {
         bool listed = slot is not null;
-        slot = null; heading.Text = Title; clear.Visibility = Visibility.Collapsed;
+        // Clear is about to collapse: if it holds the focus, the chart that listed the slot (or Rank by) takes it, so Tab stays in place
+        // instead of starting again at the top of the page. Without keyboard focus (an inactive window) the logical focus moves.
+        var scope = FocusManager.GetFocusScope(clear);
+        if (clear.IsKeyboardFocused || ReferenceEquals(FocusManager.GetFocusedElement(scope), clear))
+        {
+            IInputElement target = lister ?? rank;
+            if (!target.Focus()) FocusManager.SetFocusedElement(scope, target);
+        }
+        slot = null; lister = null; heading.Text = Title; clear.Visibility = Visibility.Collapsed;
         SlotCleared?.Invoke();
         if (listed) ReadWhenSettled();
     }
@@ -180,7 +204,7 @@ internal sealed class ApplicationResourcesCard : StackPanel
         try { table.ItemsSource = Array.Empty<ResourceRow>(); }
         finally { syncing = false; }
         shareBar.Children.Clear(); shareBar.ColumnDefinitions.Clear(); shareBar.Visibility = Visibility.Collapsed;
-        Note(gapNotice, ""); storage.Text = ""; frame.Visibility = Visibility.Visible;
+        Note(retention, ""); Note(gapNotice, ""); storage.Text = ""; frame.Visibility = Visibility.Visible;
         ShowSeries();
     }
     /// <summary>True when the view on screen already answers the request: the same slot, or the period a minute refresh moved slightly.</summary>
@@ -199,9 +223,10 @@ internal sealed class ApplicationResourcesCard : StackPanel
         // The chart follows a listed application; one missing from the new period or slot has nothing to show.
         if (SelectedApp is { } app && (view.RecordedMinutes == 0 || (app != ProcessHistory.EverythingElse
             && !view.Rows.Any(r => r.Name.Equals(app, StringComparison.OrdinalIgnoreCase))))) SelectedApp = null;
-        // A minute that has just ended may not be saved yet, so it is not a gap until it has had time to arrive. The notice describes
-        // the period, so a slot leaves it out.
-        long gaps = shownSlot is null ? ElapsedMinutes(view.From, view.To, now - SaveDelay) - view.RecordedMinutes : 0;
+        // A minute that has just ended may not be saved yet, so it is not a gap until it has had time to arrive. Minutes before the
+        // 30-day retention cutoff are never kept, so they are not gaps either. The notice describes the period, so a slot leaves it out.
+        retainedFrom = ProcessHistoryStore.RetentionCutoff(now);
+        long gaps = shownSlot is null ? ElapsedMinutes(view.From > retainedFrom ? view.From : retainedFrom, view.To, now - SaveDelay) - view.RecordedMinutes : 0;
         Note(gapNotice, gaps > 0 ? $"{gaps:N0} minutes in this period have no process data (monitoring off, DeadWare not running, or a capture gap)." : "");
         storage.Text = $"process-history.db · {Ui.Bytes(view.StorageBytes)}";
         RefreshRows();
@@ -252,11 +277,17 @@ internal sealed class ApplicationResourcesCard : StackPanel
         finally { syncing = false; }
         // A slot without process data (monitoring was off) says so instead of showing an empty table.
         bool emptySlot = shownSlot is not null && view.RecordedMinutes == 0;
+        // A period that starts before the retention cutoff says its earlier minutes are not kept; wholly before it, that is the summary.
+        bool expired = shownSlot is null && view.RecordedMinutes == 0 && view.To <= retainedFrom;
+        Note(retention, shownSlot is null && view.From < retainedFrom && !expired ? NotKept : "");
+        // The read returns the top rows; the period may hold more applications than that.
+        bool more = view.ApplicationCount > view.Rows.Count;
         frame.Visibility = emptySlot ? Visibility.Collapsed : Visibility.Visible;
         summary.Text = pending ?? (emptySlot ? "No process data in this span."
+            : expired ? NotKept
             : view.RecordedMinutes == 0 ? "No application resources were recorded in this period."
-            : query.Length > 0 ? $"{listed.Count - 1:N0} of {view.Rows.Count:N0} applications match."
-            : $"{view.Rows.Count:N0} applications · {view.RecordedMinutes:N0} recorded minutes");
+            : query.Length > 0 ? $"{listed.Count - 1:N0} of {(more ? "the top " : "")}{view.Rows.Count:N0} applications match."
+            : $"{(more ? $"Top {view.Rows.Count:N0} of {view.ApplicationCount:N0}" : $"{view.Rows.Count:N0}")} applications · {view.RecordedMinutes:N0} recorded minutes");
         DrawShares(view, listed);
     }
 
@@ -318,7 +349,6 @@ internal sealed class ApplicationResourcesCard : StackPanel
     }
     private async Task ChartAsync(ProcessHistoryService service, int current, string app, ProcessRank metric, DateTimeOffset from, DateTimeOffset to)
     {
-        int points = (int)Math.Clamp(Chart.ActualWidth > 0 ? Chart.ActualWidth : 600, 60, ProcessHistoryStore.MaximumRows);
         UsageHistoryView? history;
         try { history = await service.TryReadSeriesAsync(app, metric, from, to, points); }
         catch (ArgumentException) { history = null; }
@@ -327,7 +357,8 @@ internal sealed class ApplicationResourcesCard : StackPanel
         if (history is null)
         {
             // Reported like the ranking: an empty plot under a title that says so, and the service status says why.
-            chartTitle.Text = $"{app} · {title} · could not be read"; status.Text = service.Status; Chart.SetData([], unit, maximum);
+            chartTitle.Text = $"{app} · {title} · could not be read"; status.Text = service.Status;
+            Chart.SetData([], unit, maximum); AutomationProperties.SetName(Chart, $"{app} {label} history");
             return;
         }
         Chart.SetData([new UsageTrace(history, color, false, $"{app} {label}")], unit, maximum);
