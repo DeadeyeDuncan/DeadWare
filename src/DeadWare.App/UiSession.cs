@@ -11,6 +11,7 @@ public sealed class UiSession
     public GraphHistoryService GraphHistory {get;}
     public BatteryHistoryService Battery {get;}
     public UsageHistoryService Usage {get;}
+    public ProcessHistoryService ProcessHistory {get;}
     public AlertService Alerts {get;}
     public ConnectionService Connections {get;}
     public UpdateService Updates {get;}=new(BuildInfo.Version);
@@ -67,6 +68,9 @@ public sealed class UiSession
         Usage=new(Path.Combine(Path.GetDirectoryName(settingsPath)!,"usage-history.db"),Environment.MachineName);
         Usage.Configure(Settings.UsageRecording);
         Collector.SampleAvailable+=Usage.TryRecord;
+        ProcessHistory=new(Path.Combine(Path.GetDirectoryName(settingsPath)!,"process-history.db"),Environment.MachineName);
+        ProcessHistory.Configure(Settings.ProcessMonitoring,Settings.UsageRecording);
+        Collector.SampleAvailable+=ProcessHistory.TryRecord;
         Alerts=new(Path.Combine(Path.GetDirectoryName(settingsPath)!,"alerts.db"),Environment.MachineName,Usage,()=>Current is null||SelectedGpuId is null?null:GpuName);
         Alerts.Configure(Settings.Alerts,Settings.AlertNotifications);
         Collector.SampleAvailable+=Alerts.TryRecordBattery;
@@ -87,7 +91,7 @@ public sealed class UiSession
     {
         // Restore the saved window types exactly; the launch preference only affects new requests.
         foreach(string key in layout.Remembered)OpenDetachedCore(key);
-        GraphHistory.Start();Cooling.Start();Battery.Start();Usage.Start();Alerts.Start();Connections.Start();_ = SaveAsync();Collector.Start();timer.Start();
+        GraphHistory.Start();Cooling.Start();Battery.Start();Usage.Start();ProcessHistory.Start();Alerts.Start();Connections.Start();_ = SaveAsync();Collector.Start();timer.Start();
     }
     public void SetRange(int seconds) {Settings.HistorySeconds=seconds;Changed?.Invoke();_ = SaveAsync();}
     public void SetGpu(string? id) {Settings.SelectedGpuId=id;Changed?.Invoke();_ = SaveAsync();}
@@ -209,7 +213,7 @@ public sealed class UiSession
     }
     public void SetProcessMonitoring(bool enabled)
     {
-        Settings.ProcessMonitoring=enabled;Collector.SetProcessMonitoring(enabled);Changed?.Invoke();_ = SaveAsync();
+        Settings.ProcessMonitoring=enabled;Collector.SetProcessMonitoring(enabled);ProcessHistory.Configure(enabled,Settings.UsageRecording);Changed?.Invoke();_ = SaveAsync();
     }
     public void SetProcessColumns(IEnumerable<string> keys)
     {
@@ -220,7 +224,7 @@ public sealed class UiSession
     public void SetRestoreOpenWindows(bool enabled) {Settings.RestoreOpenWindows=enabled;_ = SaveAsync();}
     public void SetStartInTray(bool enabled) {Settings.StartInTray=enabled;_ = SaveAsync();}
     public void SetBatteryRecording(bool enabled) {Settings.BatteryRecording=enabled;Battery.Configure(enabled);Changed?.Invoke();_ = SaveAsync();}
-    public void SetUsageRecording(bool enabled) {Settings.UsageRecording=enabled;Usage.Configure(enabled);Changed?.Invoke();_ = SaveAsync();}
+    public void SetUsageRecording(bool enabled) {Settings.UsageRecording=enabled;Usage.Configure(enabled);ProcessHistory.Configure(Settings.ProcessMonitoring,enabled);Changed?.Invoke();_ = SaveAsync();}
     public void SetAlertRules(IReadOnlyList<AlertRule> rules)
     {
         Settings.Alerts=AlertRules.Normalize(rules);Alerts.Configure(Settings.Alerts,Settings.AlertNotifications);Changed?.Invoke();_ = SaveAsync();
@@ -307,8 +311,10 @@ public sealed class UiSession
         Collector.SampleAvailable-=GraphHistory.TryRecord;
         Collector.SampleAvailable-=Battery.TryRecord;
         Collector.SampleAvailable-=Usage.TryRecord;
+        // Null only in shutdown fixtures built without a constructor, like Connections.
+        if(ProcessHistory is not null)Collector.SampleAvailable-=ProcessHistory.TryRecord;
         Collector.SampleAvailable-=Alerts.TryRecordBattery;
-        (string Stage,Task Stop)[] drains=[("connections",connections),("cooling",Begin(Cooling.StopAsync)),("graph history",Begin(GraphHistory.StopAsync)),("battery",Begin(Battery.StopAsync)),("usage history",Begin(Usage.StopAsync)),("alerts",Begin(Alerts.StopAsync))];
+        (string Stage,Task Stop)[] drains=[("connections",connections),("cooling",Begin(Cooling.StopAsync)),("graph history",Begin(GraphHistory.StopAsync)),("battery",Begin(Battery.StopAsync)),("usage history",Begin(Usage.StopAsync)),("process history",ProcessHistory is null?Task.CompletedTask:Begin(ProcessHistory.StopAsync)),("alerts",Begin(Alerts.StopAsync))];
         await Task.WhenAny(providerStop,providerExpired).ConfigureAwait(false);
         await Task.WhenAny(Task.WhenAll(drains.Select(d=>d.Stop)),historyExpired).ConfigureAwait(false);
         (string Stage,Task Stop)[] stages=[("network capture",networkStop),("hardware provider",providerStop),..drains];

@@ -38,6 +38,8 @@ public sealed class ProcessHistoryStore(string path, long maximumDatabaseBytes =
         """;
     private readonly string path = Path.GetFullPath(path);
     private bool initialized;
+    // Test seam, set by reflection: runs after a read's first statement so a test can save a minute mid-read. Always null in the app.
+    private Action? afterFirstRead = null;
 
     public long StorageBytes => new[] { path, path + "-wal", path + "-shm" }
         .Where(File.Exists).Sum(file => new FileInfo(file).Length);
@@ -151,19 +153,22 @@ public sealed class ProcessHistoryStore(string path, long maximumDatabaseBytes =
         if (limit is < 1 or > MaximumRows) throw new ArgumentOutOfRangeException(nameof(limit));
         if (!Enum.IsDefined(rank)) throw new ArgumentOutOfRangeException(nameof(rank));
         using var db = Open(readOnly: true);
+        // One deferred read transaction: every statement sees the snapshot of the first, even while the worker saves a minute.
+        using var transaction = db.BeginTransaction(deferred: true);
         long fromMs = from.ToUnixTimeMilliseconds(), toMs = to.ToUnixTimeMilliseconds();
         (string, object)[] args = [("$machine", machine), ("$from", fromMs), ("$to", toMs)];
         long recorded = 0; double capacity = 0; long? first = null, last = null;
         using (var command = Command(db, """
             SELECT COUNT(*),MIN(minute),MAX(minute),TOTAL(processors*covered) FROM minutes
             WHERE machine=$machine AND minute>=$from AND minute<$to
-            """, null, args))
+            """, transaction, args))
         using (var reader = command.ExecuteReader())
         {
             reader.Read(); recorded = reader.GetInt64(0);
             if (recorded > 0) { first = reader.GetInt64(1); last = reader.GetInt64(2); }
             capacity = reader.GetDouble(3);
         }
+        afterFirstRead?.Invoke();
         string order = rank switch
         {
             ProcessRank.CpuTime => "TOTAL(a.cpu)",
@@ -177,25 +182,25 @@ public sealed class ProcessHistoryStore(string path, long maximumDatabaseBytes =
             """;
         var rows = new List<ProcessResourceRow>();
         using (var command = Command(db, $"SELECT n.display,{Columns} {From} AND a.everything_else=0 GROUP BY a.name_id ORDER BY {order} DESC,n.display LIMIT $limit",
-            null, [.. args, ("$limit", limit)]))
+            transaction, [.. args, ("$limit", limit)]))
         using (var reader = command.ExecuteReader())
             while (reader.Read()) rows.Add(Row(reader.GetString(0), reader, 1, capacity, false));
         ProcessResourceRow other;
-        using (var command = Command(db, $"SELECT {Columns} {From} AND a.everything_else=1", null, args))
+        using (var command = Command(db, $"SELECT {Columns} {From} AND a.everything_else=1", transaction, args))
         using (var reader = command.ExecuteReader())
         { reader.Read(); other = Row(ProcessHistory.EverythingElse, reader, 0, capacity, true); }
         double total;
         using (var command = Command(db, """
             SELECT TOTAL(cpu),TOTAL(io_read)+TOTAL(io_write),TOTAL(memory_seconds) FROM app_minutes
             WHERE machine=$machine AND minute>=$from AND minute<$to
-            """, null, args))
+            """, transaction, args))
         using (var reader = command.ExecuteReader())
         {
             reader.Read();
             total = rank switch { ProcessRank.CpuTime => reader.GetDouble(0) / TicksPerSecond, ProcessRank.AverageMemory => reader.GetDouble(2), _ => reader.GetDouble(1) };
         }
         return new(from, to, rows, other, total, recorded, first is { } f ? Stamp(f) : null, last is { } l ? Stamp(l + MinuteMilliseconds) : null,
-            Earliest(db, machine), StorageBytes);
+            Earliest(db, transaction, machine), StorageBytes);
     }
 
     /// <summary>One application's metric over time, bucketed like <see cref="UsageHistoryStore.ReadMetric"/>. CPU is a percentage of the
@@ -208,6 +213,7 @@ public sealed class ProcessHistoryStore(string path, long maximumDatabaseBytes =
         if (!Enum.IsDefined(metric)) throw new ArgumentOutOfRangeException(nameof(metric));
         maxPoints = Math.Min(maxPoints, MaximumRows);
         using var db = Open(readOnly: true);
+        using var transaction = db.BeginTransaction(deferred: true);
         long fromMs = from.ToUnixTimeMilliseconds(), toMs = to.ToUnixTimeMilliseconds();
         long bucket = Math.Max(MinuteMilliseconds, (long)Math.Ceiling((toMs - fromMs) / (double)maxPoints));
         string key = name.Equals(ProcessHistory.EverythingElse, StringComparison.OrdinalIgnoreCase) ? EverythingElseKey : name.ToUpperInvariant();
@@ -228,7 +234,7 @@ public sealed class ProcessHistoryStore(string path, long maximumDatabaseBytes =
         using (var command = Command(db, $"""
             SELECT (a.minute-$from)/$bucket,{Sum},{Weight},MIN({Each}),MAX({Each}),COUNT(*),SUM(m.complete)
             {From} GROUP BY (a.minute-$from)/$bucket ORDER BY 1
-            """, null, [.. args, ("$bucket", bucket)]))
+            """, transaction, [.. args, ("$bucket", bucket)]))
         using (var reader = command.ExecuteReader())
             while (reader.Read())
             {
@@ -237,14 +243,15 @@ public sealed class ProcessHistoryStore(string path, long maximumDatabaseBytes =
                 buckets.Add(new(Stamp(start), Stamp(Math.Min(start + bucket, toMs)), reader.GetDouble(1) / reader.GetDouble(2), reader.GetDouble(3),
                     reader.GetDouble(4), minutes, reader.GetInt64(6), minutes));
             }
+        afterFirstRead?.Invoke();
         Summary statistics; long listed;
-        using (var command = Command(db, $"SELECT {Sum},{Weight},MIN({Each}),MAX({Each}),COUNT(*) {From}", null, args))
+        using (var command = Command(db, $"SELECT {Sum},{Weight},MIN({Each}),MAX({Each}),COUNT(*) {From}", transaction, args))
         using (var reader = command.ExecuteReader())
         {
             reader.Read(); listed = reader.GetInt64(4);
             statistics = listed == 0 ? new(null, null, null) : new(reader.GetDouble(2), reader.GetDouble(3), reader.GetDouble(0) / reader.GetDouble(1));
         }
-        return new(from, to, bucket, buckets, statistics, listed, Earliest(db, machine), StorageBytes);
+        return new(from, to, bucket, buckets, statistics, listed, Earliest(db, transaction, machine), StorageBytes);
     }
 
     private static ProcessResourceRow Row(string name, SqliteDataReader reader, int offset, double capacity, bool everythingElse)
@@ -303,9 +310,9 @@ public sealed class ProcessHistoryStore(string path, long maximumDatabaseBytes =
         return true;
     }
 
-    private static DateTimeOffset? Earliest(SqliteConnection db, string machine)
+    private static DateTimeOffset? Earliest(SqliteConnection db, SqliteTransaction transaction, string machine)
     {
-        object? value = ScalarWith(db, "SELECT MIN(minute) FROM minutes WHERE machine=$machine", null, ("$machine", machine));
+        object? value = ScalarWith(db, "SELECT MIN(minute) FROM minutes WHERE machine=$machine", transaction, ("$machine", machine));
         return value is null or DBNull ? null : Stamp(Convert.ToInt64(value, CultureInfo.InvariantCulture));
     }
 
