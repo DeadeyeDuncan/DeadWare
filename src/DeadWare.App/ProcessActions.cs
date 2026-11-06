@@ -26,7 +26,8 @@ internal interface IProcessControl
     bool IsSignalled(SafeProcessHandle handle);
     /// <summary>Waits up to <paramref name="timeout"/> in total for every handle to signal.</summary>
     void WaitAll(IReadOnlyList<SafeProcessHandle> handles,TimeSpan timeout);
-    /// <summary>The running process's Generation; null when it has exited or cannot be read.</summary>
+    /// <summary>The running process's Generation; null only when the process is gone (the PID no longer exists, or the process has exited).
+    /// Throws <see cref="System.ComponentModel.Win32Exception"/> when a running process's creation time cannot be read, so it is never mistaken for an exited one.</summary>
     long? CreationTicks(int pid);
     string? ImagePath(int pid);
 }
@@ -123,7 +124,13 @@ internal sealed class NativeProcessControl : IProcessControl
     public long? CreationTicks(int pid)
     {
         using var process=OpenProcess(ProcessQueryLimitedInformation,false,pid);
-        return !process.IsInvalid&&NativeProcessIdentity.Times(process) is {Exited:false} times?times.Generation:null;
+        if(process.IsInvalid)
+        {
+            int error=Marshal.GetLastPInvokeError();
+            return error==ErrorInvalidParameter?null:throw new Win32Exception(error);
+        }
+        if(NativeProcessIdentity.Times(process) is not {} times)throw new Win32Exception(Marshal.GetLastPInvokeError());
+        return times.Exited?null:times.Generation;
     }
     public string? ImagePath(int pid)
     {
@@ -162,6 +169,9 @@ internal sealed class NativeProcessControl : IProcessControl
 internal sealed class ProcessActions(IProcessControl control,Func<string,string?,bool> confirm,Func<string,bool> reveal,int ownPid,bool elevated)
 {
     internal static readonly TimeSpan EndWait=TimeSpan.FromSeconds(2);
+    private const string ProcessExited="The process has already exited.",CouldNotOpen="Could not open the file location.";
+    /// <summary>How long Open file location waits for the shell before it reports failure, so a hung Explorer never leaves the action pending.</summary>
+    internal TimeSpan RevealTimeout {get;init;}=TimeSpan.FromSeconds(10);
 
     /// <summary>The page's confirmation: a Yes/No warning whose default button is No, shown on <paramref name="dispatcher"/>'s thread.</summary>
     internal static Func<string,string?,bool> MessageBoxConfirm(Dispatcher dispatcher)=>(question,summary)=>
@@ -230,28 +240,44 @@ internal sealed class ProcessActions(IProcessControl control,Func<string,string?
     public Task<string> OpenLocationAsync(IReadOnlyList<(int Pid,long Generation)> members)=>Task.Run(()=>
     {
         try{return OpenLocation(members);}
-        catch(Win32Exception w){return $"Could not open the file location (Windows error {w.NativeErrorCode}).";}
+        catch(Win32Exception w){return Failed(w);}
         catch(Exception e){return $"Could not open the file location ({e.GetType().Name}).";}
     });
+    private static string Failed(Win32Exception w)=>$"Could not open the file location (Windows error {w.NativeErrorCode}).";
 
     private string OpenLocation(IReadOnlyList<(int Pid,long Generation)> members)
     {
-        var running=members.Where(m=>control.CreationTicks(m.Pid)==m.Generation).ToList();
-        if(running.Count==0)return "The process has already exited.";
-        var paths=running.Select(m=>control.ImagePath(m.Pid)).OfType<string>().Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        // A creation time that cannot be read is not an exit: when no member can be confirmed, that failure is reported instead.
+        Win32Exception? unreadable=null;
+        bool Running((int Pid,long Generation) member)
+        {
+            try{return control.CreationTicks(member.Pid)==member.Generation;}
+            catch(Win32Exception w){unreadable??=w;return false;}
+        }
+        var running=members.Where(Running).ToList();
+        int unreadPaths=0;
+        var located=new List<string>();
+        foreach(var member in running)
+        {
+            if(control.ImagePath(member.Pid) is not {} path){unreadPaths++;continue;}
+            // Checked again after the read, so a PID reused meanwhile never lends its path.
+            if(Running(member))located.Add(path);
+        }
+        var paths=located.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         if(paths.Count>1)return $"runs from {paths.Count} locations; expand to choose one";
-        if(paths.Count==0)return "Could not open the file location.";
-        string path=paths[0];
-        if(!File.Exists(path))return "The program file is no longer there.";
-        return RevealOnSta(path)?"":"Could not open the file location.";
+        if(paths.Count==0)return unreadable is not null?Failed(unreadable):unreadPaths>0?CouldNotOpen:ProcessExited;
+        string only=paths[0];
+        if(!File.Exists(only))return "The program file is no longer there.";
+        return RevealOnSta(only)?"":CouldNotOpen;
     }
-    /// <summary>Runs <c>reveal</c> on a short-lived STA thread, as the shell calls require, and rethrows what it threw.</summary>
+    /// <summary>Runs <c>reveal</c> on a short-lived STA thread, as the shell calls require, and rethrows what it threw; false when it has not returned within <see cref="RevealTimeout"/>.</summary>
     private bool RevealOnSta(string path)
     {
         bool revealed=false;Exception? failure=null;
         var thread=new Thread(()=>{try{revealed=reveal(path);}catch(Exception e){failure=e;}}){IsBackground=true,Name="DeadWare Open file location"};
         thread.SetApartmentState(ApartmentState.STA);
-        thread.Start();thread.Join();
+        thread.Start();
+        if(!thread.Join(RevealTimeout))return false;
         if(failure is not null)ExceptionDispatchInfo.Throw(failure);
         return revealed;
     }

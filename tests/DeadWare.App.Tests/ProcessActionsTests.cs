@@ -170,8 +170,10 @@ public class ProcessActionsTests
         Assert.Equal([8],c.Terminated);
     }
 
-    /// <summary>Opens the location of PID 8 with the row's <paramref name="generation"/>; its image path is <paramref name="path"/>, or a new file in a temp folder whose name has a space.</summary>
-    private static async Task<(string Status,string? Revealed,bool OnSta,string File)> OpenWith(bool reveal=true,Exception? throwOnReveal=null,string? path=null,long? creationTicks=1,long generation=1)
+    /// <summary>Opens the location of PID 8 with the row's <paramref name="generation"/>; its image path is <paramref name="path"/>, or a new file in a temp folder whose name has a space.
+    /// <paramref name="configure"/> adjusts PID 8's script; the reveal waits for <paramref name="hold"/> when given.</summary>
+    private static async Task<(string Status,string? Revealed,bool OnSta,string File)> OpenWith(bool reveal=true,Exception? throwOnReveal=null,string? path=null,long? creationTicks=1,long generation=1,
+        Action<FakeProcessControl.Script>? configure=null,ManualResetEventSlim? hold=null,TimeSpan? revealTimeout=null)
     {
         string folder=Path.Combine(Path.GetTempPath(),$"DeadWare actions {Guid.NewGuid():N}");
         Directory.CreateDirectory(folder);
@@ -182,14 +184,18 @@ public class ProcessActionsTests
             var control=new FakeProcessControl();
             control[8].ImagePath=path??file;
             control[8].CreationTicks=creationTicks;
+            configure?.Invoke(control[8]);
             string? revealed=null;bool onSta=false;
-            var actions=new ProcessActions(control,(_,_)=>throw new InvalidOperationException("Open file location never confirms."),p=>
+            Func<string,string?,bool> confirm=(_,_)=>throw new InvalidOperationException("Open file location never confirms.");
+            bool Reveal(string p)
             {
                 onSta=Thread.CurrentThread.GetApartmentState()==ApartmentState.STA;
+                hold?.Wait();
                 if(throwOnReveal is not null)throw throwOnReveal;
                 revealed=p;
                 return reveal;
-            },Own,false);
+            }
+            var actions=revealTimeout is TimeSpan timeout?new ProcessActions(control,confirm,Reveal,Own,false){RevealTimeout=timeout}:new ProcessActions(control,confirm,Reveal,Own,false);
             string status=await actions.OpenLocationAsync([(8,generation)]);
             return (status,revealed,onSta,file);
         }
@@ -224,7 +230,12 @@ public class ProcessActionsTests
         var stale=await OpenWith(creationTicks:2);
         Assert.Equal("The process has already exited.",stale.Status);
         Assert.Null(stale.Revealed);
+        // Null is a process that is gone.
         Assert.Equal("The process has already exited.",(await OpenWith(creationTicks:null)).Status);
+        // A running process whose creation time cannot be read has not exited.
+        var unreadable=await OpenWith(configure:s=>s.CreationTicksError=5);
+        Assert.Equal("Could not open the file location (Windows error 5).",unreadable.Status);
+        Assert.Null(unreadable.Revealed);
         var missing=await OpenWith(path:Path.Combine(Path.GetTempPath(),$"DeadWare missing {Guid.NewGuid():N}","app.exe"));
         Assert.Equal("The program file is no longer there.",missing.Status);
         Assert.Null(missing.Revealed);
@@ -232,5 +243,46 @@ public class ProcessActionsTests
         Assert.Equal("",opened.Status);
         Assert.Equal(opened.File,opened.Revealed);
         Assert.True(opened.OnSta);
+    }
+
+    [Fact]
+    public async Task Open_location_for_an_app_reports_an_unreadable_member_only_when_none_is_confirmed()
+    {
+        var (a,c,_)=Actions();
+        c[8].CreationTicksError=5;
+        c[9].CreationTicks=2;
+        Assert.Equal("Could not open the file location (Windows error 5).",await a.OpenLocationAsync([(8,1),(9,1)]));
+        // A confirmed member is used even though another cannot be read.
+        c[9].CreationTicks=1;
+        c[9].ImagePath=Path.Combine(Path.GetTempPath(),$"DeadWare missing {Guid.NewGuid():N}","app.exe");
+        Assert.Equal("The program file is no longer there.",await a.OpenLocationAsync([(8,1),(9,1)]));
+    }
+
+    [Fact]
+    public async Task Open_location_rechecks_the_generation_after_reading_the_path()
+    {
+        var reused=await OpenWith(configure:s=>s.CreationTicksAfterPathRead=2);
+        Assert.Equal("The process has already exited.",reused.Status);
+        Assert.Null(reused.Revealed);
+        // For an app, the reused member's path is neither counted nor revealed.
+        var (a,c,_)=Actions();
+        c[8].ImagePath=Path.Combine(Path.GetTempPath(),$"DeadWare missing {Guid.NewGuid():N}","app.exe");
+        c[9].ImagePath=@"C:\Other\app.exe";
+        c[9].CreationTicksAfterPathRead=2;
+        Assert.Equal("The program file is no longer there.",await a.OpenLocationAsync([(8,1),(9,1)]));
+    }
+
+    [Fact]
+    public async Task Open_location_gives_up_on_a_hung_shell()
+    {
+        Assert.Equal(TimeSpan.FromSeconds(10),new ProcessActions(new FakeProcessControl(),(_,_)=>false,_=>true,Own,false).RevealTimeout);
+        var hold=new ManualResetEventSlim();
+        try
+        {
+            var hung=await OpenWith(hold:hold,revealTimeout:TimeSpan.FromMilliseconds(200)).WaitAsync(TimeSpan.FromSeconds(30));
+            Assert.Equal("Could not open the file location.",hung.Status);
+            Assert.Null(hung.Revealed);
+        }
+        finally{hold.Set();}
     }
 }

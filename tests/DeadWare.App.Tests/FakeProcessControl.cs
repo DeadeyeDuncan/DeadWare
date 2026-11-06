@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using DeadWare.App;
 using DeadWare.Core;
 using Microsoft.Win32.SafeHandles;
@@ -38,6 +39,10 @@ internal sealed class FakeProcessControl : IProcessControl
         public string? ImagePath=AppPath;
         public string? TokenUserSid=UserSid;
         public FakeEnding Ending=FakeEnding.Ends;
+        /// <summary>The Win32 error <see cref="FakeProcessControl.CreationTicks"/> throws: the process runs but its creation time cannot be read. End task's facts read is unaffected.</summary>
+        public int? CreationTicksError;
+        /// <summary>The creation ticks the PID reads once its image path has been read: the PID was reused meanwhile.</summary>
+        public long? CreationTicksAfterPathRead;
     }
     private sealed class Handle(int pid,SafeProcessHandle value,bool signalled)
     {
@@ -110,8 +115,20 @@ internal sealed class FakeProcessControl : IProcessControl
         foreach(var handle in handles)Find(handle);
         lock(gate){waits++;waitTimeout=timeout;}
     }
-    public long? CreationTicks(int pid)=>this[pid].CreationTicks;
-    public string? ImagePath(int pid)=>this[pid].ImagePath;
+    public long? CreationTicks(int pid)
+    {
+        var script=this[pid];
+        lock(gate)return script.CreationTicksError is int error?throw new Win32Exception(error):script.CreationTicks;
+    }
+    public string? ImagePath(int pid)
+    {
+        var script=this[pid];
+        lock(gate)
+        {
+            if(script.CreationTicksAfterPathRead is long reused)script.CreationTicks=reused;
+            return script.ImagePath;
+        }
+    }
 
     private Handle Find(SafeProcessHandle handle)
     {
