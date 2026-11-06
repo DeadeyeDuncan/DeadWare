@@ -267,7 +267,7 @@ Native details: one `NtQuerySystemInformation(5, buffer, length, out returned)` 
 [Fact] public void Status_appears_only_after_60_s_of_continuous_failure(){ const string f="Process scan unavailable (NTSTATUS 0xC0000004)";
     Assert.Equal("",WindowsProcesses.PacedStatus(59.9,0,f));Assert.Equal(f,WindowsProcesses.PacedStatus(60,0,f));Assert.Equal(f,WindowsProcesses.PacedStatus(500,0,f));Assert.Equal("",WindowsProcesses.PacedStatus(500,null,f));Assert.Equal("",WindowsProcesses.PacedStatus(130,100,f));}
 
-// CollectorProcessTests (HardwareEnabled:false, EtwEnabled:false, interval 0.5; FakeProcesses yields scripted scans with rising CPU and counts calls;
+// CollectorProcessTests (HardwareEnabled:false, EtwEnabled:false, interval 0.5; FakeProcesses yields scripted scans with rising CPU and counts calls; ThrowingStorage (internal, in CollectorProcessTests.cs) is an IStorageFastSource whose Drives throws NotSupportedException;
 // ProcessorCountThrows throws InvalidCastException from ProcessorCount; Start/NextWhere/NextReadingAfter subscribe to SampleAvailable with a 10 s timeout;
 // FirstWith(source, options = new(ProcessMonitoring:true)) returns the first published reading)
 [Fact] public async Task Monitoring_is_off_by_default_and_never_scans(){ var (r,fake)=await Third(new());Assert.Equal(ProcessActivityKind.Off,r.ProcessActivity.Kind);Assert.Equal(0,fake.Calls);}
@@ -283,7 +283,7 @@ Native details: one `NtQuerySystemInformation(5, buffer, length, out returned)` 
 [Fact] public async Task Stopped_path_publishes_unavailable_or_off(){ var on=await FirstWith(new ProcessorCountThrows(),new(ProcessMonitoring:true));Assert.StartsWith("Collector stopped (InvalidCastException)",on.HardwareStatus);
     Assert.Equal(ProcessActivityKind.Unavailable,on.ProcessActivity.Kind);Assert.Equal("InvalidCastException",on.ProcessActivity.Scan.Status);
     var off=await FirstWith(new ProcessorCountThrows(),new());Assert.StartsWith("Collector stopped",off.HardwareStatus);Assert.Equal(ProcessActivityKind.Off,off.ProcessActivity.Kind);}
-[Fact] public async Task Failed_pass_publishes_unavailable_with_the_exception_type(){ /* FakeStorage whose Drives throws NotSupportedException, monitoring on */ Assert.Equal("NotSupportedException",r.ProcessActivity.Scan.Status);}
+[Fact] public async Task Failed_pass_publishes_unavailable_with_the_exception_type(){ /* ThrowingStorage, monitoring on */ Assert.Equal("NotSupportedException",r.ProcessActivity.Scan.Status);}
 [Fact] public async Task Failed_pass_with_monitoring_off_publishes_off()=>Assert.Equal(ProcessActivityKind.Off,r.ProcessActivity.Kind);
 [Fact] public async Task Sequence_increases_per_published_activity()=>Assert.True(second.ProcessActivity.Sequence>first.ProcessActivity.Sequence);
 ```
@@ -334,7 +334,7 @@ public void Disk_tracing_needs_elevation_and_the_disk_build(string[] args,bool e
     var failed=await FirstReadingWithThrowingStorage(new(DiagnosticTimings:true,ProcessMonitoring:true));Assert.Equal("Unavailable",failed.ProcessSummary!.State);}
 [Fact] public async Task Timing_keys_appear_when_the_scan_runs(){ Assert.Contains("windows/processes",r.ProviderMilliseconds!.Keys);Assert.Contains("processes/join",r.ProviderMilliseconds.Keys);Assert.DoesNotContain("etw/disk",r.ProviderMilliseconds.Keys);}
 ```
-`FirstReading`/`SecondReading` build a collector with `HardwareEnabled:false, EtwEnabled:false` over Task 4's `FakeProcesses`; `FirstReadingWithThrowingStorage` adds Task 4's `FakeStorage` whose `Drives` throws.
+`FirstReading`/`SecondReading` build a collector with `HardwareEnabled:false, EtwEnabled:false` over Task 4's `FakeProcesses`; `FirstReadingWithThrowingStorage` adds Task 4's `ThrowingStorage`.
 
 - [ ] **Step 2: Commit the failing tests, push and verify failure**
 
@@ -498,6 +498,7 @@ Run (CI). Expected: green. With `DiskColumns=true`, `Disk_attribution_and_event_
 - Create: `src/DeadWare.App/ProcessScanLoop.cs`
 - Modify: `src/DeadWare.App/Collector.cs` (block 1 takes from the loop instead of scanning; loop joined in `DisposeCoreAsync` under `HardwareStopBudget` like `healthLoop`)
 - Test: `tests/DeadWare.App.Tests/ProcessScanLoopTests.cs`
+- Modify: `tests/DeadWare.App.Tests/CollectorProcessTests.cs` (`FakeProcesses` gains `CallGaps()` and `WaitForCalls(n)`)
 
 **Interfaces:**
 - Consumes: Task 2 `ProcessActivityTracker`, `TrackedScan`, `ProcessDeltas.Add`; Task 4 `IProcessSource`.
@@ -515,11 +516,11 @@ Run (CI). Expected: green. With `DiskColumns=true`, `Disk_attribution_and_event_
 [Fact] public async Task Disabled_loop_never_scans()=>Assert.Equal(0,fake.Calls);
 [Fact] public async Task Turning_off_resets_the_tracker_and_the_first_scan_after_on_is_a_first_sample(){ bool on=true;var (loop,fake)=Loop(enabled:()=>on);await fake.WaitForCalls(3);on=false;await Task.Delay(1500);Assert.Null(loop.Take());
     on=true;int n=fake.Calls;await fake.WaitForCalls(n+1);var first=loop.Take()!;Assert.All(first.Processes,p=>{Assert.Equal(ProcessGap.FirstSample,p.RateGap);Assert.Null(p.CpuPercent);});Assert.Null(first.DeltaSeconds);}
-[Fact] public async Task Dispose_completes_within_the_hardware_budget(){ var (loop,fake)=Loop(source:new BlockingProcesses());loop.Start();await fake.Entered;var sw=Stopwatch.StartNew();
+[Fact] public async Task Dispose_completes_within_the_hardware_budget(){ var (loop,fake)=Loop(source:new BlockingProcesses());await fake.Entered;var sw=Stopwatch.StartNew();
     await loop.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(6));Assert.True(sw.Elapsed<TimeSpan.FromSeconds(5.5),$"{sw.Elapsed.TotalSeconds:0.0} s");}
 ```
 
-`Loop(pollingInterval = ()=>0.5, enabled = ()=>true, source = new FakeProcesses())` builds and starts a `ProcessScanLoop` over a real `ProcessActivityTracker(8)` and a `Stopwatch` monotonic clock; `FakeProcesses` (Task 4) records each call's monotonic time (`CallGaps()`), and `WaitForCalls(n)` waits up to 15 s; `BlockingProcesses` blocks every `Scan` until released and completes `Entered` on the first call.
+`Loop<T>(Func<double>? pollingInterval=null, Func<bool>? enabled=null, T? source=null) where T : class, IProcessSource` returns `(ProcessScanLoop Loop, T Source)`, defaulting to `()=>0.5`, `()=>true` and `new FakeProcesses()`, and builds and starts a `ProcessScanLoop` over a real `ProcessActivityTracker(8)` and a `Stopwatch` monotonic clock; this task extends Task 4's `FakeProcesses` to record each call's monotonic time (`CallGaps()`) and adds `WaitForCalls(n)` (waits up to 15 s); `BlockingProcesses` blocks every `Scan` until released and completes `Entered` on the first call.
 
 - [ ] **Step 2: Commit the failing tests, push and verify failure** — Expected: `error CS0246` for `ProcessScanLoop`.
 - [ ] **Step 3: Implement the loop in the style of `StorageSensorLoop` and switch the collector to it**
@@ -789,7 +790,7 @@ Checks (`[ElevatedGitHubFact]`, class `[Collection("RealWindows")]`): `Windows_p
 - Modify: `tests/DeadWare.App.Tests/BatteryUiTests.cs:73-74` (phase `"processes page"` → `ProcessesPageUiChecks.Run()` after `StoragePageUiChecks.Run()`), `tests/DeadWare.App.Tests/ShellUiChecks.cs:28-30`
 
 **Interfaces:**
-- Consumes: Tasks 10–14; `UiSession.SetProcessMonitoring`, `SetProcessColumns`, `RestartElevated`, `Current`, `Stale`, `Changed`.
+- Consumes: Task 10 `ProcessColumnKeys`, `ProcessCopy.ScanSentence`; Task 11 `ProcessGrouping`, `ProcessTableColumns`, `ProcessSort`, `ProcessCopy`; Task 14 `IProcessControl`, `NativeProcessControl`, the `MessageBox` confirm, `FakeProcessControl`; `UiSession.SetProcessMonitoring`, `SetProcessColumns`, `RestartElevated`, `Current`, `Stale`, `Changed`.
 - Produces:
   - `internal sealed class ProcessesPage : UserControl { public ProcessesPage(UiSession session); internal ProcessesPage(UiSession session,bool diskColumns,IProcessControl? control); internal DataGrid Grid{get;} internal Func<string,string?,bool> Confirm{get;set;} internal void Refresh(); }` — the public constructor passes `ProcessFeatures.DiskColumns` and `null` (meaning `new NativeProcessControl()`); `Grid` is the Processes `DataGrid` (Task 18's preview check reads it); `Confirm` defaults to Task 14's `MessageBox` confirm and is the **only** confirmation hook: Task 17 builds `ProcessActions` per action as `new ProcessActions(control,(q,s)=>Confirm(q,s),ProcessActions.Reveal,Environment.ProcessId,session.Current?.Elevated??Collector.IsElevated)`, so UI checks set `Confirm` and pass Task 14's `FakeProcessControl`.
   - `internal sealed class ProcessRowView : INotifyPropertyChanged` (`Id`, `IsApp`, `Expandable`, `Expanded`, `Name`, one display string and one tooltip string per column key, `Spoken`).
@@ -805,7 +806,7 @@ internal static void Run(){ Off_state_shows_turn_on(); Rows_group_case_variants_
     Gap_tooltips_name_their_reason(); Stale_reading_shows_dash_with_stale_tooltip(); Hidden_sort_column_falls_back(); Cap_note_is_shown(); Footer_lists_the_definitions(); Automation_names_and_spoken_summary(); }
 // Session fixture as StoragePageUiChecks.Session: Reading{Elevated=e, ProcessActivity=activity}, Settings{ProcessMonitoring=on, ProcessColumns=columns}; stale:true sets the reading's MonotonicSeconds to −100.
 // Fixture(): Sequence 1; chrome.exe PIDs 30/31/32 (CPU 1, 5, 3), Explorer.EXE 10 and explorer.exe 11 (CPU 1 each), Code.exe 40 (CPU 0.5); all with memory, I/O, disk and network values.
-static void Off_state_shows_turn_on(){ var (p,session)=Page(monitoring:false);Assert.Contains(Texts(p),t=>t=="Per-process monitoring is off. Turning it on adds one Windows process scan per poll.");Click(Button(p,"Turn on"));Assert.True(session.Settings.ProcessMonitoring);}
+static void Off_state_shows_turn_on(){ var (p,session)=Page(monitoring:false);Assert.Contains(Texts(p),t=>t==ProcessCopy.OffTitle+" "+ProcessCopy.ScanSentence(Collector.IsElevated,ProcessFeatures.DiskColumns,ProcessFeatures.ScanLoop));Click(Button(p,"Turn on"));Assert.True(session.Settings.ProcessMonitoring);}
 static void Rows_group_case_variants_are_collapsed_and_expand(){ var (p,_)=Page();Assert.Equal(["chrome.exe","Explorer.EXE","Code.exe"],AppNames(p));Assert.Equal(3,Rows(p).Count);Expand(p,"chrome.exe");Assert.Equal(6,Rows(p).Count);}
 static void Single_process_app_shows_pid_without_chevron(){ var (p,_)=Page(columns:["pid","cpu"]);Assert.Null(Chevron(p,"Code.exe"));Assert.Equal("40",Cell(p,"Code.exe","pid"));Assert.NotNull(Chevron(p,"chrome.exe"));Assert.Equal("",Cell(p,"chrome.exe","pid"));}
 static void Expanded_rows_share_columns_and_sort_within_their_app(){ var (p,_)=Page(elevated:true);Expand(p,"chrome.exe");Assert.Equal([31,32,30],ChildPids(p,"chrome.exe"));
@@ -1167,7 +1168,7 @@ static void Click_activates_the_bucket_under_the_pointer(){ Click(chart,BucketCe
 - Create: `src/DeadWare.App/ApplicationResourcesCard.cs`
 - Modify: `src/DeadWare.App/UsageHistoryPage.cs` (insert the card after the Applications card at 88 and before "Keep a longer record" at 90; load it in `LoadAsync` at 162–182; description at 93; privacy line at 94)
 - Modify: `src/DeadWare.App/Windows.cs:158` (usage help line), the Per-process monitoring help line that Task 10 added after the Storage sensors help (find it by its `ProcessCopy.ScanSentence` call), `src/DeadWare.Core/ProcessTable.cs` (`ProcessCopy.ScanSentence` gains an optional last parameter `bool history=false`; true appends `" While usage history is recorded, it also keeps the busiest apps for 30 days."`)
-- Create: `tests/DeadWare.App.Tests/ApplicationResourcesUiChecks.cs` (`internal static void Run(Application app)`); Modify: `tests/DeadWare.App.Tests/UsageHistoryUiChecks.cs` (its `Run(app)` ends by calling `ApplicationResourcesUiChecks.Run(app)`, so the card and click-a-moment checks run inside the Usage history checks, phase `"usage history"`, as the spec places them; `BatteryUiTests.cs` is unchanged), `tests/DeadWare.App.Tests/ShellUiChecks.cs`, `tests/DeadWare.Tests/ProcessSettingsTests.cs`
+- Create: `tests/DeadWare.App.Tests/ApplicationResourcesUiChecks.cs` (`internal static void Run(Application app)`); Modify: `tests/DeadWare.App.Tests/UsageHistoryUiChecks.cs` (its `Run(app)` ends by calling `ApplicationResourcesUiChecks.Run(app)`, so the card and click-a-moment checks run inside the Usage history checks, phase `"usage history"`, as the spec places them; `BatteryUiTests.cs` is unchanged), `tests/DeadWare.App.Tests/ShellUiChecks.cs`, `tests/DeadWare.App.Tests/ProcessesPageUiChecks.cs` (`Off_state_shows_turn_on` expects `ProcessCopy.OffTitle+" "+ProcessCopy.ScanSentence(Collector.IsElevated,ProcessFeatures.DiskColumns,ProcessFeatures.ScanLoop,history:true)`), `tests/DeadWare.Tests/ProcessSettingsTests.cs`
 
 **Interfaces:**
 - Consumes: Task 23 `ProcessResourceView`, Task 24 `ProcessHistoryService`, Task 25 chart.
@@ -1194,7 +1195,7 @@ static void Share_bar_has_a_segment_per_row(){ var bar=Named(card,"Share of peri
 static void Storage_line_names_the_file()=>Assert.Contains(Texts(card),t=>t.StartsWith("process-history.db · "));
 // `Period(page)` invokes the page's private `Period()` by reflection, as ShellUiChecks reaches private members.
 // UsageHistoryUiChecks: description still contains "up to 400 days" and ends "for 30 days (up to 128 MiB)."; privacy line equals the new text
-// ShellUiChecks: CardOf("Keeps day, week and month history") is still "History and alerts"; that help ends with "for 30 days."
+// ShellUiChecks: CardOf("Keeps day, week and month history") is still "History and alerts"; that help ends with "for 30 days."; the Per-process monitoring help equals ProcessCopy.ScanSentence(Collector.IsElevated,ProcessFeatures.DiskColumns,ProcessFeatures.ScanLoop,history:true)
 // ProcessSettingsTests
 [Fact] public void Scan_sentence_adds_the_history_sentence()=>Assert.Equal("Turning it on adds one Windows process scan per poll. While usage history is recorded, it also keeps the busiest apps for 30 days.",ProcessCopy.ScanSentence(false,false,false,history:true));
 ```
