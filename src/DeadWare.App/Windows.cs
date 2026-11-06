@@ -156,7 +156,7 @@ public sealed class MainWindow : Window
         System.Windows.Automation.AutomationProperties.SetName(usageRecording,"Record usage history");
         usageRecording.Checked+=(_,_)=>{if(!syncingWidgetGraphs)session.SetUsageRecording(true);};
         usageRecording.Unchecked+=(_,_)=>{if(!syncingWidgetGraphs)session.SetUsageRecording(false);};history.Children.Add(usageRecording);
-        var usageHelp=Ui.Text("Keeps day, week and month history of CPU, GPU, RAM and network usage plus per-application network totals for up to 400 days in this Windows profile. Pausing keeps what was saved. Open Usage history to browse, export or check storage.",12,"Muted");usageHelp.Margin=new(0,0,0,8);history.Children.Add(usageHelp);
+        var usageHelp=Ui.Text("Keeps day, week and month history of CPU, GPU, RAM and network usage plus per-application network totals for up to 400 days in this Windows profile. Pausing keeps what was saved. Open Usage history to browse, export or check storage. While Per-process monitoring is on, it also keeps the busiest apps' CPU, memory and I/O for 30 days.",12,"Muted");usageHelp.Margin=new(0,0,0,8);history.Children.Add(usageHelp);
         var usageOpen=Ui.Button("Open Usage history",()=>Navigate("usage"));usageOpen.Margin=new(0,0,0,20);history.Children.Add(usageOpen);
         history.Children.Add(Ui.Heading("Alerts",16));
         alertNotifications.IsChecked=session.Settings.AlertNotifications;
@@ -198,7 +198,7 @@ public sealed class MainWindow : Window
         System.Windows.Automation.AutomationProperties.SetName(processMonitoring,"Per-process monitoring");
         processMonitoring.Checked+=(_,_)=>{if(!syncingWidgetGraphs)session.SetProcessMonitoring(true);};
         processMonitoring.Unchecked+=(_,_)=>{if(!syncingWidgetGraphs)session.SetProcessMonitoring(false);};monitoring.Children.Add(processMonitoring);
-        monitoring.Children.Add(Ui.Text(ProcessCopy.ScanSentence(session.Current?.Elevated??Collector.IsElevated,ProcessFeatures.DiskColumns,ProcessFeatures.ScanLoop),12,"Muted"));
+        monitoring.Children.Add(Ui.Text(ProcessCopy.ScanSentence(session.Current?.Elevated??Collector.IsElevated,ProcessFeatures.DiskColumns,ProcessFeatures.ScanLoop,history:true),12,"Muted"));
         cpuCoreUsage.IsChecked=session.Settings.ShowCpuCoreUsage;
         System.Windows.Automation.AutomationProperties.SetName(cpuCoreUsage,"Show per-core CPU usage on usage graphs");
         cpuCoreUsage.Checked+=(_,_)=>{if(!syncingWidgetGraphs)session.SetCpuCoreUsage(true);};

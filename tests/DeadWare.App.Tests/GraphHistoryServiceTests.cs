@@ -84,17 +84,18 @@ public class GraphHistoryServiceTests
         var service=new GraphHistoryService(fixture.Path,"machine",new SampleHistory(),flushInterval:TimeSpan.FromMilliseconds(50));
         try
         {
+            // The reader is initialized once, before the service starts, so the poll below only reads. Re-initializing on every poll made
+            // the test a second writer (a write transaction and a TRUNCATE checkpoint every 20 ms) racing the service's 1 s busy timeout,
+            // and one lost race ends the service's recording for good.
+            var reader=new GraphHistoryStore(fixture.Path);reader.Initialize();
             service.Start();service.TryRecord(Reading(DateTimeOffset.UtcNow,1));
-            using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            var waited=System.Diagnostics.Stopwatch.StartNew();
             while(true)
             {
-                timeout.Token.ThrowIfCancellationRequested();
-                if(File.Exists(fixture.Path))
-                {
-                    try {var store=new GraphHistoryStore(fixture.Path);store.Initialize();if(store.Read(DateTimeOffset.UtcNow).Count==1)break;}
-                    catch(Microsoft.Data.Sqlite.SqliteException) { }
-                }
-                await Task.Delay(20,timeout.Token);
+                Assert.True(waited.Elapsed<TimeSpan.FromSeconds(5),$"No periodic flush within 5 s. Service status: {service.Status}");
+                try {if(reader.Read(DateTimeOffset.UtcNow).Count==1)break;}
+                catch(Microsoft.Data.Sqlite.SqliteException) { }
+                await Task.Delay(20);
             }
             Assert.DoesNotContain("unavailable",service.Status,StringComparison.OrdinalIgnoreCase);
         }

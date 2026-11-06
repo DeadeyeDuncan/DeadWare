@@ -31,6 +31,65 @@ internal sealed class UsageHistoryChart : FrameworkElement
     internal static bool CanConnect(UsageHistoryBucket a, UsageHistoryBucket b, long bucketMilliseconds)
         => IsFull(a, bucketMilliseconds) && IsFull(b, bucketMilliseconds) && b.Start == a.End;
 
+    /// <summary>When true, % values under 10 keep one decimal ("0.4%"): an app's share of all logical processors is often under 1 %.
+    /// Off by default, so the Device charts keep whole percents.</summary>
+    public bool TenthsBelowTenPercent { get; init; }
+
+    private bool selectable, keyboardFocused;
+    private int? selectedIndex;
+    /// <summary>When true the chart takes focus, a click or Enter activates a bucket and Left/Right move <see cref="SelectedIndex"/>. Off by default.
+    /// While it has keyboard focus it draws an Accent frame in place of the default focus rectangle.</summary>
+    public bool Selectable
+    {
+        get => selectable;
+        set { if (selectable == value) return; selectable = value; Focusable = value; FocusVisualStyle = null; InvalidateVisual(); }
+    }
+    protected override void OnIsKeyboardFocusedChanged(DependencyPropertyChangedEventArgs e)
+    {
+        base.OnIsKeyboardFocusedChanged(e);
+        keyboardFocused = (bool)e.NewValue;
+        if (selectable) InvalidateVisual();
+    }
+    /// <summary>Index into the first trace's buckets drawn with an accent hairline; null draws nothing. Ignored unless <see cref="Selectable"/>.</summary>
+    public int? SelectedIndex
+    {
+        get => selectedIndex;
+        set { if (selectedIndex == value) return; selectedIndex = value; InvalidateVisual(); }
+    }
+    /// <summary>Raised with the bucket index when a bucket is clicked or Enter is pressed on the selection.</summary>
+    public event Action<int>? BucketActivated;
+    /// <summary>Index of the bucket under a point from the last render, or null when the point is over no bucket.</summary>
+    internal int? BucketAt(Point point) => ChartFrame.Nearest(targets, point, PlotRect) is >= 0 and var index ? index : null;
+    protected override void OnMouseLeftButtonDown(System.Windows.Input.MouseButtonEventArgs e)
+    {
+        base.OnMouseLeftButtonDown(e);
+        if (!selectable) return;
+        // Handled, so an enclosing ScrollViewer does not take the focus back and Left, Right and Enter stay the chart's.
+        Focus(); HandleClick(e.GetPosition(this)); e.Handled = true;
+    }
+    internal void HandleClick(Point point)
+    {
+        if (!selectable || BucketAt(point) is not { } index) return;
+        SelectedIndex = index; BucketActivated?.Invoke(index);
+    }
+    protected override void OnKeyDown(System.Windows.Input.KeyEventArgs e)
+    {
+        base.OnKeyDown(e);
+        if (selectable && HandleKey(e.Key)) e.Handled = true;
+    }
+    internal bool HandleKey(System.Windows.Input.Key key)
+    {
+        int count = traces.FirstOrDefault()?.View.Buckets.Count ?? 0;
+        if (!selectable || count == 0) return false;
+        switch (key)
+        {
+            case System.Windows.Input.Key.Left: SelectedIndex = selectedIndex is { } l ? Math.Max(0, Math.Min(l, count) - 1) : count - 1; return true;
+            case System.Windows.Input.Key.Right: SelectedIndex = selectedIndex is { } r ? Math.Min(count - 1, r + 1) : 0; return true;
+            case System.Windows.Input.Key.Enter when selectedIndex is { } index && index < count: BucketActivated?.Invoke(index); return true;
+            default: return false;
+        }
+    }
+
     internal Rect PlotRect { get; private set; }
     /// <summary>Index into the first trace's buckets of the bucket under the pointer, or -1.</summary>
     internal int HoverIndex { get; private set; } = -1;
@@ -50,6 +109,12 @@ internal sealed class UsageHistoryChart : FrameworkElement
         double w = ActualWidth, h = ActualHeight;
         if (w < 160 || h < 120) return;
         dc.DrawRectangle(Brushes.Transparent, null, new Rect(0, 0, w, h));
+        // A Tab stop shows keyboard focus with an Accent frame, as the app's other focusable controls do.
+        if (selectable && keyboardFocused)
+        {
+            var focus = new Pen(Theme.Brush("Accent"), 1); focus.Freeze();
+            dc.DrawRoundedRectangle(null, focus, new Rect(0.5, 0.5, w - 1, h - 1), 7, 7);
+        }
         const double left = 12, right = 8, top = 12, bottom = 30;
         double width = w - left - right, height = h - top - bottom;
         var plot = new Rect(left, top, width, height); PlotRect = plot;
@@ -103,6 +168,11 @@ internal sealed class UsageHistoryChart : FrameworkElement
         string finish = DateLabel(to);
         Label(dc, finish, left + width - Formatted(finish).Width, top + height + 8);
         if (!any) Label(dc, "No history in this range yet", left + 10, top + height / 2 - 7);
+        if (selectable && selectedIndex is { } picked && picked >= 0 && picked < targets.Count)
+        {
+            var accent = new Pen(Theme.Brush("Accent"), 1); accent.Freeze();
+            dc.DrawLine(accent, new(targets[picked].X, top), new(targets[picked].X, top + height));
+        }
         HoverIndex = ChartFrame.Nearest(targets, hover, plot);
         if (HoverIndex >= 0 && HoverIndex < first.View.Buckets.Count)
         {
@@ -123,11 +193,12 @@ internal sealed class UsageHistoryChart : FrameworkElement
             if (anchor is { } at) ChartFrame.Chip(dc, at, plot, lines, typeface, pixelsPerDip, false);
         }
     }
-    private string Format(double value) => unit switch
+    internal string Format(double value) => unit switch
     {
-        "%" => $"{value:0}%",
+        "%" => TenthsBelowTenPercent && Math.Abs(value) < 10 ? $"{value:0.#}%" : $"{value:0}%",
         "°C" => $"{value:0}°C",
         "B/s" => Ui.Bytes(value, true),
+        "B" => Ui.Bytes(value),
         _ => $"{value:0.#} {unit}",
     };
     private void Label(DrawingContext dc, string text, double x, double y) => dc.DrawText(Formatted(text), new(x, y));

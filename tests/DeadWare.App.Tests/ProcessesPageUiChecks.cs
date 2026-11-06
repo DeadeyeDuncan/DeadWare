@@ -74,8 +74,8 @@ internal static class ProcessesPageUiChecks
     private static void Off_state_shows_turn_on()
     {
         var (p,session)=Page(monitoring:false);
-        // The fixture reading is a standard user's (Elevated=false), so the sentence has no disk trace.
-        string off=ProcessCopy.OffTitle+" "+ProcessCopy.ScanSentence(false,ProcessFeatures.DiskColumns,ProcessFeatures.ScanLoop);
+        // The fixture reading is a standard user's (Elevated=false), so the sentence has no disk trace; it ends with the history sentence.
+        string off=ProcessCopy.OffTitle+" "+ProcessCopy.ScanSentence(false,ProcessFeatures.DiskColumns,ProcessFeatures.ScanLoop,history:true);
         Assert.Contains(off,Texts(p));
         Assert.DoesNotContain(p.Grid,Shown(p));
         Click(Button(p,"Turn on"));
@@ -88,7 +88,7 @@ internal static class ProcessesPageUiChecks
         var (empty,emptySession)=Page(monitoring:false);
         typeof(Collector).GetField("latest",All)!.SetValue(emptySession.Collector,null);
         Refresh(empty);
-        Assert.Contains(ProcessCopy.OffTitle+" "+ProcessCopy.ScanSentence(Collector.IsElevated,ProcessFeatures.DiskColumns,ProcessFeatures.ScanLoop),Texts(empty));
+        Assert.Contains(ProcessCopy.OffTitle+" "+ProcessCopy.ScanSentence(Collector.IsElevated,ProcessFeatures.DiskColumns,ProcessFeatures.ScanLoop,history:true),Texts(empty));
         emptySession.Settings.ProcessMonitoring=true;Refresh(empty);
         Assert.Empty(Rows(empty));Assert.Contains(empty.Grid,Shown(empty));
     }

@@ -185,7 +185,7 @@ internal sealed class ProcessesPage : UserControl
         // Hiding, the picker and the banner follow the published reading; before the first one, this process's own elevation.
         bool elevated=reading?.Elevated??Collector.IsElevated;
         bool on=session.Settings.ProcessMonitoring;
-        offText.Text=ProcessCopy.OffTitle+" "+ProcessCopy.ScanSentence(elevated,diskColumns,ProcessFeatures.ScanLoop);
+        offText.Text=ProcessCopy.OffTitle+" "+ProcessCopy.ScanSentence(elevated,diskColumns,ProcessFeatures.ScanLoop,history:true);
         offCard.Visibility=on?Visibility.Collapsed:Visibility.Visible;
         live.Visibility=on?Visibility.Visible:Visibility.Collapsed;
         foreach(var choice in ProcessTableColumns.Picker(session.Settings.ProcessColumns,elevated,diskColumns))
