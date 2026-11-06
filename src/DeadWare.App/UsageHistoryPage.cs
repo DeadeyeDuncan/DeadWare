@@ -37,6 +37,7 @@ internal sealed class UsageHistoryPage : ScrollViewer
     private readonly TextBox search = new() { Width = 220 };
     private readonly CheckBox recording = new() { Content = "Record usage history on this device" };
     private readonly Button exportMetrics, exportApplications, earlier, later;
+    private readonly ApplicationResourcesCard resources;
     private readonly DispatcherTimer timer = new() { Interval = TimeSpan.FromSeconds(60) };
     private UsagePageData? data;
     private int revision, offset;
@@ -86,12 +87,13 @@ internal sealed class UsageHistoryPage : ScrollViewer
         var table = Ui.Panel(applications, new Thickness(0)); table.Margin = new(0, 6, 0, 8); apps.Children.Add(table);
         apps.Children.Add(Ui.Text("Totals come from observed per-application traffic (ETW) during the period, summed by executable name across its processes. Time without capture is a gap, not zero traffic. Open Connections to see where the bytes went.", 11, "Muted"));
         body.Children.Add(Card(apps));
+        resources = new ApplicationResourcesCard(session); body.Children.Add(Card(resources));
 
         var settings = new StackPanel(); settings.Children.Add(Ui.Heading("Keep a longer record", 16)); recording.Margin = new(0, 12, 0, 8); settings.Children.Add(recording);
         AutomationProperties.SetName(recording, "Record usage history");
         settings.Children.Add(recordingStatus); storage.Margin = new(0, 8, 0, 8); settings.Children.Add(storage);
-        settings.Children.Add(Ui.Text("One row per minute for CPU, GPU, RAM and network, plus per-application bytes, kept for up to 400 days or 256 MiB, whichever comes first. The six-hour live graphs are separate and unchanged. Recording begins with this version while DeadWare runs; sleep and stopped monitoring leave gaps.", 12, "Muted"));
-        var local = Ui.Text("History stays in this Windows profile in usage-history.db and is never uploaded. Application names and byte totals describe what runs on this computer, so treat exports as private. Back up the database only while DeadWare is fully quit.", 11, "Muted"); local.Margin = new(0, 8, 0, 0); settings.Children.Add(local);
+        settings.Children.Add(Ui.Text("One row per minute for CPU, GPU, RAM and network, plus per-application bytes, kept for up to 400 days or 256 MiB, whichever comes first. The six-hour live graphs are separate and unchanged. Recording begins with this version while DeadWare runs; sleep and stopped monitoring leave gaps. While Per-process monitoring is on, it also keeps the busiest apps' CPU, memory and I/O for 30 days (up to 128 MiB).", 12, "Muted"));
+        var local = Ui.Text("History stays in this Windows profile in usage-history.db and process-history.db and is never uploaded. Application names and byte totals describe what runs on this computer, so treat exports as private. Back up the databases only while DeadWare is fully quit.", 11, "Muted"); local.Margin = new(0, 8, 0, 0); settings.Children.Add(local);
         body.Children.Add(Card(settings)); body.Children.Add(actionStatus);
 
         recording.IsChecked = session.Settings.UsageRecording;
@@ -161,6 +163,8 @@ internal sealed class UsageHistoryPage : ScrollViewer
     private async Task<UsagePageData> LoadAsync()
     {
         var (from, to) = Period();
+        // The card reads on its own, so the Device charts never wait for a month of process history (about a second).
+        resources.Load(from, to);
         string? gpu = session.GpuName is var name && name != "GPU unavailable" ? name : null;
         int points = (int)Math.Clamp(charts["cpu"].ActualWidth > 0 ? charts["cpu"].ActualWidth : 600, 60, 1500);
         var service = session.Usage;

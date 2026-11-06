@@ -145,7 +145,7 @@ public sealed class ProcessHistoryService
         catch (Exception error) when (error is not ArgumentException)
         {
             Fail(error);
-            return new(from, to, [], new(ProcessHistory.EverythingElse, 0, 0, 0, 0, 0, 0, true), 0, 0, null, null, null, 0);
+            return new(from, to, [], new(ProcessHistory.EverythingElse, 0, 0, 0, 0, 0, 0, true, 0), 0, 0, null, null, null, 0);
         }
     }
     /// <summary>One application's metric over the period, bucketed for a chart and read like <see cref="ReadApplicationsAsync"/>.</summary>

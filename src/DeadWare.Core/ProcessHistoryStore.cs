@@ -5,8 +5,18 @@ namespace DeadWare.Core;
 
 public enum ProcessRank { CpuTime, AverageMemory, Io }
 
+/// <summary>One application's totals for a period. <see cref="MemoryByteSeconds"/> is its Σ(memory × Δt) over the minutes it was listed.</summary>
 public sealed record ProcessResourceRow(string Name, double CpuSeconds, double AverageCpuPercent, double AverageMemoryBytes,
-    long IoRead, long IoWritten, long MinutesListed, bool EverythingElse);
+    long IoRead, long IoWritten, long MinutesListed, bool EverythingElse, double MemoryByteSeconds)
+{
+    /// <summary>This row's part of <see cref="ProcessResourceView.RankTotal"/> for the same rank: CPU seconds, Σ(memory × Δt) or I/O read + written.</summary>
+    public double PartOf(ProcessRank rank) => rank switch
+    {
+        ProcessRank.CpuTime => CpuSeconds,
+        ProcessRank.AverageMemory => MemoryByteSeconds,
+        _ => (double)IoRead + IoWritten,
+    };
+}
 
 public sealed record ProcessResourceView(DateTimeOffset From, DateTimeOffset To, IReadOnlyList<ProcessResourceRow> Rows,
     ProcessResourceRow EverythingElse, double RankTotal, long RecordedMinutes, DateTimeOffset? FirstMinute, DateTimeOffset? LastMinuteEnd,
@@ -258,7 +268,7 @@ public sealed class ProcessHistoryStore(string path, long maximumDatabaseBytes =
     {
         double cpu = reader.GetDouble(offset) / TicksPerSecond, memory = reader.GetDouble(offset + 3), covered = reader.GetDouble(offset + 5);
         return new(name, cpu, capacity > 0 ? 100 * cpu / capacity : 0, covered > 0 ? memory / covered : 0,
-            Saturate(reader.GetDouble(offset + 1)), Saturate(reader.GetDouble(offset + 2)), reader.GetInt64(offset + 4), everythingElse);
+            Saturate(reader.GetDouble(offset + 1)), Saturate(reader.GetDouble(offset + 2)), reader.GetInt64(offset + 4), everythingElse, memory);
     }
 
     private static long Saturate(double value) => value >= long.MaxValue ? long.MaxValue : (long)value;

@@ -1,0 +1,232 @@
+using System.Globalization;
+using System.Windows;
+using System.Windows.Automation;
+using System.Windows.Controls;
+using System.Windows.Data;
+using System.Windows.Shapes;
+using DeadWare.Core;
+
+namespace DeadWare.App;
+
+/// <summary>Usage history's Application resources card: the busiest apps' saved CPU, memory and I/O for the page's period, from
+/// process-history.db. Reads run off the UI thread through <see cref="ProcessHistoryService"/> and only the latest request is shown;
+/// the search filters the rows already read. <see cref="UiSession.ProcessHistory"/> may be null in fixtures.</summary>
+internal sealed class ApplicationResourcesCard : StackPanel
+{
+    private sealed record RankChoice(string Label, ProcessRank Rank) { public override string ToString() => Label; }
+    private sealed record ResourceRow(string Name, string CpuTime, string AverageCpu, string AverageMemory, string IoRead, string IoWritten, string MinutesListed);
+    private const string LoadingText = "Loading application resources…";
+    // Share-bar colours are theme resources; Everything else is always Muted.
+    private static readonly string[] Palette = ["Graph/cpu", "Graph/memory", "Graph/download", "Graph/upload", "Graph/gpu", "Graph/diskread", "Graph/cputemp", "Graph/gputemp", "Accent"];
+    private readonly UiSession session;
+    private readonly ComboBox rank = new() { MinWidth = 140 };
+    private readonly TextBox search = new() { Width = 220 };
+    private readonly Grid shareBar = new() { Height = 14, Margin = new(0, 6, 0, 10), Visibility = Visibility.Collapsed };
+    private readonly DataGrid table = new() { AutoGenerateColumns = false, IsReadOnly = true, HeadersVisibility = DataGridHeadersVisibility.Column, MaxHeight = 420,
+        CanUserSortColumns = false, SelectionMode = DataGridSelectionMode.Single };
+    private readonly TextBlock summary = Ui.Text(LoadingText, 12, "Muted"), gapNotice = Ui.Text("", 12, "Warning");
+    private readonly TextBlock chartHint = Ui.Text("", 11, "Muted"), chartTitle = Ui.Text("", 13, "Heading", "HeadingFont");
+    private readonly TextBlock status = Ui.Text("", 11, "Muted"), storage = Ui.Text("", 11, "Muted");
+    private readonly StackPanel chart = new() { Visibility = Visibility.Collapsed };
+    private (DateTimeOffset From, DateTimeOffset To)? period;
+    private (string App, ProcessRank Rank, DateTimeOffset From, DateTimeOffset To)? charted;
+    // Loading or failure text shown in place of the summary until the next view arrives.
+    private string? pending = LoadingText;
+    private ProcessRank shownRank;
+    private int request, seriesRequest;
+    private bool syncing;
+
+    public ApplicationResourcesCard(UiSession session)
+    {
+        this.session = session;
+        Children.Add(Ui.Heading("Application resources", 16));
+        var controls = new WrapPanel { Margin = new(0, 8, 0, 4) };
+        var rankLabel = Ui.Text("Rank by", 12, "Muted"); rankLabel.Margin = new(0, 0, 8, 0); controls.Children.Add(rankLabel);
+        rank.ItemsSource = new[] { new RankChoice("CPU time", ProcessRank.CpuTime), new("Average memory", ProcessRank.AverageMemory), new("I/O", ProcessRank.Io) };
+        rank.SelectedIndex = 0; AutomationProperties.SetName(rank, "Rank application resources by"); controls.Children.Add(rank);
+        var searchLabel = Ui.Text("Find application", 12, "Muted"); searchLabel.Margin = new(20, 0, 12, 0); controls.Children.Add(searchLabel);
+        AutomationProperties.SetName(search, "Find application in application resources"); controls.Children.Add(search);
+        Children.Add(controls);
+        AutomationProperties.SetName(shareBar, "Share of period total"); Children.Add(shareBar);
+        Children.Add(summary); gapNotice.Margin = new(0, 4, 0, 4); Note(gapNotice, ""); Children.Add(gapNotice);
+        Column("Application", nameof(ResourceRow.Name), 2.4); Column("CPU time", nameof(ResourceRow.CpuTime), 1.1);
+        Column("Avg CPU", nameof(ResourceRow.AverageCpu), 0.9); Column("Avg memory while listed", nameof(ResourceRow.AverageMemory), 1.5);
+        Column("I/O read", nameof(ResourceRow.IoRead), 1); Column("I/O written", nameof(ResourceRow.IoWritten), 1); Column("Minutes listed", nameof(ResourceRow.MinutesListed), 1);
+        AutomationProperties.SetName(table, "Application resources");
+        var frame = Ui.Panel(table, new Thickness(0)); frame.Margin = new(0, 6, 0, 8); Children.Add(frame);
+        Note(chartHint, ""); Children.Add(chartHint);
+        chart.Children.Add(chartTitle); chart.Children.Add(Chart); Children.Add(chart);
+        Children.Add(Ui.Text("CPU time, I/O read and I/O written are summed over the minutes each application was listed. Avg CPU is its share of all logical processors across every recorded minute; Avg memory while listed averages its private working set over the minutes it was listed. Each minute lists up to 30 of the busiest applications by CPU, memory and I/O; Everything else holds the rest.", 11, "Muted"));
+        status.Margin = new(0, 8, 0, 0); Children.Add(status); Children.Add(storage);
+        rank.SelectionChanged += (_, _) => { ShowSeries(); _ = ReloadAsync(); };
+        search.TextChanged += (_, _) => RefreshRows();
+        table.SelectionChanged += (_, _) => { if (syncing) return; SelectedApp = (table.SelectedItem as ResourceRow)?.Name; ShowSeries(); };
+    }
+
+    internal ProcessRank Rank => (rank.SelectedItem as RankChoice)?.Rank ?? ProcessRank.CpuTime;
+    /// <summary>The application whose chart is shown; it stays while a search hides its row.</summary>
+    internal string? SelectedApp { get; private set; }
+    internal UsageHistoryChart Chart { get; } = new() { Height = 170, Margin = new(0, 6, 0, 4) };
+    /// <summary>The last view applied.</summary>
+    internal ProcessResourceView? View { get; private set; }
+    /// <summary>True while the latest ranking read has not returned.</summary>
+    internal bool Loading { get; private set; }
+
+    /// <summary>Reads the ranking for the page's period off the UI thread. A later call, or a Rank by change, makes an earlier read stale and
+    /// its result is dropped. The rows on screen stay until the new ones arrive.</summary>
+    internal void Load(DateTimeOffset from, DateTimeOffset to) { period = (from, to); _ = ReloadAsync(); }
+
+    private async Task ReloadAsync()
+    {
+        if (period is not { } range) return;
+        int current = ++request; var ranking = Rank;
+        if (session.ProcessHistory is not { } service)
+        {
+            Loading = false; pending = "Application resource history is not available."; summary.Text = pending;
+            return;
+        }
+        // The page's one-minute refresh keeps the numbers on screen; a new range or ranking says it is loading.
+        if (!Shows(range.From, range.To, ranking)) { pending = LoadingText; summary.Text = pending; }
+        Loading = true; status.Text = service.Status;
+        ProcessResourceView view;
+        try { view = await service.ReadApplicationsAsync(range.From, range.To, ranking); }
+        catch (ArgumentException error)
+        {
+            if (current != request) return;
+            Loading = false; pending = $"Application resources could not be read ({error.GetType().Name})."; summary.Text = pending;
+            return;
+        }
+        if (current != request) return;
+        Loading = false; status.Text = service.Status;
+        Apply(view, DateTimeOffset.UtcNow);
+    }
+    private bool Shows(DateTimeOffset from, DateTimeOffset to, ProcessRank ranking) => View is { } view && shownRank == ranking
+        && view.To - view.From == to - from && (from - view.From).Duration() < TimeSpan.FromMinutes(2);
+
+    /// <summary>Shows a period's ranking, read with the current Rank by. <paramref name="now"/> bounds the minutes that could have been recorded.</summary>
+    internal void Apply(ProcessResourceView view, DateTimeOffset now)
+    {
+        View = view; shownRank = Rank; pending = null;
+        // The chart follows a listed application; one missing from the new period has nothing to show.
+        if (SelectedApp is { } app && (view.RecordedMinutes == 0 || (app != ProcessHistory.EverythingElse
+            && !view.Rows.Any(r => r.Name.Equals(app, StringComparison.OrdinalIgnoreCase))))) SelectedApp = null;
+        long gaps = ElapsedMinutes(view.From, view.To, now) - view.RecordedMinutes;
+        Note(gapNotice, gaps > 0 ? $"{gaps:N0} minutes in this period have no process data (monitoring off, DeadWare not running, or a capture gap)." : "");
+        storage.Text = $"process-history.db · {Ui.Bytes(view.StorageBytes)}";
+        RefreshRows();
+        ShowSeries();
+    }
+
+    /// <summary>Whole minutes that start in [<paramref name="from"/>, <paramref name="to"/>) and have ended by <paramref name="now"/>:
+    /// every minute the store could hold for the period.</summary>
+    internal static long ElapsedMinutes(DateTimeOffset from, DateTimeOffset to, DateTimeOffset now)
+    {
+        const long Minute = TimeSpan.TicksPerMinute;
+        static long Ceiling(long ticks) => (ticks + Minute - 1) / Minute * Minute;
+        long end = Math.Min(Ceiling(to.UtcTicks), now.UtcTicks / Minute * Minute);
+        return Math.Max(0, (end - Ceiling(from.UtcTicks)) / Minute);
+    }
+
+    /// <summary>Like "18 min 0 s": seconds under a minute, minutes and seconds under an hour, then hours and minutes.</summary>
+    internal static string Duration(double seconds)
+    {
+        if (!double.IsFinite(seconds) || seconds < 0) return "—";
+        if (seconds < 59.95) return seconds.ToString("0.#", CultureInfo.CurrentCulture) + " s";
+        var time = TimeSpan.FromSeconds(Math.Round(seconds));
+        return time.TotalHours >= 1 ? $"{(long)time.TotalHours:N0} h {time.Minutes} min" : $"{time.Minutes} min {time.Seconds} s";
+    }
+
+    private void RefreshRows()
+    {
+        if (View is not { } view) return;
+        string query = search.Text.Trim();
+        var listed = new List<ProcessResourceRow>();
+        if (view.RecordedMinutes > 0)
+        {
+            listed.AddRange(view.Rows.Where(r => query.Length == 0 || r.Name.Contains(query, StringComparison.OrdinalIgnoreCase)));
+            // Everything else always stays, whatever the search.
+            listed.Add(view.EverythingElse);
+        }
+        var rows = listed.Select(Row).ToList();
+        syncing = true;
+        try
+        {
+            table.ItemsSource = rows;
+            table.SelectedItem = rows.FirstOrDefault(r => r.Name.Equals(SelectedApp, StringComparison.OrdinalIgnoreCase));
+        }
+        finally { syncing = false; }
+        summary.Text = pending ?? (view.RecordedMinutes == 0 ? "No application resources were recorded in this period."
+            : query.Length > 0 ? $"{listed.Count - 1:N0} of {view.Rows.Count:N0} applications match."
+            : $"{view.Rows.Count:N0} applications · {view.RecordedMinutes:N0} recorded minutes");
+        DrawShares(view, listed);
+    }
+
+    private void DrawShares(ProcessResourceView view, IReadOnlyList<ProcessResourceRow> listed)
+    {
+        shareBar.Children.Clear(); shareBar.ColumnDefinitions.Clear();
+        double total = view.RankTotal;
+        bool visible = total > 0 && listed.Count > 0;
+        shareBar.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
+        if (!visible) return;
+        // Colours follow the unfiltered ranking, so a row keeps its colour while the search changes.
+        var order = new Dictionary<ProcessResourceRow, int>(ReferenceEqualityComparer.Instance);
+        for (int i = 0; i < view.Rows.Count; i++) order[view.Rows[i]] = i;
+        double shown = 0;
+        for (int i = 0; i < listed.Count; i++)
+        {
+            var row = listed[i]; double part = Math.Max(0, row.PartOf(shownRank)); shown += part;
+            shareBar.ColumnDefinitions.Add(new() { Width = new GridLength(part, GridUnitType.Star) });
+            var piece = new Rectangle { ToolTip = $"{row.Name}: {100 * part / total:0.#} % of the period total" };
+            piece.SetResourceReference(Shape.FillProperty, row.EverythingElse ? "Muted" : Palette[order.GetValueOrDefault(row) % Palette.Length]);
+            Grid.SetColumn(piece, i); shareBar.Children.Add(piece);
+        }
+        // Rows the search hides, or beyond the rows read, leave their part empty, so each segment stays a share of the whole period.
+        if (total > shown) shareBar.ColumnDefinitions.Add(new() { Width = new GridLength(total - shown, GridUnitType.Star) });
+    }
+
+    /// <summary>Charts the selected application over the shown period with the Rank by metric; changing either redraws it.</summary>
+    private void ShowSeries()
+    {
+        var view = View;
+        if (SelectedApp is not { } app || view is null)
+        {
+            charted = null; seriesRequest++; chart.Visibility = Visibility.Collapsed;
+            Note(chartHint, view is { RecordedMinutes: > 0 } ? "Select an application to chart it over this period." : "");
+            return;
+        }
+        Note(chartHint, ""); chart.Visibility = Visibility.Visible;
+        var metric = Rank;
+        if (charted == (app, metric, view.From, view.To)) return;
+        bool redraw = charted is not { } shown || shown.App != app || shown.Rank != metric;
+        charted = (app, metric, view.From, view.To); int current = ++seriesRequest;
+        var (unit, maximum, title, label, _) = Metric(metric);
+        chartTitle.Text = $"{app} · {title}";
+        // A new app or metric shows an empty plot in its unit until the read returns, never the previous metric on the wrong scale;
+        // a new period for the same series keeps the old line until then, so the page's minute refresh does not flicker.
+        if (redraw) { Chart.SetData([], unit, maximum); AutomationProperties.SetName(Chart, $"{app} {label} history"); }
+        if (session.ProcessHistory is { } service) _ = ChartAsync(service, current, app, metric, view.From, view.To);
+    }
+    private async Task ChartAsync(ProcessHistoryService service, int current, string app, ProcessRank metric, DateTimeOffset from, DateTimeOffset to)
+    {
+        int points = (int)Math.Clamp(Chart.ActualWidth > 0 ? Chart.ActualWidth : 600, 60, ProcessHistoryStore.MaximumRows);
+        UsageHistoryView history;
+        try { history = await service.ReadSeriesAsync(app, metric, from, to, points); }
+        catch (ArgumentException) { return; }
+        if (current != seriesRequest) return;
+        var (unit, maximum, _, label, color) = Metric(metric);
+        Chart.SetData([new UsageTrace(history, color, false, $"{app} {label}")], unit, maximum);
+    }
+    private static (string Unit, double? Maximum, string Title, string Label, string Color) Metric(ProcessRank metric) => metric switch
+    {
+        ProcessRank.CpuTime => ("%", 100, "CPU % of all logical processors", "CPU", Theme.GraphKey("cpu")),
+        ProcessRank.AverageMemory => ("B", null, "memory (private working set)", "memory", Theme.GraphKey("memory")),
+        _ => ("B/s", null, "I/O read + written per second", "I/O", Theme.GraphKey("diskread")),
+    };
+
+    private static ResourceRow Row(ProcessResourceRow row) => new(row.Name, Duration(row.CpuSeconds),
+        row.AverageCpuPercent.ToString("0.#", CultureInfo.CurrentCulture) + " %", Ui.Bytes(row.AverageMemoryBytes), Ui.Bytes(row.IoRead),
+        Ui.Bytes(row.IoWritten), row.MinutesListed.ToString("N0", CultureInfo.CurrentCulture));
+    private void Column(string title, string binding, double weight)
+        => table.Columns.Add(new DataGridTextColumn { Header = title, Binding = new Binding(binding), Width = new DataGridLength(weight, DataGridLengthUnitType.Star) });
+    private static void Note(TextBlock note, string text) { note.Text = text; note.Visibility = text.Length == 0 ? Visibility.Collapsed : Visibility.Visible; }
+}
