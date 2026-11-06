@@ -15,7 +15,7 @@ public class GpuFanDataTests
         string prefix=temperatureKey[..^"temperature".Length];
         Assert.Equal("/gpu/0/fan",mappings[prefix+"fan"]);
         Assert.Equal("/gpu/0/usage",mappings[prefix+"usage"]);
-        Assert.Equal(6,mappings.Count);
+        Assert.Equal(8,mappings.Count); // network 2 + RAM 1 + GPU 3 + disk totals 2
     }
 
     [Fact]

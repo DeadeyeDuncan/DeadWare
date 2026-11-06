@@ -168,9 +168,10 @@ internal static class StorageChartUiChecks
         Assert.Equal(4, specs.Length);
         Assert.Equal(new[] { "storage/total/read", "storage/total/write" }, specs.Where(s => !Core(s)).Select(Metric));
         Assert.Equal(new[] { "storage/HDD1/read", "storage/NVME1/read" }, specs.Where(Core).Select(Metric));
-        // The per-drive lines are drawn with the core palette, and the axis is a bytes/s scale.
+        // The per-drive lines are tints of the disk read colour (never the CPU core palette), and the axis is a bytes/s scale.
         var pens = Drawings(drawing).Select(d => d.Pen?.Brush).OfType<SolidColorBrush>().Select(b => b.Color).ToHashSet();
-        Assert.Contains(Theme.CoreBrush(0, 2).Color, pens); Assert.Contains(Theme.CoreBrush(1, 2).Color, pens);
+        Assert.Contains(Theme.DriveBrush(0, 2).Color, pens); Assert.Contains(Theme.DriveBrush(1, 2).Color, pens);
+        Assert.Equal(ThemeTokens.CoreTint(((SolidColorBrush)Theme.Brush("Graph/diskread")).Color, 0, 2, SystemParameters.HighContrast), Theme.DriveBrush(0, 2).Color);
         Assert.Contains(Labels(drawing), l => l.EndsWith("MB/s", StringComparison.Ordinal));
     }
 
