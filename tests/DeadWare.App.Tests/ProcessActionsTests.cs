@@ -24,10 +24,10 @@ public class ProcessActionsTests
         var control=new FakeProcessControl();var box=new Box(answer);
         return (new ProcessActions(control,box.Ask,_=>throw new InvalidOperationException("End task never reveals."),own,elevated),control,box);
     }
-    /// <summary>Ends PID 8 alone as a standard user, answering Yes; PID 8 opens and reads as endable unless <paramref name="configure"/> changes it.</summary>
-    private static Task<string> EndWith(Action<FakeProcessControl> configure)
+    /// <summary>Ends PID 8 alone, as a standard user unless <paramref name="elevated"/>, answering Yes; PID 8 opens and reads as endable unless <paramref name="configure"/> changes it.</summary>
+    private static Task<string> EndWith(Action<FakeProcessControl> configure,bool elevated=false)
     {
-        var (actions,control,_)=Actions();
+        var (actions,control,_)=Actions(elevated:elevated);
         configure(control);
         return actions.EndAsync("a.exe",[(8,1)],false);
     }
@@ -145,7 +145,11 @@ public class ProcessActionsTests
     }
 
     [Fact]
-    public async Task Other_open_errors_count_as_denied()=>Assert.Equal(NeedsAdministrator,await EndWith(c=>c.OpenError(8,error:1450)));
+    public async Task Other_open_errors_count_as_denied()
+    {
+        Assert.Equal(NeedsAdministrator,await EndWith(c=>c.OpenError(8,error:1450)));
+        Assert.Equal("Not ended: 1 denied by Windows",await EndWith(c=>c.OpenError(8,error:1450),elevated:true));
+    }
 
     [Fact]
     public async Task Gone_or_reused_pids_count_as_already_exited_and_are_never_terminated()
@@ -159,10 +163,15 @@ public class ProcessActionsTests
         Assert.Empty(gone!.Terminated);
         Assert.Empty(reused!.Terminated);
         Assert.Empty(reused.StillOpen);
+        // The creation time is compared with each row's own Generation.
+        var (a,c,_)=Actions();
+        c[8].CreationTicks=7;
+        Assert.Equal("Ended 1 · not ended 0 · already exited 0 · still running 0",await a.EndAsync("a.exe",[(8,7)],false));
+        Assert.Equal([8],c.Terminated);
     }
 
-    /// <summary>Opens PID 8's location; its image path is <paramref name="path"/>, or a new file in a temp folder whose name has a space.</summary>
-    private static async Task<(string Status,string? Revealed,bool OnSta,string File)> OpenWith(bool reveal=true,Exception? throwOnReveal=null,string? path=null,long? creationTicks=1)
+    /// <summary>Opens the location of PID 8 with the row's <paramref name="generation"/>; its image path is <paramref name="path"/>, or a new file in a temp folder whose name has a space.</summary>
+    private static async Task<(string Status,string? Revealed,bool OnSta,string File)> OpenWith(bool reveal=true,Exception? throwOnReveal=null,string? path=null,long? creationTicks=1,long generation=1)
     {
         string folder=Path.Combine(Path.GetTempPath(),$"DeadWare actions {Guid.NewGuid():N}");
         Directory.CreateDirectory(folder);
@@ -181,7 +190,7 @@ public class ProcessActionsTests
                 revealed=p;
                 return reveal;
             },Own,false);
-            string status=await actions.OpenLocationAsync([(8,1)]);
+            string status=await actions.OpenLocationAsync([(8,generation)]);
             return (status,revealed,onSta,file);
         }
         finally{Directory.Delete(folder,true);}
@@ -219,7 +228,7 @@ public class ProcessActionsTests
         var missing=await OpenWith(path:Path.Combine(Path.GetTempPath(),$"DeadWare missing {Guid.NewGuid():N}","app.exe"));
         Assert.Equal("The program file is no longer there.",missing.Status);
         Assert.Null(missing.Revealed);
-        var opened=await OpenWith();
+        var opened=await OpenWith(creationTicks:7,generation:7);
         Assert.Equal("",opened.Status);
         Assert.Equal(opened.File,opened.Revealed);
         Assert.True(opened.OnSta);
