@@ -96,12 +96,12 @@ public sealed class ProcessMeasurementTests
                 return SizeRun.NotRunning(bufferSizeMB,ready?.Take.Status??taker.Failure??"No disk take was recorded");
             }
             using var buffer=new AlignedBuffer(Megabyte,Alignment);
-            taker.Phase=Phase.Write;
+            taker.Enter(Phase.Write);
             WriteSequential(path,buffer);
             // Real-time buffers flush about every second and the rate window spans 2 s, so after the tail every write is
             // credited and the last takes of the phase see no more of it.
             await Task.Delay(Tail);
-            taker.Phase=Phase.Random;
+            taker.Enter(Phase.Random);
             await RandomWritesAsync(path,buffer);
             await Task.Delay(Drain);
             taker.Dispose();
@@ -206,7 +206,8 @@ public sealed class ProcessMeasurementTests
             thread=new Thread(Run) {IsBackground=true,Name="Disk measurement takes"};
             thread.Start();
         }
-        public Phase Phase {set=>phase=value;}
+        /// <summary>Takes made from now on are marked with <paramref name="next"/>.</summary>
+        public void Enter(Phase next)=>phase=next;
         /// <summary>Set when a take threw; the takes after it were not made.</summary>
         public string? Failure=>failure;
         public IReadOnlyList<Taken> Taken {get{lock(gate)return taken.ToArray();}}
