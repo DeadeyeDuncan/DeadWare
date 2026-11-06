@@ -32,6 +32,7 @@ public sealed class MainWindow : Window
     private readonly CheckBox gpuFanSpeed=new() {Content="Show GPU fan speed on temperature graphs",Margin=new Thickness(0,0,0,8)};
     private readonly CheckBox cpuPumpSpeed=new() {Content="Show CPU pump speed on CPU temperature graphs",Margin=new Thickness(0,0,0,8)};
     private readonly CheckBox cpuCoreUsage=new() {Content="Show per-core CPU usage on usage graphs",Margin=new Thickness(0,12,0,8)};
+    private readonly CheckBox processMonitoring=new() {Content="Per-process monitoring",Margin=new Thickness(0,14,0,8)};
     private readonly ComboBox glass=new() {MinWidth=160};
     private readonly CheckBox graphSmoothing=new() {Content="Smooth long-range graphs (1, 3 and 6 hours)",Margin=new Thickness(0,0,0,8)};
     private readonly CheckBox usageRecording=new() {Content="Record usage history on this device",Margin=new Thickness(0,8,0,8)};
@@ -57,7 +58,7 @@ public sealed class MainWindow : Window
         var quitButton=Ui.Button("Quit DeadWare",quit);quitButton.FontSize=11;sideBottom.Children.Add(quitButton);trayNotice.Margin=new Thickness(3,5,3,8);sideBottom.Children.Add(trayNotice);
         sideBottom.Children.Add(monitoringInfo);
         var nav=new StackPanel();sidebar.Children.Add(new ScrollViewer{Content=nav,VerticalScrollBarVisibility=ScrollBarVisibility.Auto,HorizontalScrollBarVisibility=ScrollBarVisibility.Disabled});
-        foreach(var (key,label) in new[]{("overview","Overview"),("network","Network"),("storage","Storage"),("connections","Connections"),("battery","Battery history"),("usage","Usage history"),("alerts","Alerts"),("sensors","Sensors"),("cooling","Cooling Health"),("desktop","Settings"),("updates","Updates")})
+        foreach(var (key,label) in new[]{("overview","Overview"),("network","Network"),("storage","Storage"),("processes","Processes"),("connections","Connections"),("battery","Battery history"),("usage","Usage history"),("alerts","Alerts"),("sensors","Sensors"),("cooling","Cooling Health"),("desktop","Settings"),("updates","Updates")})
         {var button=Ui.NavButton(key,label,()=>Navigate(key));navigation[key]=button;nav.Children.Add(button);if(key=="battery")batteryNavigation=button;}
         var main=new DockPanel {Margin=new Thickness(8,12,18,16)};Grid.SetColumn(main,1);shell.Children.Add(main);
         var footer=new StackPanel {Margin=new Thickness(4,10,4,0)};footer.Children.Add(status);DockPanel.SetDock(footer,Dock.Bottom);main.Children.Add(footer);
@@ -71,7 +72,7 @@ public sealed class MainWindow : Window
         updateNotice=new(ShowUpdates);header.Children.Add(updateNotice);
         gpu.SelectionChanged+=(_,_)=>{if(!syncingGpu)session.SetGpu((gpu.SelectedItem as Device)?.Id);};
         main.Children.Add(content);
-        pages["overview"]=Overview();pages["network"]=Network();pages["storage"]=new StoragePage(session);pages["connections"]=new ConnectionsPage(session);pages["cooling"]=new CoolingHealthPage(session);pages["battery"]=new BatteryHistoryPage(session);pages["usage"]=new UsageHistoryPage(session);pages["alerts"]=new AlertsPage(session);pages["sensors"]=Sensors();pages["desktop"]=Desktop();pages["updates"]=new UpdatesPage(session);Navigate("overview");
+        pages["overview"]=Overview();pages["network"]=Network();pages["storage"]=new StoragePage(session);pages["processes"]=new ProcessesPage(session);pages["connections"]=new ConnectionsPage(session);pages["cooling"]=new CoolingHealthPage(session);pages["battery"]=new BatteryHistoryPage(session);pages["usage"]=new UsageHistoryPage(session);pages["alerts"]=new AlertsPage(session);pages["sensors"]=Sensors();pages["desktop"]=Desktop();pages["updates"]=new UpdatesPage(session);Navigate("overview");
         session.Changed+=Refresh;session.Updates.Changed+=RefreshUpdateNotice;session.UsageDayRequested+=ShowUsageDay;
         Closed+=(_,_)=>{session.Changed-=Refresh;session.Updates.Changed-=RefreshUpdateNotice;session.UsageDayRequested-=ShowUsageDay;};Closing+=OnClosing;
         RefreshUpdateNotice();
@@ -193,9 +194,10 @@ public sealed class MainWindow : Window
         var storageSensors=new CheckBox {Content="Storage sensors (temperature and health; restart to apply)",IsChecked=session.Settings.StorageSensors,Margin=new Thickness(0,14,0,8)};
         storageSensors.Checked+=(_,_)=>session.SetStorageSensors(true);storageSensors.Unchecked+=(_,_)=>session.SetStorageSensors(false);monitoring.Children.Add(storageSensors);
         monitoring.Children.Add(Ui.Text("Reads drive temperature, SMART health and wear from LibreHardwareMonitor every 30 seconds. Throughput and free space do not depend on this. Changing it takes effect after restarting DeadWare.",12,"Muted"));
-        var processMonitoring=new CheckBox {Content="Per-process monitoring",IsChecked=session.Settings.ProcessMonitoring,Margin=new Thickness(0,14,0,8)};
+        processMonitoring.IsChecked=session.Settings.ProcessMonitoring;
         System.Windows.Automation.AutomationProperties.SetName(processMonitoring,"Per-process monitoring");
-        processMonitoring.Checked+=(_,_)=>session.SetProcessMonitoring(true);processMonitoring.Unchecked+=(_,_)=>session.SetProcessMonitoring(false);monitoring.Children.Add(processMonitoring);
+        processMonitoring.Checked+=(_,_)=>{if(!syncingWidgetGraphs)session.SetProcessMonitoring(true);};
+        processMonitoring.Unchecked+=(_,_)=>{if(!syncingWidgetGraphs)session.SetProcessMonitoring(false);};monitoring.Children.Add(processMonitoring);
         monitoring.Children.Add(Ui.Text(ProcessCopy.ScanSentence(session.Current?.Elevated??Collector.IsElevated,ProcessFeatures.DiskColumns,ProcessFeatures.ScanLoop),12,"Muted"));
         cpuCoreUsage.IsChecked=session.Settings.ShowCpuCoreUsage;
         System.Windows.Automation.AutomationProperties.SetName(cpuCoreUsage,"Show per-core CPU usage on usage graphs");
@@ -245,9 +247,9 @@ public sealed class MainWindow : Window
     private void Navigate(string destination)
     {
         gpuControls.Visibility=destination=="overview"?Visibility.Visible:Visibility.Collapsed;
-        liveToolbar.Visibility=destination is "cooling" or "battery" or "usage" or "alerts" or "updates" or "connections"?Visibility.Collapsed:Visibility.Visible;
+        liveToolbar.Visibility=destination is "cooling" or "battery" or "usage" or "alerts" or "updates" or "connections" or "processes"?Visibility.Collapsed:Visibility.Visible;
         foreach(var (key,button) in navigation)button.Tag=key==destination?"active":null;
-        page=destination;content.Content=pages[destination];heading.Text=destination switch {"network"=>"Network","storage"=>"Storage","connections"=>"Connections","cooling"=>"Cooling Health","battery"=>"Battery history","usage"=>"Usage history","alerts"=>"Alerts","updates"=>"Keep DeadWare current","sensors"=>"Hardware sensors","desktop"=>"Settings",_=>"System overview"};
+        page=destination;content.Content=pages[destination];heading.Text=destination switch {"network"=>"Network","storage"=>"Storage","processes"=>"Processes","connections"=>"Connections","cooling"=>"Cooling Health","battery"=>"Battery history","usage"=>"Usage history","alerts"=>"Alerts","updates"=>"Keep DeadWare current","sensors"=>"Hardware sensors","desktop"=>"Settings",_=>"System overview"};
         RefreshUpdateNotice();Refresh();
         if(destination=="desktop")_ = RefreshStartupAsync();
     }
@@ -266,6 +268,8 @@ public sealed class MainWindow : Window
             gpuFanSpeed.IsChecked=session.Settings.ShowGpuFanSpeed;
             cpuPumpSpeed.IsChecked=session.Settings.ShowCpuPumpSpeed;
             cpuCoreUsage.IsChecked=session.Settings.ShowCpuCoreUsage;
+            // The Processes page's Turn on changes the same setting.
+            processMonitoring.IsChecked=session.Settings.ProcessMonitoring;
             graphSmoothing.IsChecked=session.Settings.GraphSmoothing;
             usageRecording.IsChecked=session.Settings.UsageRecording;
             alertNotifications.IsChecked=session.Settings.AlertNotifications;
