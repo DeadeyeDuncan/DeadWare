@@ -151,4 +151,15 @@ public class ProcessMinuteFolderTests
         Assert.DoesNotContain(b.Applications,a=>a.Name=="Unknown application");
         Assert.Equal(9,b.Applications.Single(a=>a.EverythingElse).CpuTime);
     }
+    [Fact] public void Omitted_io_and_memory_go_to_everything_else(){ var f=new ProcessMinuteFolder();
+        f.Observe(A(0,[P("",cpu:3,read:5,write:6,mem:7),P("a.exe",cpu:100)],new ProcessOmitted(2,0,new ProcessDeltas(40,70,30,900,1))));
+        var e=Assert.IsType<ProcessMinuteBatch>(f.Observe(A(60,P("z.exe")))).Applications.Single(a=>a.EverythingElse);
+        Assert.Equal((43L,75L,36L),(e.CpuTime,e.IoRead,e.IoWrite));Assert.Equal(907,e.MemoryByteSeconds,6);}
+    [Fact] public void An_interval_change_marks_only_its_own_minute_incomplete(){ var f=new ProcessMinuteFolder();
+        ProcessActivity Slow(double t)=>A(t,[P("a.exe",cpu:1,dt:5)],dt:5,interval:5);
+        for(int t=0;t<30;t++)f.Observe(A(t,P("a.exe",cpu:1)));
+        for(int t=30;t<60;t+=5)f.Observe(Slow(t));
+        var first=Assert.IsType<ProcessMinuteBatch>(f.Observe(Slow(60)));Assert.Equal(60,first.CoveredSeconds,6);Assert.False(first.Complete);
+        for(int t=65;t<120;t+=5)f.Observe(Slow(t));
+        var second=Assert.IsType<ProcessMinuteBatch>(f.Observe(Slow(120)));Assert.True(second.Complete);Assert.Equal(first.Segment,second.Segment);}
 }

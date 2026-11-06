@@ -4,9 +4,10 @@ namespace DeadWare.Tests;
 public class ProcessTableTests
 {
     static ProcessSample S(int pid,string name,double? cpu=0)=>new(pid,1,name,1,cpu,0,null,null,ProcessGap.None,null);
+    static ProcessSample Full()=>new(7,1,"a.exe",1,1.5,4096,10,20,ProcessGap.None,null){DiskReadPerSecond=300,DiskWritePerSecond=400,DownloadPerSecond=5000,UploadPerSecond=6000};
     static ProcessAppRow G(params ProcessSample[] members)=>Assert.Single(ProcessGrouping.Group(members));
     static IReadOnlyList<string> SortBy(bool descending){
-        ProcessSample[] list=[S(1,"a",null),S(3,"c",5),S(2,"b",5)];
+        ProcessSample[] list=[S(1,"a",null),S(2,"c",5),S(3,"b",5)];
         var samples=list.OrderBy(p=>p,Comparer<ProcessSample>.Create((x,y)=>ProcessSort.Compare(x,y,"cpu",descending))).Select(p=>p.Name).ToList();
         var rows=ProcessGrouping.Group(list).OrderBy(r=>r,Comparer<ProcessAppRow>.Create((x,y)=>ProcessSort.Compare(x,y,"cpu",descending))).Select(r=>r.Name).ToList();
         Assert.Equal(samples,rows);
@@ -27,7 +28,14 @@ public class ProcessTableTests
     [Fact] public void Picker_disables_admin_entries_and_keeps_their_saved_state(){ var p=ProcessTableColumns.Picker(["network"],false,true);var n=p.Single(c=>c.Key=="network");Assert.False(n.Enabled);Assert.True(n.Checked);Assert.Equal("NETWORK (administrator)",n.Label);
         Assert.Equal(["cpu","memory","io","disk","network","pid","ioread","iowrite","diskread","diskwrite","download","upload"],p.Select(c=>c.Key));}
     [Fact] public void Hidden_sort_column_falls_back_to_cpu_then_name(){ Assert.Equal(("cpu",true),ProcessTableColumns.EffectiveSort("upload",false,["cpu"]));Assert.Equal(("name",false),ProcessTableColumns.EffectiveSort("upload",false,["memory"]));}
-    [Fact] public void Nulls_sort_last_both_ways_and_ties_by_name_then_pid(){ Assert.Equal(["b","c","a"],SortBy(true));Assert.Equal(["b","c","a"],SortBy(false));}
+    [Fact] public void Nulls_sort_last_both_ways_and_ties_by_name_then_pid(){ Assert.Equal(["b","c","a"],SortBy(true));Assert.Equal(["b","c","a"],SortBy(false));
+        Assert.Equal([2,9],new[]{S(9,"a",5),S(2,"a",5)}.Order(Comparer<ProcessSample>.Create((x,y)=>ProcessSort.Compare(x,y,"cpu",true))).Select(p=>p.Pid));}
+    [Theory][InlineData("pid",7)][InlineData("cpu",1.5)][InlineData("memory",4096)][InlineData("io",30)][InlineData("ioread",10)][InlineData("iowrite",20)]
+    [InlineData("disk",700)][InlineData("diskread",300)][InlineData("diskwrite",400)][InlineData("network",11000)][InlineData("download",5000)][InlineData("upload",6000)]
+    public void Each_column_key_reads_its_own_field(string key,double expected){ Assert.Equal(expected,ProcessGrouping.Value(Full(),key));
+        Assert.Equal(key=="pid"?3:2*expected,ProcessGrouping.Value(G(Full(),Full() with{Pid=3}),key));}
+    [Theory][InlineData("io")][InlineData("disk")][InlineData("network")]
+    public void A_sum_column_is_unknown_when_either_half_is(string key)=>Assert.Null(ProcessGrouping.Value(Full() with{IoWritePerSecond=key=="io"?null:20,DiskReadPerSecond=key=="disk"?null:300,UploadPerSecond=key=="network"?null:6000},key));
     [Theory][InlineData(false,true,"Disk and network need administrator")][InlineData(false,false,"Network needs administrator")][InlineData(true,true,null)]
     public void Banner_follows_elevation_and_build(bool elevated,bool disk,string? expected)=>Assert.Equal(expected,ProcessCopy.Banner(elevated,disk));
     [Fact] public void Footer_omits_disk_without_the_disk_build(){ Assert.Equal(3,ProcessCopy.Footer(false).Count);Assert.Equal(4,ProcessCopy.Footer(true).Count);}
