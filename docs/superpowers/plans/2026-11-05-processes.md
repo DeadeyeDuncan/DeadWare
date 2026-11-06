@@ -928,18 +928,29 @@ git commit -m "docs: processes release notes, changelog, validation and 0.13.0"
 
 ## 0.13.1 — only if Task 8 set `DiskColumns=false`
 
-Work on a new feature branch from `main` after 0.13.0 merges; open a draft PR with the first push.
+Work on a new feature branch from `main` after 0.13.0 merges; open a draft PR with the first push (Task 20 Step 2).
 
 ### Task 20: Thread-to-process map for disk events
 
 **Files:**
 - Create: `src/DeadWare.Core/DiskThreadMap.cs`
-- Modify: `src/DeadWare.App/EtwDisk.cs` (Thread start/DCStart/stop handlers feed the map; `DiskIORead`/`DiskIOWrite` take the PID from the map by the event's issuing thread — check `DiskIOTraceData`'s members in TraceEvent 4.0.0 for the issuing-thread field before using `ThreadID` — and count the event unattributed when the map has no entry)
-- Modify: `src/DeadWare.Core/ProcessFeatures.cs` (only after Step 4 passes: `DiskColumns=true`)
-- Test: `tests/DeadWare.Tests/DiskThreadMapTests.cs`; the gate is `Disk_attribution_and_event_loss` (Task 7)
+- Modify: `src/DeadWare.App/EtwDisk.cs` (Thread start/DCStart/stop handlers feed the map through the seams below; `DiskIORead`/`DiskIOWrite` take the PID from the map by the event's issuing thread — check `DiskIOTraceData`'s members in TraceEvent 4.0.0 for the issuing-thread field before using `ThreadID` — and count the event unattributed when the map has no entry)
+- Modify: `src/DeadWare.Core/ProcessFeatures.cs` (Step 3 sets `DiskColumns=true`, the gate under test; Step 4 keeps it on a pass and reverts it to false on a fail)
+- Test: `tests/DeadWare.Tests/DiskThreadMapTests.cs`, `tests/DeadWare.App.Tests/EtwDiskTests.cs` (add cases); the gate is `Disk_attribution_and_event_loss` (Task 7)
 
 **Interfaces:**
-- Produces: `public sealed class DiskThreadMap { public void Start(int threadId,int pid,long eventUtcTicks); public void Stop(int threadId,long eventUtcTicks); public int? Resolve(int threadId,long eventUtcTicks); public void Clear(); public int Count{get;} }` — a thread id reused by another process resolves to the newer owner for events at or after its start; `Stop` removes the entry; `Clear` is called on loss.
+- Produces:
+  - `public sealed class DiskThreadMap { public void Start(int threadId,int pid,long eventUtcTicks); public void Stop(int threadId,long eventUtcTicks); public int? Resolve(int threadId,long eventUtcTicks); public void Clear(); public int Count{get;} }` — a thread id reused by another process resolves to the newer owner for events at or after its start; `Stop` removes the entry; `Clear` is called on loss.
+  - On `EtwDisk`: `internal void RecordThread(int threadId,int pid,long eventUtcTicks,bool started)` (the Thread start/DCStart handlers call it with `started:true`, stop with `false`); `internal void RecordThreadIo(int threadId,long eventUtcTicks,int bytes,bool write)` (resolves the PID through the map and then records as `RecordIo` does; no entry counts one unattributed event); `internal int ThreadCount{get;}`. The lossy take that resets attribution also calls `DiskThreadMap.Clear()`.
+
+- [ ] **Step 0: Fetch, inspect and create the 0.13.1 branch**
+
+```bash
+git fetch origin
+git status --short --branch
+git switch -c claude/processes-disk-0.13.1 origin/main   # main holds the merged 0.13.0; unrelated local work stays where it is
+```
+Expected: a clean tree at `origin/main`. It is a `claude/*` branch, so pushes run CI only through the draft PR opened in Step 2.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -948,11 +959,25 @@ Work on a new feature branch from `main` after 0.13.0 merges; open a draft PR wi
 [Fact] public void Unknown_thread_is_unattributed()=>Assert.Null(new DiskThreadMap().Resolve(5,1));
 [Fact] public void Reused_thread_id_resolves_to_the_newer_owner(){ m.Start(100,8,10);m.Stop(100,20);m.Start(100,9,30);Assert.Equal(9,m.Resolve(100,31));Assert.Null(m.Resolve(100,25));}
 [Fact] public void Clear_empties_the_map_after_loss(){ m.Start(1,2,3);m.Clear();Assert.Equal(0,m.Count);}
+// EtwDiskTests (Task 6's Disk(...)/TakeWarm/loss helpers)
+[Fact] public void Unmapped_thread_counts_as_unattributed(){ var d=Disk(resolve:pid=>new(pid,10,"a.exe"));d.RecordThreadIo(77,20,4096,write:true);var t=TakeWarm(d);Assert.Equal(1,t.UnattributedEvents);Assert.DoesNotContain(t.Rates,r=>r.Write>0);}
+[Fact] public void Mapped_thread_is_credited_to_its_process(){ var d=Disk(resolve:pid=>new(pid,10,"a.exe"));d.RecordThread(77,8,15,started:true);d.RecordThreadIo(77,20,4096,write:true);d.RecordThreadIo(77,21,512,write:false);
+    var t=Take(d,at:0);t=Take(d,at:2.5);var rate=Assert.Single(t.Rates,r=>r.Pid==8);Assert.Equal(4096/2.5,rate.Write,6);Assert.Equal(512/2.5,rate.Read,6);Assert.Equal(0,t.UnattributedEvents);}
+[Fact] public void Stopped_thread_is_no_longer_credited(){ d.RecordThread(77,8,15,true);d.RecordThread(77,8,18,false);d.RecordThreadIo(77,20,4096,true);Assert.Equal(1,TakeWarm(d).UnattributedEvents);}
+[Fact] public void Lossy_take_clears_the_thread_map(){ d.RecordThread(77,8,15,true);Assert.Equal(1,d.ThreadCount);loss=5;Assert.True(d.Take(3,Index).Lossy);Assert.Equal(0,d.ThreadCount);}
 ```
 
-- [ ] **Step 2: Commit the failing tests, push and verify failure** — Expected: `error CS0246` for `DiskThreadMap`.
-- [ ] **Step 3: Implement the map and switch `EtwDisk` to it; temporarily set `DiskColumns=true` so the CI test enforces the gate**
-- [ ] **Step 4: Commit, push and verify** — Expected: green, `disk-attribution.json` share ≥ 0.90 at the chosen size. **If the share is below 90 %, revert `DiskColumns` to false, record the numbers in the PR, and stop: report to the user; Disk stays out.**
+- [ ] **Step 2: Commit the failing tests, push, open the draft PR and verify failure**
+
+```bash
+git add tests/DeadWare.Tests/DiskThreadMapTests.cs tests/DeadWare.App.Tests/EtwDiskTests.cs
+git commit -m "test: disk thread-to-process map"
+git push -u origin HEAD
+gh pr create --draft --base main --title "Per-app disk via DeadWare's thread map (0.13.1)" --body "Implements the 0.13.1 part of docs/superpowers/plans/2026-11-05-processes.md."
+```
+Run (CI). Expected: `error CS0246` for `DiskThreadMap`, `CS1061` for `RecordThread`/`RecordThreadIo`.
+- [ ] **Step 3: Implement the map and switch `EtwDisk` to it; set `DiskColumns=true` in `ProcessFeatures.cs` so the CI test enforces the gate**
+- [ ] **Step 4: Commit, push and verify** — Expected: green, `disk-attribution.json` share ≥ 0.90 at the chosen size; `DiskColumns` stays true. **If the share is below 90 %, revert `DiskColumns` to false, record the numbers in the PR, and stop: report to the user; Disk stays out.**
 - [ ] **Step 5: Confirm GitHub has the commit and record the share in the PR description**
 
 ---
@@ -960,7 +985,7 @@ Work on a new feature branch from `main` after 0.13.0 merges; open a draft PR wi
 ### Task 21: 0.13.1 release docs and version
 
 **Files:**
-- Modify: `Directory.Build.props` (`0.13.1`), `CHANGELOG.md` (`## 0.13.1 — Per-app disk`), `README.md` (Disk columns, `--diagnose` disk timing keys, privacy unchanged), `docs/validation.md` (`## Per-app disk (0.13.1, <date>)` with the share, −1 share, `BufferSizeMB`, events lost)
+- Modify: `Directory.Build.props` (`0.13.1`), `CHANGELOG.md` (`## 0.13.1 — Per-app disk`), `README.md` (Disk columns, `--diagnose` disk timing keys; privacy section updated for 0.13.1: as administrator a kernel disk trace and DeadWare's thread-to-process map are held in memory only, record no process names or paths and are never saved, and diagnostics get only counts and timings for them), `docs/validation.md` (`## Per-app disk (0.13.1, <date>)` with the share, −1 share, `BufferSizeMB`, events lost)
 - Create: `docs/releases/v0.13.1.md`
 
 - [ ] **Step 1: Write the docs and bump the version**
@@ -973,7 +998,7 @@ Work on a new feature branch from `main` after 0.13.0 merges; open a draft PR wi
 
 ## 0.14.0 — saved history
 
-Work on a new feature branch from `main` after the 0.13.x release merges; open a draft PR with the first push.
+Work on a new feature branch from `main` after the 0.13.x release merges; open a draft PR with the first push (Task 22 Step 2).
 
 ### Task 22: `ProcessMinuteFolder`
 
@@ -991,6 +1016,15 @@ Work on a new feature branch from `main` after the 0.13.x release merges; open a
 
 Breaks and segments mirror `UsageMinuteFolder` (`UsageHistory.cs:76-126`): non-finite or non-increasing monotonic time, a monotonic gap > `max(5, max(intervals)+3)`, or wall/monotonic drift > 3 s break the segment; a later minute closes the previous one. Only `Kind == Available` activities with non-null `DeltaSeconds` add: `CoveredSeconds += DeltaSeconds`, and per process (key `ProcessGrouping.Key`, first casing kept) CPU time, I/O read/write (null deltas add nothing) and memory × Δt; empty-name processes and `Omitted.Deltas` go to Everything else. At close: per-app memory = `MemoryByteSeconds / CoveredSeconds`; keep the union of the top 10 by CPU time, by that memory and by read+write (a zero never qualifies; ties by key ordinal); everything else summed into one Everything else row (always present). `Complete = continuous && publications ≥ ExpectedSamples(interval) − 1`. A minute with zero covered seconds returns null.
 
+- [ ] **Step 0: Fetch, inspect and create the 0.14.0 branch**
+
+```bash
+git fetch origin
+git status --short --branch
+git switch -c claude/processes-history-0.14.0 origin/main   # main holds the merged 0.13.x; unrelated local work stays where it is
+```
+Expected: a clean tree at `origin/main`. It is a `claude/*` branch, so pushes run CI only through the draft PR opened in Step 2.
+
 - [ ] **Step 1: Write the failing tests**
 
 ```csharp
@@ -1005,7 +1039,15 @@ Breaks and segments mirror `UsageMinuteFolder` (`UsageHistory.cs:76-126`): non-f
 [Fact] public void Off_and_unavailable_activities_add_nothing()=>Assert.Equal(0,b.CoveredSeconds);
 ```
 
-- [ ] **Step 2: Commit the failing tests, push and verify failure** — Expected: `error CS0246` for `ProcessMinuteFolder`.
+- [ ] **Step 2: Commit the failing tests, push, open the draft PR and verify failure**
+
+```bash
+git add tests/DeadWare.Tests/ProcessMinuteFolderTests.cs
+git commit -m "test(core): process minute folder"
+git push -u origin HEAD
+gh pr create --draft --base main --title "Application resource history (0.14.0)" --body "Implements the 0.14.0 part of docs/superpowers/plans/2026-11-05-processes.md."
+```
+Run (CI). Expected: `error CS0246` for `ProcessMinuteFolder`.
 - [ ] **Step 3: Implement `ProcessHistory.cs`**
 - [ ] **Step 4: Commit, push and verify pass** — Expected: green; `ProcessMinuteFolderTests` pass.
 - [ ] **Step 5: Confirm GitHub has the commit**
@@ -1026,7 +1068,7 @@ Breaks and segments mirror `UsageMinuteFolder` (`UsageHistory.cs:76-126`): non-f
   - `public sealed record ProcessResourceView(DateTimeOffset From,DateTimeOffset To,IReadOnlyList<ProcessResourceRow> Rows,ProcessResourceRow EverythingElse,double RankTotal,long RecordedMinutes,DateTimeOffset? FirstMinute,DateTimeOffset? LastMinuteEnd,DateTimeOffset? EarliestRetained,long StorageBytes);`
   - `public sealed class ProcessHistoryStore(string path,long maximumDatabaseBytes=ProcessHistoryStore.MaximumDatabaseBytes){ public const long MaximumDatabaseBytes=128L*1024*1024; public const int RetentionDays=30,MaximumReadDays=31,MaximumRows=1000; public const int ApplicationId=0x44575052; public void Initialize(); public void Append(string machine,IReadOnlyList<ProcessMinuteBatch> batches,DateTimeOffset now); public ProcessResourceView ReadApplications(string machine,DateTimeOffset from,DateTimeOffset to,ProcessRank rank,int limit=200); public UsageHistoryView ReadSeries(string machine,string name,ProcessRank metric,DateTimeOffset from,DateTimeOffset to,int maxPoints); public long StorageBytes{get;} }`
 
-Schema `user_version` 1, `application_id` 0x44575052: `names(id INTEGER PRIMARY KEY, upper TEXT UNIQUE NOT NULL, display TEXT NOT NULL)` (upper = `ToUpperInvariant(name)`, display = first stored casing; no `NOCASE`); `minutes(machine, minute, covered REAL, processors INTEGER, complete INTEGER, segment, PRIMARY KEY(machine, minute))`; `app_minutes(machine, minute, name_id, cpu INTEGER, io_read INTEGER, io_write INTEGER, memory_seconds REAL, PRIMARY KEY(machine, minute, name_id))` with Everything else stored under the reserved name `ProcessHistory.EverythingElse` plus a flag column. Open: inspect read-only with `PRAGMA integrity_check` first, then version and `application_id` (as `ConnectionHistoryStore.cs:74-77`); newer, foreign or corrupt → `InvalidDataException`, file preserved. WAL, `synchronous=FULL`, `journal_size_limit=8388608`. A minute already stored from another segment keeps the first segment's rows and only sets `complete=0`. Cap: on `SQLITE_FULL`-style budget overflow drop the oldest whole day (never today) and retry; delete days older than 30. Reads: `to − from ≤ 31 days` else `ArgumentException`; `limit` and `maxPoints` ≤ 1000. Definitions (spec, Application resources): CPU time, I/O sums over listed minutes; Avg CPU = 100 × CPU seconds ÷ Σ(N × covered) over all recorded minutes of the period; Avg memory = Σ memory_seconds ÷ Σ covered of the app's listed minutes; `RankTotal` = the ranked metric's period total including Everything else (CPU time, Σ memory_seconds, or read+written). `ReadSeries` buckets like `ReadMetric` (`bucket = max(60 000 ms, ⌈period ÷ min(points,1000)⌉)`, aligned to `from`, grouped by `(minute−from)/bucket`): CPU % = 100 × Σcpu ÷ Σ(N×covered) of listed minutes; memory = Σ memory_seconds ÷ Σ covered; I/O = Σ(read+write) ÷ Σ covered (B/s); `Minimum`/`Maximum` = lowest/highest per-minute value; `Minutes` counts listed minutes so a bucket missing any minute is partial.
+Schema `user_version` 1, `application_id` 0x44575052: `names(id INTEGER PRIMARY KEY, upper TEXT UNIQUE NOT NULL, display TEXT NOT NULL)` (upper = `ToUpperInvariant(name)`, display = first stored casing; no `NOCASE`); `minutes(machine, minute, covered REAL, processors INTEGER, complete INTEGER, segment, PRIMARY KEY(machine, minute))`; `app_minutes(machine, minute, name_id, cpu INTEGER, io_read INTEGER, io_write INTEGER, memory_seconds REAL, PRIMARY KEY(machine, minute, name_id))` with Everything else stored under the reserved name `ProcessHistory.EverythingElse` plus a flag column. Open: inspect read-only with `PRAGMA integrity_check` first, then version and `application_id` (as `ConnectionHistoryStore.cs:74-77`); newer, foreign or corrupt → `InvalidDataException`, file preserved. WAL, `synchronous=FULL`, `journal_size_limit=8388608`. A minute already stored from another segment keeps the first segment's rows and only sets `complete=0`. Cap: on `SQLITE_FULL`-style budget overflow drop the oldest whole day (never today) and retry; delete days older than 30. Reads: `to − from ≤ 31 days` else `ArgumentException`; `ReadApplications` (and its `RecordedMinutes`, `RankTotal` and Everything else) includes exactly the minutes with `from ≤ minute start < to`, where `from` need not be minute-aligned, so a click-a-moment slot gets the minutes `ReadMetric`'s `(minute − from) / bucket` grouping put in that point; rows are ordered by the rank — `CpuTime` by CPU seconds, `AverageMemory` by Avg memory while listed, `Io` by I/O read + written — descending, ties by name ordinal, Everything else kept apart in `EverythingElse`; `limit` outside 1–1000 throws `ArgumentOutOfRangeException` (as `UsageHistoryStore.ReadApplications`' `maxNames`), and `maxPoints` outside 1–4000 throws `ArgumentOutOfRangeException` (as `ReadMetric`) while values above 1000 are clamped to 1000 for bucketing, keeping the SQL within `LIMIT` 1000. Definitions (spec, Application resources): CPU time, I/O sums over listed minutes; Avg CPU = 100 × CPU seconds ÷ Σ(N × covered) over all recorded minutes of the period; Avg memory = Σ memory_seconds ÷ Σ covered of the app's listed minutes; `RankTotal` = the ranked metric's period total including Everything else (CPU time, Σ memory_seconds, or read+written). `ReadSeries` buckets like `ReadMetric` (`bucket = max(60 000 ms, ⌈period ÷ min(points,1000)⌉)`, aligned to `from`, grouped by `(minute−from)/bucket`): CPU % = 100 × Σcpu ÷ Σ(N×covered) of listed minutes; memory = Σ memory_seconds ÷ Σ covered; I/O = Σ(read+write) ÷ Σ covered (B/s); `Minimum`/`Maximum` = lowest/highest per-minute value; `Minutes` counts listed minutes so a bucket missing any minute is partial.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1044,6 +1086,12 @@ Schema `user_version` 1, `application_id` 0x44575052: `names(id INTEGER PRIMARY 
     Assert.Equal(100*48.0/(8*120),r.AverageCpuPercent,6);Assert.Equal(1024d*1024*1024,r.AverageMemoryBytes,1);Assert.Equal(1,r.MinutesListed);}
 [Fact] public void Everything_else_is_present_and_ranked_total_includes_it()=>Assert.Equal(v.Rows.Sum(r=>r.CpuSeconds)+v.EverythingElse.CpuSeconds,v.RankTotal,6);
 [Fact] public void Series_buckets_like_ReadMetric_and_leaves_unlisted_minutes_as_gaps(){ /* app listed in minutes 0,1,3 of a 4-minute period, 2 points → bucket 2 min */ Assert.Equal(2,s.Buckets.Count);Assert.Equal(2,s.Buckets[0].Minutes);Assert.Equal(1,s.Buckets[1].Minutes);Assert.Equal(120_000,s.BucketMilliseconds);}
+[Fact] public void Read_applications_includes_minutes_starting_in_a_non_aligned_slot(){ /* app listed in minutes 12:00, 12:01, 12:02, 12:03 (cpu 1, 2, 4, 8 s) */ var v=store.ReadApplications("m",At(12,0,30),At(12,2,30),ProcessRank.CpuTime);
+    Assert.Equal(2,v.RecordedMinutes);Assert.Equal(6,v.Rows.Single(r=>r.Name=="a.exe").CpuSeconds,6);Assert.Equal(At(12,1,0),v.FirstMinute);Assert.Equal(At(12,3,0),v.LastMinuteEnd);}
+[Theory][InlineData(ProcessRank.CpuTime,new[]{"cpu.exe","io.exe","mem.exe"})][InlineData(ProcessRank.AverageMemory,new[]{"mem.exe","io.exe","cpu.exe"})][InlineData(ProcessRank.Io,new[]{"io.exe","cpu.exe","mem.exe"})]
+public void Rank_orders_rows_by_cpu_time_avg_memory_or_read_plus_written(ProcessRank rank,string[] expected){ /* cpu.exe: 50 s, 1 MB, 10+10 B; mem.exe: 1 s, 4 GB, 0+5 B; io.exe: 2 s, 2 GB, 600+400 B */
+    Assert.Equal(expected,store.ReadApplications("m",from,to,rank).Rows.Select(r=>r.Name));}
+[Fact] public void Limit_above_1000_is_rejected()=>Assert.Throws<ArgumentOutOfRangeException>(()=>store.ReadApplications("m",now.AddDays(-1),now,ProcessRank.CpuTime,1001));
 [Fact] public void Series_points_are_capped_at_1000()=>Assert.True(store.ReadSeries("m","a.exe",ProcessRank.Io,now.AddDays(-30),now,4000).Buckets.Count<=1000);
 ```
 
@@ -1075,7 +1123,10 @@ Copies `UsageHistoryService` (`UsageHistoryService.cs:12-137`): 120-slot bounded
 [Fact] public async Task Stop_flushes_the_open_minute()=>Assert.Equal(1,(await Read()).RecordedMinutes);
 [Fact] public async Task Store_failure_stops_only_this_worker(){ /* path is a directory */ Assert.True(service.Failed);Assert.False(usage.Failed);}
 // CoolingShutdownTests
-[Fact] public async Task Sign_out_with_an_uninitialized_process_history_is_null_guarded(){ /* StuckSession fixture without ProcessHistory; StopCollectorForSessionEnding completes */ }
+[Fact] public async Task Sign_out_with_an_uninitialized_process_history_is_null_guarded(){ string root=Root();var (session,collector,connections,worker)=StuckSession(root,new EtwNetwork(_=>new(11,1,"fixture")));worker.SetResult();
+    try{ Assert.Null(typeof(UiSession).GetProperty("ProcessHistory")!.GetValue(session));var stop=Task.Run(()=>typeof(UiSession).GetMethod("StopCollectorForSessionEnding",Flags)!.Invoke(session,null));await stop.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.True(connections.StopAsync().IsCompleted);string trace=Path.Combine(root,"trace.jsonl");Assert.False(File.Exists(trace)&&File.ReadAllText(trace).Contains("session_end_collector_stop_failed"));}
+    finally{ await connections.StopAsync();if(Directory.Exists(root))Directory.Delete(root,true);}}
 ```
 
 - [ ] **Step 2: Commit the failing tests, push and verify failure** — Expected: `error CS0246` for `ProcessHistoryService`.
@@ -1115,14 +1166,14 @@ static void Click_activates_the_bucket_under_the_pointer(){ Click(chart,BucketCe
 **Files:**
 - Create: `src/DeadWare.App/ApplicationResourcesCard.cs`
 - Modify: `src/DeadWare.App/UsageHistoryPage.cs` (insert the card after the Applications card at 88 and before "Keep a longer record" at 90; load it in `LoadAsync` at 162–182; description at 93; privacy line at 94)
-- Modify: `src/DeadWare.App/Windows.cs:158` (usage help line), `:193-195` (Per-process monitoring help), `src/DeadWare.Core/ProcessTable.cs` (`ProcessCopy.ScanSentence` gains an optional last parameter `bool history=false`; true appends `" While usage history is recorded, it also keeps the busiest apps for 30 days."`)
-- Create: `tests/DeadWare.App.Tests/ApplicationResourcesUiChecks.cs`; Modify: `tests/DeadWare.App.Tests/BatteryUiTests.cs` (phase `"application resources card"` after `"usage history"`), `tests/DeadWare.App.Tests/UsageHistoryUiChecks.cs`, `tests/DeadWare.App.Tests/ShellUiChecks.cs`, `tests/DeadWare.Tests/ProcessSettingsTests.cs`
+- Modify: `src/DeadWare.App/Windows.cs:158` (usage help line), the Per-process monitoring help line that Task 10 added after the Storage sensors help (find it by its `ProcessCopy.ScanSentence` call), `src/DeadWare.Core/ProcessTable.cs` (`ProcessCopy.ScanSentence` gains an optional last parameter `bool history=false`; true appends `" While usage history is recorded, it also keeps the busiest apps for 30 days."`)
+- Create: `tests/DeadWare.App.Tests/ApplicationResourcesUiChecks.cs` (`internal static void Run(Application app)`); Modify: `tests/DeadWare.App.Tests/UsageHistoryUiChecks.cs` (its `Run(app)` ends by calling `ApplicationResourcesUiChecks.Run(app)`, so the card and click-a-moment checks run inside the Usage history checks, phase `"usage history"`, as the spec places them; `BatteryUiTests.cs` is unchanged), `tests/DeadWare.App.Tests/ShellUiChecks.cs`, `tests/DeadWare.Tests/ProcessSettingsTests.cs`
 
 **Interfaces:**
 - Consumes: Task 23 `ProcessResourceView`, Task 24 `ProcessHistoryService`, Task 25 chart.
-- Produces: `internal sealed class ApplicationResourcesCard : StackPanel { public ApplicationResourcesCard(UiSession session); internal void Apply(ProcessResourceView view,DateTimeOffset now); internal ProcessRank Rank{get;} internal string? SelectedApp{get;} internal UsageHistoryChart Chart{get;} }`
+- Produces: `internal sealed class ApplicationResourcesCard : StackPanel { public ApplicationResourcesCard(UiSession session); internal void Apply(ProcessResourceView view,DateTimeOffset now); internal ProcessRank Rank{get;} internal string? SelectedApp{get;} internal UsageHistoryChart Chart{get;} internal ProcessResourceView? View{get;} }` — `View` is the last applied view; `UsageHistoryPage.LoadAsync` reloads the card for the page's current `Period()` on every load, so a Day/Week/Month change and the earlier and later controls reload it.
 
-Card (spec, Usage history: Application resources): heading **Application resources**; Rank by **CPU time** / **Average memory** / **I/O**; search box ("Find application", automation name "Find application in application resources"); share bar of `RankTotal`; table columns `Application · CPU time · Avg CPU · Avg memory while listed · I/O read · I/O written · Minutes listed`, Everything else as the last row; selecting a row shows its `UsageHistoryChart` with one series: CPU % (`"%"`, fixed 100), memory (`"B"`, automatic) or I/O (`"B/s"`); changing Rank by redraws for the same app; gap notice `$"{gaps:N0} minutes in this period have no process data (monitoring off, DeadWare not running, or a capture gap)."` (gaps = elapsed period minutes − `RecordedMinutes`) and a storage line `$"process-history.db · {Ui.Bytes(StorageBytes)}"`. Text updates, exact:
+Card (spec, Usage history: Application resources): heading **Application resources**; Rank by **CPU time** / **Average memory** / **I/O**; search box ("Find application", automation name "Find application in application resources") that filters the table rows by name (trimmed, OrdinalIgnoreCase contains; Everything else always stays); share bar of `RankTotal` (automation name "Share of period total", one segment per listed row plus Everything else, widths proportional to each row's ranked value); table columns `Application · CPU time · Avg CPU · Avg memory while listed · I/O read · I/O written · Minutes listed`, Everything else as the last row; selecting a row shows its `UsageHistoryChart` with one series: CPU % (`"%"`, fixed 100), memory (`"B"`, automatic) or I/O (`"B/s"`); changing Rank by redraws for the same app; gap notice `$"{gaps:N0} minutes in this period have no process data (monitoring off, DeadWare not running, or a capture gap)."` (gaps = elapsed period minutes − `RecordedMinutes`) and a storage line `$"process-history.db · {Ui.Bytes(StorageBytes)}"`. Text updates, exact:
 - Settings usage help (`Windows.cs:158`) keeps its current text and appends `" While Per-process monitoring is on, it also keeps the busiest apps' CPU, memory and I/O for 30 days."`
 - Keep a longer record description keeps "up to 400 days" and appends `" While Per-process monitoring is on, it also keeps the busiest apps' CPU, memory and I/O for 30 days (up to 128 MiB)."`
 - Privacy line becomes `"History stays in this Windows profile in usage-history.db and process-history.db and is never uploaded. Application names and byte totals describe what runs on this computer, so treat exports as private. Back up the databases only while DeadWare is fully quit."`
@@ -1135,7 +1186,13 @@ Card (spec, Usage history: Application resources): heading **Application resourc
 static void Card_sits_between_applications_and_keep_a_longer_record()=>Assert.Equal(["Device","Applications","Application resources","Keep a longer record"],CardHeadings(page));
 static void Table_has_the_seven_columns_and_everything_else_last(){ Assert.Equal(["Application","CPU time","Avg CPU","Avg memory while listed","I/O read","I/O written","Minutes listed"],Headers(card));Assert.Equal("Everything else",LastRowName(card));}
 static void Selecting_an_app_shows_its_chart_and_rank_by_redraws(){ Select(card,"chrome.exe");Assert.Equal("%",ChartUnit(card));SetRank(card,ProcessRank.AverageMemory);Assert.Equal("B",ChartUnit(card));Assert.Equal("chrome.exe",card.SelectedApp);}
-static void Gap_notice_counts_minutes_without_process_data()=>Assert.Contains("minutes in this period have no process data",Texts(card));
+static void Gap_notice_counts_minutes_without_process_data()=>Assert.Contains(Texts(card),t=>t.EndsWith("minutes in this period have no process data (monitoring off, DeadWare not running, or a capture gap)."));
+static void Range_change_reloads_the_card(){ var dayFrom=card.View!.From;SelectRange(page,"Week");WaitFor(()=>card.View!.From!=dayFrom);Assert.Equal(Period(page).From,card.View!.From);
+    var weekFrom=card.View.From;Click(ButtonNamed(page,"Earlier period"));WaitFor(()=>card.View!.From!=weekFrom);Assert.Equal(Period(page),(card.View!.From,card.View.To));}
+static void Search_filters_rows_and_keeps_everything_else(){ SetSearch(card,"chro");Assert.Equal(["chrome.exe","Everything else"],RowNames(card));SetSearch(card,"");Assert.True(RowNames(card).Count>2);}
+static void Share_bar_has_a_segment_per_row(){ var bar=Named(card,"Share of period total");Assert.Equal(RowNames(card).Count,Segments(bar).Count);}
+static void Storage_line_names_the_file()=>Assert.Contains(Texts(card),t=>t.StartsWith("process-history.db · "));
+// `Period(page)` invokes the page's private `Period()` by reflection, as ShellUiChecks reaches private members.
 // UsageHistoryUiChecks: description still contains "up to 400 days" and ends "for 30 days (up to 128 MiB)."; privacy line equals the new text
 // ShellUiChecks: CardOf("Keeps day, week and month history") is still "History and alerts"; that help ends with "for 30 days."
 // ProcessSettingsTests
@@ -1144,7 +1201,7 @@ static void Gap_notice_counts_minutes_without_process_data()=>Assert.Contains("m
 
 - [ ] **Step 2: Commit the failing tests, push and verify failure** — Expected: `error CS0246` for `ApplicationResourcesCard`.
 - [ ] **Step 3: Implement the card, the page wiring and the text updates**
-- [ ] **Step 4: Commit, push and verify pass** — Expected: green; the UI fact passes phases `"usage history"` and `"application resources card"`; `ProcessSettingsTests` pass.
+- [ ] **Step 4: Commit, push and verify pass** — Expected: green; the UI fact passes phase `"usage history"` (which now runs `ApplicationResourcesUiChecks`); `ProcessSettingsTests` pass.
 - [ ] **Step 5: Confirm GitHub has the commit**
 
 ---
@@ -1156,24 +1213,24 @@ static void Gap_notice_counts_minutes_without_process_data()=>Assert.Contains("m
 - Modify: `tests/DeadWare.App.Tests/ApplicationResourcesUiChecks.cs`
 
 **Interfaces:**
-- Consumes: Task 25 `BucketActivated`/`SelectedIndex`; Task 23 `ReadApplicationsAsync`; the page's `Period()` and the CPU chart's `points` (`UsageHistoryPage.cs:165`).
-- Produces: `internal void ShowSlot(DateTimeOffset slotStart,DateTimeOffset slotEnd,ProcessRank rank)`, `internal void ClearSlot()` on the card; `internal static string SlotHeading(DateTimeOffset first,DateTimeOffset lastEnd,bool withDate)` → `"Busiest apps · 03:13–03:16"` / `"Busiest apps · Nov 3 03:05–03:28"` (local time, `MMM d HH:mm`).
+- Consumes: Task 25 `BucketActivated`/`SelectedIndex`; Task 24 `ProcessHistoryService.ReadApplicationsAsync`; the page's `Period()` and the CPU chart's `points` (`UsageHistoryPage.cs:165`).
+- Produces: `internal UsageHistoryChart Chart(string kind)=>charts[kind];` on `UsageHistoryPage` (the private `charts` dictionary at `UsageHistoryPage.cs:32`; the static `Charts` array stays as it is); `internal void ShowSlot(DateTimeOffset slotStart,DateTimeOffset slotEnd,ProcessRank rank)`, `internal void ClearSlot()` on the card; `internal static string SlotHeading(DateTimeOffset first,DateTimeOffset lastEnd,bool withDate)` → `"Busiest apps · 03:13–03:16"` / `"Busiest apps · Nov 3 03:05–03:28"` (local time, `MMM d HH:mm`).
 
 Slot = `[from + k × bucket, from + (k+1) × bucket)` clipped to the period end, with `bucket = CPU view's BucketMilliseconds` (shared by CPU and RAM). CPU click ranks by CPU time, RAM by average memory; the list includes Everything else; the heading names `FirstMinute` to `LastMinuteEnd` with the date on Week and Month; the hairline is set on both charts; Esc or **Clear** calls `ClearSlot()` and clears both `SelectedIndex`. A slot with `RecordedMinutes == 0` shows `"No process data in this span."` and Clear stays available.
 
 - [ ] **Step 1: Write the failing checks**
 
 ```csharp
-static void Clicking_a_cpu_point_lists_the_busiest_apps_in_its_slot(){ Activate(page.Charts["cpu"],1);Assert.StartsWith("Busiest apps · ",Heading(card));Assert.Equal(ProcessRank.CpuTime,card.Rank);Assert.Equal("Everything else",LastRowName(card));}
+static void Clicking_a_cpu_point_lists_the_busiest_apps_in_its_slot(){ Activate(page.Chart("cpu"),1);Assert.StartsWith("Busiest apps · ",Heading(card));Assert.Equal(ProcessRank.CpuTime,card.Rank);Assert.Equal("Everything else",LastRowName(card));}
 static void Ram_click_ranks_by_average_memory()=>Assert.Equal(ProcessRank.AverageMemory,AfterActivate("memory").Rank);
-static void Both_charts_show_the_hairline_and_clear_removes_it(){ Assert.Equal(1,page.Charts["cpu"].SelectedIndex);Assert.Equal(1,page.Charts["memory"].SelectedIndex);Click(Button(card,"Clear"));Assert.Null(page.Charts["cpu"].SelectedIndex);}
+static void Both_charts_show_the_hairline_and_clear_removes_it(){ Assert.Equal(1,page.Chart("cpu").SelectedIndex);Assert.Equal(1,page.Chart("memory").SelectedIndex);Click(Button(card,"Clear"));Assert.Null(page.Chart("cpu").SelectedIndex);Assert.Null(page.Chart("memory").SelectedIndex);}
 static void Slot_heading_formats(){ Assert.Equal("Busiest apps · 03:13–03:16",ApplicationResourcesCard.SlotHeading(L(3,13),L(3,16),false));Assert.Equal("Busiest apps · Nov 3 03:05–03:28",ApplicationResourcesCard.SlotHeading(L(3,5),L(3,28),true));}
 static void Clicking_a_slot_without_process_data_says_so(){ Activate(EmptySlot);Assert.Contains("No process data in this span.",Texts(card));Key(card,Key.Escape);Assert.Equal("Application resources",Heading(card));}
 ```
 
 - [ ] **Step 2: Commit the failing checks, push and verify failure** — Expected: `error CS1061` for `ShowSlot`/`SlotHeading`.
 - [ ] **Step 3: Implement click-a-moment**
-- [ ] **Step 4: Commit, push and verify pass** — Expected: green; the UI fact passes phase `"application resources card"`.
+- [ ] **Step 4: Commit, push and verify pass** — Expected: green; the UI fact passes phase `"usage history"`.
 - [ ] **Step 5: Confirm GitHub has the commit**
 
 ---
