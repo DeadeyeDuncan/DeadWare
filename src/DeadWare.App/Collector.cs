@@ -306,7 +306,9 @@ public sealed class Collector : IAsyncDisposable
         finally
         {
             stage="Stopping providers";
-            try {computer?.Close();} finally {await StopEtwAsync();}
+            // Requested before Close, as disposal does, so a worker that ends for any reason leaves no disk session; disposal shares this stop.
+            var diskStop=disk?.StopAsync()??Task.CompletedTask;
+            try {computer?.Close();} finally {await Task.WhenAll(StopEtwAsync(),diskStop);}
             stage="Stopped";
         }
     }

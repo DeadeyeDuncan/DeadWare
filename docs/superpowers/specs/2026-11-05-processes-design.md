@@ -280,6 +280,7 @@ When at least 4 ETW rows have their PID in the scan and more than 50 % of them m
 - **Lifecycle:**
   - Every start and stop runs on one serialized pool task, never on the poll thread. A start costs about 200 ms plus rundown.
   - **Shutdown:** `Collector.DisposeCoreAsync` requests the disk stop before it awaits the worker, next to `StopNetworkCaptureAsync()`, and awaits it with the network stop. A stuck hardware provider therefore cannot delay it. It is not part of the network stop, so the final connections drain never waits for it. Disposal first closes the lifecycle task to new starts: a queued start is dropped, and a start already running finishes and is then stopped. The new field is null-guarded, because the shutdown fixtures build `Collector` with `GetUninitializedObject` (`CoolingShutdownTests`).
+  - **Worker exit:** whenever the collector's worker ends, after an error it cannot publish past or on cancellation, its `finally` requests the disk stop before it closes the hardware providers and awaits it with the network stop, so no disk session outlives the worker. Disposal's stop is the same task.
   - **Deadline:** the existing 5 s `HardwareStopBudget` bounds only the storage-health join (and the scan loop's join, if Cost moves the scan there), not the disk stop, so the collector adds no timeout of its own. The callers bound the stop: UiSession's provider deadline (5 s on Quit, 3 s at sign-out) and `--diagnose`'s 3 s shutdown wait, which fails the run when exceeded. A normal stop, including one queued behind a start, must therefore finish within 3 s. A stop still running at the deadline appears as the outstanding "hardware provider" stage in `collector_stop_timeout`. The orphan cleanup before the next disk-session start removes any session it left.
   - Before starting, it stops sessions named `DeadWare-Disk-<pid>-*` or `DeadWare-<pid>-*` whose PID is not a running DeadWare. These are orphans from a crash.
 - **Gating:** `CollectorOptions` gains `ProcessDiskTracing`, default false. It only permits a disk session and never changes after the collector is built.
@@ -388,7 +389,7 @@ When at least 4 ETW rows have their PID in the scan and more than 50 % of them m
   - 0.14.0: the minute folder (at most 30 apps plus Everything else a minute) and the store, including the one-day size test at that cap.
 - **App:**
   - Collector tests with a fake and a throwing process source: CPU and memory keys survive, and switching off takes effect within one poll. Switching on starts `EtwDisk` only when `ProcessDiskTracing` is set, without rebuilding the collector.
-  - `EtwDisk` through test seams, including a stuck hardware worker that still stops the disk session (`CoolingShutdownTests`' stuck-worker fixture).
+  - `EtwDisk` through test seams, including a stuck hardware worker that still stops the disk session (`CoolingShutdownTests`' stuck-worker fixture), and a worker that ends after an error still stops the disk session (`EtwDiskTests`).
   - `--diagnose` builds options that run the scan (Off with `--no-processes`), and its JSON, serialized from a reading whose `ProcessActivity` holds named processes, contains a `ProcessSummary` that is not Off and none of those names.
   - Actions through the native-control and confirm hooks.
 - **UI checks:**
