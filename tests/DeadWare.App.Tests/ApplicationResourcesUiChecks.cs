@@ -78,6 +78,7 @@ internal static class ApplicationResourcesUiChecks
             SelectRange(page, "Day"); Load(page);
             Shows_the_day_ranking(card, ["chrome.exe", "Code.exe", "steam.exe", "explorer.exe", "Everything else"]);
             Only_the_cpu_and_ram_charts_are_selectable(page);
+            Clicking_a_point_brings_the_card_into_view(page, card);
             Clicking_a_cpu_point_lists_the_busiest_apps_in_its_slot(page, card);
             Both_charts_show_the_hairline_and_clear_removes_it(page, card);
             Ram_click_ranks_by_average_memory(page, card);
@@ -361,10 +362,35 @@ internal static class ApplicationResourcesUiChecks
         Assert.Equal("2.5 %", Cell(Rows(card)[0], "AverageCpu"));
         Assert.Equal(ApplicationResourcesCard.Duration(5.0 * bucket.Minutes), Cell(Rows(card)[^1], "CpuTime"));
         Assert.Contains($"4 applications · {bucket.Minutes} recorded minutes", Texts(card));
+        // The share bar and its segments name the slot's total, not the period's.
+        var bar = Assert.IsType<Grid>(Named(card, "Share of this span's total"));
+        Assert.Equal(Visibility.Visible, bar.Visibility);
+        Assert.DoesNotContain(Descendants(card).OfType<FrameworkElement>(), e => AutomationProperties.GetName(e) == "Share of period total");
+        Assert.EndsWith(" % of this span's total", (string)Segments(bar)[0].ToolTip);
         // The period's gap notice does not describe a slot; Clear is offered.
         Assert.DoesNotContain(Texts(card), t => t.EndsWith(GapEnding, StringComparison.Ordinal));
         Assert.True(IsShown(Button(card, "Clear"), card));
         Assert.Equal<(DateTimeOffset, DateTimeOffset)?>((bucket.Start, bucket.End), card.Slot);
+    }
+
+    private static void Clicking_a_point_brings_the_card_into_view(UsageHistoryPage page, ApplicationResourcesCard card)
+    {
+        // At a window's height the card sits below the Device and Applications cards, so a click scrolls it into view.
+        var window = new Size(1050, 800);
+        page.ScrollToTop(); Layout(page, window);
+        var frame = (FrameworkElement)VisualTreeHelper.GetParent(card);
+        Assert.Equal(0, page.VerticalOffset);
+        Assert.True(Top(frame, page) > page.ViewportHeight, "The Application resources card starts below the fold.");
+        var bucket = Bucket(page.Chart("cpu"), 1);
+        Activate(page.Chart("cpu"), 1);
+        WaitFor(() => { Layout(page, window); return page.VerticalOffset > 0; });
+        Assert.InRange(Top(frame, page), -0.5, page.ViewportHeight - 1);
+        WaitFor(() => !card.Loading && card.View is { } shown && shown.From == bucket.Start);
+        // Back to the period ranking, at the checks' full height.
+        Click(Button(card, "Clear"));
+        Shows_the_day_ranking(card, ["chrome.exe", "Code.exe", "steam.exe", "explorer.exe", "Everything else"]);
+        page.ScrollToTop(); Layout(page);
+        Assert.Equal(0, page.VerticalOffset);
     }
 
     private static void Both_charts_show_the_hairline_and_clear_removes_it(UsageHistoryPage page, ApplicationResourcesCard card)
@@ -444,6 +470,14 @@ internal static class ApplicationResourcesUiChecks
         SelectRange(page, "Week");
         Assert.Null(card.Slot); Assert.Equal("Application resources", Heading(card));
         Assert.Null(page.Chart("cpu").SelectedIndex); Assert.Null(page.Chart("memory").SelectedIndex);
+        // On Week (and Month) a listed slot's heading carries its date, formatted as the card formats it.
+        Load(page);
+        var week = Bucket(page.Chart("cpu"), 1);
+        Activate(page.Chart("cpu"), 1);
+        WaitFor(() => !card.Loading && card.View is { } shown && shown.From == week.Start);
+        Assert.Equal(TimeSpan.FromDays(7), PageData(page).To - PageData(page).From);
+        var first = card.View!.FirstMinute!.Value.ToLocalTime();
+        Assert.StartsWith($"Busiest apps · {first.ToString("MMM d HH:mm", CultureInfo.CurrentCulture)}–", Heading(card));
         SelectRange(page, "Day"); Load(page);
         Shows_the_day_ranking(card, ["chrome.exe", "Code.exe", "steam.exe", "explorer.exe", "Everything else"]);
         var bucket = Bucket(page.Chart("cpu"), 1);
@@ -469,7 +503,7 @@ internal static class ApplicationResourcesUiChecks
         Assert.Empty(RowNames(card));
         // It says so instead of showing an empty table, and it is not the period's "nothing recorded" or gap notice.
         Assert.False(IsShown(Table(card), card));
-        Assert.Equal(Visibility.Collapsed, Named(card, "Share of period total").Visibility);
+        Assert.Equal(Visibility.Collapsed, Named(card, "Share of this span's total").Visibility);
         Assert.DoesNotContain(NothingRecorded, texts);
         Assert.DoesNotContain(texts, t => t.EndsWith(GapEnding, StringComparison.Ordinal));
         // The heading names the span's minutes; Clear stays available and both charts mark the slot.
@@ -529,7 +563,7 @@ internal static class ApplicationResourcesUiChecks
         Assert.StartsWith("Busiest apps · ", Heading(missing));
     }
 
-    /// <summary>Waits for the card's period ranking of the Day range and checks its rows, summary and table.</summary>
+    /// <summary>Waits for the card's period ranking of the Day range and checks its rows, summary, share bar and table.</summary>
     private static void Shows_the_day_ranking(ApplicationResourcesCard card, string[] names)
     {
         WaitFor(() => !card.Loading && card.View is { } shown && shown.To - shown.From == TimeSpan.FromDays(1));
@@ -537,6 +571,7 @@ internal static class ApplicationResourcesUiChecks
         Assert.Equal("Application resources", Heading(card));
         Assert.Equal(names, RowNames(card));
         Assert.Contains($"4 applications · {DayMinutes} recorded minutes", Texts(card));
+        Assert.Equal(Visibility.Visible, Named(card, "Share of period total").Visibility);
         Assert.True(IsShown(Table(card), card));
     }
 
@@ -631,7 +666,9 @@ internal static class ApplicationResourcesUiChecks
     /// have no input source, so the mouse event itself cannot be raised).</summary>
     private static void Activate(UsageHistoryChart chart, int index)
     {
-        Layout(Root(chart));
+        // Laid out again at its current size, so the chart has drawn its latest data.
+        var root = Root(chart);
+        Layout(root, root.RenderSize is { Width: > 0, Height: > 0 } size ? size : PageSize);
         var plot = chart.PlotRect; double y = plot.Top + plot.Height / 2;
         double? x = null;
         for (double at = plot.Left; at <= plot.Right && x is null; at += 0.05) if (chart.BucketAt(new(at, y)) == index) x = at;
@@ -706,8 +743,11 @@ internal static class ApplicationResourcesUiChecks
         for (int i = 0; i < VisualTreeHelper.GetChildrenCount(root); i++)
             foreach (var child in Descendants(VisualTreeHelper.GetChild(root, i))) yield return child;
     }
-    private static void Layout(FrameworkElement element)
-    { element.Measure(PageSize); element.Arrange(new(PageSize)); element.UpdateLayout(); }
+    private static void Layout(FrameworkElement element) => Layout(element, PageSize);
+    private static void Layout(FrameworkElement element, Size size)
+    { element.Measure(size); element.Arrange(new(size)); element.UpdateLayout(); }
+    /// <summary>The element's top in the page's viewport (the page's scroll offset included).</summary>
+    private static double Top(FrameworkElement element, UsageHistoryPage page) => element.TransformToAncestor(page).Transform(new Point()).Y;
 
     /// <summary>Pumps the dispatcher until <paramref name="done"/> holds, for up to 5 s, so a read's result can arrive.</summary>
     private static void WaitFor(Func<bool> done)

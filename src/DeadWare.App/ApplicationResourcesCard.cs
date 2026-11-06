@@ -263,6 +263,8 @@ internal sealed class ApplicationResourcesCard : StackPanel
     private void DrawShares(ProcessResourceView view, IReadOnlyList<ProcessResourceRow> listed)
     {
         shareBar.Children.Clear(); shareBar.ColumnDefinitions.Clear();
+        // The bar and its segments name the same whole: the period's, or the listed slot's.
+        AutomationProperties.SetName(shareBar, shownSlot is null ? "Share of period total" : "Share of this span's total");
         double total = view.RankTotal;
         bool visible = total > 0 && listed.Count > 0;
         shareBar.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;

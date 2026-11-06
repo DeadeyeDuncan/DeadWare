@@ -41,6 +41,7 @@ internal sealed class UsageHistoryPage : ScrollViewer
     private readonly CheckBox recording = new() { Content = "Record usage history on this device" };
     private readonly Button exportMetrics, exportApplications, earlier, later;
     private readonly ApplicationResourcesCard resources;
+    private readonly Border resourcesCard;
     private readonly DispatcherTimer timer = new() { Interval = TimeSpan.FromSeconds(60) };
     private UsagePageData? data;
     private int revision, offset;
@@ -77,7 +78,7 @@ internal sealed class UsageHistoryPage : ScrollViewer
             grid.Children.Add(cell);
         }
         device.Children.Add(grid);
-        var deviceHint = Ui.Text("Each point is the average of the recorded minutes in its slot; the shaded band spans their minimum and maximum. Minutes with no readings stay empty and partial slots are not connected. Statistics use the stored minute values for the whole period. Dates use local time.", 11, "Muted");
+        var deviceHint = Ui.Text("Each point is the average of the recorded minutes in its slot; the shaded band spans their minimum and maximum. Minutes with no readings stay empty and partial slots are not connected. Statistics use the stored minute values for the whole period. Dates use local time. Click a CPU or RAM point, or press Enter on it, to list its busiest apps under Application resources.", 11, "Muted");
         device.Children.Add(deviceHint); body.Children.Add(Card(device));
 
         var apps = new StackPanel(); apps.Children.Add(Ui.Heading("Applications", 16));
@@ -90,7 +91,7 @@ internal sealed class UsageHistoryPage : ScrollViewer
         var table = Ui.Panel(applications, new Thickness(0)); table.Margin = new(0, 6, 0, 8); apps.Children.Add(table);
         apps.Children.Add(Ui.Text("Totals come from observed per-application traffic (ETW) during the period, summed by executable name across its processes. Time without capture is a gap, not zero traffic. Open Connections to see where the bytes went.", 11, "Muted"));
         body.Children.Add(Card(apps));
-        resources = new ApplicationResourcesCard(session); body.Children.Add(Card(resources));
+        resources = new ApplicationResourcesCard(session); resourcesCard = Card(resources); body.Children.Add(resourcesCard);
         foreach (var (kind, ranking) in Moments)
         {
             charts[kind].Selectable = true;
@@ -157,6 +158,9 @@ internal sealed class UsageHistoryPage : ScrollViewer
         var bucket = view.Buckets[index];
         resources.ShowSlot(bucket.Start, bucket.End, ranking);
         MarkMoment();
+        // The card sits below the Device charts, out of view at a window's height: a click or Enter scrolls it in. Only activation does
+        // this (never the minute refresh), and keyboard focus stays on the chart, so Left, Right and Enter keep working.
+        resourcesCard.BringIntoView();
     }
     /// <summary>Draws the listed slot's hairline on both charts at the bucket holding its middle, so it follows the slot's time when a
     /// refresh moves the grid.</summary>
