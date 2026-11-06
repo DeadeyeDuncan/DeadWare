@@ -310,7 +310,7 @@ When at least 4 ETW rows have their PID in the scan and more than 50 % of them m
   - The scan and the tracker update run in the first, just before `lock(publicationGate)` (inside the loop when Cost moves the scan there).
   - The disk take and then the network and disk joins run in the second, inside the lock, right after the poll's only `etw.TakeSnapshot` (the network join needs `capture.Processes`) and before the `Reading` is built. It is skipped when the scan failed, and the activity is that `Unavailable`.
   - The `Reading` is then built and published as usual. Neither block wraps `new Reading`, `History.Add` or `SampleAvailable`, so a process failure never reaches the pass's own catch, which would publish an empty Snapshot.
-- **Unchanged:** `Reading.Processes`, `EtwNetwork`, usage-history.db (v1), `AlertKind`, `Snapshot.Values` and the six-hour graph cache.
+- **Unchanged:** `Reading.Processes` (in memory; from 0.14.1 it is not serialized in diagnostics), `EtwNetwork`, usage-history.db (v1), `AlertKind`, `Snapshot.Values` and the six-hour graph cache.
 - **Diagnostics:**
   - `--diagnose` builds its own `CollectorOptions` and never reads settings.json, so the saved Per-process monitoring switch does not apply to it. The app itself is unaffected: it follows the saved switch, which is off by default.
     - It sets `ProcessMonitoring`, so it runs the process scan, unless a new `--no-processes` flag is given.
@@ -321,7 +321,7 @@ When at least 4 ETW rows have their PID in the scan and more than 50 % of them m
     - The collector sets it on all three publish paths, only when `DiagnosticTimings` is on, like `ProviderMilliseconds`.
     - With `--no-processes` it reports Off.
   - Timing keys: `windows/processes` and `processes/join` appear whenever the scan runs. `etw/disk` and `open/etwdisk` appear only when the disk session ran (elevated, in a build that includes the Disk columns, without `--no-processes` or `--no-etw`).
-  - No per-process names or paths are written for the new data, and the existing network list is unchanged.
+  - No per-process names or paths are written for the new data. From 0.14.1 the existing network list (`Reading.Processes`) is not written either: each sample keeps only its count, `NetworkApplications`.
 
 ## History (0.14.0)
 
@@ -390,7 +390,7 @@ When at least 4 ETW rows have their PID in the scan and more than 50 % of them m
 - **App:**
   - Collector tests with a fake and a throwing process source: CPU and memory keys survive, and switching off takes effect within one poll. Switching on starts `EtwDisk` only when `ProcessDiskTracing` is set, without rebuilding the collector.
   - `EtwDisk` through test seams, including a stuck hardware worker that still stops the disk session (`CoolingShutdownTests`' stuck-worker fixture), and a worker that ends after an error still stops the disk session (`EtwDiskTests`).
-  - `--diagnose` builds options that run the scan (Off with `--no-processes`), and its JSON, serialized from a reading whose `ProcessActivity` holds named processes, contains a `ProcessSummary` that is not Off and none of those names.
+  - `--diagnose` builds options that run the scan (Off with `--no-processes`), and its JSON, serialized from a reading whose `ProcessActivity` holds named processes, contains a `ProcessSummary` that is not Off and none of those names, nor the names in Reading.Processes.
   - Actions through the native-control and confirm hooks.
 - **UI checks:**
   - A Processes-page phase after Storage: the off state, rows, expansion, the column picker, the hidden admin columns, disabled picker entries and banner from a fixture reading with `Elevated` false, the full column set with `Elevated` true, and tooltips.
@@ -450,4 +450,3 @@ When at least 4 ETW rows have their PID in the scan and more than 50 % of them m
 - Command lines and services views.
 - Per-process disk or network history (network per app is already in Usage history's Applications).
 - Feeding `EtwNetwork`'s identity from the process scan, in place of its native lookups and 5 s reconcile. `EtwNetwork` keeps its 5 s reconcile through `NativeProcessIdentity.Read`, so its "PID n" fallback names, which are Usage history's application keys, stay as they are. Only `EtwDisk`'s reconcile reads the scan index (see Disk column).
-- Excluding the existing `Reading.Processes` from `--diagnose`.
