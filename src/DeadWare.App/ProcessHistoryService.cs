@@ -86,7 +86,7 @@ public sealed class ProcessHistoryService
             DateTime Expire() { var now = time.GetUtcNow(); store.Expire(now); return now.UtcDateTime.Date; }
             var expired = Expire();
             var folder = new ProcessMinuteFolder(); var pending = new List<ProcessMinuteBatch>(64);
-            long? previousGeneration = null; long previousDrops = 0, previousSequence = 0;
+            long? previousGeneration = null; long previousDrops = 0, previousSequence = 0; DateTimeOffset previousMinute = default;
             void Flush()
             {
                 if (pending.Count == 0) return;
@@ -97,6 +97,8 @@ public sealed class ProcessHistoryService
             {
                 // A repeated or reordered activity would count its deltas twice.
                 if (item.Sequence <= previousSequence) return;
+                var minute = UsageMetrics.Floor(item.Activity.Timestamp);
+                bool lost = false;
                 if (previousGeneration is { } before)
                 {
                     // A pause or resume ends the open minute and starts a new segment.
@@ -106,10 +108,13 @@ public sealed class ProcessHistoryService
                         folder.Break();
                     }
                     // A dropped or missed activity leaves the open minute incomplete.
-                    else if (item.Drops != previousDrops || item.Sequence != previousSequence + 1) folder.Break();
+                    else if (item.Drops != previousDrops || item.Sequence != previousSequence + 1) { folder.Break(); lost = true; }
                 }
                 previousGeneration = item.Generation; previousDrops = item.Drops; previousSequence = item.Sequence;
                 if (folder.Observe(item.Activity) is { } batch) pending.Add(batch);
+                // Across a minute boundary the old minute may have lost its tail and this one its head: mark this one too.
+                if (lost && minute != previousMinute) folder.Break();
+                previousMinute = minute;
                 if (pending.Count >= 30) Flush();
             }
             using var timer = new PeriodicTimer(interval, time);
