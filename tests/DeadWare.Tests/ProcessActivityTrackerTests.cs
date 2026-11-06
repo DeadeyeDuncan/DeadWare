@@ -18,7 +18,7 @@ public class ProcessActivityTrackerTests
         Assert.Equal(12.5,s.CpuPercent!.Value,6);Assert.Equal(500,s.IoReadPerSecond!.Value,6);Assert.Equal(250,s.IoWritePerSecond!.Value,6);Assert.Equal(ProcessGap.None,s.RateGap);
         Assert.Equal(10_000_000,s.Deltas!.CpuTime);Assert.Equal(1000,s.Deltas.MemoryByteSeconds,6);Assert.Equal(1,s.Deltas.Seconds,6);}
     [Fact] public void Pid_reuse_starts_a_new_baseline(){ var t=new ProcessActivityTracker(8);t.Update(Scan(0,Entry(8,cpu:5_000_000,gen:Ticks(-500))));
-        var second=t.Update(Scan(5,Entry(8,cpu:100,gen:Ticks(-2))));Assert.Null(second.Processes[0].CpuPercent);Assert.Null(second.Processes[0].Deltas!.CpuTime);}
+        var second=t.Update(Scan(1,Entry(8,cpu:100,gen:Ticks(-2))));Assert.Null(second.Processes[0].CpuPercent);Assert.Null(second.Processes[0].Deltas!.CpuTime);}
     [Fact] public void Process_started_during_the_interval_is_credited_in_full(){ var t=new ProcessActivityTracker(8);t.Update(Scan(10,Entry(1)));
         var s=t.Update(Scan(11,Entry(1),Entry(9,cpu:2_000_000,read:1000,gen:Ticks(9.5)))).Processes.Single(p=>p.Pid==9);
         Assert.Equal(2_000_000,s.Deltas!.CpuTime);Assert.Equal(1000,s.Deltas.IoReadBytes);Assert.Equal(2_000_000/(double)(Second*8)*100,s.CpuPercent!.Value,6);}
@@ -56,7 +56,7 @@ public class ProcessActivityTrackerTests
         Assert.DoesNotContain(r.Processes,p=>p.Pid>=4096&&p.Pid<=4099);}
     [Fact] public void All_null_first_scan_keeps_the_largest_by_memory(){ var t=new ProcessActivityTracker(8);
         var entries=Enumerable.Range(1,4100).Select(i=>Entry(i,ws:i*10L)).ToArray();var r=t.Update(Scan(0,entries));
-        long smallestKept=r.Processes.Min(p=>p.PrivateBytes);Assert.Equal(410,smallestKept);Assert.DoesNotContain(r.Processes,p=>p.PrivateBytes<smallestKept);
+        long smallestKept=r.Processes.Min(p=>p.PrivateBytes);Assert.Equal(50,smallestKept);Assert.DoesNotContain(r.Processes,p=>p.PrivateBytes<smallestKept);
         Assert.Equal(10+20+30+40,r.Omitted.PrivateBytes);Assert.Equal(ProcessDeltas.Zero,r.Omitted.Deltas);}
     [Fact] public void Omitted_carries_summed_exact_deltas(){ var t=new ProcessActivityTracker(8);
         t.Update(Scan(0,Enumerable.Range(1,4100).Select(i=>Entry(i)).ToArray()));
