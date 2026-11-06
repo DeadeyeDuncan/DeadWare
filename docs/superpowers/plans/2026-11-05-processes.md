@@ -718,7 +718,7 @@ public void Windows_folder_plus_service_account(string path,string sid,EndTaskVe
 
 **Files:**
 - Create: `src/DeadWare.App/ProcessActions.cs`
-- Test: `tests/DeadWare.App.Tests/ProcessActionsTests.cs`
+- Test: `tests/DeadWare.App.Tests/ProcessActionsTests.cs`, `tests/DeadWare.App.Tests/FakeProcessControl.cs` (the shared fake; Tasks 16–17 reuse it)
 
 **Interfaces:**
 - Consumes: Task 13 `EndTaskPolicy`, `EndTaskFacts`, `EndTaskVerdict`.
@@ -733,7 +733,7 @@ public void Windows_folder_plus_service_account(string path,string sid,EndTaskVe
 - [ ] **Step 1: Write the failing tests**
 
 ```csharp
-// FakeControl: scripted ProcessOpen/EndTaskFacts per pid, records opens, terminations and closes; handles are fake SafeProcessHandle(IntPtr n,false)
+// FakeProcessControl (internal, own file): scripted ProcessOpen/EndTaskFacts per pid (default: endable, signalled after Terminate), records opens, terminations and closes; handles are fake SafeProcessHandle(IntPtr n,false)
 [Fact] public async Task Pid_0_4_and_DeadWare_are_refused_without_opening(){ var (a,c)=Actions(own:999);Assert.Equal("Use Quit DeadWare",await a.EndAsync("DeadWare.exe",[(999,1)],true));Assert.Empty(c.Opened);
     Assert.StartsWith("Not ended: 1 system process",await a.EndAsync("System",[(4,1)],true));}
 [Fact] public async Task Confirm_counts_only_endable_members_and_summarises_the_rest(){ /* 28 endable, 3 NeedsAdministrator, standard user */ Assert.Equal("End 28 of 31 chrome.exe processes? Unsaved work in them will be lost.",asked.Question);Assert.Equal("Not ended: 3 need administrator.",asked.Summary);}
@@ -751,7 +751,7 @@ public void Windows_folder_plus_service_account(string path,string sid,EndTaskVe
 [Fact] public async Task Open_location_with_two_paths_asks_to_expand()=>Assert.Equal("runs from 2 locations; expand to choose one",await a.OpenLocationAsync([(8,1),(9,1)]));
 [Fact] public async Task Open_location_checks_generation_and_existence(){ Assert.Equal("The process has already exited.",await Stale());Assert.Equal("The program file is no longer there.",await Missing());Assert.Equal(@"C:\Program Files\App\app.exe",revealed);}
 ```
-`EndWith(configure)` runs `EndAsync("a.exe",[(8,1)],false)` as a standard user over a `FakeControl` whose pid 8 opens and reads as endable unless `configure` changes it (`OpenError(pid,error)` makes the open fail with that Win32 code, `ThrowOnFacts` throws from `ReadFacts`); `OpenWith(reveal=true, throwOnReveal=null)` runs `OpenLocationAsync([(8,1)])` with an existing temp file as the image path.
+`EndWith(configure)` runs `EndAsync("a.exe",[(8,1)],false)` as a standard user over a `FakeProcessControl` whose pid 8 opens and reads as endable unless `configure` changes it (`OpenError(pid,error)` makes the open fail with that Win32 code, `ThrowOnFacts` throws from `ReadFacts`); `OpenWith(reveal=true, throwOnReveal=null)` runs `OpenLocationAsync([(8,1)])` with an existing temp file as the image path.
 
 - [ ] **Step 2: Commit the failing tests, push and verify failure** — Expected: `error CS0246` for `ProcessActions`, `IProcessControl`.
 - [ ] **Step 3: Implement `NativeProcessControl` and `ProcessActions`**
@@ -779,7 +779,7 @@ Checks (`[ElevatedGitHubFact]`, class `[Collection("RealWindows")]`): `Windows_p
 
 ---
 
-### Task 16: Processes page, rail entry and shell wiring
+### Task 16: Processes page — shell wiring, off state, table, columns, picker, banner and tooltips
 
 **Files:**
 - Create: `src/DeadWare.App/ProcessesPage.cs`
@@ -790,32 +790,49 @@ Checks (`[ElevatedGitHubFact]`, class `[Collection("RealWindows")]`): `Windows_p
 
 **Interfaces:**
 - Consumes: Tasks 10–14; `UiSession.SetProcessMonitoring`, `SetProcessColumns`, `RestartElevated`, `Current`, `Stale`, `Changed`.
-- Produces: `internal sealed class ProcessesPage : UserControl { public ProcessesPage(UiSession session); internal ProcessesPage(UiSession session,bool diskColumns,ProcessActions? actions); internal Func<string,string?,bool> Confirm{get;set;} internal void Refresh(); }` and `internal sealed class ProcessRowView : INotifyPropertyChanged` (`Id`, `IsApp`, `Expandable`, `Expanded`, `Name`, one display string and one tooltip string per column key, `Spoken`).
+- Produces:
+  - `internal sealed class ProcessesPage : UserControl { public ProcessesPage(UiSession session); internal ProcessesPage(UiSession session,bool diskColumns,IProcessControl? control); internal DataGrid Grid{get;} internal Func<string,string?,bool> Confirm{get;set;} internal void Refresh(); }` — the public constructor passes `ProcessFeatures.DiskColumns` and `null` (meaning `new NativeProcessControl()`); `Grid` is the Processes `DataGrid` (Task 18's preview check reads it); `Confirm` defaults to Task 14's `MessageBox` confirm and is the **only** confirmation hook: Task 17 builds `ProcessActions` per action as `new ProcessActions(control,(q,s)=>Confirm(q,s),ProcessActions.Reveal,Environment.ProcessId,session.Current?.Elevated??Collector.IsElevated)`, so UI checks set `Confirm` and pass Task 14's `FakeProcessControl`.
+  - `internal sealed class ProcessRowView : INotifyPropertyChanged` (`Id`, `IsApp`, `Expandable`, `Expanded`, `Name`, one display string and one tooltip string per column key, `Spoken`).
 
-Layout and behaviour (spec, Processes page): off state text `ProcessCopy.OffTitle + " " + ProcessCopy.ScanSentence(...)` with **Turn on** → `session.SetProcessMonitoring(true)`; top strip: search box (placeholder/automation name "Find app or PID"), **End task…**, **Open file location**, one banner (`ProcessCopy.Banner(session.Current.Elevated, diskColumns)`) with **Restart as administrator** → `session.RestartElevated`; a `DataGrid` of `ProcessRowView` with uppercased headers from `ProcessTableColumns.Visible(session.Settings.ProcessColumns, session.Current.Elevated, diskColumns)`; **Columns** button and header right-click open a checkable `ContextMenu` from `ProcessTableColumns.Picker`, each change → `SetProcessColumns`; chevron in NAME expands; a single-process app shows its PID inline and no chevron; process rows sort within their app; cap note when `TotalProcesses > 4096`; footer lines `ProcessCopy.Footer(diskColumns)`. Calm order: re-sort only when `ProcessActivity.Sequence` changes, using `OrderHold` (pointer over grid, open menu/dialog, `KeyNavigated` on arrow/Page/Home/End) with `CalmOrderPlanner.Plan` outside a hold and `Held` during one; F5, header click and search change re-sort immediately; selection, expansion and scroll offset survive every update. Tooltips: `FirstSample` for `RateGap/NetworkGap/DiskGap==FirstSample`, `NetworkNotMatched`/`DiskNotMatched` for `NotMatched`, `Stale` when `session.Stale`, else the column's `ProcessColumnState.Status`. Keys: Left/Right collapse/expand, Enter toggles, Delete opens End task…, Ctrl+F focuses search, Esc clears search, F5 re-sorts. Automation names on grid ("Processes"), search, buttons and chevrons ("Expand <name>"/"Collapse <name>"); `Spoken` like `"chrome.exe, 3 processes, CPU 12 %, memory 512 MB"`. Status line shows action results. Renders once from `session.Current` in its constructor (as `StoragePage` does). When the selected row's id disappears, selection clears and both action buttons disable.
+Layout and behaviour (spec, Processes page): off state text `ProcessCopy.OffTitle + " " + ProcessCopy.ScanSentence(...)` with **Turn on** → `session.SetProcessMonitoring(true)`; top strip: search box (placeholder/automation name "Find app or PID"), **End task…**, **Open file location** (both disabled until Task 17 wires them), one banner (`ProcessCopy.Banner(session.Current.Elevated, diskColumns)`) with **Restart as administrator** → `session.RestartElevated`; `Grid` holds `ProcessRowView`s with uppercased headers from `ProcessTableColumns.Visible(session.Settings.ProcessColumns, session.Current.Elevated, diskColumns)`. **Columns** button and a right-click on any column header open the same checkable `ContextMenu` from `ProcessTableColumns.Picker`; a toggle of entry `key` calls `session.SetProcessColumns(ProcessColumnKeys.Toggle(session.Settings.ProcessColumns,key,on))`, never a list rebuilt from the menu's items, so disabled administrator keys and the Disk keys a build without Disk leaves out of the menu stay saved. Rows are collapsed by default; the chevron in NAME expands an app into its process rows, which show the same columns and sort within their app by the table's sort; a single-process app shows its PID inline and no chevron. Header click sorts (`ProcessSort`, first click descending for numeric columns, ascending for NAME, a second click flips); `ProcessTableColumns.EffectiveSort` applies whenever the visible set changes. Cap note `ProcessCopy.CapNote(TotalProcesses)` when `TotalProcesses > 4096`; footer lines `ProcessCopy.Footer(diskColumns)`. Tooltips, first match: `Stale` for every value cell (shown as "—") when `session.Stale`; `FirstSample` for `RateGap/NetworkGap/DiskGap==FirstSample`; `NetworkNotMatched`/`DiskNotMatched` for `NotMatched`; else the column's `ProcessColumnState.Status`. Automation names: grid "Processes", search box "Find app or PID", each button by its content, chevrons "Expand <name>"/"Collapse <name>"; `Spoken` like `"chrome.exe, 3 processes, CPU 9 %, memory 512 MB"` (the visible columns in order). Renders once from `session.Current` in its constructor (as `StoragePage` does); in this task every new reading re-sorts (Task 17 adds calm order).
 
 - [ ] **Step 1: Write the failing UI checks**
 
 ```csharp
-internal static void Run(){ Off_state_shows_turn_on(); Rows_group_case_variants_and_expand(); Single_process_app_shows_pid_without_chevron(); Column_picker_has_every_column_in_fixed_order();
+internal static void Run(){ Off_state_shows_turn_on(); Rows_group_case_variants_are_collapsed_and_expand(); Single_process_app_shows_pid_without_chevron(); Expanded_rows_share_columns_and_sort_within_their_app();
+    Column_picker_has_every_column_in_fixed_order(); Header_right_click_opens_picker(); Picker_toggle_keeps_hidden_admin_and_disk_keys();
     Standard_user_hides_admin_columns_disables_picker_entries_and_shows_banner(); Elevated_shows_the_full_set_with_dash_and_status(); Disk_build_off_omits_disk_everywhere();
-    Gap_tooltips_name_their_reason(); Changed_without_a_new_reading_does_not_resort(); Held_order_appends_new_apps_and_keeps_selection(); Hidden_sort_column_falls_back();
-    Keyboard_shortcuts(); Cap_note_is_shown(); Selected_app_exiting_clears_selection_and_disables_actions(); }
-// Session fixture as StoragePageUiChecks.Session: Reading{Elevated=e, ProcessActivity=activity}, Settings{ProcessMonitoring=on}
-static void Off_state_shows_turn_on(){ var p=Page(monitoring:false);Assert.Contains(Texts(p),t=>t=="Per-process monitoring is off. Turning it on adds one Windows process scan per poll.");Click(Button(p,"Turn on"));Assert.True(session.Settings.ProcessMonitoring);}
-static void Rows_group_case_variants_and_expand(){ /* Explorer.EXE + explorer.exe + chrome×3 */ Assert.Equal(["chrome.exe","Explorer.EXE"],AppNames(p));Expand(p,"chrome.exe");Assert.Equal(5,Rows(p).Count);}
-static void Column_picker_has_every_column_in_fixed_order()=>Assert.Equal(["CPU","MEMORY","I/O","DISK","NETWORK","PID","I/O READ","I/O WRITE","DISK READ","DISK WRITE","↓ DOWNLOAD","↑ UPLOAD"],PickerHeaders(Page(elevated:true,disk:true)));
-static void Standard_user_hides_admin_columns_disables_picker_entries_and_shows_banner(){ var p=Page(elevated:false,disk:true);Assert.Equal(["NAME","CPU","MEMORY","I/O"],Headers(p));
-    Assert.All(PickerItems(p).Where(i=>i.Header.EndsWith("(administrator)")),i=>Assert.False(i.IsEnabled));Assert.Contains("Disk and network need administrator",Texts(p));Assert.NotNull(Button(p,"Restart as administrator"));}
-static void Elevated_shows_the_full_set_with_dash_and_status(){ /* Network state (false,"Per-app ETW unavailable (X)") */ Assert.Equal(["NAME","CPU","MEMORY","I/O","DISK","NETWORK"],Headers(p));Assert.Equal("—",Cell(p,"chrome.exe","network"));Assert.Equal("Per-app ETW unavailable (X)",Tip(p,"chrome.exe","network"));}
-static void Disk_build_off_omits_disk_everywhere(){ var p=Page(elevated:false,disk:false);Assert.DoesNotContain(PickerHeaders(p),h=>h.StartsWith("DISK"));Assert.Contains("Network needs administrator",Texts(p));}
-static void Gap_tooltips_name_their_reason(){ Assert.Equal("first sample",Tip(p,"new.exe","cpu"));Assert.Equal("traffic not matched to this process",Tip(p,"moved.exe","network"));}
-static void Changed_without_a_new_reading_does_not_resort(){ /* mutate latest values without changing Sequence; RaiseChanged */ Assert.Equal(before,AppNames(p));}
-static void Held_order_appends_new_apps_and_keeps_selection(){ Hold(p,pointer:true);Select(p,"chrome.exe");Publish(seq+1,withNew:"zoom.exe",chromeIdle:true);Assert.Equal("zoom.exe",AppNames(p)[^1]);Assert.Equal("chrome.exe",Selected(p));}
-static void Selected_app_exiting_clears_selection_and_disables_actions(){ Select(p,"chrome.exe");Publish(seq+1,without:"chrome.exe");Assert.Null(Selected(p));Assert.False(Button(p,"End task…").IsEnabled);Assert.False(Button(p,"Open file location").IsEnabled);}
+    Gap_tooltips_name_their_reason(); Stale_reading_shows_dash_with_stale_tooltip(); Hidden_sort_column_falls_back(); Cap_note_is_shown(); Footer_lists_the_definitions(); Automation_names_and_spoken_summary(); }
+// Session fixture as StoragePageUiChecks.Session: Reading{Elevated=e, ProcessActivity=activity}, Settings{ProcessMonitoring=on, ProcessColumns=columns}; stale:true sets the reading's MonotonicSeconds to −100.
+// Fixture(): Sequence 1; chrome.exe PIDs 30/31/32 (CPU 1, 5, 3), Explorer.EXE 10 and explorer.exe 11 (CPU 1 each), Code.exe 40 (CPU 0.5); all with memory, I/O, disk and network values.
+static void Off_state_shows_turn_on(){ var (p,session)=Page(monitoring:false);Assert.Contains(Texts(p),t=>t=="Per-process monitoring is off. Turning it on adds one Windows process scan per poll.");Click(Button(p,"Turn on"));Assert.True(session.Settings.ProcessMonitoring);}
+static void Rows_group_case_variants_are_collapsed_and_expand(){ var (p,_)=Page();Assert.Equal(["chrome.exe","Explorer.EXE","Code.exe"],AppNames(p));Assert.Equal(3,Rows(p).Count);Expand(p,"chrome.exe");Assert.Equal(6,Rows(p).Count);}
+static void Single_process_app_shows_pid_without_chevron(){ var (p,_)=Page(columns:["pid","cpu"]);Assert.Null(Chevron(p,"Code.exe"));Assert.Equal("40",Cell(p,"Code.exe","pid"));Assert.NotNull(Chevron(p,"chrome.exe"));Assert.Equal("",Cell(p,"chrome.exe","pid"));}
+static void Expanded_rows_share_columns_and_sort_within_their_app(){ var (p,_)=Page(elevated:true);Expand(p,"chrome.exe");Assert.Equal([31,32,30],ChildPids(p,"chrome.exe"));
+    Assert.All(["cpu","memory","io","disk","network"],k=>Assert.NotEqual("",Cell(p,31,k)));Assert.Equal("app:EXPLORER.EXE",Rows(p)[4].Id);}
+static void Column_picker_has_every_column_in_fixed_order()=>Assert.Equal(["CPU","MEMORY","I/O","DISK","NETWORK","PID","I/O READ","I/O WRITE","DISK READ","DISK WRITE","↓ DOWNLOAD","↑ UPLOAD"],PickerHeaders(Page(elevated:true,disk:true).Page));
+static void Header_right_click_opens_picker(){ var (p,_)=Page(elevated:true);RightClick(Header(p,"CPU"));Assert.True(PickerMenu(p).IsOpen);Assert.Equal(12,PickerItems(p).Count);PickerMenu(p).IsOpen=false;}
+static void Picker_toggle_keeps_hidden_admin_and_disk_keys(){ var (p,session)=Page(elevated:false,disk:false);Toggle(PickerItem(p,"PID"));
+    Assert.Equal(["pid","cpu","memory","io","disk","network"],session.Settings.ProcessColumns);Toggle(PickerItem(p,"CPU"));Assert.Equal(["pid","memory","io","disk","network"],session.Settings.ProcessColumns);}
+static void Standard_user_hides_admin_columns_disables_picker_entries_and_shows_banner(){ var (p,_)=Page(elevated:false,disk:true);Assert.Equal(["NAME","CPU","MEMORY","I/O"],Headers(p));
+    Assert.Equal(6,PickerItems(p).Count(i=>i.Header.EndsWith("(administrator)")));Assert.All(PickerItems(p).Where(i=>i.Header.EndsWith("(administrator)")),i=>Assert.False(i.IsEnabled));Assert.Contains("Disk and network need administrator",Texts(p));Assert.NotNull(Button(p,"Restart as administrator"));}
+static void Elevated_shows_the_full_set_with_dash_and_status(){ var (p,_)=Page(elevated:true,network:new(false,"Per-app ETW unavailable (X)"));Assert.Equal(["NAME","CPU","MEMORY","I/O","DISK","NETWORK"],Headers(p));Assert.Equal("—",Cell(p,"chrome.exe","network"));Assert.Equal("Per-app ETW unavailable (X)",Tip(p,"chrome.exe","network"));Assert.Null(Button(p,"Restart as administrator"));}
+static void Disk_build_off_omits_disk_everywhere(){ var (p,_)=Page(elevated:false,disk:false);Assert.DoesNotContain(PickerHeaders(p),h=>h.StartsWith("DISK"));Assert.Contains("Network needs administrator",Texts(p));
+    var (e,_)=Page(elevated:true,disk:false);Assert.DoesNotContain("DISK",Headers(e));}
+static void Gap_tooltips_name_their_reason(){ var (p,_)=Page(elevated:true,activity:WithGaps());/* new.exe RateGap FirstSample; moved.exe NetworkGap and DiskGap NotMatched */
+    Assert.Equal("—",Cell(p,"new.exe","cpu"));Assert.Equal("first sample",Tip(p,"new.exe","cpu"));Assert.Equal("traffic not matched to this process",Tip(p,"moved.exe","network"));Assert.Equal("disk activity not matched to this process",Tip(p,"moved.exe","disk"));}
+static void Stale_reading_shows_dash_with_stale_tooltip(){ var (p,_)=Page(stale:true);Assert.Equal("—",Cell(p,"chrome.exe","cpu"));Assert.Equal("stale reading",Tip(p,"chrome.exe","cpu"));Assert.Equal("stale reading",Tip(p,"chrome.exe","memory"));}
+static void Hidden_sort_column_falls_back(){ var (p,_)=Page(elevated:true);ClickHeader(p,"NETWORK");Toggle(PickerItem(p,"NETWORK"));Assert.Equal(("cpu",true),SortState(p));Assert.Equal(["chrome.exe","Explorer.EXE","Code.exe"],AppNames(p));
+    Toggle(PickerItem(p,"CPU"));Assert.Equal(("name",false),SortState(p));Assert.Equal(["chrome.exe","Code.exe","Explorer.EXE"],AppNames(p));}
+static void Cap_note_is_shown(){ Assert.Contains("Showing 4,096 of 5,000 processes",Texts(Page(activity:Fixture() with {TotalProcesses=5000}).Page));Assert.DoesNotContain(Texts(Page().Page),t=>t.StartsWith("Showing "));}
+static void Footer_lists_the_definitions(){ Assert.Equal(ProcessCopy.Footer(true),FooterTexts(Page(elevated:true,disk:true).Page));Assert.Equal(ProcessCopy.Footer(false),FooterTexts(Page(elevated:true,disk:false).Page));}
+static void Automation_names_and_spoken_summary(){ var (p,_)=Page(elevated:true);Assert.Equal("Processes",AutomationProperties.GetName(p.Grid));Assert.Equal("Find app or PID",AutomationProperties.GetName(SearchBox(p)));
+    Assert.All(["End task…","Open file location","Columns"],b=>Assert.Equal(b,AutomationProperties.GetName(Button(p,b))));Assert.Equal("Expand chrome.exe",AutomationProperties.GetName(Chevron(p,"chrome.exe")));
+    Expand(p,"chrome.exe");Assert.Equal("Collapse chrome.exe",AutomationProperties.GetName(Chevron(p,"chrome.exe")));Assert.StartsWith("chrome.exe, 3 processes, CPU ",Row(p,"chrome.exe").Spoken);}
 // ShellUiChecks
 Assert.Equal(12,navigation.Count);Assert.Equal(order.IndexOf("storage")+1,order.IndexOf("processes"));Assert.Equal(order.IndexOf("network")+1,order.IndexOf("storage"));
 ```
+`Page(...)` returns `(ProcessesPage Page,UiSession Session)` built through the internal constructor (`diskColumns:disk`, `control:new FakeProcessControl()`), defaults `monitoring:true, elevated:false, disk:true, stale:false, columns:ProcessColumnKeys.Default, activity:Fixture()`; `Cell`/`Tip` take an app name or a PID; `Toggle` raises the menu item's `Click` with `IsChecked` flipped.
 
 - [ ] **Step 2: Commit the failing checks, push and verify failure** — Expected: `error CS0246` for `ProcessesPage`.
 - [ ] **Step 3: Implement the page, rail entry, glyph, heading and toolbar collapse**
@@ -827,19 +844,60 @@ Follow `StoragePage` for the render-in-constructor and `Loaded`/`Unloaded` subsc
 
 ---
 
+### Task 17: Processes page — calm order, holds, keyboard, selection and actions
+
+**Files:**
+- Modify: `src/DeadWare.App/ProcessesPage.cs`
+- Modify: `tests/DeadWare.App.Tests/ProcessesPageUiChecks.cs` (`Run()` calls the new checks after Task 16's)
+
+**Interfaces:**
+- Consumes: Task 16 `ProcessesPage`, `Confirm`; Task 12 `CalmOrderPlanner`, `OrderHold`; Task 14 `ProcessActions`, `FakeProcessControl`.
+- Produces: no new members; behaviour only.
+
+Calm order (spec, Calm order): re-sort only when `ProcessActivity.Sequence` changes, never on a `Changed` without one; `OrderHold` is held while the pointer is over `Grid`, while a menu or dialog is open (the picker, the confirm call), and for 3 s after `KeyNavigated` on Up/Down/PageUp/PageDown/Home/End; outside a hold apply `CalmOrderPlanner.Plan` (so new apps take their sorted place at once), during one `Held`; F5, a header click and a search change re-sort immediately even during a hold; expanding or collapsing adds or removes only that app's rows; selection, expansion and the `ScrollViewer` vertical offset survive every update. Keys: Left/Right collapse/expand, Enter toggles, Delete opens End task…, Ctrl+F focuses search, Esc clears search, F5 re-sorts. Selection: an app row acts on every member (`wholeApp:true`), a process row on that process; when the selected row's id disappears, selection clears and both action buttons disable. **End task…** and **Open file location** run Task 14's `EndAsync`/`OpenLocationAsync` and show the returned string in a status line under the top strip (empty string clears it).
+
+- [ ] **Step 1: Write the failing UI checks**
+
+```csharp
+static void Changed_without_a_new_reading_does_not_resort(){ var (p,session)=Page();var before=AppNames(p);MutateLatest(session,"Code.exe",cpu:99);RaiseChanged(session);Assert.Equal(before,AppNames(p));}
+static void New_reading_outside_a_hold_resorts(){ var (p,session)=Page();Publish(session,2,cpu:("Code.exe",99));Assert.Equal("Code.exe",AppNames(p)[0]);}
+static void Held_order_appends_new_apps_and_keeps_selection(){ var (p,session)=Page();var before=AppNames(p);Hold(p,pointer:true);Select(p,"chrome.exe");Publish(session,2,withNew:"zoom.exe",cpu:("chrome.exe",0));
+    Assert.Equal([..before,"zoom.exe"],AppNames(p));Assert.Equal("chrome.exe",Selected(p));Hold(p,pointer:false);Publish(session,3);Assert.Equal(Sorted(p),AppNames(p));}
+static void F5_header_click_and_search_resort_during_hold(){ var (p,session)=Page();Hold(p,pointer:true);Publish(session,2,cpu:("Code.exe",99));Assert.NotEqual("Code.exe",AppNames(p)[0]);
+    Key(p,Key.F5);Assert.Equal("Code.exe",AppNames(p)[0]);Publish(session,3,cpu:("Explorer.EXE",200));ClickHeader(p,"CPU");Assert.Equal(Sorted(p),AppNames(p));
+    Publish(session,4,cpu:("Code.exe",300));SetSearch(p,"e");Assert.Equal(Sorted(p),AppNames(p));}
+static void Updates_keep_selection_expansion_and_scroll(){ var (p,session)=Page(activity:SixtyApps());Expand(p,"chrome.exe");Select(p,"app40.exe");ScrollTo(p,200);Publish(session,2);
+    Assert.Equal("app40.exe",Selected(p));Assert.True(IsExpanded(p,"chrome.exe"));Assert.Equal(200,VerticalOffset(p),1);}
+static void Keyboard_shortcuts(){ var (p,_)=Page();int asked=0;p.Confirm=(_,_)=>{asked++;return false;};Select(p,"chrome.exe");Key(p,Key.Right);Assert.True(IsExpanded(p,"chrome.exe"));Key(p,Key.Left);Assert.False(IsExpanded(p,"chrome.exe"));
+    Key(p,Key.Enter);Assert.True(IsExpanded(p,"chrome.exe"));Key(p,Key.F,ModifierKeys.Control);Assert.Same(SearchBox(p),Keyboard.FocusedElement);SetSearch(p,"code");Key(SearchBox(p),Key.Escape);Assert.Equal("",SearchBox(p).Text);
+    Select(p,"chrome.exe");Key(p,Key.Delete);WaitFor(()=>asked==1);}
+static void Selected_app_exiting_clears_selection_and_disables_actions(){ var (p,session)=Page();Select(p,"chrome.exe");Assert.True(Button(p,"End task…").IsEnabled);Publish(session,2,without:"chrome.exe");
+    Assert.Null(Selected(p));Assert.False(Button(p,"End task…").IsEnabled);Assert.False(Button(p,"Open file location").IsEnabled);}
+static void End_task_asks_through_the_confirm_hook_and_shows_the_result(){ var (p,_)=Page();string? asked=null;p.Confirm=(q,_)=>{asked=q;return true;};Select(p,"chrome.exe");Click(Button(p,"End task…"));
+    WaitFor(()=>StatusText(p)!="");Assert.Equal("End chrome.exe (3 processes)? Unsaved work in it will be lost.",asked);Assert.Equal("Ended 3 · not ended 0 · already exited 0 · still running 0",StatusText(p));}
+```
+`Publish(session,sequence,…)` replaces the fixture reading with a new `Sequence` and raises `Changed`; `Sorted(p)` is the app order `ProcessSort` gives the latest reading under the page's current sort; `WaitFor` pumps the dispatcher for up to 5 s; `FakeProcessControl` reads every fixture PID as endable and signals on `Terminate`.
+
+- [ ] **Step 2: Commit the failing checks, push and verify failure** — Expected: the UI fact fails in phase `"processes page"` (first failing check: `Changed_without_a_new_reading_does_not_resort` or `Held_order_appends_new_apps_and_keeps_selection`).
+- [ ] **Step 3: Implement calm order, holds, keys, selection and the action wiring**
+- [ ] **Step 4: Commit, push and verify pass** — Expected: green; the UI fact passes phase `"processes page"`.
+- [ ] **Step 5: Confirm GitHub has the commit**
+
+---
+
 ### Task 18: Preview routes
 
 **Files:**
-- Modify: `tools/OverviewPreview/Program.cs:27` (Routes gain `"storage"` and `"processes"` after `"network"`), `:82` (preview `UserSettings` gains `ProcessMonitoring=true`), `:139` (`UpdateSample` sets `Reading.ProcessActivity`), `:274` (sizes: `route is "network" or "desktop" or "processes"` → 1220×900 and 900×640), `:282` (table height for `"processes"`), `:306` (Note counts ten production pages)
+- Modify: `tools/OverviewPreview/Program.cs:27` (Routes gain `"storage"` and `"processes"` after `"network"`, 12 routes), `:82` (preview `UserSettings` gains `ProcessMonitoring=true`), `:139` (`UpdateSample` sets `Reading.ProcessActivity`), `:274` (sizes: `route is "network" or "desktop" or "processes"` → 1220×900 and 900×640), `:282` (table height and app-row count for `"processes"` from `ProcessesPage.Grid`), `:306` (Note: `"all eight production pages"` becomes `"all ten production pages"` — Storage and Processes are the two new production pages — and `"Network and Settings also at"` becomes `"Network, Processes and Settings also at"`)
 
 **Interfaces:**
-- Consumes: Task 16 `ProcessesPage` (`DataGrid` field), Task 2 records.
+- Consumes: Task 16 `ProcessesPage.Grid`, Task 2 records.
 
 Fixture activity: `chrome.exe` ×3 (one expanded-capable app), `Code.exe`, `explorer.exe`, `DeadWare.exe`, all with CPU, memory, I/O and network values, `Elevated=true`. The check fails the render when the Processes grid is under 70 px tall at 900×640 or shows fewer than 4 app rows.
 
-- [ ] **Step 1: Add the `processes` check (height ≥ 70 at 900×640, ≥ 4 rows) to the render loop**
-- [ ] **Step 2: Commit, push and verify failure** — Expected: the "Render previews" step fails on the missing `processes` route/page fixture.
-- [ ] **Step 3: Add the routes, fixture settings, synthetic activity and sizes**
+- [ ] **Step 1: Add the `storage` and `processes` routes, the `processes` sizes and the `processes` check (grid ≥ 70 px tall at 900×640, ≥ 4 app rows) to the render loop, without fixture settings or activity**
+- [ ] **Step 2: Commit, push and verify failure** — Expected: the "Render previews" step fails with the `processes` check's message: the page renders its off state (monitoring is off in the preview settings), so the grid has 0 app rows.
+- [ ] **Step 3: Add `ProcessMonitoring=true` to the preview settings, the synthetic activity in `UpdateSample` and the Note wording**
 - [ ] **Step 4: Commit, push and verify pass** — Expected: green; `DeadWare-previews` holds `glass-shell-*-processes.png`, `glass-shell-*-processes-900x640.png` and `glass-shell-*-storage.png`.
 - [ ] **Step 5: Confirm GitHub has the commit**
 
