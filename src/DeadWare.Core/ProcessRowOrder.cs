@@ -35,7 +35,7 @@ public static class CalmOrderPlanner
 
     /// <summary>
     /// The held order after a new reading: exited ids removed, new apps (no parent) appended in <paramref name="present"/> order,
-    /// new children placed after the last current row of their parent (at the bottom when the parent is not shown).
+    /// new children placed after the last current row of their parent (at the bottom, after the new apps, when the parent was not already shown).
     /// </summary>
     public static IReadOnlyList<string> Held(IReadOnlyList<string> current,IReadOnlyList<string> present,Func<string,string?> parentOf)
     {
@@ -47,7 +47,7 @@ public static class CalmOrderPlanner
         foreach(var id in fresh.Where(id=>parentOf(id) is not null))
         {
             var parent=parentOf(id)!;
-            var at=result.FindLastIndex(r=>r==parent||parentOf(r)==parent);
+            var at=shown.Contains(parent)?result.FindLastIndex(r=>r==parent||parentOf(r)==parent):-1;
             if(at<0)result.Add(id);else result.Insert(at+1,id);
         }
         return result;
