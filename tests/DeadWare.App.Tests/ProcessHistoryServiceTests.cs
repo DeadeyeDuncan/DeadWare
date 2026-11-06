@@ -100,6 +100,8 @@ public class ProcessHistoryServiceTests
         Assert.Equal([Start, Start.AddMinutes(2)], series.Buckets.Select(b => b.Start));
         Assert.Equal([1L, 0L], series.Buckets.Select(b => b.CompleteMinutes));
         Assert.Equal(2, (await Read(service, 3)).RecordedMinutes);
+        Assert.Equal(2, (await service.TryReadApplicationsAsync(Start, Start.AddMinutes(3), ProcessRank.CpuTime))!.RecordedMinutes);
+        Assert.NotNull(await service.TryReadSeriesAsync("chrome.exe", ProcessRank.CpuTime, Start, Start.AddMinutes(3), 3));
     }
 
     [Fact]
@@ -130,6 +132,9 @@ public class ProcessHistoryServiceTests
         var view = await Read(service);
         Assert.Equal((0L, 0), (view.RecordedMinutes, view.Rows.Count));
         Assert.Empty((await service.ReadSeriesAsync("chrome.exe", ProcessRank.Io, Start, Start.AddMinutes(1), 1)).Buckets);
+        // The Try reads tell the failure apart from an empty period.
+        Assert.Null(await service.TryReadApplicationsAsync(Start, Start.AddMinutes(1), ProcessRank.CpuTime));
+        Assert.Null(await service.TryReadSeriesAsync("chrome.exe", ProcessRank.Io, Start, Start.AddMinutes(1), 1));
         Assert.Equal("foreign database fixture", await File.ReadAllTextAsync(fixture.Path));
     }
 

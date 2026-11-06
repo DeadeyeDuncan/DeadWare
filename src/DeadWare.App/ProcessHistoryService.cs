@@ -8,6 +8,8 @@ namespace DeadWare.App;
 public sealed class ProcessHistoryService
 {
     public const string SavedStatus = "Application resources saved locally · up to 30 days.";
+    /// <summary>How often closed minutes are saved unless a caller chooses otherwise.</summary>
+    public static readonly TimeSpan DefaultFlushInterval = TimeSpan.FromSeconds(15);
     private const string PausedStatus = "Application resources are recorded while Per-process monitoring and usage history are both on. Saved history is retained.";
     private sealed record Pending(ProcessActivity Activity, long Sequence, long Generation, long Drops);
     private readonly Channel<Pending> queue = Channel.CreateBounded<Pending>(new BoundedChannelOptions(120)
@@ -27,7 +29,7 @@ public sealed class ProcessHistoryService
 
     public ProcessHistoryService(string path, string machineKey, TimeProvider? timeProvider = null, TimeSpan? flushInterval = null)
     {
-        store = new(path); machine = machineKey; time = timeProvider ?? TimeProvider.System; interval = flushInterval ?? TimeSpan.FromSeconds(15);
+        store = new(path); machine = machineKey; time = timeProvider ?? TimeProvider.System; interval = flushInterval ?? DefaultFlushInterval;
         if (interval <= TimeSpan.Zero || interval > TimeSpan.FromMinutes(1)) throw new ArgumentOutOfRangeException(nameof(flushInterval));
     }
     public long DroppedSamples => Interlocked.Read(ref dropped);
@@ -136,6 +138,11 @@ public sealed class ProcessHistoryService
     /// <summary>The period's per-application totals, read off the UI thread in one snapshot. An unreadable store reports
     /// <see cref="Status"/> and returns an empty view; an invalid range or rank throws <see cref="ArgumentOutOfRangeException"/>.</summary>
     public async Task<ProcessResourceView> ReadApplicationsAsync(DateTimeOffset from, DateTimeOffset to, ProcessRank rank)
+        => await TryReadApplicationsAsync(from, to, rank).ConfigureAwait(false)
+            ?? new(from, to, [], new(ProcessHistory.EverythingElse, 0, 0, 0, 0, 0, 0, true, 0), 0, 0, null, null, null, 0);
+    /// <summary>Like <see cref="ReadApplicationsAsync"/>, but null when the store cannot be read, so a caller can tell a failure from an
+    /// empty period; <see cref="Status"/> then says why.</summary>
+    public async Task<ProcessResourceView?> TryReadApplicationsAsync(DateTimeOffset from, DateTimeOffset to, ProcessRank rank)
     {
         try
         {
@@ -145,11 +152,15 @@ public sealed class ProcessHistoryService
         catch (Exception error) when (error is not ArgumentException)
         {
             Fail(error);
-            return new(from, to, [], new(ProcessHistory.EverythingElse, 0, 0, 0, 0, 0, 0, true, 0), 0, 0, null, null, null, 0);
+            return null;
         }
     }
     /// <summary>One application's metric over the period, bucketed for a chart and read like <see cref="ReadApplicationsAsync"/>.</summary>
     public async Task<UsageHistoryView> ReadSeriesAsync(string name, ProcessRank metric, DateTimeOffset from, DateTimeOffset to, int maxPoints)
+        => await TryReadSeriesAsync(name, metric, from, to, maxPoints).ConfigureAwait(false)
+            ?? new(from, to, 60_000, [], new(null, null, null), 0, null, 0);
+    /// <summary>Like <see cref="ReadSeriesAsync"/>, but null when the store cannot be read.</summary>
+    public async Task<UsageHistoryView?> TryReadSeriesAsync(string name, ProcessRank metric, DateTimeOffset from, DateTimeOffset to, int maxPoints)
     {
         try
         {
@@ -159,7 +170,7 @@ public sealed class ProcessHistoryService
         catch (Exception error) when (error is not ArgumentException)
         {
             Fail(error);
-            return new(from, to, 60_000, [], new(null, null, null), 0, null, 0);
+            return null;
         }
     }
 }

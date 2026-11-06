@@ -4,18 +4,21 @@ using System.Windows.Automation;
 using System.Windows.Controls;
 using System.Windows.Data;
 using System.Windows.Shapes;
+using System.Windows.Threading;
 using DeadWare.Core;
 
 namespace DeadWare.App;
 
 /// <summary>Usage history's Application resources card: the busiest apps' saved CPU, memory and I/O for the page's period, from
 /// process-history.db. Reads run off the UI thread through <see cref="ProcessHistoryService"/> and only the latest request is shown;
-/// the search filters the rows already read. <see cref="UiSession.ProcessHistory"/> may be null in fixtures.</summary>
+/// the search filters the rows already read, and Rank by and row changes wait a moment so stepping through them starts one read.
+/// <see cref="UiSession.ProcessHistory"/> may be null in fixtures.</summary>
 internal sealed class ApplicationResourcesCard : StackPanel
 {
     private sealed record RankChoice(string Label, ProcessRank Rank) { public override string ToString() => Label; }
     private sealed record ResourceRow(string Name, string CpuTime, string AverageCpu, string AverageMemory, string IoRead, string IoWritten, string MinutesListed);
     private const string LoadingText = "Loading application resources…";
+    private static readonly TimeSpan Settle = TimeSpan.FromMilliseconds(250);
     // Share-bar colours are theme resources; Everything else is always Muted.
     private static readonly string[] Palette = ["Graph/cpu", "Graph/memory", "Graph/download", "Graph/upload", "Graph/gpu", "Graph/diskread", "Graph/cputemp", "Graph/gputemp", "Accent"];
     private readonly UiSession session;
@@ -28,6 +31,7 @@ internal sealed class ApplicationResourcesCard : StackPanel
     private readonly TextBlock chartHint = Ui.Text("", 11, "Muted"), chartTitle = Ui.Text("", 13, "Heading", "HeadingFont");
     private readonly TextBlock status = Ui.Text("", 11, "Muted"), storage = Ui.Text("", 11, "Muted");
     private readonly StackPanel chart = new() { Visibility = Visibility.Collapsed };
+    private readonly DispatcherTimer rankDelay = new() { Interval = Settle }, seriesDelay = new() { Interval = Settle };
     private (DateTimeOffset From, DateTimeOffset To)? period;
     private (string App, ProcessRank Rank, DateTimeOffset From, DateTimeOffset To)? charted;
     // Loading or failure text shown in place of the summary until the next view arrives.
@@ -58,7 +62,9 @@ internal sealed class ApplicationResourcesCard : StackPanel
         chart.Children.Add(chartTitle); chart.Children.Add(Chart); Children.Add(chart);
         Children.Add(Ui.Text("CPU time, I/O read and I/O written are summed over the minutes each application was listed. Avg CPU is its share of all logical processors across every recorded minute; Avg memory while listed averages its private working set over the minutes it was listed. Each minute lists up to 30 of the busiest applications by CPU, memory and I/O; Everything else holds the rest.", 11, "Muted"));
         status.Margin = new(0, 8, 0, 0); Children.Add(status); Children.Add(storage);
-        rank.SelectionChanged += (_, _) => { ShowSeries(); _ = ReloadAsync(); };
+        rank.SelectionChanged += (_, _) => RankChanged();
+        rankDelay.Tick += (_, _) => { rankDelay.Stop(); _ = ReloadAsync(); };
+        seriesDelay.Tick += (_, _) => { seriesDelay.Stop(); ReadSeries(); };
         search.TextChanged += (_, _) => RefreshRows();
         table.SelectionChanged += (_, _) => { if (syncing) return; SelectedApp = (table.SelectedItem as ResourceRow)?.Name; ShowSeries(); };
     }
@@ -69,53 +75,76 @@ internal sealed class ApplicationResourcesCard : StackPanel
     internal UsageHistoryChart Chart { get; } = new() { Height = 170, Margin = new(0, 6, 0, 4) };
     /// <summary>The last view applied.</summary>
     internal ProcessResourceView? View { get; private set; }
-    /// <summary>True while the latest ranking read has not returned.</summary>
+    /// <summary>True while the latest ranking read is waiting or has not returned.</summary>
     internal bool Loading { get; private set; }
+    /// <summary>Ranking reads that have returned, whether shown or dropped as stale.</summary>
+    internal int ReadsReturned { get; private set; }
 
     /// <summary>Reads the ranking for the page's period off the UI thread. A later call, or a Rank by change, makes an earlier read stale and
     /// its result is dropped. The rows on screen stay until the new ones arrive.</summary>
-    internal void Load(DateTimeOffset from, DateTimeOffset to) { period = (from, to); _ = ReloadAsync(); }
+    internal void Load(DateTimeOffset from, DateTimeOffset to) { period = (from, to); rankDelay.Stop(); _ = ReloadAsync(); }
+
+    private void RankChanged()
+    {
+        // The chart switches unit at once; both reads wait until Rank by settles.
+        ShowSeries();
+        if (period is null) return;
+        // A read already in flight is for the old ranking: dropping it keeps the rows and the share bar on one rank.
+        request++; Loading = true; pending = LoadingText; summary.Text = pending;
+        rankDelay.Stop(); rankDelay.Start();
+    }
 
     private async Task ReloadAsync()
     {
         if (period is not { } range) return;
         int current = ++request; var ranking = Rank;
-        if (session.ProcessHistory is not { } service)
-        {
-            Loading = false; pending = "Application resource history is not available."; summary.Text = pending;
-            return;
-        }
+        if (session.ProcessHistory is not { } service) { Loading = false; Unavailable("Application resource history is not available."); return; }
         // The page's one-minute refresh keeps the numbers on screen; a new range or ranking says it is loading.
         if (!Shows(range.From, range.To, ranking)) { pending = LoadingText; summary.Text = pending; }
         Loading = true; status.Text = service.Status;
-        ProcessResourceView view;
-        try { view = await service.ReadApplicationsAsync(range.From, range.To, ranking); }
-        catch (ArgumentException error)
-        {
-            if (current != request) return;
-            Loading = false; pending = $"Application resources could not be read ({error.GetType().Name})."; summary.Text = pending;
-            return;
-        }
+        ProcessResourceView? view; string reason = "Application resources could not be read.";
+        try { view = await service.TryReadApplicationsAsync(range.From, range.To, ranking); }
+        catch (ArgumentException error) { view = null; reason = $"Application resources could not be read ({error.GetType().Name})."; }
+        ReadsReturned++;
         if (current != request) return;
         Loading = false; status.Text = service.Status;
-        Apply(view, DateTimeOffset.UtcNow);
+        // An unreadable file is reported (the status names the error type), never shown as a period with nothing recorded.
+        if (view is null) Unavailable(reason);
+        else Apply(view, DateTimeOffset.UtcNow);
+    }
+
+    /// <summary>Clears the rows, share bar, gap notice, storage line and chart, and gives <paramref name="reason"/> instead.</summary>
+    private void Unavailable(string reason)
+    {
+        View = null; SelectedApp = null; pending = reason; summary.Text = reason;
+        syncing = true;
+        try { table.ItemsSource = Array.Empty<ResourceRow>(); }
+        finally { syncing = false; }
+        shareBar.Children.Clear(); shareBar.ColumnDefinitions.Clear(); shareBar.Visibility = Visibility.Collapsed;
+        Note(gapNotice, ""); storage.Text = "";
+        ShowSeries();
     }
     private bool Shows(DateTimeOffset from, DateTimeOffset to, ProcessRank ranking) => View is { } view && shownRank == ranking
         && view.To - view.From == to - from && (from - view.From).Duration() < TimeSpan.FromMinutes(2);
 
-    /// <summary>Shows a period's ranking, read with the current Rank by. <paramref name="now"/> bounds the minutes that could have been recorded.</summary>
+    /// <summary>Shows a period's ranking, read with the current Rank by. <paramref name="now"/> bounds the minutes that could have been saved.</summary>
     internal void Apply(ProcessResourceView view, DateTimeOffset now)
     {
         View = view; shownRank = Rank; pending = null;
         // The chart follows a listed application; one missing from the new period has nothing to show.
         if (SelectedApp is { } app && (view.RecordedMinutes == 0 || (app != ProcessHistory.EverythingElse
             && !view.Rows.Any(r => r.Name.Equals(app, StringComparison.OrdinalIgnoreCase))))) SelectedApp = null;
-        long gaps = ElapsedMinutes(view.From, view.To, now) - view.RecordedMinutes;
+        // A minute that has just ended may not be saved yet, so it is not a gap until it has had time to arrive.
+        long gaps = ElapsedMinutes(view.From, view.To, now - SaveDelay) - view.RecordedMinutes;
         Note(gapNotice, gaps > 0 ? $"{gaps:N0} minutes in this period have no process data (monitoring off, DeadWare not running, or a capture gap)." : "");
         storage.Text = $"process-history.db · {Ui.Bytes(view.StorageBytes)}";
         RefreshRows();
         ShowSeries();
     }
+
+    /// <summary>How long a minute can take to reach the file after it ends: it closes at the next poll's publication and the service
+    /// saves closed minutes every flush interval.</summary>
+    private TimeSpan SaveDelay => ProcessHistoryService.DefaultFlushInterval + TimeSpan.FromSeconds(session.Settings.PollingIntervalSeconds);
 
     /// <summary>Whole minutes that start in [<paramref name="from"/>, <paramref name="to"/>) and have ended by <paramref name="now"/>:
     /// every minute the store could hold for the period.</summary>
@@ -190,7 +219,7 @@ internal sealed class ApplicationResourcesCard : StackPanel
         var view = View;
         if (SelectedApp is not { } app || view is null)
         {
-            charted = null; seriesRequest++; chart.Visibility = Visibility.Collapsed;
+            charted = null; seriesRequest++; seriesDelay.Stop(); chart.Visibility = Visibility.Collapsed;
             Note(chartHint, view is { RecordedMinutes: > 0 } ? "Select an application to chart it over this period." : "");
             return;
         }
@@ -198,22 +227,34 @@ internal sealed class ApplicationResourcesCard : StackPanel
         var metric = Rank;
         if (charted == (app, metric, view.From, view.To)) return;
         bool redraw = charted is not { } shown || shown.App != app || shown.Rank != metric;
-        charted = (app, metric, view.From, view.To); int current = ++seriesRequest;
+        charted = (app, metric, view.From, view.To); seriesRequest++;
         var (unit, maximum, title, label, _) = Metric(metric);
         chartTitle.Text = $"{app} · {title}";
         // A new app or metric shows an empty plot in its unit until the read returns, never the previous metric on the wrong scale;
         // a new period for the same series keeps the old line until then, so the page's minute refresh does not flicker.
         if (redraw) { Chart.SetData([], unit, maximum); AutomationProperties.SetName(Chart, $"{app} {label} history"); }
-        if (session.ProcessHistory is { } service) _ = ChartAsync(service, current, app, metric, view.From, view.To);
+        // Stepping through rows or Rank by starts one read, once the choice settles.
+        seriesDelay.Stop(); seriesDelay.Start();
+    }
+    private void ReadSeries()
+    {
+        if (charted is { } shown && session.ProcessHistory is { } service)
+            _ = ChartAsync(service, seriesRequest, shown.App, shown.Rank, shown.From, shown.To);
     }
     private async Task ChartAsync(ProcessHistoryService service, int current, string app, ProcessRank metric, DateTimeOffset from, DateTimeOffset to)
     {
         int points = (int)Math.Clamp(Chart.ActualWidth > 0 ? Chart.ActualWidth : 600, 60, ProcessHistoryStore.MaximumRows);
-        UsageHistoryView history;
-        try { history = await service.ReadSeriesAsync(app, metric, from, to, points); }
-        catch (ArgumentException) { return; }
+        UsageHistoryView? history;
+        try { history = await service.TryReadSeriesAsync(app, metric, from, to, points); }
+        catch (ArgumentException) { history = null; }
         if (current != seriesRequest) return;
-        var (unit, maximum, _, label, color) = Metric(metric);
+        var (unit, maximum, title, label, color) = Metric(metric);
+        if (history is null)
+        {
+            // Reported like the ranking: an empty plot under a title that says so, and the service status says why.
+            chartTitle.Text = $"{app} · {title} · could not be read"; status.Text = service.Status; Chart.SetData([], unit, maximum);
+            return;
+        }
         Chart.SetData([new UsageTrace(history, color, false, $"{app} {label}")], unit, maximum);
     }
     private static (string Unit, double? Maximum, string Title, string Label, string Color) Metric(ProcessRank metric) => metric switch

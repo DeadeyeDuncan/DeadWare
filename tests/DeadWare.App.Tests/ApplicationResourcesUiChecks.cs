@@ -71,6 +71,7 @@ internal static class ApplicationResourcesUiChecks
             Range_change_reloads_the_card(page, card);
             Gap_notice_is_exact_and_hidden_without_gaps(folder);
             Empty_period_and_missing_history_say_why(folder);
+            Unreadable_history_is_reported_not_shown_as_empty(folder);
         }
         finally
         {
@@ -171,10 +172,22 @@ internal static class ApplicationResourcesUiChecks
         Assert.Equal("steam.exe", RowNames(card)[0]);
         Assert.Equal("chrome.exe", card.SelectedApp);
 
-        ranked = card.View;
-        SetRank(card, ProcessRank.CpuTime);
-        WaitFor(() => !ReferenceEquals(card.View, ranked) && !card.Loading && Traces(card).Count == 1);
+        // Stepping through Rank by starts one ranking read and one chart read, once it settles.
+        int before = Volatile.Read(ref reads); ranked = card.View;
+        SetRank(card, ProcessRank.AverageMemory); SetRank(card, ProcessRank.CpuTime);
+        Assert.True(card.Loading);
         Assert.Equal("%", ChartUnit(card));
+        WaitFor(() => !ReferenceEquals(card.View, ranked) && !card.Loading && Traces(card).Count == 1);
+        Assert.Equal("chrome.exe", RowNames(card)[0]);
+        Assert.Equal(before + 2, Volatile.Read(ref reads));
+
+        // Stepping through rows, as the arrow keys do, starts one chart read for the row it stops on.
+        before = Volatile.Read(ref reads);
+        Select(card, "Code.exe"); Select(card, "steam.exe"); Select(card, "chrome.exe");
+        WaitFor(() => Traces(card).Count == 1);
+        Assert.Equal("chrome.exe", card.SelectedApp);
+        Assert.Equal("chrome.exe CPU", Traces(card)[0].Label);
+        Assert.Equal(before + 1, Volatile.Read(ref reads));
     }
 
     private static void Gap_notice_counts_minutes_without_process_data(ApplicationResourcesCard card)
@@ -204,8 +217,10 @@ internal static class ApplicationResourcesUiChecks
         WaitFor(() => !card.Loading);
         Assert.Equal(TimeSpan.FromDays(1), card.View!.To - card.View.From);
         Assert.Equal(PageData(page), (card.View.From, card.View.To));
+        // Release the month read and wait until the card has its result: it arrives late and is dropped.
+        int returned = card.ReadsReturned;
         release.Set();
-        Settle(TimeSpan.FromMilliseconds(500));
+        WaitFor(() => card.ReadsReturned == returned + 1);
         Assert.Equal(TimeSpan.FromDays(1), card.View!.To - card.View.From);
         Assert.Equal(["chrome.exe", "Code.exe", "steam.exe", "explorer.exe", "Everything else"], RowNames(card));
     }
@@ -248,6 +263,13 @@ internal static class ApplicationResourcesUiChecks
         Assert.Contains("9 " + GapEnding, Texts(card));
         card.Apply(View(from, to, 59), to);
         Assert.DoesNotContain(Texts(card), t => t.EndsWith(GapEnding, StringComparison.Ordinal));
+        // 12:59 ended at 13:00:00. Ten seconds later it may still be on its way to the file (a poll to close it, then the 15 s flush),
+        // so it is not a gap yet; once that time has passed, a missing minute is one.
+        var justEnded = new DateTimeOffset(2026, 11, 2, 13, 0, 10, TimeSpan.Zero);
+        card.Apply(View(from, to, 58), justEnded);
+        Assert.DoesNotContain(Texts(card), t => t.EndsWith(GapEnding, StringComparison.Ordinal));
+        card.Apply(View(from, to, 58), justEnded.AddSeconds(10));
+        Assert.Contains("1 " + GapEnding, Texts(card));
     }
 
     private static void Empty_period_and_missing_history_say_why(string folder)
@@ -258,11 +280,37 @@ internal static class ApplicationResourcesUiChecks
         card.Load(from, to);
         Assert.False(card.Loading);
         Assert.Contains("Application resource history is not available.", Texts(card));
-        card.Apply(View(from, to, 0), to);
+        card.Apply(View(from, to, 0), to.AddMinutes(1));
         Assert.Empty(RowNames(card));
         Assert.Contains(NothingRecorded, Texts(card));
         Assert.Contains("1,440 " + GapEnding, Texts(card));
         Assert.Equal(Visibility.Collapsed, Named(card, "Share of period total").Visibility);
+    }
+
+    private static void Unreadable_history_is_reported_not_shown_as_empty(string folder)
+    {
+        string junk = Path.Combine(folder, "junk"); Directory.CreateDirectory(junk);
+        string path = Path.Combine(junk, "process-history.db"); File.WriteAllText(path, "not a database");
+        var card = new ApplicationResourcesCard(Session(new ProcessHistoryService(path, Machine), folder));
+        var to = DateTimeOffset.UtcNow; var from = to.AddDays(-1);
+        // Rows, a gap notice and a storage line on screen first: the failure must clear them, not leave them standing.
+        card.Apply(View(from, to, 50), to);
+        Assert.Contains(Texts(card), t => t.EndsWith(GapEnding, StringComparison.Ordinal));
+        card.Load(from, to);
+        WaitFor(() => !card.Loading);
+        var texts = Texts(card);
+        Assert.Contains("Application resources could not be read.", texts);
+        Assert.Contains(texts, t => t.Contains("(InvalidDataException)", StringComparison.Ordinal));
+        Assert.DoesNotContain(NothingRecorded, texts);
+        Assert.DoesNotContain(texts, t => t.EndsWith(GapEnding, StringComparison.Ordinal));
+        Assert.DoesNotContain(texts, t => t.Contains("0 B", StringComparison.Ordinal));
+        Assert.DoesNotContain(texts, t => t.StartsWith("process-history.db", StringComparison.Ordinal));
+        Assert.DoesNotContain(texts, t => t.Contains(junk, StringComparison.OrdinalIgnoreCase));
+        Assert.Null(card.View);
+        Assert.Empty(RowNames(card));
+        Assert.Equal(Visibility.Collapsed, Named(card, "Share of period total").Visibility);
+        // The file is preserved.
+        Assert.Equal("not a database", File.ReadAllText(path));
     }
 
     private static ProcessResourceView View(DateTimeOffset from, DateTimeOffset to, long recorded)
@@ -387,13 +435,5 @@ internal static class ApplicationResourcesUiChecks
             try { Dispatcher.PushFrame(frame); } finally { timer.Stop(); }
         }
         Assert.True(done(), "The Application resources card did not get there within 5 s.");
-    }
-    /// <summary>Pumps the dispatcher for <paramref name="time"/>, so a late result has every chance to arrive.</summary>
-    private static void Settle(TimeSpan time)
-    {
-        var frame = new DispatcherFrame(); var timer = new DispatcherTimer { Interval = time };
-        timer.Tick += (_, _) => frame.Continue = false;
-        timer.Start();
-        try { Dispatcher.PushFrame(frame); } finally { timer.Stop(); }
     }
 }
