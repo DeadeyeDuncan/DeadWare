@@ -1,5 +1,44 @@
 # Release validation
 
+## Application resource history (0.14.0, 2026-11-06)
+
+### One-day size
+
+`One_day_at_the_cap_stays_under_four_mebibytes` (`tests/DeadWare.Tests/ProcessHistoryStoreTests.cs`) writes one day at the cap, 1,440 complete minutes with the same 30 app names plus Everything else and full-width counter values each minute, and asserts the files stay under 4 MiB. It passed with `dotnet test tests/DeadWare.Tests -c Release -p:EnableWindowsTargeting=true --nologo --filter "FullyQualifiedName~One_day_at_the_cap"` on Linux on 2026-11-06. A throwaway copy of the test that printed `StorageBytes` (not committed) measured:
+
+- 2,740,224 bytes (2.61 MiB) with the test's one-character machine key;
+- 3,522,560 bytes (3.36 MiB) with a 15-character key, the longest computer name `Environment.MachineName` returns on Windows. The app keys rows by that name and stores it in every row.
+
+Worst case: a busy day near the cap is about 3–4 MiB, so 30 days plus today (31 × 3.4 MiB, about 104 MiB) fit under the 128 MiB cap (`ProcessHistoryStore.MaximumDatabaseBytes`, `RetentionDays` 30). The spec's estimate of about 2 MB per day was low. Whole-day eviction bounds the file whatever real days hold.
+
+### Behaviour the release notes describe
+
+- Recording has no switch of its own: `ProcessHistoryService` records while `UserSettings.ProcessMonitoring` and `UserSettings.UsageRecording` are both on. Turning either off keeps the saved file.
+- Each minute keeps the union of the top 10 apps by CPU time, by memory and by I/O read + write (at most 30) plus one Everything else row. Activities with monitoring off add nothing, so those minutes are gaps, not empty rows.
+- CPU time and I/O are stored as whole numbers that are never unknown, so an unknown delta inside a valid scan interval (an app's counters went backwards, or a process that started earlier was seen without a baseline) folds as 0: a stored minute can understate rather than be marked unknown.
+- A minute is saved after it closes, at the next 15-second flush; the card's gap count leaves out a minute that has just ended until it has had time to arrive.
+- A restart inside a minute keeps the first segment's rows and clears `complete`; a dropped or skipped publication marks the open minute incomplete. A crash after a recording switch, before the next resume or Quit, loses the open minute.
+- The Application resources table lists up to 200 apps for the period (`ReadApplications`' default limit) plus Everything else.
+- Click a moment lists the clicked bucket's own slot (the CPU and RAM charts share `ReadMetric`'s grid), ranked by CPU time from the CPU chart and by average memory from the RAM chart. Clear and Esc return to the period ranking; changing the range, **◀ Earlier**, **Later ▶** and an alert's **View in Usage history** clear the slot, and the page's minute refresh keeps and re-reads it.
+
+### Automated coverage
+
+Core, run locally on Linux and on the Windows CI build: `ProcessMinuteFolderTests` (the three top-ten lists and the 30-app cap, case variants, empty names and omitted sums in Everything else, zero values and ties, covered seconds, null I/O deltas, zero-covered minutes, clock jumps, gaps and breaks, completeness, off and unavailable activities) and `ProcessHistoryStoreTests` (the one-day size above, constants, upper-invariant names, restarts and retried batches, newer, foreign and corrupt files preserved, reopen, whole-day eviction that keeps today, 30-day retention, the 31-day read limit, the averaging definitions, Everything else and the rank total, row parts that sum to the rank total for every rank, series buckets with gaps, non-aligned slots, ranking order, ties and the row limit, machine partitions, invalid batches, the 1,000-row and point caps, and one snapshot per read).
+
+App, on the Windows CI build only: `ProcessHistoryServiceTests` (records only with both switches on, drops and counts a full queue, saves the open minute on stop and closed minutes on the timer, a recording change saves the open minute, a store failure stops only its worker, a foreign file is preserved and reported, the session switches configure the service), the sign-out null guard in `CoolingShutdownTests`, and the UI checks for the chart byte unit and selection (`UsageHistoryUiChecks`), the Application resources card and click a moment (`ApplicationResourcesUiChecks`), and the history-switch text in Settings and on the Processes page (`ShellUiChecks`, `ProcessesPageUiChecks`). No test drains a non-null process history through Quit; the service's stop flush is covered on its own.
+
+### Pending by eye
+
+Never claimed as verified in this release:
+
+- A real day of recording on a physical machine and the resulting `process-history.db` size.
+- Click a moment on a real machine: a CPU and a RAM point, Left, Right and Enter, the card scrolling into view, and Clear and Esc.
+- Application resources rankings compared with Task Manager for the same period.
+
+### Results
+
+`dotnet build DeadWare.slnx -c Release -p:EnableWindowsTargeting=true --nologo` finished with 0 errors; its 14 warnings are existing xUnit analyzer notes and one nullability warning in App test files this release does not change. The Core suite on Linux passed 888 tests with 1 skipped and 26 failures, the known Windows-only Core tests that cannot run there; the App tests run only on the Windows CI build.
+
 ## Processes (0.13.0, 2026-11-06)
 
 ### Measurements and decisions
