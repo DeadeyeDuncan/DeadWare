@@ -98,6 +98,23 @@ internal static class ShellUiChecks
             try{box.IsChecked=false;Assert.False(session.Settings.StorageSensors);box.IsChecked=true;Assert.True(session.Settings.StorageSensors);}
             finally{box.IsChecked=was;}
         }
+        // Per-process monitoring switch: a Monitoring checkbox bound to the session setting, with its scan-cost help line.
+        {
+            const string processName="Per-process monitoring";
+            var box=Descendants(pages["desktop"]).OfType<CheckBox>().Single(b=>AutomationProperties.GetName(b)==processName);
+            Assert.Equal(processName,box.Content);
+            Assert.Equal("Monitoring",Descendants(cards.Single(c=>Descendants(c).Contains(box))).OfType<TextBlock>().First().Text);
+            Assert.Equal("Monitoring",CardOf("Turning it on adds one Windows process scan"));
+            var help=Descendants(pages["desktop"]).OfType<TextBlock>().Single(b=>b.Text.StartsWith("Turning it on adds one Windows process scan",StringComparison.Ordinal));
+            Assert.Contains(ProcessCopy.ScanSentence(session.Current?.Elevated??Collector.IsElevated,ProcessFeatures.DiskColumns,ProcessFeatures.ScanLoop),help.Text);
+            bool was=session.Settings.ProcessMonitoring;Assert.Equal(was,box.IsChecked);
+            try
+            {
+                box.IsChecked=true;Assert.True(session.Settings.ProcessMonitoring);Assert.True(session.Collector.ProcessMonitoring);
+                box.IsChecked=false;Assert.False(session.Settings.ProcessMonitoring);Assert.False(session.Collector.ProcessMonitoring);
+            }
+            finally{box.IsChecked=was;}
+        }
         // Dashboard status line: unavailable notice when the switch is on and no cores were read.
         {
             var collector=session.Collector;var latestField=collector.GetType().GetField("latest",All)!;
