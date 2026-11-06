@@ -157,13 +157,21 @@ public class ProcessHistoryStoreTests
     public void Whole_day_eviction_never_evicts_today()
     {
         using var fixture = new Fixture(); var store = fixture.Open(300 * 1024);
-        var apps = Enumerable.Range(0, 10).Select(i => App($"application-{i}.exe", 1000 + i, 2000 + i, 3000 + i, 4000 + i)).ToArray();
+        ProcessAppMinute[] Apps(int count) => Enumerable.Range(0, count).Select(i => App($"application-{i}.exe", 1000 + i, 2000 + i, 3000 + i, 4000 + i)).ToArray();
         var today = Day.AddDays(6);
+        // Today lists three times as many apps as the older days, so its save must evict more than one older day to fit.
         for (int d = 0; d <= 6; d++)
-            store.Append("m", Enumerable.Range(0, 120).Select(i => Batch(Day.AddDays(d).AddMinutes(i), apps: apps)).ToList(), today.AddHours(13));
+            store.Append("m", Enumerable.Range(0, 120).Select(i => Batch(Day.AddDays(d).AddMinutes(i), apps: Apps(d == 6 ? 30 : 10))).ToList(), today.AddHours(13));
         var days = fixture.Days();
         Assert.Contains(today.UtcDateTime.Date, days);
         Assert.DoesNotContain(Day.UtcDateTime.Date, days);
+        // Eviction drops whole days: every day left still holds all 120 of its minutes.
+        var counts = fixture.Query("SELECT minute/86400000, COUNT(*) FROM minutes GROUP BY 1 ORDER BY 1", r =>
+        {
+            var rows = new List<(DateTime Day, long Minutes)>(); while (r.Read()) rows.Add((DateTime.UnixEpoch.AddDays(r.GetInt64(0)), r.GetInt64(1))); return rows;
+        });
+        Assert.Equal(days, counts.Select(c => c.Day));
+        Assert.All(counts, c => Assert.Equal(120L, c.Minutes));
     }
 
     [Fact]
