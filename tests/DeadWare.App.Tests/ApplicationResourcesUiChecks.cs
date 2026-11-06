@@ -7,6 +7,7 @@ using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
+using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
 using DeadWare.App;
@@ -18,7 +19,9 @@ namespace DeadWare.App.Tests;
 
 /// <summary>Usage history's Application resources card, run at the end of <see cref="UsageHistoryUiChecks"/> (phase "usage history").
 /// The card reads a real process-history.db, filled with fixture minutes, through a <see cref="ProcessHistoryService"/>. Pages here are
-/// never Loaded, so after a range or earlier/later change <see cref="Load"/> runs the page's own load, as its refresh would.</summary>
+/// never Loaded, so after a range or earlier/later change <see cref="Load"/> runs the page's own load, as its refresh would. For click a
+/// moment the page's Device charts read a usage-history.db whose CPU and RAM minutes cover the fixture day's process minutes and ten
+/// minutes after them without process data.</summary>
 internal static class ApplicationResourcesUiChecks
 {
     private const BindingFlags All = BindingFlags.Instance | BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic;
@@ -26,6 +29,7 @@ internal static class ApplicationResourcesUiChecks
     private const string GapEnding = "minutes in this period have no process data (monitoring off, DeadWare not running, or a capture gap).";
     private const string Loading = "Loading application resources…";
     private const string NothingRecorded = "No application resources were recorded in this period.";
+    private const string NoProcessData = "No process data in this span.";
     private const int DayMinutes = 90;
     private static readonly Size PageSize = new(1050, 2600);
     // Every recorded minute of the fixture day (60 covered seconds, 8 processors): CPU 100-ns ticks, I/O read, I/O written, Σ memory × Δt.
@@ -53,8 +57,9 @@ internal static class ApplicationResourcesUiChecks
             // The card awaits its reads on the UI thread, as it does in the app.
             SynchronizationContext.SetSynchronizationContext(new DispatcherSynchronizationContext(Dispatcher.CurrentDispatcher));
             Directory.CreateDirectory(folder);
-            var service = Service(folder);
-            var page = new UsageHistoryPage(Session(service, folder));
+            var minute = UsageMetrics.Floor(DateTimeOffset.UtcNow);
+            var service = Service(folder, minute);
+            var page = new UsageHistoryPage(Session(service, folder, DeviceHistory(folder, minute)));
             Layout(page);
             var card = Assert.Single(Descendants(page).OfType<ApplicationResourcesCard>());
             Card_sits_between_applications_and_keep_a_longer_record(page);
@@ -69,9 +74,22 @@ internal static class ApplicationResourcesUiChecks
             Storage_line_names_the_file(card);
             Quick_range_changes_show_only_the_last_period(page, card, release);
             Range_change_reloads_the_card(page, card);
+            // Click a moment, back on Day: the Device charts show the fixture's usage minutes.
+            SelectRange(page, "Day"); Load(page);
+            Shows_the_day_ranking(card, ["chrome.exe", "Code.exe", "steam.exe", "explorer.exe", "Everything else"]);
+            Only_the_cpu_and_ram_charts_are_selectable(page);
+            Clicking_a_cpu_point_lists_the_busiest_apps_in_its_slot(page, card);
+            Both_charts_show_the_hairline_and_clear_removes_it(page, card);
+            Ram_click_ranks_by_average_memory(page, card);
+            Arrow_keys_move_the_selection_and_enter_lists_it(page, card);
+            The_minute_refresh_keeps_the_slot_and_moves_its_hairlines_with_the_grid(page, card);
+            A_new_period_clears_the_moment(page, card);
+            Clicking_a_slot_without_process_data_says_so(page, card, minute.AddMinutes(-11));
+            Slot_heading_formats();
             Gap_notice_is_exact_and_hidden_without_gaps(folder);
             Empty_period_and_missing_history_say_why(folder);
             Unreadable_history_is_reported_not_shown_as_empty(folder);
+            A_slot_that_cannot_be_read_says_why_and_clear_returns(folder);
         }
         finally
         {
@@ -313,19 +331,228 @@ internal static class ApplicationResourcesUiChecks
         Assert.Equal("not a database", File.ReadAllText(path));
     }
 
+    private static void Only_the_cpu_and_ram_charts_are_selectable(UsageHistoryPage page)
+    {
+        foreach (string kind in new[] { "cpu", "memory" }) { Assert.True(page.Chart(kind).Selectable); Assert.True(page.Chart(kind).Focusable); }
+        foreach (string kind in new[] { "cputemp", "gpu", "gputemp", "network" }) Assert.False(page.Chart(kind).Selectable);
+        Assert.InRange(Traces(page.Chart("cpu"))[0].View.Buckets.Count, 20, DayMinutes + 10);
+    }
+
+    private static void Clicking_a_cpu_point_lists_the_busiest_apps_in_its_slot(UsageHistoryPage page, ApplicationResourcesCard card)
+    {
+        var cpu = page.Chart("cpu"); var bucket = Bucket(cpu, 1);
+        Activate(cpu, 1);
+        WaitFor(() => !card.Loading && card.View is { } shown && shown.From == bucket.Start);
+        Assert.StartsWith("Busiest apps · ", Heading(card));
+        Assert.Equal(ProcessRank.CpuTime, card.Rank);
+        Assert.Equal("Everything else", LastRowName(card));
+        // The list holds exactly the stored minutes the clicked point averaged: those that start in its slot. Slot 1 lies inside the
+        // fixture's process minutes, so every one of its Device minutes has process data.
+        var slot = card.View!;
+        Assert.Equal((bucket.Start, bucket.End), (slot.From, slot.To));
+        Assert.InRange(bucket.Minutes, 1, 10);
+        Assert.Equal(bucket.Minutes, slot.RecordedMinutes);
+        var first = Ceiling(bucket.Start); var lastEnd = first.AddMinutes(bucket.Minutes);
+        Assert.Equal<DateTimeOffset?>(first, slot.FirstMinute); Assert.Equal<DateTimeOffset?>(lastEnd, slot.LastMinuteEnd);
+        Assert.Equal($"Busiest apps · {first.ToLocalTime():HH:mm}–{lastEnd.ToLocalTime():HH:mm}", Heading(card));
+        Assert.Equal(["chrome.exe", "Code.exe", "steam.exe", "explorer.exe", "Everything else"], RowNames(card));
+        // chrome.exe uses 12 s of CPU a minute on 8 processors (2.5 % of the machine), Everything else 5 s.
+        Assert.Equal(ApplicationResourcesCard.Duration(12.0 * bucket.Minutes), Cell(Rows(card)[0], "CpuTime"));
+        Assert.Equal("2.5 %", Cell(Rows(card)[0], "AverageCpu"));
+        Assert.Equal(ApplicationResourcesCard.Duration(5.0 * bucket.Minutes), Cell(Rows(card)[^1], "CpuTime"));
+        Assert.Contains($"4 applications · {bucket.Minutes} recorded minutes", Texts(card));
+        // The period's gap notice does not describe a slot; Clear is offered.
+        Assert.DoesNotContain(Texts(card), t => t.EndsWith(GapEnding, StringComparison.Ordinal));
+        Assert.True(IsShown(Button(card, "Clear"), card));
+        Assert.Equal<(DateTimeOffset, DateTimeOffset)?>((bucket.Start, bucket.End), card.Slot);
+    }
+
+    private static void Both_charts_show_the_hairline_and_clear_removes_it(UsageHistoryPage page, ApplicationResourcesCard card)
+    {
+        var cpu = page.Chart("cpu"); var memory = page.Chart("memory");
+        Assert.Equal(1, cpu.SelectedIndex); Assert.Equal(1, memory.SelectedIndex);
+        Layout(page);
+        Assert.Equal(1, Hairlines(cpu)); Assert.Equal(1, Hairlines(memory));
+        Click(Button(card, "Clear"));
+        Assert.Null(cpu.SelectedIndex); Assert.Null(memory.SelectedIndex);
+        Assert.Equal("Application resources", Heading(card));
+        Assert.Null(card.Slot);
+        Assert.False(IsShown(Button(card, "Clear"), card));
+        Layout(page);
+        Assert.Equal(0, Hairlines(cpu)); Assert.Equal(0, Hairlines(memory));
+        // Clear returns to the period ranking.
+        Shows_the_day_ranking(card, ["chrome.exe", "Code.exe", "steam.exe", "explorer.exe", "Everything else"]);
+    }
+
+    private static void Ram_click_ranks_by_average_memory(UsageHistoryPage page, ApplicationResourcesCard card)
+    {
+        var memory = page.Chart("memory"); var bucket = Bucket(memory, 2);
+        Activate(memory, 2);
+        WaitFor(() => !card.Loading && card.View is { } shown && shown.From == bucket.Start);
+        Assert.Equal(ProcessRank.AverageMemory, card.Rank);
+        // Every minute holds Code.exe at 1.5 GB, chrome.exe at 800 MB, steam.exe at 300 MB and explorer.exe at 100 MB.
+        Assert.Equal(["Code.exe", "chrome.exe", "steam.exe", "explorer.exe", "Everything else"], RowNames(card));
+        Assert.Equal("800.0 MB", Cell(Rows(card)[1], "AverageMemory"));
+        Assert.StartsWith("Busiest apps · ", Heading(card));
+        Assert.Equal(2, page.Chart("cpu").SelectedIndex); Assert.Equal(2, memory.SelectedIndex);
+        // Esc on the chart that was clicked (it holds the focus) returns to the period ranking, still by average memory.
+        Press(memory, Key.Escape);
+        Assert.Equal("Application resources", Heading(card));
+        Assert.Null(page.Chart("cpu").SelectedIndex); Assert.Null(memory.SelectedIndex);
+        Shows_the_day_ranking(card, ["Code.exe", "chrome.exe", "steam.exe", "explorer.exe", "Everything else"]);
+    }
+
+    private static void Arrow_keys_move_the_selection_and_enter_lists_it(UsageHistoryPage page, ApplicationResourcesCard card)
+    {
+        var cpu = page.Chart("cpu"); var memory = page.Chart("memory");
+        // Right moves the selection on the focused chart; nothing is listed until Enter.
+        Assert.True(cpu.HandleKey(Key.Right)); Assert.True(cpu.HandleKey(Key.Right));
+        Assert.Equal(1, cpu.SelectedIndex);
+        Assert.Null(card.Slot);
+        Assert.Equal("Application resources", Heading(card));
+        int before = Volatile.Read(ref reads);
+        Assert.True(cpu.HandleKey(Key.Enter));
+        // The CPU chart ranks by CPU time again; the slot is read at once, not after Rank by settles, and only once.
+        Assert.False(Timer(card, "rankDelay").IsEnabled);
+        var bucket = Bucket(cpu, 1);
+        WaitFor(() => !card.Loading && card.View is { } shown && shown.From == bucket.Start);
+        Assert.Equal(before + 1, Volatile.Read(ref reads));
+        Assert.Equal(ProcessRank.CpuTime, card.Rank);
+        Assert.Equal("chrome.exe", RowNames(card)[0]);
+        Assert.Equal(1, memory.SelectedIndex);
+    }
+
+    private static void The_minute_refresh_keeps_the_slot_and_moves_its_hairlines_with_the_grid(UsageHistoryPage page, ApplicationResourcesCard card)
+    {
+        var data = (UsagePageData)typeof(UsageHistoryPage).GetField("data", All)!.GetValue(page)!;
+        var slot = card.Slot; string heading = Heading(card);
+        Assert.NotNull(slot);
+        // A refresh reads the period again a little later, so the bucket grid moves under the slot: here two earlier slots now come first.
+        static UsageHistoryBucket At(UsageHistoryView view, int k) => new(view.From.AddMilliseconds(k * view.BucketMilliseconds),
+            view.From.AddMilliseconds((k + 1) * view.BucketMilliseconds), 40, 20, 60, 1, 1, 60);
+        page.Apply(data with { Metrics = data.Metrics.ToDictionary(p => p.Key, p => p.Value with { Buckets = [At(p.Value, 0), At(p.Value, 1), .. p.Value.Buckets] }) });
+        Assert.Equal(3, page.Chart("cpu").SelectedIndex); Assert.Equal(3, page.Chart("memory").SelectedIndex);
+        Assert.Equal(slot, card.Slot); Assert.Equal(heading, Heading(card));
+        page.Apply(data);
+        Assert.Equal(1, page.Chart("cpu").SelectedIndex); Assert.Equal(1, page.Chart("memory").SelectedIndex);
+    }
+
+    private static void A_new_period_clears_the_moment(UsageHistoryPage page, ApplicationResourcesCard card)
+    {
+        // Another range, or an earlier or later period, has another bucket grid: the slot and both hairlines clear at once.
+        Assert.NotNull(card.Slot);
+        SelectRange(page, "Week");
+        Assert.Null(card.Slot); Assert.Equal("Application resources", Heading(card));
+        Assert.Null(page.Chart("cpu").SelectedIndex); Assert.Null(page.Chart("memory").SelectedIndex);
+        SelectRange(page, "Day"); Load(page);
+        Shows_the_day_ranking(card, ["chrome.exe", "Code.exe", "steam.exe", "explorer.exe", "Everything else"]);
+        var bucket = Bucket(page.Chart("cpu"), 1);
+        Activate(page.Chart("cpu"), 1);
+        WaitFor(() => !card.Loading && card.View is { } shown && shown.From == bucket.Start);
+        Click(ButtonNamed(page, "Earlier period"));
+        Assert.Null(card.Slot); Assert.Equal("Application resources", Heading(card));
+        Assert.Null(page.Chart("cpu").SelectedIndex); Assert.Null(page.Chart("memory").SelectedIndex);
+        Click(ButtonNamed(page, "Later period")); Load(page);
+        Shows_the_day_ranking(card, ["chrome.exe", "Code.exe", "steam.exe", "explorer.exe", "Everything else"]);
+    }
+
+    private static void Clicking_a_slot_without_process_data_says_so(UsageHistoryPage page, ApplicationResourcesCard card, DateTimeOffset lastProcessMinute)
+    {
+        var cpu = page.Chart("cpu"); int emptySlot = Traces(cpu)[0].View.Buckets.Count - 1; var bucket = Bucket(cpu, emptySlot);
+        // The fixture's last ten Device minutes were recorded while monitoring was off: this slot has CPU readings but no process data.
+        Assert.True(bucket.Start > lastProcessMinute && bucket.Minutes > 0);
+        Activate(cpu, emptySlot);
+        WaitFor(() => !card.Loading && card.View is { } shown && shown.From == bucket.Start);
+        var texts = Texts(card);
+        Assert.Contains(NoProcessData, texts);
+        Assert.Equal(0, card.View!.RecordedMinutes);
+        Assert.Empty(RowNames(card));
+        // It says so instead of showing an empty table, and it is not the period's "nothing recorded" or gap notice.
+        Assert.False(IsShown(Table(card), card));
+        Assert.Equal(Visibility.Collapsed, Named(card, "Share of period total").Visibility);
+        Assert.DoesNotContain(NothingRecorded, texts);
+        Assert.DoesNotContain(texts, t => t.EndsWith(GapEnding, StringComparison.Ordinal));
+        // The heading names the span's minutes; Clear stays available and both charts mark the slot.
+        Assert.Equal($"Busiest apps · {Ceiling(bucket.Start).ToLocalTime():HH:mm}–{Ceiling(bucket.End).ToLocalTime():HH:mm}", Heading(card));
+        Assert.True(IsShown(Button(card, "Clear"), card));
+        Assert.Equal(emptySlot, cpu.SelectedIndex); Assert.Equal(emptySlot, page.Chart("memory").SelectedIndex);
+        Press(card, Key.Escape);
+        Assert.Equal("Application resources", Heading(card));
+        Assert.Null(cpu.SelectedIndex); Assert.Null(page.Chart("memory").SelectedIndex);
+        // Esc returns to the period ranking: its rows and table are back, and the span's sentence is gone.
+        Shows_the_day_ranking(card, ["chrome.exe", "Code.exe", "steam.exe", "explorer.exe", "Everything else"]);
+        Assert.DoesNotContain(NoProcessData, Texts(card));
+    }
+
+    private static void Slot_heading_formats()
+    {
+        static DateTimeOffset L(int hour, int minute, int day = 3) => new(new DateTime(2026, 11, day, hour, minute, 0, DateTimeKind.Local));
+        Assert.Equal("Busiest apps · 03:13–03:16", ApplicationResourcesCard.SlotHeading(L(3, 13), L(3, 16), false));
+        Assert.Equal("Busiest apps · Nov 3 03:05–03:28", ApplicationResourcesCard.SlotHeading(L(3, 5), L(3, 28), true));
+        // A Month slot that crosses midnight names both dates.
+        Assert.Equal("Busiest apps · Nov 3 23:30–Nov 4 01:06", ApplicationResourcesCard.SlotHeading(L(23, 30), L(1, 6, 4), true));
+    }
+
+    private static void A_slot_that_cannot_be_read_says_why_and_clear_returns(string folder)
+    {
+        string junk = Path.Combine(folder, "junk-slot"); Directory.CreateDirectory(junk);
+        string path = Path.Combine(junk, "process-history.db"); File.WriteAllText(path, "not a database");
+        var card = new ApplicationResourcesCard(Session(new ProcessHistoryService(path, Machine), folder));
+        var to = DateTimeOffset.UtcNow; var from = to.AddDays(-1);
+        card.Load(from, to);
+        WaitFor(() => !card.Loading);
+        // Rows on screen first; the slot's failed read is reported like the period's, never as a span without process data.
+        card.Apply(View(from, to, 50), to);
+        card.ShowSlot(to.AddMinutes(-30), to.AddMinutes(-27), ProcessRank.CpuTime);
+        Assert.True(card.Loading);
+        WaitFor(() => !card.Loading);
+        var texts = Texts(card);
+        Assert.Contains("Application resources could not be read.", texts);
+        Assert.Contains(texts, t => t.Contains("(InvalidDataException)", StringComparison.Ordinal));
+        Assert.DoesNotContain(NoProcessData, texts);
+        Assert.DoesNotContain(texts, t => t.StartsWith("process-history.db", StringComparison.Ordinal));
+        Assert.Null(card.View);
+        Assert.Empty(RowNames(card));
+        Assert.Equal(Visibility.Collapsed, Named(card, "Share of period total").Visibility);
+        Assert.StartsWith("Busiest apps · ", Heading(card));
+        Assert.True(IsShown(Button(card, "Clear"), card));
+        Click(Button(card, "Clear"));
+        Assert.Equal("Application resources", Heading(card));
+        Assert.False(IsShown(Button(card, "Clear"), card));
+        WaitFor(() => !card.Loading);
+        Assert.Contains("Application resources could not be read.", Texts(card));
+        // Without process history (fixtures), the slot says the history is not available.
+        var missing = new ApplicationResourcesCard(Session(null, folder));
+        missing.ShowSlot(to.AddMinutes(-30), to.AddMinutes(-27), ProcessRank.AverageMemory);
+        Assert.False(missing.Loading);
+        Assert.Equal(ProcessRank.AverageMemory, missing.Rank);
+        Assert.Contains("Application resource history is not available.", Texts(missing));
+        Assert.StartsWith("Busiest apps · ", Heading(missing));
+    }
+
+    /// <summary>Waits for the card's period ranking of the Day range and checks its rows, summary and table.</summary>
+    private static void Shows_the_day_ranking(ApplicationResourcesCard card, string[] names)
+    {
+        WaitFor(() => !card.Loading && card.View is { } shown && shown.To - shown.From == TimeSpan.FromDays(1));
+        Assert.Null(card.Slot);
+        Assert.Equal("Application resources", Heading(card));
+        Assert.Equal(names, RowNames(card));
+        Assert.Contains($"4 applications · {DayMinutes} recorded minutes", Texts(card));
+        Assert.True(IsShown(Table(card), card));
+    }
+
     private static ProcessResourceView View(DateTimeOffset from, DateTimeOffset to, long recorded)
         => new(from, to, recorded == 0 ? [] : [new("a.exe", 60, 1, 1e6, 1, 1, recorded, false, 6e7)],
             new(ProcessHistory.EverythingElse, recorded, 1, 1e6, 1, 1, recorded, true, recorded * 6e7), recorded == 0 ? 0 : 60 + recorded,
             recorded, recorded == 0 ? null : from, recorded == 0 ? null : to, recorded == 0 ? null : from, 4096);
 
-    /// <summary>A process-history.db with a fixture day (90 minutes ending ten minutes ago) and 30 minutes three days ago, read through
-    /// a service whose store counts every read and can hold one read until released.</summary>
-    private static ProcessHistoryService Service(string folder)
+    /// <summary>A process-history.db with a fixture day (90 minutes ending ten minutes before <paramref name="minute"/>) and 30 minutes
+    /// three days ago, read through a service whose store counts every read and can hold one read until released.</summary>
+    private static ProcessHistoryService Service(string folder, DateTimeOffset minute)
     {
         string path = Path.Combine(folder, "process-history.db");
         var store = new ProcessHistoryStore(path); store.Initialize();
         var now = DateTimeOffset.UtcNow;
-        var minute = new DateTimeOffset(now.UtcTicks / TimeSpan.TicksPerMinute * TimeSpan.TicksPerMinute, TimeSpan.Zero);
         var batches = Enumerable.Range(0, DayMinutes).Select(i => new ProcessMinuteBatch(minute.AddMinutes(i - DayMinutes - 10), 60, 8, true, "fixture", DayApps))
             .Concat(Enumerable.Range(0, 30).Select(i => new ProcessMinuteBatch(minute.AddDays(-3).AddMinutes(i), 60, 8, true, "fixture",
                 [new("backup.exe", 20_000_000, 400_000_000, 300_000_000, 200e6 * 60, false), new(ProcessHistory.EverythingElse, 1_000_000, 0, 0, 1e9 * 60, true)])))
@@ -341,7 +568,20 @@ internal static class ApplicationResourcesUiChecks
         return service;
     }
 
-    private static UiSession Session(ProcessHistoryService? history, string folder)
+    /// <summary>A usage-history.db with CPU and RAM minutes for the fixture day's 90 process minutes and the ten minutes after them, which
+    /// were recorded while monitoring was off and so have no process data.</summary>
+    private static UsageHistoryService DeviceHistory(string folder, DateTimeOffset minute)
+    {
+        string path = Path.Combine(folder, "usage-history.db");
+        var store = new UsageHistoryStore(path); store.Initialize();
+        var batches = Enumerable.Range(0, DayMinutes + 10).Select(i => minute.AddMinutes(i - DayMinutes - 10)).Select(at => new UsageMinuteBatch(at,
+            [new(UsageMetrics.Cpu, null, at, 40, 20, 60, 60, true, "fixture"), new(UsageMetrics.Memory, null, at, 55, 50, 60, 60, true, "fixture")],
+            [], false, "fixture")).ToList();
+        store.Append(Machine, batches, DateTimeOffset.UtcNow);
+        return new UsageHistoryService(path, Machine);
+    }
+
+    private static UiSession Session(ProcessHistoryService? history, string folder, UsageHistoryService? usage = null)
     {
         var session = (UiSession)RuntimeHelpers.GetUninitializedObject(typeof(UiSession));
         var collector = (Collector)RuntimeHelpers.GetUninitializedObject(typeof(Collector));
@@ -351,7 +591,7 @@ internal static class ApplicationResourcesUiChecks
         void Set(string name, object value) => typeof(UiSession).GetField(name, All)!.SetValue(session, value);
         Set("<Collector>k__BackingField", collector);
         Set("<Settings>k__BackingField", new UserSettings { ProcessMonitoring = true });
-        Set("<Usage>k__BackingField", new UsageHistoryService(Path.Combine(folder, Guid.NewGuid() + "-usage.db"), Machine));
+        Set("<Usage>k__BackingField", usage ?? new UsageHistoryService(Path.Combine(folder, Guid.NewGuid() + "-usage.db"), Machine));
         if (history is not null) Set("<ProcessHistory>k__BackingField", history);
         return session;
     }
@@ -382,6 +622,52 @@ internal static class ApplicationResourcesUiChecks
     }
     private static Button ButtonNamed(DependencyObject root, string name) => Descendants(root).OfType<Button>().Single(b => AutomationProperties.GetName(b) == name);
     private static void Click(ButtonBase button) => button.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+    private static Button Button(DependencyObject root, string content) => Descendants(root).OfType<Button>().Single(b => Equals(b.Content, content));
+    private static string Heading(ApplicationResourcesCard card) => Descendants(card).OfType<TextBlock>().First().Text;
+    private static DispatcherTimer Timer(ApplicationResourcesCard card, string name) => (DispatcherTimer)typeof(ApplicationResourcesCard).GetField(name, All)!.GetValue(card)!;
+    private static DateTimeOffset Ceiling(DateTimeOffset time)
+        => new((time.UtcTicks + TimeSpan.TicksPerMinute - 1) / TimeSpan.TicksPerMinute * TimeSpan.TicksPerMinute, TimeSpan.Zero);
+
+    /// <summary>Clicks a Device chart where its bucket <paramref name="index"/> is drawn, through the chart's own click handling (pages here
+    /// have no input source, so the mouse event itself cannot be raised).</summary>
+    private static void Activate(UsageHistoryChart chart, int index)
+    {
+        Layout(Root(chart));
+        var plot = chart.PlotRect; double y = plot.Top + plot.Height / 2;
+        double? x = null;
+        for (double at = plot.Left; at <= plot.Right && x is null; at += 0.05) if (chart.BucketAt(new(at, y)) == index) x = at;
+        Assert.True(x.HasValue, $"No point on the chart selects bucket {index}.");
+        chart.HandleClick(new(x.Value, y));
+        Assert.Equal(index, chart.SelectedIndex);
+    }
+    private static UsageHistoryBucket Bucket(UsageHistoryChart chart, int index) => Traces(chart)[0].View.Buckets[index];
+    /// <summary>Accent hairlines the chart drew at its last render.</summary>
+    private static int Hairlines(UsageHistoryChart chart)
+    {
+        var accent = Application.Current.Resources["Accent"];
+        return Drawings(VisualTreeHelper.GetDrawing(chart)).Count(d => d.Geometry is LineGeometry line && line.StartPoint.X == line.EndPoint.X && ReferenceEquals(d.Pen?.Brush, accent));
+    }
+    private static IEnumerable<GeometryDrawing> Drawings(Drawing? drawing)
+        => drawing is GeometryDrawing geometry ? [geometry] : drawing is DrawingGroup group ? group.Children.SelectMany(Drawings) : [];
+    private static FrameworkElement Root(DependencyObject element)
+    {
+        while (VisualTreeHelper.GetParent(element) is { } parent) element = parent;
+        return (FrameworkElement)element;
+    }
+    /// <summary>Presses a key on an element as the keyboard does: the preview first, then the key itself unless it was handled.</summary>
+    private static void Press(UIElement target, Key key)
+    {
+        var preview = new KeyEventArgs(Keyboard.PrimaryDevice, new KeySource(), 0, key) { RoutedEvent = Keyboard.PreviewKeyDownEvent };
+        target.RaiseEvent(preview);
+        if (!preview.Handled) target.RaiseEvent(new KeyEventArgs(Keyboard.PrimaryDevice, new KeySource(), 0, key) { RoutedEvent = Keyboard.KeyDownEvent });
+    }
+    /// <summary>The input source a key event must name; it is never added to the sources, and offscreen nothing reads it.</summary>
+    private sealed class KeySource : PresentationSource
+    {
+        public override Visual RootVisual { get => null!; set { } }
+        protected override CompositionTarget GetCompositionTargetCore() => null!;
+        public override bool IsDisposed => false;
+    }
 
     private static DataGrid Table(ApplicationResourcesCard card) => Assert.Single(Descendants(card).OfType<DataGrid>());
     private static List<object> Rows(ApplicationResourcesCard card) => ((System.Collections.IEnumerable?)Table(card).ItemsSource ?? Array.Empty<object>()).Cast<object>().ToList();
@@ -399,7 +685,8 @@ internal static class ApplicationResourcesUiChecks
     }
     private static string ChartUnit(ApplicationResourcesCard card) => (string)typeof(UsageHistoryChart).GetField("unit", All)!.GetValue(card.Chart)!;
     private static double? ChartMaximum(ApplicationResourcesCard card) => (double?)typeof(UsageHistoryChart).GetField("fixedMaximum", All)!.GetValue(card.Chart);
-    private static IReadOnlyList<UsageTrace> Traces(ApplicationResourcesCard card) => (IReadOnlyList<UsageTrace>)typeof(UsageHistoryChart).GetField("traces", All)!.GetValue(card.Chart)!;
+    private static IReadOnlyList<UsageTrace> Traces(ApplicationResourcesCard card) => Traces(card.Chart);
+    private static IReadOnlyList<UsageTrace> Traces(UsageHistoryChart chart) => (IReadOnlyList<UsageTrace>)typeof(UsageHistoryChart).GetField("traces", All)!.GetValue(chart)!;
     private static FrameworkElement Named(DependencyObject root, string name) => Descendants(root).OfType<FrameworkElement>().Single(e => AutomationProperties.GetName(e) == name);
     private static List<Rectangle> Segments(Grid bar) => bar.Children.OfType<Rectangle>().ToList();
     private static double Fraction(Grid bar, int segment)
