@@ -119,7 +119,7 @@ Minor-version milestones:
   - All native work runs off the UI thread. The app manifest stays `asInvoker`.
 - **Open file location:**
   - Checks that the process still has the row's Generation.
-  - Reads the image path on demand with `QueryFullProcessImageNameW` and checks the file exists.
+  - Reads the image path on demand with `QueryFullProcessImageNameW` and checks the file is there. A file Windows reports not found says "The program file is no longer there."; one Windows denies access to says "Could not open the file location (denied by Windows)." and nothing is revealed, since Explorer has no more access.
   - A short-lived STA thread calls `SHOpenFolderAndSelectItems`, falling back to `explorer.exe /select,"<path>"`.
   - The path stays in local variables and is never stored or logged.
   - An app whose processes run from more than one path says "runs from 2 locations; expand to choose one".

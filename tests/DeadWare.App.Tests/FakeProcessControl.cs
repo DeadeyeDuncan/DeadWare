@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.IO;
 using DeadWare.App;
 using DeadWare.Core;
 using Microsoft.Win32.SafeHandles;
@@ -62,6 +63,9 @@ internal sealed class FakeProcessControl : IProcessControl
     public string WindowsFolder=>Windows;
     /// <summary>Thrown from <see cref="ReadFacts"/> when set.</summary>
     public Exception? ThrowOnFacts {get;set;}
+    /// <summary>Thrown from <see cref="Attributes"/> when set; otherwise the real attributes are read, so a temp file is there and a path in a missing folder is gone.</summary>
+    public Exception? ThrowOnAttributes {get;set;}
+    public FileAttributes Attributes(string path)=>ThrowOnAttributes is {} e?throw e:File.GetAttributes(path);
     /// <summary>The script of <paramref name="pid"/>, created with the defaults on first use.</summary>
     public Script this[int pid] {get {lock(gate)return scripts.TryGetValue(pid,out var script)?script:scripts[pid]=new();}}
     public void OpenError(int pid,int error)=>this[pid].OpenError=error;
