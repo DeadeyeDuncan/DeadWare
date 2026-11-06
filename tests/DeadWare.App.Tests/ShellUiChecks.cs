@@ -106,7 +106,7 @@ internal static class ShellUiChecks
             Assert.Equal("Monitoring",Descendants(cards.Single(c=>Descendants(c).Contains(box))).OfType<TextBlock>().First().Text);
             Assert.Equal("Monitoring",CardOf("Turning it on adds one Windows process scan"));
             var help=Descendants(pages["desktop"]).OfType<TextBlock>().Single(b=>b.Text.StartsWith("Turning it on adds one Windows process scan",StringComparison.Ordinal));
-            Assert.Contains(ProcessCopy.ScanSentence(session.Current?.Elevated??Collector.IsElevated,ProcessFeatures.DiskColumns,ProcessFeatures.ScanLoop),help.Text);
+            Assert.Equal(ProcessCopy.ScanSentence(session.Current?.Elevated??Collector.IsElevated,ProcessFeatures.DiskColumns,ProcessFeatures.ScanLoop),help.Text);
             bool was=session.Settings.ProcessMonitoring;Assert.Equal(was,box.IsChecked);
             try
             {
