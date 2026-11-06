@@ -327,7 +327,8 @@ internal static class ProcessesPageUiChecks
         Assert.Equal(held,AppNames(keyed));
         // While the column picker is open; once it has closed, the next new reading re-sorts.
         var (picking,_)=Page();
-        PickerMenu(picking).IsOpen=true;
+        Click(Button(picking,"Columns"));
+        Assert.True(PickerMenu(picking).IsOpen);
         Publish(picking,2,cpu:("Code.exe",99));
         Assert.Equal(held,AppNames(picking));
         PickerMenu(picking).IsOpen=false;
