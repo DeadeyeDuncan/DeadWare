@@ -36,6 +36,12 @@ public sealed class ProcessAttribution(Func<int,ProcessIdentity?> resolve)
     {
         lock(gate) foreach(int pid in identities.Keys.ToArray()) Refresh(pid);
     }
+    /// <summary>Like <see cref="Reconcile()"/>, but a tracked PID whose indexed Generation still matches is kept without a native read.</summary>
+    public void Reconcile(Func<int,ProcessIdentity?> index)
+    {
+        lock(gate) foreach(var (pid,identity) in identities.ToArray())
+            if(index(pid)?.Generation!=identity.Generation) Refresh(pid);
+    }
     public void Refresh(int pid)
     {
         lock(gate)

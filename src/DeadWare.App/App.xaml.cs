@@ -111,11 +111,16 @@ public partial class App : Application
         updateChecks.Cancel();updateChecks.Dispose();
         try {DisposeTray();}finally {try {instance?.Dispose();}finally {base.OnExit(e);}}
     }
+    internal static CollectorOptions DiagnosticOptions(string[] args,bool elevated)
+    {
+        bool processes=!args.Contains("--no-processes"),etw=!args.Contains("--no-etw");
+        return new(HardwareEnabled:!args.Contains("--no-hardware"),EtwEnabled:etw,DiagnosticTimings:true,ProcessMonitoring:processes,ProcessDiskTracing:ProcessFeatures.DiskColumns&&elevated&&processes&&etw);
+    }
     private static async Task<int> DiagnoseAsync(string[] args)
     {
         Collector? collector=null;string? output=null;int exit=0;string status="Starting";
         var readings=new List<Reading>();int deadlineSeconds=15;
-        var options=new CollectorOptions(HardwareEnabled:!args.Contains("--no-hardware"),EtwEnabled:!args.Contains("--no-etw"),DiagnosticTimings:true);
+        var options=DiagnosticOptions(args,Collector.IsElevated);
         async Task WriteReport()
         {
             if(output is null)return;

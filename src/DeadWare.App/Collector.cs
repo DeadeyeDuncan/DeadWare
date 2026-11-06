@@ -15,6 +15,9 @@ public record Reading(Snapshot Sample,IReadOnlyList<Device> Gpus,IReadOnlyList<S
     public BatteryReading Battery {get;init;}=BatteryReading.Unavailable;
     public int CpuCoreCount {get;init;}
     public StorageReading Storage {get;init;}=StorageReading.Empty;
+    [System.Text.Json.Serialization.JsonIgnore]
+    public ProcessActivity ProcessActivity {get;init;}=ProcessActivity.None;
+    public ProcessSummary? ProcessSummary {get;init;}
 }
 
 public sealed record StorageReading(IReadOnlyList<StorageDrive> Drives,IReadOnlyList<StorageHealth> Health,string Status)
@@ -81,11 +84,26 @@ public sealed class Collector : IAsyncDisposable
     internal static readonly TimeSpan StorageHealthPeriod=TimeSpan.FromSeconds(30);
     private const string StorageSensorsOff="Unavailable · storage sensors off";
     // Diagnostic isolation (HardwareEnabled:false) keeps WMI and disk counters off the poll thread.
-    public Collector(CollectorOptions? options=null):this(options,options is {HardwareEnabled:false}?null:new WindowsStorage()) {}
-    internal Collector(CollectorOptions? options,IStorageFastSource? storage,IStorageHealthSource? healthSource=null,TimeSpan? healthPeriod=null) {this.storage=storage;this.healthSource=healthSource;this.healthPeriod=healthPeriod??StorageHealthPeriod;this.options=options??new();SetPollingInterval(this.options.PollingIntervalSeconds);etw=new(this.options.DiagnosticTimings);}
+    public Collector(CollectorOptions? options=null):this(options,options is {HardwareEnabled:false}?null:new WindowsStorage(),processes:new WindowsProcesses()) {}
+    internal Collector(CollectorOptions? options,IStorageFastSource? storage,IStorageHealthSource? healthSource=null,TimeSpan? healthPeriod=null,IProcessSource? processes=null,Func<IDiskTrace>? diskTrace=null)
+    {
+        this.storage=storage;this.healthSource=healthSource;this.healthPeriod=healthPeriod??StorageHealthPeriod;this.processes=processes??new WindowsProcesses();this.options=options??new();SetPollingInterval(this.options.PollingIntervalSeconds);SetProcessMonitoring(this.options.ProcessMonitoring);etw=new(this.options.DiagnosticTimings);
+        // ProcessDiskTracing only permits a session; it runs while monitoring is on.
+        if(this.options.ProcessDiskTracing)disk=new(diskTrace??(()=>new EtwDisk(EtwDisk.BufferSizeMB)));
+    }
     private double pollingIntervalSeconds=1;
     public double PollingIntervalSeconds=>Volatile.Read(ref pollingIntervalSeconds);
     public void SetPollingInterval(double intervalSeconds)=>Volatile.Write(ref pollingIntervalSeconds,PollingPolicy.Normalize(intervalSeconds));
+    private volatile bool processMonitoring;
+    /// <summary>Read once at the start of each pass, so a change applies from the next poll.</summary>
+    public bool ProcessMonitoring=>processMonitoring;
+    public void SetProcessMonitoring(bool enabled)=>processMonitoring=enabled;
+    private readonly IProcessSource processes;
+    private long processSequence;
+    // Null without ProcessDiskTracing, and in the shutdown fixtures built with GetUninitializedObject.
+    private readonly DiskTraceController? disk;
+    // The monitoring flag last sent to the disk lifecycle; null before the first pass. Read and written only by the worker.
+    private bool? diskRequested;
     private readonly CancellationTokenSource cancellation=new();
     private readonly Stopwatch clock=Stopwatch.StartNew();
     private readonly WindowsCounters windows=new();
@@ -136,10 +154,19 @@ public sealed class Collector : IAsyncDisposable
                 var loop=new StorageSensorLoop(healthSource??new LibreStorageHealth(),healthPeriod,()=>Volatile.Read(ref storageDrives));
                 Volatile.Write(ref healthLoop,loop);loop.Start();
             }
+            // Built once, outside the pass, so a source that cannot even count processors stops the collector visibly.
+            int processorCount=processes.ProcessorCount;
+            var tracker=new ProcessActivityTracker(processorCount);
+            // Fed by every successful pass's take, monitoring on or off, so a loss marks only the take that reset attribution. A loss first
+            // seen by a failed pass's take marks the next successful one, whose attribution was also reset since the previous successful take.
+            var networkLoss=new NetworkLossWatch();
             while(!cancellation.IsCancellationRequested)
             {
                 intervalSeconds=PollingIntervalSeconds;
                 double started=clock.Elapsed.TotalSeconds;
+                bool monitoring=processMonitoring;
+                // Queued on the disk lifecycle's own pool task on the first pass and on every change, so the poll never waits on it.
+                if(disk is not null&&diskRequested!=monitoring){diskRequested=monitoring;disk.Request(monitoring);}
                 try
                 {
                     Dictionary<string,double>? timings=options.DiagnosticTimings?new(){["open/hardware"]=hardwareOpenMilliseconds,["open/etw"]=etwOpenMilliseconds}:null;
@@ -215,6 +242,22 @@ public sealed class Collector : IAsyncDisposable
                     if(errors.Count>0) hardwareStatus+=" · "+string.Join("; ",errors.Distinct());
                     if(storageError is not null) hardwareStatus+=" · "+storageError;
                     if(beyondEight) hardwareStatus+=" · "+BeyondEightNote;
+                    // Process block 1: a scan failure becomes the published activity and never fails the pass.
+                    TrackedScan? tracked=null;string? processFailure=null;
+                    if(!monitoring)tracker.Reset();
+                    else
+                    {
+                        stage="Scanning processes";providerStarted=Stopwatch.GetTimestamp();
+                        try
+                        {
+                            var scan=processes.Scan(clock.Elapsed.TotalSeconds,intervalSeconds);
+                            if(scan is null)processFailure=processes.Failure is {Length:>0} failure?failure:ProcessScanUnavailable;
+                            else tracked=tracker.Update(scan);
+                            if(processes.Status is {Length:>0} processStatus) hardwareStatus+=" · "+processStatus;
+                        }
+                        catch(Exception e) {processFailure=e.GetType().Name;}
+                        if(timings is not null)timings["windows/processes"]=Stopwatch.GetElapsedTime(providerStarted).TotalMilliseconds;
+                    }
                     stage="Reading ETW counters";
                     // Snapshot and delivery are one step, so the final drain never overtakes (and
                     // makes ConnectionService drop) a sample whose observations were already taken.
@@ -223,14 +266,17 @@ public sealed class Collector : IAsyncDisposable
                         providerStarted=Stopwatch.GetTimestamp();
                         var timestamp=DateTimeOffset.Now;var now=clock.Elapsed.TotalSeconds;
                         var capture=etw.TakeSnapshot(timestamp,now,options.EtwEnabled);
+                        bool networkLossy=networkLoss.Lossy(capture.Connections.LostEvents);
                         // The local-network share comes from the per-app capture, so it joins the sample after the ETW snapshot.
                         var local=NetworkTrafficSplit.Local(capture.Connections,network.Down,network.Up);
                         values["network/download/local"]=local.Down;values["network/upload/local"]=local.Up;
+                        if(timings is not null)timings["etw/snapshot"]=Stopwatch.GetElapsedTime(providerStarted).TotalMilliseconds;
+                        var processActivity=PublishProcesses(monitoring,tracked,processFailure,processorCount,capture,networkLossy,now,timings);
                         var sample=new Snapshot(timestamp,now,new System.Collections.ObjectModel.ReadOnlyDictionary<string,double?>(values)) {PollingIntervalSeconds=intervalSeconds};
-                        if(timings is not null){timings["etw/snapshot"]=Stopwatch.GetElapsedTime(providerStarted).TotalMilliseconds;timings["poll/total"]=(clock.Elapsed.TotalSeconds-started)*1000;}
+                        if(timings is not null)timings["poll/total"]=(clock.Elapsed.TotalSeconds-started)*1000;
                         double elapsed=clock.Elapsed.TotalSeconds-started;
                         if(elapsed>=intervalSeconds)hardwareStatus+=$" · Slow sample ({elapsed:0.0}s); pausing before the next poll.";
-                        var reading=new Reading(sample,gpus.AsReadOnly(),sensors.AsReadOnly(),capture.Processes,cpuName,hardwareStatus,network.Status,EtwStatus,IsElevated,timings,etw.Failure) {Battery=battery,Connections=capture.Connections,CpuCoreCount=cores.Count,Storage=storageReading};
+                        var reading=new Reading(sample,gpus.AsReadOnly(),sensors.AsReadOnly(),capture.Processes,cpuName,hardwareStatus,network.Status,EtwStatus,IsElevated,timings,etw.Failure) {Battery=battery,Connections=capture.Connections,CpuCoreCount=cores.Count,Storage=storageReading,ProcessActivity=processActivity,ProcessSummary=Summary(processActivity)};
                         History.Add(sample);Volatile.Write(ref latest,reading);SampleAvailable?.Invoke(reading);
                     }
                 }
@@ -239,7 +285,7 @@ public sealed class Collector : IAsyncDisposable
                     var sample=new Snapshot(DateTimeOffset.Now,clock.Elapsed.TotalSeconds,new Dictionary<string,double?>()) {PollingIntervalSeconds=intervalSeconds};
                     lock(publicationGate)
                     {
-                        var failed=new Reading(sample,Latest?.Gpus??[],[],[],Latest?.CpuName??"Processor",$"Collection failed ({e.GetType().Name}); retrying at the selected polling interval.","Interface readings unavailable",EtwStatus,IsElevated,EtwFailure:etw.Failure) {Connections=etw.TakeSnapshot(sample.Timestamp,sample.MonotonicSeconds,available:false).Connections};
+                        var failed=new Reading(sample,Latest?.Gpus??[],[],[],Latest?.CpuName??"Processor",$"Collection failed ({e.GetType().Name}); retrying at the selected polling interval.","Interface readings unavailable",EtwStatus,IsElevated,EtwFailure:etw.Failure) {Connections=etw.TakeSnapshot(sample.Timestamp,sample.MonotonicSeconds,available:false).Connections,ProcessActivity=FailedActivity(monitoring,e),ProcessSummary=Summary(FailedActivity(monitoring,e))};
                         History.Add(sample);Volatile.Write(ref latest,failed);SampleAvailable?.Invoke(failed);
                     }
                 }
@@ -253,7 +299,7 @@ public sealed class Collector : IAsyncDisposable
             var sample=new Snapshot(DateTimeOffset.Now,clock.Elapsed.TotalSeconds,new Dictionary<string,double?>()) {PollingIntervalSeconds=intervalSeconds};
             lock(publicationGate)
             {
-                var failed=new Reading(sample,[],[],[],"Processor",$"Collector stopped ({e.GetType().Name}). Restart DeadWare to retry.","Interface readings unavailable",EtwStatus,IsElevated,EtwFailure:etw.Failure) {Connections=etw.TakeSnapshot(sample.Timestamp,sample.MonotonicSeconds,available:false).Connections};
+                var failed=new Reading(sample,[],[],[],"Processor",$"Collector stopped ({e.GetType().Name}). Restart DeadWare to retry.","Interface readings unavailable",EtwStatus,IsElevated,EtwFailure:etw.Failure) {Connections=etw.TakeSnapshot(sample.Timestamp,sample.MonotonicSeconds,available:false).Connections,ProcessActivity=FailedActivity(processMonitoring,e),ProcessSummary=Summary(FailedActivity(processMonitoring,e))};
                 History.Add(sample);Volatile.Write(ref latest,failed);SampleAvailable?.Invoke(failed);
             }
         }
@@ -263,6 +309,34 @@ public sealed class Collector : IAsyncDisposable
             try {computer?.Close();} finally {await StopEtwAsync();}
             stage="Stopped";
         }
+    }
+    private ProcessSummary? Summary(ProcessActivity activity)=>options.DiagnosticTimings?ProcessSummary.From(activity):null;
+    private const string ProcessScanUnavailable="Process scan unavailable";
+    private static ProcessActivity FailedActivity(bool monitoring,Exception e)=>monitoring?ProcessActivity.Unavailable(e.GetType().Name):ProcessActivity.Off;
+    /// <summary>Process block 2, inside the publication lock after the poll's only ETW snapshot: takes the disk trace and joins the scan to per-app traffic and disk. It never throws, so the reading is always published.</summary>
+    private ProcessActivity PublishProcesses(bool monitoring,TrackedScan? tracked,string? failure,int processorCount,NetworkCaptureSnapshot capture,bool networkLossy,double now,Dictionary<string,double>? timings)
+    {
+        if(!monitoring)return ProcessActivity.Off;
+        if(failure is not null||tracked is null)return ProcessActivity.Unavailable(failure??ProcessScanUnavailable);
+        long started=Stopwatch.GetTimestamp();
+        try
+        {
+            var diskTake=DiskTake.Off;
+            if(disk is not null)
+            {
+                long diskStarted=Stopwatch.GetTimestamp();
+                diskTake=disk.Take(now,tracked.Index);
+                // Only once a session has opened, so the keys mean the disk session ran.
+                if(timings is not null&&disk.LastOpenMilliseconds is {} opened) {timings["open/etwdisk"]=opened;timings["etw/disk"]=Stopwatch.GetElapsedTime(diskStarted).TotalMilliseconds;}
+            }
+            var network=ProcessJoins.Network(tracked.Processes,capture.Processes,capture.Connections.Available,EtwStatus,networkLossy);
+            var joined=ProcessJoins.Disk(network.Processes,diskTake);
+            var scan=tracked.Scan;
+            return new ProcessActivity(ProcessActivityKind.Available,++processSequence,scan.UtcTime,scan.MonotonicSeconds,scan.PollingIntervalSeconds,processorCount,joined.Processes,tracked.Omitted,tracked.TotalProcesses,tracked.DeltaSeconds)
+                {Network=network.State,NetworkMisses=network.Misses,Disk=joined.State,DiskMisses=joined.Misses,UnattributedDiskEvents=diskTake.UnattributedEvents};
+        }
+        catch(Exception e) {return ProcessActivity.Unavailable(e.GetType().Name);}
+        finally {if(timings is not null)timings["processes/join"]=Stopwatch.GetElapsedTime(started).TotalMilliseconds;}
     }
     /// <summary>Holds the last good core count for one empty poll (as nulls) so a transient sensor miss shows a gap, not a disappearance.</summary>
     internal static IReadOnlyList<double?> HoldCores(IReadOnlyList<double?> read,ref int held)
@@ -336,8 +410,10 @@ public sealed class Collector : IAsyncDisposable
         try
         {
             var networkStop=StopNetworkCaptureAsync();
+            // Requested before the worker join, so a stuck hardware provider cannot delay it; HardwareStopBudget does not bound it.
+            var diskStop=disk?.StopAsync()??Task.CompletedTask;
             try {if(worker is not null)await worker.ConfigureAwait(false);}
-            finally {await networkStop.ConfigureAwait(false);}
+            finally {await Task.WhenAll(networkStop,diskStop).ConfigureAwait(false);}
         }
         finally
         {

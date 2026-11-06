@@ -38,10 +38,16 @@ public class CoolingShutdownTests
             var graphReading=new Reading(new Snapshot(DateTimeOffset.UtcNow,1,new Dictionary<string,double?>{{"network/download",100},{"network/upload",0}}),[],[],[],"Processor","","","",false);
             graphs.TryRecord(graphReading);
             battery.Start();battery.TryRecord(graphReading with {Battery=new(60,BatteryPowerState.OnBattery,true)});
+            // Each worker opens its database before it takes its record off the queue, then keeps the record in memory (an open
+            // minute, a 15 s batch) for the drain to write. Wait for that, so the 3 s window covers the drain as at a real sign-out
+            // long after startup; three first-time SQLite creations on a busy CI runner can use the whole window.
+            using(var warm=new CancellationTokenSource(TimeSpan.FromSeconds(30)))
+                while(history.PendingSamples+graphs.PendingSamples+battery.PendingSamples>0)await Task.Delay(10,warm.Token);
             var watch=Stopwatch.StartNew();
             typeof(UiSession).GetMethod("StopCollectorForSessionEnding",flags)!.Invoke(session,null);
             Assert.InRange(watch.Elapsed.TotalSeconds,2.8,4.5);
-            Assert.True(cancellation.IsCancellationRequested);Assert.True(history.StopAsync().IsCompleted);
+            Assert.True(cancellation.IsCancellationRequested);
+            Assert.True(history.StopAsync().IsCompleted);
             Assert.True(graphs.StopAsync().IsCompleted);
             Assert.True(battery.StopAsync().IsCompleted);
             Assert.Equal(1,(await battery.ReadViewAsync(0)).TotalObservations);
@@ -62,8 +68,15 @@ public class CoolingShutdownTests
     private static Task Stop(UiSession session,TimeSpan providerDeadline)=>(Task)typeof(UiSession).GetMethod("StopCollectorAsync",Flags)!.Invoke(session,[providerDeadline,providerDeadline,TimeSpan.FromSeconds(10)])!;
     private sealed class NoLocation:IConnectionGeolocation {public ConnectionLocation? Lookup(string address)=>null;}
     private static async Task<long> SavedBytes(ConnectionService connections,DateTimeOffset now)=>(await connections.ReadViewAsync(new(now.AddMinutes(-1),now.AddMinutes(1)))).Summary.ReceivedBytes;
-    private static void Observe(EtwNetwork capture,DateTimeOffset now,double seconds)
-    {capture.TakeSnapshot(now,seconds);capture.RecordEndpoint(11,now,71,false,IPAddress.Parse("8.8.8.8"),443,IPAddress.Loopback,123,ConnectionProtocol.Tcp);}
+    /// <summary>Takes the ledger's baseline snapshot and records 71 received bytes at the same instant. Both clocks are read here,
+    /// together: a later snapshot discards pending traffic when its wall-clock and monotonic intervals differ by more than 2 s,
+    /// so a timestamp captured before a slow first store open would drop the bytes.</summary>
+    private static (DateTimeOffset Timestamp,double Seconds) Observe(EtwNetwork capture,Collector collector)
+    {
+        var timestamp=DateTimeOffset.UtcNow;double seconds=collector.ElapsedSeconds;
+        capture.TakeSnapshot(timestamp,seconds);capture.RecordEndpoint(11,timestamp,71,false,IPAddress.Parse("8.8.8.8"),443,IPAddress.Loopback,123,ConnectionProtocol.Tcp);
+        return (timestamp,seconds);
+    }
     /// <summary>A session wired like the real one whose hardware worker never finishes. Never starts hardware or ETW.</summary>
     private static (UiSession Session,Collector Collector,ConnectionService Connections,TaskCompletionSource Worker) StuckSession(string root,EtwNetwork capture,ConnectionService? connections=null)
     {
@@ -90,7 +103,7 @@ public class CoolingShutdownTests
         var (session,collector,connections,worker)=StuckSession(root,capture);var now=DateTimeOffset.UtcNow;
         try
         {
-            connections.Start();await SavedBytes(connections,now);Observe(capture,now,collector.ElapsedSeconds);
+            connections.Start();await SavedBytes(connections,now);Observe(capture,collector);
             var watch=Stopwatch.StartNew();
             await Stop(session,TimeSpan.FromSeconds(1)).WaitAsync(TimeSpan.FromSeconds(10));
             Assert.InRange(watch.Elapsed.TotalSeconds,0.8,3);Assert.False(worker.Task.IsCompleted);
@@ -109,8 +122,8 @@ public class CoolingShutdownTests
         var (session,collector,connections,worker)=StuckSession(root,capture);var now=DateTimeOffset.UtcNow;
         try
         {
-            double seconds=collector.ElapsedSeconds;connections.Start();await SavedBytes(connections,now);Observe(capture,now,seconds);
-            connections.TryRecord(capture.TakeSnapshot(now.AddSeconds(1),seconds+1).Connections);
+            connections.Start();await SavedBytes(connections,now);var (observed,seconds)=Observe(capture,collector);
+            connections.TryRecord(capture.TakeSnapshot(observed.AddSeconds(1),seconds+1).Connections);
             var watch=Stopwatch.StartNew();
             if(sessionEnding)
             {
@@ -139,7 +152,7 @@ public class CoolingShutdownTests
         collector.FinalConnectionsAvailable+=_=>throw new InvalidOperationException("late subscriber failure");worker.SetResult();
         try
         {
-            connections.Start();await SavedBytes(connections,now);Observe(capture,now,collector.ElapsedSeconds);
+            connections.Start();await SavedBytes(connections,now);Observe(capture,collector);
             typeof(UiSession).GetMethod("StopCollectorForSessionEnding",Flags)!.Invoke(session,null);
             Assert.True(connections.StopAsync().IsCompleted);Assert.Equal(71,await SavedBytes(connections,now));
             Assert.Contains("session_end_collector_stop_failed",File.ReadAllText(Path.Combine(root,"trace.jsonl")));
@@ -151,10 +164,10 @@ public class CoolingShutdownTests
     {
         string root=Root();var capture=new EtwNetwork(_=>new(11,1,"fixture"));long saved=0;
         var connections=new ConnectionService(new NoLocation(),()=>DateTimeOffset.UtcNow,(records,_)=>{if(records.Count==0)return;Thread.Sleep(1500);Interlocked.Add(ref saved,records.Sum(r=>r.Delta.ReceivedBytes));});
-        var (session,collector,_,worker)=StuckSession(root,capture,connections);var now=DateTimeOffset.UtcNow;
+        var (session,collector,_,worker)=StuckSession(root,capture,connections);
         try
         {
-            connections.Start();Observe(capture,now,collector.ElapsedSeconds);
+            connections.Start();Observe(capture,collector);
             var watch=Stopwatch.StartNew();
             await Stop(session,TimeSpan.FromMilliseconds(300)).WaitAsync(TimeSpan.FromSeconds(10));
             // The hardware provider missed its deadline long before the slow flush finished; Quit still waited for the flush.
@@ -173,11 +186,26 @@ public class CoolingShutdownTests
         SetField(session,"<Cooling>k__BackingField",RuntimeHelpers.GetUninitializedObject(typeof(CoolingHistoryService)));
         try
         {
-            connections.Start();await SavedBytes(connections,now);Observe(capture,now,collector.ElapsedSeconds);
+            connections.Start();await SavedBytes(connections,now);Observe(capture,collector);
             await Assert.ThrowsAsync<ArgumentNullException>(()=>Stop(session,TimeSpan.FromSeconds(1)).WaitAsync(TimeSpan.FromSeconds(10)));
             Assert.True(connections.StopAsync().IsCompleted);Assert.Equal(71,await SavedBytes(connections,now));
         }
         finally {await connections.StopAsync();if(Directory.Exists(root))Directory.Delete(root,true);}
+    }
+    [Fact]
+    public async Task Stuck_hardware_worker_still_stops_the_disk_session()
+    {
+        string root=Root();
+        var (_,collector,connections,worker)=StuckSession(root,new EtwNetwork(_=>new(11,1,"fixture")));var fake=new FakeTrace();
+        var controller=new DiskTraceController(fake.Create);controller.Request(true);await DiskTraceTesting.Drain(controller);SetField(collector,"disk",controller);
+        Assert.True(fake.Running);
+        try
+        {
+            var dispose=collector.DisposeAsync().AsTask();
+            await fake.Stopped.WaitAsync(TimeSpan.FromSeconds(3));
+            Assert.Equal(1,fake.Stops);Assert.False(fake.Running);Assert.False(worker.Task.IsCompleted);Assert.False(dispose.IsCompleted);
+        }
+        finally {worker.TrySetResult();await collector.DisposeAsync();await connections.StopAsync();if(Directory.Exists(root))Directory.Delete(root,true);}
     }
     [Fact]
     public async Task Worker_sample_taken_before_stop_reaches_connection_history_before_the_final_drain()
@@ -194,7 +222,7 @@ public class CoolingShutdownTests
         var now=DateTimeOffset.UtcNow;
         try
         {
-            connections.Start();await SavedBytes(connections,now);Observe(capture,now,collector.ElapsedSeconds);
+            connections.Start();await SavedBytes(connections,now);Observe(capture,collector);
             collector.Start();Assert.True(parked.Wait(TimeSpan.FromSeconds(10)));
             var stop=collector.StopNetworkCaptureAsync();
             await Task.WhenAny(stop,Task.Delay(300));release.Set();

@@ -1,5 +1,46 @@
 # Release validation
 
+## Processes (0.13.0, 2026-11-06)
+
+### Measurements and decisions
+
+Measured on GitHub `windows-latest`, elevated, in CI run https://github.com/DeadeyeDuncan/DeadWare/actions/runs/42148708989 (head `e1b0af5`), recorded by the real-Windows measurement tests.
+
+Process scan (`scan-timing.json`): 240 scans, p50 0.478 ms, p95 0.526 ms, initial buffer 1,048,576 bytes, 147 processes and 1,543 threads, 0 failures.
+
+Disk attribution (`disk-attribution.json`): the run stopped at the first loss-free buffer size, so one size was measured. At `BufferSizeMB` 64 the session was running and unpaused, the test's own `(Pid, Generation)` was credited 1.0051 of the 256 MB unbuffered write-through file, the unattributed share was 0, no events were lost and the longest lossy run was 0. The chosen size is 64 MB and the loss limit was not hit.
+
+A share slightly above 1.0 is expected; the likely cause is that NTFS metadata writes are credited to the writing process on top of the file data.
+
+Decisions (spec, Recording the decisions):
+
+- `ProcessFeatures.ScanLoop = false`: p95 0.526 ms is at or below 15 ms, so the scan runs on every poll and no separate loop is needed.
+- `ProcessFeatures.DiskBufferMultiplier = 1`: the chosen 64 MB equals `EtwDisk.DefaultBufferSizeMB` (`max(64, 2 x cores)`, 64 on the 4-core runner), so the default buffer is kept.
+- `ProcessFeatures.DiskColumns = true`: the run was elevated and the share 1.0051 is at least 0.90 at the chosen size, so the Disk columns ship in 0.13.0 (not 0.13.1). The gate test now enforces the 0.90 share in CI.
+
+### Automated coverage
+
+Verified on the Windows runner, elevated, on the Windows CI build of the pull request: the process scan checks; orphan disk-session cleanup; the scan timing and disk attribution measurements above (the 90 % attribution gate is now enforced); End task refusing Windows' own processes with a No answer; ending a SYSTEM-owned helper only with SeDebugPrivilege; ending the test's own child processes; the Processes page UI checks; and the preview renders.
+
+### Scope change
+
+The automated standard-user checks planned in the design were dropped: a standard-user scan, and End task as a standard user. Standard-user behaviour is covered by Processes page UI checks driven by a reading with `Elevated=false`, plus the manual checks under Pending, and is not verified on a real standard-user session.
+
+### Pending by eye
+
+Never claimed as verified in this release:
+
+- Run DeadWare without administrator rights: the Processes page shows I/O, hides Disk and Network, and the banner reads "Disk and network need administrator".
+- End task on an elevated or other-user process as a standard user reports "Needs administrator".
+- Task Manager Details comparison.
+- End task against real third-party services, including a driver-store service such as NVIDIA Display Container, and another signed-in user's process, as a standard user and as administrator.
+- Open file location in Program Files, WindowsApps and paths with spaces and commas.
+- Behaviour at 0.5 s and 10 s polling, during sleep, and on Quit during an elevated copy.
+
+### Results
+
+`dotnet build DeadWare.slnx -c Release --nologo` finished with 0 errors. The Core suite on Linux passed 838 tests with 1 skipped and 26 failures, the known Windows-only Core tests that cannot run there; the App tests run only on the Windows CI build.
+
 ## Polish (0.10.1, 2026-11-03)
 
 A small release on 0.10.0: the pre-0.9.0 left RPM gutter is removed from `HistoryChart` so `PlotRect` starts at the same edge with and without a fan or pump overlay, with an overlap guard in `ChartFrame.Grid` that skips a left RPM label that would reach the right value label; the collector holds the last good per-core count for one empty poll (`Collector.HoldCores`, for LibreHardwareMonitor and Windows-counter cores alike), reports cores dropped above 64 in the hardware status from either source, the per-core tint saturation is continuous across s = 0.25, and the graph-history restore fill only uses a record's own core keys as a fill source.

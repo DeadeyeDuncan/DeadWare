@@ -24,7 +24,7 @@ internal static class Program
     private static readonly Assembly AppAssembly=typeof(UiSession).Assembly;
     // Every production theme, read from the app so a new palette is rendered automatically.
     private static readonly string[] Themes=(string[])AppAssembly.GetType("DeadWare.App.Theme")!.GetField("Names",All)!.GetValue(null)!;
-    private static readonly string[] Routes=["overview","network","connections","battery","usage","alerts","sensors","cooling","desktop","updates"];
+    private static readonly string[] Routes=["overview","network","storage","processes","connections","battery","usage","alerts","sensors","cooling","desktop","updates"];
     private static readonly string Scratch=Path.Combine(Path.GetTempPath(),"DeadWare-GlassPreview",Guid.NewGuid().ToString("N"));
     private static UiSession session=null!;
     private static Collector collector=null!;
@@ -79,7 +79,7 @@ internal static class Program
         Set(collector,"clock",Clock);Set(collector,"<History>k__BackingField",new SampleHistory());
         session=(UiSession)RuntimeHelpers.GetUninitializedObject(typeof(UiSession));
         Set(session,"<Collector>k__BackingField",collector);
-        Set(session,"<Settings>k__BackingField",new UserSettings {HistorySeconds=300,SelectedGpuId="preview-gpu",ShowGpuFanSpeed=true,ShowCpuCoreUsage=true,ConnectionsAnimation=false});
+        Set(session,"<Settings>k__BackingField",new UserSettings {HistorySeconds=300,SelectedGpuId="preview-gpu",ShowGpuFanSpeed=true,ShowCpuCoreUsage=true,ConnectionsAnimation=false,ProcessMonitoring=true});
         Set(session,"<SettingsStatus>k__BackingField","");
         Set(session,"settingsPath",Path.Combine(Scratch,"settings.json"));Set(session,"writer",new SettingsSnapshotWriter(Path.Combine(Scratch,"settings.json")));
         Set(session,"layout",new DetachedWindowState([]));Set(session,"captureWindows",new Dictionary<Window,Action>());Set(session,"detached",new Dictionary<string,Window>());
@@ -136,6 +136,19 @@ internal static class Program
          new("PREVIEW-SATA-0002","PREVIEW-SATA-0002","Sample SATA SSD",1,"SATA",1_000_000_000_000,false,[new("D","Data",1_000_000_000_000,410_000_000_000)])],
         [new("PREVIEW-NVME-0001","OK",44,96,59,4120,70,null),new("PREVIEW-SATA-0002","OK",36,88,59,10230,70,null)],"");
 
+    // chrome.exe x3 (an expandable app), Code.exe, explorer.exe and DeadWare.exe with every column known; the fixture is elevated, so disk values are given too.
+    private static ProcessActivity SampleProcessActivity(double now)
+    {
+        ProcessSample Process(int pid,string name,double cpu,long memory,double read,double write,double download,double upload,double diskRead,double diskWrite)=>
+            new(pid,1,name,1,cpu,memory,read,write,ProcessGap.None,null){DownloadPerSecond=download,UploadPerSecond=upload,DiskReadPerSecond=diskRead,DiskWritePerSecond=diskWrite};
+        ProcessSample[] processes=
+        [
+            Process(4280,"chrome.exe",6.2,640_000_000,1.4e6,.3e6,5.2e6,.6e6,1.1e6,.2e6),Process(4312,"chrome.exe",2.1,310_000_000,.2e6,.1e6,2.4e6,.3e6,.1e6,.05e6),Process(4388,"chrome.exe",.8,180_000_000,.1e6,.05e6,.8e6,.1e6,.05e6,.02e6),
+            Process(7120,"Code.exe",3.4,520_000_000,.9e6,.7e6,0,0,.8e6,.6e6),Process(1844,"explorer.exe",.6,140_000_000,.1e6,.05e6,0,0,.08e6,.03e6),Process(9024,"DeadWare.exe",1.3,95_000_000,.05e6,.02e6,.01e6,.01e6,.02e6,.01e6)
+        ];
+        return new(ProcessActivityKind.Available,(long)now,DateTimeOffset.UtcNow,now,1,8,processes,ProcessOmitted.None,processes.Length,1);
+    }
+
     private static void UpdateSample()
     {
         double now=Clock.Elapsed.TotalSeconds;
@@ -153,8 +166,8 @@ internal static class Program
             new("memory/usage","System memory · Sample","Memory usage","%",sample.Values["memory/usage"])
         };
         ProcessTraffic[] processes=[new(4280,1,"Sample browser",8.4e6,1.2e6,2_400_000_000L,84_000_000L),new(9312,1,"Sample sync",2.8e6,540e3,850_000_000L,120_000_000L),new(6408,1,"Sample music",1.2e6,60e3,180_000_000L,6_000_000L)];
-        Set(collector,"latest",state=="Discovering hardware"?null:new Reading(sample,[new("preview-gpu","Radeon RX 6800 XT · Preview GPU")],sensors,processes,"Ryzen 7 5800X · Preview CPU","SYNTHETIC SAMPLE DATA · no hardware monitoring","Sample interface totals · no live network accounting","Sample process traffic · ETW is not running",false)
-            {Battery=new(73,BatteryPowerState.Charging,false),CpuCoreCount=8,Storage=SampleStorage});
+        Set(collector,"latest",state=="Discovering hardware"?null:new Reading(sample,[new("preview-gpu","Radeon RX 6800 XT · Preview GPU")],sensors,processes,"Ryzen 7 5800X · Preview CPU","SYNTHETIC SAMPLE DATA · no hardware monitoring","Sample interface totals · no live network accounting","Sample process traffic · ETW is not running",true)
+            {Battery=new(73,BatteryPowerState.Charging,false),CpuCoreCount=8,Storage=SampleStorage,ProcessActivity=SampleProcessActivity(now)});
     }
 
     private static TextBlock Text(string value,double size=13,string color="Ink")=>(TextBlock)Call("Ui","Text",value,size,color,"BodyFont")!;
@@ -271,7 +284,9 @@ internal static class Program
                     Field<TextBlock>(dashboard,"monitoringInfo").Text="SAMPLE DATA ONLY\nUnstarted preview session";
                     if(route=="desktop") Field<TextBlock>(dashboard,"startupStatus").Text="Preview only · startup registration has not been queried or changed.";
                     if(route is "overview" or "network") RefreshSampleCards(dashboard,pages[route]);
-                    foreach(var size in route is "network" or "desktop" ? new[]{new Size(1220,900),new Size(900,640)} : new[]{new Size(1220,900)})
+                    // The page is never loaded offscreen, so it does not render itself from the session; ask it to.
+                    if(route=="processes") Invoke(pages[route],"Refresh");
+                    foreach(var size in route is "network" or "desktop" or "processes" ? new[]{new Size(1220,900),new Size(900,640)} : new[]{new Size(1220,900)})
                     {
                     frame.Measure(size);frame.Arrange(new Rect(new Point(),size));frame.UpdateLayout();Pump();frame.UpdateLayout();
                     if(!ReferenceEquals(frame.Background,Application.Current.Resources["WindowSurface"]))throw new InvalidOperationException("Shell glass window surface did not update.");
@@ -279,8 +294,12 @@ internal static class Program
                     var text=string.Join(" ",Descendants(shell).OfType<TextBlock>().Select(t=>t.Text));
                     if(!text.Contains("SYNTHETIC SAMPLE DATA"))throw new InvalidOperationException("Every shell capture must label synthetic data.");
                     if(Directory.Exists(Scratch)&&Directory.EnumerateFiles(Scratch,"*.db*",SearchOption.AllDirectories).Any())throw new InvalidOperationException("Preview unexpectedly created a history database.");
-                    double? tableHeight=route=="network"?Field<DataGrid>(dashboard,"apps").ActualHeight:null;
-                    if(tableHeight is <70) failures.Add($"{theme} Network table at {size.Width:0}x{size.Height:0} has {tableHeight:0.##} px height; at least 70 px is required.");
+                    // ProcessesPage.Grid is internal and the preview has no InternalsVisibleTo, so it is read by reflection like "apps".
+                    var processGrid=route=="processes"?(DataGrid)pages[route].GetType().GetProperty("Grid",All)!.GetValue(pages[route])!:null;
+                    int? appRows=processGrid?.Items.Cast<object>().Count(row=>(bool)row.GetType().GetProperty("IsApp",All)!.GetValue(row)!);
+                    double? tableHeight=route=="network"?Field<DataGrid>(dashboard,"apps").ActualHeight:processGrid?.ActualHeight;
+                    if(tableHeight is <70) failures.Add($"{theme} {(route=="network"?"Network":"Processes")} table at {size.Width:0}x{size.Height:0} has {tableHeight:0.##} px height; at least 70 px is required.");
+                    if(appRows is <4) failures.Add($"{theme} Processes table at {size.Width:0}x{size.Height:0} shows {appRows} app rows; at least 4 are required.");
                     double? chartHeight=null;bool? chartTrace=null;
                     if(route=="network")
                     {
@@ -292,7 +311,7 @@ internal static class Program
                     }
                     string suffix=size.Width==1220?"":$"-{size.Width:0}x{size.Height:0}";
                     Save(frame,(int)size.Width,(int)size.Height,Path.Combine(output,$"glass-shell-{theme}-{route}{suffix}.png"));
-                    checks.Add(new {theme,route,width=size.Width,height=size.Height,tableHeight,chartHeight,chartTrace,synthetic=true,nativeWindow=false,storesOpened=false});
+                    checks.Add(new {theme,route,width=size.Width,height=size.Height,tableHeight,appRows,chartHeight,chartTrace,synthetic=true,nativeWindow=false,storesOpened=false});
                     }
                 }
             }
@@ -303,7 +322,7 @@ internal static class Program
         }
         File.WriteAllText(Path.Combine(output,"shell-checks.json"),JsonSerializer.Serialize(new
         {
-            Note="Actual MainWindow and all eight production pages with in-memory synthetic fixtures; Network and Settings also at the supported 900x640 minimum. No hardware/ETW workers, installed settings, history queries, native windows, startup-task actions or network requests. Offscreen at 96 DPI; no native input/compositor/soak proof.",checks,failures
+            Note="Actual MainWindow and all ten production pages with in-memory synthetic fixtures; Network, Processes and Settings also at the supported 900x640 minimum. No hardware/ETW workers, installed settings, history queries, native windows, startup-task actions or network requests. Offscreen at 96 DPI; no native input/compositor/soak proof.",checks,failures
         },new JsonSerializerOptions {WriteIndented=true}));
         if(failures.Count>0)throw new InvalidOperationException(string.Join(Environment.NewLine,failures));
     }

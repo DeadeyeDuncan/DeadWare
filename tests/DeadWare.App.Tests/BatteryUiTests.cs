@@ -72,6 +72,8 @@ public class BatteryUiTests
                 WidgetDiskUiChecks.Run();
                 Phase("storage page");
                 StoragePageUiChecks.Run();
+                Phase("processes page");
+                ProcessesPageUiChecks.Run();
                 Phase("chart frame");
                 ChartFrameUiChecks.Run();
                 Phase("thermal chart");

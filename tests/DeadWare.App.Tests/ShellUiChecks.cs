@@ -23,12 +23,13 @@ internal static class ShellUiChecks
         T Field<T>(string name)=>(T)typeof(MainWindow).GetField(name,All)!.GetValue(dashboard)!;
         void Navigate(string route)=>typeof(MainWindow).GetMethod("Navigate",All)!.Invoke(dashboard,[route]);
 
-        // Rail: ten vector buttons, no glyph characters, exactly one active after navigating.
+        // Rail: twelve vector buttons, no glyph characters, exactly one active after navigating.
         var navigation=Field<Dictionary<string,Button>>("navigation");
-        Assert.Equal(11,navigation.Count);
+        Assert.Equal(12,navigation.Count);
         var order=navigation.Keys.ToList();
-        Assert.Equal(order.IndexOf("network")+1,order.IndexOf("storage"));
         Assert.True(order.IndexOf("network")>=0);
+        Assert.Equal(order.IndexOf("network")+1,order.IndexOf("storage"));
+        Assert.Equal(order.IndexOf("storage")+1,order.IndexOf("processes"));
         foreach(var (route,button) in navigation)
         {
             Assert.NotEmpty(Descendants(button).OfType<Path>());
@@ -42,6 +43,13 @@ internal static class ShellUiChecks
         Assert.Equal("connections",active.Key);
         Navigate("overview");
         Assert.Equal("active",navigation["overview"].Tag);Assert.NotEqual("active",navigation["connections"].Tag);
+        // Processes: its own page and heading, with the live toolbar collapsed (no history range).
+        Navigate("processes");
+        Assert.IsType<ProcessesPage>(Field<ContentControl>("content").Content);
+        Assert.Equal("Processes",Field<TextBlock>("heading").Text);
+        Assert.Equal(Visibility.Collapsed,Field<DockPanel>("liveToolbar").Visibility);
+        Assert.Equal("Processes",AutomationProperties.GetName(navigation["processes"]));
+        Navigate("overview");
 
         // Header: one DockPanel holds the title block, the range pill, the GPU picker and the widget button.
         var header=Assert.IsType<DockPanel>(Field<TextBlock>("heading").Parent is StackPanel titleBlock?titleBlock.Parent:null);
@@ -96,6 +104,26 @@ internal static class ShellUiChecks
             Assert.Equal("Monitoring",Descendants(cards.Single(c=>Descendants(c).Contains(box))).OfType<TextBlock>().First().Text);
             bool was=session.Settings.StorageSensors;
             try{box.IsChecked=false;Assert.False(session.Settings.StorageSensors);box.IsChecked=true;Assert.True(session.Settings.StorageSensors);}
+            finally{box.IsChecked=was;}
+        }
+        // Per-process monitoring switch: a Monitoring checkbox bound to the session setting, with its scan-cost help line.
+        {
+            const string processName="Per-process monitoring";
+            var box=Descendants(pages["desktop"]).OfType<CheckBox>().Single(b=>AutomationProperties.GetName(b)==processName);
+            Assert.Equal(processName,box.Content);
+            Assert.Equal("Monitoring",Descendants(cards.Single(c=>Descendants(c).Contains(box))).OfType<TextBlock>().First().Text);
+            Assert.Equal("Monitoring",CardOf("Turning it on adds one Windows process scan"));
+            var help=Descendants(pages["desktop"]).OfType<TextBlock>().Single(b=>b.Text.StartsWith("Turning it on adds one Windows process scan",StringComparison.Ordinal));
+            Assert.Equal(ProcessCopy.ScanSentence(session.Current?.Elevated??Collector.IsElevated,ProcessFeatures.DiskColumns,ProcessFeatures.ScanLoop),help.Text);
+            bool was=session.Settings.ProcessMonitoring;Assert.Equal(was,box.IsChecked);
+            try
+            {
+                box.IsChecked=true;Assert.True(session.Settings.ProcessMonitoring);Assert.True(session.Collector.ProcessMonitoring);
+                box.IsChecked=false;Assert.False(session.Settings.ProcessMonitoring);Assert.False(session.Collector.ProcessMonitoring);
+                // The Processes page's Turn on calls the same session method; the checkbox follows it.
+                session.SetProcessMonitoring(true);Assert.True(box.IsChecked);
+                session.SetProcessMonitoring(false);Assert.False(box.IsChecked);
+            }
             finally{box.IsChecked=was;}
         }
         // Dashboard status line: unavailable notice when the switch is on and no cores were read.

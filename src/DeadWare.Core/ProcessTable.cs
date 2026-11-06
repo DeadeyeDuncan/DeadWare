@@ -1,0 +1,142 @@
+namespace DeadWare.Core;
+public static class ProcessCopy
+{
+    public const string OffTitle="Per-process monitoring is off.";
+    public const string FirstSample="first sample";
+    public const string Stale="stale reading";
+    public const string NetworkNotMatched="traffic not matched to this process";
+    public const string DiskNotMatched="disk activity not matched to this process";
+    public static string ScanSentence(bool elevated,bool diskColumns,bool scanLoop)=>
+        "Turning it on adds one Windows process scan per poll"+(scanLoop?" (at most one a second)":"")+(elevated&&diskColumns?" and a disk trace":"")+".";
+    public static string? Banner(bool elevated,bool diskColumns)=>elevated?null:diskColumns?"Disk and network need administrator":"Network needs administrator";
+    public static string CapNote(int total)=>$"Showing 4,096 of {total:N0} processes";
+    public static IReadOnlyList<string> Footer(bool diskColumns)
+    {
+        var lines=new List<string>
+        {
+            "CPU is the share of all logical processors, as in Task Manager's Details tab, so it sums to at most 100 %.",
+            "Memory is the private working set, Task Manager's \"Memory (private working set)\".",
+            "I/O counts all file, pipe and device transfers, including cached reads, and is not disk activity.",
+        };
+        if(diskColumns)lines.Add("Disk is physical drive transfers. Delayed cache writes are credited to System.");
+        return lines;
+    }
+}
+/// <summary>One app: every process sharing an image name. Each rate is the sum of the members that know it, null only when none does.</summary>
+public sealed record ProcessAppRow(string Key,string Name,IReadOnlyList<ProcessSample> Members)
+{
+    public double? Cpu=>Sum("cpu");
+    public long Memory=>Members.Sum(m=>m.PrivateBytes);
+    public double? Io=>Sum("io");
+    public double? IoRead=>Sum("ioread");
+    public double? IoWrite=>Sum("iowrite");
+    public double? Disk=>Sum("disk");
+    public double? DiskRead=>Sum("diskread");
+    public double? DiskWrite=>Sum("diskwrite");
+    public double? Network=>Sum("network");
+    public double? Download=>Sum("download");
+    public double? Upload=>Sum("upload");
+    double? Sum(string key)
+    {
+        double? total=null;
+        foreach(var m in Members)if(ProcessGrouping.Value(m,key) is{} v)total=(total??0)+v;
+        return total;
+    }
+}
+public static class ProcessGrouping
+{
+    public static string Key(string name)=>UsageMetrics.NormalizeName(name).ToUpperInvariant();
+    public static IReadOnlyList<ProcessAppRow> Group(IReadOnlyList<ProcessSample> processes)
+    {
+        var order=new List<string>();
+        var groups=new Dictionary<string,(string Name,List<ProcessSample> Members)>(StringComparer.Ordinal);
+        foreach(var p in processes)
+        {
+            var key=Key(p.Name);
+            if(!groups.TryGetValue(key,out var g)){g=(UsageMetrics.NormalizeName(p.Name),[]);groups[key]=g;order.Add(key);}
+            g.Members.Add(p);
+        }
+        return order.Select(k=>new ProcessAppRow(k,groups[k].Name,groups[k].Members)).ToList();
+    }
+    /// <summary>Like the Network page: name contains, or PID text contains; the query is trimmed and empty matches all.</summary>
+    public static bool Matches(ProcessAppRow row,string query)
+    {
+        query=(query??"").Trim();
+        return query.Length==0||row.Name.Contains(query,StringComparison.OrdinalIgnoreCase)||row.Members.Any(m=>m.Pid.ToString().Contains(query));
+    }
+    public static double? Value(ProcessSample p,string key)=>key switch
+    {
+        "pid"=>p.Pid,
+        "cpu"=>p.CpuPercent,
+        "memory"=>p.PrivateBytes,
+        "io"=>Add(p.IoReadPerSecond,p.IoWritePerSecond),
+        "ioread"=>p.IoReadPerSecond,
+        "iowrite"=>p.IoWritePerSecond,
+        "disk"=>Add(p.DiskReadPerSecond,p.DiskWritePerSecond),
+        "diskread"=>p.DiskReadPerSecond,
+        "diskwrite"=>p.DiskWritePerSecond,
+        "network"=>Add(p.DownloadPerSecond,p.UploadPerSecond),
+        "download"=>p.DownloadPerSecond,
+        "upload"=>p.UploadPerSecond,
+        _=>null,
+    };
+    public static double? Value(ProcessAppRow r,string key)=>key switch
+    {
+        "pid"=>r.Members.Count==0?null:r.Members.Min(m=>m.Pid),
+        "cpu"=>r.Cpu,
+        "memory"=>r.Memory,
+        "io"=>r.Io,
+        "ioread"=>r.IoRead,
+        "iowrite"=>r.IoWrite,
+        "disk"=>r.Disk,
+        "diskread"=>r.DiskRead,
+        "diskwrite"=>r.DiskWrite,
+        "network"=>r.Network,
+        "download"=>r.Download,
+        "upload"=>r.Upload,
+        _=>null,
+    };
+    static double? Add(double? a,double? b)=>a is null||b is null?null:a+b;
+}
+public sealed record ProcessColumnChoice(string Key,string Header,bool Checked,bool Enabled,string Label);
+public static class ProcessTableColumns
+{
+    static readonly string[] PickerOrder=["cpu","memory","io","disk","network","pid","ioread","iowrite","diskread","diskwrite","download","upload"];
+    public static string Header(string key)=>key switch
+    {
+        "name"=>"NAME","pid"=>"PID","cpu"=>"CPU","memory"=>"MEMORY","io"=>"I/O","ioread"=>"I/O READ","iowrite"=>"I/O WRITE",
+        "disk"=>"DISK","diskread"=>"DISK READ","diskwrite"=>"DISK WRITE","network"=>"NETWORK","download"=>"↓ DOWNLOAD","upload"=>"↑ UPLOAD",
+        _=>key.ToUpperInvariant(),
+    };
+    public static IReadOnlyList<string> Visible(IReadOnlyList<string> saved,bool elevated,bool diskColumns)=>
+        ProcessColumnKeys.All.Where(k=>saved.Contains(k)&&Allowed(k,elevated,diskColumns)).ToList();
+    public static IReadOnlyList<ProcessColumnChoice> Picker(IReadOnlyList<string> saved,bool elevated,bool diskColumns)=>
+        PickerOrder.Where(k=>diskColumns||!ProcessColumnKeys.DiskKeys.Contains(k)).Select(k=>
+        {
+            bool admin=ProcessColumnKeys.AdministratorOnly.Contains(k);
+            return new ProcessColumnChoice(k,Header(k),saved.Contains(k),!admin||elevated,admin&&!elevated?Header(k)+" (administrator)":Header(k));
+        }).ToList();
+    public static (string Key,bool Descending) EffectiveSort(string? key,bool descending,IReadOnlyList<string> visible)
+    {
+        if(key is not null&&(key=="name"||visible.Contains(key)))return (key,descending);
+        return visible.Contains("cpu")?("cpu",true):("name",false);
+    }
+    static bool Allowed(string k,bool elevated,bool diskColumns)=>(elevated||!ProcessColumnKeys.AdministratorOnly.Contains(k))&&(diskColumns||!ProcessColumnKeys.DiskKeys.Contains(k));
+}
+public static class ProcessSort
+{
+    public static int Compare(ProcessAppRow a,ProcessAppRow b,string key,bool descending)=>
+        Core(key,descending,ProcessGrouping.Value(a,key),ProcessGrouping.Value(b,key),a.Name,b.Name,a.Members.Count==0?0:a.Members.Min(m=>m.Pid),b.Members.Count==0?0:b.Members.Min(m=>m.Pid));
+    public static int Compare(ProcessSample a,ProcessSample b,string key,bool descending)=>
+        Core(key,descending,ProcessGrouping.Value(a,key),ProcessGrouping.Value(b,key),UsageMetrics.NormalizeName(a.Name),UsageMetrics.NormalizeName(b.Name),a.Pid,b.Pid);
+    static int Core(string key,bool descending,double? x,double? y,string nameA,string nameB,int pidA,int pidB)
+    {
+        int c;
+        if(key=="name")c=descending?-StringComparer.OrdinalIgnoreCase.Compare(nameA,nameB):StringComparer.OrdinalIgnoreCase.Compare(nameA,nameB);
+        else if(x is null||y is null)c=x is null?(y is null?0:1):-1;
+        else{c=x.Value.CompareTo(y.Value);if(descending)c=-c;}
+        if(c!=0)return c;
+        c=StringComparer.OrdinalIgnoreCase.Compare(nameA,nameB);
+        return c!=0?c:pidA.CompareTo(pidB);
+    }
+}

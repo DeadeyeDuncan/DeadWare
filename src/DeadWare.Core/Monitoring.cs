@@ -400,6 +400,8 @@ public sealed class UserSettings
     public string WindowPlacementFormat {get;set;}=WindowCoordinates.Format;
     public bool ExtendedSensors {get;set;}
     public bool StorageSensors {get;set;}=true;
+    public bool ProcessMonitoring {get;set;}
+    public List<string> ProcessColumns {get;set;}=ProcessColumnKeys.Default.ToList();
     public string Theme {get;set;}="Midnight";
     public string GlassLevel {get;set;}=GlassLevels.Balanced;
     public Dictionary<string,string> GraphColors {get;set;}=new();
@@ -438,6 +440,7 @@ public static class SettingsCodec
             if(s.CoolingSummaryDays is not (30 or 90))s.CoolingSummaryDays=90;
             if(!Guid.TryParse(s.CoolingConfigurationId,out _))s.CoolingConfigurationId=Guid.NewGuid().ToString("N");
             s.OpenWindows=DetachedWindowState.Normalize(s.OpenWindows);
+            s.ProcessColumns=ProcessColumnKeys.Normalize(s.ProcessColumns);
             s.Alerts=AlertRules.Normalize(s.Alerts);
             s.Windows=s.Windows.Where(p=>p.Value is not null).Take(16).ToDictionary(p=>p.Key,p=>p.Value);
             bool legacyPlacement=!document.RootElement.TryGetProperty(nameof(UserSettings.WindowPlacementFormat),out _)||s.WindowPlacementFormat!=WindowCoordinates.Format;

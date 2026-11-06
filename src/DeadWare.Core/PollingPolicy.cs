@@ -1,6 +1,6 @@
 namespace DeadWare.Core;
 public record HardwareSources(bool Cpu,bool Gpu,bool Memory,bool Motherboard,bool Controllers,bool Storage);
-public record CollectorOptions(bool HardwareEnabled=true,bool EtwEnabled=true,bool ExtendedSensors=false,bool DiagnosticTimings=false,double PollingIntervalSeconds=1,bool StorageSensors=true)
+public record CollectorOptions(bool HardwareEnabled=true,bool EtwEnabled=true,bool ExtendedSensors=false,bool DiagnosticTimings=false,double PollingIntervalSeconds=1,bool StorageSensors=true,bool ProcessMonitoring=false,bool ProcessDiskTracing=false)
 {
     public HardwareSources Sources=>new(HardwareEnabled,HardwareEnabled,HardwareEnabled&&ExtendedSensors,HardwareEnabled&&ExtendedSensors,HardwareEnabled&&ExtendedSensors,HardwareEnabled&&ExtendedSensors);
 }

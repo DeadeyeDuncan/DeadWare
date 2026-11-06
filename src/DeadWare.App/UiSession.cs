@@ -55,7 +55,7 @@ public sealed class UiSession
         diagnostics?.Record("settings_loaded",new {Status=SettingsStatus,Settings.RestoreOpenWindows,OpenWindows=layout.Remembered,Settings.SelectedGpuId,Disk=LayoutDiagnostics.ReadSettingsState(settingsPath)});
         saveTimer.Tick+=async (_,_)=>{saveTimer.Stop();await SaveAsync();};
         timer.Interval=TimeSpan.FromSeconds(Math.Min(1,Settings.PollingIntervalSeconds));
-        Collector=new(new CollectorOptions(ExtendedSensors:Settings.ExtendedSensors,PollingIntervalSeconds:Settings.PollingIntervalSeconds,StorageSensors:Settings.StorageSensors));
+        Collector=new(new CollectorOptions(ExtendedSensors:Settings.ExtendedSensors,PollingIntervalSeconds:Settings.PollingIntervalSeconds,StorageSensors:Settings.StorageSensors,ProcessMonitoring:Settings.ProcessMonitoring,ProcessDiskTracing:ProcessFeatures.DiskColumns&&Collector.IsElevated));
         GraphHistory=new(Path.Combine(Path.GetDirectoryName(settingsPath)!,"live-graph-history.db"),Environment.MachineName,Collector.History);
         Collector.SampleAvailable+=GraphHistory.TryRecord;
         Cooling=new(Path.Combine(Path.GetDirectoryName(settingsPath)!,"cooling-history.db"),Environment.MachineName,Settings.CoolingConfigurationId);
@@ -206,6 +206,16 @@ public sealed class UiSession
         Collector.SetPollingInterval(Settings.PollingIntervalSeconds);
         timer.Interval=TimeSpan.FromSeconds(Math.Min(1,Settings.PollingIntervalSeconds));
         Changed?.Invoke();_ = SaveAsync();
+    }
+    public void SetProcessMonitoring(bool enabled)
+    {
+        Settings.ProcessMonitoring=enabled;Collector.SetProcessMonitoring(enabled);Changed?.Invoke();_ = SaveAsync();
+    }
+    public void SetProcessColumns(IEnumerable<string> keys)
+    {
+        var next=ProcessColumnKeys.Normalize(keys);
+        if(Settings.ProcessColumns.SequenceEqual(next,StringComparer.Ordinal))return;
+        Settings.ProcessColumns=next;Changed?.Invoke();_ = SaveAsync();
     }
     public void SetRestoreOpenWindows(bool enabled) {Settings.RestoreOpenWindows=enabled;_ = SaveAsync();}
     public void SetStartInTray(bool enabled) {Settings.StartInTray=enabled;_ = SaveAsync();}

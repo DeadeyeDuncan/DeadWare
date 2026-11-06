@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.13.0 — Processes
+
+- **Processes page.** A new page lists every running app with CPU, memory and I/O for every user, and Disk and Network when DeadWare runs as administrator. Processes with the same image name are one app row; expand it for its processes. The default columns are CPU, Memory, I/O, Disk and Network; **PID**, **I/O read**, **I/O write**, **Disk read**, **Disk write**, **Download** and **Upload** are in the column picker, which remembers your choice. This is the Processes release the Storage notes called "0.12": the number went to 0.12.0 to 0.12.5.
+- **I/O is never disk data.** I/O comes from Windows' per-process I/O counters and is labelled I/O everywhere, never Disk. Disk is physical drive traffic from a Windows kernel trace and needs administrator, so a standard user sees I/O and no Disk or Network columns, and the banner reads "Disk and network need administrator".
+- **Per-app Disk ships now.** The Storage notes said per-application disk I/O was planned for 0.12; Disk per app arrives in this release, for administrators, measured at 1.0051 of a 256 MB unbuffered write credited to the writing process with no events lost.
+- **End task…** ends the selected process, or every process of the selected app, never a process tree. It follows Task Manager's rules: it refuses System (PID 0 and 4), DeadWare itself, critical and protected processes and Windows' own processes, and ends third-party services and other users' processes only when DeadWare runs as administrator (Windows can still deny it, reported as "denied by Windows"). A box asks first and its default answer is **No**. A process that needs administrator reports "Needs administrator". Known limit: any process that runs as SYSTEM or another service account from a program inside the Windows folder (outside its driver store) counts as Windows' own, so a third-party service installed there, as some older drivers are, is refused as a Windows process.
+- **Open file location** opens the folder of the selected process and selects its file. An app that runs from more than one folder asks you to expand it and choose one.
+- **Per-process monitoring is off by default.** Turn it on with **Settings → Monitoring → Per-process monitoring** or the page's **Turn on** button; while it is off, no scan runs. `--diagnose` gains `--no-processes`.
+- **Privacy.** The new per-process data stays in memory; it saves or logs no process names or program paths (saved process history comes in 0.14.0). The process scan adds only counts and timings to diagnostics.
+
 ## 0.12.5 — Disk graph history and drive line colours
 
 - **Disk graph keeps its read and write lines after a restart.** The six-hour graph history saved each drive's read and write but not the Disk totals, so after DeadWare restarted, the restored part of the Disk graph (the overview card, its pop-out and the widget) showed only the thin per-drive lines, and the read and write lines began at the restart. The totals are now saved too. History saved before this update has no totals, so that part of the graph still lacks them until it ages out of the six-hour window.
