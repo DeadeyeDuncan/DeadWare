@@ -62,7 +62,9 @@ internal static class DiskTraceTesting
         }
         throw new TimeoutException("The disk lifecycle kept queuing work.");
     }
-    public static Task Drain(Collector collector)=>Drain((DiskTraceController)typeof(Collector).GetField("disk",BindingFlags.Instance|BindingFlags.NonPublic)!.GetValue(collector)!);
+    /// <summary>The collector's disk lifecycle controller (its private <c>disk</c> field).</summary>
+    public static DiskTraceController Controller(Collector collector)=>(DiskTraceController)typeof(Collector).GetField("disk",BindingFlags.Instance|BindingFlags.NonPublic)!.GetValue(collector)!;
+    public static Task Drain(Collector collector)=>Drain(Controller(collector));
 }
 
 [Collection(TestHostThreadPool.TimingCollection)]
@@ -233,6 +235,40 @@ public class EtwDiskTests
         c.SampleAvailable+=Handler;
         try {c.Start();return await tcs.Task.WaitAsync(TimeSpan.FromSeconds(10));}
         finally {c.SampleAvailable-=Handler;}
+    }
+    [Fact] public async Task Worker_that_stops_after_an_error_stops_the_disk_trace()
+    {
+        var fake=new FakeTrace();var c=Build(fake,new(ProcessMonitoring:true,ProcessDiskTracing:true));
+        try
+        {
+            await Readings(c,2);await DiskTraceTesting.Drain(c);Assert.True(fake.Running);
+            // Throws from the pass's publication and again from the failed pass's, so the worker leaves through its outer catch.
+            int throws=2;c.SampleAvailable+=_=>{if(Interlocked.Decrement(ref throws)>=0)throw new InvalidOperationException("subscriber");};
+            await c.Completion.WaitAsync(TimeSpan.FromSeconds(10));
+            Assert.StartsWith("Collector stopped (InvalidOperationException)",c.Latest!.HardwareStatus);
+            await DiskTraceTesting.Drain(c);Assert.Equal(1,fake.Stops);Assert.False(fake.Running);
+            await c.DisposeAsync();Assert.Equal(1,fake.Starts);Assert.Equal(1,fake.Stops);
+        }
+        finally {await c.DisposeAsync();}
+    }
+    [Fact] public async Task Worker_that_stops_while_the_disk_trace_starts_stops_it_once_started()
+    {
+        using var gate=new ManualResetEventSlim();var fake=new FakeTrace(startGate:gate);var c=Build(fake,new(ProcessMonitoring:true,ProcessDiskTracing:true));
+        var stopped=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);int throws=0;
+        c.SampleAvailable+=r=>{if(r.HardwareStatus.StartsWith("Collector stopped",StringComparison.Ordinal))stopped.TrySetResult();
+            else if(Interlocked.Decrement(ref throws)>=0)throw new InvalidOperationException("subscriber");};
+        try
+        {
+            // Armed only once the start runs: a start that is still only queued when the worker stops is dropped, the case Queued_start_is_dropped_after_stop covers.
+            c.Start();await fake.Entered.WaitAsync(TimeSpan.FromSeconds(10));var held=DiskTraceTesting.Controller(c).Idle;Interlocked.Exchange(ref throws,2);
+            await stopped.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            // The start is released only once the worker's stop has queued behind it, so the stop always meets a running start.
+            for(int i=0;i<500&&ReferenceEquals(DiskTraceTesting.Controller(c).Idle,held);i++)await Task.Delay(20);
+            Assert.NotSame(held,DiskTraceTesting.Controller(c).Idle);
+            gate.Set();await c.Completion.WaitAsync(TimeSpan.FromSeconds(10));await DiskTraceTesting.Drain(c);
+            Assert.Equal(1,fake.Starts);Assert.Equal(1,fake.Stops);Assert.False(fake.Running);
+        }
+        finally {gate.Set();await c.DisposeAsync();}
     }
     [Fact] public async Task Monitoring_on_starts_disk_only_when_ProcessDiskTracing_is_set()
     {
