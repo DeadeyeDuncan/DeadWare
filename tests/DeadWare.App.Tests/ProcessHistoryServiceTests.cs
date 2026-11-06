@@ -1,5 +1,6 @@
 using System.IO;
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using DeadWare.App;
 using DeadWare.Core;
 using Xunit;
@@ -32,11 +33,10 @@ public class ProcessHistoryServiceTests
     public async Task Full_queue_drops_and_counts()
     {
         using var fixture = new Fixture(); var service = new ProcessHistoryService(fixture.Path, "tablet");
-        const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
-        ((ProcessHistoryStore)typeof(ProcessHistoryService).GetField("store", flags)!.GetValue(service)!).Initialize();
+        ((ProcessHistoryStore)typeof(ProcessHistoryService).GetField("store", All)!.GetValue(service)!).Initialize();
         // The worker waits on this initialization, so nothing leaves the 120-slot queue.
         var ready = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        typeof(ProcessHistoryService).GetField("initialization", flags)!.SetValue(service, ready.Task);
+        typeof(ProcessHistoryService).GetField("initialization", All)!.SetValue(service, ready.Task);
         service.Configure(true, true); service.Start();
         try
         {
@@ -131,6 +131,49 @@ public class ProcessHistoryServiceTests
         Assert.Equal((0L, 0), (view.RecordedMinutes, view.Rows.Count));
         Assert.Empty((await service.ReadSeriesAsync("chrome.exe", ProcessRank.Io, Start, Start.AddMinutes(1), 1)).Buckets);
         Assert.Equal("foreign database fixture", await File.ReadAllTextAsync(fixture.Path));
+    }
+
+    [Fact]
+    public async Task Session_switches_configure_process_history_and_need_no_service()
+    {
+        using var fixture = new Fixture();
+        // UI-check fixtures build sessions without process history; both switches must still work there.
+        var bare = Session(fixture, null, "bare");
+        bare.SetProcessMonitoring(true); bare.SetUsageRecording(false); bare.SetUsageRecording(true); bare.SetProcessMonitoring(false);
+        Assert.Equal((false, true), (bare.Settings.ProcessMonitoring, bare.Settings.UsageRecording));
+        var service = new ProcessHistoryService(fixture.Path, "tablet"); var session = Session(fixture, service, "wired");
+        const string paused = "recorded while Per-process monitoring and usage history are both on";
+        Assert.Contains(paused, service.Status);
+        session.SetProcessMonitoring(true); Assert.DoesNotContain(paused, service.Status);
+        session.SetUsageRecording(false); Assert.Contains(paused, service.Status);
+        session.SetUsageRecording(true); Assert.DoesNotContain(paused, service.Status);
+        session.SetProcessMonitoring(false); Assert.Contains(paused, service.Status);
+        await Task.WhenAll(Saved(bare), Saved(session));
+    }
+
+    private const BindingFlags All = BindingFlags.Instance | BindingFlags.NonPublic;
+
+    /// <summary>A session wired only for the two recording switches, like the UI-check fixtures. Never starts hardware or a window.</summary>
+    private static UiSession Session(Fixture fixture, ProcessHistoryService? history, string name)
+    {
+        var session = (UiSession)RuntimeHelpers.GetUninitializedObject(typeof(UiSession));
+        void Set(string field, object? value) => typeof(UiSession).GetField(field, All)!.SetValue(session, value);
+        Set("<Collector>k__BackingField", RuntimeHelpers.GetUninitializedObject(typeof(Collector)));
+        Set("<Settings>k__BackingField", new UserSettings { ProcessMonitoring = false, UsageRecording = true });
+        Set("<Usage>k__BackingField", new UsageHistoryService(fixture.Path + "." + name + ".usage", "tablet"));
+        Set("<ProcessHistory>k__BackingField", history);
+        Set("layout", new DetachedWindowState([]));
+        Set("writer", new SettingsSnapshotWriter(fixture.Path + "." + name + ".json"));
+        return session;
+    }
+
+    /// <summary>Waits until the session's last settings revision is on disk, so no background save outlives the fixture.</summary>
+    private static async Task Saved(UiSession session)
+    {
+        long revision = (long)typeof(UiSession).GetField("saveRevision", All)!.GetValue(session)!;
+        var writer = typeof(UiSession).GetField("writer", All)!.GetValue(session)!;
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        while ((long)writer.GetType().GetField("savedRevision", All)!.GetValue(writer)! != revision) await Task.Delay(10, deadline.Token);
     }
 
     private static Task<ProcessResourceView> Read(ProcessHistoryService service, int minutes = 2) =>

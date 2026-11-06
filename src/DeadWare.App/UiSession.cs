@@ -11,6 +11,7 @@ public sealed class UiSession
     public GraphHistoryService GraphHistory {get;}
     public BatteryHistoryService Battery {get;}
     public UsageHistoryService Usage {get;}
+    /// <summary>Null only in fixtures built without the constructor, so every use outside it is null-guarded.</summary>
     public ProcessHistoryService ProcessHistory {get;}
     public AlertService Alerts {get;}
     public ConnectionService Connections {get;}
@@ -213,7 +214,7 @@ public sealed class UiSession
     }
     public void SetProcessMonitoring(bool enabled)
     {
-        Settings.ProcessMonitoring=enabled;Collector.SetProcessMonitoring(enabled);ProcessHistory.Configure(enabled,Settings.UsageRecording);Changed?.Invoke();_ = SaveAsync();
+        Settings.ProcessMonitoring=enabled;Collector.SetProcessMonitoring(enabled);ProcessHistory?.Configure(enabled,Settings.UsageRecording);Changed?.Invoke();_ = SaveAsync();
     }
     public void SetProcessColumns(IEnumerable<string> keys)
     {
@@ -224,7 +225,7 @@ public sealed class UiSession
     public void SetRestoreOpenWindows(bool enabled) {Settings.RestoreOpenWindows=enabled;_ = SaveAsync();}
     public void SetStartInTray(bool enabled) {Settings.StartInTray=enabled;_ = SaveAsync();}
     public void SetBatteryRecording(bool enabled) {Settings.BatteryRecording=enabled;Battery.Configure(enabled);Changed?.Invoke();_ = SaveAsync();}
-    public void SetUsageRecording(bool enabled) {Settings.UsageRecording=enabled;Usage.Configure(enabled);ProcessHistory.Configure(Settings.ProcessMonitoring,enabled);Changed?.Invoke();_ = SaveAsync();}
+    public void SetUsageRecording(bool enabled) {Settings.UsageRecording=enabled;Usage.Configure(enabled);ProcessHistory?.Configure(Settings.ProcessMonitoring,enabled);Changed?.Invoke();_ = SaveAsync();}
     public void SetAlertRules(IReadOnlyList<AlertRule> rules)
     {
         Settings.Alerts=AlertRules.Normalize(rules);Alerts.Configure(Settings.Alerts,Settings.AlertNotifications);Changed?.Invoke();_ = SaveAsync();
