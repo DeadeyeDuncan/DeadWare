@@ -74,7 +74,7 @@ internal sealed class ApplicationResourcesCard : StackPanel
         frame = Ui.Panel(table, new Thickness(0)); frame.Margin = new(0, 6, 0, 8); Children.Add(frame);
         Note(chartHint, ""); Children.Add(chartHint);
         chart.Children.Add(chartTitle); chart.Children.Add(Chart); Children.Add(chart);
-        Children.Add(Ui.Text("CPU time, I/O read and I/O written are summed over the minutes each application was listed. Avg CPU is its share of all logical processors across every recorded minute; Avg memory while listed averages its private working set over the minutes it was listed. Each minute lists up to 30 of the busiest applications by CPU, memory and I/O; Everything else holds the rest the scan saw, and processes that exit between scans are not counted.", 11, "Muted"));
+        Children.Add(Ui.Text("CPU time, I/O read and I/O written are summed over the minutes each application was listed. Avg CPU is its share of all logical processors across every recorded minute; Avg memory while listed averages its private working set over the minutes it was listed. Each minute lists up to 30 of the busiest applications by CPU, memory and I/O; Everything else holds the rest of the apps the scan saw. Usage after the last scan that saw a process is not counted, nor is a process that starts and exits between scans.", 11, "Muted"));
         status.Margin = new(0, 8, 0, 0); Children.Add(status); Children.Add(storage);
         rank.SelectionChanged += (_, _) => RankChanged();
         rankDelay.Tick += (_, _) => { rankDelay.Stop(); _ = ReloadAsync(); };
