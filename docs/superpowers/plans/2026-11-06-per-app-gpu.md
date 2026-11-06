@@ -102,21 +102,12 @@ For this plan:
   - `public static class GpuCounterStatus { public const string Unavailable="GPU counters unavailable",Unreadable="GPU counters unreadable",TooMany="Too many GPU counter instances"; public static string Error(uint status)=>$"GPU counters unavailable (error 0x{status:X8})"; }`
   - `public sealed class GpuCounterReader(IGpuCounterApi api){ public const double RetrySeconds=60,NotReadySeconds=60,AdapterRereadSeconds=60; public const int MaximumItems=65536; public GpuCounterRead Read(double monotonicSeconds,DateTimeOffset utcTime,double pollingIntervalSeconds); public void Close(); public bool IsOpen{get;} public bool LastReadOpened{get;} }`
 
-`Read` follows the spec's Data source and Errors and limits:
-- A closed query opens only when no failure happened in the last 60 s; until then `Read` returns the last failure's state without calling the API.
-  - `Open` failing with `CStatusNoObject` or `CStatusNoCounter` gives `Unavailable`. Any other failure gives `Error(status)`.
-  - A successful open reads `Adapters()` and sets `LastReadOpened` for that read.
-- `Collect` returning `NoData` or `CStatusNoInstance` gives `Unavailable`; the query stays open and that collection is not the previous one. Any other non-zero status closes the query and gives `Error(status)`.
-- Each array status works as follows:
-  - 0 gives items.
-  - `InvalidData`, `CalcNegativeDenominator` or `CalcNegativeValue` makes that counter's `…Ready` false with no items.
-  - `NoData`, `CStatusNoInstance` or zero items gives an empty list: `Unavailable` for the engine counter, known-empty memory for the others.
-  - Anything else closes the query and gives `Error(status)`.
-- An item is ready when its CStatus is `CStatusValidData` or `CStatusNewData`. A name that does not parse counts in `Skipped`, never a not-ready one.
-- State order: `Error`, then `TooMany` (any array over `MaximumItems`, for that read), then `Unavailable` (no engine instances), then `Unreadable` (`Skipped × 2 > Instances`), else `Ready`.
-- The not-ready run starts at the first read with a benign array status and ends at a read with none. Once a read is at least 60 s into the run, it closes the query and gives `Error(<that read's benign status>)`.
-- The previous collection is the last successful collection on this query, kept only if 0 < now − its monotonic time ≤ `PollingPolicy.FreshnessSeconds(pollingIntervalSeconds)`. Otherwise both `PreviousUtcTime` and `IntervalSeconds` are null.
-- Adapters are numbered 0, 1, … in enumeration order, skipping software adapters, which keep their description with `Number` null. A LUID DXGI does not list is absent from `Adapters`, and callers use `GpuAdapterName.Unknown`. DXGI is read again, at most once a minute, when an item's LUID is not in the map or the last enumeration failed. Values are kept either way.
+`Read` follows the spec's Data source and Errors and limits. The plan decides what the spec leaves open:
+- While a retry is not yet due, `Read` returns the last failure's state without calling the API. A successful open reads `Adapters()` and sets `LastReadOpened` for that read.
+- A `Collect` that returns `NoData` or `CStatusNoInstance` keeps the query open and does not become the previous collection.
+- A benign array status (`InvalidData`, `CalcNegativeDenominator`, `CalcNegativeValue`) returns no items, so it sets that counter's `…Ready` to false. The not-ready run starts at the first read with any benign status and ends at a read with none. The 60 s failure uses that read's status.
+- State order, first match: `Error`, `TooMany`, `Unavailable` (no engine instances), `Unreadable` (`Skipped × 2 > Instances`), else `Ready`.
+- A software adapter keeps its description with `Number` null. A LUID DXGI does not list is absent from `Adapters`, and callers use `GpuAdapterName.Unknown`.
 
 - [ ] **Step 0: Fetch, check 0.14.1 is on main, create the branch and record the warning count**
 
@@ -264,18 +255,36 @@ Native details:
             var arrays=Enum.GetValues<GpuCounterKind>().ToDictionary(k=>k,api.Read);var second=scans.Scan(1,1)!;
             if(collect is GpuPdhStatus.NoData||arrays.Values.All(a=>a.Status is GpuPdhStatus.NoData or GpuPdhStatus.CStatusNoInstance||a.Items.Count==0)){MeasurementRecorder.Write("gpu-counters",new{counters="present",instances=0});return;}
             Assert.True(collect==0,$"Collect failed with 0x{collect:X8}");
-            Assert.All(arrays,a=>Assert.True(a.Value.Status==0,$"{a.Key} array failed with 0x{a.Value.Status:X8}"));
-            var pids=first.Processes.Concat(second.Processes).Select(p=>p.Pid).ToHashSet();
-            // Parse every name (it never throws); every parsed instance's PID is in one of the two scans.
-            // Record per kind: items, skipped and not-ready counts. Record per LUID seen: listed by api.Adapters(), its Flags and its engine types. No adapter descriptions.
+            uint[] allowed=[0,GpuPdhStatus.NoData,GpuPdhStatus.CStatusNoInstance,GpuPdhStatus.InvalidData,GpuPdhStatus.CalcNegativeDenominator,GpuPdhStatus.CalcNegativeValue];
+            Assert.All(arrays,a=>Assert.True(allowed.Contains(a.Value.Status),$"{a.Key} array failed with 0x{a.Value.Status:X8}"));
+            var pids=first.Processes.Concat(second.Processes).Select(p=>p.Pid).ToHashSet();var parsed=new List<(GpuCounterKind Kind,GpuCounterInstance Instance)>();int skipped=0;
+            foreach(var (kind,array) in arrays)foreach(var item in array.Items)
+                if(GpuCounterInstance.TryParse(item.Name,kind,out var instance)){Assert.True(pids.Contains(instance.Pid),$"{kind} instance PID {instance.Pid} is in neither scan");parsed.Add((kind,instance));}
+                else skipped++;
+            var adapters=api.Adapters();
+            MeasurementRecorder.Write("gpu-counters",new{counters="present",instances=parsed.Count+skipped,skipped,statuses=arrays.ToDictionary(a=>a.Key.ToString(),a=>$"0x{a.Value.Status:X8}"),
+                luids=parsed.GroupBy(p=>p.Instance.Luid).Select(g=>new{listed=adapters?.Any(a=>a.Luid==g.Key),flags=adapters?.FirstOrDefault(a=>a.Luid==g.Key)?.Flags,
+                    engineTypes=g.Where(p=>p.Kind==GpuCounterKind.Engine).Select(p=>p.Instance.Type).Distinct().Order().ToArray()}).ToArray()});   // no adapter descriptions
         }
         finally {api.Close();}
     }
-    [GitHubWindowsFact] public void Gpu_counter_timing_over_240_reads()
+    [GitHubWindowsFact] public async Task Gpu_counter_timing_over_240_reads()
     {
-        // new WindowsGpuCounters(): 240 Read calls 100 ms apart on a Stopwatch clock, each timed. p50Ms/p95Ms leave out the first read after open, which is firstMs.
-        // Write gpu-timing.json: elevated, reads=240, p50Ms, p95Ms, firstMs, engineInstances, memoryInstances, skipped, adapters (count), status (the last State.Status).
-        // State "GPU counters unavailable" on the first read writes counters:"absent"; an engine set that stays empty writes instances:0; any error code is recorded. It always passes.
+        var source=new WindowsGpuCounters();var clock=Stopwatch.StartNew();var times=new List<double>();double? firstMs=null;GpuCounterRead? last=null;
+        try
+        {
+            for(int i=0;i<240;i++)
+            {
+                long start=Stopwatch.GetTimestamp();last=source.Read(clock.Elapsed.TotalSeconds,1);double ms=Stopwatch.GetElapsedTime(start).TotalMilliseconds;
+                if(source.LastReadOpened)firstMs??=ms;else times.Add(ms);
+                if(i==0&&last.State.Status==GpuCounterStatus.Unavailable&&last.Instances==0&&!source.IsOpen){MeasurementRecorder.Write("gpu-timing",new{elevated=MeasurementRecorder.Elevated,counters="absent"});return;}
+                await Task.Delay(100);
+            }
+            MeasurementRecorder.Write("gpu-timing",new{elevated=MeasurementRecorder.Elevated,reads=240,p50Ms=ProcessMeasurementTests.Percentile(times,0.50),p95Ms=ProcessMeasurementTests.Percentile(times,0.95),firstMs,
+                engineInstances=last!.Engines.Count,memoryInstances=last.Dedicated.Count+last.Shared.Count,last.Skipped,adapters=last.Adapters.Count,status=last.State.Status,
+                instances=last.Instances==0?(int?)0:null});   // a set that stays empty records instances:0; an error code is recorded in status; it always passes
+        }
+        finally {source.Close();}
     }
 }
 ```
@@ -334,8 +343,9 @@ The loop follows `StorageSensorLoop`'s style. The period is recomputed each pass
     g.Reset();Assert.False(g.OwnLoop);g.Record(20,false);Assert.False(g.OwnLoop);}
 
 // GpuCounterLoopTests (App). FakeGpuSource : IGpuCounterSource returns reads with MonotonicSeconds = the time passed and IntervalSeconds = the gap since its previous read
-// (null for the first after open), can delay or block each Read, records each call's time (CallGaps()), counts Reads and Closes, tracks IsOpen and the most Reads in flight
-// at once (MaxConcurrent), and has WaitForReads(n) (15 s limit). Loop(interval, enabled, source) starts a GpuCounterLoop on a Stopwatch clock.
+// (null for the first after open), records each call's time (CallGaps(), LastReadAt), counts Reads and Closes, tracks IsOpen and the most Reads in flight at once (MaxConcurrent),
+// and has WaitForReads(n) (15 s limit). With block:true each Read waits for Release(); Entered completes on the first Read and Closed on the first Close.
+// Loop(interval=()=>0.5, enabled=()=>true, source=new FakeGpuSource()) starts a GpuCounterLoop on a Stopwatch clock and returns (loop, source).
 [Fact] public async Task Period_is_at_least_one_second_and_follows_slower_polling(){ double interval=0.5;var (loop,fake)=Loop(()=>interval);await fake.WaitForReads(3);
     Assert.All(fake.CallGaps(),g=>Assert.True(g>=0.95,$"gap {g:0.00} s"));interval=2;int n=fake.Reads;await fake.WaitForReads(n+2);Assert.All(fake.CallGaps().Skip(n),g=>Assert.True(g>=1.95,$"gap {g:0.00} s"));}
 [Fact] public async Task A_read_is_taken_fresh_once_then_again_without_credit(){ var (loop,fake)=Loop();await fake.WaitForReads(1);var first=loop.Take()!;Assert.True(first.Fresh);Assert.True(first.Read.Credit);Assert.NotNull(first.ReadMilliseconds);
@@ -387,15 +397,13 @@ Run (CI). Expected: green; `GpuCounterLoopTests` pass.
   - `public static class GpuProcessJoin { public const int MaximumEngines=32; public static GpuJoinResult Join(IReadOnlyList<ProcessSample> samples,GpuCounterRead? read); public static double? IntervalSeconds(GpuCounterRead? read); public static int CompareEngineOrder(GpuEngineUse a,GpuEngineUse b); }`
   - `public TrackedScan ProcessActivityTracker.Update(ProcessScan scan,GpuCounterRead? gpu=null)`. It joins every sample before the 4,096 cut and sets `TrackedScan.Gpu` and `GpuIntervalSeconds` from the result.
 
-Join rules (spec, Joining to processes):
+Join rules: the spec's Joining to processes, plus these plan decisions:
 - `IntervalSeconds(read)` is `read.IntervalSeconds` when `read.State.Available && read.Credit`, else null.
-- A null read leaves every GPU value null with `GpuGap=FirstSample` and state `Ready`. In loop placement, no read has completed yet. An unavailable read leaves them null with `GpuGap=None` and its own state.
-- Otherwise, per PID:
-  - GPU % and engine are null with `FirstSample` when the read has no previous collection, or `EnginesReady` is false, or `Generation >= PreviousUtcTime.UtcTicks − TimeSpan.TicksPerSecond`, or every one of the process's engine items is not ready. These checks come before the known-zero rule.
-  - Otherwise `GpuEngines` lists the ready items above 0 % with Percent clamped to 100. Each entry is labelled with its adapter's `GpuAdapterName.Label(type)` (`Unknown` for an unlisted LUID) and carries that adapter's description. The list is sorted by Percent descending, then `CompareEngineOrder`, and cut at 32. `GpuPercent`, `GpuEngine` and `GpuAdapter` come from its first entry. An empty list gives 0, "" and null.
-- `CompareEngineOrder` puts numbered adapters first, by the number in the `Label`'s `"GPU <n> · "` prefix that `GpuAdapterName.Label` writes, then `"GPU ?"` adapters by LUID, then Phys, then Engine.
-- Memory: `GpuDedicatedBytes` is the sum of the process's ready items, 0 with none. A not-ready item, or `DedicatedReady` false, makes it null with `FirstSample`. Shared memory follows the same rule.
-- Deltas, only when `Deltas` is non-null: `GpuSeconds = GpuPercent / 100 × g` and `GpuMemoryByteSeconds = GpuDedicatedBytes × g`, with g = `IntervalSeconds(read)`. Each is null when its value or g is null.
+- A null read (in loop placement, before any read has completed) leaves every GPU value null with `GpuGap=FirstSample` and state `Ready`, so every "—" has a reason. An unavailable read leaves them null with `GpuGap=None` and its own state.
+- `EnginesReady` false is treated like no previous collection. `DedicatedReady` or `SharedReady` false makes that memory value null with `FirstSample` for every process.
+- An entry's `Label` is its adapter's `GpuAdapterName.Label(type)` (`Unknown` for an unlisted LUID), and its `Adapter` is that adapter's description.
+- `CompareEngineOrder` reads the adapter number from the `"GPU <n> · "` prefix that `GpuAdapterName.Label` writes. Numbered adapters come first, then `"GPU ?"` by LUID, then Phys, then Engine.
+- GPU deltas are set only on a non-null `Deltas`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -538,169 +546,114 @@ Run (CI). Expected: green. `CollectorGpuTests`, `CollectorProcessTests`, `EtwDis
 
 ## 0.15.0 — Step 3: Processes page
 
-### Task 6: Column keys, the settings upgrade and the scan sentence
+### Task 6: Table model: app GPU, engine text, sorting and copy (Core)
 
 **Files:**
-- Modify: `src/DeadWare.Core/ProcessColumnKeys.cs`
-- Modify: `src/DeadWare.Core/Monitoring.cs`: `UserSettings` (after `ProcessColumns`, :404) and `SettingsCodec.Read` (after `s.ProcessColumns=ProcessColumnKeys.Normalize(s.ProcessColumns);`, :443)
-- Modify: `src/DeadWare.Core/ProcessTable.cs`: `ProcessCopy.ScanSentence` (:10-12), `ProcessTableColumns.PickerOrder` and `Header`
-- Test: `tests/DeadWare.Tests/ProcessSettingsTests.cs`, `tests/DeadWare.Tests/ProcessTableTests.cs` (`Picker_disables_admin_entries_and_keeps_their_saved_state`)
-
-**Interfaces:**
-- Produces:
-  - `ProcessColumnKeys.All` gains `"gpu","gpuengine","gpumemory","gpushared"` after `"upload"`. `Default` becomes `["cpu","memory","io","disk","network","gpu","gpumemory"]`. `public static IReadOnlyList<string> PreviousDefault{get;}=["cpu","memory","io","disk","network"]`. `public const int CurrentVersion=2`. `AdministratorOnly` and `DiskKeys` are unchanged.
-  - `UserSettings.ProcessColumnsVersion` (int, initializer `ProcessColumnKeys.CurrentVersion`).
-  - `SettingsCodec.Read` upgrades a file without the property (`document.RootElement.TryGetProperty`) or with a value below 2. A normalized list that equals `PreviousDefault` as a set becomes `[..Default]`; any other list stays. Read then always sets the version to 2. `Normalize` and `Toggle` never upgrade.
-  - `ProcessTableColumns.Header`: `"gpu"=>"GPU","gpuengine"=>"GPU ENGINE","gpumemory"=>"GPU MEMORY","gpushared"=>"SHARED GPU MEMORY"`. `PickerOrder` becomes `["cpu","memory","io","disk","network","gpu","gpumemory","pid","ioread","iowrite","diskread","diskwrite","download","upload","gpuengine","gpushared"]`.
-  - `ProcessCopy.ScanSentence(bool elevated,bool diskColumns,bool scanLoop,bool history=false)` returns `"Turning it on adds one Windows process scan per poll"+(scanLoop?" (at most one a second)":"")+(elevated&&diskColumns?", one GPU counter read per poll and a disk trace":" and one GPU counter read per poll")+"."`, then the unchanged history sentence.
-
-- [ ] **Step 1: Update and write the failing tests**
-
-```csharp
-// ProcessSettingsTests: Defaults_are_off_and_the_five_default_columns becomes
-[Fact] public void Defaults_are_off_and_the_seven_default_columns(){ var s=new UserSettings();Assert.False(s.ProcessMonitoring);
-    Assert.Equal(["cpu","memory","io","disk","network","gpu","gpumemory"],s.ProcessColumns);Assert.Equal(2,s.ProcessColumnsVersion);}
-// Unknown_null_and_duplicate_keys_are_dropped_and_ordered: "gpu" (now known) becomes "gputemp"; expected ["cpu","upload"] stays.
-// Toggle_changes_only_that_key: expected lists gain "gpu","gpumemory" (pid on: ["pid","cpu","memory","io","disk","network","gpu","gpumemory"]; cpu off: ["memory","io","disk","network","gpu","gpumemory"]).
-// Scan_sentence_follows_the_build: the four cases become
-//   (false,false,false) "Turning it on adds one Windows process scan per poll and one GPU counter read per poll."
-//   (true,true,false)   "Turning it on adds one Windows process scan per poll, one GPU counter read per poll and a disk trace."
-//   (true,false,true)   "Turning it on adds one Windows process scan per poll (at most one a second) and one GPU counter read per poll."
-//   (true,true,true)    "Turning it on adds one Windows process scan per poll (at most one a second), one GPU counter read per poll and a disk trace."
-// Scan_sentence_adds_the_history_sentence expects "Turning it on adds one Windows process scan per poll and one GPU counter read per poll. While usage history is recorded, it also keeps the busiest apps for 30 days."
-[Theory][InlineData("[\"cpu\",\"memory\",\"io\",\"disk\",\"network\"]")][InlineData("[\"network\",\"disk\",\"io\",\"memory\",\"cpu\",\"cpu\"]")][InlineData("[\"cpu\",\"memory\",\"io\",\"disk\",\"network\",\"bogus\",null]")]
-public void A_version_less_0_13_default_reads_as_the_new_default(string list){ var s=SettingsCodec.Read($"{{\"ProcessColumns\":{list}}}").Settings;
-    Assert.Equal(ProcessColumnKeys.Default,s.ProcessColumns);Assert.Equal(2,s.ProcessColumnsVersion);}
-[Fact] public void A_version_below_2_is_upgraded_too()=>Assert.Equal(ProcessColumnKeys.Default,SettingsCodec.Read("{\"ProcessColumnsVersion\":1,\"ProcessColumns\":[\"cpu\",\"memory\",\"io\",\"disk\",\"network\"]}").Settings.ProcessColumns);
-[Theory][InlineData("[\"cpu\",\"memory\"]","cpu,memory")][InlineData("[\"pid\",\"cpu\",\"memory\",\"io\",\"disk\",\"network\"]","pid,cpu,memory,io,disk,network")][InlineData("[]","")]
-public void Any_other_version_less_list_is_kept(string list,string expected){ var s=SettingsCodec.Read($"{{\"ProcessColumns\":{list}}}").Settings;
-    Assert.Equal(expected,string.Join(",",s.ProcessColumns));Assert.Equal(2,s.ProcessColumnsVersion);}
-[Fact] public void The_new_default_without_gpu_survives_round_trips(){ var json="{\"ProcessColumnsVersion\":2,\"ProcessColumns\":[\"cpu\",\"memory\",\"io\",\"disk\",\"network\"]}";
-    var once=SettingsCodec.Read(json).Settings;var twice=SettingsCodec.Read(SettingsCodec.Write(once)).Settings;Assert.Equal(ProcessColumnKeys.PreviousDefault,twice.ProcessColumns);Assert.Equal(2,twice.ProcessColumnsVersion);
-    var fresh=new UserSettings();fresh.ProcessColumns=ProcessColumnKeys.Toggle(ProcessColumnKeys.Toggle(fresh.ProcessColumns,"gpu",false),"gpumemory",false);
-    Assert.Equal(ProcessColumnKeys.PreviousDefault,SettingsCodec.Read(SettingsCodec.Write(SettingsCodec.Read(SettingsCodec.Write(fresh)).Settings)).Settings.ProcessColumns);}
-[Fact] public void Normalize_and_toggle_never_upgrade(){ Assert.Equal(ProcessColumnKeys.PreviousDefault,ProcessColumnKeys.Normalize(ProcessColumnKeys.PreviousDefault));
-    Assert.Equal(["pid","cpu","memory","io","disk","network"],ProcessColumnKeys.Toggle(ProcessColumnKeys.PreviousDefault,"pid",true));}
-[Fact] public void Gpu_keys_follow_upload_and_none_needs_administrator(){ Assert.Equal(["gpu","gpuengine","gpumemory","gpushared"],ProcessColumnKeys.All.Skip(12));Assert.Equal(16,ProcessColumnKeys.All.Count);
-    Assert.Empty(ProcessColumnKeys.AdministratorOnly.Intersect(ProcessColumnKeys.All.Skip(12)));
-    Assert.Equal(["GPU","GPU ENGINE","GPU MEMORY","SHARED GPU MEMORY"],ProcessColumnKeys.All.Skip(12).Select(ProcessTableColumns.Header));}
-// ProcessTableTests.Picker_disables_admin_entries_and_keeps_their_saved_state: the key list becomes
-//   ["cpu","memory","io","disk","network","gpu","gpumemory","pid","ioread","iowrite","diskread","diskwrite","download","upload","gpuengine","gpushared"], and every GPU entry is Enabled while not elevated.
-```
-
-- [ ] **Step 2: Run to verify failure.** Run the `ProcessSettingsTests|ProcessTableTests` filter. Expected: `error CS0117` for `PreviousDefault`, and `error CS1061` for `ProcessColumnsVersion`.
-- [ ] **Step 3: Implement the keys, the version, the upgrade, the headers and the sentence**
-- [ ] **Step 4: Run the tests, then the Core baseline.** Expected: PASS, then no output.
-- [ ] **Step 5: Commit and push**
-
-```bash
-git add tests/DeadWare.Tests/ProcessSettingsTests.cs tests/DeadWare.Tests/ProcessTableTests.cs
-git commit -m "test(settings): GPU column keys, the one-time default upgrade and the scan sentence"
-git add src/DeadWare.Core/ProcessColumnKeys.cs src/DeadWare.Core/Monitoring.cs src/DeadWare.Core/ProcessTable.cs
-git commit -m "feat(settings): GPU columns join the defaults once for saved 0.13 defaults"
-```
-Run (CI). Expected: the build is green and Core passes. UI checks that assert the default headers or the scan sentence may fail in phase `"processes page"` or `"shell chrome"`; Task 8 updates them. Record any failure on the PR and go on.
-
----
-
-### Task 7: App rows, GPU engine text, sorting and copy (Core)
-
-**Files:**
-- Modify: `src/DeadWare.Core/ProcessTable.cs`: `ProcessAppRow`, `ProcessGrouping.Value` (both overloads), `ProcessSort`, `ProcessTableColumns`, `ProcessCopy.Footer`
-- Test: `tests/DeadWare.Tests/ProcessTableTests.cs`
+- Modify: `src/DeadWare.Core/ProcessTable.cs`: `ProcessCopy` (`ScanSentence`, `Footer`), `ProcessAppRow`, `ProcessGrouping.Value` (both overloads), `ProcessSort`, `ProcessTableColumns`
+- Test: `tests/DeadWare.Tests/ProcessTableTests.cs`, `tests/DeadWare.Tests/ProcessSettingsTests.cs` (the `ScanSentence` cases)
 
 **Interfaces:**
 - Consumes: Task 4 `GpuEngineUse`, `GpuProcessJoin.CompareEngineOrder`.
 - Produces:
-  - `public static (double? Percent,GpuEngineUse? Busiest) ProcessGrouping.GpuUse(IReadOnlyList<ProcessSample> members)`. Members' `GpuEngines` are grouped by (Luid, Phys, Engine) and their Percents summed. The highest sum, clamped to 100, wins, with ties by `CompareEngineOrder`. `Busiest` is that engine's entry with its Percent replaced by the clamped sum. The result is null when every member's list is null, and (0, null) when some list is non-null but no member has an entry.
-  - `ProcessAppRow`: `double? Gpu`, `GpuEngineUse? GpuBusiest` (both from `GpuUse`, computed once), and `double? GpuMemory` and `double? GpuShared` (sums of known members, null only when none is known).
+  - `public static (double? Percent,GpuEngineUse? Busiest) ProcessGrouping.GpuUse(IReadOnlyList<ProcessSample> members)`. It follows the spec's App rows rule. `Busiest` is the winning engine's entry with Percent replaced by the clamped sum. The result is null when every member's list is null, and (0, null) when some list is non-null but no member has an entry.
+  - `ProcessAppRow` gains `double? Gpu` and `GpuEngineUse? GpuBusiest`, computed from `Members` through `GpuUse` like the other sums. It also gains `double? GpuMemory` and `double? GpuShared`: sums of known members, null only when none is known.
   - `ProcessGrouping.Value`: `"gpu"`, `"gpumemory"` and `"gpushared"` read those values. `"gpuengine"` is null, since it is a text column.
   - `public static string? ProcessGrouping.EngineText(ProcessSample p)` (null when `GpuPercent` is null, else `GpuEngine ?? ""`) and `EngineText(ProcessAppRow r)` (null when `Gpu` is null, else `GpuBusiest?.Label ?? ""`).
   - `public static string ProcessCopy.EngineTip(GpuEngineUse engine)` joins the adapter description, when there is one, and `"<type> engine"` (`"engine"` for an empty type) with `" · "`.
-  - `ProcessSort.Compare` (both overloads) for `"gpuengine"` compares `EngineText` under `StringComparer.OrdinalIgnoreCase` and flips that comparison when descending. In both directions, "" sorts after every named engine and null after "". Ties go by name, then PID, as today.
+  - `ProcessSort.Compare` (both overloads) for `"gpuengine"` compares `EngineText` under `StringComparer.OrdinalIgnoreCase` and flips only that comparison when descending. In both directions, "" sorts after every named engine and null after "". Ties go by name, then PID, as today.
   - `public static bool ProcessTableColumns.AscendingFirst(string key)=>key is "name" or "gpuengine";`
   - `ProcessCopy.Footer(bool)` ends, in both builds, with `"GPU is the app's busiest GPU engine, as in Task Manager; GPU memory is dedicated video memory."`
+  - `ProcessCopy.ScanSentence(bool elevated,bool diskColumns,bool scanLoop,bool history=false)` returns `"Turning it on adds one Windows process scan per poll"+(scanLoop?" (at most one a second)":"")+(elevated&&diskColumns?", one GPU counter read per poll and a disk trace":" and one GPU counter read per poll")+"."`, then the unchanged history sentence. The UI checks compare against this function, so they follow it.
 
 - [ ] **Step 1: Write the failing tests**
 
 ```csharp
-// U(luid,eng,pct,type="3D",phys=0,label=null,adapter=null) builds a GpuEngineUse (label defaults to "GPU 0 · <type>" for luid 0xA, "GPU 1 · <type>" for 0xB, "GPU ? · <type>" otherwise);
-// GS(pid,engines) builds a sample whose GpuEngines are those entries and GpuPercent is the first entry's (0 for []).
+// U(luid,eng,pct,type="3D",phys=0,label=null,adapter=null) builds a GpuEngineUse, whose label defaults to "GPU 0 · <type>" for luid 0xA, "GPU 1 · <type>" for 0xB and "GPU ? · <type>" otherwise.
+// GS(pid,engines) builds an "a.exe" sample with those GpuEngines and GpuPercent from the first entry (0 for []). G(...) and S(...) are the file's helpers.
 [Fact] public void An_app_sums_each_engine_across_members(){ var r=G(GS(1,[U(0xA,1,50,"Copy"),U(0xA,0,30)]),GS(2,[U(0xA,0,40)]));
-    Assert.Equal(70,r.Gpu);Assert.Equal("GPU 0 · 3D",r.GpuBusiest!.Label);Assert.Equal(70,r.GpuBusiest.Percent);}   // no member's busiest
+    Assert.Equal(70,r.Gpu);Assert.Equal("GPU 0 · 3D",r.GpuBusiest!.Label);Assert.Equal(70,r.GpuBusiest.Percent);}   // no member's own busiest
 [Fact] public void Two_phys_values_under_one_luid_stay_apart()=>Assert.Equal(40,G(GS(1,[U(0xA,0,30,phys:0)]),GS(2,[U(0xA,0,40,phys:1)])).Gpu);
-[Fact] public void Empty_lists_are_zero_and_all_unknown_is_unknown(){ var zero=G(GS(1,[]),S(2,"a",1));Assert.Equal(0,zero.Gpu);Assert.Null(zero.GpuBusiest);Assert.Equal("",ProcessGrouping.EngineText(zero));
-    var unknown=G(S(1,"a",1),S(2,"a",1));Assert.Null(unknown.Gpu);Assert.Null(ProcessGrouping.EngineText(unknown));}
+[Fact] public void Empty_lists_are_zero_and_all_unknown_is_unknown(){ var zero=G(GS(1,[]),S(2,"a.exe",1));Assert.Equal(0,zero.Gpu);Assert.Null(zero.GpuBusiest);Assert.Equal("",ProcessGrouping.EngineText(zero));
+    var unknown=G(S(1,"a.exe",1),S(2,"a.exe",1));Assert.Null(unknown.Gpu);Assert.Null(ProcessGrouping.EngineText(unknown));}
 [Fact] public void An_app_sum_is_clamped_and_ties_go_to_engine_order(){ Assert.Equal(100,G(GS(1,[U(0xA,0,60)]),GS(2,[U(0xA,0,60)])).Gpu);
     Assert.Equal("GPU 0 · 3D",G(GS(1,[U(0xB,0,50)]),GS(2,[U(0xA,0,50)])).GpuBusiest!.Label);Assert.Equal("GPU 1 · 3D",G(GS(1,[U(0xC,0,50)]),GS(2,[U(0xB,0,50)])).GpuBusiest!.Label);}
-[Fact] public void Gpu_memory_sums_and_is_unknown_only_when_every_member_is(){ var r=G(S(1,"a",1) with{GpuDedicatedBytes=100,GpuSharedBytes=null},S(2,"a",1) with{GpuDedicatedBytes=null,GpuSharedBytes=null});
+[Fact] public void Gpu_memory_sums_and_is_unknown_only_when_every_member_is(){ var r=G(S(1,"a.exe",1) with{GpuDedicatedBytes=100},S(2,"a.exe",1));
     Assert.Equal(100,r.GpuMemory);Assert.Null(r.GpuShared);Assert.Equal(100,ProcessGrouping.Value(r,"gpumemory"));}
 // 0.14.1's Each_column_key_reads_its_own_field: Full() gains GpuPercent=12.5,GpuEngines=[U(0xA,0,12.5)],GpuEngine="GPU 0 · 3D",GpuDedicatedBytes=8192,GpuSharedBytes=1024,
-// and the theory gains [InlineData("gpu",12.5)][InlineData("gpumemory",8192)][InlineData("gpushared",1024)] (two members on one engine sum: 25, 16384, 2048).
+// and the theory gains [InlineData("gpu",12.5)][InlineData("gpumemory",8192)][InlineData("gpushared",1024)] (two members on one engine: 25, 16384, 2048).
 [Theory][InlineData("NVIDIA GeForce RTX 4070","3D","NVIDIA GeForce RTX 4070 · 3D engine")][InlineData(null,"3D","3D engine")][InlineData(null,"","engine")][InlineData("Intel(R) UHD Graphics 770","","Intel(R) UHD Graphics 770 · engine")]
 public void Engine_tooltip_names_the_adapter_and_type(string? adapter,string type,string expected)=>Assert.Equal(expected,ProcessCopy.EngineTip(U(0xA,0,10,type,adapter:adapter)));
 [Fact] public void Gpu_engine_sorts_as_text_with_empty_then_unknown_last_both_ways(){
-    var rows=new[]{G(GS(1,[U(0xB,0,9)])) with{Name="x1"},G(GS(2,[U(0xA,1,9,"copy",label:"gpu 0 · Copy")])) with{Name="x2"},G(GS(3,[])) with{Name="x3"},G(S(4,"x4",1)) with{Name="x4"},G(GS(5,[U(0xA,1,9,"Copy")])) with{Name="x5"}};
+    var rows=new[]{G(GS(1,[U(0xB,0,9)])) with{Name="x1"},G(GS(2,[U(0xA,1,9,"Copy",label:"gpu 0 · Copy")])) with{Name="x2"},G(GS(3,[])) with{Name="x3"},G(S(4,"a.exe",1)) with{Name="x4"},G(GS(5,[U(0xA,1,9,"Copy")])) with{Name="x5"}};
     string[] By(bool d)=>[..rows.Order(Comparer<ProcessAppRow>.Create((a,b)=>ProcessSort.Compare(a,b,"gpuengine",d))).Select(r=>r.Name)];
     Assert.Equal(["x2","x5","x1","x3","x4"],By(false));Assert.Equal(["x1","x2","x5","x3","x4"],By(true));}
-[Fact] public void Only_name_and_gpu_engine_sort_ascending_first(){ Assert.True(ProcessTableColumns.AscendingFirst("gpuengine"));Assert.True(ProcessTableColumns.AscendingFirst("name"));
-    Assert.False(ProcessTableColumns.AscendingFirst("gpu"));Assert.False(ProcessTableColumns.AscendingFirst("gpumemory"));}
+[Fact] public void Only_name_and_gpu_engine_sort_ascending_first(){ Assert.True(ProcessTableColumns.AscendingFirst("gpuengine"));Assert.True(ProcessTableColumns.AscendingFirst("name"));Assert.False(ProcessTableColumns.AscendingFirst("gpu"));}
 [Fact] public void The_footer_ends_with_the_gpu_line(){ Assert.Equal("GPU is the app's busiest GPU engine, as in Task Manager; GPU memory is dedicated video memory.",ProcessCopy.Footer(true)[^1]);Assert.Equal(5,ProcessCopy.Footer(true).Count);}
 // Footer_omits_disk_without_the_disk_build: 3 becomes 4.
+// ProcessSettingsTests.Scan_sentence_follows_the_build, the four cases:
+//   (false,false,false) "Turning it on adds one Windows process scan per poll and one GPU counter read per poll."
+//   (true,true,false)   "Turning it on adds one Windows process scan per poll, one GPU counter read per poll and a disk trace."
+//   (true,false,true)   "Turning it on adds one Windows process scan per poll (at most one a second) and one GPU counter read per poll."
+//   (true,true,true)    "Turning it on adds one Windows process scan per poll (at most one a second), one GPU counter read per poll and a disk trace."
+// Scan_sentence_adds_the_history_sentence: "Turning it on adds one Windows process scan per poll and one GPU counter read per poll. While usage history is recorded, it also keeps the busiest apps for 30 days."
 ```
 
-- [ ] **Step 2: Run to verify failure.** Run the `ProcessTableTests` filter. Expected: `error CS0117` for `GpuUse`, `EngineText`, `EngineTip` and `AscendingFirst`.
+- [ ] **Step 2: Run to verify failure.** Run the `ProcessTableTests|ProcessSettingsTests` filter. Expected: `error CS0117` for `GpuUse`, `EngineText`, `EngineTip` and `AscendingFirst`.
 - [ ] **Step 3: Implement the members, the text sort and the copy**
 - [ ] **Step 4: Run the tests, then the Core baseline.** Expected: PASS, then no output.
 - [ ] **Step 5: Commit and push**
 
 ```bash
-git add tests/DeadWare.Tests/ProcessTableTests.cs
-git commit -m "test(core): app GPU by engine, engine text, tooltip, sort and footer"
+git add tests/DeadWare.Tests/ProcessTableTests.cs tests/DeadWare.Tests/ProcessSettingsTests.cs
+git commit -m "test(core): app GPU by engine, engine text, tooltip, sort, footer and scan sentence"
 git add src/DeadWare.Core/ProcessTable.cs
 git commit -m "feat(core): per-app GPU and GPU memory in the Processes table model"
 ```
-Run (CI). Expected: the build is green and Core passes. UI failures from Task 6 may remain until Task 8.
+Run (CI). Expected: green. The page footer, off state and Settings help line follow `Footer` and `ScanSentence`.
 
 ---
 
-### Task 8: Processes page GPU columns
+### Task 7: GPU column keys and the Processes page columns
 
 **Files:**
+- Modify: `src/DeadWare.Core/ProcessColumnKeys.cs` (`All`, `Default`)
+- Modify: `src/DeadWare.Core/ProcessTable.cs` (`ProcessTableColumns.PickerOrder`, `Header`)
 - Modify: `src/DeadWare.App/ProcessesPage.cs`:
-  - `OnSorting` (:257-264): `sortDescending=!ProcessTableColumns.AscendingFirst(key)`, and its comment.
-  - `Cells`, `State`, `Gap` and `Format` (:426-460).
+  - `OnSorting` (:257-264): `sortDescending=!ProcessTableColumns.AscendingFirst(key)`, and its comment;
+  - `Cells`, `State`, `Gap` and `Format` (:426-460);
   - `SpokenLabels` and `Spoken` (:462-476).
-- Test: `tests/DeadWare.App.Tests/ProcessesPageUiChecks.cs`
+- Test: `tests/DeadWare.Tests/ProcessSettingsTests.cs`, `tests/DeadWare.Tests/ProcessTableTests.cs`, `tests/DeadWare.App.Tests/ProcessesPageUiChecks.cs`
 
 **Interfaces:**
-- Consumes: Tasks 4, 6 and 7.
-- Produces (page-private):
-  - `State(activity,key)` returns `activity.Gpu` for the four GPU keys.
-  - `Gap(process,key)` returns `process.GpuGap` for them. The app overload keeps its first-reason rule.
-  - A GPU key is stale when `stale||activity.GpuStale`.
-  - `Format`: `"gpu"` like CPU (`"0.#"` + `" %"`); `"gpumemory"` and `"gpushared"` like memory (`Ui.Bytes(value)`).
-  - The `"gpuengine"` cell takes `EngineText`:
-    - null gives "—" with the GPU cell's reason.
-    - "" gives "" with no tooltip.
-    - A label gives the label, with the tooltip `ProcessCopy.EngineTip(app.GpuBusiest!)`, or `process.GpuEngines![0]` on a process row.
-  - `SpokenLabels`: `["gpu"]="GPU",["gpuengine"]="GPU engine",["gpumemory"]="GPU memory",["gpushared"]="shared GPU memory"`. `Spoken` skips a cell whose text is "".
+- Consumes: Tasks 4 and 6.
+- Produces:
+  - `ProcessColumnKeys.All` gains `"gpu","gpuengine","gpumemory","gpushared"` after `"upload"`. `Default` becomes `["cpu","memory","io","disk","network","gpu","gpumemory"]`. `AdministratorOnly` and `DiskKeys` are unchanged.
+  - `Header`: `"gpu"=>"GPU","gpuengine"=>"GPU ENGINE","gpumemory"=>"GPU MEMORY","gpushared"=>"SHARED GPU MEMORY"`. `PickerOrder` becomes `["cpu","memory","io","disk","network","gpu","gpumemory","pid","ioread","iowrite","diskread","diskwrite","download","upload","gpuengine","gpushared"]`.
+  - Page (private):
+    - `State(activity,key)` returns `activity.Gpu` for the four GPU keys, and `Gap(process,key)` returns `process.GpuGap`. The app overload keeps its first-reason rule.
+    - A GPU key is stale when `stale||activity.GpuStale`.
+    - `Format`: `"gpu"` like CPU; `"gpumemory"` and `"gpushared"` like memory (`Ui.Bytes(value)`).
+    - The `"gpuengine"` cell takes `EngineText`. Null gives "—" with the GPU cell's reason. "" gives "" with no tooltip. A label gives the label, with the tooltip `ProcessCopy.EngineTip(app.GpuBusiest!)`, or `process.GpuEngines![0]` on a process row.
+    - `SpokenLabels`: `["gpu"]="GPU",["gpuengine"]="GPU engine",["gpumemory"]="GPU memory",["gpushared"]="shared GPU memory"`. `Spoken` skips a cell whose text is "".
 
-- [ ] **Step 1: Update the fixtures and existing checks, and write the new checks**
+- [ ] **Step 1: Update and write the tests and checks**
 
 ```csharp
-// Sample(pid,name,cpu) gains {GpuPercent=0,GpuEngine="",GpuEngines=[],GpuDedicatedBytes=1_000_000,GpuSharedBytes=0}, so fixtures have known zeros.
-// Existing asserts that name the default columns:
+// ProcessSettingsTests: Defaults_are_off_and_the_five_default_columns becomes Defaults_are_off_and_the_seven_default_columns, expecting ["cpu","memory","io","disk","network","gpu","gpumemory"].
+// Unknown_null_and_duplicate_keys_are_dropped_and_ordered: "gpu" (now known) becomes "gputemp"; ["cpu","upload"] stays.
+// Toggle_changes_only_that_key: the lists gain "gpu","gpumemory" (pid on: ["pid","cpu","memory","io","disk","network","gpu","gpumemory"]; cpu off: ["memory","io","disk","network","gpu","gpumemory"]).
+[Fact] public void Gpu_keys_follow_upload_and_none_needs_administrator(){ Assert.Equal(["gpu","gpuengine","gpumemory","gpushared"],ProcessColumnKeys.All.Skip(12));Assert.Equal(16,ProcessColumnKeys.All.Count);
+    Assert.Empty(ProcessColumnKeys.AdministratorOnly.Intersect(ProcessColumnKeys.All.Skip(12)));
+    Assert.Equal(["GPU","GPU ENGINE","GPU MEMORY","SHARED GPU MEMORY"],ProcessColumnKeys.All.Skip(12).Select(ProcessTableColumns.Header));}
+// ProcessTableTests.Picker_disables_admin_entries_and_keeps_their_saved_state: the key list becomes PickerOrder above; every GPU entry is Enabled while not elevated.
+
+// ProcessesPageUiChecks. Sample(pid,name,cpu) gains {GpuPercent=0,GpuEngine="",GpuEngines=[],GpuDedicatedBytes=1_000_000,GpuSharedBytes=0}, so fixtures hold known zeros. Existing asserts:
 //   Column_picker_has_every_column_in_fixed_order: headers ["CPU","MEMORY","I/O","DISK","NETWORK","GPU","GPU MEMORY","PID","I/O READ","I/O WRITE","DISK READ","DISK WRITE","↓ DOWNLOAD","↑ UPLOAD","GPU ENGINE","SHARED GPU MEMORY"],
-//     checked [7×true, 9×false], count 16;
+//     checked 7 × true then 9 × false, count 16;
 //   Standard_user_hides_admin_columns…: ["NAME","CPU","MEMORY","I/O","GPU","GPU MEMORY"]; Elevated_shows_the_full_set…: ["NAME","CPU","MEMORY","I/O","DISK","NETWORK","GPU","GPU MEMORY"];
 //   Automation_names_and_spoken_summary: "chrome.exe, 3 processes, CPU 9 %, memory 192.0 MB, I/O 9.0 KB/s, disk 22.5 KB/s, network 12.0 KB/s, GPU 0 %, GPU memory 3.0 MB".
-private static void Gpu_columns_show_by_default_for_fresh_and_0_13_settings_but_not_a_custom_list(){
-    IReadOnlyList<string> Saved(string json)=>SettingsCodec.Read(json).Settings.ProcessColumns;
-    Assert.Equal(["NAME","CPU","MEMORY","I/O","GPU","GPU MEMORY"],Headers(Page(columns:Saved("{}")).Page));
-    Assert.Equal(["NAME","CPU","MEMORY","I/O","GPU","GPU MEMORY"],Headers(Page(columns:Saved("{\"ProcessColumns\":[\"cpu\",\"memory\",\"io\",\"disk\",\"network\"]}")).Page));
-    var custom=Page(columns:Saved("{\"ProcessColumns\":[\"cpu\",\"memory\"]}")).Page;Assert.Equal(["NAME","CPU","MEMORY"],Headers(custom));
-    Assert.False(PickerItem(custom,"GPU").IsChecked);Assert.False(PickerItem(custom,"GPU MEMORY").IsChecked);}
+// Unknown(activity,gap=None) nulls every sample's GPU values and sets GpuGap. WithEngine(pct,name,label,adapter) gives that app one engine.
+// WithEngines() holds a.exe "GPU 0 · Copy", b.exe "GPU 1 · 3D", zero.exe as a known zero and unknown.exe as unknown. ColumnNamed(p,header) finds a DataGrid column by header.
 private static void Gpu_dashes_name_each_reason(){
     foreach(string status in new[]{"GPU counters unavailable (error 0xC0000BBC)","GPU counters unavailable","GPU counters unreadable","Too many GPU counter instances"})
     {var (p,_)=Page(activity:Unknown(Fixture()) with{Gpu=new(false,status)});Assert.Equal("—",Cell(p,"Code.exe","gpu"));Assert.Equal(status,Tip(p,"Code.exe","gpu"));Assert.Equal(status,Tip(p,"Code.exe","gpumemory"));}
@@ -712,33 +665,81 @@ private static void Gpu_engine_cell_tooltip_and_known_zeros(){ var (p,_)=Page(co
     Assert.Equal("0 %",Cell(p,"Explorer.EXE","gpu"));Assert.Null(Tip(p,"Explorer.EXE","gpu"));Assert.Equal("",Cell(p,"Explorer.EXE","gpuengine"));Assert.Null(Tip(p,"Explorer.EXE","gpuengine"));
     Assert.Equal("0 B",Cell(p,"Explorer.EXE","gpushared"));}
 private static void Gpu_engine_sorts_ascending_first_and_gpu_descending_first(){ var (p,_)=Page(columns:[..ProcessColumnKeys.All],activity:WithEngines());
-    ClickHeader(p,"GPU ENGINE");Assert.Equal(ListSortDirection.Ascending,Column(p,"GPU ENGINE").SortDirection);Assert.Equal(["a.exe","b.exe","zero.exe","unknown.exe"],AppNames(p));
+    ClickHeader(p,"GPU ENGINE");Assert.Equal(ListSortDirection.Ascending,ColumnNamed(p,"GPU ENGINE").SortDirection);Assert.Equal(["a.exe","b.exe","zero.exe","unknown.exe"],AppNames(p));
     ClickHeader(p,"GPU ENGINE");Assert.Equal(["b.exe","a.exe","zero.exe","unknown.exe"],AppNames(p));
-    ClickHeader(p,"GPU");Assert.Equal(ListSortDirection.Descending,Column(p,"GPU").SortDirection);}
+    ClickHeader(p,"GPU");Assert.Equal(ListSortDirection.Descending,ColumnNamed(p,"GPU").SortDirection);}
 private static void Gpu_spoken_labels(){ var (p,_)=Page(columns:[..ProcessColumnKeys.All],activity:WithEngine(40,"Code.exe","GPU 1 · 3D","NVIDIA GeForce RTX 4070"));
-    Assert.EndsWith(", GPU 40 %, GPU engine GPU 1 · 3D, GPU memory 1.0 MB, shared GPU memory 0 B",Row(p,"Code.exe").Spoken);
-    Assert.DoesNotContain("GPU engine",Row(p,"Explorer.EXE").Spoken);
+    Assert.EndsWith(", GPU 40 %, GPU engine GPU 1 · 3D, GPU memory 1.0 MB, shared GPU memory 0 B",Row(p,"Code.exe").Spoken);Assert.DoesNotContain("GPU engine",Row(p,"Explorer.EXE").Spoken);
     var (u,_)=Page(columns:[..ProcessColumnKeys.All],activity:Unknown(Fixture(),ProcessGap.FirstSample));Assert.Contains("GPU engine unknown (first sample)",Row(u,"Code.exe").Spoken);}
-// Unknown(activity,gap=None) nulls every sample's GPU values and sets GpuGap. WithEngine(pct,name,label,adapter) gives that app one engine.
-// WithEngines() holds a.exe "GPU 0 · Copy", b.exe "GPU 1 · 3D", zero.exe known zero and unknown.exe unknown. Run calls the five new checks after Footer_lists_the_definitions().
+// Run calls the four new checks after Footer_lists_the_definitions().
 ```
 
-- [ ] **Step 2: Build, commit the checks, push and verify failure**
+- [ ] **Step 2: Run the Core tests and build to verify failure.** Run the `ProcessSettingsTests|ProcessTableTests` filter. Expected: `Gpu_keys_follow_upload_and_none_needs_administrator`, `Defaults_are_off_and_the_seven_default_columns` and the picker fact fail. The App checks compile.
+- [ ] **Step 3: Implement the keys, headers, picker order and the page cells**
+- [ ] **Step 4: Core tests and baseline, commit, push and verify in CI**
 
 ```bash
-git add tests/DeadWare.App.Tests/ProcessesPageUiChecks.cs
+git add tests/DeadWare.Tests/ProcessSettingsTests.cs tests/DeadWare.Tests/ProcessTableTests.cs tests/DeadWare.App.Tests/ProcessesPageUiChecks.cs
 git commit -m "test(processes): GPU columns, gaps, engine tooltip, sorting and spoken labels"
-```
-Run (CI). Expected: the UI fact fails in phase `"processes page"` at the first GPU cell assertion: the page has no GPU cell code yet.
-
-- [ ] **Step 3: Implement the cells, the sort direction and the spoken labels**
-- [ ] **Step 4: Commit, push and verify pass**
-
-```bash
-git add src/DeadWare.App/ProcessesPage.cs
+git add src/DeadWare.Core/ProcessColumnKeys.cs src/DeadWare.Core/ProcessTable.cs src/DeadWare.App/ProcessesPage.cs
 git commit -m "feat(processes): GPU, GPU engine, GPU memory and shared GPU memory columns"
 ```
-Run (CI). Expected: green. The UI fact passes `"processes page"`, `"processes shell keys"` and `"shell chrome"`. ShellUiChecks finds the help line by the prefix "Turning it on adds one Windows process scan" and compares it with `ScanSentence`.
+Run (CI). Expected: green. The UI fact passes `"processes page"`, `"processes shell keys"` and `"shell chrome"`.
+
+---
+
+### Task 8: The one-time column upgrade for saved settings
+
+**Files:**
+- Modify: `src/DeadWare.Core/ProcessColumnKeys.cs` (`PreviousDefault`, `CurrentVersion`)
+- Modify: `src/DeadWare.Core/Monitoring.cs`: `UserSettings` (after `ProcessColumns`, :404) and `SettingsCodec.Read` (after `s.ProcessColumns=ProcessColumnKeys.Normalize(s.ProcessColumns);`, :443)
+- Test: `tests/DeadWare.Tests/ProcessSettingsTests.cs`, `tests/DeadWare.App.Tests/ProcessesPageUiChecks.cs` (one check)
+
+**Interfaces:**
+- Consumes: Task 7 `ProcessColumnKeys.Default`.
+- Produces:
+  - `public static IReadOnlyList<string> ProcessColumnKeys.PreviousDefault{get;}=["cpu","memory","io","disk","network"]` and `public const int ProcessColumnKeys.CurrentVersion=2`.
+  - `UserSettings.ProcessColumnsVersion` (int, initializer `ProcessColumnKeys.CurrentVersion`).
+  - `SettingsCodec.Read` upgrades a file without the property (`document.RootElement.TryGetProperty(nameof(UserSettings.ProcessColumnsVersion),out _)` false) or with a value below 2. A normalized list that equals `PreviousDefault` as a set becomes `[..ProcessColumnKeys.Default]`; any other list stays. Read then always sets the version to 2. `Normalize` and `Toggle` never upgrade.
+
+- [ ] **Step 1: Write the failing tests and check**
+
+```csharp
+// Defaults_are_off_and_the_seven_default_columns also asserts Assert.Equal(2,s.ProcessColumnsVersion).
+[Theory][InlineData("[\"cpu\",\"memory\",\"io\",\"disk\",\"network\"]")][InlineData("[\"network\",\"disk\",\"io\",\"memory\",\"cpu\",\"cpu\"]")][InlineData("[\"cpu\",\"memory\",\"io\",\"disk\",\"network\",\"bogus\",null]")]
+public void A_version_less_0_13_default_reads_as_the_new_default(string list){ var s=SettingsCodec.Read($"{{\"ProcessColumns\":{list}}}").Settings;
+    Assert.Equal(ProcessColumnKeys.Default,s.ProcessColumns);Assert.Equal(2,s.ProcessColumnsVersion);}
+[Fact] public void A_version_below_2_is_upgraded_too()=>Assert.Equal(ProcessColumnKeys.Default,SettingsCodec.Read("{\"ProcessColumnsVersion\":1,\"ProcessColumns\":[\"cpu\",\"memory\",\"io\",\"disk\",\"network\"]}").Settings.ProcessColumns);
+[Theory][InlineData("[\"cpu\",\"memory\"]","cpu,memory")][InlineData("[\"pid\",\"cpu\",\"memory\",\"io\",\"disk\",\"network\"]","pid,cpu,memory,io,disk,network")][InlineData("[]","")]
+public void Any_other_version_less_list_is_kept(string list,string expected){ var s=SettingsCodec.Read($"{{\"ProcessColumns\":{list}}}").Settings;
+    Assert.Equal(expected,string.Join(",",s.ProcessColumns));Assert.Equal(2,s.ProcessColumnsVersion);}
+[Fact] public void The_new_default_without_gpu_survives_round_trips(){
+    var once=SettingsCodec.Read("{\"ProcessColumnsVersion\":2,\"ProcessColumns\":[\"cpu\",\"memory\",\"io\",\"disk\",\"network\"]}").Settings;
+    var twice=SettingsCodec.Read(SettingsCodec.Write(once)).Settings;Assert.Equal(ProcessColumnKeys.PreviousDefault,twice.ProcessColumns);Assert.Equal(2,twice.ProcessColumnsVersion);
+    var fresh=new UserSettings();fresh.ProcessColumns=ProcessColumnKeys.Toggle(ProcessColumnKeys.Toggle(fresh.ProcessColumns,"gpu",false),"gpumemory",false);
+    Assert.Equal(ProcessColumnKeys.PreviousDefault,SettingsCodec.Read(SettingsCodec.Write(SettingsCodec.Read(SettingsCodec.Write(fresh)).Settings)).Settings.ProcessColumns);}
+[Fact] public void Normalize_and_toggle_never_upgrade(){ Assert.Equal(ProcessColumnKeys.PreviousDefault,ProcessColumnKeys.Normalize(ProcessColumnKeys.PreviousDefault));
+    Assert.Equal(["pid","cpu","memory","io","disk","network"],ProcessColumnKeys.Toggle(ProcessColumnKeys.PreviousDefault,"pid",true));}
+// ProcessesPageUiChecks, called from Run after the Task 7 checks:
+private static void Gpu_columns_show_for_fresh_and_0_13_settings_but_not_a_custom_list(){
+    IReadOnlyList<string> Saved(string json)=>SettingsCodec.Read(json).Settings.ProcessColumns;
+    Assert.Equal(["NAME","CPU","MEMORY","I/O","GPU","GPU MEMORY"],Headers(Page(columns:Saved("{}")).Page));
+    Assert.Equal(["NAME","CPU","MEMORY","I/O","GPU","GPU MEMORY"],Headers(Page(columns:Saved("{\"ProcessColumns\":[\"cpu\",\"memory\",\"io\",\"disk\",\"network\"]}")).Page));
+    var custom=Page(columns:Saved("{\"ProcessColumns\":[\"cpu\",\"memory\"]}")).Page;Assert.Equal(["NAME","CPU","MEMORY"],Headers(custom));
+    Assert.False(PickerItem(custom,"GPU").IsChecked);Assert.False(PickerItem(custom,"GPU MEMORY").IsChecked);}
+```
+
+- [ ] **Step 2: Run to verify failure.** Run the `ProcessSettingsTests` filter. Expected: `error CS0117` for `PreviousDefault`, and `error CS1061` for `ProcessColumnsVersion`.
+- [ ] **Step 3: Implement the version and the upgrade**
+- [ ] **Step 4: Run the tests and the Core baseline, commit, push and verify in CI**
+
+```bash
+git add tests/DeadWare.Tests/ProcessSettingsTests.cs tests/DeadWare.App.Tests/ProcessesPageUiChecks.cs
+git commit -m "test(settings): the saved 0.13 default gains the GPU columns once"
+git add src/DeadWare.Core/ProcessColumnKeys.cs src/DeadWare.Core/Monitoring.cs
+git commit -m "feat(settings): upgrade saved 0.13 default columns to the new default once"
+```
+Run (CI). Expected: green. The UI fact passes `"processes page"`.
 
 ---
 
@@ -751,7 +752,7 @@ Run (CI). Expected: green. The UI fact passes `"processes page"`, `"processes sh
 - Test: `tests/DeadWare.Tests/ProcessMinuteFolderTests.cs`
 
 **Interfaces:**
-- Consumes: Task 4 `ProcessActivity.GpuIntervalSeconds` and `ProcessDeltas.GpuSeconds`/`GpuMemoryByteSeconds`; Task 7 `ProcessGrouping.GpuUse`; 0.14.1 `ProcessHistory.SavedName`.
+- Consumes: Task 4 `ProcessActivity.GpuIntervalSeconds` and `ProcessDeltas.GpuSeconds`/`GpuMemoryByteSeconds`; Task 6 `ProcessGrouping.GpuUse`; 0.14.1 `ProcessHistory.SavedName`.
 - Produces:
   - `ProcessHistory.MaximumApplications=40`.
   - `ProcessAppMinute` init members `double? GpuSeconds` and `double? GpuMemoryByteSeconds`.
@@ -767,7 +768,7 @@ Run (CI). Expected: green. The UI fact passes `"processes page"`, `"processes sh
 
 ```csharp
 // P(...) gains gpu (double?) and gpuMem (long?): gpu null leaves GpuEngines null; gpu 0 gives []; otherwise one GpuEngineUse(0xA,0,0,"3D","GPU 0 · 3D",null,gpu).
-// Engine(type,eng) picks another engine. A(...) gains gpuInterval (double?) for ProcessActivity.GpuIntervalSeconds.
+// Engine(type,eng) picks another engine. A(...) gains gpuInterval (double?) for ProcessActivity.GpuIntervalSeconds. App(b,name) is b.Applications.Single(a=>a.Name==name).
 [Fact] public void Gpu_is_a_fourth_top_ten(){ /* 50 apps: 10 CPU leaders, 10 memory leaders, 10 I/O leaders, 10 GPU leaders (gpu 10..19 %), 10 small; 60 activities with gpuInterval 1 */
     Assert.Equal(40,ProcessHistory.MaximumApplications);Assert.Equal(41,b.Applications.Count);Assert.All(gpuLeaders,n=>Assert.Contains(b.Applications,a=>a.Name==n));Assert.Equal(60,b.GpuCoveredSeconds,6);}
 [Fact] public void Two_members_busy_on_different_engines_record_the_higher_sum(){ /* a.exe pid 1 "3D" 30 %, pid 2 "Copy" 50 %, 60 activities, gpuInterval 1 */ Assert.Equal(30,App(b,"a.exe").GpuSeconds!.Value,6);}   // 0.5 × 60, not 0.8 × 60
@@ -897,7 +898,8 @@ Run (CI). Expected: green. `ProcessHistoryServiceTests` and `CoolingShutdownTest
 - [ ] **Step 1: Write the failing tests**
 
 ```csharp
-// G(minute,covered,apps) = Batch(minute,apps:apps) with{GpuCoveredSeconds=covered}; Gpu(name,seconds,mem=0)=App(name,1) with{GpuSeconds=seconds,GpuMemoryByteSeconds=mem}.
+// G(minute,covered,apps) = Batch(minute,apps:apps) with{GpuCoveredSeconds=covered}; Gpu(name,seconds,mem=0)=App(name,1) with{GpuSeconds=seconds,GpuMemoryByteSeconds=mem};
+// Read(rank,minutes=1)=store.ReadApplications("m",Day,Day.AddMinutes(minutes),rank,Now) on the fixture's store.
 [Fact] public void Rank_by_gpu_orders_by_gpu_seconds_and_the_total_includes_everything_else(){ store.Append("m",[G(Day,60,[Gpu("b.exe",10),Gpu("a.exe",30),App("c.exe",99) with{GpuSeconds=0,GpuMemoryByteSeconds=0},Else(1) with{GpuSeconds=5,GpuMemoryByteSeconds=0}])],Now);
     var v=Read(ProcessRank.Gpu);Assert.Equal(["a.exe","b.exe","c.exe"],v.Rows.Select(r=>r.Name));Assert.Equal(45,v.RankTotal,6);Assert.Equal(30,v.Rows[0].PartOf(ProcessRank.Gpu),6);}
 [Fact] public void Avg_gpu_is_a_share_of_gpu_covered_time_only(){ store.Append("m",[G(Day,60,[Gpu("a.exe",30),Else(1) with{GpuSeconds=150,GpuMemoryByteSeconds=0}]),G(Day.AddMinutes(1),60,[Gpu("a.exe",0),Else(1) with{GpuSeconds=0,GpuMemoryByteSeconds=0}]),
@@ -937,7 +939,6 @@ Run (CI). Expected: green. `ProcessHistoryService` passes `ProcessRank.Gpu` thro
   - the columns (:70-72);
   - 0.14.1's `ResourceRow` class and `RefreshRows`;
   - the note (:77);
-  - `RefreshRows`'s summary (:275-289);
   - `Metric` (:360-365).
 - Modify: `src/DeadWare.App/Windows.cs:159` (History and alerts help)
 - Modify: `src/DeadWare.App/UsageHistoryPage.cs:112` (Keep a longer record)
@@ -954,7 +955,6 @@ Run (CI). Expected: green. `ProcessHistoryService` passes `ProcessRank.Gpu` thro
     - Avg GPU memory uses `Ui.Bytes`.
   - Copy: the note replaces "Each minute lists up to 30 of the busiest applications by CPU, memory and I/O;" with "Each minute lists up to 40 of the busiest applications by CPU, memory, I/O and GPU;". The spec quotes this sentence shortened; the rest of the sentence ("Everything else holds the rest of the apps the scan saw.") stays. The note then gains, after its "Avg memory while listed …" sentence, "Avg GPU is its busiest GPU engine's share of the time GPU data was recorded; Avg GPU memory while listed averages its dedicated GPU memory over the minutes it was listed with GPU data."
   - `Metric(ProcessRank.Gpu)` is `("%", 100, "GPU % of the busiest engine", "GPU", Theme.GraphKey("gpu"))`, with an automatic maximum (null) when the charted app is Everything else.
-  - A listed slot ranked by GPU with recorded minutes and `GpuCoveredSeconds` 0 shows "No GPU data in this span." in place of the table, like the empty-slot case. Clear stays.
   - Windows.cs:159 ends "While Per-process monitoring is on, it also keeps the busiest apps' CPU, memory, I/O and GPU for 30 days.". UsageHistoryPage.cs:112 ends "While Per-process monitoring is on, it also keeps the busiest apps' CPU, memory, I/O and GPU for 30 days (up to 192 MiB).".
 
 - [ ] **Step 1: Update and write the checks**
@@ -993,7 +993,7 @@ private static void The_note_names_gpu(ApplicationResourcesCard card){ var note=
 git add tests/DeadWare.App.Tests/ApplicationResourcesUiChecks.cs tests/DeadWare.App.Tests/ShellUiChecks.cs tests/DeadWare.App.Tests/UsageHistoryUiChecks.cs
 git commit -m "test(usage): GPU rank, columns, tooltips, chart and copy on Application resources"
 ```
-Run (CI). Expected: the UI fact fails in phase `"shell chrome"` at ShellUiChecks' `EndsWith`, which runs before `"usage history"`.
+Run (CI). Expected: the UI fact fails at the first changed copy assertion, in phase `"shell chrome"` or `"usage history"`, whichever runs first.
 
 - [ ] **Step 3: Implement the rank, columns, row cells, note, chart metric, slot text and copy**
 - [ ] **Step 4: Commit, push and verify pass**
@@ -1010,43 +1010,50 @@ Run (CI). Expected: green. The UI fact passes `"shell chrome"` and `"usage histo
 
 **Files:**
 - Modify: `src/DeadWare.App/UsageHistoryPage.cs`: `Moments` (:30) and its comment (:29); `ShowMoment`'s doc comment (:154-156)
-- Modify: `src/DeadWare.App/ApplicationResourcesCard.cs` (`ShowSlot` with `ProcessRank.Gpu`; the slot text from Task 12)
+- Modify: `src/DeadWare.App/ApplicationResourcesCard.cs` (`RefreshRows`'s summary, :275-289: the "No GPU data in this span." text)
 - Test: `tests/DeadWare.App.Tests/ApplicationResourcesUiChecks.cs`
 
 **Interfaces:**
-- Consumes: 0.14.1's `SelectionMoved`, `marked`, `MoveMoment`, `MarkMoment` and the Esc handler, all of which loop over `Moments`; Task 12's slot text; `ShowSlot(DateTimeOffset,DateTimeOffset,ProcessRank)`.
+- Consumes: 0.14.1's `SelectionMoved`, `marked`, `MoveMoment`, `MarkMoment` and the Esc handler, all of which loop over `Moments`; `ShowSlot(DateTimeOffset,DateTimeOffset,ProcessRank)`; Task 11's `ProcessResourceView.GpuCoveredSeconds`.
 - Produces: `Moments = [("cpu", ProcessRank.CpuTime), ("memory", ProcessRank.AverageMemory), ("gpu", ProcessRank.Gpu)]`.
   - The GPU chart becomes `Selectable` and focusable. It shares the CPU chart's grid, because every metric is read with the CPU chart's `points`.
   - `ShowMoment` and `MoveMoment` return when `data` has no `"gpu"` view, so with no GPU selected there is nothing to click.
   - `MarkMoment` sets the GPU chart's index to null when it has no bucket at `marked`.
   - The comment at :29 names CPU, RAM and GPU.
+  - On the card, a listed slot ranked by GPU whose view has recorded minutes but `GpuCoveredSeconds` 0 shows "No GPU data in this span." in place of the table, as the empty-slot case does ("No process data in this span." still wins when the slot has no recorded minutes). Clear stays.
 
 - [ ] **Step 1: Write the failing checks**
 
 ```csharp
-// Only_the_cpu_and_ram_charts_are_selectable becomes Only_the_cpu_ram_and_gpu_charts_are_selectable: Selectable and Focusable on "cpu","memory","gpu", on no other chart.
-// WithGpu(page): page.Apply(data with{GpuName="Fixture GPU",Metrics=data.Metrics.SetItem("gpu",data.Metrics["cpu"])}) so the GPU chart has the CPU chart's buckets.
-private static void Clicking_a_gpu_point_ranks_the_slot_by_gpu(UsageHistoryPage page,ApplicationResourcesCard card){ WithGpu(page);Activate(page.Chart("gpu"),1);var bucket=Bucket(page.Chart("gpu"),1);
-    WaitFor(()=>!card.Loading&&card.View is {} v&&v.From==bucket.Start);Assert.Equal(ProcessRank.Gpu,card.Rank);Assert.StartsWith("Busiest apps · ",Heading(card));Assert.Equal("Everything else",LastRowName(card));
-    Assert.Equal([1,1,1],new[]{"cpu","memory","gpu"}.Select(k=>page.Chart(k).SelectedIndex));Layout(page);Assert.All(new[]{"cpu","memory","gpu"},k=>Assert.Equal(1,Hairlines(page.Chart(k))));}
+// Only_the_cpu_and_ram_charts_are_selectable becomes Only_the_cpu_ram_and_gpu_charts_are_selectable: Selectable and Focusable on "cpu", "memory" and "gpu", and on no other chart.
+// PageData(page) reads the page's data field by reflection, as 0.14.1's checks do. WithGpu(page) applies PageData(page) with GpuName "Fixture GPU" and a copy of Metrics whose
+// "gpu" view is the CPU view, so the GPU chart has the CPU chart's buckets; WithoutGpu(data) is a copy with GpuName null and no "gpu" view. The shared fixture's minutes have no GPU data.
+static readonly string[] Three=["cpu","memory","gpu"];
+private static void Clicking_a_gpu_point_ranks_the_slot_by_gpu(UsageHistoryPage page,ApplicationResourcesCard card){ WithGpu(page);Activate(page.Chart("gpu"),1);
+    WaitFor(()=>!card.Loading&&card.Slot is not null&&card.Rank==ProcessRank.Gpu);Assert.StartsWith("Busiest apps · ",Heading(card));
+    Assert.Equal([1,1,1],Three.Select(k=>page.Chart(k).SelectedIndex));Layout(page);Assert.All(Three,k=>Assert.Equal(1,Hairlines(page.Chart(k))));
+    Assert.Contains("No GPU data in this span.",Texts(card));Assert.True(Button(card,"Clear")!.IsVisible);
+    Activate(page.Chart("cpu"),1);WaitFor(()=>!card.Loading&&card.Rank==ProcessRank.CpuTime);Assert.DoesNotContain("No GPU data in this span.",Texts(card));Click(Button(card,"Clear"));}
 private static void Keys_on_the_gpu_chart_move_all_three_and_esc_clears(UsageHistoryPage page,ApplicationResourcesCard card){ WithGpu(page);var gpu=page.Chart("gpu");
-    Press(gpu,Key.Right);Assert.Equal([2,2,2],new[]{"cpu","memory","gpu"}.Select(k=>page.Chart(k).SelectedIndex));
+    Press(gpu,Key.Right);Assert.Equal([0,0,0],Three.Select(k=>page.Chart(k).SelectedIndex));Press(gpu,Key.Right);Assert.Equal([1,1,1],Three.Select(k=>page.Chart(k).SelectedIndex));
     Assert.True(gpu.HandleKey(Key.Enter));WaitFor(()=>!card.Loading&&card.Rank==ProcessRank.Gpu&&card.Slot is not null);
-    Press(gpu,Key.Escape);Assert.Null(card.Slot);Assert.All(new[]{"cpu","memory","gpu"},k=>Assert.Null(page.Chart(k).SelectedIndex));}
+    Press(gpu,Key.Escape);Assert.Null(card.Slot);Assert.All(Three,k=>Assert.Null(page.Chart(k).SelectedIndex));}
 private static void Clear_removes_the_gpu_hairline_too(UsageHistoryPage page,ApplicationResourcesCard card){ WithGpu(page);Activate(page.Chart("gpu"),1);WaitFor(()=>card.Slot is not null);
-    Click(Button(card,"Clear"));Assert.All(new[]{"cpu","memory","gpu"},k=>Assert.Null(page.Chart(k).SelectedIndex));}
-private static void A_gpu_click_on_minutes_without_gpu_data_says_so(UsageHistoryPage page,ApplicationResourcesCard card){   // the folder fixture's minutes have no GPU data
-    WithGpu(page);Activate(page.Chart("gpu"),1);WaitFor(()=>!card.Loading&&card.Slot is not null);Assert.Contains("No GPU data in this span.",Texts(card));Assert.True(Button(card,"Clear")!.IsVisible);
-    Activate(page.Chart("cpu"),1);WaitFor(()=>!card.Loading&&card.Rank==ProcessRank.CpuTime);Assert.DoesNotContain("No GPU data in this span.",Texts(card));}
+    Click(Button(card,"Clear"));Assert.All(Three,k=>Assert.Null(page.Chart(k).SelectedIndex));}
 private static void A_gpu_click_on_a_slot_without_process_data_says_so(UsageHistoryPage page,ApplicationResourcesCard card,DateTimeOffset lastProcessMinute){
-    // As Clicking_a_slot_without_process_data_says_so, on the GPU chart: "No process data in this span." and Clear stays.
-}
+    // The empty bucket Clicking_a_slot_without_process_data_says_so uses (after lastProcessMinute), activated on the GPU chart.
+    WithGpu(page);Activate(page.Chart("gpu"),EmptyIndex(page,lastProcessMinute));WaitFor(()=>!card.Loading&&card.Slot is not null);
+    Assert.Contains("No process data in this span.",Texts(card));Assert.DoesNotContain("No GPU data in this span.",Texts(card));Assert.True(Button(card,"Clear")!.IsVisible);Click(Button(card,"Clear"));}
 private static void Clearing_the_dashboard_gpu_keeps_the_listed_gpu_moment(UsageHistoryPage page,ApplicationResourcesCard card){   // Review Focus 4
-    WithGpu(page);Activate(page.Chart("gpu"),1);WaitFor(()=>card.Slot is not null);var slot=card.Slot;var data=PageData(page);
-    page.Apply(data with{GpuName=null,Metrics=data.Metrics.Remove("gpu")});
+    WithGpu(page);Activate(page.Chart("gpu"),1);WaitFor(()=>card.Slot is not null);var slot=card.Slot;page.Apply(WithoutGpu(PageData(page)));
     Assert.Null(page.Chart("gpu").SelectedIndex);Assert.Equal(1,page.Chart("cpu").SelectedIndex);Assert.Equal(1,page.Chart("memory").SelectedIndex);Assert.Equal(slot,card.Slot);
     Activate(page.Chart("gpu"),0);Assert.Equal(slot,card.Slot);Press(page.Chart("cpu"),Key.Right);Assert.Equal(2,page.Chart("memory").SelectedIndex);Press(page.Chart("cpu"),Key.Escape);}
-// Run calls these after 0.14.1's Esc_clears_a_cursor_that_lists_nothing_and_the_refresh_keeps_it_cleared, each ending with nothing listed.
+private static void A_gpu_slot_with_gpu_data_lists_apps_by_gpu_and_everything_else(string folder){
+    // A store with one minute: a.exe 30 GPU-s, b.exe 6 GPU-s, Everything else 3 GPU-s, GpuCoveredSeconds 60.
+    var card=new ApplicationResourcesCard(Session(null,folder));card.ShowSlot(minute,minute.AddMinutes(1),ProcessRank.Gpu);WaitFor(()=>!card.Loading&&card.View is not null);
+    Assert.Equal(["a.exe","b.exe","Everything else"],RowNames(card));Assert.Equal("50 %",Cell(Row(card,"a.exe"),"AverageGpu"));Assert.Equal("5 %",Cell(Row(card,"Everything else"),"AverageGpu"));}
+// Run calls the page checks after 0.14.1's Esc_clears_a_cursor_that_lists_nothing_and_the_refresh_keeps_it_cleared, each ending with nothing listed, and the folder check with the other folder checks.
+// EmptyIndex is the bucket lookup Clicking_a_slot_without_process_data_says_so already does, moved to a helper.
 ```
 
 - [ ] **Step 2: Build, commit the checks, push and verify failure**
