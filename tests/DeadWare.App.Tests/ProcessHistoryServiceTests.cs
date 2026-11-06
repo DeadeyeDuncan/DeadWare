@@ -3,6 +3,7 @@ using System.Reflection;
 using System.Runtime.CompilerServices;
 using DeadWare.App;
 using DeadWare.Core;
+using Microsoft.Data.Sqlite;
 using Xunit;
 
 namespace DeadWare.App.Tests;
@@ -139,6 +140,44 @@ public class ProcessHistoryServiceTests
     }
 
     [Fact]
+    public async Task Days_past_retention_are_expired_at_start_while_recording_is_off()
+    {
+        using var fixture = new Fixture();
+        var store = new ProcessHistoryStore(fixture.Path); store.Initialize();
+        var now = DateTimeOffset.UtcNow; var old = UsageMetrics.Floor(now.AddDays(-40));
+        // The recent minute first: an append expires older days before it saves.
+        store.Append("tablet", [Minute(Start)], now);
+        store.Append("tablet", [Minute(old)], old.AddHours(1));
+        Assert.Equal([old, Start], Minutes(fixture));
+        var service = new ProcessHistoryService(fixture.Path, "tablet");
+        service.Configure(false, true); service.Start(); await service.StopAsync();
+        Assert.False(service.Failed);
+        Assert.Contains("recorded while Per-process monitoring and usage history are both on", service.Status);
+        Assert.Equal([Start], Minutes(fixture));
+    }
+
+    [Fact]
+    public async Task The_flush_tick_expires_again_when_the_utc_day_changes_while_recording_is_off()
+    {
+        using var fixture = new Fixture();
+        var store = new ProcessHistoryStore(fixture.Path); store.Initialize();
+        var now = DateTimeOffset.UtcNow;
+        // The first minute of the retention window: kept today, past retention tomorrow.
+        var edge = ProcessHistoryStore.RetentionCutoff(now);
+        store.Append("tablet", [Minute(edge), Minute(Start)], now);
+        var service = new ProcessHistoryService(fixture.Path, "tablet", new NextDay(), TimeSpan.FromMilliseconds(30));
+        service.Configure(true, false); service.Start();
+        try
+        {
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            while (Minutes(fixture).Count == 2) await Task.Delay(20, deadline.Token);
+            Assert.Equal([Start], Minutes(fixture));
+            Assert.False(service.Failed);
+        }
+        finally { await service.StopAsync(); }
+    }
+
+    [Fact]
     public async Task Session_switches_configure_process_history_and_need_no_service()
     {
         using var fixture = new Fixture();
@@ -179,6 +218,25 @@ public class ProcessHistoryServiceTests
         var writer = typeof(UiSession).GetField("writer", All)!.GetValue(session)!;
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
         while ((long)writer.GetType().GetField("savedRevision", All)!.GetValue(writer)! != revision) await Task.Delay(10, deadline.Token);
+    }
+
+    private static ProcessMinuteBatch Minute(DateTimeOffset at) => new(at, 60, 8, true, "fixture", [new("chrome.exe", 1, 0, 0, 0, false)]);
+
+    /// <summary>Every minute in the file, read directly, so expired rows are told apart from rows a read leaves out.</summary>
+    private static List<DateTimeOffset> Minutes(Fixture fixture)
+    {
+        using var db = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = fixture.Path, Mode = SqliteOpenMode.ReadOnly, Pooling = false }.ToString());
+        db.Open(); using var command = db.CreateCommand(); command.CommandText = "SELECT minute FROM minutes ORDER BY 1";
+        using var reader = command.ExecuteReader(); var minutes = new List<DateTimeOffset>();
+        while (reader.Read()) minutes.Add(DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(0)));
+        return minutes;
+    }
+
+    /// <summary>The real clock for its first reading (the worker's start), a day later for every reading after it.</summary>
+    private sealed class NextDay : TimeProvider
+    {
+        private int readings;
+        public override DateTimeOffset GetUtcNow() => base.GetUtcNow() + (Interlocked.Increment(ref readings) > 1 ? TimeSpan.FromDays(1) : TimeSpan.Zero);
     }
 
     private static Task<ProcessResourceView> Read(ProcessHistoryService service, int minutes = 2) =>
