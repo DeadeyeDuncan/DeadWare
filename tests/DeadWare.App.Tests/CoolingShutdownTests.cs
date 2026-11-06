@@ -180,6 +180,21 @@ public class CoolingShutdownTests
         finally {await connections.StopAsync();if(Directory.Exists(root))Directory.Delete(root,true);}
     }
     [Fact]
+    public async Task Stuck_hardware_worker_still_stops_the_disk_session()
+    {
+        string root=Root();
+        var (_,collector,connections,worker)=StuckSession(root,new EtwNetwork(_=>new(11,1,"fixture")));var fake=new FakeTrace();
+        var controller=new DiskTraceController(fake.Create);controller.Request(true);await DiskTraceTesting.Drain(controller);SetField(collector,"disk",controller);
+        Assert.True(fake.Running);
+        try
+        {
+            var dispose=collector.DisposeAsync().AsTask();
+            await fake.Stopped.WaitAsync(TimeSpan.FromSeconds(3));
+            Assert.Equal(1,fake.Stops);Assert.False(fake.Running);Assert.False(worker.Task.IsCompleted);Assert.False(dispose.IsCompleted);
+        }
+        finally {worker.TrySetResult();await collector.DisposeAsync();await connections.StopAsync();if(Directory.Exists(root))Directory.Delete(root,true);}
+    }
+    [Fact]
     public async Task Worker_sample_taken_before_stop_reaches_connection_history_before_the_final_drain()
     {
         string root=Root();var collector=new Collector(new CollectorOptions(HardwareEnabled:false));

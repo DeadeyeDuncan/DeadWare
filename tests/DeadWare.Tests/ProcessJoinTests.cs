@@ -25,6 +25,8 @@ public class ProcessJoinTests
     [Fact] public void Lossy_take_nulls_with_status(){ var r=ProcessJoins.Disk([P(8,1)],Take(lossy:true,status:"Windows dropped disk events",rates:[R(8,1,5,5)]));
         Assert.Equal("Windows dropped disk events",r.State.Status);Assert.False(r.State.Available);Assert.Null(r.Processes[0].DiskReadPerSecond);}
     [Fact] public void Stopped_trace_nulls_with_status(){ var r=ProcessJoins.Disk([P(8,1)],Take(DiskTraceState.Failed,"Disk trace failed (0xC0000022)"));Assert.Equal("Disk trace failed (0xC0000022)",r.State.Status);Assert.Null(r.Processes[0].DiskWritePerSecond);}
+    [Fact] public void Off_take_names_its_reason(){ Assert.Equal("Per-app disk tracing is off",DiskTake.Off.Status);var r=ProcessJoins.Disk([P(8,1)],DiskTake.Off);
+        Assert.False(r.State.Available);Assert.Equal(DiskTake.Off.Status,r.State.Status);Assert.Null(r.Processes[0].DiskReadPerSecond);}
     [Fact] public void Disk_match_absent_and_miss(){ var r=ProcessJoins.Disk([P(8,1),P(9,1),P(10,1)],Take(rates:[R(8,1,500,2000),R(10,2,1,1)]));
         Assert.Equal(500,r.Processes[0].DiskReadPerSecond);Assert.Equal(2000,r.Processes[0].DiskWritePerSecond);Assert.Equal(0,r.Processes[1].DiskReadPerSecond);Assert.Equal(0,r.Processes[1].DiskWritePerSecond);
         Assert.Null(r.Processes[2].DiskReadPerSecond);Assert.Equal(ProcessGap.NotMatched,r.Processes[2].DiskGap);Assert.Equal(1,r.Misses);Assert.True(r.State.Available);}
