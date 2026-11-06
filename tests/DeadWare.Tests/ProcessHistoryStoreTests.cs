@@ -466,6 +466,31 @@ public class ProcessHistoryStoreTests
     }
 
     [Fact]
+    public void Unpaired_surrogate_reserved_and_path_shaped_names_are_rejected_without_writing()
+    {
+        using var fixture = new Fixture(); var store = fixture.Open();
+        // SQLite's UTF-8 stores both as a\uFFFD.exe: one name id twice in a minute failed the primary key and stopped recording.
+        Assert.Throws<ArgumentException>(() => store.Append("m", [Batch(Day, apps: [App("a\uD800.exe", 5), App("a\uD801.exe", 7), Else(1)])], Now));
+        foreach (string name in new[] { "Everything else", "everything ELSE", "*everything else", @"C:\Users\alice\tool.exe", "tools/tool.exe", "Unknown application" })
+            Assert.Throws<ArgumentException>(() => store.Append("m", [Batch(Day, apps: [App(name, 5)])], Now));
+        Assert.Empty(fixture.Days());
+        store.Append("m", [Batch(Day, apps: [App("a\uFFFD.exe", 12), App("\U0001F600.exe", 3), Else(1)])], Now);
+        Assert.Equal(["a\uFFFD.exe", "\U0001F600.exe"], store.ReadApplications("m", Day, Day.AddMinutes(1), ProcessRank.CpuTime, Now).Rows.Select(r => r.Name));
+    }
+
+    [Fact]
+    public void Saved_names_at_the_length_limit_are_accepted_as_they_are()
+    {
+        using var fixture = new Fixture(); var store = fixture.Open();
+        // NormalizeName keeps 256 characters: a cut can end in a space or in half of a surrogate pair.
+        var saved = new[] { new string('x', 255) + " tail.exe", new string('x', 255) + "\U0001F600.exe" }.Select(n => ProcessHistory.SavedName(n)!).ToArray();
+        Assert.Equal([new string('x', 255), new string('x', 255) + "\uFFFD"], saved);
+        Assert.All(saved, s => Assert.Equal(s, ProcessHistory.SavedName(s)));
+        store.Append("m", [Batch(Day, apps: [.. saved.Select(s => App(s, 5)), Else(1)])], Now);
+        Assert.Equal(2, store.ReadApplications("m", Day, Day.AddMinutes(1), ProcessRank.CpuTime, Now).Rows.Count);
+    }
+
+    [Fact]
     public void Limit_above_1000_is_rejected()
     {
         using var fixture = new Fixture(); var store = fixture.Open();

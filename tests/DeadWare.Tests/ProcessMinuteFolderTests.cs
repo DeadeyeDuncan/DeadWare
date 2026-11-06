@@ -151,6 +151,12 @@ public class ProcessMinuteFolderTests
         Assert.DoesNotContain(b.Applications,a=>a.Name=="Unknown application");
         Assert.Equal(9,b.Applications.Single(a=>a.EverythingElse).CpuTime);
     }
+    [Fact] public void Unpaired_surrogates_fold_into_one_app_named_with_U_FFFD(){
+        var b=Close(P("a\uD800.exe",cpu:5,pid:1),P("a\uD801.exe",cpu:7,pid:2),P("a\uFFFD.exe",cpu:1,pid:3),P("\U0001F600.exe",cpu:2,pid:4));
+        Assert.Equal(["a\uFFFD.exe","\U0001F600.exe",ProcessHistory.EverythingElse],b.Applications.Select(a=>a.Name));Assert.Equal(13,b.Applications[0].CpuTime);}
+    [Fact] public void Reserved_and_path_shaped_names_go_to_everything_else(){
+        var b=Close(P("Everything else",cpu:1),P("EVERYTHING ELSE",cpu:2,pid:2),P("*Everything else",cpu:4,pid:3),P(@"C:\Tools\tool.exe",cpu:8,pid:4),P("tools/tool.exe",cpu:16,pid:5),P("a.exe",cpu:32,pid:6));
+        Assert.Equal(["a.exe",ProcessHistory.EverythingElse],b.Applications.Select(a=>a.Name));Assert.Equal(31,b.Applications.Single(a=>a.EverythingElse).CpuTime);}
     [Fact] public void Omitted_io_and_memory_go_to_everything_else(){ var f=new ProcessMinuteFolder();
         f.Observe(A(0,[P("",cpu:3,read:5,write:6,mem:7),P("a.exe",cpu:100)],new ProcessOmitted(2,0,new ProcessDeltas(40,70,30,900,1))));
         var e=Assert.IsType<ProcessMinuteBatch>(f.Observe(A(60,P("z.exe")))).Applications.Single(a=>a.EverythingElse);
