@@ -24,17 +24,17 @@ public class ProcessHistoryStoreTests
     private sealed class Fixture : IDisposable
     {
         private readonly string directory = Path.Combine(Path.GetTempPath(), "deadware-process-history-" + Guid.NewGuid().ToString("N"));
-        public string Path { get; }
-        public Fixture() { Directory.CreateDirectory(directory); Path = System.IO.Path.Combine(directory, "process-history.db"); }
+        public string DbPath { get; }
+        public Fixture() { Directory.CreateDirectory(directory); DbPath = Path.Combine(directory, "process-history.db"); }
 
         public ProcessHistoryStore Open(long maximumBytes = ProcessHistoryStore.MaximumDatabaseBytes)
         {
-            var store = new ProcessHistoryStore(Path, maximumBytes); store.Initialize(); return store;
+            var store = new ProcessHistoryStore(DbPath, maximumBytes); store.Initialize(); return store;
         }
 
         public T Query<T>(string sql, Func<SqliteDataReader, T> read)
         {
-            using var db = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = Path, Mode = SqliteOpenMode.ReadOnly, Pooling = false }.ToString());
+            using var db = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = DbPath, Mode = SqliteOpenMode.ReadOnly, Pooling = false }.ToString());
             db.Open(); using var command = db.CreateCommand(); command.CommandText = sql;
             using var reader = command.ExecuteReader(); return read(reader);
         }
@@ -115,10 +115,10 @@ public class ProcessHistoryStoreTests
     public void Unreadable_files_are_preserved_and_reported(string kind)
     {
         using var fixture = new Fixture();
-        if (kind == "corrupt") File.WriteAllBytes(fixture.Path, Enumerable.Range(0, 8192).Select(i => (byte)(i * 31 + 7)).ToArray());
+        if (kind == "corrupt") File.WriteAllBytes(fixture.DbPath, Enumerable.Range(0, 8192).Select(i => (byte)(i * 31 + 7)).ToArray());
         else
         {
-            using (var db = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = fixture.Path, Pooling = false }.ToString()))
+            using (var db = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = fixture.DbPath, Pooling = false }.ToString()))
             {
                 db.Open(); using var command = db.CreateCommand();
                 command.CommandText = kind == "newer"
@@ -128,10 +128,10 @@ public class ProcessHistoryStoreTests
             }
             SqliteConnection.ClearAllPools();
         }
-        byte[] before = File.ReadAllBytes(fixture.Path);
-        var store = new ProcessHistoryStore(fixture.Path);
+        byte[] before = File.ReadAllBytes(fixture.DbPath);
+        var store = new ProcessHistoryStore(fixture.DbPath);
         Assert.Throws<InvalidDataException>(store.Initialize);
-        Assert.Equal(before, File.ReadAllBytes(fixture.Path));
+        Assert.Equal(before, File.ReadAllBytes(fixture.DbPath));
     }
 
     [Fact]
@@ -216,7 +216,7 @@ public class ProcessHistoryStoreTests
     public void Series_buckets_like_ReadMetric_and_leaves_unlisted_minutes_as_gaps()
     {
         using var fixture = new Fixture(); var store = fixture.Open();
-        store.Append("m", [0, 1, 3].Select(i => Batch(Day.AddMinutes(i), processors: 2, apps: [App("a.exe", (i + 1) * 12_000_000)])).Append(Batch(Day.AddMinutes(2), apps: [App("b.exe", 1)])).ToList(), Now);
+        store.Append("m", new[] { 0, 1, 3 }.Select(i => Batch(Day.AddMinutes(i), processors: 2, apps: [App("a.exe", (i + 1) * 12_000_000)])).Append(Batch(Day.AddMinutes(2), apps: [App("b.exe", 1)])).ToList(), Now);
         var s = store.ReadSeries("m", "A.EXE", ProcessRank.CpuTime, Day, Day.AddMinutes(4), 2);
         Assert.Equal(2, s.Buckets.Count);
         Assert.Equal(2, s.Buckets[0].Minutes);
@@ -252,7 +252,7 @@ public class ProcessHistoryStoreTests
     public void Read_applications_includes_minutes_starting_in_a_non_aligned_slot()
     {
         using var fixture = new Fixture(); var store = fixture.Open();
-        store.Append("m", [1, 2, 4, 8].Select((cpu, i) => Batch(At(12, i, 0), apps: [App("a.exe", cpu * 10_000_000L)])).ToList(), Now);
+        store.Append("m", new[] { 1, 2, 4, 8 }.Select((cpu, i) => Batch(At(12, i, 0), apps: [App("a.exe", cpu * 10_000_000L)])).ToList(), Now);
         var view = store.ReadApplications("m", At(12, 0, 30), At(12, 2, 30), ProcessRank.CpuTime);
         Assert.Equal(2, view.RecordedMinutes);
         Assert.Equal(6, view.Rows.Single(r => r.Name == "a.exe").CpuSeconds, 6);
