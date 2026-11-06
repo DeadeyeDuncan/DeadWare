@@ -17,6 +17,7 @@ public record Reading(Snapshot Sample,IReadOnlyList<Device> Gpus,IReadOnlyList<S
     public StorageReading Storage {get;init;}=StorageReading.Empty;
     [System.Text.Json.Serialization.JsonIgnore]
     public ProcessActivity ProcessActivity {get;init;}=ProcessActivity.None;
+    public ProcessSummary? ProcessSummary {get;init;}
 }
 
 public sealed record StorageReading(IReadOnlyList<StorageDrive> Drives,IReadOnlyList<StorageHealth> Health,string Status)
@@ -262,7 +263,7 @@ public sealed class Collector : IAsyncDisposable
                         if(timings is not null)timings["poll/total"]=(clock.Elapsed.TotalSeconds-started)*1000;
                         double elapsed=clock.Elapsed.TotalSeconds-started;
                         if(elapsed>=intervalSeconds)hardwareStatus+=$" · Slow sample ({elapsed:0.0}s); pausing before the next poll.";
-                        var reading=new Reading(sample,gpus.AsReadOnly(),sensors.AsReadOnly(),capture.Processes,cpuName,hardwareStatus,network.Status,EtwStatus,IsElevated,timings,etw.Failure) {Battery=battery,Connections=capture.Connections,CpuCoreCount=cores.Count,Storage=storageReading,ProcessActivity=processActivity};
+                        var reading=new Reading(sample,gpus.AsReadOnly(),sensors.AsReadOnly(),capture.Processes,cpuName,hardwareStatus,network.Status,EtwStatus,IsElevated,timings,etw.Failure) {Battery=battery,Connections=capture.Connections,CpuCoreCount=cores.Count,Storage=storageReading,ProcessActivity=processActivity,ProcessSummary=Summary(processActivity)};
                         History.Add(sample);Volatile.Write(ref latest,reading);SampleAvailable?.Invoke(reading);
                     }
                 }
@@ -271,7 +272,7 @@ public sealed class Collector : IAsyncDisposable
                     var sample=new Snapshot(DateTimeOffset.Now,clock.Elapsed.TotalSeconds,new Dictionary<string,double?>()) {PollingIntervalSeconds=intervalSeconds};
                     lock(publicationGate)
                     {
-                        var failed=new Reading(sample,Latest?.Gpus??[],[],[],Latest?.CpuName??"Processor",$"Collection failed ({e.GetType().Name}); retrying at the selected polling interval.","Interface readings unavailable",EtwStatus,IsElevated,EtwFailure:etw.Failure) {Connections=etw.TakeSnapshot(sample.Timestamp,sample.MonotonicSeconds,available:false).Connections,ProcessActivity=FailedActivity(monitoring,e)};
+                        var failed=new Reading(sample,Latest?.Gpus??[],[],[],Latest?.CpuName??"Processor",$"Collection failed ({e.GetType().Name}); retrying at the selected polling interval.","Interface readings unavailable",EtwStatus,IsElevated,EtwFailure:etw.Failure) {Connections=etw.TakeSnapshot(sample.Timestamp,sample.MonotonicSeconds,available:false).Connections,ProcessActivity=FailedActivity(monitoring,e),ProcessSummary=Summary(FailedActivity(monitoring,e))};
                         History.Add(sample);Volatile.Write(ref latest,failed);SampleAvailable?.Invoke(failed);
                     }
                 }
@@ -285,7 +286,7 @@ public sealed class Collector : IAsyncDisposable
             var sample=new Snapshot(DateTimeOffset.Now,clock.Elapsed.TotalSeconds,new Dictionary<string,double?>()) {PollingIntervalSeconds=intervalSeconds};
             lock(publicationGate)
             {
-                var failed=new Reading(sample,[],[],[],"Processor",$"Collector stopped ({e.GetType().Name}). Restart DeadWare to retry.","Interface readings unavailable",EtwStatus,IsElevated,EtwFailure:etw.Failure) {Connections=etw.TakeSnapshot(sample.Timestamp,sample.MonotonicSeconds,available:false).Connections,ProcessActivity=FailedActivity(processMonitoring,e)};
+                var failed=new Reading(sample,[],[],[],"Processor",$"Collector stopped ({e.GetType().Name}). Restart DeadWare to retry.","Interface readings unavailable",EtwStatus,IsElevated,EtwFailure:etw.Failure) {Connections=etw.TakeSnapshot(sample.Timestamp,sample.MonotonicSeconds,available:false).Connections,ProcessActivity=FailedActivity(processMonitoring,e),ProcessSummary=Summary(FailedActivity(processMonitoring,e))};
                 History.Add(sample);Volatile.Write(ref latest,failed);SampleAvailable?.Invoke(failed);
             }
         }
@@ -296,6 +297,7 @@ public sealed class Collector : IAsyncDisposable
             stage="Stopped";
         }
     }
+    private ProcessSummary? Summary(ProcessActivity activity)=>options.DiagnosticTimings?ProcessSummary.From(activity):null;
     private const string ProcessScanUnavailable="Process scan unavailable";
     private static ProcessActivity FailedActivity(bool monitoring,Exception e)=>monitoring?ProcessActivity.Unavailable(e.GetType().Name):ProcessActivity.Off;
     /// <summary>Process block 2, inside the publication lock after the poll's only ETW snapshot: joins the scan to per-app traffic. It never throws, so the reading is always published.</summary>

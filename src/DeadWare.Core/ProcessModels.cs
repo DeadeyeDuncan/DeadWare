@@ -46,4 +46,9 @@ public sealed record ProcessActivity(ProcessActivityKind Kind,long Sequence,Date
     public static ProcessActivity Unavailable(string status)=>Empty(ProcessActivityKind.Unavailable) with{Scan=new(false,status)};
     static ProcessActivity Empty(ProcessActivityKind kind)=>new(kind,0,DateTimeOffset.MinValue,0,0,0,Array.Empty<ProcessSample>(),ProcessOmitted.None,0,null);
 }
+/// <summary>Counts and states only, for diagnostics: never a process name or path.</summary>
+public sealed record ProcessSummary(string State,int Processes,int Omitted,ProcessColumnState Scan,ProcessColumnState Disk,ProcessColumnState Network,int NetworkMisses,int DiskMisses,long UnattributedDiskEvents)
+{
+    public static ProcessSummary From(ProcessActivity activity)=>new(activity.Kind.ToString(),activity.Processes.Count,activity.Omitted.Count,activity.Scan,activity.Disk,activity.Network,activity.NetworkMisses,activity.DiskMisses,activity.UnattributedDiskEvents);
+}
 public sealed record TrackedScan(ProcessScan Scan,IReadOnlyList<ProcessSample> Processes,ProcessOmitted Omitted,double? DeltaSeconds,int TotalProcesses,IReadOnlyDictionary<int,ProcessIdentity> Index);
