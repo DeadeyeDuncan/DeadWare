@@ -492,6 +492,10 @@ internal static class ProcessesPageUiChecks
         Click(Button(p,"Open file location"));
         WaitFor(()=>StatusText(p)!="");
         Assert.Equal("The program file is no longer there.",StatusText(p));
+        Fake(p).ThrowOnAttributes=new UnauthorizedAccessException();
+        Click(Button(p,"Open file location"));
+        WaitFor(()=>StatusText(p)=="Could not open the file location (denied by Windows)."&&Button(p,"Open file location")!.IsEnabled);
+        Fake(p).ThrowOnAttributes=null;
         // An app whose processes run from two places asks for a process row.
         Fake(p)[31].ImagePath=Path.Combine(missing,"other","app.exe");
         Select(p,"chrome.exe");
