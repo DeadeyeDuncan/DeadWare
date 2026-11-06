@@ -54,6 +54,10 @@ public sealed class ProcessHistoryStore(string path, long maximumDatabaseBytes =
     public long StorageBytes => new[] { path, path + "-wal", path + "-shm" }
         .Where(File.Exists).Sum(file => new FileInfo(file).Length);
 
+    /// <summary>The oldest minute kept as of <paramref name="now"/>: the start of the UTC day <see cref="RetentionDays"/> days before
+    /// today. Saves, expiry and reads all use this one cutoff.</summary>
+    public static DateTimeOffset RetentionCutoff(DateTimeOffset now) => Stamp(DayFloor(now.ToUnixTimeMilliseconds()) - RetentionDays * DayMilliseconds);
+
     public void Initialize()
     {
         if (maximumDatabaseBytes is < 65536 or > MaximumDatabaseBytes) throw new ArgumentOutOfRangeException(nameof(maximumDatabaseBytes));
@@ -93,21 +97,21 @@ public sealed class ProcessHistoryStore(string path, long maximumDatabaseBytes =
 
     /// <summary>Writes closed minutes. Rows older than the retention window or more than five minutes ahead of now are ignored.
     /// A minute already stored from another segment (a restart inside that minute) keeps its first rows and is marked incomplete;
-    /// the same segment repeated is ignored, so a retried batch cannot double count.</summary>
+    /// the same segment repeated is ignored, so a retried batch cannot double count. Expired days leave first, as <see cref="Expire"/> does.</summary>
     public void Append(string machine, IReadOnlyList<ProcessMinuteBatch> batches, DateTimeOffset now)
     {
         EnsureInitialized(); ValidateMachine(machine); ArgumentNullException.ThrowIfNull(batches);
         foreach (var batch in batches) ValidateBatch(batch);
         if (batches.Count == 0) return;
         long today = DayFloor(now.ToUnixTimeMilliseconds());
-        long cutoff = today - RetentionDays * DayMilliseconds, latest = now.ToUnixTimeMilliseconds() + FutureToleranceMilliseconds;
+        long cutoff = RetentionCutoff(now).ToUnixTimeMilliseconds(), latest = now.ToUnixTimeMilliseconds() + FutureToleranceMilliseconds;
         using var db = Open();
+        ExpireByDay(db, cutoff);
         while (true)
         {
             try
             {
                 using var transaction = db.BeginTransaction();
-                Expire(db, transaction, cutoff);
                 var ids = new Dictionary<string, long>(StringComparer.Ordinal);
                 foreach (var batch in batches)
                 {
@@ -156,8 +160,19 @@ public sealed class ProcessHistoryStore(string path, long maximumDatabaseBytes =
         Checkpoint(db);
     }
 
-    /// <summary>Totals per application for the minutes starting in [from, to). Everything else is kept apart from the ranked rows.</summary>
-    public ProcessResourceView ReadApplications(string machine, DateTimeOffset from, DateTimeOffset to, ProcessRank rank, int limit = 200)
+    /// <summary>Deletes every minute before <see cref="RetentionCutoff"/>(<paramref name="now"/>), with its application rows, for every
+    /// machine. Each UTC day is its own committed transaction followed by a checkpoint, so a long absence never writes one large journal.
+    /// The history worker calls this at start and when the UTC day changes, so days leave while recording is off too.</summary>
+    public void Expire(DateTimeOffset now)
+    {
+        EnsureInitialized();
+        using var db = Open();
+        ExpireByDay(db, RetentionCutoff(now).ToUnixTimeMilliseconds());
+    }
+
+    /// <summary>Totals per application for the minutes starting in [from, to). Everything else is kept apart from the ranked rows.
+    /// Minutes before <see cref="RetentionCutoff"/>(<paramref name="now"/>) are never read, even before they are expired.</summary>
+    public ProcessResourceView ReadApplications(string machine, DateTimeOffset from, DateTimeOffset to, ProcessRank rank, DateTimeOffset now, int limit = 200)
     {
         EnsureInitialized(); ValidateMachine(machine); ValidateRange(from, to);
         if (limit is < 1 or > MaximumRows) throw new ArgumentOutOfRangeException(nameof(limit));
@@ -165,7 +180,8 @@ public sealed class ProcessHistoryStore(string path, long maximumDatabaseBytes =
         using var db = Open(readOnly: true);
         // One deferred read transaction: every statement sees the snapshot of the first, even while the worker saves a minute.
         using var transaction = db.BeginTransaction(deferred: true);
-        long fromMs = from.ToUnixTimeMilliseconds(), toMs = to.ToUnixTimeMilliseconds();
+        long cutoff = RetentionCutoff(now).ToUnixTimeMilliseconds();
+        long fromMs = Math.Max(from.ToUnixTimeMilliseconds(), cutoff), toMs = to.ToUnixTimeMilliseconds();
         (string, object)[] args = [("$machine", machine), ("$from", fromMs), ("$to", toMs)];
         long recorded = 0; double capacity = 0; long? first = null, last = null;
         using (var command = Command(db, """
@@ -210,12 +226,13 @@ public sealed class ProcessHistoryStore(string path, long maximumDatabaseBytes =
             total = rank switch { ProcessRank.CpuTime => reader.GetDouble(0) / TicksPerSecond, ProcessRank.AverageMemory => reader.GetDouble(2), _ => reader.GetDouble(1) };
         }
         return new(from, to, rows, other, total, recorded, first is { } f ? Stamp(f) : null, last is { } l ? Stamp(l + MinuteMilliseconds) : null,
-            Earliest(db, transaction, machine), StorageBytes);
+            Earliest(db, transaction, machine, cutoff), StorageBytes);
     }
 
     /// <summary>One application's metric over time, bucketed like <see cref="UsageHistoryStore.ReadMetric"/>. CPU is a percentage of the
-    /// machine's capacity, memory is bytes and I/O is read plus written bytes per second. Minutes the application was not listed are gaps.</summary>
-    public UsageHistoryView ReadSeries(string machine, string name, ProcessRank metric, DateTimeOffset from, DateTimeOffset to, int maxPoints)
+    /// machine's capacity, memory is bytes and I/O is read plus written bytes per second. Minutes the application was not listed are gaps.
+    /// Minutes before <see cref="RetentionCutoff"/>(<paramref name="now"/>) are never read; the grid still starts at <paramref name="from"/>.</summary>
+    public UsageHistoryView ReadSeries(string machine, string name, ProcessRank metric, DateTimeOffset from, DateTimeOffset to, int maxPoints, DateTimeOffset now)
     {
         EnsureInitialized(); ValidateMachine(machine); ValidateRange(from, to);
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
@@ -224,10 +241,10 @@ public sealed class ProcessHistoryStore(string path, long maximumDatabaseBytes =
         maxPoints = Math.Min(maxPoints, MaximumRows);
         using var db = Open(readOnly: true);
         using var transaction = db.BeginTransaction(deferred: true);
-        long fromMs = from.ToUnixTimeMilliseconds(), toMs = to.ToUnixTimeMilliseconds();
+        long fromMs = from.ToUnixTimeMilliseconds(), toMs = to.ToUnixTimeMilliseconds(), cutoff = RetentionCutoff(now).ToUnixTimeMilliseconds();
         long bucket = Math.Max(MinuteMilliseconds, (long)Math.Ceiling((toMs - fromMs) / (double)maxPoints));
         string key = name.Equals(ProcessHistory.EverythingElse, StringComparison.OrdinalIgnoreCase) ? EverythingElseKey : name.ToUpperInvariant();
-        (string, object)[] args = [("$machine", machine), ("$key", key), ("$from", fromMs), ("$to", toMs)];
+        (string, object)[] args = [("$machine", machine), ("$key", key), ("$from", fromMs), ("$since", Math.Max(fromMs, cutoff)), ("$to", toMs)];
         // Σ value, Σ weight and the per-minute value; the average is the ratio of the sums.
         (string Sum, string Weight, string Each) = metric switch
         {
@@ -238,7 +255,7 @@ public sealed class ProcessHistoryStore(string path, long maximumDatabaseBytes =
         };
         const string From = """
             FROM app_minutes a JOIN minutes m ON m.machine=a.machine AND m.minute=a.minute JOIN names n ON n.id=a.name_id
-            WHERE a.machine=$machine AND n.upper=$key AND a.minute>=$from AND a.minute<$to
+            WHERE a.machine=$machine AND n.upper=$key AND a.minute>=$since AND a.minute<$to
             """;
         var buckets = new List<UsageHistoryBucket>();
         using (var command = Command(db, $"""
@@ -261,7 +278,7 @@ public sealed class ProcessHistoryStore(string path, long maximumDatabaseBytes =
             reader.Read(); listed = reader.GetInt64(4);
             statistics = listed == 0 ? new(null, null, null) : new(reader.GetDouble(2), reader.GetDouble(3), reader.GetDouble(0) / reader.GetDouble(1));
         }
-        return new(from, to, bucket, buckets, statistics, listed, Earliest(db, transaction, machine), StorageBytes);
+        return new(from, to, bucket, buckets, statistics, listed, Earliest(db, transaction, machine, cutoff), StorageBytes);
     }
 
     private static ProcessResourceRow Row(string name, SqliteDataReader reader, int offset, double capacity, bool everythingElse)
@@ -308,6 +325,21 @@ public sealed class ProcessHistoryStore(string path, long maximumDatabaseBytes =
         Execute(db, "DELETE FROM names WHERE id NOT IN(SELECT DISTINCT name_id FROM app_minutes)", transaction);
     }
 
+    /// <summary>Deletes every minute before <paramref name="cutoff"/>, oldest UTC day first: one committed transaction per day and a
+    /// checkpoint after each, so the journal holds about one day of deletions at a time.</summary>
+    private static void ExpireByDay(SqliteConnection db, long cutoff)
+    {
+        while (Scalar(db, "SELECT MIN(minute) FROM minutes") is long oldest && oldest < cutoff)
+        {
+            using (var transaction = db.BeginTransaction())
+            {
+                Expire(db, transaction, Math.Min(DayFloor(oldest) + DayMilliseconds, cutoff));
+                transaction.Commit();
+            }
+            Checkpoint(db);
+        }
+    }
+
     private static bool EvictOldestDay(SqliteConnection db, long protectedDay)
     {
         object? oldest = Scalar(db, "SELECT MIN(minute) FROM minutes");
@@ -320,9 +352,10 @@ public sealed class ProcessHistoryStore(string path, long maximumDatabaseBytes =
         return true;
     }
 
-    private static DateTimeOffset? Earliest(SqliteConnection db, SqliteTransaction transaction, string machine)
+    private static DateTimeOffset? Earliest(SqliteConnection db, SqliteTransaction transaction, string machine, long cutoff)
     {
-        object? value = ScalarWith(db, "SELECT MIN(minute) FROM minutes WHERE machine=$machine", transaction, ("$machine", machine));
+        object? value = ScalarWith(db, "SELECT MIN(minute) FROM minutes WHERE machine=$machine AND minute>=$cutoff", transaction,
+            ("$machine", machine), ("$cutoff", cutoff));
         return value is null or DBNull ? null : Stamp(Convert.ToInt64(value, CultureInfo.InvariantCulture));
     }
 

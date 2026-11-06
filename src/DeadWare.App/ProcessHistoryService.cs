@@ -4,7 +4,8 @@ using DeadWare.Core;
 namespace DeadWare.App;
 
 /// <summary>One background writer folds published process activity into minutes and saves them to process-history.db, like
-/// <see cref="UsageHistoryService"/>; reads use independent connections. Records only while Per-process monitoring and usage history are both on.</summary>
+/// <see cref="UsageHistoryService"/>; reads use independent connections. Records only while Per-process monitoring and usage history are both on;
+/// the writer runs either way, so days past the 30-day retention leave at start and when the UTC day changes.</summary>
 public sealed class ProcessHistoryService
 {
     public const string SavedStatus = "Application resources saved locally · up to 30 days.";
@@ -81,6 +82,9 @@ public sealed class ProcessHistoryService
         try
         {
             await InitializeAsync().ConfigureAwait(false);
+            // Each save expires old days first, but nothing is saved while recording is off: expire at start and on each new UTC day too.
+            DateTime Expire() { var now = time.GetUtcNow(); store.Expire(now); return now.UtcDateTime.Date; }
+            var expired = Expire();
             var folder = new ProcessMinuteFolder(); var pending = new List<ProcessMinuteBatch>(64);
             long? previousGeneration = null; long previousDrops = 0, previousSequence = 0;
             void Flush()
@@ -116,7 +120,9 @@ public sealed class ProcessHistoryService
                 if (tick.IsCompleted)
                 {
                     if (!await tick.ConfigureAwait(false)) break;
-                    Flush(); tick = timer.WaitForNextTickAsync().AsTask();
+                    Flush();
+                    if (time.GetUtcNow().UtcDateTime.Date != expired) expired = Expire();
+                    tick = timer.WaitForNextTickAsync().AsTask();
                 }
                 if (available.IsCompleted)
                 {
@@ -147,7 +153,7 @@ public sealed class ProcessHistoryService
         try
         {
             await InitializeAsync().ConfigureAwait(false);
-            return await Task.Run(() => store.ReadApplications(machine, from, to, rank)).ConfigureAwait(false);
+            return await Task.Run(() => store.ReadApplications(machine, from, to, rank, time.GetUtcNow())).ConfigureAwait(false);
         }
         catch (Exception error) when (error is not ArgumentException)
         {
@@ -165,7 +171,7 @@ public sealed class ProcessHistoryService
         try
         {
             await InitializeAsync().ConfigureAwait(false);
-            return await Task.Run(() => store.ReadSeries(machine, name, metric, from, to, maxPoints)).ConfigureAwait(false);
+            return await Task.Run(() => store.ReadSeries(machine, name, metric, from, to, maxPoints, time.GetUtcNow())).ConfigureAwait(false);
         }
         catch (Exception error) when (error is not ArgumentException)
         {
