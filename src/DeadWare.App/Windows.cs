@@ -193,6 +193,10 @@ public sealed class MainWindow : Window
         var storageSensors=new CheckBox {Content="Storage sensors (temperature and health; restart to apply)",IsChecked=session.Settings.StorageSensors,Margin=new Thickness(0,14,0,8)};
         storageSensors.Checked+=(_,_)=>session.SetStorageSensors(true);storageSensors.Unchecked+=(_,_)=>session.SetStorageSensors(false);monitoring.Children.Add(storageSensors);
         monitoring.Children.Add(Ui.Text("Reads drive temperature, SMART health and wear from LibreHardwareMonitor every 30 seconds. Throughput and free space do not depend on this. Changing it takes effect after restarting DeadWare.",12,"Muted"));
+        var processMonitoring=new CheckBox {Content="Per-process monitoring",IsChecked=session.Settings.ProcessMonitoring,Margin=new Thickness(0,14,0,8)};
+        System.Windows.Automation.AutomationProperties.SetName(processMonitoring,"Per-process monitoring");
+        processMonitoring.Checked+=(_,_)=>session.SetProcessMonitoring(true);processMonitoring.Unchecked+=(_,_)=>session.SetProcessMonitoring(false);monitoring.Children.Add(processMonitoring);
+        monitoring.Children.Add(Ui.Text(ProcessCopy.ScanSentence(session.Current?.Elevated??Collector.IsElevated,ProcessFeatures.DiskColumns,ProcessFeatures.ScanLoop),12,"Muted"));
         cpuCoreUsage.IsChecked=session.Settings.ShowCpuCoreUsage;
         System.Windows.Automation.AutomationProperties.SetName(cpuCoreUsage,"Show per-core CPU usage on usage graphs");
         cpuCoreUsage.Checked+=(_,_)=>{if(!syncingWidgetGraphs)session.SetCpuCoreUsage(true);};
