@@ -30,6 +30,10 @@ internal static class ApplicationResourcesUiChecks
     private const string Loading = "Loading application resources…";
     private const string NothingRecorded = "No application resources were recorded in this period.";
     private const string NoProcessData = "No process data in this span.";
+    private const string KeptForThirtyDays = "Application resources are kept for 30 days; earlier minutes are not kept.";
+    private const string Paused = "recorded while Per-process monitoring and usage history are both on";
+    // The page passes its CPU chart's point count to the card; cards built alone here pass the page's fallback width.
+    private const int Points = 600;
     private const int DayMinutes = 90;
     private static readonly Size PageSize = new(1050, 2600);
     // Every recorded minute of the fixture day (60 covered seconds, 8 processors): CPU 100-ns ticks, I/O read, I/O written, Σ memory × Δt.
@@ -70,6 +74,8 @@ internal static class ApplicationResourcesUiChecks
             Search_filters_rows_and_keeps_everything_else(card);
             Share_bar_has_a_segment_per_row(card);
             Selecting_an_app_shows_its_chart_and_rank_by_redraws(card);
+            The_app_chart_shares_the_device_charts_grid(page, card);
+            Cpu_labels_show_tenths_under_ten_percent_on_the_app_chart_only(page, card);
             Gap_notice_counts_minutes_without_process_data(card);
             Storage_line_names_the_file(card);
             Quick_range_changes_show_only_the_last_period(page, card, release);
@@ -78,9 +84,11 @@ internal static class ApplicationResourcesUiChecks
             SelectRange(page, "Day"); Load(page);
             Shows_the_day_ranking(card, ["chrome.exe", "Code.exe", "steam.exe", "explorer.exe", "Everything else"]);
             Only_the_cpu_and_ram_charts_are_selectable(page);
+            Selectable_charts_draw_a_frame_while_they_have_keyboard_focus(page);
             Clicking_a_point_brings_the_card_into_view(page, card);
             Clicking_a_cpu_point_lists_the_busiest_apps_in_its_slot(page, card);
             Both_charts_show_the_hairline_and_clear_removes_it(page, card);
+            Clear_hands_its_focus_to_the_chart_that_listed_the_slot(page, card);
             Ram_click_ranks_by_average_memory(page, card);
             Arrow_keys_move_the_selection_and_enter_lists_it(page, card);
             The_minute_refresh_keeps_the_slot_and_moves_its_hairlines_with_the_grid(page, card);
@@ -91,6 +99,11 @@ internal static class ApplicationResourcesUiChecks
             Empty_period_and_missing_history_say_why(folder);
             Unreadable_history_is_reported_not_shown_as_empty(folder);
             A_slot_that_cannot_be_read_says_why_and_clear_returns(folder);
+            Gap_notice_starts_at_the_retention_cutoff(folder);
+            More_applications_than_the_rows_read_say_top_n_of_m(folder);
+            A_failed_series_read_keeps_the_chart_name(folder);
+            Clear_without_a_chart_hands_its_focus_to_rank_by(folder);
+            Status_line_follows_the_recording_switches_without_a_read(folder);
         }
         finally
         {
@@ -209,6 +222,26 @@ internal static class ApplicationResourcesUiChecks
         Assert.Equal(before + 1, Volatile.Read(ref reads));
     }
 
+    private static void The_app_chart_shares_the_device_charts_grid(UsageHistoryPage page, ApplicationResourcesCard card)
+    {
+        // The selected app's series is read with the CPU chart's point count, so its buckets are the CPU and RAM charts' slots.
+        var device = Traces(page.Chart("cpu"))[0].View; var app = Traces(card)[0].View;
+        Assert.Equal("chrome.exe CPU", Traces(card)[0].Label);
+        Assert.Equal((device.From, device.To, device.BucketMilliseconds), (app.From, app.To, app.BucketMilliseconds));
+        Assert.NotEmpty(app.Buckets);
+        Assert.All(app.Buckets, bucket => Assert.Contains(device.Buckets, slot => slot.Start == bucket.Start && slot.End == bucket.End));
+    }
+
+    private static void Cpu_labels_show_tenths_under_ten_percent_on_the_app_chart_only(UsageHistoryPage page, ApplicationResourcesCard card)
+    {
+        // An app's share of all logical processors is often under 1 %, so the card's chart (hover and axis) keeps one decimal under 10 %.
+        Assert.Equal("%", ChartUnit(card));
+        Assert.Equal(["0.4%", "2.5%", "9.9%", "12%", "0%"], new[] { 0.4, 2.46, 9.94, 12.3, 0 }.Select(card.Chart.Format));
+        // The Device charts keep whole percents.
+        Assert.Equal(["0%", "2%", "12%"], new[] { 0.4, 2.46, 12.3 }.Select(page.Chart("cpu").Format));
+        Assert.Equal(["0%", "2%"], new[] { 0.4, 2.46 }.Select(page.Chart("memory").Format));
+    }
+
     private static void Gap_notice_counts_minutes_without_process_data(ApplicationResourcesCard card)
     {
         string notice = Assert.Single(Texts(card), t => t.EndsWith(GapEnding, StringComparison.Ordinal));
@@ -296,7 +329,7 @@ internal static class ApplicationResourcesUiChecks
         var card = new ApplicationResourcesCard(Session(null, folder));
         Assert.Contains(Loading, Texts(card));
         var from = new DateTimeOffset(2026, 11, 2, 12, 0, 0, TimeSpan.Zero); var to = from.AddDays(1);
-        card.Load(from, to);
+        card.Load(from, to, Points);
         Assert.False(card.Loading);
         Assert.Contains("Application resource history is not available.", Texts(card));
         card.Apply(View(from, to, 0), to.AddMinutes(1));
@@ -315,7 +348,7 @@ internal static class ApplicationResourcesUiChecks
         // Rows, a gap notice and a storage line on screen first: the failure must clear them, not leave them standing.
         card.Apply(View(from, to, 50), to);
         Assert.Contains(Texts(card), t => t.EndsWith(GapEnding, StringComparison.Ordinal));
-        card.Load(from, to);
+        card.Load(from, to, Points);
         WaitFor(() => !card.Loading);
         var texts = Texts(card);
         Assert.Contains("Application resources could not be read.", texts);
@@ -337,6 +370,23 @@ internal static class ApplicationResourcesUiChecks
         foreach (string kind in new[] { "cpu", "memory" }) { Assert.True(page.Chart(kind).Selectable); Assert.True(page.Chart(kind).Focusable); }
         foreach (string kind in new[] { "cputemp", "gpu", "gputemp", "network" }) Assert.False(page.Chart(kind).Selectable);
         Assert.InRange(Traces(page.Chart("cpu"))[0].View.Buckets.Count, 20, DayMinutes + 10);
+    }
+
+    private static void Selectable_charts_draw_a_frame_while_they_have_keyboard_focus(UsageHistoryPage page)
+    {
+        // Tab reaches the CPU and RAM charts, and each draws an Accent frame while it has keyboard focus, as the app's other focusable
+        // controls do. Offscreen pages cannot take keyboard focus, so each chart is told its focus changed, as the keyboard tells it.
+        foreach (string kind in new[] { "cpu", "memory" })
+        {
+            var chart = page.Chart(kind);
+            Layout(page); Assert.Equal(0, FocusFrames(chart));
+            KeyboardFocus(chart, true); Layout(page); Assert.Equal(1, FocusFrames(chart));
+            KeyboardFocus(chart, false); Layout(page); Assert.Equal(0, FocusFrames(chart));
+        }
+        // A chart that is not selectable is not a Tab stop and never draws one.
+        var network = page.Chart("network");
+        KeyboardFocus(network, true); Layout(page); Assert.Equal(0, FocusFrames(network));
+        KeyboardFocus(network, false); Layout(page);
     }
 
     private static void Clicking_a_cpu_point_lists_the_busiest_apps_in_its_slot(UsageHistoryPage page, ApplicationResourcesCard card)
@@ -408,6 +458,21 @@ internal static class ApplicationResourcesUiChecks
         Assert.Equal(0, Hairlines(cpu)); Assert.Equal(0, Hairlines(memory));
         // Clear returns to the period ranking.
         Shows_the_day_ranking(card, ["chrome.exe", "Code.exe", "steam.exe", "explorer.exe", "Everything else"]);
+    }
+
+    private static void Clear_hands_its_focus_to_the_chart_that_listed_the_slot(UsageHistoryPage page, ApplicationResourcesCard card)
+    {
+        var cpu = page.Chart("cpu"); var bucket = Bucket(cpu, 1);
+        Activate(cpu, 1);
+        WaitFor(() => !card.Loading && card.View is { } shown && shown.From == bucket.Start);
+        // Clear collapses once pressed: holding the focus, it hands it to the chart that listed the slot, so Tab stays where it was.
+        var clear = Button(card, "Clear"); var scope = FocusManager.GetFocusScope(clear);
+        FocusManager.SetFocusedElement(scope, clear);
+        Click(clear);
+        Assert.False(IsShown(clear, card));
+        Assert.Same(cpu, FocusManager.GetFocusedElement(scope));
+        Shows_the_day_ranking(card, ["chrome.exe", "Code.exe", "steam.exe", "explorer.exe", "Everything else"]);
+        FocusManager.SetFocusedElement(scope, null);
     }
 
     private static void Ram_click_ranks_by_average_memory(UsageHistoryPage page, ApplicationResourcesCard card)
@@ -533,7 +598,7 @@ internal static class ApplicationResourcesUiChecks
         string path = Path.Combine(junk, "process-history.db"); File.WriteAllText(path, "not a database");
         var card = new ApplicationResourcesCard(Session(new ProcessHistoryService(path, Machine), folder));
         var to = DateTimeOffset.UtcNow; var from = to.AddDays(-1);
-        card.Load(from, to);
+        card.Load(from, to, Points);
         WaitFor(() => !card.Loading);
         // Rows on screen first; the slot's failed read is reported like the period's, never as a span without process data.
         card.Apply(View(from, to, 50), to);
@@ -563,6 +628,103 @@ internal static class ApplicationResourcesUiChecks
         Assert.StartsWith("Busiest apps · ", Heading(missing));
     }
 
+    private static void Gap_notice_starts_at_the_retention_cutoff(string folder)
+    {
+        var card = new ApplicationResourcesCard(Session(null, folder));
+        var now = new DateTimeOffset(2026, 11, 2, 12, 0, 30, TimeSpan.Zero); var cutoff = ProcessHistoryStore.RetentionCutoff(now);
+        // A day that straddles the cutoff can hold only its 720 minutes after it. 600 were recorded, so 120 are gaps, and a sentence
+        // says why the earlier minutes are missing instead of blaming monitoring.
+        card.Apply(View(cutoff.AddHours(-12), cutoff.AddHours(12), 600), now);
+        Assert.Contains("120 " + GapEnding, Texts(card));
+        Assert.Single(Texts(card), t => t == KeptForThirtyDays);
+        // A period wholly before the cutoff says so in place of "nothing recorded", and has no gaps.
+        card.Apply(View(cutoff.AddDays(-2), cutoff.AddDays(-1), 0), now);
+        var texts = Texts(card);
+        Assert.Single(texts, t => t == KeptForThirtyDays);
+        Assert.DoesNotContain(NothingRecorded, texts);
+        Assert.DoesNotContain(texts, t => t.EndsWith(GapEnding, StringComparison.Ordinal));
+        // Inside the 30 days nothing changes.
+        card.Apply(View(now.AddDays(-1), now, 0), now);
+        texts = Texts(card);
+        Assert.Contains(NothingRecorded, texts);
+        Assert.Contains("1,439 " + GapEnding, texts);
+        Assert.DoesNotContain(KeptForThirtyDays, texts);
+    }
+
+    private static void More_applications_than_the_rows_read_say_top_n_of_m(string folder)
+    {
+        var card = new ApplicationResourcesCard(Session(null, folder));
+        var to = DateTimeOffset.UtcNow; var from = to.AddDays(-1);
+        // The period holds 320 applications and the read returned its top rows (one here): both numbers come from the view.
+        card.Apply(View(from, to, 50, applications: 320), to);
+        Assert.Contains("Top 1 of 320 applications · 50 recorded minutes", Texts(card));
+        SetSearch(card, "a.exe"); Assert.Contains("1 of the top 1 applications match.", Texts(card));
+        SetSearch(card, "");
+        // Every application read: the summary and the search count are unchanged.
+        card.Apply(View(from, to, 50), to);
+        Assert.Contains("1 applications · 50 recorded minutes", Texts(card));
+        SetSearch(card, "a.exe"); Assert.Contains("1 of 1 applications match.", Texts(card));
+        SetSearch(card, "");
+    }
+
+    private static void A_failed_series_read_keeps_the_chart_name(string folder)
+    {
+        string junk = Path.Combine(folder, "junk-series"); Directory.CreateDirectory(junk);
+        string path = Path.Combine(junk, "process-history.db"); File.WriteAllText(path, "not a database");
+        var card = new ApplicationResourcesCard(Session(new ProcessHistoryService(path, Machine), folder));
+        var to = DateTimeOffset.UtcNow; var from = to.AddDays(-1);
+        card.Apply(View(from, to, 50), to);
+        Select(card, "a.exe");
+        Assert.Equal("a.exe CPU history", AutomationProperties.GetName(card.Chart));
+        WaitFor(() => Texts(card).Contains("a.exe · CPU % of all logical processors · could not be read"));
+        // The plot is empty and the title says why; a screen reader still hears which app and metric the chart is for.
+        Assert.Empty(Traces(card));
+        Assert.Equal("a.exe CPU history", AutomationProperties.GetName(card.Chart));
+    }
+
+    private static void Clear_without_a_chart_hands_its_focus_to_rank_by(string folder)
+    {
+        var card = new ApplicationResourcesCard(Session(null, folder));
+        var to = DateTimeOffset.UtcNow;
+        card.ShowSlot(to.AddMinutes(-30), to.AddMinutes(-27), ProcessRank.CpuTime);
+        var clear = Button(card, "Clear"); var scope = FocusManager.GetFocusScope(clear);
+        FocusManager.SetFocusedElement(scope, clear);
+        Click(clear);
+        Assert.False(IsShown(clear, card));
+        Assert.Same(Descendants(card).OfType<ComboBox>().Single(c => AutomationProperties.GetName(c) == "Rank application resources by"),
+            FocusManager.GetFocusedElement(scope));
+    }
+
+    private static void Status_line_follows_the_recording_switches_without_a_read(string folder)
+    {
+        string root = Path.Combine(folder, "status"); Directory.CreateDirectory(root);
+        string path = Path.Combine(root, "process-history.db");
+        var service = new ProcessHistoryService(path, Machine);
+        var session = Session(service, folder);
+        // The page's switch saves the settings, so the session gets somewhere to write them.
+        typeof(UiSession).GetField("layout", All)!.SetValue(session, new DetachedWindowState([]));
+        typeof(UiSession).GetField("writer", All)!.SetValue(session, new SettingsSnapshotWriter(Path.Combine(root, "settings.json")));
+        service.Configure(session.Settings.ProcessMonitoring, session.Settings.UsageRecording);
+        var page = new UsageHistoryPage(session);
+        var card = Assert.Single(Descendants(page).OfType<ApplicationResourcesCard>());
+        // The status line shows at once and follows each switch while the page is shown, not only when the card next reads.
+        Assert.Equal(service.Status, Status(card)); Assert.DoesNotContain(Paused, Status(card));
+        var toggle = Descendants(page).OfType<CheckBox>().Single(c => AutomationProperties.GetName(c) == "Record usage history");
+        toggle.IsChecked = false;
+        Assert.False(session.Settings.UsageRecording);
+        Assert.Contains(Paused, Status(card));
+        toggle.IsChecked = true;
+        Assert.Equal(service.Status, Status(card)); Assert.DoesNotContain(Paused, Status(card));
+        // Per-process monitoring switched off and on elsewhere (Settings or the Processes page) reaches the page through session.Changed.
+        service.Configure(false, true); RefreshCurrent(page);
+        Assert.Contains(Paused, Status(card));
+        service.Configure(true, true); RefreshCurrent(page);
+        Assert.Equal(service.Status, Status(card)); Assert.DoesNotContain(Paused, Status(card));
+        // None of this read process-history.db: the file was never even created.
+        Assert.False(File.Exists(path));
+        var save = session.SaveAsync(); WaitFor(() => save.IsCompleted);
+    }
+
     /// <summary>Waits for the card's period ranking of the Day range and checks its rows, summary, share bar and table.</summary>
     private static void Shows_the_day_ranking(ApplicationResourcesCard card, string[] names)
     {
@@ -575,8 +737,8 @@ internal static class ApplicationResourcesUiChecks
         Assert.True(IsShown(Table(card), card));
     }
 
-    private static ProcessResourceView View(DateTimeOffset from, DateTimeOffset to, long recorded)
-        => new(from, to, recorded == 0 ? [] : [new("a.exe", 60, 1, 1e6, 1, 1, recorded, false, 6e7)],
+    private static ProcessResourceView View(DateTimeOffset from, DateTimeOffset to, long recorded, long? applications = null)
+        => new(from, to, recorded == 0 ? [] : [new("a.exe", 60, 1, 1e6, 1, 1, recorded, false, 6e7)], applications ?? (recorded == 0 ? 0 : 1),
             new(ProcessHistory.EverythingElse, recorded, 1, 1e6, 1, 1, recorded, true, recorded * 6e7), recorded == 0 ? 0 : 60 + recorded,
             recorded, recorded == 0 ? null : from, recorded == 0 ? null : to, recorded == 0 ? null : from, 4096);
 
@@ -637,6 +799,8 @@ internal static class ApplicationResourcesUiChecks
         WaitFor(() => load.IsCompleted);
         page.Apply(load.Result);
     }
+    private static void RefreshCurrent(UsageHistoryPage page) => typeof(UsageHistoryPage).GetMethod("RefreshCurrent", All)!.Invoke(page, []);
+    private static string Status(ApplicationResourcesCard card) => ((TextBlock)typeof(ApplicationResourcesCard).GetField("status", All)!.GetValue(card)!).Text;
     private static (DateTimeOffset From, DateTimeOffset To) Period(UsageHistoryPage page)
         => ((DateTimeOffset, DateTimeOffset))typeof(UsageHistoryPage).GetMethod("Period", All)!.Invoke(page, [])!;
     private static (DateTimeOffset From, DateTimeOffset To) PageData(UsageHistoryPage page)
@@ -683,6 +847,16 @@ internal static class ApplicationResourcesUiChecks
         var accent = Application.Current.Resources["Accent"];
         return Drawings(VisualTreeHelper.GetDrawing(chart)).Count(d => d.Geometry is LineGeometry line && line.StartPoint.X == line.EndPoint.X && ReferenceEquals(d.Pen?.Brush, accent));
     }
+    /// <summary>Accent frames the chart drew at its last render: its keyboard focus cue.</summary>
+    private static int FocusFrames(UsageHistoryChart chart)
+    {
+        var accent = Application.Current.Resources["Accent"];
+        return Drawings(VisualTreeHelper.GetDrawing(chart)).Count(d => d.Geometry is RectangleGeometry && ReferenceEquals(d.Pen?.Brush, accent));
+    }
+    /// <summary>Tells an element its keyboard focus changed, as the keyboard does; offscreen nothing can take keyboard focus itself.</summary>
+    private static void KeyboardFocus(UIElement element, bool focused)
+        => typeof(UIElement).GetMethod("OnIsKeyboardFocusedChanged", BindingFlags.Instance | BindingFlags.NonPublic, [typeof(DependencyPropertyChangedEventArgs)])!
+            .Invoke(element, [new DependencyPropertyChangedEventArgs(UIElement.IsKeyboardFocusedProperty, !focused, focused)]);
     private static IEnumerable<GeometryDrawing> Drawings(Drawing? drawing)
         => drawing is GeometryDrawing geometry ? [geometry] : drawing is DrawingGroup group ? group.Children.SelectMany(Drawings) : [];
     private static FrameworkElement Root(DependencyObject element)

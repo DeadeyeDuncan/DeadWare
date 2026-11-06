@@ -239,7 +239,7 @@ public class ProcessHistoryStoreTests
         var now = Day.AddDays(31).AddHours(1);
         Assert.Equal([Day, Day.AddDays(1)], fixture.Minutes());
         var view = store.ReadApplications("m", Day, Day.AddDays(31), ProcessRank.CpuTime, now);
-        Assert.Equal("a.exe", Assert.Single(view.Rows).Name);
+        Assert.Equal(("a.exe", 1L), (Assert.Single(view.Rows).Name, view.ApplicationCount));
         Assert.Equal((1L, (DateTimeOffset?)Day.AddDays(1), (DateTimeOffset?)Day.AddDays(1)), (view.RecordedMinutes, view.FirstMinute, view.EarliestRetained));
         Assert.Equal(1L, view.EverythingElse.MinutesListed);
         Assert.Equal(3, view.RankTotal, 6);
@@ -415,6 +415,22 @@ public class ProcessHistoryStoreTests
         using var fixture = new Fixture(); var store = fixture.Open();
         store.Append("m", [Batch(Day, apps: [App("c.exe", 5), App("a.exe", 5), App("b.exe", 5)])], Now);
         Assert.Equal(["a.exe", "b.exe"], store.ReadApplications("m", Day, Day.AddMinutes(1), ProcessRank.CpuTime, Now, 2).Rows.Select(r => r.Name));
+    }
+
+    [Fact]
+    public void The_view_counts_every_application_in_the_range_beyond_the_rows_read()
+    {
+        using var fixture = new Fixture(); var store = fixture.Open();
+        // Five names over three minutes, one of them in two casings; Everything else is not an application.
+        store.Append("m", [Batch(Day, apps: [App("a.exe", 5), App("b.exe", 4), Else(9)]), Batch(Day.AddMinutes(1), apps: [App("A.EXE", 3), App("c.exe", 2)]),
+            Batch(Day.AddMinutes(2), apps: [App("d.exe", 1), App("e.exe", 1)])], Now);
+        var top = store.ReadApplications("m", Day, Day.AddMinutes(3), ProcessRank.CpuTime, Now, 2);
+        Assert.Equal((2, 5L), (top.Rows.Count, top.ApplicationCount));
+        var all = store.ReadApplications("m", Day, Day.AddMinutes(3), ProcessRank.Io, Now);
+        Assert.Equal((5, 5L), (all.Rows.Count, all.ApplicationCount));
+        // Only the range counts: the first minute holds a.exe and b.exe.
+        Assert.Equal(2L, store.ReadApplications("m", Day, Day.AddMinutes(1), ProcessRank.AverageMemory, Now, 1).ApplicationCount);
+        Assert.Equal(0L, store.ReadApplications("m", Day.AddHours(1), Day.AddHours(2), ProcessRank.CpuTime, Now).ApplicationCount);
     }
 
     [Fact]
