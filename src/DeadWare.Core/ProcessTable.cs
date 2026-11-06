@@ -6,8 +6,10 @@ public static class ProcessCopy
     public const string Stale="stale reading";
     public const string NetworkNotMatched="traffic not matched to this process";
     public const string DiskNotMatched="disk activity not matched to this process";
-    public static string ScanSentence(bool elevated,bool diskColumns,bool scanLoop)=>
-        "Turning it on adds one Windows process scan per poll"+(scanLoop?" (at most one a second)":"")+(elevated&&diskColumns?" and a disk trace":"")+".";
+    /// <summary>What turning on Per-process monitoring costs; <paramref name="history"/> adds what it saves while usage history is recorded (0.14.0).</summary>
+    public static string ScanSentence(bool elevated,bool diskColumns,bool scanLoop,bool history=false)=>
+        "Turning it on adds one Windows process scan per poll"+(scanLoop?" (at most one a second)":"")+(elevated&&diskColumns?" and a disk trace":"")+"."+
+        (history?" While usage history is recorded, it also keeps the busiest apps for 30 days.":"");
     public static string? Banner(bool elevated,bool diskColumns)=>elevated?null:diskColumns?"Disk and network need administrator":"Network needs administrator";
     public static string CapNote(int total)=>$"Showing 4,096 of {total:N0} processes";
     public static IReadOnlyList<string> Footer(bool diskColumns)

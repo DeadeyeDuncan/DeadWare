@@ -20,6 +20,8 @@ internal static class UsageHistoryUiChecks
     private static readonly Type ChartType = Assembly.GetType("DeadWare.App.UsageHistoryChart")!;
     private static readonly Type TraceType = Assembly.GetType("DeadWare.App.UsageTrace")!;
     private static readonly Type DataType = Assembly.GetType("DeadWare.App.UsagePageData")!;
+    private const string ProcessHistorySentence = " While Per-process monitoring is on, it also keeps the busiest apps' CPU, memory and I/O for 30 days (up to 128 MiB).";
+    private const string PrivacyLine = "History stays in this Windows profile in usage-history.db and process-history.db and is never uploaded. Application names and byte totals describe what runs on this computer, so treat exports as private. Back up the databases only while DeadWare is fully quit.";
 
     internal static void Run(Application app)
     {
@@ -38,6 +40,8 @@ internal static class UsageHistoryUiChecks
         {
             Assembly.GetType("DeadWare.App.Theme")!.GetMethod("Apply", All)!.Invoke(null, [theme]);
             CheckChart(theme, now, output);
+            CheckByteUnit(now);
+            CheckSelection(now);
             foreach (bool empty in new[] { true, false })
             {
                 var page = (FrameworkElement)Activator.CreateInstance(PageType, All, null, [session, true], null)!;
@@ -50,6 +54,12 @@ internal static class UsageHistoryUiChecks
                 Assert.Contains("CPU usage", text); Assert.Contains("GPU usage · Fixture GPU", text); Assert.Contains("Network download / upload", text);
                 Assert.Contains("Applications", text); Assert.Contains("Record usage history on this device", text);
                 Assert.Contains("up to 400 days", text);
+                var texts = Descendants(page).OfType<TextBlock>().Select(t => t.Text).ToArray();
+                string description = Assert.Single(texts, t => t.StartsWith("One row per minute for CPU, GPU, RAM and network", StringComparison.Ordinal));
+                Assert.Contains("up to 400 days", description);
+                Assert.EndsWith("for 30 days (up to 128 MiB).", description);
+                Assert.EndsWith(ProcessHistorySentence, description);
+                Assert.Contains(PrivacyLine, texts);
                 var selector = (ComboBox)PageType.GetField("range", All)!.GetValue(page)!;
                 Assert.Equal(3, selector.Items.Count);
                 var table = (DataGrid)PageType.GetField("applications", All)!.GetValue(page)!;
@@ -91,6 +101,7 @@ internal static class UsageHistoryUiChecks
             }
         }
         Assembly.GetType("DeadWare.App.Theme")!.GetMethod("Apply", All)!.Invoke(null, ["Midnight"]);
+        ApplicationResourcesUiChecks.Run(app);
     }
 
     private static void CheckChart(string theme, DateTimeOffset now, string? output)
@@ -151,6 +162,89 @@ internal static class UsageHistoryUiChecks
             using var stream = File.Create(Path.Combine(output, $"usage-chart-{theme}.png"));
             var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap)); encoder.Save(stream);
         }
+    }
+
+    private static FrameworkElement ChartWith(DateTimeOffset now, string unit, double? maximum, double value)
+    {
+        var chart = (FrameworkElement)Activator.CreateInstance(ChartType, true)!;
+        var start = now.AddHours(-3);
+        var buckets = Enumerable.Range(0, 36).Select(i => new UsageHistoryBucket(start.AddMinutes(i * 5), start.AddMinutes(i * 5 + 5), value, value / 2, value * 1.5, 5, 5, 300)).ToArray();
+        var view = new UsageHistoryView(start, now, 300_000, buckets, new(value / 2, value * 1.5, value), 180, start, 4096);
+        var traces = Array.CreateInstance(TraceType, 1); traces.SetValue(Activator.CreateInstance(TraceType, view, "Graph/cpu", false, "Fixture")!, 0);
+        ChartType.GetMethod("SetData", All)!.Invoke(chart, [traces, unit, maximum]);
+        Layout(chart, 620, 180);
+        return chart;
+    }
+
+    private static void CheckByteUnit(DateTimeOffset now)
+    {
+        // A bytes series with an automatic maximum labels its axis through Ui.Bytes.
+        var chart = ChartWith(now, "B", null, 512d * 1024 * 1024);
+        var labels = Glyphs(VisualTreeHelper.GetDrawing(chart)!).Select(RunText).ToArray();
+        Assert.Contains(labels, t => t.EndsWith("MB") || t.EndsWith("GB"));
+        Assert.DoesNotContain(labels, t => t.EndsWith('%'));
+    }
+
+    private static void CheckSelection(DateTimeOffset now)
+    {
+        var accent = Application.Current.Resources["Accent"];
+        int Hairlines(FrameworkElement chart) => Drawings(VisualTreeHelper.GetDrawing(chart)!)
+            .Count(d => d.Geometry is LineGeometry line && line.StartPoint.X == line.EndPoint.X && ReferenceEquals(d.Pen?.Brush, accent));
+        int Count(FrameworkElement chart) => Drawings(VisualTreeHelper.GetDrawing(chart)!).Count();
+        int? Selected(FrameworkElement chart) => (int?)ChartType.GetProperty("SelectedIndex")!.GetValue(chart);
+        var handleKey = ChartType.GetMethod("HandleKey", All)!;
+        var handleClick = ChartType.GetMethod("HandleClick", All)!;
+
+        // Without Selectable the chart draws exactly as before and is not focusable, whatever SelectedIndex says.
+        var plain = ChartWith(now, "%", 100d, 40);
+        int before = Count(plain);
+        Assert.False(plain.Focusable);
+        ChartType.GetProperty("SelectedIndex")!.SetValue(plain, 2);
+        Layout(plain, 620, 180);
+        Assert.Equal(before, Count(plain));
+        Assert.Equal(0, Hairlines(plain));
+        handleKey.Invoke(plain, [System.Windows.Input.Key.Right]);
+        Assert.Equal(2, Selected(plain));
+
+        var chart = ChartWith(now, "%", 100d, 40);
+        int activated = -1;
+        ChartType.GetEvent("BucketActivated")!.AddEventHandler(chart, new Action<int>(i => activated = i));
+        ChartType.GetProperty("Selectable")!.SetValue(chart, true);
+        Assert.True(chart.Focusable);
+        Assert.Equal(0, Hairlines(chart));
+        ChartType.GetProperty("SelectedIndex")!.SetValue(chart, 2);
+        Layout(chart, 620, 180);
+        Assert.Equal(1, Hairlines(chart));
+        var plot = (Rect)ChartType.GetProperty("PlotRect", All)!.GetValue(chart)!;
+        double Centre(int bucket) => plot.Left + plot.Width * ((bucket * 5 + 2.5) / 180);
+        var hairline = Assert.Single(Drawings(VisualTreeHelper.GetDrawing(chart)!), d => d.Geometry is LineGeometry line && line.StartPoint.X == line.EndPoint.X && ReferenceEquals(d.Pen?.Brush, accent));
+        Assert.Equal(1, hairline.Pen.Thickness);
+        Assert.Equal(Centre(2), ((LineGeometry)hairline.Geometry).StartPoint.X, 3);
+        handleKey.Invoke(chart, [System.Windows.Input.Key.Right]);
+        Assert.Equal(3, Selected(chart));
+        handleKey.Invoke(chart, [System.Windows.Input.Key.Enter]);
+        Assert.Equal(3, activated);
+        handleKey.Invoke(chart, [System.Windows.Input.Key.Left]); handleKey.Invoke(chart, [System.Windows.Input.Key.Left]);
+        Assert.Equal(1, Selected(chart));
+        handleKey.Invoke(chart, [System.Windows.Input.Key.Left]); handleKey.Invoke(chart, [System.Windows.Input.Key.Left]);
+        Assert.Equal(0, Selected(chart));
+        ChartType.GetProperty("SelectedIndex")!.SetValue(chart, 35);
+        handleKey.Invoke(chart, [System.Windows.Input.Key.Right]);
+        Assert.Equal(35, Selected(chart));
+        ChartType.GetProperty("SelectedIndex")!.SetValue(chart, null);
+        Layout(chart, 620, 180);
+        Assert.Equal(0, Hairlines(chart));
+
+        // A click activates the bucket under the pointer; a click outside any bucket does nothing.
+        activated = -1;
+        var bucketAt = ChartType.GetMethod("BucketAt", All)!;
+        Assert.Equal(1, (int?)bucketAt.Invoke(chart, [new Point(Centre(1), plot.Top + 20)]));
+        Assert.Null(bucketAt.Invoke(chart, [new Point(2, plot.Top + 20)]));
+        handleClick.Invoke(chart, [new Point(Centre(1), plot.Top + 20)]);
+        Assert.Equal(1, activated);
+        Assert.Equal(1, Selected(chart));
+        handleClick.Invoke(chart, [new Point(2, plot.Top + 20)]);
+        Assert.Equal(1, activated);
     }
 
     private static object Data(DateTimeOffset now, bool empty)

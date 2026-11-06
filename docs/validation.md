@@ -1,5 +1,49 @@
 # Release validation
 
+## Application resource history (0.14.0, 2026-11-06)
+
+### One-day size
+
+`One_day_at_the_cap_stays_under_four_mebibytes` (`tests/DeadWare.Tests/ProcessHistoryStoreTests.cs`) writes one day at the cap, 1,440 complete minutes with the same 30 app names plus Everything else and full-width counter values each minute, and asserts the files stay under 4 MiB. It passed with `dotnet test tests/DeadWare.Tests -c Release -p:EnableWindowsTargeting=true --nologo --filter "FullyQualifiedName~One_day_at_the_cap"` on Linux on 2026-11-06. A throwaway copy of the test that printed `StorageBytes` (not committed) measured:
+
+- 2,740,224 bytes (2.61 MiB) with the test's one-character machine key;
+- 3,522,560 bytes (3.36 MiB) with a 15-character key, the longest computer name `Environment.MachineName` returns on Windows. The app keys rows by that name and stores it in every row.
+
+Worst case: a busy day near the cap is about 3–4 MiB, so 30 days plus today (31 × 3.4 MiB, about 104 MiB) fit under the 128 MiB cap (`ProcessHistoryStore.MaximumDatabaseBytes`, `RetentionDays` 30). The spec's estimate of about 2 MB per day was low. Whole-day eviction bounds the file whatever real days hold.
+
+### Behaviour the release notes describe
+
+- Recording has no switch of its own: `ProcessHistoryService` records while `UserSettings.ProcessMonitoring` and `UserSettings.UsageRecording` are both on. Turning either off keeps the saved file, and its days still leave once they are 30 days old.
+- Retention has one cutoff, `ProcessHistoryStore.RetentionCutoff(now)`: the UTC day floor of now minus 30 days. `Expire(now)` deletes every older minute and its app rows for every machine, one UTC day per committed transaction with a checkpoint between days; `Append` runs the same step before its insert transaction. The service's worker, which runs whether or not it records, calls `Expire` right after initialization and on the flush tick whenever the UTC day has changed. `ReadApplications`, `ReadSeries` and the earliest retained minute never reach before the cutoff, even before expiry has run.
+- Each minute keeps the union of the top 10 apps by CPU time, by memory and by I/O read + write (at most 30) plus one Everything else row holding the rest of the apps the scan saw. Activities with monitoring off add nothing, so those minutes are gaps, not empty rows.
+- Usage after the last scan that saw a process is not recorded, nor is a process that starts and exits between two scans: `ProcessActivityTracker` credits a process only up to the last scan that saw it (a process that started since the previous scan counts from zero at its first scan). Saved totals can be lower than the Device charts.
+- CPU time and I/O are stored as whole numbers that are never unknown, so an unknown delta inside a valid scan interval (an app's counters went backwards, or a process that started earlier was seen without a baseline) folds as 0: a stored minute can understate rather than be marked unknown.
+- A minute is saved after it closes, at the next 15-second flush; the card's gap count leaves out a minute that has just ended until it has had time to arrive, and counts only from the retention cutoff. A period that starts before the cutoff says "Application resources are kept for 30 days; earlier minutes are not kept.", in place of "No application resources were recorded in this period." when the whole period is older.
+- A restart inside a minute keeps the first segment's rows and clears `complete`; a dropped or skipped publication marks the open minute incomplete, and when the next activity starts a new minute that minute is marked too (the old one may have lost its tail, the new one its head). A crash after a recording switch, before the next resume or Quit, loses the open minute.
+- The Application resources table lists up to 200 apps for the period (`ReadApplications`' default limit) plus Everything else. The same read counts every application in the range (`ApplicationCount`), so past the limit the summary says "Top 200 of N applications · …" and a search says "N of the top 200 applications match.".
+- The card's status line follows Record usage history and Per-process monitoring as they change (`RefreshStatus`, no database read). The selected app's series is read with the CPU chart's point count, capped at 1,000 (`ProcessHistoryStore.MaximumRows`): while the CPU chart is at most 1,000 px wide its buckets are the Device charts' slots, and on a wider chart they are coarser. Its CPU labels keep one decimal under 10 %. The CPU and RAM charts draw an Accent frame while they have keyboard focus. Clear, if it holds the focus as it collapses (a click gives it keyboard focus too), hands it to Rank by just below it, whichever chart listed the slot, so Tab stays in the card and the page does not scroll.
+- Click a moment lists the clicked bucket's own slot (the CPU and RAM charts share `ReadMetric`'s grid), ranked by CPU time from the CPU chart and by average memory from the RAM chart. Clear and Esc return to the period ranking; changing the range, **◀ Earlier**, **Later ▶** and an alert's **View in Usage history** clear the slot, and the page's minute refresh keeps and re-reads it.
+
+### Automated coverage
+
+Core, run locally on Linux and on the Windows CI build: `ProcessMinuteFolderTests` (the three top-ten lists and the 30-app cap, case variants, empty names and omitted sums in Everything else, zero values and ties, covered seconds, null I/O deltas, zero-covered minutes, clock jumps, gaps and breaks, completeness, off and unavailable activities) and `ProcessHistoryStoreTests` (the one-day size above, constants, upper-invariant names, restarts and retried batches, newer, foreign and corrupt files preserved, reopen, whole-day eviction, eviction at the 65,536-byte minimum cap that drops the older day, then refuses the batch once only today remains and keeps today's saved minutes, 30-day retention, the retention cutoff, expiry without an append for every machine with today kept, reads that skip minutes past the cutoff before expiry, the application count past the rows read, the 31-day read limit, the averaging definitions, Everything else and the rank total, row parts that sum to the rank total for every rank, series buckets with gaps, non-aligned slots, ranking order, ties and the row limit, machine partitions, invalid batches, the 1,000-row and point caps, and one snapshot per read).
+
+App, on the Windows CI build only: `ProcessHistoryServiceTests` (records only with both switches on, drops and counts a full queue, saves the open minute on stop and closed minutes on the timer, a recording change saves the open minute, a loss at a minute boundary marks both minutes incomplete and a loss inside a minute only its own, days past retention are expired at start and on a UTC day change while recording is off, a store failure stops only its worker, a foreign file is preserved and reported, the session switches configure the service), the sign-out null guard in `CoolingShutdownTests`, and the UI checks for the chart byte unit and selection (`UsageHistoryUiChecks`), the Application resources card and click a moment (`ApplicationResourcesUiChecks`, including the gap notice from the retention cutoff and the 30-day sentence, the status line following both switches without a read, the charts' focus frame, a failed series read keeping the chart's name, Clear handing its focus to Rank by after a chart listed the slot and without one, CPU tenths on the app chart only, the app series on the CPU chart's grid, and "Top N of M"), and the history-switch text in Settings and on the Processes page (`ShellUiChecks`, `ProcessesPageUiChecks`). No test drains a non-null process history through Quit; the service's stop flush is covered on its own.
+
+### Pending by eye
+
+Never claimed as verified in this release:
+
+- A real day of recording on a physical machine and the resulting `process-history.db` size.
+- Click a moment on a real machine: a CPU and a RAM point, Left, Right and Enter, the card scrolling into view, and Clear and Esc.
+- Application resources rankings compared with Task Manager for the same period.
+- The CPU and RAM charts' focus frame and Clear's focus hand-off to Rank by while tabbing on a real display (the checks inspect the drawing and the logical focus offscreen).
+- Clicking or pressing Clear does not move the page.
+
+### Results
+
+`dotnet build DeadWare.slnx -c Release -p:EnableWindowsTargeting=true --nologo` finished with 0 errors and 14 existing warnings (xUnit analyzer notes and one nullability warning in App tests), none on a line this release changed. The Core suite on Linux passed 894 tests with 1 skipped and 26 failures, the known Windows-only Core tests that cannot run there; the App tests run only on the Windows CI build.
+
 ## Processes (0.13.0, 2026-11-06)
 
 ### Measurements and decisions
