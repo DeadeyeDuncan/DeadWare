@@ -73,7 +73,7 @@ public class GraphHistoryServiceTests
         reading=reading with {Gpus=[..reading.Gpus,new("/gpu/1","Same model")],Sensors=[..reading.Sensors,new("private-extra","Same model","GPU Core","%",50,"/gpu/1","GpuAmd","Load","Available")]};
         var mapping=GraphHistoryProjection.Mappings(reading,"machine");
         Assert.DoesNotContain(mapping.Values,key=>key.StartsWith("/gpu/"));
-        Assert.Equal(6,mapping.Count);
+        Assert.Equal(8,mapping.Count); // network 2 + RAM 1 + CPU 3 + disk totals 2
         Assert.DoesNotContain(mapping.Keys,key=>key.Contains("Test CPU")||key.Contains("private"));
     }
 
@@ -219,7 +219,7 @@ public class GraphHistoryServiceTests
         var reading=WithMemory(Reading(DateTimeOffset.UtcNow,1),8,16);
         var mapping=GraphHistoryProjection.Mappings(reading,"machine");
         var memory=Assert.Single(mapping,pair=>pair.Value=="memory/usage");
-        Assert.Equal(3,mapping.Count);
+        Assert.Equal(5,mapping.Count); // network 2 + RAM 1 + disk totals 2
         Assert.DoesNotContain(mapping.Values,key=>key is "memory/used" or "memory/total");
         Assert.DoesNotContain(mapping.Keys,key=>key.Contains("machine")||key.Contains("Test CPU"));
         Assert.NotEqual(memory.Key,Assert.Single(GraphHistoryProjection.Mappings(reading,"another-machine"),pair=>pair.Value=="memory/usage").Key);
@@ -248,7 +248,7 @@ public class GraphHistoryServiceTests
         Assert.Null(history.Read()[^1].SessionId);
         Assert.Equal(25,history.Summarize("memory/usage",1,21600).Average);
         var store=new GraphHistoryStore(fixture.Path);store.Initialize();
-        Assert.All(store.Read(DateTimeOffset.UtcNow),row=>Assert.Equal(3,row.Values.Count));
+        Assert.All(store.Read(DateTimeOffset.UtcNow),row=>Assert.Equal(5,row.Values.Count));
     }
 
     [Fact]
@@ -398,7 +398,18 @@ public class GraphHistoryServiceTests
         Assert.Contains("storage/S1/read",m.Values);Assert.Contains("storage/S2/write",m.Values);}
     [Fact] public void Live_only_drives_are_not_mapped()=>Assert.DoesNotContain("storage/USB#1/read",GraphHistoryProjection.Mappings(ReadingWithDrives(Drive(null,1,removable:true)),"m").Values);
     [Fact] public void Ninth_drive_is_dropped(){ var m=GraphHistoryProjection.Mappings(ReadingWithDrives(Enumerable.Range(0,9).Select(i=>Drive("S"+i,i)).ToArray()),"m");
-        Assert.Equal(16,m.Values.Count(v=>v.StartsWith("storage/")));}
+        Assert.Equal(16,m.Values.Count(v=>v.StartsWith("storage/")&&!v.StartsWith("storage/total/")));}
+    [Fact] public void Disk_totals_are_mapped_with_or_without_persistable_drives()
+    {
+        foreach(var reading in new[]{ReadingWithDrives(),ReadingWithDrives(Drive(null,1,removable:true)),ReadingWithDrives(Drive("S1",0))})
+        {
+            var m=GraphHistoryProjection.Mappings(reading,"m");
+            Assert.Contains("storage/total/read",m.Values);Assert.Contains("storage/total/write",m.Values);
+        }
+        // The totals key is the machine's, so plugging in a drive does not orphan the saved totals.
+        string Key(Reading r)=>GraphHistoryProjection.Mappings(r,"m").Single(kv=>kv.Value=="storage/total/read").Key;
+        Assert.Equal(Key(ReadingWithDrives(Drive("S1",0))),Key(ReadingWithDrives(Drive("S1",0),Drive("S2",1),Drive(null,2,removable:true))));
+    }
     [Fact] public void Plugging_a_removable_drive_keeps_fixed_drive_keys(){ var before=GraphHistoryProjection.Mappings(ReadingWithDrives(Drive("S1",0)),"m");
         var after=GraphHistoryProjection.Mappings(ReadingWithDrives(Drive("S1",0),Drive(null,1,removable:true)),"m");
         Assert.Equal(before.Single(kv=>kv.Value=="storage/S1/read").Key,after.Single(kv=>kv.Value=="storage/S1/read").Key);}
@@ -414,6 +425,20 @@ public class GraphHistoryServiceTests
         var second=new GraphHistoryService(fixture.Path,"machine",history);second.Start();second.TryRecord(live);await second.StopAsync();
         var series=history.Series("storage/S1/read",50,21600);
         Assert.Contains(series,p=>p.Value==100);Assert.Contains(series,p=>p.Value==105);Assert.Equal(7,series[^1].Value);
+    }
+    [Fact] public async Task Disk_totals_restore_after_restart()
+    {
+        using var fixture=new Fixture();var now=DateTimeOffset.UtcNow.AddSeconds(-2);
+        Reading Make(DateTimeOffset t,double mono,double v){var r=ReadingWithDrives(Drive("S1",0),Drive(null,1,removable:true));var values=Reading(t,mono).Sample.Values.ToDictionary(p=>p.Key,p=>p.Value);
+            values["storage/total/read"]=v;values["storage/total/write"]=v+1;return r with {Sample=r.Sample with {Timestamp=t,MonotonicSeconds=mono,Values=values}};}
+        var first=new GraphHistoryService(fixture.Path,"machine",new SampleHistory());first.Start();
+        for(int i=0;i<6;i++)first.TryRecord(Make(now.AddSeconds(-20+i),i+1,200+i));
+        await first.StopAsync();
+        var history=new SampleHistory();var live=Make(now,50,9);history.Add(live.Sample);
+        var second=new GraphHistoryService(fixture.Path,"machine",history);second.Start();second.TryRecord(live);await second.StopAsync();
+        var read=history.Series("storage/total/read",50,21600);var write=history.Series("storage/total/write",50,21600);
+        Assert.Contains(read,p=>p.Value==200);Assert.Contains(read,p=>p.Value==205);Assert.Equal(9,read[^1].Value);
+        Assert.Contains(write,p=>p.Value==201);Assert.Equal(10,write[^1].Value);
     }
 
     private static Reading WithCores(Reading reading,int count)

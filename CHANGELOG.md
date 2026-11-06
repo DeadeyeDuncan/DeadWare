@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.12.5 — Disk graph history and drive line colours
+
+- **Disk graph keeps its read and write lines after a restart.** The six-hour graph history saved each drive's read and write but not the Disk totals, so after DeadWare restarted, the restored part of the Disk graph (the overview card, its pop-out and the widget) showed only the thin per-drive lines, and the read and write lines began at the restart. The totals are now saved too. History saved before this update has no totals, so that part of the graph still lacks them until it ages out of the six-hour window.
+- **Per-drive lines use the disk colour.** The thin per-drive lines on the Disk graph were tints of the CPU colour (and took any per-core CPU colour override), so they could read as a red warning on a Disk graph. They are now tints of the disk read colour and ignore the CPU core settings.
+
 ## 0.12.4 — Energy saver in battery history
 
 - **Energy saver turns the battery line amber.** On Windows 11 24H2 and later, Energy saver replaced battery saver, and its standard level is not reported through the older battery-saver flag DeadWare read. Periods with Energy saver on were therefore recorded as saver off, and the Battery history charge line stayed its normal colour. DeadWare now also reads Windows' own Energy saver status, without administrator access, so the line turns amber and the Saver marks fill while Energy saver is on, on battery or plugged in. Earlier Windows versions keep using the battery-saver flag. Periods recorded before this update keep the state they were saved with.

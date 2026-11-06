@@ -595,6 +595,16 @@ Pending until run on a physical machine; automated tests use synthetic traffic.
 - Run non-elevated, with per-app capture unavailable: the Network graph is unchanged and no local figure appears.
 - Per-core CPU usage on: the aggregate CPU line is not drawn; the GPU trace, header percentage and hover total remain.
 
+## Disk graph history and drive line colours (0.12.5)
+
+Reported symptom: after a restart, the widget's Disk graph showed only a thin red line for the restored part and the blue read and green write lines began at the restart. Root cause: `GraphHistoryProjection.Mappings` persisted each persistable drive's `storage/<id>/read|write` but not `storage/total/read|write`, which drive the Disk graph's read and write traces, so the restore had nothing to put under them. The thin line was a per-drive trace, drawn with `Theme.CoreBrush`, a tint of the CPU colour that also honoured `cpucore/N` overrides.
+
+Fix: the totals are persisted under a machine-keyed `Storage` / `drive totals` identity, independent of the drive set, so plugging a drive in or out does not orphan them. Per-drive traces use the new `Theme.DriveBrush`, the same tint ramp over the disk read colour, with no core overrides. Rows saved before 0.12.5 have no totals; they age out of the six-hour window.
+
+Automated (authored without a .NET SDK; the pull request's Windows CI builds and runs both test projects): `Disk_totals_are_mapped_with_or_without_persistable_drives` and `Disk_totals_restore_after_restart` in `GraphHistoryServiceTests`; mapping counts in the RAM, ambiguous-GPU and GPU fan tests include the two totals; `Storage_card_draws_read_and_write_and_per_drive_lines` asserts the drive pens are disk read tints.
+
+Pending until checked on a physical machine: with DeadWare running for a while, restart it; the restored part of the Disk graph shows the read and write lines, and the per-drive lines are shades of the disk read colour.
+
 ## Energy saver in battery history (0.12.4)
 
 Reported symptom: with Windows Energy saver on while discharging, the Battery history charge line never turned amber. Root cause: DeadWare read saver state only from `GetSystemPowerStatus` → `SYSTEM_POWER_STATUS.SystemStatusFlag`. On Windows 11 24H2 and later, Energy saver replaced battery saver and has two active levels, Standard and High savings. The legacy flag (and its `GUID_POWER_SAVING_STATUS` notification) reports on only for High savings, so Standard periods were stored as a known saver=0 and drawn in the normal colour. Evidence: Microsoft's merged Windows App SDK `EnergySaverStatus2` spec maps Standard → legacy Off and High savings → On; the Windows SDK `winnt.h` (10.0.26100 and later) marks `GUID_POWER_SAVING_STATUS` deprecated in Germanium in favour of `GUID_ENERGY_SAVER_STATUS` (0 off, 1 standard, 2 high savings); two independent projects measured `SystemStatusFlag` = 0 with Energy saver on. The struct layout and the 0/1 mapping were correct. A port of the recorder, the SQLite bucketing and the chart (cross-checked against the repo's own tests and real SQLite) draws an amber Day line in every simulated case once saver=1 is recorded, so the chart was not at fault; Week and longer ranges show amber dots and marks rather than a line by design.

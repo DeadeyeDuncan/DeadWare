@@ -22,6 +22,8 @@ public static class GraphHistoryProjection
         }
         Add("Network","interface totals","network","download","upload");
         Add("Memory","physical memory","memory","usage");
+        // Disk totals span every present drive (removable ones included), so they are keyed to the machine, not to a drive set.
+        Add("Storage","drive totals","storage/total","read","write");
         var cpus=reading.Sensors.Where(s=>s.HardwareType=="Cpu"&&s.HardwareId.Length>0&&s.Hardware.Length>0)
             .GroupBy(s=>s.HardwareId,StringComparer.Ordinal).ToArray();
         // CPU graph values are machine-wide. Multiple sockets cannot be assigned a
