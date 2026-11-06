@@ -30,7 +30,7 @@ The automated standard-user checks planned in the design were dropped: a standar
 
 Never claimed as verified in this release:
 
-- Run DeadWare without administrator rights: the Processes page shows I/O, hides Disk and Network, and the banner reads "Network needs administrator".
+- Run DeadWare without administrator rights: the Processes page shows I/O, hides Disk and Network, and the banner reads "Disk and network need administrator".
 - End task on an elevated or other-user process as a standard user reports "Needs administrator".
 - Task Manager Details comparison.
 - End task against real third-party services, including a driver-store service such as NVIDIA Display Container, and another signed-in user's process, as a standard user and as administrator.
