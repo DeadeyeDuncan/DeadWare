@@ -705,7 +705,8 @@ internal static class ApplicationResourcesUiChecks
         typeof(UiSession).GetField("layout", All)!.SetValue(session, new DetachedWindowState([]));
         typeof(UiSession).GetField("writer", All)!.SetValue(session, new SettingsSnapshotWriter(Path.Combine(root, "settings.json")));
         service.Configure(session.Settings.ProcessMonitoring, session.Settings.UsageRecording);
-        var page = new UsageHistoryPage(session);
+        // Laid out first, so the page's template puts its cards and the switch in the visual tree; it is still never Loaded, so nothing reads.
+        var page = new UsageHistoryPage(session); Layout(page);
         var card = Assert.Single(Descendants(page).OfType<ApplicationResourcesCard>());
         // The status line shows at once and follows each switch while the page is shown, not only when the card next reads.
         Assert.Equal(service.Status, Status(card)); Assert.DoesNotContain(Paused, Status(card));
