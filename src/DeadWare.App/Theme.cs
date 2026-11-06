@@ -37,9 +37,23 @@ internal static class Theme
         }
         return brush;
     }
+    private static readonly Dictionary<(Color,int,int,bool),SolidColorBrush> driveBrushes=new();
+    /// <summary>A drive's trace brush on a Disk chart: the auto tint of the disk read colour. Core colour overrides never apply.</summary>
+    public static SolidColorBrush DriveBrush(int index,int count)
+    {
+        var read=((SolidColorBrush)Brush("Graph/diskread")).Color;
+        bool highContrast=SystemParameters.HighContrast;
+        var key=(read,index,count,highContrast);
+        if(!driveBrushes.TryGetValue(key,out var brush))
+        {
+            brush=new SolidColorBrush(ThemeTokens.CoreTint(read,index,count,highContrast));
+            brush.Freeze();driveBrushes[key]=brush;
+        }
+        return brush;
+    }
     private static void ApplyGraphColors()
     {
-        coreBrushes.Clear();
+        coreBrushes.Clear();driveBrushes.Clear();
         foreach(string kind in GraphColorSettings.Kinds)
         {
             string role=kind switch {"gpu" or "gputemp"=>"Gpu","gpufan"=>"Warning","cpupump"=>"Download","memory"=>"Accent","download" or "diskread"=>"Download",_=>"Cpu"};

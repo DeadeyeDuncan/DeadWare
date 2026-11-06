@@ -311,7 +311,7 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
             if(showPump)specs.Add(new(session.MetricId("cpupump"),Theme.GraphKey("cpupump"),false,true,fanMaximum,0));
             for(int i=0;i<query.Cores;i++)specs.Add(new(CpuCoreUsage.Key(i),Theme.GraphKey("cpu"),false,false,maximum,0){Core=true,Brush=Theme.CoreBrush(i,query.Cores),CoreIndex=i,CoreKey=GraphColorSettings.CoreKey(i)});
             var driveIds=DriveIds(query);
-            for(int i=0;i<driveIds.Length;i++)specs.Add(new(StorageMetrics.Key(driveIds[i],"read"),Theme.GraphKey("diskread"),false,false,maximum,0){Core=true,Brush=Theme.CoreBrush(i,driveIds.Length),DriveId=driveIds[i]});
+            for(int i=0;i<driveIds.Length;i++)specs.Add(new(StorageMetrics.Key(driveIds[i],"read"),Theme.GraphKey("diskread"),false,false,maximum,0){Core=true,Brush=Theme.DriveBrush(i,driveIds.Length),DriveId=driveIds[i]});
             bool spline=!(query.Seconds>=3600&&!query.Smoothed);
             var paths=new Dictionary<string,TracePath>();
             foreach(var spec in specs)paths[spec.Metric]=BuildTrace(Read(spec.Metric),built,spec.Maximum,plot,query.Seconds>=3600,spline,glowCopy:!spec.Core&&!spec.Local);
