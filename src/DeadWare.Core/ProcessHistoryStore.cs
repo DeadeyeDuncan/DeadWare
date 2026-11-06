@@ -330,27 +330,21 @@ public sealed class ProcessHistoryStore(string path, long maximumDatabaseBytes =
         => Execute(db, "DELETE FROM names WHERE id NOT IN(SELECT DISTINCT name_id FROM app_minutes)", transaction);
 
     /// <summary>Deletes every minute before <paramref name="cutoff"/>, oldest UTC day first: one committed transaction per day and a
-    /// checkpoint after each, so the journal holds about one day of deletions at a time. The names those days alone used leave once,
-    /// in a small transaction after the last day.</summary>
+    /// checkpoint after each, so the journal holds about one day of deletions at a time. The pass that removes the last expired day
+    /// also deletes the names no remaining minute lists, in the same transaction: an interruption before it leaves an expired minute,
+    /// so the next expiry comes back to that pass, and never leaves expired names behind with nothing left to expire.</summary>
     private static void ExpireByDay(SqliteConnection db, long cutoff)
     {
-        bool expired = false;
         while (Scalar(db, "SELECT MIN(minute) FROM minutes") is long oldest && oldest < cutoff)
         {
             using (var transaction = db.BeginTransaction())
             {
                 DeleteMinutes(db, transaction, Math.Min(DayFloor(oldest) + DayMilliseconds, cutoff));
+                if (ScalarWith(db, "SELECT MIN(minute) FROM minutes", transaction) is not long left || left >= cutoff) DeleteOrphanedNames(db, transaction);
                 transaction.Commit();
             }
-            Checkpoint(db); expired = true;
+            Checkpoint(db);
         }
-        if (!expired) return;
-        using (var transaction = db.BeginTransaction())
-        {
-            DeleteOrphanedNames(db, transaction);
-            transaction.Commit();
-        }
-        Checkpoint(db);
     }
 
     private static bool EvictOldestDay(SqliteConnection db, long protectedDay)
