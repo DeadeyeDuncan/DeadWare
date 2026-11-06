@@ -42,7 +42,7 @@ Never claimed as verified in this release:
 
 ### Results
 
-`dotnet build DeadWare.slnx -c Release -p:EnableWindowsTargeting=true --nologo` finished with 0 errors; its 14 warnings are existing xUnit analyzer notes and one nullability warning in App test files this release does not change. The Core suite on Linux passed 894 tests with 1 skipped and 26 failures, the known Windows-only Core tests that cannot run there; the App tests run only on the Windows CI build.
+`dotnet build DeadWare.slnx -c Release -p:EnableWindowsTargeting=true --nologo` finished with 0 errors and 14 existing warnings (xUnit analyzer notes and one nullability warning in App tests), none on a line this release changed. The Core suite on Linux passed 894 tests with 1 skipped and 26 failures, the known Windows-only Core tests that cannot run there; the App tests run only on the Windows CI build.
 
 ## Processes (0.13.0, 2026-11-06)
 

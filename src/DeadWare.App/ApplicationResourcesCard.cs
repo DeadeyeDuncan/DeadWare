@@ -102,7 +102,8 @@ internal sealed class ApplicationResourcesCard : StackPanel
 
     /// <summary>Reads the ranking for the page's period off the UI thread. A later call, or a Rank by change, makes an earlier read stale and
     /// its result is dropped. The rows on screen stay until the new ones arrive. <paramref name="devicePoints"/> is the CPU chart's point
-    /// count: the selected app's series is read with it (at most <see cref="ProcessHistoryStore.MaximumRows"/>), so it shares that grid.</summary>
+    /// count: the selected app's series is read with it (at most <see cref="ProcessHistoryStore.MaximumRows"/>), so up to a 1,000-point chart it
+    /// shares that grid; a wider CPU chart has finer Device slots.</summary>
     internal void Load(DateTimeOffset from, DateTimeOffset to, int devicePoints)
     {
         period = (from, to); points = Math.Clamp(devicePoints, 1, ProcessHistoryStore.MaximumRows); rankDelay.Stop(); _ = ReloadAsync();
