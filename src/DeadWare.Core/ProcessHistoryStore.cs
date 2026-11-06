@@ -311,11 +311,9 @@ public sealed class ProcessHistoryStore(string path, long maximumDatabaseBytes =
         }
     }
 
-    private static void Expire(SqliteConnection db, SqliteTransaction transaction, long cutoff)
+    /// <summary>Deletes every minute before <paramref name="cutoff"/> and its application rows, for every machine.</summary>
+    private static void DeleteMinutes(SqliteConnection db, SqliteTransaction transaction, long cutoff)
     {
-        // Cheap check first: the big table is only walked when a day actually leaves.
-        object? oldest = ScalarWith(db, "SELECT MIN(minute) FROM minutes", transaction);
-        if (oldest is null or DBNull || Convert.ToInt64(oldest, CultureInfo.InvariantCulture) >= cutoff) return;
         var machines = new List<string>();
         using (var command = Command(db, "SELECT DISTINCT machine FROM minutes", transaction))
         using (var reader = command.ExecuteReader())
@@ -325,22 +323,34 @@ public sealed class ProcessHistoryStore(string path, long maximumDatabaseBytes =
             Execute(db, "DELETE FROM app_minutes WHERE machine=$machine AND minute<$cutoff", transaction, ("$machine", machine), ("$cutoff", cutoff));
             Execute(db, "DELETE FROM minutes WHERE machine=$machine AND minute<$cutoff", transaction, ("$machine", machine), ("$cutoff", cutoff));
         }
-        Execute(db, "DELETE FROM names WHERE id NOT IN(SELECT DISTINCT name_id FROM app_minutes)", transaction);
     }
 
+    /// <summary>Deletes the names no saved minute lists any more. It walks the whole of app_minutes, so it runs once per expiry or eviction.</summary>
+    private static void DeleteOrphanedNames(SqliteConnection db, SqliteTransaction transaction)
+        => Execute(db, "DELETE FROM names WHERE id NOT IN(SELECT DISTINCT name_id FROM app_minutes)", transaction);
+
     /// <summary>Deletes every minute before <paramref name="cutoff"/>, oldest UTC day first: one committed transaction per day and a
-    /// checkpoint after each, so the journal holds about one day of deletions at a time.</summary>
+    /// checkpoint after each, so the journal holds about one day of deletions at a time. The names those days alone used leave once,
+    /// in a small transaction after the last day.</summary>
     private static void ExpireByDay(SqliteConnection db, long cutoff)
     {
+        bool expired = false;
         while (Scalar(db, "SELECT MIN(minute) FROM minutes") is long oldest && oldest < cutoff)
         {
             using (var transaction = db.BeginTransaction())
             {
-                Expire(db, transaction, Math.Min(DayFloor(oldest) + DayMilliseconds, cutoff));
+                DeleteMinutes(db, transaction, Math.Min(DayFloor(oldest) + DayMilliseconds, cutoff));
                 transaction.Commit();
             }
-            Checkpoint(db);
+            Checkpoint(db); expired = true;
         }
+        if (!expired) return;
+        using (var transaction = db.BeginTransaction())
+        {
+            DeleteOrphanedNames(db, transaction);
+            transaction.Commit();
+        }
+        Checkpoint(db);
     }
 
     private static bool EvictOldestDay(SqliteConnection db, long protectedDay)
@@ -350,7 +360,7 @@ public sealed class ProcessHistoryStore(string path, long maximumDatabaseBytes =
         long day = DayFloor(Convert.ToInt64(oldest, CultureInfo.InvariantCulture));
         if (day >= protectedDay) return false;
         using var transaction = db.BeginTransaction();
-        Expire(db, transaction, day + DayMilliseconds);
+        DeleteMinutes(db, transaction, day + DayMilliseconds); DeleteOrphanedNames(db, transaction);
         transaction.Commit();
         return true;
     }

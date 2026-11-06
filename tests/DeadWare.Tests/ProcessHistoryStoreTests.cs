@@ -217,13 +217,16 @@ public class ProcessHistoryStoreTests
         using var fixture = new Fixture(); var store = fixture.Open();
         var today = Day.AddDays(35);
         store.Append("m", [Batch(today, apps: [App("today.exe", 1)])], today.AddHours(1));
+        // shared.exe is listed on the first and the last of the six days.
         store.Append("m", Enumerable.Range(0, 6).SelectMany(d => new[] { Batch(Day.AddDays(d), apps: [App($"day-{d}.exe", 1)]),
-            Batch(Day.AddDays(d).AddHours(23).AddMinutes(59), apps: [App($"day-{d}.exe", 1)]) }).ToList(), Day.AddDays(6));
+            Batch(Day.AddDays(d).AddHours(23).AddMinutes(59), apps: d is 0 or 5 ? [App($"day-{d}.exe", 1), App("shared.exe", 1)] : [App($"day-{d}.exe", 1)]) })
+            .ToList(), Day.AddDays(6));
         Assert.Equal(7, fixture.Days().Count);
         store.Expire(today.AddHours(2));
         // The cutoff is Day + 5: days 0 to 4 leave whole, day 5 and today stay whole.
         Assert.Equal([Day.AddDays(5), Day.AddDays(5).AddHours(23).AddMinutes(59), today], fixture.Minutes());
-        Assert.Equal(["day-5.exe", "today.exe"], fixture.Query("SELECT display FROM names ORDER BY display", r =>
+        // Every name only the expired days used leaves with them; a name a kept day still lists stays.
+        Assert.Equal(["day-5.exe", "shared.exe", "today.exe"], fixture.Query("SELECT display FROM names ORDER BY display", r =>
         {
             var names = new List<string>(); while (r.Read()) names.Add(r.GetString(0)); return names;
         }));
