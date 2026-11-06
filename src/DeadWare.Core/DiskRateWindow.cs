@@ -4,7 +4,8 @@ public sealed record DiskProcessTotal(int Pid,long Generation,long BytesRead,lon
 public sealed record DiskProcessRate(int Pid,long Generation,double Read,double Write);
 public sealed record DiskTake(DiskTraceState State,string Status,bool Lossy,bool Warm,IReadOnlyList<DiskProcessRate> Rates,double UnattributedShare,long UnattributedEvents)
 {
-    public static DiskTake Off{get;}=new(DiskTraceState.Off,"",false,false,Array.Empty<DiskProcessRate>(),0,0);
+    /// <summary>No disk session runs; its status is the Disk columns' "—" reason.</summary>
+    public static DiskTake Off{get;}=new(DiskTraceState.Off,"Per-app disk tracing is off",false,false,Array.Empty<DiskProcessRate>(),0,0);
 }
 /// <summary>Turns cumulative per-process disk totals into rates over a window of at least <paramref name="minimumSeconds"/>.</summary>
 public sealed class DiskRateWindow(double minimumSeconds=2)

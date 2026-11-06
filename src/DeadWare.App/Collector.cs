@@ -85,7 +85,12 @@ public sealed class Collector : IAsyncDisposable
     private const string StorageSensorsOff="Unavailable · storage sensors off";
     // Diagnostic isolation (HardwareEnabled:false) keeps WMI and disk counters off the poll thread.
     public Collector(CollectorOptions? options=null):this(options,options is {HardwareEnabled:false}?null:new WindowsStorage(),processes:new WindowsProcesses()) {}
-    internal Collector(CollectorOptions? options,IStorageFastSource? storage,IStorageHealthSource? healthSource=null,TimeSpan? healthPeriod=null,IProcessSource? processes=null) {this.storage=storage;this.healthSource=healthSource;this.healthPeriod=healthPeriod??StorageHealthPeriod;this.processes=processes??new WindowsProcesses();this.options=options??new();SetPollingInterval(this.options.PollingIntervalSeconds);SetProcessMonitoring(this.options.ProcessMonitoring);etw=new(this.options.DiagnosticTimings);}
+    internal Collector(CollectorOptions? options,IStorageFastSource? storage,IStorageHealthSource? healthSource=null,TimeSpan? healthPeriod=null,IProcessSource? processes=null,Func<IDiskTrace>? diskTrace=null)
+    {
+        this.storage=storage;this.healthSource=healthSource;this.healthPeriod=healthPeriod??StorageHealthPeriod;this.processes=processes??new WindowsProcesses();this.options=options??new();SetPollingInterval(this.options.PollingIntervalSeconds);SetProcessMonitoring(this.options.ProcessMonitoring);etw=new(this.options.DiagnosticTimings);
+        // ProcessDiskTracing only permits a session; it runs while monitoring is on.
+        if(this.options.ProcessDiskTracing)disk=new(diskTrace??(()=>new EtwDisk(EtwDisk.BufferSizeMB)));
+    }
     private double pollingIntervalSeconds=1;
     public double PollingIntervalSeconds=>Volatile.Read(ref pollingIntervalSeconds);
     public void SetPollingInterval(double intervalSeconds)=>Volatile.Write(ref pollingIntervalSeconds,PollingPolicy.Normalize(intervalSeconds));
@@ -95,8 +100,10 @@ public sealed class Collector : IAsyncDisposable
     public void SetProcessMonitoring(bool enabled)=>processMonitoring=enabled;
     private readonly IProcessSource processes;
     private long processSequence;
-    // No disk session exists in this build, so the Disk columns' "—" names this reason.
-    internal const string DiskTracingOff="Per-app disk tracing is off";
+    // Null without ProcessDiskTracing, and in the shutdown fixtures built with GetUninitializedObject.
+    private readonly DiskTraceController? disk;
+    // The monitoring flag last sent to the disk lifecycle; null before the first pass. Read and written only by the worker.
+    private bool? diskRequested;
     private readonly CancellationTokenSource cancellation=new();
     private readonly Stopwatch clock=Stopwatch.StartNew();
     private readonly WindowsCounters windows=new();
@@ -155,6 +162,8 @@ public sealed class Collector : IAsyncDisposable
                 intervalSeconds=PollingIntervalSeconds;
                 double started=clock.Elapsed.TotalSeconds;
                 bool monitoring=processMonitoring;
+                // Queued on the disk lifecycle's own pool task on the first pass and on every change, so the poll never waits on it.
+                if(disk is not null&&diskRequested!=monitoring){diskRequested=monitoring;disk.Request(monitoring);}
                 try
                 {
                     Dictionary<string,double>? timings=options.DiagnosticTimings?new(){["open/hardware"]=hardwareOpenMilliseconds,["open/etw"]=etwOpenMilliseconds}:null;
@@ -258,7 +267,7 @@ public sealed class Collector : IAsyncDisposable
                         var local=NetworkTrafficSplit.Local(capture.Connections,network.Down,network.Up);
                         values["network/download/local"]=local.Down;values["network/upload/local"]=local.Up;
                         if(timings is not null)timings["etw/snapshot"]=Stopwatch.GetElapsedTime(providerStarted).TotalMilliseconds;
-                        var processActivity=PublishProcesses(monitoring,tracked,processFailure,processorCount,capture,timings);
+                        var processActivity=PublishProcesses(monitoring,tracked,processFailure,processorCount,capture,now,timings);
                         var sample=new Snapshot(timestamp,now,new System.Collections.ObjectModel.ReadOnlyDictionary<string,double?>(values)) {PollingIntervalSeconds=intervalSeconds};
                         if(timings is not null)timings["poll/total"]=(clock.Elapsed.TotalSeconds-started)*1000;
                         double elapsed=clock.Elapsed.TotalSeconds-started;
@@ -300,18 +309,27 @@ public sealed class Collector : IAsyncDisposable
     private ProcessSummary? Summary(ProcessActivity activity)=>options.DiagnosticTimings?ProcessSummary.From(activity):null;
     private const string ProcessScanUnavailable="Process scan unavailable";
     private static ProcessActivity FailedActivity(bool monitoring,Exception e)=>monitoring?ProcessActivity.Unavailable(e.GetType().Name):ProcessActivity.Off;
-    /// <summary>Process block 2, inside the publication lock after the poll's only ETW snapshot: joins the scan to per-app traffic. It never throws, so the reading is always published.</summary>
-    private ProcessActivity PublishProcesses(bool monitoring,TrackedScan? tracked,string? failure,int processorCount,NetworkCaptureSnapshot capture,Dictionary<string,double>? timings)
+    /// <summary>Process block 2, inside the publication lock after the poll's only ETW snapshot: takes the disk trace and joins the scan to per-app traffic and disk. It never throws, so the reading is always published.</summary>
+    private ProcessActivity PublishProcesses(bool monitoring,TrackedScan? tracked,string? failure,int processorCount,NetworkCaptureSnapshot capture,double now,Dictionary<string,double>? timings)
     {
         if(!monitoring)return ProcessActivity.Off;
         if(failure is not null||tracked is null)return ProcessActivity.Unavailable(failure??ProcessScanUnavailable);
         long started=Stopwatch.GetTimestamp();
         try
         {
+            var diskTake=DiskTake.Off;
+            if(disk is not null)
+            {
+                long diskStarted=Stopwatch.GetTimestamp();
+                diskTake=disk.Take(now,tracked.Index);
+                // Only once a session has opened, so the keys mean the disk session ran.
+                if(timings is not null&&disk.LastOpenMilliseconds is {} opened) {timings["open/etwdisk"]=opened;timings["etw/disk"]=Stopwatch.GetElapsedTime(diskStarted).TotalMilliseconds;}
+            }
             var network=ProcessJoins.Network(tracked.Processes,capture.Processes,capture.Connections.Available,EtwStatus);
+            var joined=ProcessJoins.Disk(network.Processes,diskTake);
             var scan=tracked.Scan;
-            return new ProcessActivity(ProcessActivityKind.Available,++processSequence,scan.UtcTime,scan.MonotonicSeconds,scan.PollingIntervalSeconds,processorCount,network.Processes,tracked.Omitted,tracked.TotalProcesses,tracked.DeltaSeconds)
-                {Network=network.State,NetworkMisses=network.Misses,Disk=new(false,DiskTracingOff)};
+            return new ProcessActivity(ProcessActivityKind.Available,++processSequence,scan.UtcTime,scan.MonotonicSeconds,scan.PollingIntervalSeconds,processorCount,joined.Processes,tracked.Omitted,tracked.TotalProcesses,tracked.DeltaSeconds)
+                {Network=network.State,NetworkMisses=network.Misses,Disk=joined.State,DiskMisses=joined.Misses,UnattributedDiskEvents=diskTake.UnattributedEvents};
         }
         catch(Exception e) {return ProcessActivity.Unavailable(e.GetType().Name);}
         finally {if(timings is not null)timings["processes/join"]=Stopwatch.GetElapsedTime(started).TotalMilliseconds;}
@@ -388,8 +406,10 @@ public sealed class Collector : IAsyncDisposable
         try
         {
             var networkStop=StopNetworkCaptureAsync();
+            // Requested before the worker join, so a stuck hardware provider cannot delay it; HardwareStopBudget does not bound it.
+            var diskStop=disk?.StopAsync()??Task.CompletedTask;
             try {if(worker is not null)await worker.ConfigureAwait(false);}
-            finally {await networkStop.ConfigureAwait(false);}
+            finally {await Task.WhenAll(networkStop,diskStop).ConfigureAwait(false);}
         }
         finally
         {
