@@ -244,6 +244,9 @@ public class BatteryUiTests
                 ConnectionsPageUiChecks.CheckNavigation(dashboard);
                 Phase("shell chrome");
                 ShellUiChecks.Run(dashboard);
+                Phase("processes shell keys");
+                ProcessesPageUiChecks.CheckShellKeys(dashboard);
+                Phase("shell chrome");
                 var shell = (Grid)dashboard.Content;
                 var sidebar = Assert.IsType<DockPanel>(shell.Children[0] is Border surface ? surface.Child : shell.Children[0]);
                 var navigation = (StackPanel)sidebar.Children.OfType<ScrollViewer>().Single().Content;

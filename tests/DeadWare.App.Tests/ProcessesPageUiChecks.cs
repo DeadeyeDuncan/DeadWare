@@ -434,6 +434,32 @@ internal static class ProcessesPageUiChecks
         WaitFor(()=>Volatile.Read(ref asked)==1&&Button(p,"End task…")!.IsEnabled);
     }
 
+    internal static void CheckShellKeys(MainWindow dashboard)
+    {
+        // The fixture's real, unshown MainWindow; its Processes page is off and has no reading. Fields by reflection (All).
+        var rail=((Dictionary<string,Button>)typeof(MainWindow).GetField("navigation",All)!.GetValue(dashboard)!)["processes"];
+        var page=(ProcessesPage)((Dictionary<string,FrameworkElement>)typeof(MainWindow).GetField("pages",All)!.GetValue(dashboard)!)["processes"];
+        var search=(TextBox)typeof(ProcessesPage).GetField("search",All)!.GetValue(page)!;
+        void Navigate(string key)=>typeof(MainWindow).GetMethod("Navigate",All)!.Invoke(dashboard,[key]);
+        Navigate("processes");var shell=(FrameworkElement)dashboard.Content;shell.Measure(new Size(1220,900));shell.Arrange(new Rect(0,0,1220,900));shell.UpdateLayout();
+        var widget=Assert.Single(Shown(shell).OfType<Button>(),b=>b.Content as string=="↗ Open widget");
+        search.Text="code";Assert.True(Press(rail,Key.Escape));Assert.Equal("",search.Text);
+        Assert.False(Press(rail,Key.Escape));                                   // nothing to clear
+        Assert.True(Press(widget,Key.F5));                                      // from the header, page off
+        search.Text="code";Assert.True(Press(dashboard,Key.Escape));Assert.Equal("",search.Text);   // nothing focused
+        // Offscreen the modifier state cannot be set (0.13.0 Task 17 ruling): the window's method is called with Control.
+        Assert.True(dashboard.PageKey(rail,Key.F,ModifierKeys.Control));Assert.Same(search,FocusManager.GetFocusedElement(FocusManager.GetFocusScope(search)));
+        Assert.False(dashboard.PageKey(rail,Key.F,ModifierKeys.None));
+        foreach(var key in new[]{Key.Delete,Key.Enter,Key.Left,Key.Right,Key.Down})Assert.False(dashboard.PageKey(rail,key,ModifierKeys.None));
+        search.Text="code";
+        Assert.False(dashboard.PageKey(page.Grid,Key.Escape,ModifierKeys.None));
+        Assert.False(dashboard.PageKey(PickerItems(page)[0],Key.Escape,ModifierKeys.None));Assert.False(dashboard.PageKey(PickerItems(page)[0],Key.F5,ModifierKeys.None));
+        Assert.Equal("code",search.Text);
+        Navigate("connections");
+        Assert.False(Press(rail,Key.Escape));Assert.False(Press(rail,Key.F5));Assert.False(dashboard.PageKey(rail,Key.F,ModifierKeys.Control));Assert.Equal("code",search.Text);
+        search.Text="";FocusManager.SetFocusedElement(dashboard,null);Navigate("overview");
+    }
+
     private static void Selected_app_exiting_clears_selection_and_disables_actions()
     {
         var (p,_)=Page();
@@ -699,11 +725,15 @@ internal static class ProcessesPageUiChecks
         }
         Layout(page);
     }
-    private static void Press(UIElement target,Key key)
+    /// <summary>A key pressed with <paramref name="target"/> focused: PreviewKeyDown, then KeyDown unless handled; true when either was handled.</summary>
+    private static bool Press(UIElement target,Key key)
     {
         var preview=new KeyEventArgs(Keyboard.PrimaryDevice,new KeySource(),0,key) {RoutedEvent=Keyboard.PreviewKeyDownEvent};
         target.RaiseEvent(preview);
-        if(!preview.Handled)target.RaiseEvent(new KeyEventArgs(Keyboard.PrimaryDevice,new KeySource(),0,key) {RoutedEvent=Keyboard.KeyDownEvent});
+        if(preview.Handled)return true;
+        var down=new KeyEventArgs(Keyboard.PrimaryDevice,new KeySource(),0,key) {RoutedEvent=Keyboard.KeyDownEvent};
+        target.RaiseEvent(down);
+        return down.Handled;
     }
     /// <summary>The input source a key event must name; it is never added to the sources, and offscreen nothing reads it.</summary>
     private sealed class KeySource : PresentationSource
