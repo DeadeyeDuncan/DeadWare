@@ -160,6 +160,20 @@ public class CoolingShutdownTests
         finally {await connections.StopAsync();if(Directory.Exists(root))Directory.Delete(root,true);}
     }
     [Fact]
+    public async Task Sign_out_with_an_uninitialized_process_history_is_null_guarded()
+    {
+        string root=Root();var (session,_,connections,worker)=StuckSession(root,new EtwNetwork(_=>new(11,1,"fixture")));worker.SetResult();
+        try
+        {
+            // StuckSession, like a session built before process history existed, never sets ProcessHistory.
+            Assert.Null(typeof(UiSession).GetProperty("ProcessHistory")!.GetValue(session));
+            var stop=Task.Run(()=>typeof(UiSession).GetMethod("StopCollectorForSessionEnding",Flags)!.Invoke(session,null));await stop.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.True(connections.StopAsync().IsCompleted);string trace=Path.Combine(root,"trace.jsonl");
+            Assert.False(File.Exists(trace)&&File.ReadAllText(trace).Contains("session_end_collector_stop_failed"));
+        }
+        finally {await connections.StopAsync();if(Directory.Exists(root))Directory.Delete(root,true);}
+    }
+    [Fact]
     public async Task Connection_flush_that_outlasts_the_provider_deadline_completes_before_quit_returns()
     {
         string root=Root();var capture=new EtwNetwork(_=>new(11,1,"fixture"));long saved=0;

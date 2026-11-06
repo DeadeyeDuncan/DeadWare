@@ -331,6 +331,29 @@ public class ProcessHistoryStoreTests
         Assert.True(view.BucketMilliseconds >= (long)Math.Ceiling(TimeSpan.FromDays(30).TotalMilliseconds / 1000));
     }
 
+    [Fact]
+    public void Each_read_sees_one_snapshot_while_a_minute_is_saved_between_its_statements()
+    {
+        using var fixture = new Fixture(); var store = fixture.Open(); var writer = fixture.Open();
+        ProcessMinuteBatch Minute(int index) => Batch(At(12, index, 0), apps: [App("a.exe", 10_000_000), Else(10_000_000)]);
+        store.Append("m", [Minute(0)], Now);
+        int saved = 0;
+        // The history worker can commit a minute while the card reads: save one after each read's first statement.
+        typeof(ProcessHistoryStore).GetField("afterFirstRead", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+            .SetValue(store, (Action)(() => writer.Append("m", [Minute(++saved)], Now)));
+        var view = store.ReadApplications("m", At(12, 0, 0), At(13, 0, 0), ProcessRank.CpuTime);
+        Assert.Equal(1, saved);
+        Assert.Equal((1L, (DateTimeOffset?)At(12, 1, 0)), (view.RecordedMinutes, view.LastMinuteEnd));
+        Assert.Equal((1L, 1L), (Assert.Single(view.Rows).MinutesListed, view.EverythingElse.MinutesListed));
+        Assert.Equal(2, view.RankTotal, 6);
+        var series = store.ReadSeries("m", "a.exe", ProcessRank.CpuTime, At(12, 0, 0), At(13, 0, 0), 60);
+        Assert.Equal(2, saved);
+        Assert.Equal(2, series.Buckets.Count);
+        Assert.Equal(2, series.Minutes);
+        // The next read sees every saved minute.
+        Assert.Equal(3, writer.ReadApplications("m", At(12, 0, 0), At(13, 0, 0), ProcessRank.CpuTime).RecordedMinutes);
+    }
+
     private sealed class TupleComparer : IEqualityComparer<(double, double)>
     {
         public bool Equals((double, double) x, (double, double) y) => Math.Abs(x.Item1 - y.Item1) < 1e-6 && Math.Abs(x.Item2 - y.Item2) < 1e-6;
