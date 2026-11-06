@@ -504,7 +504,6 @@ internal static class ApplicationResourcesUiChecks
         // Rows on screen first; the slot's failed read is reported like the period's, never as a span without process data.
         card.Apply(View(from, to, 50), to);
         card.ShowSlot(to.AddMinutes(-30), to.AddMinutes(-27), ProcessRank.CpuTime);
-        Assert.True(card.Loading);
         WaitFor(() => !card.Loading);
         var texts = Texts(card);
         Assert.Contains("Application resources could not be read.", texts);

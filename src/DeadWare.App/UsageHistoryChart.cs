@@ -53,7 +53,8 @@ internal sealed class UsageHistoryChart : FrameworkElement
     {
         base.OnMouseLeftButtonDown(e);
         if (!selectable) return;
-        Focus(); HandleClick(e.GetPosition(this));
+        // Handled, so an enclosing ScrollViewer does not take the focus back and Left, Right and Enter stay the chart's.
+        Focus(); HandleClick(e.GetPosition(this)); e.Handled = true;
     }
     internal void HandleClick(Point point)
     {

@@ -3,6 +3,7 @@ using System.Windows.Automation;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Data;
+using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Shapes;
 using System.Windows.Threading;
@@ -25,6 +26,8 @@ internal sealed class UsageHistoryPage : ScrollViewer
         ("gpu", "GPU usage", "%", 100), ("gputemp", "GPU temperature", "°C", null),
         ("memory", "RAM usage", "%", 100), ("network", "Network download / upload", "B/s", null),
     ];
+    // Click a moment: these Device charts list a slot's busiest apps in the Application resources card, ranked by their own metric.
+    private static readonly (string Kind, ProcessRank Rank)[] Moments = [("cpu", ProcessRank.CpuTime), ("memory", ProcessRank.AverageMemory)];
     private readonly UiSession session;
     private readonly ComboBox range = new() { MinWidth = 110 };
     private readonly TextBlock period = Ui.Text("", 13), applicationSummary = Ui.Text("", 12, "Muted"), gapNotice = Ui.Text("", 12, "Warning");
@@ -88,6 +91,19 @@ internal sealed class UsageHistoryPage : ScrollViewer
         apps.Children.Add(Ui.Text("Totals come from observed per-application traffic (ETW) during the period, summed by executable name across its processes. Time without capture is a gap, not zero traffic. Open Connections to see where the bytes went.", 11, "Muted"));
         body.Children.Add(Card(apps));
         resources = new ApplicationResourcesCard(session); body.Children.Add(Card(resources));
+        foreach (var (kind, ranking) in Moments)
+        {
+            charts[kind].Selectable = true;
+            charts[kind].BucketActivated += index => ShowMoment(kind, index, ranking);
+        }
+        resources.SlotCleared += () => { foreach (var (kind, _) in Moments) charts[kind].SelectedIndex = null; };
+        PreviewKeyDown += (_, e) =>
+        {
+            // Esc returns the card to the period ranking from anywhere on the page; keys in a drop-down (its own popup) stay its own.
+            if (e.Key == Key.Escape && e.OriginalSource is Visual source && source.IsDescendantOf(this)
+                && (resources.Slot is not null || Moments.Any(m => charts[m.Kind].SelectedIndex is not null)))
+            { resources.ClearSlot(); e.Handled = true; }
+        };
 
         var settings = new StackPanel(); settings.Children.Add(Ui.Heading("Keep a longer record", 16)); recording.Margin = new(0, 12, 0, 8); settings.Children.Add(recording);
         AutomationProperties.SetName(recording, "Record usage history");
@@ -98,7 +114,7 @@ internal sealed class UsageHistoryPage : ScrollViewer
 
         recording.IsChecked = session.Settings.UsageRecording;
         recording.Checked += (_, _) => ChangeRecording(true); recording.Unchecked += (_, _) => ChangeRecording(false);
-        range.SelectionChanged += (_, _) => { offset = 0; RequestRefresh(); };
+        range.SelectionChanged += (_, _) => { offset = 0; resources.ClearSlot(); RequestRefresh(); };
         search.TextChanged += (_, _) => RefreshApplications();
         timer.Tick += (_, _) => _ = RefreshAsync();
         Loaded += (_, _) => { session.Changed += RefreshCurrent; UpdateVisibility(); };
@@ -123,14 +139,40 @@ internal sealed class UsageHistoryPage : ScrollViewer
         if (IsLoaded && IsVisible) { timer.Start(); RefreshCurrent(); _ = RefreshAsync(); }
         else { timer.Stop(); revision++; }
     }
-    private void Step(int direction) { offset = Math.Max(0, offset + direction); UpdatePeriod(); RequestRefresh(); }
+    // Another period has another bucket grid, so a listed slot and its hairlines clear with it.
+    private void Step(int direction) { offset = Math.Max(0, offset + direction); resources.ClearSlot(); UpdatePeriod(); RequestRefresh(); }
     /// <summary>Selects the Day range and steps back to the day that contains <paramref name="at"/>.</summary>
     public void ShowDay(DateTimeOffset at)
     {
         range.SelectedIndex = 0;
         offset = Math.Max(0, (int)Math.Floor((DateTimeOffset.UtcNow - at).TotalDays));
-        UpdatePeriod(); RequestRefresh();
+        resources.ClearSlot(); UpdatePeriod(); RequestRefresh();
     }
+    /// <summary>Lists the busiest apps in the activated CPU or RAM bucket. The bucket is the slot <c>ReadMetric</c> grouped,
+    /// [from + k × bucket, from + (k + 1) × bucket) clipped to the period end, on the grid the CPU and RAM charts share, so the card
+    /// aggregates exactly the minutes the point averaged.</summary>
+    private void ShowMoment(string kind, int index, ProcessRank ranking)
+    {
+        if (data?.Metrics.GetValueOrDefault(kind) is not { } view || index >= view.Buckets.Count) return;
+        var bucket = view.Buckets[index];
+        resources.ShowSlot(bucket.Start, bucket.End, ranking);
+        MarkMoment();
+    }
+    /// <summary>Draws the listed slot's hairline on both charts at the bucket holding its middle, so it follows the slot's time when a
+    /// refresh moves the grid.</summary>
+    private void MarkMoment()
+    {
+        if (data is not { } shown || resources.Slot is not { } slot) return;
+        var middle = slot.From + (slot.To - slot.From) / 2;
+        foreach (var (kind, _) in Moments)
+        {
+            var buckets = shown.Metrics.GetValueOrDefault(kind)?.Buckets ?? [];
+            int at = -1;
+            for (int i = 0; i < buckets.Count && at < 0; i++) if (buckets[i].Start <= middle && middle < buckets[i].End) at = i;
+            charts[kind].SelectedIndex = at >= 0 ? at : null;
+        }
+    }
+    internal UsageHistoryChart Chart(string kind) => charts[kind];
     private (DateTimeOffset From, DateTimeOffset To) Period()
     {
         var to = DateTimeOffset.UtcNow.AddDays(-offset * Days);
@@ -205,6 +247,7 @@ internal sealed class UsageHistoryPage : ScrollViewer
                 : kind is "gpu" or "gputemp" && result.GpuName is null ? "No GPU selected on the dashboard."
                 : Statistics(traces[0].View, unit);
         }
+        MarkMoment();
         var earliest = result.Metrics.Values.Select(v => v.EarliestRetained).FirstOrDefault(e => e is not null) ?? result.Applications.EarliestRetained;
         long bytes = result.Metrics.Values.Select(v => v.StorageBytes).DefaultIfEmpty(result.Applications.StorageBytes).Max();
         storage.Text = $"Local history: {Ui.Bytes(bytes)} · up to 400 days" + (earliest is { } first ? $"\nEarliest retained minute: {first.ToLocalTime():g}" : "\nNo minutes recorded yet.");
