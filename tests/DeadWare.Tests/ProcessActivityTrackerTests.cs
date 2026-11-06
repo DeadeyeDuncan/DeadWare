@@ -66,6 +66,17 @@ public class ProcessActivityTrackerTests
         var cpuOmitted=new ProcessActivityTracker(8);cpuOmitted.Update(Scan(0,Enumerable.Range(1,4100).Select(i=>Entry(i)).ToArray()));
         var r2=cpuOmitted.Update(Scan(1,Enumerable.Range(1,4100).Select(i=>Entry(i,cpu:i<=4?100L*i:Second)).ToArray()));
         Assert.Equal(100+200+300+400,r2.Omitted.Deltas.CpuTime);}
+    [Fact] public void Cap_ranks_unknown_rates_as_zero_so_memory_breaks_the_tie(){ var t=new ProcessActivityTracker(8);
+        t.Update(Scan(0,Enumerable.Range(1,4099).Select(i=>Entry(i)).ToArray()));
+        // pid 4100 was missed by the previous scan (null rates) but holds the most memory; every other process is a known 0 %.
+        var r=t.Update(Scan(1,Enumerable.Range(1,4100).Select(i=>i==4100?Entry(i,ws:5000):Entry(i)).ToArray()));
+        Assert.Null(r.Processes.Single(p=>p.Pid==4100).CpuPercent);Assert.Equal(4100,r.Processes[0].Pid);
+        Assert.Equal(4,r.Omitted.Count);Assert.DoesNotContain(r.Processes,p=>p.Pid>=4096&&p.Pid<=4099);}
+    [Fact] public void Omitted_deltas_stay_null_when_every_omitted_process_is_unknown(){ var t=new ProcessActivityTracker(8);
+        t.Update(Scan(0,Enumerable.Range(5,4096).Select(i=>Entry(i)).ToArray()));
+        // pids 1..4 are old processes missing from the previous scan (null deltas) and rank last; the rest are busy.
+        var r=t.Update(Scan(1,Enumerable.Range(1,4100).Select(i=>Entry(i,cpu:i<=4?0:1_000+i)).ToArray()));
+        Assert.Equal(4,r.Omitted.Count);Assert.Null(r.Omitted.Deltas.CpuTime);Assert.Null(r.Omitted.Deltas.IoReadBytes);Assert.Null(r.Omitted.Deltas.IoWriteBytes);Assert.Equal(1,r.Omitted.Deltas.Seconds,6);}
     [Fact] public void Index_covers_every_scanned_process(){ var t=new ProcessActivityTracker(8);var r=t.Update(Scan(0,Enumerable.Range(1,4100).Select(i=>Entry(i)).ToArray()));
         Assert.Equal(4100,r.Index.Count);Assert.Equal("p4100.exe",r.Index[4100].Name);}
     [Fact] public void Ten_thousand_create_exit_cycles_keep_baselines_bounded(){ var t=new ProcessActivityTracker(8);

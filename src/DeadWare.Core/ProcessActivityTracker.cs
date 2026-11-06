@@ -50,11 +50,12 @@ public sealed class ProcessActivityTracker(int processorCount)
         IReadOnlyList<ProcessSample> published=samples;
         if(samples.Count>MaximumPublished)
         {
-            var ranked=samples.OrderByDescending(s=>s.CpuPercent??-1).ThenByDescending(s=>s.IoReadPerSecond is null?-1:s.IoReadPerSecond.Value+(s.IoWritePerSecond??0))
+            var ranked=samples.OrderByDescending(s=>s.CpuPercent??0).ThenByDescending(s=>(s.IoReadPerSecond??0)+(s.IoWritePerSecond??0))
                 .ThenByDescending(s=>s.PrivateBytes).ThenBy(s=>s.Pid).ToList();
             published=ranked.GetRange(0,MaximumPublished);
             var rest=ranked.GetRange(MaximumPublished,ranked.Count-MaximumPublished);
-            var sum=ProcessDeltas.Zero;
+            // Unknown stays unknown: with a valid Δt the counters start null and only known deltas add in.
+            var sum=dt is null?ProcessDeltas.Zero:new ProcessDeltas(null,null,null,0,0);
             foreach(var s in rest)if(s.Deltas is not null)sum=sum.Add(s.Deltas);
             omitted=new ProcessOmitted(rest.Count,rest.Sum(s=>s.PrivateBytes),sum with{Seconds=dt??0});
         }
