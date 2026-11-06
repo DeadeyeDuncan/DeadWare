@@ -78,7 +78,7 @@ Minor-version milestones:
   - Disk is physical drive transfers. Delayed cache writes are credited to System.
 - **Keyboard and accessibility:**
   - Left and Right collapse and expand, Enter toggles, Delete opens End task…, and Ctrl+F focuses the search box.
-  - Esc clears the search, and F5 re-sorts.
+  - Esc clears the search, and F5 re-sorts. From 0.14.1, Ctrl+F, F5 and Esc work whenever the page is shown, also while keyboard focus is in the sidebar or the header.
   - The grid, search box, buttons and chevrons have automation names, and each row has a spoken summary.
   - Colours come from theme resources only.
 
