@@ -92,16 +92,17 @@ public sealed class ProcessMinuteFolder
         {
             if(p is null)continue;
             Totals target;
-            if(string.IsNullOrWhiteSpace(p.Name))target=other;
+            string name=UsageMetrics.NormalizeName(p.Name);
+            if(name==UsageMetrics.UnknownName)target=other;
             else
             {
-                string key=ProcessGrouping.Key(p.Name);
-                if(!apps.TryGetValue(key,out target!))apps[key]=target=new Totals{Name=UsageMetrics.NormalizeName(p.Name)};
+                string key=ProcessGrouping.Key(name);
+                if(!apps.TryGetValue(key,out target!))apps[key]=target=new Totals{Name=name};
             }
             target.Cpu+=p.Deltas?.CpuTime??0;
             target.Read+=p.Deltas?.IoReadBytes??0;
             target.Write+=p.Deltas?.IoWriteBytes??0;
-            target.Memory+=Math.Max(0,p.PrivateBytes)*seconds;
+            target.Memory+=p.Deltas?.MemoryByteSeconds??0;
         }
         var omitted=activity.Omitted.Deltas;
         other.Cpu+=omitted.CpuTime??0;other.Read+=omitted.IoReadBytes??0;other.Write+=omitted.IoWriteBytes??0;

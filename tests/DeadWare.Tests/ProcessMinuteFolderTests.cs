@@ -4,8 +4,8 @@ namespace DeadWare.Tests;
 public class ProcessMinuteFolderTests
 {
     static readonly DateTimeOffset T0=new(2026,11,5,10,0,0,TimeSpan.Zero);
-    static ProcessSample P(string name,long cpu=0,long mem=0,long read=0,long write=0,int pid=1)
-        =>new(pid,1,name,1,null,mem,null,null,ProcessGap.None,new ProcessDeltas(cpu,read,write,0,1));
+    static ProcessSample P(string name,long cpu=0,long mem=0,long read=0,long write=0,int pid=1,double dt=1)
+        =>new(pid,1,name,1,null,mem,null,null,ProcessGap.None,new ProcessDeltas(cpu,read,write,mem*dt,dt));
     static ProcessActivity A(double t,IReadOnlyList<ProcessSample> ps,ProcessOmitted? omitted=null,double? dt=1,ProcessActivityKind kind=ProcessActivityKind.Available,double wallOffset=0,double interval=1)
         =>new(kind,(long)t,T0.AddSeconds(t+wallOffset),t,interval,8,ps,omitted??ProcessOmitted.None,ps.Count,dt);
     static ProcessActivity A(double t,params ProcessSample[] ps)=>A(t,(IReadOnlyList<ProcessSample>)ps);
@@ -56,7 +56,7 @@ public class ProcessMinuteFolderTests
     {
         var f=new ProcessMinuteFolder();
         var list=Enumerable.Range(1,11).Select(i=>P($"m{i}.exe",mem:i*100)).ToArray();
-        f.Observe(A(0,list));f.Observe(A(2,list.Select(p=>p).ToArray(),dt:2));
+        f.Observe(A(0,list));f.Observe(A(2,Enumerable.Range(1,11).Select(i=>P($"m{i}.exe",mem:i*100,dt:2)).ToArray(),dt:2));
         var b=Assert.IsType<ProcessMinuteBatch>(f.Observe(A(60,P("z.exe"))));
         Assert.Equal(3,b.CoveredSeconds,6);
         Assert.DoesNotContain(b.Applications,a=>a.Name=="m1.exe");
@@ -89,11 +89,13 @@ public class ProcessMinuteFolderTests
     }
     [Fact] public void Clock_jump_breaks_the_segment_and_marks_the_minute_partial()
     {
+        // 5 s polling: 12 publications (11 needed), no monotonic gap, wall stays inside 10:00. Only wall/monotonic drift can break it.
         var f=new ProcessMinuteFolder();
-        for(int i=0;i<10;i++)f.Observe(A(i,P("a.exe",cpu:1)));
-        f.Observe(A(10,[P("a.exe",cpu:1)],wallOffset:15));
-        for(int i=11;i<45;i++)f.Observe(A(i,[P("a.exe",cpu:1)],wallOffset:15));
-        var b=Assert.IsType<ProcessMinuteBatch>(f.Observe(A(61,[P("a.exe",cpu:1)],wallOffset:15)));
+        ProcessActivity At(int t,double wall)=>A(t,[P("a.exe",cpu:1,dt:5)],dt:5,wallOffset:wall,interval:5);
+        for(int t=0;t<10;t+=5)f.Observe(At(t,0));
+        for(int t=10;t<60;t+=5)f.Observe(At(t,4));
+        var b=Assert.IsType<ProcessMinuteBatch>(f.Observe(At(60,4)));
+        Assert.Equal(60,b.CoveredSeconds,6);
         Assert.False(b.Complete);
         var next=Assert.IsType<ProcessMinuteBatch>(f.Flush());
         Assert.NotEqual(b.Segment,next.Segment);
@@ -128,5 +130,25 @@ public class ProcessMinuteFolderTests
         var b=Assert.IsType<ProcessMinuteBatch>(f.Flush());
         Assert.Equal(1,b.CoveredSeconds);
         Assert.DoesNotContain(b.Applications,a=>a.Name=="a.exe");
+    }
+    [Fact] public void Eleven_apps_tied_on_cpu_send_the_last_key_to_everything_else()
+    {
+        var b=Close(Enumerable.Range(0,11).Select(i=>P($"app{i:00}.exe",cpu:5)).ToArray());
+        Assert.DoesNotContain(b.Applications,a=>a.Name=="app10.exe");
+        Assert.Equal(10,b.Applications.Count(a=>!a.EverythingElse));
+        Assert.Equal(5,b.Applications.Single(a=>a.EverythingElse).CpuTime);
+    }
+    [Fact] public void Write_volume_alone_can_qualify_for_the_io_top_ten()
+    {
+        var list=Enumerable.Range(1,10).Select(i=>P($"r{i}.exe",read:1000+i)).Append(P("w.exe",write:5000)).Append(P("low.exe",read:1)).ToArray();
+        var b=Close(list);
+        Assert.Contains(b.Applications,a=>a.Name=="w.exe"&&a.IoWrite==5000);
+        Assert.DoesNotContain(b.Applications,a=>a.Name=="r1.exe");
+    }
+    [Fact] public void Control_character_names_are_unknown_and_go_to_everything_else()
+    {
+        var b=Close(P("\u0007\u0001",cpu:9),P("a.exe",cpu:1));
+        Assert.DoesNotContain(b.Applications,a=>a.Name=="Unknown application");
+        Assert.Equal(9,b.Applications.Single(a=>a.EverythingElse).CpuTime);
     }
 }
