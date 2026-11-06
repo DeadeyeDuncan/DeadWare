@@ -20,6 +20,8 @@ internal static class UsageHistoryUiChecks
     private static readonly Type ChartType = Assembly.GetType("DeadWare.App.UsageHistoryChart")!;
     private static readonly Type TraceType = Assembly.GetType("DeadWare.App.UsageTrace")!;
     private static readonly Type DataType = Assembly.GetType("DeadWare.App.UsagePageData")!;
+    private const string ProcessHistorySentence = " While Per-process monitoring is on, it also keeps the busiest apps' CPU, memory and I/O for 30 days (up to 128 MiB).";
+    private const string PrivacyLine = "History stays in this Windows profile in usage-history.db and process-history.db and is never uploaded. Application names and byte totals describe what runs on this computer, so treat exports as private. Back up the databases only while DeadWare is fully quit.";
 
     internal static void Run(Application app)
     {
@@ -52,6 +54,12 @@ internal static class UsageHistoryUiChecks
                 Assert.Contains("CPU usage", text); Assert.Contains("GPU usage · Fixture GPU", text); Assert.Contains("Network download / upload", text);
                 Assert.Contains("Applications", text); Assert.Contains("Record usage history on this device", text);
                 Assert.Contains("up to 400 days", text);
+                var texts = Descendants(page).OfType<TextBlock>().Select(t => t.Text).ToArray();
+                string description = Assert.Single(texts, t => t.StartsWith("One row per minute for CPU, GPU, RAM and network", StringComparison.Ordinal));
+                Assert.Contains("up to 400 days", description);
+                Assert.EndsWith("for 30 days (up to 128 MiB).", description);
+                Assert.EndsWith(ProcessHistorySentence, description);
+                Assert.Contains(PrivacyLine, texts);
                 var selector = (ComboBox)PageType.GetField("range", All)!.GetValue(page)!;
                 Assert.Equal(3, selector.Items.Count);
                 var table = (DataGrid)PageType.GetField("applications", All)!.GetValue(page)!;
@@ -93,6 +101,7 @@ internal static class UsageHistoryUiChecks
             }
         }
         Assembly.GetType("DeadWare.App.Theme")!.GetMethod("Apply", All)!.Invoke(null, ["Midnight"]);
+        ApplicationResourcesUiChecks.Run(app);
     }
 
     private static void CheckChart(string theme, DateTimeOffset now, string? output)

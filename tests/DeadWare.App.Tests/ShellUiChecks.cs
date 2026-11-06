@@ -81,6 +81,11 @@ internal static class ShellUiChecks
         }
         Assert.Equal("Startup",CardOf("At Windows sign-in"));Assert.Equal("Startup",CardOf("Windows asks for administrator"));
         Assert.Equal("History and alerts",CardOf("Keeps day, week and month history"));Assert.Equal("History and alerts",CardOf("Record endpoint history"));
+        // The usage-history switch also keeps the busiest apps while Per-process monitoring is on.
+        var usageHelp=Descendants(pages["desktop"]).OfType<TextBlock>().Single(b=>b.Text.StartsWith("Keeps day, week and month history",StringComparison.Ordinal));
+        Assert.EndsWith("for 30 days.",usageHelp.Text);
+        Assert.EndsWith(" While Per-process monitoring is on, it also keeps the busiest apps' CPU, memory and I/O for 30 days.",usageHelp.Text);
+        Assert.Contains("for up to 400 days",usageHelp.Text);
         Assert.Equal("History and alerts",CardOf("Rules you set on the Alerts page"));Assert.Equal("Widget",CardOf("Choose the graphs shown in the widget"));
         Assert.Equal("Pop-outs",CardOf("Positions, sizes and Always on top"));Assert.Equal("Monitoring",CardOf("Includes motherboard"));
         // Per-core CPU usage: a Monitoring checkbox that drives the session setting.
@@ -114,7 +119,7 @@ internal static class ShellUiChecks
             Assert.Equal("Monitoring",Descendants(cards.Single(c=>Descendants(c).Contains(box))).OfType<TextBlock>().First().Text);
             Assert.Equal("Monitoring",CardOf("Turning it on adds one Windows process scan"));
             var help=Descendants(pages["desktop"]).OfType<TextBlock>().Single(b=>b.Text.StartsWith("Turning it on adds one Windows process scan",StringComparison.Ordinal));
-            Assert.Equal(ProcessCopy.ScanSentence(session.Current?.Elevated??Collector.IsElevated,ProcessFeatures.DiskColumns,ProcessFeatures.ScanLoop),help.Text);
+            Assert.Equal(ProcessCopy.ScanSentence(session.Current?.Elevated??Collector.IsElevated,ProcessFeatures.DiskColumns,ProcessFeatures.ScanLoop,history:true),help.Text);
             bool was=session.Settings.ProcessMonitoring;Assert.Equal(was,box.IsChecked);
             try
             {

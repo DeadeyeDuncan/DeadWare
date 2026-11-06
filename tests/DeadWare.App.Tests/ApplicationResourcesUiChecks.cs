@@ -1,0 +1,399 @@
+using System.Diagnostics;
+using System.Globalization;
+using System.IO;
+using System.Reflection;
+using System.Runtime.CompilerServices;
+using System.Windows;
+using System.Windows.Automation;
+using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
+using System.Windows.Media;
+using System.Windows.Threading;
+using DeadWare.App;
+using DeadWare.Core;
+using Xunit;
+using Rectangle = System.Windows.Shapes.Rectangle;
+
+namespace DeadWare.App.Tests;
+
+/// <summary>Usage history's Application resources card, run at the end of <see cref="UsageHistoryUiChecks"/> (phase "usage history").
+/// The card reads a real process-history.db, filled with fixture minutes, through a <see cref="ProcessHistoryService"/>. Pages here are
+/// never Loaded, so after a range or earlier/later change <see cref="Load"/> runs the page's own load, as its refresh would.</summary>
+internal static class ApplicationResourcesUiChecks
+{
+    private const BindingFlags All = BindingFlags.Instance | BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic;
+    private const string Machine = "fixture";
+    private const string GapEnding = "minutes in this period have no process data (monitoring off, DeadWare not running, or a capture gap).";
+    private const string Loading = "Loading application resources…";
+    private const string NothingRecorded = "No application resources were recorded in this period.";
+    private const int DayMinutes = 90;
+    private static readonly Size PageSize = new(1050, 2600);
+    // Every recorded minute of the fixture day (60 covered seconds, 8 processors): CPU 100-ns ticks, I/O read, I/O written, Σ memory × Δt.
+    private static readonly ProcessAppMinute[] DayApps =
+    [
+        new("chrome.exe", 120_000_000, 2_000_000, 1_000_000, 800e6 * 60, false),
+        new("Code.exe", 30_000_000, 500_000, 200_000, 1.5e9 * 60, false),
+        new("steam.exe", 10_000_000, 50_000_000, 10_000_000, 300e6 * 60, false),
+        new("explorer.exe", 5_000_000, 100_000, 100_000, 100e6 * 60, false),
+        new(ProcessHistory.EverythingElse, 50_000_000, 5_000_000, 5_000_000, 2e9 * 60, true),
+    ];
+    // Ninety minutes of the day ranking: CPU seconds per app and in total.
+    private const double ChromeCpu = DayMinutes * 12.0, EverythingElseCpu = DayMinutes * 5.0, CpuTotal = DayMinutes * 21.5;
+    private static int reads;
+    private static ManualResetEventSlim? hold;
+
+    internal static void Run(Application app)
+    {
+        var culture = CultureInfo.CurrentCulture; var context = SynchronizationContext.Current;
+        string folder = Path.Combine(Path.GetTempPath(), "deadware-resources-" + Guid.NewGuid().ToString("N"));
+        var release = new ManualResetEventSlim(false);
+        try
+        {
+            CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
+            // The card awaits its reads on the UI thread, as it does in the app.
+            SynchronizationContext.SetSynchronizationContext(new DispatcherSynchronizationContext(Dispatcher.CurrentDispatcher));
+            Directory.CreateDirectory(folder);
+            var service = Service(folder);
+            var page = new UsageHistoryPage(Session(service, folder));
+            Layout(page);
+            var card = Assert.Single(Descendants(page).OfType<ApplicationResourcesCard>());
+            Card_sits_between_applications_and_keep_a_longer_record(page);
+            Before_the_first_read_the_card_says_it_is_loading(card);
+            Load(page); WaitFor(() => card.View is not null && !card.Loading);
+            Table_has_the_seven_columns_and_everything_else_last(card);
+            Rows_show_the_period_totals(card);
+            Search_filters_rows_and_keeps_everything_else(card);
+            Share_bar_has_a_segment_per_row(card);
+            Selecting_an_app_shows_its_chart_and_rank_by_redraws(card);
+            Gap_notice_counts_minutes_without_process_data(card);
+            Storage_line_names_the_file(card);
+            Quick_range_changes_show_only_the_last_period(page, card, release);
+            Range_change_reloads_the_card(page, card);
+            Gap_notice_is_exact_and_hidden_without_gaps(folder);
+            Empty_period_and_missing_history_say_why(folder);
+        }
+        finally
+        {
+            release.Set(); Volatile.Write(ref hold, null);
+            CultureInfo.CurrentCulture = culture; SynchronizationContext.SetSynchronizationContext(context);
+            try { if (Directory.Exists(folder)) Directory.Delete(folder, true); }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
+        }
+    }
+
+    private static void Card_sits_between_applications_and_keep_a_longer_record(UsageHistoryPage page)
+        => Assert.Equal(["Device", "Applications", "Application resources", "Keep a longer record"], CardHeadings(page));
+
+    private static void Before_the_first_read_the_card_says_it_is_loading(ApplicationResourcesCard card)
+    {
+        Assert.Null(card.View);
+        Assert.Contains(Loading, Texts(card));
+    }
+
+    private static void Table_has_the_seven_columns_and_everything_else_last(ApplicationResourcesCard card)
+    {
+        Assert.Equal(["Application", "CPU time", "Avg CPU", "Avg memory while listed", "I/O read", "I/O written", "Minutes listed"], Headers(card));
+        Assert.Equal("Everything else", LastRowName(card));
+        Assert.Equal(ProcessRank.CpuTime, card.Rank);
+        Assert.Equal(["chrome.exe", "Code.exe", "steam.exe", "explorer.exe", "Everything else"], RowNames(card));
+        Assert.Contains($"4 applications · {DayMinutes} recorded minutes", Texts(card));
+    }
+
+    private static void Rows_show_the_period_totals(ApplicationResourcesCard card)
+    {
+        // 90 minutes of 12 s on 8 processors × 60 s: 18 minutes of CPU time, 2.5 % of the machine; memory averages over the minutes listed.
+        var chrome = Rows(card)[0];
+        Assert.Equal(["chrome.exe", "18 min 0 s", "2.5 %", "800.0 MB", "180.0 MB", "90.0 MB", "90"],
+            new[] { "Name", "CpuTime", "AverageCpu", "AverageMemory", "IoRead", "IoWritten", "MinutesListed" }.Select(p => Cell(chrome, p)));
+        Assert.Equal("7 min 30 s", Cell(Rows(card)[^1], "CpuTime"));
+        Assert.Equal(["12.3 s", "2 min 5 s", "1 h 2 min", "—"], new[] { 12.34, 125.4, 3723, double.NaN }.Select(ApplicationResourcesCard.Duration));
+    }
+
+    private static void Search_filters_rows_and_keeps_everything_else(ApplicationResourcesCard card)
+    {
+        int before = Volatile.Read(ref reads);
+        SetSearch(card, "chro"); Assert.Equal(["chrome.exe", "Everything else"], RowNames(card));
+        Assert.Contains("1 of 4 applications match.", Texts(card));
+        SetSearch(card, "  CHRO "); Assert.Equal(["chrome.exe", "Everything else"], RowNames(card));
+        SetSearch(card, "no such app"); Assert.Equal(["Everything else"], RowNames(card));
+        SetSearch(card, ""); Assert.True(RowNames(card).Count > 2);
+        // Typing filters the rows already read; it never queries process-history.db again.
+        Assert.Equal(before, Volatile.Read(ref reads));
+    }
+
+    private static void Share_bar_has_a_segment_per_row(ApplicationResourcesCard card)
+    {
+        var bar = Assert.IsType<Grid>(Named(card, "Share of period total"));
+        Assert.Equal(Visibility.Visible, bar.Visibility);
+        Assert.Equal(RowNames(card).Count, Segments(bar).Count);
+        // Each segment is its row's part of the period's CPU time; Everything else is last and Muted.
+        Assert.Equal(ChromeCpu / CpuTotal, Fraction(bar, 0), 6);
+        Assert.Equal(EverythingElseCpu / CpuTotal, Fraction(bar, Segments(bar).Count - 1), 6);
+        Assert.Equal(((SolidColorBrush)Application.Current.Resources["Muted"]).Color, Assert.IsType<SolidColorBrush>(Segments(bar)[^1].Fill).Color);
+        Assert.Equal("chrome.exe: 55.8 % of the period total", Segments(bar)[0].ToolTip);
+        // A search keeps each segment's share of the whole period: the hidden rows leave their part empty.
+        SetSearch(card, "chro");
+        Assert.Equal(2, Segments(bar).Count);
+        Assert.Equal(ChromeCpu / CpuTotal, Fraction(bar, 0), 6);
+        SetSearch(card, "");
+        Assert.Equal(RowNames(card).Count, Segments(bar).Count);
+    }
+
+    private static void Selecting_an_app_shows_its_chart_and_rank_by_redraws(ApplicationResourcesCard card)
+    {
+        Assert.False(IsShown(card.Chart, card));
+        Select(card, "chrome.exe");
+        Assert.Equal("chrome.exe", card.SelectedApp);
+        Assert.True(IsShown(card.Chart, card));
+        Assert.Equal("%", ChartUnit(card)); Assert.Equal(100d, ChartMaximum(card));
+        WaitFor(() => Traces(card).Count == 1);
+        var cpu = Traces(card)[0].View;
+        Assert.Equal(DayMinutes, cpu.Minutes);
+        Assert.Equal(2.5, cpu.Statistics.Average!.Value, 6);
+
+        var ranked = card.View;
+        SetRank(card, ProcessRank.AverageMemory);
+        Assert.Equal(ProcessRank.AverageMemory, card.Rank);
+        Assert.Equal("B", ChartUnit(card)); Assert.Null(ChartMaximum(card));
+        WaitFor(() => !ReferenceEquals(card.View, ranked) && !card.Loading && Traces(card).Count == 1);
+        Assert.Equal("chrome.exe", card.SelectedApp);
+        Assert.NotNull(Table(card).SelectedItem);
+        Assert.Equal("chrome.exe", Cell(Table(card).SelectedItem!, "Name"));
+        Assert.Equal(800e6, Traces(card)[0].View.Statistics.Average!.Value, 0);
+        Assert.Equal("Code.exe", RowNames(card)[0]);
+
+        ranked = card.View;
+        SetRank(card, ProcessRank.Io);
+        Assert.Equal("B/s", ChartUnit(card)); Assert.Null(ChartMaximum(card));
+        WaitFor(() => !ReferenceEquals(card.View, ranked) && !card.Loading && Traces(card).Count == 1);
+        // chrome.exe reads 2 MB and writes 1 MB a minute: 50 kB/s.
+        Assert.Equal(5e4, Traces(card)[0].View.Statistics.Average!.Value, 0);
+        Assert.Equal("steam.exe", RowNames(card)[0]);
+        Assert.Equal("chrome.exe", card.SelectedApp);
+
+        ranked = card.View;
+        SetRank(card, ProcessRank.CpuTime);
+        WaitFor(() => !ReferenceEquals(card.View, ranked) && !card.Loading && Traces(card).Count == 1);
+        Assert.Equal("%", ChartUnit(card));
+    }
+
+    private static void Gap_notice_counts_minutes_without_process_data(ApplicationResourcesCard card)
+    {
+        string notice = Assert.Single(Texts(card), t => t.EndsWith(GapEnding, StringComparison.Ordinal));
+        long gaps = long.Parse(notice[..notice.IndexOf(' ')], NumberStyles.AllowThousands, CultureInfo.InvariantCulture);
+        // The day has 1,439 or 1,440 whole minutes that have ended, depending on where the clock sits in its minute.
+        Assert.InRange(gaps, 1440 - DayMinutes - 2, 1440 - DayMinutes);
+    }
+
+    private static void Storage_line_names_the_file(ApplicationResourcesCard card)
+    {
+        Assert.Contains(Texts(card), t => t.StartsWith("process-history.db · ", StringComparison.Ordinal));
+        Assert.True(card.View!.StorageBytes > 0);
+        Assert.Contains("process-history.db · " + Ui.Bytes(card.View.StorageBytes), Texts(card));
+    }
+
+    private static void Quick_range_changes_show_only_the_last_period(UsageHistoryPage page, ApplicationResourcesCard card, ManualResetEventSlim release)
+    {
+        // The month read waits inside the store until the newer day read has been shown.
+        Volatile.Write(ref hold, release);
+        SelectRange(page, "Month"); Load(page);
+        WaitFor(() => Volatile.Read(ref hold) is null);
+        Assert.True(card.Loading);
+        Assert.Contains(Loading, Texts(card));
+        SelectRange(page, "Day"); Load(page);
+        WaitFor(() => !card.Loading);
+        Assert.Equal(TimeSpan.FromDays(1), card.View!.To - card.View.From);
+        Assert.Equal(PageData(page), (card.View.From, card.View.To));
+        release.Set();
+        Settle(TimeSpan.FromMilliseconds(500));
+        Assert.Equal(TimeSpan.FromDays(1), card.View!.To - card.View.From);
+        Assert.Equal(["chrome.exe", "Code.exe", "steam.exe", "explorer.exe", "Everything else"], RowNames(card));
+    }
+
+    private static void Range_change_reloads_the_card(UsageHistoryPage page, ApplicationResourcesCard card)
+    {
+        var dayFrom = card.View!.From;
+        SelectRange(page, "Week"); Load(page);
+        WaitFor(() => card.View!.From != dayFrom && !card.Loading);
+        Assert.Equal(PageData(page), (card.View!.From, card.View.To));
+        Assert.Equal(TimeSpan.FromDays(7), card.View.To - card.View.From);
+        Near(Period(page), card.View);
+        // Three days ago is inside the week but not the day.
+        Assert.Contains("backup.exe", RowNames(card));
+        Assert.Equal("chrome.exe", card.SelectedApp);
+
+        var weekFrom = card.View.From;
+        Click(ButtonNamed(page, "Earlier period")); Load(page);
+        WaitFor(() => card.View!.From != weekFrom && !card.Loading);
+        Assert.Equal(PageData(page), (card.View!.From, card.View.To));
+        Near(Period(page), card.View);
+        Assert.InRange(card.View.To - weekFrom, TimeSpan.Zero, TimeSpan.FromMinutes(1));
+        // Nothing was recorded the week before: no rows, a reason, and the selection clears with its chart.
+        Assert.Empty(RowNames(card));
+        Assert.Contains(NothingRecorded, Texts(card));
+        Assert.Null(card.SelectedApp);
+        Assert.False(IsShown(card.Chart, card));
+        Assert.Equal(Visibility.Collapsed, Named(card, "Share of period total").Visibility);
+    }
+
+    private static void Gap_notice_is_exact_and_hidden_without_gaps(string folder)
+    {
+        var card = new ApplicationResourcesCard(Session(null, folder));
+        var from = new DateTimeOffset(2026, 11, 2, 12, 0, 30, TimeSpan.Zero); var to = from.AddHours(1);
+        // 12:01 to 12:59 have ended by 13:00:30; the minute starting 13:00 has not.
+        Assert.Equal(59, ApplicationResourcesCard.ElapsedMinutes(from, to, to));
+        Assert.Equal(60, ApplicationResourcesCard.ElapsedMinutes(from, to, to.AddDays(1)));
+        Assert.Equal(0, ApplicationResourcesCard.ElapsedMinutes(from, to, from));
+        card.Apply(View(from, to, 50), to);
+        Assert.Contains("9 " + GapEnding, Texts(card));
+        card.Apply(View(from, to, 59), to);
+        Assert.DoesNotContain(Texts(card), t => t.EndsWith(GapEnding, StringComparison.Ordinal));
+    }
+
+    private static void Empty_period_and_missing_history_say_why(string folder)
+    {
+        var card = new ApplicationResourcesCard(Session(null, folder));
+        Assert.Contains(Loading, Texts(card));
+        var from = new DateTimeOffset(2026, 11, 2, 12, 0, 0, TimeSpan.Zero); var to = from.AddDays(1);
+        card.Load(from, to);
+        Assert.False(card.Loading);
+        Assert.Contains("Application resource history is not available.", Texts(card));
+        card.Apply(View(from, to, 0), to);
+        Assert.Empty(RowNames(card));
+        Assert.Contains(NothingRecorded, Texts(card));
+        Assert.Contains("1,440 " + GapEnding, Texts(card));
+        Assert.Equal(Visibility.Collapsed, Named(card, "Share of period total").Visibility);
+    }
+
+    private static ProcessResourceView View(DateTimeOffset from, DateTimeOffset to, long recorded)
+        => new(from, to, recorded == 0 ? [] : [new("a.exe", 60, 1, 1e6, 1, 1, recorded, false, 6e7)],
+            new(ProcessHistory.EverythingElse, recorded, 1, 1e6, 1, 1, recorded, true, recorded * 6e7), recorded == 0 ? 0 : 60 + recorded,
+            recorded, recorded == 0 ? null : from, recorded == 0 ? null : to, recorded == 0 ? null : from, 4096);
+
+    /// <summary>A process-history.db with a fixture day (90 minutes ending ten minutes ago) and 30 minutes three days ago, read through
+    /// a service whose store counts every read and can hold one read until released.</summary>
+    private static ProcessHistoryService Service(string folder)
+    {
+        string path = Path.Combine(folder, "process-history.db");
+        var store = new ProcessHistoryStore(path); store.Initialize();
+        var now = DateTimeOffset.UtcNow;
+        var minute = new DateTimeOffset(now.UtcTicks / TimeSpan.TicksPerMinute * TimeSpan.TicksPerMinute, TimeSpan.Zero);
+        var batches = Enumerable.Range(0, DayMinutes).Select(i => new ProcessMinuteBatch(minute.AddMinutes(i - DayMinutes - 10), 60, 8, true, "fixture", DayApps))
+            .Concat(Enumerable.Range(0, 30).Select(i => new ProcessMinuteBatch(minute.AddDays(-3).AddMinutes(i), 60, 8, true, "fixture",
+                [new("backup.exe", 20_000_000, 400_000_000, 300_000_000, 200e6 * 60, false), new(ProcessHistory.EverythingElse, 1_000_000, 0, 0, 1e9 * 60, true)])))
+            .ToList();
+        store.Append(Machine, batches, now);
+        var service = new ProcessHistoryService(path, Machine);
+        var reader = typeof(ProcessHistoryService).GetField("store", All)!.GetValue(service)!;
+        typeof(ProcessHistoryStore).GetField("afterFirstRead", All)!.SetValue(reader, new Action(() =>
+        {
+            Interlocked.Increment(ref reads);
+            if (Interlocked.Exchange(ref hold, null) is { } gate) gate.Wait(TimeSpan.FromSeconds(10));
+        }));
+        return service;
+    }
+
+    private static UiSession Session(ProcessHistoryService? history, string folder)
+    {
+        var session = (UiSession)RuntimeHelpers.GetUninitializedObject(typeof(UiSession));
+        var collector = (Collector)RuntimeHelpers.GetUninitializedObject(typeof(Collector));
+        typeof(Collector).GetField("clock", All)!.SetValue(collector, new Stopwatch());
+        typeof(Collector).GetField("latest", All)!.SetValue(collector, new Reading(new(DateTimeOffset.UtcNow, 0, new Dictionary<string, double?>()),
+            [], [], [], "CPU", "", "", "", false));
+        void Set(string name, object value) => typeof(UiSession).GetField(name, All)!.SetValue(session, value);
+        Set("<Collector>k__BackingField", collector);
+        Set("<Settings>k__BackingField", new UserSettings { ProcessMonitoring = true });
+        Set("<Usage>k__BackingField", new UsageHistoryService(Path.Combine(folder, Guid.NewGuid() + "-usage.db"), Machine));
+        if (history is not null) Set("<ProcessHistory>k__BackingField", history);
+        return session;
+    }
+
+    /// <summary>Runs the page's load, as its refresh does once a range or earlier/later change has updated its period.</summary>
+    private static void Load(UsageHistoryPage page)
+    {
+        var load = (Task<UsagePageData>)typeof(UsageHistoryPage).GetMethod("LoadAsync", All)!.Invoke(page, [])!;
+        WaitFor(() => load.IsCompleted);
+        page.Apply(load.Result);
+    }
+    private static (DateTimeOffset From, DateTimeOffset To) Period(UsageHistoryPage page)
+        => ((DateTimeOffset, DateTimeOffset))typeof(UsageHistoryPage).GetMethod("Period", All)!.Invoke(page, [])!;
+    private static (DateTimeOffset From, DateTimeOffset To) PageData(UsageHistoryPage page)
+    {
+        var data = (UsagePageData)typeof(UsageHistoryPage).GetField("data", All)!.GetValue(page)!;
+        return (data.From, data.To);
+    }
+    private static void Near((DateTimeOffset From, DateTimeOffset To) period, ProcessResourceView view)
+    {
+        Assert.InRange((period.From - view.From).Duration(), TimeSpan.Zero, TimeSpan.FromMinutes(1));
+        Assert.Equal(period.To - period.From, view.To - view.From);
+    }
+    private static void SelectRange(UsageHistoryPage page, string label)
+    {
+        var range = Descendants(page).OfType<ComboBox>().Single(c => AutomationProperties.GetName(c) == "Usage history time range");
+        range.SelectedItem = range.Items.Cast<object>().Single(item => item.ToString() == label);
+    }
+    private static Button ButtonNamed(DependencyObject root, string name) => Descendants(root).OfType<Button>().Single(b => AutomationProperties.GetName(b) == name);
+    private static void Click(ButtonBase button) => button.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+
+    private static DataGrid Table(ApplicationResourcesCard card) => Assert.Single(Descendants(card).OfType<DataGrid>());
+    private static List<object> Rows(ApplicationResourcesCard card) => ((System.Collections.IEnumerable?)Table(card).ItemsSource ?? Array.Empty<object>()).Cast<object>().ToList();
+    private static List<string> RowNames(ApplicationResourcesCard card) => Rows(card).Select(r => Cell(r, "Name")).ToList();
+    private static string LastRowName(ApplicationResourcesCard card) => RowNames(card)[^1];
+    private static string Cell(object row, string property) => (string)row.GetType().GetProperty(property)!.GetValue(row)!;
+    private static string[] Headers(ApplicationResourcesCard card) => Table(card).Columns.Select(c => (string)c.Header).ToArray();
+    private static void Select(ApplicationResourcesCard card, string name) => Table(card).SelectedItem = Rows(card).Single(r => Cell(r, "Name") == name);
+    private static void SetSearch(ApplicationResourcesCard card, string text)
+        => Descendants(card).OfType<TextBox>().Single(t => AutomationProperties.GetName(t) == "Find application in application resources").Text = text;
+    private static void SetRank(ApplicationResourcesCard card, ProcessRank rank)
+    {
+        var box = Descendants(card).OfType<ComboBox>().Single(c => AutomationProperties.GetName(c) == "Rank application resources by");
+        box.SelectedItem = box.Items.Cast<object>().Single(item => (ProcessRank)item.GetType().GetProperty("Rank")!.GetValue(item)! == rank);
+    }
+    private static string ChartUnit(ApplicationResourcesCard card) => (string)typeof(UsageHistoryChart).GetField("unit", All)!.GetValue(card.Chart)!;
+    private static double? ChartMaximum(ApplicationResourcesCard card) => (double?)typeof(UsageHistoryChart).GetField("fixedMaximum", All)!.GetValue(card.Chart);
+    private static IReadOnlyList<UsageTrace> Traces(ApplicationResourcesCard card) => (IReadOnlyList<UsageTrace>)typeof(UsageHistoryChart).GetField("traces", All)!.GetValue(card.Chart)!;
+    private static FrameworkElement Named(DependencyObject root, string name) => Descendants(root).OfType<FrameworkElement>().Single(e => AutomationProperties.GetName(e) == name);
+    private static List<Rectangle> Segments(Grid bar) => bar.Children.OfType<Rectangle>().ToList();
+    private static double Fraction(Grid bar, int segment)
+        => bar.ColumnDefinitions[Grid.GetColumn(Segments(bar)[segment])].Width.Value / bar.ColumnDefinitions.Sum(c => c.Width.Value);
+    /// <summary>True when the element and every ancestor up to the card are visible.</summary>
+    private static bool IsShown(FrameworkElement element, DependencyObject root)
+    {
+        for (DependencyObject? at = element; at is not null && at != root; at = VisualTreeHelper.GetParent(at))
+            if (at is UIElement { Visibility: not Visibility.Visible }) return false;
+        return true;
+    }
+    private static List<string> CardHeadings(UsageHistoryPage page)
+        => ((StackPanel)page.Content).Children.OfType<Border>().Select(card => Descendants(card).OfType<TextBlock>().First().Text).ToList();
+    private static List<string> Texts(DependencyObject root) => Descendants(root).OfType<TextBlock>().Select(t => t.Text).ToList();
+    private static IEnumerable<DependencyObject> Descendants(DependencyObject root)
+    {
+        yield return root;
+        for (int i = 0; i < VisualTreeHelper.GetChildrenCount(root); i++)
+            foreach (var child in Descendants(VisualTreeHelper.GetChild(root, i))) yield return child;
+    }
+    private static void Layout(FrameworkElement element)
+    { element.Measure(PageSize); element.Arrange(new(PageSize)); element.UpdateLayout(); }
+
+    /// <summary>Pumps the dispatcher until <paramref name="done"/> holds, for up to 5 s, so a read's result can arrive.</summary>
+    private static void WaitFor(Func<bool> done)
+    {
+        if (!done())
+        {
+            var frame = new DispatcherFrame(); var deadline = Stopwatch.StartNew();
+            var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(5) };
+            timer.Tick += (_, _) => { if (done() || deadline.Elapsed >= TimeSpan.FromSeconds(5)) frame.Continue = false; };
+            timer.Start();
+            try { Dispatcher.PushFrame(frame); } finally { timer.Stop(); }
+        }
+        Assert.True(done(), "The Application resources card did not get there within 5 s.");
+    }
+    /// <summary>Pumps the dispatcher for <paramref name="time"/>, so a late result has every chance to arrive.</summary>
+    private static void Settle(TimeSpan time)
+    {
+        var frame = new DispatcherFrame(); var timer = new DispatcherTimer { Interval = time };
+        timer.Tick += (_, _) => frame.Continue = false;
+        timer.Start();
+        try { Dispatcher.PushFrame(frame); } finally { timer.Stop(); }
+    }
+}

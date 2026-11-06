@@ -16,4 +16,5 @@ public class ProcessSettingsTests
     [Theory][InlineData(false,false,false,"Turning it on adds one Windows process scan per poll.")][InlineData(true,true,false,"Turning it on adds one Windows process scan per poll and a disk trace.")]
     [InlineData(true,false,true,"Turning it on adds one Windows process scan per poll (at most one a second).")][InlineData(true,true,true,"Turning it on adds one Windows process scan per poll (at most one a second) and a disk trace.")]
     public void Scan_sentence_follows_the_build(bool elevated,bool disk,bool loop,string expected)=>Assert.Equal(expected,ProcessCopy.ScanSentence(elevated,disk,loop));
+    [Fact] public void Scan_sentence_adds_the_history_sentence()=>Assert.Equal("Turning it on adds one Windows process scan per poll. While usage history is recorded, it also keeps the busiest apps for 30 days.",ProcessCopy.ScanSentence(false,false,false,history:true));
 }

@@ -213,6 +213,25 @@ public class ProcessHistoryStoreTests
     }
 
     [Fact]
+    public void Row_parts_add_up_to_the_rank_total_for_every_rank()
+    {
+        using var fixture = new Fixture(); var store = fixture.Open();
+        // The second minute covers only 30 s, so a row's memory part (Σ memory × Δt) is not its average times its minutes.
+        store.Append("m", [
+            Batch(Day, covered: 60, apps: [App("a.exe", 10_000_000, 1, 2, 600), App("b.exe", 20_000_000, 3, 4, 1200), Else(5_000_000, 5, 6, 300)]),
+            Batch(Day.AddMinutes(1), covered: 30, apps: [App("a.exe", 30_000_000, 7, 8, 900), Else(1_000_000, 9, 10, 150)])], Now);
+        foreach (var rank in Enum.GetValues<ProcessRank>())
+        {
+            var view = store.ReadApplications("m", Day, Day.AddMinutes(2), rank);
+            Assert.Equal(view.RankTotal, view.Rows.Sum(r => r.PartOf(rank)) + view.EverythingElse.PartOf(rank), 6);
+        }
+        var a = store.ReadApplications("m", Day, Day.AddMinutes(2), ProcessRank.AverageMemory).Rows.Single(r => r.Name == "a.exe");
+        Assert.Equal(1500, a.MemoryByteSeconds, 6);
+        Assert.Equal((4.0, 1500.0, 18.0), (a.PartOf(ProcessRank.CpuTime), a.PartOf(ProcessRank.AverageMemory), a.PartOf(ProcessRank.Io)));
+        Assert.Equal(1500 / 90.0, a.AverageMemoryBytes, 6);
+    }
+
+    [Fact]
     public void Series_buckets_like_ReadMetric_and_leaves_unlisted_minutes_as_gaps()
     {
         using var fixture = new Fixture(); var store = fixture.Open();
