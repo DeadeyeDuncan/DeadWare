@@ -105,6 +105,24 @@ public class ProcessHistoryServiceTests
         Assert.NotNull(await service.TryReadSeriesAsync("chrome.exe", ProcessRank.CpuTime, Start, Start.AddMinutes(3), 3));
     }
 
+    [Theory]
+    // The first activity of minute 1 or the last of minute 0 is lost: the old minute may have lost its tail, the new one its head.
+    [InlineData(60, 0, 0)][InlineData(59, 0, 0)]
+    // A loss inside a minute marks only that minute.
+    [InlineData(30, 0, 1)][InlineData(90, 1, 0)]
+    public async Task A_lost_activity_marks_the_minutes_it_may_have_cut(int lost, long firstComplete, long secondComplete)
+    {
+        using var fixture = new Fixture(); var service = new ProcessHistoryService(fixture.Path, "tablet");
+        service.Configure(true, true); service.Start();
+        // 119 activities fit the 120-slot queue, so the skipped sequence number is the only loss.
+        for (int i = 0; i < 120; i++) if (i != lost) service.TryRecord(Reading(i));
+        await service.StopAsync();
+        Assert.Equal(0, service.DroppedSamples);
+        var series = await service.ReadSeriesAsync("chrome.exe", ProcessRank.CpuTime, Start, Start.AddMinutes(2), 2);
+        Assert.Equal([Start, Start.AddMinutes(1)], series.Buckets.Select(b => b.Start));
+        Assert.Equal([firstComplete, secondComplete], series.Buckets.Select(b => b.CompleteMinutes));
+    }
+
     [Fact]
     public async Task Store_failure_stops_only_this_worker()
     {
