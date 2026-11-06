@@ -24,7 +24,7 @@ internal static class Program
     private static readonly Assembly AppAssembly=typeof(UiSession).Assembly;
     // Every production theme, read from the app so a new palette is rendered automatically.
     private static readonly string[] Themes=(string[])AppAssembly.GetType("DeadWare.App.Theme")!.GetField("Names",All)!.GetValue(null)!;
-    private static readonly string[] Routes=["overview","network","connections","battery","usage","alerts","sensors","cooling","desktop","updates"];
+    private static readonly string[] Routes=["overview","network","storage","processes","connections","battery","usage","alerts","sensors","cooling","desktop","updates"];
     private static readonly string Scratch=Path.Combine(Path.GetTempPath(),"DeadWare-GlassPreview",Guid.NewGuid().ToString("N"));
     private static UiSession session=null!;
     private static Collector collector=null!;
@@ -271,7 +271,9 @@ internal static class Program
                     Field<TextBlock>(dashboard,"monitoringInfo").Text="SAMPLE DATA ONLY\nUnstarted preview session";
                     if(route=="desktop") Field<TextBlock>(dashboard,"startupStatus").Text="Preview only · startup registration has not been queried or changed.";
                     if(route is "overview" or "network") RefreshSampleCards(dashboard,pages[route]);
-                    foreach(var size in route is "network" or "desktop" ? new[]{new Size(1220,900),new Size(900,640)} : new[]{new Size(1220,900)})
+                    // The page is never loaded offscreen, so it does not render itself from the session; ask it to.
+                    if(route=="processes") Invoke(pages[route],"Refresh");
+                    foreach(var size in route is "network" or "desktop" or "processes" ? new[]{new Size(1220,900),new Size(900,640)} : new[]{new Size(1220,900)})
                     {
                     frame.Measure(size);frame.Arrange(new Rect(new Point(),size));frame.UpdateLayout();Pump();frame.UpdateLayout();
                     if(!ReferenceEquals(frame.Background,Application.Current.Resources["WindowSurface"]))throw new InvalidOperationException("Shell glass window surface did not update.");
@@ -279,8 +281,12 @@ internal static class Program
                     var text=string.Join(" ",Descendants(shell).OfType<TextBlock>().Select(t=>t.Text));
                     if(!text.Contains("SYNTHETIC SAMPLE DATA"))throw new InvalidOperationException("Every shell capture must label synthetic data.");
                     if(Directory.Exists(Scratch)&&Directory.EnumerateFiles(Scratch,"*.db*",SearchOption.AllDirectories).Any())throw new InvalidOperationException("Preview unexpectedly created a history database.");
-                    double? tableHeight=route=="network"?Field<DataGrid>(dashboard,"apps").ActualHeight:null;
-                    if(tableHeight is <70) failures.Add($"{theme} Network table at {size.Width:0}x{size.Height:0} has {tableHeight:0.##} px height; at least 70 px is required.");
+                    // ProcessesPage.Grid is internal and the preview has no InternalsVisibleTo, so it is read by reflection like "apps".
+                    var processGrid=route=="processes"?(DataGrid)pages[route].GetType().GetProperty("Grid",All)!.GetValue(pages[route])!:null;
+                    int? appRows=processGrid?.Items.Cast<object>().Count(row=>(bool)row.GetType().GetProperty("IsApp",All)!.GetValue(row)!);
+                    double? tableHeight=route=="network"?Field<DataGrid>(dashboard,"apps").ActualHeight:processGrid?.ActualHeight;
+                    if(tableHeight is <70) failures.Add($"{theme} {(route=="network"?"Network":"Processes")} table at {size.Width:0}x{size.Height:0} has {tableHeight:0.##} px height; at least 70 px is required.");
+                    if(appRows is <4) failures.Add($"{theme} Processes table at {size.Width:0}x{size.Height:0} shows {appRows} app rows; at least 4 are required.");
                     double? chartHeight=null;bool? chartTrace=null;
                     if(route=="network")
                     {
@@ -292,7 +298,7 @@ internal static class Program
                     }
                     string suffix=size.Width==1220?"":$"-{size.Width:0}x{size.Height:0}";
                     Save(frame,(int)size.Width,(int)size.Height,Path.Combine(output,$"glass-shell-{theme}-{route}{suffix}.png"));
-                    checks.Add(new {theme,route,width=size.Width,height=size.Height,tableHeight,chartHeight,chartTrace,synthetic=true,nativeWindow=false,storesOpened=false});
+                    checks.Add(new {theme,route,width=size.Width,height=size.Height,tableHeight,appRows,chartHeight,chartTrace,synthetic=true,nativeWindow=false,storesOpened=false});
                     }
                 }
             }
