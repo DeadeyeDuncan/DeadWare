@@ -99,7 +99,7 @@ public sealed class ProcessHistoryStore(string path, long maximumDatabaseBytes =
 
     /// <summary>Writes closed minutes. Rows older than the retention window or more than five minutes ahead of now are ignored.
     /// A minute already stored from another segment (a restart inside that minute) keeps its first rows and is marked incomplete;
-    /// the same segment repeated is ignored, so a retried batch cannot double count. Expired days leave first, as <see cref="Expire"/> does.</summary>
+    /// the same segment repeated is ignored, so a retried batch cannot double count. Expired days leave first, as <see cref="Expire(DateTimeOffset)"/> does.</summary>
     public void Append(string machine, IReadOnlyList<ProcessMinuteBatch> batches, DateTimeOffset now)
     {
         EnsureInitialized(); ValidateMachine(machine); ArgumentNullException.ThrowIfNull(batches);
