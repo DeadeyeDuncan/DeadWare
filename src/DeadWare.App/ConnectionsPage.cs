@@ -61,8 +61,17 @@ internal sealed class ConnectionsPage : Grid
     private readonly ProgressBar progress = new() { Minimum = 0, Maximum = 100, Width = 80, Height = 6, Visibility = Visibility.Collapsed };
     private readonly StackPanel historical = new();
     private readonly DispatcherTimer playback = new() { Interval = TimeSpan.FromSeconds(1) };
+    private readonly TrafficStripView trafficStrip;
+    private readonly Border trafficCard;
     private CancellationTokenSource? queryCancellation, downloadCancellation;
     private ConnectionHistoryQuery? pending;
+    // The strip: the whole-interval query on screen (and when it was applied), one waiting, one in flight and the last that failed.
+    private ConnectionHistoryQuery? stripContext, pendingStrip, stripReading, stripFailed;
+    private DateTimeOffset stripNow;
+    // The whole-interval query of the latest request, which a strip reply must match to be applied.
+    private ConnectionHistoryQuery? requestedWhole;
+    /// <summary>The "now" the page passes when it applies a strip.</summary>
+    internal Func<DateTimeOffset> clock = () => DateTimeOffset.UtcNow;
     private ConnectionHistoryQuery? displayedHistoryQuery;
     private ConnectionLiveView live = new(default, [], null, false, false, "Waiting for endpoint capture.");
     private IReadOnlyList<PeerRow> rows = [];
@@ -70,6 +79,8 @@ internal sealed class ConnectionsPage : Grid
     private bool syncing, busy, playing, active, exportInProgress, historyMinuteReady;
     private string? selectedKey;
     private string historyStorage = "";
+    private const string LimitWarning = "This interval holds too many saved rows to show. Choose a shorter interval.";
+    private const string UnavailableSummary = "History · minute-bucket average rates · — destinations · — countries · — local · — unlocated · ↓ — received / ↑ — sent";
     private const string IntervalWarning = "Choose valid local times (yyyy-MM-dd HH:mm), from before exclusive to, at most 31 days. Avoid ambiguous or skipped daylight-saving minutes.";
     private bool IsHistory => mode.SelectedIndex == 1;
 
@@ -80,7 +91,8 @@ internal sealed class ConnectionsPage : Grid
         readHistory = q => session.Connections is { } service ? service.ReadViewAsync(q) : Task.FromResult(Empty(q, "Connection history is unavailable."));
         exportHistory=(path,query)=>session.Connections is { } service?service.ExportCsvAsync(path,query):Task.FromException(new InvalidOperationException("Connection export unavailable."));
         Background = System.Windows.Media.Brushes.Transparent; ClipToBounds = true;
-        foreach (var height in new[] { GridLength.Auto, new GridLength(1, GridUnitType.Star), GridLength.Auto, GridLength.Auto, GridLength.Auto }) body.RowDefinitions.Add(new() { Height = height });
+        // Rows: header, map card, traffic strip, node list, footer, Destinations card, settings.
+        foreach (var height in new[] { GridLength.Auto, new GridLength(1, GridUnitType.Star), GridLength.Auto, GridLength.Auto, GridLength.Auto, GridLength.Auto, GridLength.Auto }) body.RowDefinitions.Add(new() { Height = height });
         body.RowDefinitions[1].MinHeight = 300;
         var controls = new StackPanel { Margin = new(0, 6, 0, 3) }; var top = new WrapPanel();
         mode.ItemsSource = new[] { "Live", "History" }; mode.SelectedIndex = 0; Named(mode, "Connections view"); range.ItemsSource = new[] { "Today", "7 days", "30 days" }; range.SelectedIndex = 0; Named(range, "Connections time range");
@@ -95,11 +107,15 @@ internal sealed class ConnectionsPage : Grid
         var header=layoutHeader=new StackPanel();header.Children.Add(strip);header.Children.Add(summary);header.Children.Add(capture);body.Children.Add(header);
         var mapHost = new Grid(); mapHost.Children.Add(map); mapHost.Children.Add(mapOverlay);
         var mapCard = Ui.Panel(mapHost, new Thickness(6)); mapCard.Margin = new(0, 2, 0, 2); Grid.SetRow(mapCard, 1); body.Children.Add(mapCard);
+        trafficStrip = new TrafficStripView(session, TrafficStripPage.Connections); trafficStrip.Chart.Selectable = true;
+        trafficStrip.Chart.SlotActivated += (_, time) => ActivateStripAt(time);
+        trafficStrip.Chart.SelectionMoved += index => { if (trafficStrip.Chart.Strip is { } shown) ActivateStripAt(shown.Slots[index].Start); };
+        trafficCard = Ui.Panel(trafficStrip, new Thickness(12, 8, 12, 8)); trafficCard.Margin = new(0, 6, 0, 4); trafficCard.Visibility = Visibility.Collapsed; Grid.SetRow(trafficCard, 2); body.Children.Add(trafficCard);
         nodeDetails.SetResourceReference(StyleProperty, "Card"); nodeDetails.CornerRadius = new(10);
         nodeText.TextWrapping = TextWrapping.Wrap;
         var detailsLayout = new StackPanel(); var detailHeader = new DockPanel(); var close = Button("Close", ClearSelection); DockPanel.SetDock(close, Dock.Right); detailHeader.Children.Add(close); detailHeader.Children.Add(Ui.Text("Connection details", 13)); detailsLayout.Children.Add(detailHeader);
         detailsLayout.Children.Add(new ScrollViewer { Content = nodeText, MaxHeight = 175, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled }); nodeDetails.Child = detailsLayout; mapOverlay.Children.Add(nodeDetails); Named(nodeDetails, "Selected map connection details");
-        var listLayout = new StackPanel(); listLayout.Children.Add(mappedStatus); listLayout.Children.Add(mappedConnections); Grid.SetRow(listLayout, 2); body.Children.Add(listLayout);
+        var listLayout = new StackPanel(); listLayout.Children.Add(mappedStatus); listLayout.Children.Add(mappedConnections); Grid.SetRow(listLayout, 3); body.Children.Add(listLayout);
         Named(mappedConnections, "Connections drawn on map");
         mappedConnections.ItemsSource=mappedRows;
         mappedConnections.SetResourceReference(Control.BackgroundProperty,"GlassControl");
@@ -118,29 +134,31 @@ internal sealed class ConnectionsPage : Grid
         foreach(var property in new[]{ListBoxItem.IsSelectedProperty,UIElement.IsMouseOverProperty,UIElement.IsKeyboardFocusWithinProperty})
         {var trigger=new Trigger {Property=property,Value=true};trigger.Setters.Add(new Setter(Control.BackgroundProperty,new DynamicResourceExtension("GlassControl")));itemStyle.Triggers.Add(trigger);}
         mappedConnections.ItemContainerStyle = itemStyle;
-        var foot = layoutFooter = new StackPanel(); export = Button("Export CSV…", () => _ = ExportAsync()); export.HorizontalAlignment = HorizontalAlignment.Left; foot.Children.Add(export); foot.Children.Add(selection); Grid.SetRow(foot, 3); body.Children.Add(foot);
+        var foot = layoutFooter = new StackPanel(); export = Button("Export CSV…", () => _ = ExportAsync()); export.HorizontalAlignment = HorizontalAlignment.Left; foot.Children.Add(export); foot.Children.Add(selection); Grid.SetRow(foot, 4); body.Children.Add(foot);
         var settings = layoutSettings = new StackPanel(); var databaseActions = new WrapPanel(); download = Button("Download / update locations", () => _ = UpdateDatabaseAsync()); cancel = Button("Cancel download", () => downloadCancellation?.Cancel()); cancel.IsEnabled = false; databaseActions.Children.Add(download); databaseActions.Children.Add(cancel); databaseActions.Children.Add(progress); settings.Children.Add(databaseActions); settings.Children.Add(database);
         var options = new StackPanel(); var choices = new WrapPanel(); recording.IsChecked = session.Settings.ConnectionsRecording; databaseActions.Children.Add(recording); Named(citySearch, "Search offline home cities"); citySearch.ToolTip = "Search 7,342 offline cities by name or country"; choices.Children.Add(citySearch); Named(home, "Home city"); choices.Children.Add(home); choices.Children.Add(Button("Clear home city", () => home.SelectedIndex = 0)); options.Children.Add(choices); settings.Children.Add(storage);
-        options.Children.Add(Ui.Text("Origin and destination geography are approximate; curves are illustrative. The list follows the nodes visible on the map. Local / special and unlocated peers remain in totals and history CSV. Rolling history: 30 days, up to 256 MiB locally. CSV exports the full filtered interval to a new file.", 11, "Muted")); settings.Children.Add(new Expander { Header = "Recording, origin and storage", Content = options }); Grid.SetRow(settings, 4); settings.Children.Insert(0, actionStatus); body.Children.Add(settings);
+        options.Children.Add(Ui.Text("Origin and destination geography are approximate; curves are illustrative. The list follows the nodes visible on the map. Local / special and unlocated peers remain in totals and history CSV. Rolling history: 30 days, up to 256 MiB locally. CSV exports the full filtered interval to a new file.", 11, "Muted")); settings.Children.Add(new Expander { Header = "Recording, origin and storage", Content = options }); Grid.SetRow(settings, 6); settings.Children.Insert(0, actionStatus); body.Children.Add(settings);
         foreach (var element in new[] { mode, range, direction }) element.Margin = new(0, 0, 6, 3); foreach (var element in new[] { search, from, to, citySearch, country }) element.Margin = new(0, 0, 6, 3);
         selection.MaxHeight = 28; selection.TextTrimming = TextTrimming.CharacterEllipsis;
-        layoutHeader.SizeChanged+=(_,_)=>InvalidateMeasure();layoutFooter.SizeChanged+=(_,_)=>InvalidateMeasure();layoutSettings.SizeChanged+=(_,_)=>InvalidateMeasure();
+        layoutHeader.SizeChanged+=(_,_)=>InvalidateMeasure();layoutFooter.SizeChanged+=(_,_)=>InvalidateMeasure();layoutSettings.SizeChanged+=(_,_)=>InvalidateMeasure();trafficCard.SizeChanged+=(_,_)=>InvalidateMeasure();
         SetPreset(); FilterCities(); historical.Visibility = Visibility.Collapsed;
         mode.SelectionChanged += (_, _) => ChangeMode(); range.SelectionChanged += (_, _) => { SetPreset(); FiltersChanged(); }; search.TextChanged += (_, _) => FiltersChanged(); direction.SelectionChanged += (_, _) => FiltersChanged(); country.TextChanged += (_, _) => FiltersChanged();
-        minute.Checked += (_, _) => FiltersChanged(); minute.Unchecked += (_, _) => FiltersChanged(); cursor.ValueChanged += (_, _) => { if (!syncing) FiltersChanged(false); }; citySearch.TextChanged += (_, _) => FilterCities(); home.SelectionChanged += (_, _) => { if (!syncing && session.Connections is not null) session.SetConnectionsHomeCity((home.SelectedItem as CityChoice)?.Id); };
+        // The hairline follows the cursor at once, also under syncing (playback and strip clicks), before the minute's read returns.
+        minute.Checked += (_, _) => { UpdateHairline(); FiltersChanged(); }; minute.Unchecked += (_, _) => { UpdateHairline(); FiltersChanged(); }; cursor.ValueChanged += (_, _) => { UpdateHairline(); if (!syncing) FiltersChanged(false); }; citySearch.TextChanged += (_, _) => FilterCities(); home.SelectionChanged += (_, _) => { if (!syncing && session.Connections is not null) session.SetConnectionsHomeCity((home.SelectedItem as CityChoice)?.Id); };
         recording.Checked += (_, _) => SetRecording(true); recording.Unchecked += (_, _) => SetRecording(false); animation.Checked += (_, _) => SetAnimation(true); animation.Unchecked += (_, _) => SetAnimation(false);
         mappedConnections.SelectionChanged += (_, _) => { if (!syncing && mappedConnections.SelectedItem is MapRow row) SelectMapPeer(row.Key); };
         map.PointSelected += SelectMapPeer; map.ViewChanged += RefreshMappedConnections;
         PreviewKeyDown += (_, e) => { if (e.Key == System.Windows.Input.Key.Escape) { ClearSelection(); e.Handled = true; } }; playback.Tick += (_, _) => AdvancePlayback();
-        Loaded += (_, _) => { active = true; session.Changed += RefreshSession; RefreshSession(); if (IsHistory) RequestHistory(); }; Unloaded += (_, _) => { active = false; session.Changed -= RefreshSession; CancelHistory(); StopPlayback(); downloadCancellation?.Cancel(); }; IsVisibleChanged += (_, _) => { if (!IsVisible) { CancelHistory(); StopPlayback(); } else if (active) { RefreshSession(); if (IsHistory) RequestHistory(); } }; RefreshSession();
+        Loaded += (_, _) => { active = true; session.Changed += RefreshSession; RefreshSession(); ShowStripAgain(); if (IsHistory) RequestHistory(); }; Unloaded += (_, _) => { active = false; session.Changed -= RefreshSession; CancelHistory(); pendingStrip = null; StopPlayback(); downloadCancellation?.Cancel(); }; IsVisibleChanged += (_, _) => { if (!IsVisible) { CancelHistory(); pendingStrip = null; StopPlayback(); } else if (active) { RefreshSession(); ShowStripAgain(); if (IsHistory) RequestHistory(); } }; RefreshSession();
     }
     protected override Size MeasureOverride(Size availableSize)
     {
         // Keep the map large while allowing the whole page to scroll on compact displays.
         double width=double.IsFinite(availableSize.Width)?Math.Max(1,availableSize.Width-SystemParameters.VerticalScrollBarWidth):1000;
         var measure=new Size(width,double.PositiveInfinity);
-        layoutHeader.Measure(measure);layoutFooter.Measure(measure);layoutSettings.Measure(measure);
-        double minimum=layoutHeader.DesiredSize.Height+layoutFooter.DesiredSize.Height+layoutSettings.DesiredSize.Height+300+170;
+        // A collapsed traffic card (Live) measures 0.
+        layoutHeader.Measure(measure);trafficCard.Measure(measure);layoutFooter.Measure(measure);layoutSettings.Measure(measure);
+        double minimum=layoutHeader.DesiredSize.Height+trafficCard.DesiredSize.Height+layoutFooter.DesiredSize.Height+layoutSettings.DesiredSize.Height+300+170;
         body.Height=Math.Max(minimum,double.IsFinite(availableSize.Height)?availableSize.Height:minimum);
         return base.MeasureOverride(availableSize);
     }
@@ -172,7 +190,11 @@ internal sealed class ConnectionsPage : Grid
         }
         else if (!IsHistory) ApplyLive(live);
     }
-    private void ChangeMode() { CancelHistory(); displayedHistoryQuery=null; StopPlayback(); ClearSelection(); historical.Visibility = IsHistory ? Visibility.Visible : Visibility.Collapsed; range.IsEnabled = IsHistory; UpdateExportEnabled(); if (IsHistory) RequestHistory(); else ApplyLive(live); }
+    private void ChangeMode()
+    {
+        CancelHistory(); pendingStrip = null; if (!IsHistory) { stripContext = null; stripFailed = null; }
+        displayedHistoryQuery=null; StopPlayback(); ClearSelection(); historical.Visibility = trafficCard.Visibility = IsHistory ? Visibility.Visible : Visibility.Collapsed; range.IsEnabled = IsHistory; UpdateExportEnabled(); if (IsHistory) RequestHistory(); else ApplyLive(live);
+    }
     private void SetPreset()
     { int days = range.SelectedIndex switch { 1 => 7, 2 => 30, _ => 1 }; from.Text = DateTime.Today.AddDays(1 - days).ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture); to.Text = DateTime.Today.AddDays(1).ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture); syncing = true; cursor.Value = 0; syncing = false; }
     private bool TryInterval(out DateTimeOffset start, out DateTimeOffset end)
@@ -192,42 +214,105 @@ internal sealed class ConnectionsPage : Grid
         try {utc=new DateTimeOffset(parsed,zone.GetUtcOffset(parsed)).ToUniversalTime();return true;}
         catch(ArgumentOutOfRangeException) {return false;}
     }
-    private ConnectionHistoryQuery? BuildQuery(bool wholeInterval = false)
+    /// <summary>Returns the minute query while the minute cursor is on and the whole-interval query otherwise; <paramref name="whole"/> is always the whole interval.</summary>
+    private ConnectionHistoryQuery? BuildQuery(out ConnectionHistoryQuery? whole)
     {
-        if (!TryInterval(out var start, out var end)) return null; if (!wholeInterval && minute.IsChecked == true) { start = start.AddMinutes((int)cursor.Value); end = end < start.AddMinutes(1) ? end : start.AddMinutes(1); }
-        cursorTime.Text = minute.IsChecked == true ? $"{start.ToLocalTime():MM-dd HH:mm}" : "Whole interval";
-        return new(start, end, search.Text.Trim(), country.Text.Trim().ToUpperInvariant(), direction.SelectedItem is ConnectionDirection value ? value : ConnectionDirection.Both, 0, 200);
+        whole = null;
+        if (!TryInterval(out var start, out var end)) return null;
+        whole = new(start, end, search.Text.Trim(), country.Text.Trim().ToUpperInvariant(), direction.SelectedItem is ConnectionDirection value ? value : ConnectionDirection.Both, 0, 200);
+        var query = whole;
+        if (minute.IsChecked == true) { var first = start.AddMinutes((int)cursor.Value); query = whole with { From = first, To = end < first.AddMinutes(1) ? end : first.AddMinutes(1) }; }
+        cursorTime.Text = minute.IsChecked == true ? $"{query.From.ToLocalTime():MM-dd HH:mm}" : "Whole interval";
+        return query;
     }
     private void FiltersChanged(bool resetCursor = true) { if (syncing) return; StopPlayback(); ClearSelection(); if (resetCursor) { syncing = true; cursor.Value = 0; syncing = false; } if (IsHistory) RequestHistory(); else ApplyLive(live); }
     private void CancelHistory() { generation++; queryCancellation?.Cancel(); queryCancellation?.Dispose(); queryCancellation = null; pending = null; historyMinuteReady=false; UpdateMapAnimation(); }
     private static bool SameHistoryContext(ConnectionHistoryQuery left,ConnectionHistoryQuery right)=>
         left.From==right.From&&left.To==right.To&&left.Direction==right.Direction&&
-        string.Equals(left.Search,right.Search,StringComparison.OrdinalIgnoreCase)&&string.Equals(left.CountryCode,right.CountryCode,StringComparison.OrdinalIgnoreCase);
+        string.Equals(left.Search,right.Search,StringComparison.OrdinalIgnoreCase)&&string.Equals(left.CountryCode,right.CountryCode,StringComparison.OrdinalIgnoreCase)&&
+        string.Equals(left.Application,right.Application,StringComparison.Ordinal);
+    private static bool SameContext(ConnectionHistoryQuery whole, ConnectionHistoryQuery? other) => other is not null && SameHistoryContext(whole, other);
     private void RequestHistory()
     {
-        CancelHistory(); var query=BuildQuery();
+        CancelHistory(); var query=BuildQuery(out var whole); requestedWhole=whole;
         if(query is null || displayedHistoryQuery is null || !SameHistoryContext(displayedHistoryQuery,query))
         {
             displayedHistoryQuery=null; rows=[];
-            selectedKey=null; map.SetData([],null,true,"Reading saved history…"); RefreshMappedConnections(); summary.Text="History · Reading saved observations…";
+            selectedKey=null; map.SetData([],null,true,"Reading saved history…"); RefreshMappedConnections(); summary.Text="History · Reading saved observations…"; summary.ToolTip=null;
         }
-        if(query is null){StopPlayback();return;}
+        if(query is null || whole is null){StopPlayback();stripContext=null;trafficStrip.ShowText("Choose a valid interval");UpdateHairline();return;}
+        bool cursorOn=minute.IsChecked==true;
+        // The strip clears only when the whole-interval context changes, never on a cursor move.
+        if(!SameContext(whole,stripContext))
+        {
+            stripContext=null; trafficStrip.ShowText(cursorOn&&SameContext(whole,stripFailed)?"History unavailable":"Reading saved history…"); UpdateHairline();
+            // With the cursor on, a minute read carries no strip, so the whole interval is read after it; a failed context waits for a change.
+            if(cursorOn&&!SameContext(whole,stripReading)&&!SameContext(whole,pendingStrip)&&!SameContext(whole,stripFailed))pendingStrip=whole;
+        }
+        // With the cursor off, the one read carries the strip.
+        if(!cursorOn)pendingStrip=null;
         queryCancellation=new();pending=query;_=PumpHistoryAsync();
     }
+    /// <summary>Re-reads saved data, the strip included, with the minute cursor on as well as off.</summary>
+    internal void ReloadHistory() { stripContext = null; stripFailed = null; if (IsHistory) RequestHistory(); }
+    // Showing the page again re-reads a strip that may hold minutes saved since, and retries a failed one.
+    private void ShowStripAgain() { if (stripContext is { } shown && shown.To > stripNow) stripContext = null; stripFailed = null; }
     private async Task PumpHistoryAsync()
     {
         if (busy) return; busy = true;
         try
         {
-            while (pending is { } query && IsHistory)
+            // The minute first; the strip only when no minute is pending.
+            while (IsHistory && (pending is not null || pendingStrip is not null))
             {
-                pending = null; long requested = generation; var token = queryCancellation!.Token; capture.Text = "Reading saved history…";
-                try { var result = await readHistory(query); if (!token.IsCancellationRequested && requested == generation && IsHistory) ApplyHistory(result); }
-                catch (ConnectionHistoryLimitException) { if (!token.IsCancellationRequested && requested == generation && IsHistory) { actionStatus.Text = "This interval holds too many saved rows to show. Choose a shorter interval."; ApplyHistory(Empty(query, "History unavailable; no saved observations shown.")); StopPlayback(); } }
-                catch (Exception error) { if (!token.IsCancellationRequested && requested == generation && IsHistory) { actionStatus.Text = $"History could not be read ({error.GetType().Name})."; ApplyHistory(Empty(query, "History unavailable; no saved observations shown.")); StopPlayback(); } }
+                if (pending is { } query)
+                {
+                    pending = null; long requested = generation; var token = queryCancellation!.Token; capture.Text = "Reading saved history…";
+                    try { var result = await readHistory(query); if (!token.IsCancellationRequested && requested == generation && IsHistory) ApplyHistory(result); }
+                    catch (ConnectionHistoryLimitException) { if (!token.IsCancellationRequested && requested == generation && IsHistory) { actionStatus.Text = LimitWarning; ApplyHistory(Empty(query, "History unavailable; no saved observations shown.")); StopPlayback(); } }
+                    catch (Exception error) { if (!token.IsCancellationRequested && requested == generation && IsHistory) { actionStatus.Text = $"History could not be read ({error.GetType().Name})."; ApplyHistory(Empty(query, "History unavailable; no saved observations shown.")); StopPlayback(); } }
+                    continue;
+                }
+                // The strip read takes no cancellation token and is not invalidated by generation; only its Strip is ever applied.
+                var whole = pendingStrip!; pendingStrip = null; stripReading = whole;
+                ConnectionHistoryView? view = null; Exception? failure = null;
+                try { view = await readHistory(whole); }
+                catch (Exception error) { failure = error; }
+                finally { stripReading = null; }
+                if (!IsHistory || !SameContext(whole, requestedWhole)) continue;
+                if (failure is not null) actionStatus.Text = failure is ConnectionHistoryLimitException ? LimitWarning : $"History could not be read ({failure.GetType().Name}).";
+                ApplyStrip(whole, view?.Strip);
             }
         }
         finally { busy = false; }
+    }
+    /// <summary>Shows a whole-interval strip, or "History unavailable" for null, and records which context is on screen or failed.</summary>
+    private void ApplyStrip(ConnectionHistoryQuery whole, TrafficStrip? strip)
+    {
+        var current = clock();
+        trafficStrip.Apply(strip, TrafficStrips.DueUntil(whole.To, current, ConnectionService.DefaultFlushInterval + TimeSpan.FromSeconds(session.Settings.PollingIntervalSeconds)), current);
+        if (strip is null) { stripContext = null; stripFailed = whole; }
+        else { stripContext = whole; stripNow = current; stripFailed = null; }
+        UpdateHairline();
+    }
+    // While the minute cursor is on, an Accent hairline marks the middle of the cursor minute and the slot holding it is selected.
+    private void UpdateHairline()
+    {
+        var chart = trafficStrip.Chart;
+        if (minute.IsChecked == true && chart.Strip is { } shown)
+        {
+            var mark = shown.From.AddMinutes(cursor.Value).AddSeconds(30);
+            chart.MarkTime = mark; chart.SelectedIndex = TrafficStrips.SlotAt(shown, mark);
+        }
+        else { chart.MarkTime = null; chart.SelectedIndex = null; }
+    }
+    /// <summary>A click or key on the strip turns the minute cursor on at the minute holding the time, while the boxes still show the strip's interval.</summary>
+    private void ActivateStripAt(DateTimeOffset time)
+    {
+        if (!IsHistory || stripContext is not { } shown || !TryParseLocalTime(from.Text, TimeZoneInfo.Local, out var start) || !TryParseLocalTime(to.Text, TimeZoneInfo.Local, out var end) || start != shown.From || end != shown.To)
+        { UpdateHairline(); return; }
+        syncing = true; minute.IsChecked = true; cursor.Value = Math.Clamp(Math.Floor((time - shown.From).TotalMinutes), 0, cursor.Maximum); syncing = false;
+        StopPlayback(); ClearSelection(); RequestHistory();
     }
     private void TogglePlayback() { if (playing) { StopPlayback(); return; } if (!IsHistory || !TryInterval(out _, out _)) return; syncing = true; minute.IsChecked = true; syncing = false; playing = true; play.Content = "Pause"; UpdateMapAnimation(); RequestHistory(); playback.Start(); }
     private void StopPlayback() { playing = false; playback.Stop(); play.Content = "Play"; UpdateMapAnimation(); }
@@ -238,7 +323,7 @@ internal sealed class ConnectionsPage : Grid
         rows = filtered.Where(c => c.Location?.Point is not null).Select(c => new PeerRow(Key(c.Traffic.Peer), $"{c.Traffic.Peer.Process.Name} / {c.Traffic.Peer.Process.Pid}", Endpoint(c.Traffic.Peer.RemoteAddress,c.Traffic.Peer.RemotePort,c.Traffic.Peer.Protocol), Location(c.Traffic.Peer.RemoteAddress, c.Location), Ui.Bytes(view.Available ? c.Traffic.DownloadBytesPerSecond : null, true), Ui.Bytes(view.Available ? c.Traffic.UploadBytesPerSecond : null, true), Ui.Bytes(c.Traffic.ReceivedBytes), Ui.Bytes(c.Traffic.SentBytes), view.Complete ? "Observed" : "Incomplete", $"First {c.Traffic.FirstSeen.ToLocalTime():g} · Last {c.Traffic.LastSeen.ToLocalTime():g}", c.Location?.Point, view.Origin, c.Traffic.ReceivedBytes, c.Traffic.SentBytes)).ToArray();
         long received = 0, sent = 0; foreach (var item in filtered) { received = Add(received, item.Traffic.ReceivedBytes); sent = Add(sent, item.Traffic.SentBytes); }
         int local = filtered.Where(c => Kind(c.Traffic.Peer.RemoteAddress) == NetworkAddressKind.Local).Select(c => c.Traffic.Peer.RemoteAddress).Distinct().Count(); int unlocated = filtered.Where(c => Kind(c.Traffic.Peer.RemoteAddress) == NetworkAddressKind.Public && c.Location?.Point is null).Select(c => c.Traffic.Peer.RemoteAddress).Distinct().Count();
-        summary.Text = $"Live · {filtered.Select(c => c.Traffic.Peer.RemoteAddress).Distinct().Count()} destinations · {filtered.Select(c=>c.Location?.CountryCode).Where(c=>!string.IsNullOrEmpty(c)).Distinct(StringComparer.OrdinalIgnoreCase).Count()} countries · {local} local · {unlocated} unlocated · ↓ {Ui.Bytes(received)} received / ↑ {Ui.Bytes(sent)} sent (totals for active peers since first observed)"; capture.Text = $"{view.Status}{(!view.Complete ? " · Incomplete capture" : "")} · Current observed rates; geography approximate; curves illustrative.";
+        summary.Text = $"Live · {filtered.Select(c => c.Traffic.Peer.RemoteAddress).Distinct().Count()} destinations · {filtered.Select(c=>c.Location?.CountryCode).Where(c=>!string.IsNullOrEmpty(c)).Distinct(StringComparer.OrdinalIgnoreCase).Count()} countries · {local} local · {unlocated} unlocated · ↓ {Ui.Bytes(received)} received / ↑ {Ui.Bytes(sent)} sent (totals for active peers since first observed)"; summary.ToolTip = null; capture.Text = $"{view.Status}{(!view.Complete ? " · Incomplete capture" : "")} · Current observed rates; geography approximate; curves illustrative.";
         map.SetData(filtered.Where(c => c.Location?.Point is not null).Select(c => new ConnectionMapPoint(Key(c.Traffic.Peer), c.Location!.Point!, c.Traffic.ReceivedBytes, c.Traffic.SentBytes, selectedKey == Key(c.Traffic.Peer),view.Available&&c.Traffic.DownloadBytesPerSecond>0,view.Available&&c.Traffic.UploadBytesPerSecond>0,
             Label: c.Traffic.Peer.Process.Name, Detail: $"{Location(c.Traffic.Peer.RemoteAddress, c.Location)} · ↓ {Ui.Bytes(view.Available ? c.Traffic.DownloadBytesPerSecond : null, true)} · ↑ {Ui.Bytes(view.Available ? c.Traffic.UploadBytesPerSecond : null, true)}")).ToArray(), view.Origin, view.Available, view.Status); UpdateMapAnimation(); RefreshMappedConnections(); UpdateExportEnabled(); range.IsEnabled = IsHistory;
     }
@@ -247,7 +332,11 @@ internal sealed class ConnectionsPage : Grid
         displayedHistoryQuery=view.Query;
         historyMinuteReady=view.Query.To-view.Query.From<=TimeSpan.FromMinutes(1);
         rows = view.Markers.Select(m => m.Representative ?? view.Rows.FirstOrDefault(r => r.Location == m.Location && r.Origin == m.Origin)).OfType<ConnectionHistoryRow>().DistinctBy(Key).Select(r => new PeerRow(Key(r), $"{r.Process.Name} / {r.Process.Pid}", Endpoint(r.RemoteAddress,r.RemotePort,r.Protocol), Location(r.RemoteAddress, r.Location), Ui.Bytes(r.DownloadBytesPerSecond, true), Ui.Bytes(r.UploadBytesPerSecond, true), Ui.Bytes(r.ReceivedBytes), Ui.Bytes(r.SentBytes), r.Complete ? "Recorded" : "Incomplete", $"First {r.FirstSeen.ToLocalTime():g} · Last {r.LastSeen.ToLocalTime():g}", r.Location?.Point, r.Origin, r.ReceivedBytes, r.SentBytes)).ToArray(); var s = view.Summary;
-        summary.Text = $"History · minute-bucket average rates · {s.Destinations} destinations · {s.Countries} countries · {s.Local} local · {s.Unlocated} unlocated · ↓ {Ui.Bytes(s.ReceivedBytes)} received / ↑ {Ui.Bytes(s.SentBytes)} sent"; capture.Text = $"{view.Query.From.ToLocalTime():g} – {view.Query.To.ToLocalTime():g} (exclusive) · {view.Gaps.Count} gaps · {view.Status}"+(view.OmittedMarkers>0?$" · {view.OmittedMarkers:N0} grouped locations omitted from map":""); historyStorage = $"{Ui.Bytes(view.StorageBytes)} stored · Earliest {(view.EarliestRetainedTime is { } earliest ? earliest.ToLocalTime().ToString("g") : "none")} · rolling 30 days / 256 MiB. "; storage.Text = historyStorage + session.Connections?.StorageStatus;
+        // A view without a strip is unavailable (a failed read, the TEMP limit or no service): unknown counts are "—", never 0.
+        summary.Text = view.Strip is null ? UnavailableSummary : $"History · minute-bucket average rates · {s.Destinations} destinations · {s.Countries} countries · {s.Local} local · {s.Unlocated} unlocated · ↓ {Ui.Bytes(s.ReceivedBytes)} received / ↑ {Ui.Bytes(s.SentBytes)} sent"; summary.ToolTip = view.Strip is null ? "History unavailable" : null;
+        // A minute read never touches the strip; with the cursor off the one read carries it.
+        if (minute.IsChecked != true) ApplyStrip(view.Query, view.Strip);
+        capture.Text = $"{view.Query.From.ToLocalTime():g} – {view.Query.To.ToLocalTime():g} (exclusive) · {view.Gaps.Count} gaps · {view.Status}"+(view.OmittedMarkers>0?$" · {view.OmittedMarkers:N0} grouped locations omitted from map":""); historyStorage = $"{Ui.Bytes(view.StorageBytes)} stored · Earliest {(view.EarliestRetainedTime is { } earliest ? earliest.ToLocalTime().ToString("g") : "none")} · rolling 30 days / 256 MiB. "; storage.Text = historyStorage + session.Connections?.StorageStatus;
         map.SetData(view.Markers.Where(m => m.Location.Point is not null).Select(m =>
         {
             var representative = m.Representative ?? view.Rows.FirstOrDefault(r => r.Location == m.Location && r.Origin == m.Origin);
@@ -329,7 +418,7 @@ internal sealed class ConnectionsPage : Grid
         if(exportInProgress)return;
         if (session.Connections is null) { actionStatus.Text = "Connection export unavailable."; return; }
         // The service only ever writes a new file, so the dialog must not promise an overwrite it cannot deliver.
-        var query = BuildQuery(true); if (query is null) return; var dialog = new SaveFileDialog { Filter = "CSV files (*.csv)|*.csv", FileName = $"connections-{DateTime.Now:yyyyMMdd-HHmmss}.csv", OverwritePrompt = false }; if (dialog.ShowDialog() != true) return;
+        BuildQuery(out var query); if (query is null) return; var dialog = new SaveFileDialog { Filter = "CSV files (*.csv)|*.csv", FileName = $"connections-{DateTime.Now:yyyyMMdd-HHmmss}.csv", OverwritePrompt = false }; if (dialog.ShowDialog() != true) return;
         await ExportToPathAsync(dialog.FileName,query);
     }
     private async Task ExportToPathAsync(string path,ConnectionHistoryQuery query)
