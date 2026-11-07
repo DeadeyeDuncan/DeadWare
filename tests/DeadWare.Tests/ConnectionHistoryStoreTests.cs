@@ -457,6 +457,8 @@ public sealed class ConnectionHistoryStoreTests(ITestOutputHelper testOutput) : 
         // A read-only open after the writer has removed its journal recreates -wal and -shm empty, as 0.15's Read did: no page is written.
         var closed=Files(); Assert.Equal(3,store.Read(Query()).TotalRows); var opened=Files();
         Assert.Null(closed.Wal); Assert.Equal(closed.Main,opened.Main); Assert.Equal(0,opened.WalLength);
+        // StorageBytes rises by the recreated -shm alone.
+        Assert.Equal(opened.ShmLength-Math.Max(0,closed.ShmLength),opened.Storage-closed.Storage);
         Unchanged(3);
         using var pinned=Connect(); using var tx=pinned.BeginTransaction(deferred:true);
         using(var command=pinned.CreateCommand()) {command.Transaction=tx; command.CommandText="SELECT count(*) FROM traffic"; Assert.Equal(3L,command.ExecuteScalar());}
@@ -493,9 +495,9 @@ public sealed class ConnectionHistoryStoreTests(ITestOutputHelper testOutput) : 
     // The traffic strip and the exact application filter.
     private static ConnectionHistoryRecord A(string name, long received, long sent, int minute = 0) => Row(minute, $"b-{name}-{minute}", received, sent, name:name);
     private ConnectionHistoryStore? opened;
-    // The strip tests' shared store, opened on first use.
-    private ConnectionHistoryStore store => opened ??= Store();
-    private TrafficStrip Strip(ConnectionHistoryQuery query) => store.Read(query).Strip!;
+    // The strip and destination tests' shared store, opened on first use.
+    private ConnectionHistoryStore shared => opened ??= Store();
+    private TrafficStrip Strip(ConnectionHistoryQuery query) => shared.Read(query).Strip!;
     private void Metadata(long floor, long expiry) { using var db=Connect(); Sql(db,$"UPDATE metadata SET value={floor} WHERE key='floor'; UPDATE metadata SET value={expiry} WHERE key='expiry'"); }
     private static byte[] SharedBytes(string path)
     {
@@ -516,7 +518,7 @@ public sealed class ConnectionHistoryStoreTests(ITestOutputHelper testOutput) : 
 
     [Fact] public void Strip_ranks_six_applications_by_the_direction_measure_and_folds_the_rest_into_other()
     {
-        store.Append([A("b.exe",70,11),A("a.exe",80,1),A("c.exe",60,3),A("d.exe",50,4),A("e.exe",40,5),A("f.exe",30,6),A("g.exe",20,7),A("h.exe",10,0),A("z.exe",0,0)],[],Epoch.AddMinutes(2));
+        shared.Append([A("b.exe",70,11),A("a.exe",80,1),A("c.exe",60,3),A("d.exe",50,4),A("e.exe",40,5),A("f.exe",30,6),A("g.exe",20,7),A("h.exe",10,0),A("z.exe",0,0)],[],Epoch.AddMinutes(2));
         var both=Strip(Query()); Assert.Equal(["a.exe","b.exe","c.exe","d.exe","e.exe","f.exe"],both.Applications.Select(a=>a.Name)); Assert.Equal((30L,7L,2L),(both.OtherReceived,both.OtherSent,both.OtherApplications));
         Assert.Equal(TrafficMeasure.Total,both.Measure);
         Assert.Equal(["a.exe","b.exe","c.exe","d.exe","e.exe","f.exe"],Strip(Query() with {Direction=ConnectionDirection.Received}).Applications.Select(a=>a.Name));
@@ -524,13 +526,13 @@ public sealed class ConnectionHistoryStoreTests(ITestOutputHelper testOutput) : 
         Assert.Equal((80L,1L,1L),(sent.OtherReceived,sent.OtherSent,sent.OtherApplications)); Assert.Equal(TrafficMeasure.Sent,sent.Measure);
         foreach(var d in Enum.GetValues<ConnectionDirection>())
         {
-            var v=store.Read(Query() with {Direction=d});
+            var v=shared.Read(Query() with {Direction=d});
             Assert.Equal(v.Summary.ReceivedBytes,v.Strip!.Applications.Sum(a=>a.Received)+v.Strip.OtherReceived); Assert.Equal(v.Summary.SentBytes,v.Strip.Applications.Sum(a=>a.Sent)+v.Strip.OtherSent);
         }
     }
     [Fact] public void Strip_groups_names_by_application_key_and_shows_the_ordinal_smallest_name()
     {
-        store.Append([A("chrome.exe",10,0),A("Chrome.exe",20,0),A("PID 4",5,0)],[],Epoch.AddMinutes(2));
+        shared.Append([A("chrome.exe",10,0),A("Chrome.exe",20,0),A("PID 4",5,0)],[],Epoch.AddMinutes(2));
         Assert.Equal([("Chrome.exe","CHROME.EXE",30L),("PID 4","PID 4",5L)],Strip(Query()).Applications.Select(a=>(a.Name,a.Key,a.Received)));
     }
     [Fact] public void Strip_slots_match_a_reference_fold_of_every_read_row()
@@ -550,17 +552,17 @@ public sealed class ConnectionHistoryStoreTests(ITestOutputHelper testOutput) : 
             }
             if(random.Next(10)!=0) coverage.Add(new($"m{m}","s",minute,minute.AddSeconds(random.Next(10)==0?30:60),random.Next(20)!=0));
         }
-        store.Append(records,coverage,Epoch.AddMinutes(minutes+1));
+        shared.Append(records,coverage,Epoch.AddMinutes(minutes+1));
         var interval=new ConnectionHistoryQuery(Epoch,Epoch.AddMinutes(minutes),Limit:500);
         foreach(var query in new[]{interval,interval with {Search="c.exe"},interval with {CountryCode="AU"},interval with {Direction=ConnectionDirection.Received},
             interval with {Direction=ConnectionDirection.Sent},interval with {Application="A.exe"}})
         {
-            var first=store.Read(query); var strip=first.Strip!; long bucket=strip.BucketMilliseconds*TimeSpan.TicksPerMillisecond;
+            var first=shared.Read(query); var strip=first.Strip!; long bucket=strip.BucketMilliseconds*TimeSpan.TicksPerMillisecond;
             Assert.Equal(5*60_000L,strip.BucketMilliseconds); Assert.True(first.TotalRows>500);
             var keys=strip.Applications.Select(a=>a.Key).ToList(); int series=keys.Count+1;
             var fold=new Dictionary<long,(long[] Received,long[] Sent)>();
             for(int offset=0;offset<first.TotalRows;offset+=500)
-                foreach(var row in store.Read(query with {Offset=offset}).Rows)
+                foreach(var row in shared.Read(query with {Offset=offset}).Rows)
                 {
                     long slot=(row.Minute-Epoch).Ticks/bucket; int index=keys.IndexOf(ProcessGrouping.Key(row.Process.Name)); if(index<0) index=keys.Count;
                     if(!fold.TryGetValue(slot,out var sums)) fold[slot]=sums=(new long[series],new long[series]);
@@ -579,7 +581,7 @@ public sealed class ConnectionHistoryStoreTests(ITestOutputHelper testOutput) : 
     [Fact] public void Strip_recorded_seconds_come_from_coverage_and_rows_without_coverage_are_incomplete()
     {
         ConnectionCoverage C(string batch,int minute,double from,double to,bool complete=true) => new(batch,"s",Epoch.AddMinutes(minute).AddSeconds(from),Epoch.AddMinutes(minute).AddSeconds(to),complete);
-        store.Append([..Enumerable.Range(0,5).Select(m=>A("a.exe",10,10,m))],
+        shared.Append([..Enumerable.Range(0,5).Select(m=>A("a.exe",10,10,m))],
             [C("c0",0,0,30),C("c1",1,0,60),C("c2",2,0,40),C("d2",2,20,60),C("c3",3,0,60,false),C("c5",5,0,60),C("c6",6,0,0.7)],Epoch.AddMinutes(8));
         var s=Strip(Query(8)); Assert.Equal([0,1,2,3,4,5,6],s.Slots.Select(x=>(int)(x.Start-Epoch).TotalMinutes));
         Assert.Equal([30L,60L,60L,60L,60L,60L,0L],s.Slots.Select(x=>x.RecordedSeconds)); Assert.Equal([false,false,false,true,true,false,false],s.Slots.Select(x=>x.Incomplete));
@@ -590,7 +592,7 @@ public sealed class ConnectionHistoryStoreTests(ITestOutputHelper testOutput) : 
     [Fact] public void Strip_reports_retained_from_after_expiry_and_capacity_eviction()
     {
         var e=Epoch.AddHours(5);
-        store.Append([..new[]{-150,-30,30,90}.Select(m=>Row(300+m,$"r{m}"))],[..new[]{-150,-30,30,90}.Select(m=>new ConnectionCoverage($"r{m}","s",e.AddMinutes(m),e.AddMinutes(m+1),true))],e.AddHours(2));
+        shared.Append([..new[]{-150,-30,30,90}.Select(m=>Row(300+m,$"r{m}"))],[..new[]{-150,-30,30,90}.Select(m=>new ConnectionCoverage($"r{m}","s",e.AddMinutes(m),e.AddMinutes(m+1),true))],e.AddHours(2));
         var around=new ConnectionHistoryQuery(e.AddHours(-1),e.AddHours(1));
         Metadata(0,e.UtcTicks); var s=Strip(around); Assert.Equal((e,false),(s.RetainedFrom,s.CapacityShortened)); Assert.Equal([e.AddMinutes(30)],s.Slots.Select(x=>x.Start));
         Metadata(e.AddMinutes(10).UtcTicks,e.UtcTicks); s=Strip(around); Assert.Equal((e.AddMinutes(11),true),(s.RetainedFrom,s.CapacityShortened)); Assert.Equal([e.AddMinutes(30)],s.Slots.Select(x=>x.Start));
@@ -600,31 +602,31 @@ public sealed class ConnectionHistoryStoreTests(ITestOutputHelper testOutput) : 
     }
     [Fact] public void Strip_leaves_out_the_minute_that_holds_the_expiry_instant()
     {
-        store.Append([Row()],[new("b","s",Epoch,Epoch.AddMinutes(1),true)],Epoch.AddMinutes(2));
+        shared.Append([Row()],[new("b","s",Epoch,Epoch.AddMinutes(1),true)],Epoch.AddMinutes(2));
         var interval=new ConnectionHistoryQuery(Epoch.AddMinutes(-10),Epoch.AddMinutes(10));
         Metadata(0,Epoch.AddSeconds(30).UtcTicks); var s=Strip(interval); Assert.DoesNotContain(s.Slots,x=>x.Start==Epoch); Assert.Equal(Epoch.AddMinutes(1),s.RetainedFrom);
         Metadata(0,Epoch.UtcTicks); s=Strip(interval); var slot=Assert.Single(s.Slots); Assert.Equal(Epoch,slot.Start); Assert.True(TrafficStrips.IsFull(slot)); Assert.Equal(Epoch,s.RetainedFrom);
     }
     [Fact] public void Capacity_shortened_status_matches_the_strip()
     {
-        store.Append([Row(20)],[],Epoch.AddMinutes(21));
-        Metadata(Epoch.AddMinutes(5).UtcTicks,Epoch.UtcTicks); var view=store.Read(Query(30)); Assert.Contains("Capacity shortened retention.",view.Status); Assert.True(view.Strip!.CapacityShortened);
-        Metadata(Epoch.AddMinutes(-10).UtcTicks,Epoch.UtcTicks); view=store.Read(Query(30)); Assert.DoesNotContain("Capacity shortened",view.Status); Assert.False(view.Strip!.CapacityShortened);
+        shared.Append([Row(20)],[],Epoch.AddMinutes(21));
+        Metadata(Epoch.AddMinutes(5).UtcTicks,Epoch.UtcTicks); var view=shared.Read(Query(30)); Assert.Contains("Capacity shortened retention.",view.Status); Assert.True(view.Strip!.CapacityShortened);
+        Metadata(Epoch.AddMinutes(-10).UtcTicks,Epoch.UtcTicks); view=shared.Read(Query(30)); Assert.DoesNotContain("Capacity shortened",view.Status); Assert.False(view.Strip!.CapacityShortened);
     }
     [Fact] public void Application_filter_matches_the_key_exactly_everywhere()
     {
         ConnectionHistoryRecord Named(string name,long received,string address,string city) => Row(0,"b-"+name,received,0,name:name,address:address) with {Location=Place with {City=city}};
-        store.Append([Named("chrome.exe",1,"8.8.8.8","One"),Named("Chrome.exe",2,"8.8.4.4","Two"),Named("chrome",4,"9.9.9.9","Three"),Named("other.exe",8,"1.1.1.1","Four")],[],Epoch.AddMinutes(1));
-        var bare=store.Read(Query() with {Application="chrome"}); Assert.Equal(["chrome"],bare.Rows.Select(r=>r.Process.Name)); Assert.Equal(4,bare.Summary.ReceivedBytes);
-        var exe=store.Read(Query() with {Application="CHROME.EXE"});
+        shared.Append([Named("chrome.exe",1,"8.8.8.8","One"),Named("Chrome.exe",2,"8.8.4.4","Two"),Named("chrome",4,"9.9.9.9","Three"),Named("other.exe",8,"1.1.1.1","Four")],[],Epoch.AddMinutes(1));
+        var bare=shared.Read(Query() with {Application="chrome"}); Assert.Equal(["chrome"],bare.Rows.Select(r=>r.Process.Name)); Assert.Equal(4,bare.Summary.ReceivedBytes);
+        var exe=shared.Read(Query() with {Application="CHROME.EXE"});
         Assert.Equal(["Chrome.exe","chrome.exe"],exe.Rows.Select(r=>r.Process.Name).Order(StringComparer.Ordinal)); Assert.Equal(2,exe.TotalRows); Assert.Equal(3,exe.Summary.ReceivedBytes);
         Assert.Equal(["One","Two"],exe.Markers.Select(m=>m.Location.City!).Order(StringComparer.Ordinal));
         var app=Assert.Single(exe.Strip!.Applications); Assert.Equal(("Chrome.exe","CHROME.EXE",3L),(app.Name,app.Key,app.Received)); Assert.Equal(0,exe.Strip.OtherApplications);
-        var lines=Csv(store,Query() with {Application="CHROME.EXE"}).Split(Environment.NewLine,StringSplitOptions.RemoveEmptyEntries)[1..];
+        var lines=Csv(shared,Query() with {Application="CHROME.EXE"}).Split(Environment.NewLine,StringSplitOptions.RemoveEmptyEntries)[1..];
         Assert.Equal(["\"Chrome.exe\"","\"chrome.exe\""],lines.Select(l=>l.Split(',')[1]).Order(StringComparer.Ordinal));
-        Assert.Equal(4,store.Read(Query() with {Application=""}).TotalRows); Assert.Equal(4,store.Read(Query() with {Application="   "}).TotalRows);
-        Assert.Throws<ArgumentException>(()=>store.Read(Query() with {Application=new string('a',261)}));
-        Assert.Throws<ArgumentException>(()=>store.Read(Query() with {Application=null!}));
+        Assert.Equal(4,shared.Read(Query() with {Application=""}).TotalRows); Assert.Equal(4,shared.Read(Query() with {Application="   "}).TotalRows);
+        Assert.Throws<ArgumentException>(()=>shared.Read(Query() with {Application=new string('a',261)}));
+        Assert.Throws<ArgumentException>(()=>shared.Read(Query() with {Application=null!}));
         // A schema v1 file is read with the filter set and never rewritten.
         var legacy=Store(file:Path.Combine(directory,"legacy.db")); legacy.Append([Row()],[],Epoch.AddMinutes(1));
         using(var db=Connect(Path.Combine(directory,"legacy.db"))) Sql(db,"UPDATE traffic SET pid=7654321");
@@ -645,12 +647,12 @@ public sealed class ConnectionHistoryStoreTests(ITestOutputHelper testOutput) : 
     }
     [Fact] public void Application_filter_folds_non_ascii_case_and_never_pattern_matches()
     {
-        store.Append([A("ärger.exe",1,0),A("ÄRGER.EXE",2,0),A("a_b.exe",4,0),A("aXb.exe",8,0),A("50%.exe",16,0),A("500.exe",32,0)],[],Epoch.AddMinutes(2));
-        long R(string app)=>store.Read(Query() with {Application=app}).Summary.ReceivedBytes; Assert.Equal((3L,4L,16L),(R("Ärger.exe"),R("a_b.exe"),R("50%.exe")));
+        shared.Append([A("ärger.exe",1,0),A("ÄRGER.EXE",2,0),A("a_b.exe",4,0),A("aXb.exe",8,0),A("50%.exe",16,0),A("500.exe",32,0)],[],Epoch.AddMinutes(2));
+        long R(string app)=>shared.Read(Query() with {Application=app}).Summary.ReceivedBytes; Assert.Equal((3L,4L,16L),(R("Ärger.exe"),R("a_b.exe"),R("50%.exe")));
     }
 
     // Coverage in the minute that holds From (Epoch + 30 s) and traffic in the first whole minute after it.
-    private void UnalignedFixture() => store.Append([A("a.exe",10,10,1)],[new("c0","s",Epoch,Epoch.AddMinutes(1),true)],Epoch.AddDays(3).AddMinutes(2));
+    private void UnalignedFixture() => shared.Append([A("a.exe",10,10,1)],[new("c0","s",Epoch,Epoch.AddMinutes(1),true)],Epoch.AddDays(3).AddMinutes(2));
     [Fact] public void Strip_one_minute_slots_start_at_the_first_whole_minute_of_an_unaligned_interval()
     {
         UnalignedFixture(); var from=Epoch.AddSeconds(30);
@@ -669,9 +671,9 @@ public sealed class ConnectionHistoryStoreTests(ITestOutputHelper testOutput) : 
     }
     [Fact] public void Strip_never_ranks_a_zero_measure_key_even_with_free_places()
     {
-        store.Append([A("a.exe",10,5),A("b.exe",20,6),A("z.exe",0,0)],[],Epoch.AddMinutes(2));
+        shared.Append([A("a.exe",10,5),A("b.exe",20,6),A("z.exe",0,0)],[],Epoch.AddMinutes(2));
         var both=Strip(Query()); Assert.Equal(["b.exe","a.exe"],both.Applications.Select(a=>a.Name)); Assert.Equal((0L,0L,0L),(both.OtherReceived,both.OtherSent,both.OtherApplications));
-        store.Append([A("h.exe",10,0)],[],Epoch.AddMinutes(2));
+        shared.Append([A("h.exe",10,0)],[],Epoch.AddMinutes(2));
         // Under Sent the direction filter drops h.exe's rows before the strip, so it neither ranks nor counts as Other.
         var sent=Strip(Query() with {Direction=ConnectionDirection.Sent}); Assert.Equal(["b.exe","a.exe"],sent.Applications.Select(a=>a.Name)); Assert.Equal((0L,0L,0L),(sent.OtherReceived,sent.OtherSent,sent.OtherApplications));
         Assert.DoesNotContain(Strip(Query()).Applications,a=>a.Name=="z.exe");
@@ -706,8 +708,8 @@ public sealed class ConnectionHistoryStoreTests(ITestOutputHelper testOutput) : 
             records.Add(Hit($"r{i}",minute,address,location,names[random.Next(names.Length)],ports[random.Next(ports.Length)],(ConnectionProtocol)random.Next(2),
                 random.Next(5)==0?0:random.Next(1,100000),random.Next(5)==0?0:random.Next(1,10000),random.Next(8)!=0,pid:10+random.Next(4),firstSecond:random.Next(0,20),lastSecond:random.Next(20,60)));
         }
-        store.Append(records,[],Epoch.AddMinutes(31));
-        var list=store.Read(Query(30)).Destinations!;
+        shared.Append(records,[],Epoch.AddMinutes(31));
+        var list=shared.Read(Query(30)).Destinations!;
         var groups=records.GroupBy(r=>r.Delta.Peer.RemoteAddress).ToDictionary(g=>g.Key,g=>g.ToList());
         Assert.Equal(groups.Count,list.Rows.Count); Assert.Equal(groups.Count,list.Counts.All);
         foreach(var row in list.Rows)
@@ -743,24 +745,24 @@ public sealed class ConnectionHistoryStoreTests(ITestOutputHelper testOutput) : 
         bounded.Append(rows,[],Epoch.AddMinutes(302)); var view=bounded.Read(Query(302));
         Assert.Equal((302L,301L,1L,0L,1L),Tuple(view.Destinations!.Counts));
         Assert.Equal((view.Summary.Destinations,view.Summary.Local,view.Summary.Unlocated),(view.Destinations.Counts.All,view.Destinations.Counts.Local,view.Destinations.Counts.Unlocated));
-        store.Append([Row(0,"a",address:"192.168.3.5") with {Location=null},Row(0,"b",address:"9.9.9.9") with {Location=null},
+        shared.Append([Row(0,"a",address:"192.168.3.5") with {Location=null},Row(0,"b",address:"9.9.9.9") with {Location=null},
             Row(0,"c",address:"1.0.0.1") with {Location=Place with {CountryCode="AU",Country="Australia",Point=null}},
             Row(0,"d",address:"100.64.0.1") with {Location=null},Row(0,"e",address:"239.255.255.250") with {Location=null},Row(0,"f",address:"8.8.8.8")],[],Epoch.AddMinutes(1));
-        Assert.Equal((6L,3L,1L,2L,2L),Tuple(store.Read(Query()).Destinations!.Counts));
+        Assert.Equal((6L,3L,1L,2L,2L),Tuple(shared.Read(Query()).Destinations!.Counts));
     }
     [Fact] public void History_destination_shows_the_latest_saved_location_and_every_point()
     {
-        store.Append([Hit("m0",0,"8.8.8.8",Place),Hit("m1",1,"8.8.8.8",null),Hit("m2",2,"8.8.8.8",Elsewhere),Hit("m3",3,"8.8.8.8",null)],[],Epoch.AddMinutes(5));
-        var view=store.Read(Query()); var d=view.Destinations!.Rows.Single();
+        shared.Append([Hit("m0",0,"8.8.8.8",Place),Hit("m1",1,"8.8.8.8",null),Hit("m2",2,"8.8.8.8",Elsewhere),Hit("m3",3,"8.8.8.8",null)],[],Epoch.AddMinutes(5));
+        var view=shared.Read(Query()); var d=view.Destinations!.Rows.Single();
         Assert.Equal(Elsewhere,d.Location); Assert.Equal([Elsewhere.Point!,Place.Point!],d.Points); Assert.True(d.Unlocated);
         Assert.Equal(view.Summary.Unlocated,view.Destinations.Counts.Unlocated); Assert.Equal(4,d.Minutes);
     }
     [Fact] public void History_destinations_follow_search_country_direction_and_the_minute()
     {
         var australia=Place with {CountryCode="AU",Country="Australia",Point=new(-33,151)};
-        store.Append([Hit("a",0,"8.8.8.8",Place,"a.exe",received:10,sent:0),Hit("b",1,"1.1.1.1",australia,"b.exe",received:0,sent:5),
+        shared.Append([Hit("a",0,"8.8.8.8",Place,"a.exe",received:10,sent:0),Hit("b",1,"1.1.1.1",australia,"b.exe",received:0,sent:5),
             Hit("d",1,"8.8.8.8",Place,"d.exe",received:3,sent:4),Hit("c",2,"192.168.1.9",null,"c.exe",received:7,sent:7)],[],Epoch.AddMinutes(3));
-        IEnumerable<(string,long,long)> Shown(ConnectionHistoryQuery query) => store.Read(query).Destinations!.Rows.Select(r=>(r.Address,r.ReceivedBytes,r.SentBytes)).OrderBy(r=>r.Address,StringComparer.Ordinal);
+        IEnumerable<(string,long,long)> Shown(ConnectionHistoryQuery query) => shared.Read(query).Destinations!.Rows.Select(r=>(r.Address,r.ReceivedBytes,r.SentBytes)).OrderBy(r=>r.Address,StringComparer.Ordinal);
         Assert.Equal([("1.1.1.1",0L,5L),("192.168.1.9",7L,7L),("8.8.8.8",13L,4L)],Shown(Query()));
         Assert.Equal([("192.168.1.9",7L,7L)],Shown(Query() with {Search="c.exe"}));
         Assert.Equal([("1.1.1.1",0L,5L)],Shown(Query() with {CountryCode="au"}));
@@ -768,7 +770,7 @@ public sealed class ConnectionHistoryStoreTests(ITestOutputHelper testOutput) : 
         Assert.Equal([("1.1.1.1",0L,5L),("192.168.1.9",7L,7L),("8.8.8.8",3L,4L)],Shown(Query() with {Direction=ConnectionDirection.Sent}));
         Assert.Equal([("1.1.1.1",0L,5L)],Shown(Query() with {Application="B.EXE"}));
         Assert.Equal([("1.1.1.1",0L,5L),("8.8.8.8",3L,4L)],Shown(new(Epoch.AddMinutes(1),Epoch.AddMinutes(2))));
-        var sent=store.Read(Query() with {Direction=ConnectionDirection.Sent}).Destinations!.Rows.Single(r=>r.Address=="8.8.8.8");
+        var sent=shared.Read(Query() with {Direction=ConnectionDirection.Sent}).Destinations!.Rows.Single(r=>r.Address=="8.8.8.8");
         Assert.Equal((1,"d.exe",1L),(sent.AppCount,sent.Apps[0].Name,sent.Minutes));
     }
     [Fact] public void History_destination_lists_are_bounded()
@@ -783,8 +785,8 @@ public sealed class ConnectionHistoryStoreTests(ITestOutputHelper testOutput) : 
         for(int a=1;a<=5;a++) for(int i=0;i<15;i++) records.Add(Hit($"h{a}-{i}",i,$"8.8.8.{a}",Place,$"app{i}.exe",1000+i,received:1000+i));
         ConnectionLocation At(int minute) => Place with {City=$"City {minute}",Point=new(minute,minute)};
         for(int m=0;m<12;m++) records.Add(Hit($"g{m}",m,"9.9.9.9",At(m),received:5000));
-        store.Append(records,[],Epoch.AddMinutes(21));
-        var l=store.Read(Query(20)).Destinations!;
+        shared.Append(records,[],Epoch.AddMinutes(21));
+        var l=shared.Read(Query(20)).Destinations!;
         Assert.True(l.Rows.Count<=3000); Assert.All(Enum.GetValues<NetworkAddressKind>(),k=>Assert.True(l.Rows.Count(r=>r.Class.Kind==k)<=1000));
         Assert.Equal((3306L,1106L,1100L,1100L,0L),Tuple(l.Counts));
         Assert.Equal(5,l.Rows.Count(r=>r.AppCount==15));
@@ -800,8 +802,8 @@ public sealed class ConnectionHistoryStoreTests(ITestOutputHelper testOutput) : 
         for(int i=1;i<1200;i++)
             records.Add(Hit($"r{i}",i%10,Address(i),i<1000?Place:null,i==1?"=formula":"browser",received:i%600+1,sent:0));
         for(int k=0;k<120;k++) records.Add(Hit($"a{k}",k%10,Address(0),Place,$"app{k:000}.exe",received:k+1,sent:0));
-        store.Append(records,[],Epoch.AddMinutes(11));
-        var lines=Lines(DestinationsCsv(store,Query(10),DestinationScope.All));
+        shared.Append(records,[],Epoch.AddMinutes(11));
+        var lines=Lines(DestinationsCsv(shared,Query(10),DestinationScope.All));
         Assert.Equal("Address,Class,CountryCode,Country,Region,City,Latitude,Longitude,Applications,ApplicationNames,Ports,PortList,ReceivedBytes,SentBytes,Minutes,FirstSeenUtc,LastSeenUtc,Complete",lines[0]);
         Assert.Equal(1201,lines.Length);
         var expected=records.GroupBy(r=>r.Delta.Peer.RemoteAddress).OrderByDescending(g=>(double)g.Sum(r=>r.Delta.ReceivedBytes)+g.Sum(r=>r.Delta.SentBytes)).ThenBy(g=>g.Key,StringComparer.Ordinal).Select(g=>"\""+g.Key+"\"");
@@ -814,22 +816,37 @@ public sealed class ConnectionHistoryStoreTests(ITestOutputHelper testOutput) : 
         Assert.Equal("\"120\"",busy[8]);
         Assert.Equal("\""+string.Join("; ",Enumerable.Range(20,100).Reverse().Select(k=>$"app{k:000}.exe"))+"; +20 more\"",busy[9]);
         Assert.Equal("\"7260\"",busy[12]); Assert.Equal("\"10\"",busy[14]);
-        var local=Lines(DestinationsCsv(store,Query(10),DestinationScope.Local));
+        var local=Lines(DestinationsCsv(shared,Query(10),DestinationScope.Local));
         Assert.Equal(201,local.Length); Assert.All(local.Skip(1),line=>Assert.StartsWith("\"10.0.",line));
         Assert.All(local.Skip(1),line=>Assert.Equal(["\"Local · private\"","\"\"","\"\"","\"\"","\"\"","\"\"","\"\""],line.Split(',')[1..8]));
-        Assert.Equal(1001,Lines(DestinationsCsv(store,Query(10),DestinationScope.Internet)).Length);
+        Assert.Equal(1001,Lines(DestinationsCsv(shared,Query(10),DestinationScope.Internet)).Length);
     }
-    [Fact] public void Destinations_csv_caps_ports_and_neutralizes_every_cell()
+    [Fact] public void Destinations_csv_caps_ports_and_neutralizes_formulas_quotes_and_control_characters()
     {
-        store.Append([..Enumerable.Range(0,1005).Select(p=>Hit($"p{p}",0,"8.8.8.8",Place,port:p+1,protocol:(ConnectionProtocol)(p%2),received:p+1))],[],Epoch.AddMinutes(1));
-        var cells=Lines(DestinationsCsv(store,Query(),DestinationScope.All))[1].Split(',');
+        var hostile=Place with {CountryCode="@x",Country="+Country",Region="-Region",City="say \"hi\"\r\n=x"};
+        shared.Append([..Enumerable.Range(0,1005).Select(p=>Hit($"p{p}",0,"8.8.8.8",Place,port:p+1,protocol:(ConnectionProtocol)(p%2),received:p+1)),
+            Hit("hostile",0,"9.9.9.9",hostile,"@evil.exe",received:1)],[],Epoch.AddMinutes(1));
+        var lines=Lines(DestinationsCsv(shared,Query(),DestinationScope.All));
+        Assert.Equal(3,lines.Length);
+        var cells=lines[1].Split(',');
         Assert.Equal("\"1005\"",cells[10]);
         var ports=cells[11].Trim('"').Split("; ");
         Assert.Equal(1001,ports.Length); Assert.Equal("1005 Tcp",ports[0]); Assert.Equal("1004 Udp",ports[1]); Assert.Equal("+5 more",ports[^1]);
+        // Every text cell that could start a formula gets a leading quote; control characters become spaces and quotes double.
+        var neutralized=lines[2].Split(',');
+        Assert.Equal(["\"9.9.9.9\"","\"Internet\"","\"'@x\"","\"'+Country\"","\"'-Region\"","\"'say \"\"hi\"\"  =x\"","\"41\"","\"-87\""],neutralized[..8]);
+        Assert.Equal(("\"1\"","\"'@evil.exe\""),(neutralized[8],neutralized[9]));
     }
     [Fact] public void Destinations_csv_over_the_temp_limit_writes_nothing()
     {
         var store=Store(pages:16);store.Append([..Enumerable.Range(0,2000).Select(i=>Row(i%9,$"b{i}",address:$"20.{i/250}.{i%250}.1"))],[],Epoch.AddMinutes(10));var writer=new StringWriter();
         Assert.Throws<ConnectionHistoryLimitException>(()=>store.ExportDestinationsCsv(writer,Query(10),DestinationScope.All));Assert.Equal("",writer.ToString());
+    }
+    [Fact] public void Destinations_csv_over_the_temp_limit_in_a_page_keeps_what_was_written()
+    {
+        // 136 pages hold the grouped, destinations and exported tables for 3,000 remotes but not the first page's picked rows.
+        var store=Store(pages:136);store.Append([..Enumerable.Range(0,3000).Select(i=>Row(i%9,$"b{i}",address:$"20.{i/250}.{i%250}.1"))],[],Epoch.AddMinutes(10));var writer=new StringWriter();
+        Assert.Throws<ConnectionHistoryLimitException>(()=>store.ExportDestinationsCsv(writer,Query(10),DestinationScope.All));
+        Assert.Equal(["Address,Class,CountryCode,Country,Region,City,Latitude,Longitude,Applications,ApplicationNames,Ports,PortList,ReceivedBytes,SentBytes,Minutes,FirstSeenUtc,LastSeenUtc,Complete"],Lines(writer.ToString()));
     }
 }

@@ -212,18 +212,22 @@ public class UsageHistoryStoreTests
     [Theory]
     [InlineData(1, 60)] [InlineData(1, 450)] [InlineData(1, 1500)]
     [InlineData(7, 60)] [InlineData(7, 450)] [InlineData(7, 1500)]
-    [InlineData(30, 60)] [InlineData(30, 450)] [InlineData(30, 1500)] [InlineData(30, 4000)]
+    [InlineData(30, 60)] [InlineData(30, 450)] [InlineData(30, 1500)] [InlineData(30, 4000)] [InlineData(1, 700)]
     public void Application_series_uses_the_metric_bucket_grid(int days, int points)
     {
         using var fixture = new Fixture(); var store = fixture.Open(); var end = Day.AddDays(days);
-        // A CPU minute and an a.exe row every 7 minutes over the period; 2 rows a batch keeps each Append within MaximumBatchRows.
-        var batches = Enumerable.Range(0, (days * 1440 + 6) / 7).Select(i => Batch(Day.AddMinutes(7 * i), apps: [("a.exe", 100, 10)])).ToArray();
+        // A CPU minute and an a.exe row every 7 minutes over the period, plus the last minute so the last slot (partial for 1 day × 700) is listed;
+        // 2 rows a batch keeps each Append within MaximumBatchRows.
+        var batches = Enumerable.Range(0, (days * 1440 + 6) / 7).Select(i => Batch(Day.AddMinutes(7 * i), apps: [("a.exe", 100, 10)]))
+            .Append(Batch(end.AddMinutes(-1), apps: [("a.exe", 100, 10)])).ToArray();
         foreach (var chunk in batches.Chunk(UsageHistoryStore.MaximumBatchRows / 2)) store.Append("m", chunk, end);
         var series = store.ReadApplicationSeries("m", Day, end, points);
         var cpu = store.ReadMetric("m", UsageMetrics.Cpu, null, Day, end, points);
         Assert.Equal(cpu.BucketMilliseconds, series.BucketMilliseconds);
         Assert.Equal(cpu.Buckets.Count, series.Slots.Count);
         Assert.All(cpu.Buckets, b => Assert.Contains(series.Slots, s => s.Start == b.Start && s.End == b.End && s.Minutes == b.Minutes));
+        Assert.Equal(end, series.Slots[^1].End);
+        if (points == 700) Assert.True(series.Slots[^1].End - series.Slots[^1].Start < TimeSpan.FromMilliseconds(series.BucketMilliseconds));
         Assert.Equal((TrafficMeasure.Total, (DateTimeOffset?)null, Day, end), (series.Measure, series.RetainedFrom, series.From, series.To));
         Assert.Equal(batches.Length * 100L, series.Slots.Sum(s => s.Received[0]));
     }
