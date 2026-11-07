@@ -59,6 +59,7 @@ internal static class ConnectionsPageUiChecks
         CheckSavedMapDetails(session,now);
         CheckWholePageLayout(page);
         CheckHistoryQueries(session,now);
+        CheckHistoryLimitError(session);
         CheckBoundaryDates();
         CheckIntervalWarning(session);
         CheckExportBusy(session,now);
@@ -234,6 +235,15 @@ internal static class ConnectionsPageUiChecks
         Assert.False(Parse("0001-01-01 00:00",6,out _));
         Assert.True(Parse("9999-12-31 17:59",-6,out var maximum));Assert.Equal(new DateTimeOffset(9999,12,31,23,59,0,TimeSpan.Zero),maximum);
         Assert.True(Parse("0001-01-01 06:00",6,out var minimum));Assert.Equal(DateTimeOffset.MinValue,minimum);
+    }
+    private static void CheckHistoryLimitError(UiSession session)
+    {
+        var page=new ConnectionsPage(session);
+        PageType.GetField("readHistory",All)!.SetValue(page,(Func<ConnectionHistoryQuery,Task<ConnectionHistoryView>>)(_=>Task.FromException<ConnectionHistoryView>(new ConnectionHistoryLimitException(new IOException()))));
+        Field<ComboBox>(page,"mode").SelectedIndex=1;Pump();
+        Assert.Equal("This interval holds too many saved rows to show. Choose a shorter interval.",Field<TextBlock>(page,"actionStatus").Text);
+        Assert.Contains("History unavailable; no saved observations shown.",Field<TextBlock>(page,"capture").Text);
+        Assert.Empty(Field<ListBox>(page,"mappedConnections").Items);
     }
     private static void CheckIntervalWarning(UiSession session)
     {
