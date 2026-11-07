@@ -350,7 +350,7 @@ public class ConnectionServiceTests
             Assert.False(bytes.Length>=3&&bytes[0]==0xEF&&bytes[1]==0xBB&&bytes[2]==0xBF,"The export starts with a UTF-8 BOM.");
             string[] lines=System.Text.Encoding.UTF8.GetString(bytes).Split(['\r','\n'],StringSplitOptions.RemoveEmptyEntries);
             Assert.Equal("Address,Class,CountryCode,Country,Region,City,Latitude,Longitude,Applications,ApplicationNames,Ports,PortList,ReceivedBytes,SentBytes,Minutes,FirstSeenUtc,LastSeenUtc,Complete",lines[0]);
-            Assert.StartsWith("8.8.8.8,Internet,",Assert.Single(lines.Skip(1)));
+            Assert.StartsWith("\"8.8.8.8\",\"Internet\",",Assert.Single(lines.Skip(1)));
             // The Local scope leaves only the header.
             string local=System.IO.Path.Combine(root,"local.csv");await service.ExportDestinationsCsvAsync(local,new(Epoch,Epoch.AddMinutes(2)),DestinationScope.Local);
             Assert.Single((await System.IO.File.ReadAllTextAsync(local)).Split(['\r','\n'],StringSplitOptions.RemoveEmptyEntries));
