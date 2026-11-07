@@ -295,11 +295,19 @@ internal static class ProcessesPageUiChecks
         Assert.Equal("0 %",Cell(p,"Explorer.EXE","gpu"));Assert.Null(Tip(p,"Explorer.EXE","gpu"));
         Assert.Equal("",Cell(p,"Explorer.EXE","gpuengine"));Assert.Null(Tip(p,"Explorer.EXE","gpuengine"));
         Assert.Equal("0 B",Cell(p,"Explorer.EXE","gpushared"));
-        // A process row's engine and tooltip are its own busiest engine's; this one has no adapter description.
+        // A process row's engine and tooltip are its own busiest engine's, not the app's: PID 32's busier 3D engine is chrome.exe's, and PID 31
+        // keeps its Copy engine, which has no adapter description.
         var fixture=Fixture();
-        var (rows,_)=Page(columns:[..ProcessColumnKeys.All],activity:fixture with {Processes=[..fixture.Processes.Select(s=>s.Pid==31?OnEngine(s,new(0xA,0,1,"Copy","GPU 0 · Copy",null,7)):s)]});
+        var (rows,_)=Page(columns:[..ProcessColumnKeys.All],activity:fixture with {Processes=[..fixture.Processes.Select(s=>s.Pid switch
+            {
+                31=>OnEngine(s,new(0xA,0,1,"Copy","GPU 0 · Copy",null,7)),
+                32=>OnEngine(s,new(0xB,0,0,"3D","GPU 1 · 3D","NVIDIA GeForce RTX 4070",30)),
+                _=>s,
+            })]});
         Expand(rows,"chrome.exe");
+        Assert.Equal("GPU 1 · 3D",Cell(rows,"chrome.exe","gpuengine"));
         Assert.Equal("GPU 0 · Copy",Cell(rows,31,"gpuengine"));Assert.Equal("Copy engine",Tip(rows,31,"gpuengine"));
+        Assert.Equal("GPU 1 · 3D",Cell(rows,32,"gpuengine"));Assert.Equal("NVIDIA GeForce RTX 4070 · 3D engine",Tip(rows,32,"gpuengine"));
         Assert.Equal("",Cell(rows,30,"gpuengine"));Assert.Null(Tip(rows,30,"gpuengine"));
     }
 
