@@ -43,7 +43,7 @@ public static class NetworkAddress
     public static NetworkAddressClass Describe(string address) =>
         IPAddress.TryParse(address, out var ip) ? Describe(ip) : new(NetworkAddressKind.Special, "Special · unrecognized");
 
-    /// <summary>The Destinations table's class: the first matching range wins, and the kind always equals <see cref="Classify"/>'s.</summary>
+    /// <summary>The Destinations table's class: the label is the first matching range's, and the kind is <see cref="Classify"/>'s.</summary>
     public static NetworkAddressClass Describe(IPAddress address)
     {
         address = Normalize(address);
@@ -82,9 +82,7 @@ public static class NetworkAddress
                   (bytes[0] == 0x26 && bytes[1] == 0x20 && bytes[2] == 0 && bytes[3] == 0x4f && bytes[4] == 0x80 && bytes[5] == 0) ? "Special · reserved"
                 : "Internet";
         }
-        var kind = label == "Internet" ? NetworkAddressKind.Public
-            : label.StartsWith("Local", StringComparison.Ordinal) ? NetworkAddressKind.Local : NetworkAddressKind.Special;
-        return new(kind, label);
+        return new(Classify(address), label);
     }
     public static ConnectionPeer FromEndpoints(ProcessIdentity process, IPAddress sourceAddress,
         int sourcePort, IPAddress destinationAddress, int destinationPort,
