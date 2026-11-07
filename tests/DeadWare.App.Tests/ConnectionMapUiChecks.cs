@@ -392,11 +392,11 @@ internal static class ConnectionMapUiChecks
         {
             Theme.Apply(name);
             var map=new ConnectionMap {Flat=true,AnimationEnabled=false};
-            map.SetData(points,new(0,-60),true,"Highlight fixture");map.ResetView();
+            map.SetData(points,new(0,-60),true,"Ring fixture");map.ResetView();
             GeometryDrawing[] Draw(string step){Render(map,new(600,300),$"connections-highlight-{name}-{step}");return Shapes(VisualTreeHelper.GetDrawing(map)!).ToArray();}
             bool At(GeometryDrawing s,string key)=>s.Geometry is EllipseGeometry e&&(e.Center-map.PointPosition(key)!.Value).Length<.1;
             // The node core: a solid fill with an ink outline (halos have no pen; rings have no fill).
-            GeometryDrawing Node(GeometryDrawing[] shapes,string key)=>Assert.Single(shapes,s=>At(s,key)&&s.Brush is SolidColorBrush&&ReferenceEquals(s.Pen?.Brush,Theme.Brush("Ink")));
+            GeometryDrawing Node(GeometryDrawing[] shapes,string key)=>Assert.Single(shapes,s=>At(s,key)&&ReferenceEquals(s.Brush,Theme.Brush(Theme.GraphKey("download")))&&ReferenceEquals(s.Pen?.Brush,Theme.Brush("Ink")));
             GeometryDrawing[] Rings(GeometryDrawing[] shapes,string key)=>shapes.Where(s=>At(s,key)&&s.Brush is null&&ReferenceEquals(s.Pen?.Brush,Theme.Brush("Accent"))).ToArray();
             int Filaments(GeometryDrawing[] shapes)=>shapes.Count(s=>s.Geometry is StreamGeometry&&ReferenceEquals(s.Pen?.Brush,Theme.Brush("Ink"))&&s.Pen.Thickness==.5);
             var plain=Draw("plain");
@@ -420,7 +420,7 @@ internal static class ConnectionMapUiChecks
             Assert.Empty(map.HighlightedKeys);Assert.DoesNotContain("highlighted",AutomationProperties.GetName(map));
             var cleared=Draw("cleared");Assert.Empty(Rings(cleared,"near"));Assert.Equal(radius,((EllipseGeometry)Node(cleared,"near").Geometry).RadiusX,6);
 
-            map.Highlight([new GeoPoint(20,40)]);map.SetData(points,new(0,-60),true,"Highlight fixture");
+            map.Highlight([new GeoPoint(20,40)]);map.SetData(points,new(0,-60),true,"Ring fixture");
             Assert.Equal(new[]{"near"},map.HighlightedKeys);Assert.EndsWith(" · 1 highlighted",AutomationProperties.GetName(map));
             Assert.Single(Rings(Draw("kept"),"near"));
 
