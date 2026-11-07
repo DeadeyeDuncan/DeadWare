@@ -120,8 +120,7 @@ internal static class ProcessesPageUiChecks
         var (p,_)=Page(elevated:true);
         Expand(p,"chrome.exe");
         Assert.Equal([31,32,30],ChildPids(p,"chrome.exe"));
-        Assert.All(["cpu","memory","io","disk","network"],k=>Assert.NotEqual("",Cell(p,31,k)));
-        Assert.Equal("5 %",Cell(p,31,"cpu"));
+        Assert.Equal(["5 %","64.0 MB","3.0 KB/s","7.5 KB/s","4.0 KB/s"],new[]{"cpu","memory","io","disk","network"}.Select(k=>Cell(p,31,k)).ToArray());
         Assert.Equal("app:EXPLORER.EXE",Rows(p)[4].Id);
         // Process rows have no chevron of their own.
         Assert.Empty(Shown(Container(p,Row(p,31))).OfType<ToggleButton>());
@@ -338,17 +337,21 @@ internal static class ProcessesPageUiChecks
         var (asking,_)=Page();
         using var open=new ManualResetEventSlim();
         using var answer=new ManualResetEventSlim();
-        asking.Confirm=(_,_)=>{open.Set();answer.Wait(TimeSpan.FromSeconds(10));return false;};
+        int asks=0;
+        asking.Confirm=(_,_)=>{Interlocked.Increment(ref asks);open.Set();answer.Wait(TimeSpan.FromSeconds(10));return false;};
         try
         {
             Select(asking,"chrome.exe");
             Click(Button(asking,"End task…"));
             WaitFor(()=>open.IsSet);
+            Assert.False(Button(asking,"End task…")!.IsEnabled);Assert.False(Button(asking,"Open file location")!.IsEnabled);
+            Click(Button(asking,"End task…"));Press(asking,Key.Delete);
             Publish(asking,2,cpu:("Code.exe",99));
             Assert.Equal(held,AppNames(asking));
         }
         finally{answer.Set();}
         WaitFor(()=>Button(asking,"End task…")!.IsEnabled);
+        Assert.Equal(1,Volatile.Read(ref asks));
         Publish(asking,3);
         Assert.Equal("Code.exe",AppNames(asking)[0]);
     }
@@ -378,7 +381,9 @@ internal static class ProcessesPageUiChecks
         Select(p,"app40.exe");
         ScrollTo(p,200);
         Assert.Equal(200,VerticalOffset(p),tolerance:1);
-        Publish(p,2);
+        Publish(p,2,cpu:("app41.exe",40.5));
+        var names=AppNames(p);Assert.Equal(Sorted(p),names);Assert.True(Array.IndexOf(names,"app41.exe")<Array.IndexOf(names,"app40.exe"));
+        Assert.Equal([30,31,32],ChildPids(p,"chrome.exe"));
         Assert.Equal("app40.exe",Selected(p));
         Assert.True(IsExpanded(p,"chrome.exe"));
         Assert.Equal(200,VerticalOffset(p),tolerance:1);

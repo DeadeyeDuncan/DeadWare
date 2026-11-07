@@ -11,7 +11,7 @@ namespace DeadWare.App.Tests;
 [Collection(TestHostThreadPool.TimingCollection)]
 public class ProcessHistoryServiceTests
 {
-    private static readonly DateTimeOffset Start = UsageMetrics.Floor(DateTimeOffset.UtcNow.AddMinutes(-10));
+    internal static readonly DateTimeOffset Start = UsageMetrics.Floor(DateTimeOffset.UtcNow.AddMinutes(-10));
 
     [Theory][InlineData(true, true, 1)][InlineData(true, false, 0)][InlineData(false, true, 0)]
     public async Task Records_only_when_both_switches_are_on(bool monitoring, bool usage, int minutes)
@@ -261,7 +261,7 @@ public class ProcessHistoryServiceTests
         service.ReadApplicationsAsync(Start, Start.AddMinutes(minutes), ProcessRank.CpuTime);
 
     /// <summary>One 1 s poll at <paramref name="second"/> after <see cref="Start"/>: chrome.exe used 0.1 s of CPU since the previous poll.</summary>
-    private static Reading Reading(int second)
+    internal static Reading Reading(int second)
     {
         var stamp = Start.AddSeconds(second); double? delta = second == 0 ? null : 1;
         var chrome = new ProcessSample(10, 1, "chrome.exe", 1, 10, 1000, 0, 0, ProcessGap.None,
