@@ -32,7 +32,7 @@ Detailed setup, feature controls, data retention and compatibility notes. For a 
 - Drive monitoring: a Disk card with total and per-drive read/write throughput, a Storage page with temperature, health, wear and free space per volume, an optional widget Disk graph, a six-hour per-drive history (up to 8 drives) and drive temperatures as Storage devices in Cooling Health. Temperature and health come from the **Storage sensors** switch (on by default).
 - A combined download/upload graph with a shared scale and distinct line styles.
 - Per-application network rates when Windows permits ETW capture.
-- Processes: CPU, memory, I/O, GPU and GPU memory per app for every user, plus physical Disk and Network per app as administrator, with expandable processes, a column picker, **End task…** and **Open file location**. Per-process monitoring is off by default.
+- Processes: CPU, memory and I/O per app for every user; GPU and GPU memory per app, expected to need no administrator rights but not yet checked in a standard-user session; and physical Disk and Network per app as administrator, with expandable processes, a column picker, **End task…** and **Open file location**. Per-process monitoring is off by default.
 - Connections: a filled native globe or 2D map with glowing traffic arcs, moving dots on busy routes and hover chips, a visible-node list and connection detail boxes, local saved history and an optional live widget map.
 - Searchable sensor readings with minimum, maximum and average values.
 - Selectable graphics adapters on multi-GPU systems.

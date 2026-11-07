@@ -33,7 +33,7 @@ Each read calls `PdhCollectQueryData` once and reads each counter with `PdhGetFo
 
 **Statuses** (classified in Core from the raw PDH results, so these rules are tested on Linux):
 
-- An item is *ready* when its CStatus is `PDH_CSTATUS_VALID_DATA` or `PDH_CSTATUS_NEW_DATA`. Any other item status is *not ready*, for example a utilization instance that first appeared in this collection and so has no earlier raw value. A not-ready item is never counted in `Skipped` and never read as 0 (Joining says what its process shows).
+- An item is *ready* when its CStatus is `PDH_CSTATUS_VALID_DATA` or `PDH_CSTATUS_NEW_DATA` and its value is finite (for memory, also 0 to 2^50 bytes). Any other item is *not ready*, for example a utilization instance that first appeared in this collection and so has no earlier raw value. A not-ready item is never counted in `Skipped` and never read as 0 (Joining says what its process shows).
 - `PDH_CSTATUS_INVALID_DATA` (0xC0000BBA, which `windows-latest` returns for utilization on the first collection after the query opens), `PDH_INVALID_DATA`, `PDH_CALC_NEGATIVE_DENOMINATOR` or `PDH_CALC_NEGATIVE_VALUE` from the array call makes every item of that counter not ready for that read; the first collection after the query opens reports utilization this way or with not-ready items. If such reads go on for 60 s, it becomes a failure (Errors and limits).
 - No instances: `PDH_NO_DATA` or `PDH_CSTATUS_NO_INSTANCE` from the collect or array call, or zero items. For the engine counter the column is unavailable for that read ("GPU counters unavailable"), never 0 % for every process; for a memory counter it means no memory instances. The query stays open.
 - Any other non-success status is a failure (Errors and limits).
