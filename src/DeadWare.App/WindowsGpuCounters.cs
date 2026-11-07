@@ -69,6 +69,10 @@ internal sealed class PdhGpuApi : IGpuCounterApi
             var status=PdhGetFormattedCounterArrayW(counters[i],format,ref bytes,out var count,size==0?IntPtr.Zero:buffers[i]);
             if(status==GpuPdhStatus.MoreData)
             {
+                // A sizing call can answer MoreData with a required size of 0, as for an empty wildcard set on a machine where no process has used
+                // the GPU yet. That is zero items (no instances): for engines the reader shows "GPU counters unavailable" and keeps the query open,
+                // instead of a failure that reopens it every 60 s.
+                if(size==0&&bytes==0)return new(0,[]);
                 if(call==MaximumArrayCalls)return new(GpuPdhStatus.MoreData,[]);
                 // PDH's documentation: after a too-small non-zero buffer the returned size is unreliable, so ask again with
                 // size 0; the size a size-0 call returns is trusted.
