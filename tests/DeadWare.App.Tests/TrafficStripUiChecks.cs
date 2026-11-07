@@ -195,10 +195,15 @@ internal static class TrafficStripUiChecks
         Assert.False(view.Legend[7].IsButton);
 
         // Hover, then selection: the header is the slot's span and the values are the slot's, without shares.
+        // The entries are updated in place, so a focused legend button keeps its focus.
+        var legendPanel = (WrapPanel)view.Children[2]; var firstButton = (Button)legendPanel.Children[1];
         chart.HoverAt(Centre(0));
         Assert.Equal(SlotSpan(0), view.Legend[0].Text);
         Assert.Equal($"app0.exe · {Ui.Bytes(7 * 4000)}", view.Legend[1].Text);
         Assert.Equal($"app0.exe · ↓ {Ui.Bytes(7 * 3000)} · ↑ {Ui.Bytes(7 * 1000)}", view.Legend[1].Tip);
+        Assert.Same(firstButton, legendPanel.Children[1]);
+        Assert.Equal(view.Legend[1].Tip, firstButton.ToolTip);
+        Assert.Equal(view.Legend[1].Text, ((DockPanel)firstButton.Content).Children.OfType<TextBlock>().Single().Text);
         chart.HoverAt(null);
         Assert.Equal("Totals for this interval", view.Legend[0].Text);
         chart.SelectedIndex = 1;

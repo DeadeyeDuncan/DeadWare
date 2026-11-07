@@ -64,11 +64,14 @@ public static class TrafficStrips
     }
 
     /// <summary>The series' measure bytes in the slot; the last series is Other. Total saturates at long.MaxValue; Received and Sent must be ≥ 0.</summary>
-    public static long Bytes(TrafficStripSlot slot, int series, TrafficMeasure measure) => measure switch
+    public static long Bytes(TrafficStripSlot slot, int series, TrafficMeasure measure) => Bytes(slot.Received[series], slot.Sent[series], measure);
+
+    /// <summary>The measure's bytes of a received and sent pair, both ≥ 0. Total saturates at long.MaxValue.</summary>
+    public static long Bytes(long received, long sent, TrafficMeasure measure) => measure switch
     {
-        TrafficMeasure.Received => slot.Received[series],
-        TrafficMeasure.Sent => slot.Sent[series],
-        _ => slot.Received[series] > long.MaxValue - slot.Sent[series] ? long.MaxValue : slot.Received[series] + slot.Sent[series],
+        TrafficMeasure.Received => received,
+        TrafficMeasure.Sent => sent,
+        _ => received > long.MaxValue - sent ? long.MaxValue : received + sent,
     };
 
     /// <summary>Average B/s over the slot's recorded time; null when nothing was recorded.</summary>

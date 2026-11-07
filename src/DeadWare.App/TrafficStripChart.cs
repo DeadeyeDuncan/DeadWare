@@ -44,14 +44,13 @@ internal sealed class TrafficStripChart : FrameworkElement
     {
         strip = data; dueUntil = due < data.To ? due : data.To; now = current; message = null;
         int apps = data.Applications.Count;
-        seriesCount = apps + (MeasureBytes(data.OtherReceived, data.OtherSent, data.Measure) > 0 ? 1 : 0);
+        seriesCount = apps + (TrafficStrips.Bytes(data.OtherReceived, data.OtherSent, data.Measure) > 0 ? 1 : 0);
         states = new SlotState[data.Slots.Count];
         rates = new double[data.Slots.Count][];
         for (int i = 0; i < data.Slots.Count; i++)
         {
             var slot = data.Slots[i];
-            long total = 0;
-            for (int s = 0; s <= apps; s++) total = Saturate(total, TrafficStrips.Bytes(slot, s, data.Measure));
+            long total = SlotTotal(slot, apps, data.Measure);
             states[i] = page == TrafficStripPage.UsageHistory && slot.RecordedSeconds == 0 ? SlotState.NoCapture
                 : slot.RecordedSeconds > 0 && total == 0 ? SlotState.NoTraffic
                 : TrafficStrips.IsFull(slot) ? SlotState.Full : SlotState.Partial;
@@ -75,7 +74,6 @@ internal sealed class TrafficStripChart : FrameworkElement
     {
         version++;
         if (HoverIndex is not null || hoverNotYet) { HoverIndex = null; hoverNotYet = false; ChipLines = []; HoverChanged?.Invoke(); ShownSlotChanged?.Invoke(); }
-        hover = null;
         InvalidateVisual();
     }
 
@@ -123,7 +121,6 @@ internal sealed class TrafficStripChart : FrameworkElement
     internal Rect? NotKept { get; private set; }
 
     private bool hoverNotYet;
-    private Point? hover;
 
     // Size-dependent layout, rebuilt when the data or the size changes and never on hover.
     private (int Version, double Width, double Height)? built;
@@ -139,9 +136,13 @@ internal sealed class TrafficStripChart : FrameworkElement
     private double Y(double value) => PlotRect.Top + PlotRect.Height * (1 - Math.Clamp(value / maximum, 0, 1));
     private DateTimeOffset TimeAt(double x) => strip!.From + TimeSpan.FromSeconds(Seconds * Math.Clamp((x - PlotRect.Left) / Math.Max(1, PlotRect.Width), 0, 1));
     private static DateTimeOffset FloorMinute(DateTimeOffset time) => new(time.UtcTicks / TimeSpan.TicksPerMinute * TimeSpan.TicksPerMinute, TimeSpan.Zero);
-    private static long Saturate(long a, long b) => a > long.MaxValue - b ? long.MaxValue : a + b;
-    internal static long MeasureBytes(long received, long sent, TrafficMeasure measure)
-        => measure switch { TrafficMeasure.Received => received, TrafficMeasure.Sent => sent, _ => Saturate(received, sent) };
+    /// <summary>Every series' measure bytes in the slot (the applications, then Other), saturating like TrafficStrips.Bytes.</summary>
+    private static long SlotTotal(TrafficStripSlot slot, int apps, TrafficMeasure measure)
+    {
+        long total = 0;
+        for (int s = 0; s <= apps; s++) total = TrafficStrips.Bytes(total, TrafficStrips.Bytes(slot, s, measure), TrafficMeasure.Total);
+        return total;
+    }
     private bool Drawable(int index) => states[index] is SlotState.Full or SlotState.Partial && strip!.Slots[index].RecordedSeconds > 0;
 
     private void EnsureLayout()
@@ -291,7 +292,6 @@ internal sealed class TrafficStripChart : FrameworkElement
     internal void HoverAt(Point? point)
     {
         EnsureLayout();
-        hover = point;
         int? index = ChartFrame.Nearest(targets, point, PlotRect) is >= 0 and var nearest ? nearest : null;
         bool notYet = index is null && point is { } p && PlotRect.Contains(p) && notYetTarget is { } span && p.X >= span.Left && p.X < span.Right;
         if (index == HoverIndex && notYet == hoverNotYet) return;
@@ -311,8 +311,7 @@ internal sealed class TrafficStripChart : FrameworkElement
         if (states[index] == SlotState.NoTraffic) lines.Add("No traffic");
         else if (slot.RecordedSeconds > 0)
         {
-            long total = 0;
-            for (int s = 0; s <= data.Applications.Count; s++) total = Saturate(total, TrafficStrips.Bytes(slot, s, data.Measure));
+            long total = SlotTotal(slot, data.Applications.Count, data.Measure);
             lines.Add($"{Ui.Bytes(total)} · {Ui.Bytes((double)total / slot.RecordedSeconds, true)} average");
         }
         if (!TrafficStrips.IsFull(slot))
@@ -483,8 +482,9 @@ internal sealed class TrafficStripView : StackPanel
     private readonly TextBlock caption, notKept;
     private readonly WrapPanel legend;
     private readonly List<(string Text, string? Tip, Brush? Swatch, bool IsButton)> entries = [];
-    // The series behind each legend entry's swatch (−1 for none), so a theme change re-reads the brushes in place.
-    private readonly List<(int Series, Border? Swatch)> swatches = [];
+    // The series behind each legend entry's swatch (−1 for none), so a theme change re-reads the brushes in place,
+    // and the entry and its label, so hover and selection update the texts in place.
+    private readonly List<(int Series, Border? Swatch, FrameworkElement Entry, TextBlock Label)> swatches = [];
     private bool subscribed;
 
     internal TrafficStripView(UiSession session, TrafficStripPage page)
@@ -495,7 +495,7 @@ internal sealed class TrafficStripView : StackPanel
         legend = new WrapPanel { Margin = new(0, 6, 0, 0) };
         notKept = Ui.Text("", 11, "Muted"); notKept.Margin = new(0, 2, 0, 0); notKept.Visibility = Visibility.Collapsed;
         Children.Add(caption); Children.Add(Chart); Children.Add(legend); Children.Add(notKept);
-        Chart.ShownSlotChanged += RebuildLegend;
+        Chart.ShownSlotChanged += UpdateLegend;
         Loaded += (_, _) => Subscribe();
         Unloaded += (_, _) => Unsubscribe();
     }
@@ -555,7 +555,7 @@ internal sealed class TrafficStripView : StackPanel
         Chart.InvalidateVisual();
         for (int i = 0; i < swatches.Count; i++)
         {
-            var (series, swatch) = swatches[i];
+            var (series, swatch, _, _) = swatches[i];
             if (series < 0 || swatch is null) continue;
             var brush = SeriesBrush(series);
             swatch.Background = brush;
@@ -565,22 +565,44 @@ internal sealed class TrafficStripView : StackPanel
 
     private Brush SeriesBrush(int series) => series < (Chart.Strip?.Applications.Count ?? 0) ? Theme.StripBrush(series) : Theme.Brush("Muted");
 
+    /// <summary>Rebuilds the legend's entries; only Apply and ShowText change which entries there are.</summary>
     private void RebuildLegend()
     {
         legend.Children.Clear(); entries.Clear(); swatches.Clear();
-        if (Chart.Strip is not { } strip) return;
+        foreach (var (text, tip, series, app) in LegendRows())
+            Add(text, tip, series, page == TrafficStripPage.Connections && app is not null, app);
+    }
+
+    /// <summary>Hover and selection change only the texts and tooltips: the entries stay, and so does keyboard focus on a legend button.</summary>
+    private void UpdateLegend()
+    {
+        var rows = LegendRows();
+        if (rows.Count != swatches.Count) { RebuildLegend(); return; }
+        for (int i = 0; i < rows.Count; i++)
+        {
+            var (text, tip, _, _) = rows[i];
+            var (_, _, entry, label) = swatches[i];
+            label.Text = text; entry.ToolTip = tip;
+            var shown = entries[i]; shown.Text = text; shown.Tip = tip; entries[i] = shown;
+        }
+    }
+
+    private List<(string Text, string? Tip, int Series, TrafficStripApplication? App)> LegendRows()
+    {
+        var rows = new List<(string Text, string? Tip, int Series, TrafficStripApplication? App)>();
+        if (Chart.Strip is not { } strip) return rows;
         var measure = strip.Measure;
         int apps = strip.Applications.Count;
-        long otherTotal = TrafficStripChart.MeasureBytes(strip.OtherReceived, strip.OtherSent, measure);
-        double denominator = strip.Applications.Sum(a => (double)TrafficStripChart.MeasureBytes(a.Received, a.Sent, measure)) + otherTotal;
+        long otherTotal = TrafficStrips.Bytes(strip.OtherReceived, strip.OtherSent, measure);
+        double denominator = strip.Applications.Sum(a => (double)TrafficStrips.Bytes(a.Received, a.Sent, measure)) + otherTotal;
         if (denominator <= 0)
         {
-            Add(page == TrafficStripPage.Connections ? "No application traffic recorded in this interval." : "No application traffic recorded in this period.", null, -1, false, null);
-            return;
+            rows.Add((page == TrafficStripPage.Connections ? "No application traffic recorded in this interval." : "No application traffic recorded in this period.", null, -1, null));
+            return rows;
         }
         int? shown = Chart.ShownIndex;
         var slot = shown is { } index ? strip.Slots[index] : null;
-        Add(shown is { } k ? Chart.SlotSpan(k) : page == TrafficStripPage.Connections ? "Totals for this interval" : "Totals for this period", null, -1, false, null);
+        rows.Add((shown is { } k ? Chart.SlotSpan(k) : page == TrafficStripPage.Connections ? "Totals for this interval" : "Totals for this period", null, -1, null));
         for (int series = 0; series < apps + (otherTotal > 0 ? 1 : 0); series++)
         {
             var app = series < apps ? strip.Applications[series] : null;
@@ -589,7 +611,7 @@ internal sealed class TrafficStripView : StackPanel
             string text, tip;
             if (slot is null)
             {
-                long bytes = TrafficStripChart.MeasureBytes(received, sent, measure);
+                long bytes = TrafficStrips.Bytes(received, sent, measure);
                 text = $"{name} · {Ui.Bytes(bytes)} · {(bytes / denominator * 100).ToString("0.#", CultureInfo.CurrentCulture)}%";
                 tip = $"{name} · ↓ {Ui.Bytes(received)} · ↑ {Ui.Bytes(sent)}";
             }
@@ -603,8 +625,9 @@ internal sealed class TrafficStripView : StackPanel
                 text = $"{name} · {Ui.Bytes(TrafficStrips.Bytes(slot, series, measure))}";
                 tip = $"{name} · ↓ {Ui.Bytes(slot.Received[series])} · ↑ {Ui.Bytes(slot.Sent[series])}";
             }
-            Add(text, tip, series, page == TrafficStripPage.Connections && app is not null, app);
+            rows.Add((text, tip, series, app));
         }
+        return rows;
     }
 
     private void Add(string text, string? tip, int series, bool isButton, TrafficStripApplication? app)
@@ -634,6 +657,6 @@ internal sealed class TrafficStripView : StackPanel
         if (tip is not null) entry.ToolTip = tip;
         legend.Children.Add(entry);
         entries.Add((text, tip, brush, isButton));
-        swatches.Add((series, swatch));
+        swatches.Add((series, swatch, entry, label));
     }
 }
