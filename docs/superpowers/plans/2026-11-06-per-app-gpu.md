@@ -92,7 +92,7 @@ For this plan:
 - Produces:
   - `public enum GpuCounterKind{Engine,Dedicated,Shared}`
   - `public sealed record GpuCounterInstance(int Pid,long Luid,int Phys,int? Engine,string? Type){ public static bool TryParse(string? name,GpuCounterKind kind,[NotNullWhen(true)] out GpuCounterInstance? instance); }`. Engine and Type are null for memory names. LUID = ((long)hi << 32) | lo, both halves unsigned. `<type>` is everything after the first `_engtype_`, kept verbatim ("" allowed). Each LUID half is 1–8 hex digits of either case, checked by length and parsed with `NumberStyles.AllowHexSpecifier` and `CultureInfo.InvariantCulture`. Decimals are parsed with `NumberStyles.None` and `CultureInfo.InvariantCulture` (no sign, no whitespace) and must fit `int`. Never throws.
-  - `public static class GpuPdhStatus { public const uint CStatusValidData=0x00000000,CStatusNewData=0x00000001,CStatusNoInstance=0x800007D1,MoreData=0x800007D2,NoData=0x800007D5,CalcNegativeDenominator=0x800007D6,CalcNegativeValue=0x800007D8,CStatusNoObject=0xC0000BB8,CStatusNoCounter=0xC0000BB9,InvalidData=0xC0000BC6; }`. These are the `pdhmsg.h` values; cross-check them against the Windows SDK header.
+  - `public static class GpuPdhStatus { public const uint CStatusValidData=0x00000000,CStatusNewData=0x00000001,CStatusNoInstance=0x800007D1,MoreData=0x800007D2,NoData=0x800007D5,CalcNegativeDenominator=0x800007D6,CalcNegativeValue=0x800007D8,CStatusNoObject=0xC0000BB8,CStatusNoCounter=0xC0000BB9,CStatusInvalidData=0xC0000BBA,InvalidData=0xC0000BC6; }`. These are the `pdhmsg.h` values; cross-check them against the Windows SDK header.
   - `public readonly record struct GpuRawItem(string Name,uint CStatus,double Value);`: percent for engines, bytes for memory (`PDH_FMT_LARGE` values as double, exact below 2^53).
   - `public sealed record GpuRawArray(uint Status,IReadOnlyList<GpuRawItem> Items);`
   - `public sealed record GpuAdapterInfo(long Luid,string Description,uint Flags){ public const uint SoftwareFlag=2; public bool Software=>(Flags&SoftwareFlag)!=0; }`
@@ -108,7 +108,7 @@ For this plan:
 - Freshness follows the tracker's Δt rule: the reader keeps the polling interval of its previous successful collection, and the previous collection is null when the interval is not positive or exceeds `PollingPolicy.FreshnessSeconds(Math.Max(that interval, pollingIntervalSeconds))`.
 - A `Collect` that returns `NoData` or `CStatusNoInstance` keeps the query open and does not become the previous collection.
 - No engine instances means `NoData` or `CStatusNoInstance` from the collect call or the engine array call, or an engine array with status 0 and zero items. A benign array status is never "no instances".
-- A benign array status (`InvalidData`, `CalcNegativeDenominator`, `CalcNegativeValue`) returns no items, so it sets that counter's `…Ready` to false. The not-ready run starts at the first read with any benign status and ends at a read with none. The 60 s failure uses that read's status.
+- A benign array status (`CStatusInvalidData`, `InvalidData`, `CalcNegativeDenominator`, `CalcNegativeValue`) returns no items, so it sets that counter's `…Ready` to false. The not-ready run starts at the first read with any benign status and ends at a read with none. The 60 s failure uses that read's status.
 - An exception from `Open`, `Collect` or `Read(kind)` is a failure with state `GpuCounterStatus.Unavailable` (no code): the reader calls `api.Close()` (itself guarded) and waits `RetrySeconds` before the next open, as for a failing status. An exception from `Adapters()` counts as a DXGI failure (null). So `GpuCounterReader.Read` never throws, and a persistent exception never reopens the query on every poll.
 - State order, first match: `Error`, `TooMany`, `Unavailable` (no engine instances), `Unreadable` (`Skipped × 2 > Instances`), else `Ready`.
 - A software adapter keeps its description with `Number` null. A LUID DXGI does not list is absent from `Adapters`, and callers use `GpuAdapterName.Unknown`.
@@ -162,7 +162,7 @@ public void Malformed_names_do_not_parse(string? name){ Assert.False(GpuCounterI
 public void An_interval_outside_freshness_has_no_previous_collection(double dt){ R(10);var r=R(10+dt);Assert.Null(r.PreviousUtcTime);Assert.Null(r.IntervalSeconds);}   // 1 s polling: 4 s
 [Fact] public void A_slower_previous_interval_keeps_its_freshness_limit(){ R(0,interval:10);var r=R(10,interval:0.5);   // FreshnessSeconds(Math.Max(10,0.5)) = 13 s, as the tracker
     Assert.Equal(T(0),r.PreviousUtcTime);Assert.Equal(10,r.IntervalSeconds!.Value,6);Assert.Null(R(20,interval:0.5).IntervalSeconds);}   // then 0.5 s on both sides: 4 s
-[Theory][InlineData(GpuPdhStatus.InvalidData)][InlineData(GpuPdhStatus.CalcNegativeDenominator)][InlineData(GpuPdhStatus.CalcNegativeValue)]
+[Theory][InlineData(GpuPdhStatus.InvalidData)][InlineData(GpuPdhStatus.CStatusInvalidData)][InlineData(GpuPdhStatus.CalcNegativeDenominator)][InlineData(GpuPdhStatus.CalcNegativeValue)]
 public void A_benign_array_status_is_not_ready_and_fails_only_after_60_s(uint status){ api.Arrays[GpuCounterKind.Engine]=new(status,[]);
     foreach(double s in new[]{0,30,59.9}){var r=R(s);Assert.True(r.State.Available);Assert.False(r.EnginesReady);Assert.Equal(0,r.Skipped);}
     Assert.Equal(new ProcessColumnState(false,$"GPU counters unavailable (error 0x{status:X8})"),R(60).State);Assert.Equal(1,api.Closes);
@@ -271,7 +271,7 @@ Native details (no unsafe code; `DeadWare.App.csproj` does not allow it):
 5. Assert, in order:
    - `open` is 0 (message `Open failed with 0x{open:X8}`).
    - No instances: if `collect1` or `collect2` is `NoData` or `CStatusNoInstance`, or every `late` array has status `NoData` or `CStatusNoInstance` or no items, return (it passes).
-   - Both collects are 0. Every `early` and `late` array status is one of 0, `NoData`, `CStatusNoInstance`, `InvalidData`, `CalcNegativeDenominator` or `CalcNegativeValue`; the message names the kind, the read and the status.
+   - Both collects are 0. Every `early` and `late` array status is one of 0, `NoData`, `CStatusNoInstance`, `CStatusInvalidData`, `InvalidData`, `CalcNegativeDenominator` or `CalcNegativeValue`; the message names the kind, the read and the status.
    - `unmatched` is 0 (message: the kind and the PID). Parsing never threw (no exception reached the test).
    - `adapters` is not null and not empty, and every entry has a non-empty `Description`.
    - Every ready `late` engine value is finite and within 0–100. Every ready memory value is finite, at least 0 and a whole number.
