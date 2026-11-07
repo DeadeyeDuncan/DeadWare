@@ -260,17 +260,25 @@ public class ConnectionServiceTests
         }
         finally {await service.StopAsync();System.IO.Directory.Delete(root,true);}
     }
+    private const System.Reflection.BindingFlags NonPublicInstance=System.Reflection.BindingFlags.Instance|System.Reflection.BindingFlags.NonPublic;
+    /// <summary>An uninitialized UiSession holding the collector, the connection service and fixture history services under root, with a fixture ETW capture.</summary>
+    private static (UiSession Session,EtwNetwork Capture) FixtureSession(string root,Collector collector,ConnectionService service)
+    {
+        var session=(UiSession)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(UiSession));
+        void Set(string name,object value)=>typeof(UiSession).GetField("<"+name+">k__BackingField",NonPublicInstance)!.SetValue(session,value);
+        var capture=new EtwNetwork(_=>new(11,1,"fixture"));typeof(Collector).GetField("etw",NonPublicInstance)!.SetValue(collector,capture);
+        Set("Collector",collector);Set("Connections",service);Set("Cooling",new CoolingHistoryService(System.IO.Path.Combine(root,"cooling.db"),"fixture","setup"));
+        Set("GraphHistory",new GraphHistoryService(System.IO.Path.Combine(root,"graphs.db"),"fixture",new SampleHistory()));Set("Battery",new BatteryHistoryService(System.IO.Path.Combine(root,"battery.db"),"fixture"));Set("Usage",new UsageHistoryService(System.IO.Path.Combine(root,"usage.db"),"fixture"));Set("Alerts",new AlertService(System.IO.Path.Combine(root,"alerts.db"),"fixture",new UsageHistoryService(System.IO.Path.Combine(root,"usage-alerts.db"),"fixture"),()=>null));
+        return (session,capture);
+    }
+    private static Task StopCollector(UiSession session,TimeSpan providers,TimeSpan connections,TimeSpan history)
+        =>(Task)typeof(UiSession).GetMethod("StopCollectorAsync",NonPublicInstance)!.Invoke(session,[providers,connections,history])!;
     [Theory][InlineData(false)][InlineData(true)]
     public async Task Session_normal_quit_keeps_final_subscription_until_the_endpoint_drain_is_persisted(bool failingFinalSubscriber)
     {
         string root=System.IO.Path.Combine(System.IO.Path.GetTempPath(),"DeadWare-connections-"+Guid.NewGuid().ToString("N"));
         var collector=new Collector(new CollectorOptions(HardwareEnabled:false));var service=new ConnectionService(System.IO.Path.Combine(root,"connections.db"));
-        var session=(UiSession)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(UiSession));
-        const System.Reflection.BindingFlags flags=System.Reflection.BindingFlags.Instance|System.Reflection.BindingFlags.NonPublic;
-        void Set(string name,object value)=>typeof(UiSession).GetField("<"+name+">k__BackingField",flags)!.SetValue(session,value);
-        var capture=new EtwNetwork(_=>new(11,1,"fixture"));typeof(Collector).GetField("etw",flags)!.SetValue(collector,capture);
-        Set("Collector",collector);Set("Connections",service);Set("Cooling",new CoolingHistoryService(System.IO.Path.Combine(root,"cooling.db"),"fixture","setup"));
-        Set("GraphHistory",new GraphHistoryService(System.IO.Path.Combine(root,"graphs.db"),"fixture",new SampleHistory()));Set("Battery",new BatteryHistoryService(System.IO.Path.Combine(root,"battery.db"),"fixture"));Set("Usage",new UsageHistoryService(System.IO.Path.Combine(root,"usage.db"),"fixture"));Set("Alerts",new AlertService(System.IO.Path.Combine(root,"alerts.db"),"fixture",new UsageHistoryService(System.IO.Path.Combine(root,"usage-alerts.db"),"fixture"),()=>null));
+        var (session,capture)=FixtureSession(root,collector,service);
         collector.SampleAvailable+=service.TryRecord;collector.FinalConnectionsAvailable+=service.TryRecord;
         if(failingFinalSubscriber)collector.FinalConnectionsAvailable+=_=>throw new InvalidOperationException("late subscriber failure");
         DateTimeOffset now=DateTimeOffset.UtcNow;
@@ -278,7 +286,7 @@ public class ConnectionServiceTests
         {
             service.Start();capture.TakeSnapshot(now,collector.ElapsedSeconds);
             capture.RecordEndpoint(11,now,71,false,System.Net.IPAddress.Parse("8.8.8.8"),443,System.Net.IPAddress.Loopback,123,ConnectionProtocol.Tcp);
-            var stop=(Task)typeof(UiSession).GetMethod("StopCollectorAsync",flags)!.Invoke(session,[TimeSpan.FromSeconds(5),TimeSpan.FromSeconds(5),TimeSpan.FromSeconds(20)])!;
+            var stop=StopCollector(session,TimeSpan.FromSeconds(5),TimeSpan.FromSeconds(5),TimeSpan.FromSeconds(20));
             if(failingFinalSubscriber)await Assert.ThrowsAsync<InvalidOperationException>(()=>stop);else await stop;
             var history=await service.ReadViewAsync(new(now.AddMinutes(-1),now.AddMinutes(1)));Assert.Equal(71,history.Summary.ReceivedBytes);Assert.False(Assert.Single(history.Rows).Complete);
             Assert.True(service.StopAsync().IsCompleted);
@@ -481,17 +489,12 @@ public class ConnectionServiceTests
     {
         string root=System.IO.Path.Combine(System.IO.Path.GetTempPath(),"DeadWare-connections-"+Guid.NewGuid().ToString("N"));var clock=new TestClock();
         var collector=new Collector(new CollectorOptions(HardwareEnabled:false));var service=new ConnectionService(System.IO.Path.Combine(root,"connections.db"),new Resolver(_=>null),clock.Read);
-        var session=(UiSession)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(UiSession));
-        const System.Reflection.BindingFlags flags=System.Reflection.BindingFlags.Instance|System.Reflection.BindingFlags.NonPublic;
-        void Set(string name,object value)=>typeof(UiSession).GetField("<"+name+">k__BackingField",flags)!.SetValue(session,value);
-        var capture=new EtwNetwork(_=>new(11,1,"fixture"));typeof(Collector).GetField("etw",flags)!.SetValue(collector,capture);
-        Set("Collector",collector);Set("Connections",service);Set("Cooling",new CoolingHistoryService(System.IO.Path.Combine(root,"cooling.db"),"fixture","setup"));
-        Set("GraphHistory",new GraphHistoryService(System.IO.Path.Combine(root,"graphs.db"),"fixture",new SampleHistory()));Set("Battery",new BatteryHistoryService(System.IO.Path.Combine(root,"battery.db"),"fixture"));Set("Usage",new UsageHistoryService(System.IO.Path.Combine(root,"usage.db"),"fixture"));Set("Alerts",new AlertService(System.IO.Path.Combine(root,"alerts.db"),"fixture",new UsageHistoryService(System.IO.Path.Combine(root,"usage-alerts.db"),"fixture"),()=>null));
+        var (session,capture)=FixtureSession(root,collector,service);
         try
         {
             service.Start();capture.TakeSnapshot(DateTimeOffset.UtcNow,collector.ElapsedSeconds);RecordSeconds(service,clock,1,30);
             // The session-ending budget: 3 s for providers, the connections stop after 1.5 s at the latest, 3 s for history.
-            var stop=(Task)typeof(UiSession).GetMethod("StopCollectorAsync",flags)!.Invoke(session,[TimeSpan.FromSeconds(3),TimeSpan.FromSeconds(1.5),TimeSpan.FromSeconds(3)])!;
+            var stop=StopCollector(session,TimeSpan.FromSeconds(3),TimeSpan.FromSeconds(1.5),TimeSpan.FromSeconds(3));
             await stop.WaitAsync(TimeSpan.FromSeconds(10));
             var row=Assert.Single((await service.ReadViewAsync(new(Epoch,Epoch.AddMinutes(1)))).Rows);Assert.Equal((Epoch,300L),(row.Minute,row.ReceivedBytes));
         }

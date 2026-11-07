@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.IO;
 using System.Net;
 using System.Threading.Channels;
@@ -250,6 +251,7 @@ public sealed class ConnectionService
         // buffered stays the queued deltas plus the folder's open (Held) and frozen (Waiting) sizes.
         T Fold<T>(Func<T> call)
         {
+            Debug.Assert(Monitor.IsEntered(gate));
             int before=folder.Held+folder.Waiting;
             var result=call();
             buffered+=folder.Held+folder.Waiting-before;
