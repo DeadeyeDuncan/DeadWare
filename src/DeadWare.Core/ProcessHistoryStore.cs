@@ -82,7 +82,7 @@ public sealed class ProcessHistoryStore(string path, long maximumDatabaseBytes =
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         // An empty file is an interrupted first creation; anything else is inspected read-only before it is touched.
         bool create = !File.Exists(path) || new FileInfo(path).Length == 0;
-        if (!create) Inspect();
+        long version = create ? 2 : Inspect();
         using var db = Open(create: create);
         Execute(db, "PRAGMA journal_mode=WAL");
         if (create)
@@ -92,11 +92,13 @@ public sealed class ProcessHistoryStore(string path, long maximumDatabaseBytes =
             Execute(db, $"PRAGMA application_id={ApplicationId.ToString(CultureInfo.InvariantCulture)}; PRAGMA user_version=2", transaction);
             transaction.Commit();
         }
-        else Upgrade(db, beforeUpgradeCommit);
+        // Only a file Inspect read as version 1 is upgraded, so a version 2 start takes no write lock; Upgrade re-reads the version under its own.
+        else if (version == 1) Upgrade(db, beforeUpgradeCommit);
         Checkpoint(db); initialized = true;
     }
 
-    private void Inspect()
+    /// <summary>Checks the file read-only before anything writes to it and returns its <c>user_version</c>, 1 or 2.</summary>
+    private long Inspect()
     {
         try
         {
@@ -111,6 +113,7 @@ public sealed class ProcessHistoryStore(string path, long maximumDatabaseBytes =
                 (version == 2 && (Number(db, "SELECT COUNT(*) FROM pragma_table_info('app_minutes') WHERE name IN('gpu_seconds','gpu_memory_seconds')") != 2 ||
                     Number(db, "SELECT COUNT(*) FROM pragma_table_info('minutes') WHERE name='gpu_covered'") != 1)))
                 throw new InvalidDataException("Incompatible process history objects; the file was preserved.");
+            return version;
         }
         catch (SqliteException error) when (error.SqliteErrorCode is 11 or 26)
         {

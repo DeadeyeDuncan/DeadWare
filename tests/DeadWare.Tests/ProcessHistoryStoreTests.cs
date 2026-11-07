@@ -260,6 +260,19 @@ public class ProcessHistoryStoreTests
         Assert.Equal(2L, fixture.Count("PRAGMA user_version"));
     }
 
+    [Fact]
+    public void A_version_2_start_takes_no_write_lock()
+    {
+        using var fixture = new Fixture(); fixture.Open();
+        // Another connection holds the write lock. A version 2 file has nothing to upgrade, so its start never waits for that lock (the upgrade's
+        // transaction once took it on every start, and failed as busy here).
+        using var writer = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = fixture.DbPath, Pooling = false }.ToString());
+        writer.Open();
+        using (var begin = writer.CreateCommand()) { begin.CommandText = "BEGIN IMMEDIATE"; begin.ExecuteNonQuery(); }
+        fixture.Open();
+        Assert.Equal(2L, fixture.Count("PRAGMA user_version"));
+    }
+
     [Theory]
     [InlineData("gpu_covered")]
     [InlineData("gpu_seconds")]
