@@ -66,6 +66,23 @@ public class ProcessActivityTrackerTests
         var cpuOmitted=new ProcessActivityTracker(8);cpuOmitted.Update(Scan(0,Enumerable.Range(1,4100).Select(i=>Entry(i)).ToArray()));
         var r2=cpuOmitted.Update(Scan(1,Enumerable.Range(1,4100).Select(i=>Entry(i,cpu:i<=4?100L*i:Second)).ToArray()));
         Assert.Equal(100+200+300+400,r2.Omitted.Deltas.CpuTime);}
+    // A Ready GPU read at `seconds` whose previous collection is 1 s earlier: each PID uses `percent` of one engine and holds `dedicatedBytes`.
+    static GpuCounterRead GpuRead(double seconds,IReadOnlyList<int> pids,double percent,long dedicatedBytes)=>new(ProcessColumnState.Ready,Epoch.AddSeconds(seconds),seconds,Epoch.AddSeconds(seconds-1),1,
+        [..pids.Select(p=>new GpuEngineItem(new(p,0xA,0,0,"3D"),true,percent))],[..pids.Select(p=>new GpuMemoryItem(new(p,0xA,0,null,null),true,dedicatedBytes))],[],
+        new Dictionary<long,GpuAdapterName>{[0xA]=new(0,"NVIDIA GeForce RTX 4070")},pids.Count*2,0);
+    [Fact] public void Omitted_processes_carry_their_gpu_sums(){ var t=new ProcessActivityTracker(8);
+        var pids=Enumerable.Range(1,4100).ToArray();
+        // The first scan has no Δt: its Deltas are null and its omitted sum is ProcessDeltas.Zero.
+        var first=t.Update(Scan(0,pids.Select(i=>Entry(i)).ToArray()));Assert.Equal(0,first.Omitted.Deltas.GpuSeconds);Assert.Equal(0,first.Omitted.Deltas.GpuMemoryByteSeconds);
+        // pids 1..4 stay idle and are cut; every PID used 1 % of an engine and held 1,000 dedicated bytes over the read's 1 s.
+        var r=t.Update(Scan(1,pids.Select(i=>Entry(i,cpu:i<=4?0:1_000+i)).ToArray()),GpuRead(1,pids,1,1000));
+        Assert.Equal(4,r.Omitted.Count);Assert.DoesNotContain(r.Processes,p=>p.Pid<=4);Assert.All(r.Processes,p=>Assert.Equal(1,p.GpuPercent));
+        Assert.Equal(4*0.01,r.Omitted.Deltas.GpuSeconds!.Value,9);Assert.Equal(4000,r.Omitted.Deltas.GpuMemoryByteSeconds!.Value,6);Assert.True(r.Gpu.Available);Assert.Equal(1,r.GpuIntervalSeconds);}
+    [Fact] public void Omitted_gpu_sums_start_unknown_when_no_process_knows_them(){ var t=new ProcessActivityTracker(8);
+        t.Update(Scan(0,Enumerable.Range(1,4100).Select(i=>Entry(i)).ToArray()));
+        var r=t.Update(Scan(1,Enumerable.Range(1,4100).Select(i=>Entry(i,cpu:i<=4?0:1_000+i)).ToArray()),null);
+        Assert.Equal(4,r.Omitted.Count);Assert.Equal(0,r.Omitted.Deltas.CpuTime);
+        Assert.Null(r.Omitted.Deltas.GpuSeconds);Assert.Null(r.Omitted.Deltas.GpuMemoryByteSeconds);Assert.Null(r.GpuIntervalSeconds);Assert.True(r.Gpu.Available);}
     [Fact] public void Cap_ranks_unknown_rates_as_zero_so_memory_breaks_the_tie(){ var t=new ProcessActivityTracker(8);
         t.Update(Scan(0,Enumerable.Range(1,4099).Select(i=>Entry(i)).ToArray()));
         // pid 4100 was missed by the previous scan (null rates) but holds the most memory; every other process is a known 0 %.

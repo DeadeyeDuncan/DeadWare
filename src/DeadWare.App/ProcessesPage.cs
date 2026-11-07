@@ -57,7 +57,7 @@ internal sealed class ProcessRowView(string id,string? parentId) : INotifyProper
     private void Raise(string property)=>PropertyChanged?.Invoke(this,new PropertyChangedEventArgs(property));
 }
 
-/// <summary>Live per-app CPU, memory, I/O, disk and network (spec: Processes page). Apps sum their processes and expand into them;
+/// <summary>Live per-app CPU, memory, I/O, disk, network and GPU (spec: Processes page). Apps sum their processes and expand into them;
 /// the shown columns, the picker and the banner follow the reading's Elevated flag, and every "—" carries its reason as a tooltip.
 /// The order stays calm: rows re-sort for a new reading only outside a hold, and End task… and Open file location run off the UI thread.</summary>
 internal sealed class ProcessesPage : UserControl
@@ -254,13 +254,13 @@ internal sealed class ProcessesPage : UserControl
         return column;
     }
 
-    /// <summary>A header click sorts by its column: numeric columns descending first, NAME ascending first; clicking the sorted column flips it.</summary>
+    /// <summary>A header click sorts by its column: numeric columns descending first, the text columns NAME and GPU ENGINE ascending first; clicking the sorted column flips it.</summary>
     private void OnSorting(object? sender,DataGridSortingEventArgs e)
     {
         e.Handled=true;
         string key=e.Column.SortMemberPath;
         if(key==sortKey)sortDescending=!sortDescending;
-        else {sortKey=key;sortDescending=key!="name";}
+        else {sortKey=key;sortDescending=!ProcessTableColumns.AscendingFirst(key);}
         Render(resort:true);
     }
 
@@ -378,7 +378,7 @@ internal sealed class ProcessesPage : UserControl
             bool expandable=app.Members.Count>1,open=expandable&&expanded.Contains(id);
             // A single-process app is its process: it shows the PID inline and has no chevron.
             string pid=expandable?"":Pid(app.Members[0]);
-            var cells=Cells(activity,key=>ProcessGrouping.Value(app,key),key=>Gap(app,key),pid,stale);
+            var cells=Cells(activity,key=>ProcessGrouping.Value(app,key),key=>Gap(app,key),pid,ProcessGrouping.EngineText(app),app.GpuBusiest,stale);
             var view=View(id,null);
             view.Update(app.Name,expandable,open,cells,Spoken(app.Name,expandable?$"{app.Members.Count} processes":"PID "+pid,visible,cells));
             view.Members=[..app.Members.Select(m=>(m.Pid,m.Generation))];
@@ -387,7 +387,7 @@ internal sealed class ProcessesPage : UserControl
             foreach(var process in app.Members.Order(byProcess))
             {
                 string name=UsageMetrics.NormalizeName(process.Name),processPid=Pid(process);
-                var processCells=Cells(activity,key=>ProcessGrouping.Value(process,key),key=>Gap(process,key),processPid,stale);
+                var processCells=Cells(activity,key=>ProcessGrouping.Value(process,key),key=>Gap(process,key),processPid,ProcessGrouping.EngineText(process),process.GpuEngines?.FirstOrDefault(),stale);
                 var child=View(string.Create(CultureInfo.InvariantCulture,$"process:{process.Pid}:{process.Generation}"),id);
                 child.Update(name,false,false,processCells,Spoken(name,"PID "+processPid,visible,processCells));
                 child.Members=[(process.Pid,process.Generation)];
@@ -432,17 +432,19 @@ internal sealed class ProcessesPage : UserControl
     private static string AppId(string key)=>"app:"+key;
     private static string Pid(ProcessSample process)=>process.Pid.ToString(CultureInfo.InvariantCulture);
 
-    /// <summary>Every key's cell. A value is shown only when the reading is fresh and its column available; otherwise "—" with the first matching reason:
-    /// stale reading, first sample, not matched to this process, else the column's status.</summary>
-    private static Dictionary<string,ProcessCell> Cells(ProcessActivity activity,Func<string,double?> value,Func<string,ProcessGap> gap,string pid,bool stale)
+    /// <summary>Every key's cell. A value is shown only when the reading is fresh (for the GPU keys, the GPU read too) and its column available; otherwise "—" with
+    /// the first matching reason: stale reading, first sample, not matched to this process, else the column's status. GPU ENGINE shows the row's
+    /// <paramref name="engine"/> text, null when unknown, with <paramref name="busiest"/> (the engine it names) as its tooltip.</summary>
+    private static Dictionary<string,ProcessCell> Cells(ProcessActivity activity,Func<string,double?> value,Func<string,ProcessGap> gap,string pid,string? engine,GpuEngineUse? busiest,bool stale)
     {
         var cells=new Dictionary<string,ProcessCell>(StringComparer.Ordinal);
         foreach(string key in ProcessColumnKeys.All)
         {
             if(key=="pid"){cells[key]=new(pid,null);continue;}
             var state=State(activity,key);
-            if(!stale&&state.Available&&value(key) is {} known){cells[key]=new(Format(key,known),null);continue;}
-            string reason=stale?ProcessCopy.Stale:gap(key) switch
+            bool old=stale||(IsGpu(key)&&activity.GpuStale);
+            if(!old&&state.Available&&Known(key,value,engine,busiest) is {} known){cells[key]=known;continue;}
+            string reason=old?ProcessCopy.Stale:gap(key) switch
             {
                 ProcessGap.FirstSample=>ProcessCopy.FirstSample,
                 ProcessGap.NotMatched=>ProcessColumnKeys.DiskKeys.Contains(key)?ProcessCopy.DiskNotMatched:ProcessCopy.NetworkNotMatched,
@@ -453,11 +455,21 @@ internal sealed class ProcessesPage : UserControl
         return cells;
     }
 
+    /// <summary>A known value's cell; null when the value is unknown.</summary>
+    private static ProcessCell? Known(string key,Func<string,double?> value,string? engine,GpuEngineUse? busiest)
+    {
+        if(key!="gpuengine")return value(key) is {} known?new(Format(key,known),null):null;
+        // GPU ENGINE: a label with its engine's adapter and type as the tooltip, or "" with none for a known zero.
+        return engine is null?null:new(engine,engine.Length==0||busiest is null?null:ProcessCopy.EngineTip(busiest));
+    }
+
     private static bool IsNetwork(string key)=>key is "network" or "download" or "upload";
+    private static bool IsGpu(string key)=>key is "gpu" or "gpuengine" or "gpumemory" or "gpushared";
     private static ProcessColumnState State(ProcessActivity activity,string key)=>
-        ProcessColumnKeys.DiskKeys.Contains(key)?activity.Disk:IsNetwork(key)?activity.Network:activity.Scan;
+        ProcessColumnKeys.DiskKeys.Contains(key)?activity.Disk:IsNetwork(key)?activity.Network:IsGpu(key)?activity.Gpu:activity.Scan;
     private static ProcessGap Gap(ProcessSample process,string key)=>
-        ProcessColumnKeys.DiskKeys.Contains(key)?process.DiskGap:IsNetwork(key)?process.NetworkGap:key is "cpu" or "io" or "ioread" or "iowrite"?process.RateGap:ProcessGap.None;
+        ProcessColumnKeys.DiskKeys.Contains(key)?process.DiskGap:IsNetwork(key)?process.NetworkGap:IsGpu(key)?process.GpuGap:
+        key is "cpu" or "io" or "ioread" or "iowrite"?process.RateGap:ProcessGap.None;
     /// <summary>An app's value is null only when no member knows it; its reason is the first that any member gives.</summary>
     private static ProcessGap Gap(ProcessAppRow app,string key)
     {
@@ -466,8 +478,10 @@ internal sealed class ProcessesPage : UserControl
     }
     private static string Format(string key,double value)=>key switch
     {
-        "cpu"=>value.ToString("0.#",CultureInfo.CurrentCulture)+" %",
+        "cpu" or "gpu"=>value.ToString("0.#",CultureInfo.CurrentCulture)+" %",
         "memory"=>Ui.Bytes(value),
+        // A known zero reads "0 B", not Ui.Bytes's "0.0 B".
+        "gpumemory" or "gpushared"=>value==0?"0 B":Ui.Bytes(value),
         _=>Ui.Bytes(value,true),
     };
 
@@ -475,14 +489,16 @@ internal sealed class ProcessesPage : UserControl
     {
         ["cpu"]="CPU",["memory"]="memory",["io"]="I/O",["ioread"]="I/O read",["iowrite"]="I/O write",["disk"]="disk",["diskread"]="disk read",
         ["diskwrite"]="disk write",["network"]="network",["download"]="download",["upload"]="upload",
+        ["gpu"]="GPU",["gpuengine"]="GPU engine",["gpumemory"]="GPU memory",["gpushared"]="shared GPU memory",
     };
-    /// <summary>Like "chrome.exe, 3 processes, CPU 9 %, memory 512.0 MB": the shown columns in order, an unknown value with its reason.</summary>
+    /// <summary>Like "chrome.exe, 3 processes, CPU 9 %, memory 512.0 MB": the shown columns in order, an unknown value with its reason; an empty cell (a known zero's GPU engine) is left out.</summary>
     private static string Spoken(string name,string lead,IReadOnlyList<string> visible,IReadOnlyDictionary<string,ProcessCell> cells)
     {
         var parts=new List<string> {name,lead};
         foreach(string key in visible.Where(k=>k!="pid"))
         {
             var cell=cells[key];
+            if(cell.Text.Length==0)continue;
             parts.Add(cell.Text!=Dash?$"{SpokenLabels[key]} {cell.Text}":cell.Tip is {} reason?$"{SpokenLabels[key]} unknown ({reason})":$"{SpokenLabels[key]} unknown");
         }
         return string.Join(", ",parts);

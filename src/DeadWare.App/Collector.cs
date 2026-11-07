@@ -86,10 +86,10 @@ public sealed class Collector : IAsyncDisposable
     internal static readonly TimeSpan StorageHealthPeriod=TimeSpan.FromSeconds(30);
     private const string StorageSensorsOff="Unavailable · storage sensors off";
     // Diagnostic isolation (HardwareEnabled:false) keeps WMI and disk counters off the poll thread.
-    public Collector(CollectorOptions? options=null):this(options,options is {HardwareEnabled:false}?null:new WindowsStorage(),processes:new WindowsProcesses()) {}
-    internal Collector(CollectorOptions? options,IStorageFastSource? storage,IStorageHealthSource? healthSource=null,TimeSpan? healthPeriod=null,IProcessSource? processes=null,Func<IDiskTrace>? diskTrace=null)
+    public Collector(CollectorOptions? options=null):this(options,options is {HardwareEnabled:false}?null:new WindowsStorage(),processes:new WindowsProcesses(),gpuCounters:new WindowsGpuCounters()) {}
+    internal Collector(CollectorOptions? options,IStorageFastSource? storage,IStorageHealthSource? healthSource=null,TimeSpan? healthPeriod=null,IProcessSource? processes=null,Func<IDiskTrace>? diskTrace=null,IGpuCounterSource? gpuCounters=null)
     {
-        this.storage=storage;this.healthSource=healthSource;this.healthPeriod=healthPeriod??StorageHealthPeriod;this.processes=processes??new WindowsProcesses();this.options=options??new();SetPollingInterval(this.options.PollingIntervalSeconds);SetProcessMonitoring(this.options.ProcessMonitoring);etw=new(this.options.DiagnosticTimings);
+        this.storage=storage;this.healthSource=healthSource;this.healthPeriod=healthPeriod??StorageHealthPeriod;this.processes=processes??new WindowsProcesses();gpu=gpuCounters;this.options=options??new();SetPollingInterval(this.options.PollingIntervalSeconds);SetProcessMonitoring(this.options.ProcessMonitoring);etw=new(this.options.DiagnosticTimings);
         // ProcessDiskTracing only permits a session; it runs while monitoring is on.
         if(this.options.ProcessDiskTracing)disk=new(diskTrace??(()=>new EtwDisk(EtwDisk.BufferSizeMB)));
     }
@@ -106,6 +106,12 @@ public sealed class Collector : IAsyncDisposable
     private readonly DiskTraceController? disk;
     // The monitoring flag last sent to the disk lifecycle; null before the first pass. Read and written only by the worker.
     private bool? diskRequested;
+    // Null without a source, where monitoring joins an unavailable read, and in the shutdown fixtures built with GetUninitializedObject.
+    private readonly IGpuCounterSource? gpu;
+    // The running GPU loop (own-loop placement), and the Stopped task of the last loop disposed: while it is pending, that loop's read may still be
+    // in flight, so nothing else uses the source. Written only by the worker; disposal only reads them.
+    private GpuCounterLoop? gpuLoop;
+    private Task? gpuLoopStop;
     private readonly CancellationTokenSource cancellation=new();
     private readonly Stopwatch clock=Stopwatch.StartNew();
     private readonly WindowsCounters windows=new();
@@ -162,6 +168,8 @@ public sealed class Collector : IAsyncDisposable
             // Fed by every successful pass's take, monitoring on or off, so a loss marks only the take that reset attribution. A loss first
             // seen by a failed pass's take marks the next successful one, whose attribution was also reset since the previous successful take.
             var networkLoss=new NetworkLossWatch();
+            // Decides the GPU read's placement; reset whenever monitoring is off.
+            var gpuGuard=new GpuPlacementGuard();
             while(!cancellation.IsCancellationRequested)
             {
                 intervalSeconds=PollingIntervalSeconds;
@@ -246,15 +254,29 @@ public sealed class Collector : IAsyncDisposable
                     if(beyondEight) hardwareStatus+=" · "+BeyondEightNote;
                     // Process block 1: a scan failure becomes the published activity and never fails the pass.
                     TrackedScan? tracked=null;string? processFailure=null;
-                    if(!monitoring)tracker.Reset();
+                    GpuCounterRead? gpuRead=null;double? gpuMilliseconds=null,gpuReturned=null;bool gpuOwnLoop=false;
+                    if(!monitoring)
+                    {
+                        tracker.Reset();
+                        // The query closes within this poll, or in loop placement once the loop's read in flight returns.
+                        ReleaseGpu();gpuGuard.Reset();
+                    }
                     else
                     {
+                        // Before the scan, in a try of its own: windows/processes still times only the scan and the tracker update, and a GPU
+                        // failure stays in the GPU columns instead of reaching the scan's catch.
+                        stage="Reading GPU counters";
+                        // Before the read: the poll on which the guard latches still reads on this thread, so it is an every-poll read.
+                        gpuOwnLoop=gpuLoop is not null;
+                        try {gpuRead=ReadGpu(gpuGuard,intervalSeconds,out gpuMilliseconds,out gpuReturned);}
+                        catch(Exception) {gpuRead=GpuCounterRead.Unavailable(GpuCounterStatus.Unavailable,clock.Elapsed.TotalSeconds,DateTimeOffset.UtcNow);gpuMilliseconds=null;gpuReturned=null;}
+                        if(timings is not null&&gpuMilliseconds is {} gpuTime)timings["windows/gpucounters"]=gpuTime;
                         stage="Scanning processes";providerStarted=Stopwatch.GetTimestamp();
                         try
                         {
                             var scan=processes.Scan(clock.Elapsed.TotalSeconds,intervalSeconds);
                             if(scan is null)processFailure=processes.Failure is {Length:>0} failure?failure:ProcessScanUnavailable;
-                            else tracked=tracker.Update(scan);
+                            else tracked=tracker.Update(scan,gpuRead);
                             if(processes.Status is {Length:>0} processStatus) hardwareStatus+=" · "+processStatus;
                         }
                         catch(Exception e) {processFailure=e.GetType().Name;}
@@ -273,7 +295,7 @@ public sealed class Collector : IAsyncDisposable
                         var local=NetworkTrafficSplit.Local(capture.Connections,network.Down,network.Up);
                         values["network/download/local"]=local.Down;values["network/upload/local"]=local.Up;
                         if(timings is not null)timings["etw/snapshot"]=Stopwatch.GetElapsedTime(providerStarted).TotalMilliseconds;
-                        var processActivity=PublishProcesses(monitoring,tracked,processFailure,processorCount,capture,networkLossy,now,timings);
+                        var processActivity=PublishProcesses(monitoring,tracked,processFailure,processorCount,capture,networkLossy,now,timings,gpuRead,gpuMilliseconds,gpuReturned,gpuOwnLoop);
                         var sample=new Snapshot(timestamp,now,new System.Collections.ObjectModel.ReadOnlyDictionary<string,double?>(values)) {PollingIntervalSeconds=intervalSeconds};
                         if(timings is not null)timings["poll/total"]=(clock.Elapsed.TotalSeconds-started)*1000;
                         double elapsed=clock.Elapsed.TotalSeconds-started;
@@ -310,15 +332,68 @@ public sealed class Collector : IAsyncDisposable
             stage="Stopping providers";
             // Requested before Close, as disposal does, so a worker that ends for any reason leaves no disk session; disposal shares this stop.
             var diskStop=disk?.StopAsync()??Task.CompletedTask;
-            try {computer?.Close();} finally {await Task.WhenAll(StopEtwAsync(),diskStop);}
+            try
+            {
+                // No GPU read starts after the worker ends: a running loop is cancelled without waiting, its read in flight returns on its own
+                // and the loop then closes the query. The finally never waits on a GPU read; disposal bounds that wait by HardwareStopBudget.
+                try {ReleaseGpu();}
+                finally {computer?.Close();}
+            }
+            finally {await Task.WhenAll(StopEtwAsync(),diskStop);}
             stage="Stopped";
         }
     }
     private ProcessSummary? Summary(ProcessActivity activity)=>options.DiagnosticTimings?ProcessSummary.From(activity):null;
     private const string ProcessScanUnavailable="Process scan unavailable";
     private static ProcessActivity FailedActivity(bool monitoring,Exception e)=>monitoring?ProcessActivity.Unavailable(e.GetType().Name):ProcessActivity.Off;
+    /// <summary>
+    /// Process block 1's GPU step (spec, Placement and cost). Every poll reads and times the source and feeds the guard, and starts the loop once the
+    /// guard latches; that poll keeps its own read. In loop placement the poll takes the loop's latest read. While a disposed loop's read may still
+    /// be in flight, the poll joins no read (null) and does not read, so one thread at a time uses the source. <paramref name="milliseconds"/> is
+    /// set only when a read ran on this poll or the take is fresh; <paramref name="returnedSeconds"/>, when the loop's read returned, only for a take.
+    /// </summary>
+    private GpuCounterRead? ReadGpu(GpuPlacementGuard guard,double intervalSeconds,out double? milliseconds,out double? returnedSeconds)
+    {
+        milliseconds=null;returnedSeconds=null;
+        if(gpu is null)return GpuCounterRead.Unavailable(GpuCounterStatus.Unavailable,clock.Elapsed.TotalSeconds,DateTimeOffset.UtcNow);
+        if(gpuLoop is {} loop)
+        {
+            var take=loop.Take();
+            if(take is {Fresh:true})milliseconds=take.ReadMilliseconds;
+            returnedSeconds=take?.ReturnedSeconds;
+            return take?.Read;
+        }
+        if(gpuLoopStop is {IsCompleted:false})return null;
+        long started=Stopwatch.GetTimestamp();
+        var read=gpu.Read(clock.Elapsed.TotalSeconds,intervalSeconds);
+        double elapsed=Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+        milliseconds=elapsed;
+        guard.Record(elapsed,gpu.LastReadOpened);
+        if(guard.OwnLoop)
+        {
+            var own=new GpuCounterLoop(gpu,()=>clock.Elapsed.TotalSeconds,()=>PollingIntervalSeconds,()=>processMonitoring);
+            Volatile.Write(ref gpuLoop,own);own.Start();
+        }
+        return read;
+    }
+    /// <summary>
+    /// Monitoring off and the worker's finally: a running loop is cancelled without waiting for its read, which returns on its own before the loop
+    /// closes the query. Otherwise the query is closed here, unless a disposed loop's read may still be in flight. Close is idempotent, so closing
+    /// after a loop has closed is harmless.
+    /// </summary>
+    private void ReleaseGpu()
+    {
+        if(gpuLoop is {} loop)
+        {
+            _=loop.DisposeAsync().AsTask();
+            // The stop is published before the loop is cleared, so disposal always finds one or the other.
+            Volatile.Write(ref gpuLoopStop,loop.Stopped);
+            Volatile.Write(ref gpuLoop,null);
+        }
+        if(gpuLoopStop is not {IsCompleted:false})gpu?.Close();
+    }
     /// <summary>Process block 2, inside the publication lock after the poll's only ETW snapshot: takes the disk trace and joins the scan to per-app traffic and disk. It never throws, so the reading is always published.</summary>
-    private ProcessActivity PublishProcesses(bool monitoring,TrackedScan? tracked,string? failure,int processorCount,NetworkCaptureSnapshot capture,bool networkLossy,double now,Dictionary<string,double>? timings)
+    private ProcessActivity PublishProcesses(bool monitoring,TrackedScan? tracked,string? failure,int processorCount,NetworkCaptureSnapshot capture,bool networkLossy,double now,Dictionary<string,double>? timings,GpuCounterRead? gpuRead,double? gpuMilliseconds,double? gpuReturned,bool gpuOwnLoop)
     {
         if(!monitoring)return ProcessActivity.Off;
         if(failure is not null||tracked is null)return ProcessActivity.Unavailable(failure??ProcessScanUnavailable);
@@ -336,8 +411,14 @@ public sealed class Collector : IAsyncDisposable
             var network=ProcessJoins.Network(tracked.Processes,capture.Processes,capture.Connections.Available,EtwStatus,networkLossy);
             var joined=ProcessJoins.Disk(network.Processes,diskTake);
             var scan=tracked.Scan;
+            // Only a loop read can age: every poll joins its own read. Its age runs from when it returned, so a healthy loop whose reads take most
+            // of a period never shows "stale reading", while a stuck read turns stale two periods after the last one returned.
+            bool gpuStale=gpuOwnLoop&&gpuReturned is {} returned&&now-returned>2*GpuCounterLoop.Period(scan.PollingIntervalSeconds);
+            var gpuSummary=options.DiagnosticTimings?new GpuCounterSummary(gpuRead?.Instances??0,gpuRead?.Skipped??0,gpuRead?.Adapters.Count??0,gpuMilliseconds,tracked.Gpu,
+                gpuOwnLoop?GpuCounterSummary.OwnLoop:GpuCounterSummary.EveryPoll):null;
             return new ProcessActivity(ProcessActivityKind.Available,++processSequence,scan.UtcTime,scan.MonotonicSeconds,scan.PollingIntervalSeconds,processorCount,joined.Processes,tracked.Omitted,tracked.TotalProcesses,tracked.DeltaSeconds)
-                {Network=network.State,NetworkMisses=network.Misses,Disk=joined.State,DiskMisses=joined.Misses,UnattributedDiskEvents=diskTake.UnattributedEvents};
+                {Network=network.State,NetworkMisses=network.Misses,Disk=joined.State,DiskMisses=joined.Misses,UnattributedDiskEvents=diskTake.UnattributedEvents,
+                 Gpu=tracked.Gpu,GpuIntervalSeconds=tracked.GpuIntervalSeconds,GpuStale=gpuStale,GpuSummary=gpuSummary};
         }
         catch(Exception e) {return ProcessActivity.Unavailable(e.GetType().Name);}
         finally {if(timings is not null)timings["processes/join"]=Stopwatch.GetElapsedTime(started).TotalMilliseconds;}
@@ -411,6 +492,10 @@ public sealed class Collector : IAsyncDisposable
         // Started alongside the worker join so both run against one deadline.
         _=cancellation.CancelAsync();
         var healthStop=Volatile.Read(ref healthLoop)?.DisposeAsync().AsTask();
+        // A worker stuck in a hardware provider never reaches its finally, so its GPU loop is cancelled here as well; the loop closes the query once
+        // its read in flight returns.
+        var gpuStopping=Volatile.Read(ref gpuLoop);
+        _=gpuStopping?.DisposeAsync().AsTask();
         try
         {
             var networkStop=StopNetworkCaptureAsync();
@@ -423,8 +508,12 @@ public sealed class Collector : IAsyncDisposable
         {
             // A loop the worker created after cancellation began is still released.
             healthStop??=Volatile.Read(ref healthLoop)?.DisposeAsync().AsTask();
-            // The worker never waits on the loop, so the loop's join shares the hardware budget that began at cancellation.
-            try {if(healthStop is not null)await healthStop.WaitAsync(HardwareStopBudget-Stopwatch.GetElapsedTime(stopStarted) is var left&&left>TimeSpan.Zero?left:TimeSpan.Zero).ConfigureAwait(false);}
+            gpuStopping??=Volatile.Read(ref gpuLoop);
+            _=gpuStopping?.DisposeAsync().AsTask();
+            // The worker never waits on the loops, so their joins share the hardware budget that began at cancellation: the storage-health loop,
+            // and the GPU loop's Stopped or a stop the worker left pending. On a timeout the GPU loop still closes the query once its read returns.
+            Task[] stops=new[]{healthStop,gpuStopping?.Stopped,Volatile.Read(ref gpuLoopStop)}.OfType<Task>().ToArray();
+            try {await Task.WhenAll(stops).WaitAsync(HardwareStopBudget-Stopwatch.GetElapsedTime(stopStarted) is var left&&left>TimeSpan.Zero?left:TimeSpan.Zero).ConfigureAwait(false);}
             catch(TimeoutException) {}
             finally {cancellation.Dispose();(storage as IDisposable)?.Dispose();}
         }

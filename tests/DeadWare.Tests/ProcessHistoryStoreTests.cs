@@ -21,6 +21,60 @@ public class ProcessHistoryStoreTests
         bool complete = true, params ProcessAppMinute[] apps)
         => new(minute, covered, processors, complete, segment, apps);
 
+    private static ProcessMinuteBatch G(DateTimeOffset minute, double covered, ProcessAppMinute[] apps)
+        => Batch(minute, apps: apps) with { GpuCoveredSeconds = covered };
+
+    private static ProcessAppMinute Gpu(string name, double seconds, double memory = 0)
+        => App(name, 1) with { GpuSeconds = seconds, GpuMemoryByteSeconds = memory };
+
+    private static ProcessResourceView Read(ProcessHistoryStore store, ProcessRank rank, int minutes = 1)
+        => store.ReadApplications("m", Day, Day.AddMinutes(minutes), rank, Now);
+
+    // 0.14.0's Schema constant, verbatim (dd4fb74:src/DeadWare.Core/ProcessHistoryStore.cs).
+    private const string Version1Schema = """
+        CREATE TABLE names(id INTEGER PRIMARY KEY, upper TEXT UNIQUE NOT NULL, display TEXT NOT NULL);
+        CREATE TABLE minutes(
+            machine TEXT NOT NULL, minute INTEGER NOT NULL, covered REAL NOT NULL, processors INTEGER NOT NULL,
+            complete INTEGER NOT NULL CHECK(complete IN(0,1)), segment TEXT NOT NULL, PRIMARY KEY(machine,minute)) WITHOUT ROWID;
+        CREATE INDEX minutes_time ON minutes(minute);
+        CREATE TABLE app_minutes(
+            machine TEXT NOT NULL, minute INTEGER NOT NULL, name_id INTEGER NOT NULL, cpu INTEGER NOT NULL, io_read INTEGER NOT NULL,
+            io_write INTEGER NOT NULL, memory_seconds REAL NOT NULL, everything_else INTEGER NOT NULL CHECK(everything_else IN(0,1)),
+            PRIMARY KEY(machine,minute,name_id)) WITHOUT ROWID;
+        """;
+
+    private static readonly string[] Version2Minutes = ["machine", "minute", "covered", "processors", "complete", "segment", "gpu_covered"];
+    private static readonly string[] Version2AppMinutes =
+        ["machine", "minute", "name_id", "cpu", "io_read", "io_write", "memory_seconds", "everything_else", "gpu_seconds", "gpu_memory_seconds"];
+
+    /// <summary>A file as 0.14.0 creates it (its schema, application id, version 1 and WAL), holding minute <see cref="Day"/> of machine "m"
+    /// with one row per (name, CPU ticks).</summary>
+    private static void WriteVersion1(string path, (string Name, long Cpu)[] apps)
+    {
+        using (var db = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = path, Pooling = false }.ToString()))
+        {
+            db.Open();
+            void Run(string sql, params (string Name, object Value)[] args)
+            {
+                using var command = db.CreateCommand(); command.CommandText = sql;
+                foreach (var arg in args) command.Parameters.AddWithValue(arg.Name, arg.Value);
+                command.ExecuteNonQuery();
+            }
+            long minute = Day.ToUnixTimeMilliseconds();
+            Run("PRAGMA journal_mode=WAL");
+            Run(Version1Schema);
+            Run($"PRAGMA application_id={ProcessHistoryStore.ApplicationId}; PRAGMA user_version=1");
+            Run("INSERT INTO minutes(machine,minute,covered,processors,complete,segment) VALUES('m',$minute,60,4,1,'seg-a')", ("$minute", minute));
+            for (int i = 0; i < apps.Length; i++)
+            {
+                Run("INSERT INTO names(id,upper,display) VALUES($id,$upper,$display)", ("$id", i + 1), ("$upper", apps[i].Name.ToUpperInvariant()), ("$display", apps[i].Name));
+                Run("INSERT INTO app_minutes(machine,minute,name_id,cpu,io_read,io_write,memory_seconds,everything_else) VALUES('m',$minute,$id,$cpu,0,0,0,0)",
+                    ("$minute", minute), ("$id", i + 1), ("$cpu", apps[i].Cpu));
+            }
+        }
+        SqliteConnection.ClearAllPools();
+    }
+
     private sealed class Fixture : IDisposable
     {
         private readonly string directory = Path.Combine(Path.GetTempPath(), "deadware-process-history-" + Guid.NewGuid().ToString("N"));
@@ -38,6 +92,19 @@ public class ProcessHistoryStoreTests
             db.Open(); using var command = db.CreateCommand(); command.CommandText = sql;
             using var reader = command.ExecuteReader(); return read(reader);
         }
+
+        public void Execute(string sql)
+        {
+            using var db = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = DbPath, Pooling = false }.ToString());
+            db.Open(); using var command = db.CreateCommand(); command.CommandText = sql; command.ExecuteNonQuery();
+        }
+
+        public List<string> Columns(string table) => Query($"SELECT name FROM pragma_table_info('{table}')", reader =>
+        {
+            var columns = new List<string>();
+            while (reader.Read()) columns.Add(reader.GetString(0));
+            return columns;
+        });
 
         public List<DateTime> Days() => Query("SELECT DISTINCT minute/86400000 FROM minutes ORDER BY 1", reader =>
         {
@@ -63,21 +130,26 @@ public class ProcessHistoryStoreTests
     }
 
     [Fact]
-    public void One_day_at_the_cap_stays_under_four_mebibytes()
+    public void One_day_at_the_cap_stays_under_six_mebibytes()
     {
         using var fixture = new Fixture(); var store = fixture.Open();
         long big = long.MaxValue / 4;
-        var apps = Enumerable.Range(0, ProcessHistory.MaximumApplications).Select(i => App($"application-{i:00}.exe", big, big, big, big))
-            .Append(Else(big, big, big, big)).ToArray();
+        // A fractional part, so SQLite keeps every REAL at its full 8 bytes.
+        double Real(int i) => 1.2345678901234567e15 + i;
+        var apps = Enumerable.Range(0, ProcessHistory.MaximumApplications)
+            .Select(i => App($"application-{i:00}.exe", big, big, big, Real(i)) with { GpuSeconds = Real(i), GpuMemoryByteSeconds = Real(i) })
+            .Append(Else(big, big, big, Real(ProcessHistory.MaximumApplications)) with
+                { GpuSeconds = Real(ProcessHistory.MaximumApplications), GpuMemoryByteSeconds = Real(ProcessHistory.MaximumApplications) }).ToArray();
         for (int start = 0; start < 1440; start += 60)
-            store.Append("DESKTOP-ABCDEFG", Enumerable.Range(start, 60).Select(i => Batch(Day.AddMinutes(i), apps: apps)).ToList(), Day.AddDays(1));
-        Assert.True(store.StorageBytes < 4 * 1024 * 1024, $"One day used {store.StorageBytes:N0} bytes.");
+            store.Append("DESKTOP-ABCDEFG", Enumerable.Range(start, 60)
+                .Select(i => Batch(Day.AddMinutes(i), apps: apps) with { GpuCoveredSeconds = 59.987654321 }).ToList(), Day.AddDays(1));
+        Assert.True(store.StorageBytes < 6 * 1024 * 1024, $"One day used {store.StorageBytes:N0} bytes.");
     }
 
     [Fact]
     public void Cap_and_retention_constants()
     {
-        Assert.Equal(128L * 1024 * 1024, ProcessHistoryStore.MaximumDatabaseBytes);
+        Assert.Equal(192L * 1024 * 1024, ProcessHistoryStore.MaximumDatabaseBytes);
         Assert.Equal(30, ProcessHistoryStore.RetentionDays);
         Assert.Equal(31, ProcessHistoryStore.MaximumReadDays);
         Assert.Equal(1000, ProcessHistoryStore.MaximumRows);
@@ -131,7 +203,7 @@ public class ProcessHistoryStoreTests
             {
                 db.Open(); using var command = db.CreateCommand();
                 command.CommandText = kind == "newer"
-                    ? $"PRAGMA application_id={ProcessHistoryStore.ApplicationId}; PRAGMA user_version=2; CREATE TABLE x(y)"
+                    ? $"PRAGMA application_id={ProcessHistoryStore.ApplicationId}; PRAGMA user_version=3; CREATE TABLE x(y)"
                     : "PRAGMA application_id=1234; PRAGMA user_version=1; CREATE TABLE x(y)";
                 command.ExecuteNonQuery();
             }
@@ -139,7 +211,81 @@ public class ProcessHistoryStoreTests
         }
         byte[] before = File.ReadAllBytes(fixture.DbPath);
         var store = new ProcessHistoryStore(fixture.DbPath);
-        Assert.Throws<InvalidDataException>(store.Initialize);
+        var error = Assert.Throws<InvalidDataException>(store.Initialize);
+        Assert.Equal(kind == "corrupt" ? "Process history is corrupt; the file was preserved." : "Unsupported process history; the file was preserved.", error.Message);
+        Assert.Equal(before, File.ReadAllBytes(fixture.DbPath));
+    }
+
+    [Fact]
+    public void A_new_file_is_version_2_with_the_gpu_columns()
+    {
+        using var fixture = new Fixture(); fixture.Open();
+        Assert.Equal(2L, fixture.Count("PRAGMA user_version"));
+        Assert.Equal(Version2Minutes, fixture.Columns("minutes"));
+        Assert.Equal(Version2AppMinutes, fixture.Columns("app_minutes"));
+    }
+
+    [Fact]
+    public void A_version_1_file_is_upgraded_in_place_and_keeps_its_rows()
+    {
+        using var fixture = new Fixture(); WriteVersion1(fixture.DbPath, [("a.exe", 10_000_000)]);
+        var store = fixture.Open();
+        Assert.Equal(2L, fixture.Count("PRAGMA user_version"));
+        // The same columns, in the same order, as a new file.
+        Assert.Equal(Version2Minutes, fixture.Columns("minutes"));
+        Assert.Equal(Version2AppMinutes, fixture.Columns("app_minutes"));
+        var row = store.ReadApplications("m", Day, Day.AddMinutes(1), ProcessRank.CpuTime, Now).Rows.Single();
+        Assert.Equal(("a.exe", 1.0), (row.Name, row.CpuSeconds));
+        Assert.Equal(1L, fixture.Count("SELECT COUNT(*) FROM minutes WHERE gpu_covered IS NULL"));
+        // ProcessResourceRow's GPU members come in Task 11.
+        Assert.Equal(1L, fixture.Count("SELECT COUNT(*) FROM app_minutes WHERE gpu_seconds IS NULL AND gpu_memory_seconds IS NULL"));
+        // The next start inspects it as version 2 and keeps the minute.
+        Assert.Equal("a.exe", fixture.Open().ReadApplications("m", Day, Day.AddMinutes(1), ProcessRank.CpuTime, Now).Rows.Single().Name);
+    }
+
+    [Fact]
+    public void A_failed_upgrade_leaves_a_valid_version_1_file()
+    {
+        using var fixture = new Fixture(); WriteVersion1(fixture.DbPath, [("a.exe", 10_000_000)]);
+        var store = new ProcessHistoryStore(fixture.DbPath);
+        typeof(ProcessHistoryStore).GetField("beforeUpgradeCommit", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+            .SetValue(store, (Action)(() => throw new InvalidOperationException("seam")));
+        Assert.Throws<InvalidOperationException>(store.Initialize);
+        SqliteConnection.ClearAllPools();
+        Assert.Equal(1L, fixture.Count("PRAGMA user_version"));
+        Assert.DoesNotContain("gpu_seconds", fixture.Columns("app_minutes"));
+        Assert.Equal(1L, fixture.Count("SELECT COUNT(*) FROM app_minutes"));
+        // The next start upgrades it.
+        fixture.Open();
+        Assert.Equal(2L, fixture.Count("PRAGMA user_version"));
+    }
+
+    [Fact]
+    public void A_version_2_start_takes_no_write_lock()
+    {
+        using var fixture = new Fixture(); fixture.Open();
+        // Another connection holds the write lock. A version 2 file has nothing to upgrade, so its start never waits for that lock (the upgrade's
+        // transaction once took it on every start, and failed as busy here).
+        using var writer = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = fixture.DbPath, Pooling = false }.ToString());
+        writer.Open();
+        using (var begin = writer.CreateCommand()) { begin.CommandText = "BEGIN IMMEDIATE"; begin.ExecuteNonQuery(); }
+        fixture.Open();
+        Assert.Equal(2L, fixture.Count("PRAGMA user_version"));
+    }
+
+    [Theory]
+    [InlineData("gpu_covered")]
+    [InlineData("gpu_seconds")]
+    [InlineData("gpu_memory_seconds")]
+    public void A_version_2_file_missing_a_gpu_column_is_rejected_and_preserved(string missing)
+    {
+        using var fixture = new Fixture(); WriteVersion1(fixture.DbPath, []);
+        foreach (var (table, column) in new[] { ("minutes", "gpu_covered"), ("app_minutes", "gpu_seconds"), ("app_minutes", "gpu_memory_seconds") })
+            if (column != missing) fixture.Execute($"ALTER TABLE {table} ADD COLUMN {column} REAL NULL");
+        fixture.Execute("PRAGMA user_version=2");
+        byte[] before = File.ReadAllBytes(fixture.DbPath);
+        var error = Assert.Throws<InvalidDataException>(new ProcessHistoryStore(fixture.DbPath).Initialize);
+        Assert.Equal("Incompatible process history objects; the file was preserved.", error.Message);
         Assert.Equal(before, File.ReadAllBytes(fixture.DbPath));
     }
 
@@ -466,6 +612,34 @@ public class ProcessHistoryStoreTests
     }
 
     [Fact]
+    public void Gpu_values_are_stored_and_a_minute_without_gpu_stores_null()
+    {
+        using var fixture = new Fixture(); var store = fixture.Open();
+        store.Append("m", [Batch(Day, apps: [App("a.exe", 5) with { GpuSeconds = 12, GpuMemoryByteSeconds = 6e9 }, Else(1) with { GpuSeconds = 0, GpuMemoryByteSeconds = 0 }])
+            with { GpuCoveredSeconds = 60 }, Batch(Day.AddMinutes(1), apps: [App("a.exe", 5)])], Now);
+        Assert.Equal(60.0, fixture.Query("SELECT gpu_covered FROM minutes ORDER BY minute", r => { r.Read(); return r.GetDouble(0); }));
+        Assert.Equal(1L, fixture.Count("SELECT COUNT(*) FROM minutes WHERE gpu_covered IS NULL"));
+        Assert.Equal((12.0, 6e9), fixture.Query("SELECT gpu_seconds,gpu_memory_seconds FROM app_minutes a JOIN names n ON n.id=a.name_id WHERE n.upper='A.EXE' ORDER BY minute",
+            r => { r.Read(); return (r.GetDouble(0), r.GetDouble(1)); }));
+        // Everything else's zeros stay zeros; the minute without GPU data stores NULL, never 0.
+        Assert.Equal(1L, fixture.Count("SELECT COUNT(*) FROM app_minutes WHERE everything_else=1 AND gpu_seconds=0 AND gpu_memory_seconds=0"));
+        Assert.Equal(1L, fixture.Count($"SELECT COUNT(*) FROM app_minutes WHERE minute={Day.AddMinutes(1).ToUnixTimeMilliseconds()} AND gpu_seconds IS NULL AND gpu_memory_seconds IS NULL"));
+    }
+
+    [Fact]
+    public void Invalid_gpu_values_are_rejected_without_writing()
+    {
+        using var fixture = new Fixture(); var store = fixture.Open(); var ok = Batch(Day, apps: [App("a.exe", 5)]);
+        foreach (var bad in new[] { ok with { GpuCoveredSeconds = double.NaN }, ok with { GpuCoveredSeconds = -1 },
+            ok with { Applications = [App("a.exe", 5) with { GpuSeconds = 1 }] }, ok with { Applications = [App("a.exe", 5) with { GpuMemoryByteSeconds = 1 }] },
+            ok with { GpuCoveredSeconds = 60, Applications = [App("a.exe", 5) with { GpuSeconds = -1 }] },
+            ok with { GpuCoveredSeconds = 60, Applications = [App("a.exe", 5) with { GpuMemoryByteSeconds = double.PositiveInfinity }] },
+            ok with { Applications = [.. Enumerable.Range(0, 41).Select(i => App($"a{i}.exe", 1)), Else(1)] } })
+            Assert.Throws<ArgumentException>(() => store.Append("m", [bad], Now));
+        Assert.Empty(fixture.Days());
+    }
+
+    [Fact]
     public void Unpaired_surrogate_reserved_and_path_shaped_names_are_rejected_without_writing()
     {
         using var fixture = new Fixture(); var store = fixture.Open();
@@ -531,6 +705,66 @@ public class ProcessHistoryStoreTests
         Assert.Equal(2, series.Minutes);
         // The next read sees every saved minute.
         Assert.Equal(3, writer.ReadApplications("m", At(12, 0, 0), At(13, 0, 0), ProcessRank.CpuTime, Now).RecordedMinutes);
+    }
+
+    [Fact]
+    public void Rank_by_gpu_orders_by_gpu_seconds_and_the_total_includes_everything_else()
+    {
+        using var fixture = new Fixture(); var store = fixture.Open();
+        store.Append("m", [G(Day, 60, [Gpu("a.exe", 10), Gpu("b.exe", 30), App("c.exe", 99) with { GpuSeconds = 0, GpuMemoryByteSeconds = 0 },
+            Else(1) with { GpuSeconds = 5, GpuMemoryByteSeconds = 0 }])], Now);
+        var v = Read(store, ProcessRank.Gpu);
+        Assert.Equal(["b.exe", "a.exe", "c.exe"], v.Rows.Select(r => r.Name));
+        Assert.Equal(45, v.RankTotal, 6);
+        Assert.Equal(30, v.Rows[0].PartOf(ProcessRank.Gpu), 6);
+    }
+
+    [Fact]
+    public void Avg_gpu_is_a_share_of_gpu_covered_time_only()
+    {
+        using var fixture = new Fixture(); var store = fixture.Open();
+        var none = Else(1) with { GpuSeconds = 0, GpuMemoryByteSeconds = 0 };
+        store.Append("m", [G(Day, 60, [Gpu("a.exe", 30), Else(1) with { GpuSeconds = 180, GpuMemoryByteSeconds = 0 }]), G(Day.AddMinutes(1), 60, [Gpu("a.exe", 0), none]),
+            Batch(Day.AddMinutes(2), apps: [App("a.exe", 1), Else(1)]), Batch(Day.AddMinutes(3), apps: [App("a.exe", 1), Else(1)]), G(Day.AddMinutes(4), 30, [Gpu("b.exe", 6), none])], Now);
+        var v = Read(store, ProcessRank.Gpu, 5);
+        Assert.Equal(150, v.GpuCoveredSeconds, 6);
+        // 100 x 30 / 150: not 25 (/ the 120 s a.exe was listed, or the mean of its minutes' 50 % and 0 %) and not 16.7 (the mean of 50 %, 0 % and 0 %).
+        Assert.Equal(20, v.Rows.Single(r => r.Name == "a.exe").AverageGpuPercent!.Value, 6);
+        Assert.Equal(4, v.Rows.Single(r => r.Name == "b.exe").AverageGpuPercent!.Value, 6);
+        Assert.Equal(120, v.EverythingElse.AverageGpuPercent!.Value, 6);   // unclamped
+    }
+
+    [Fact]
+    public void Avg_gpu_memory_while_listed_divides_by_the_listed_gpu_minutes()
+    {
+        using var fixture = new Fixture(); var store = fixture.Open();
+        store.Append("m", [G(Day, 60, [Gpu("a.exe", 1, 6e9)]), Batch(Day.AddMinutes(1), apps: [App("a.exe", 1)]), G(Day.AddMinutes(2), 60, [Gpu("b.exe", 1)])], Now);
+        Assert.Equal(1e8, Read(store, ProcessRank.Gpu, 3).Rows.Single(r => r.Name == "a.exe").AverageGpuMemoryBytes!.Value, 1);
+    }
+
+    [Fact]
+    public void Gpu_values_are_null_without_gpu_data()
+    {
+        using var fixture = new Fixture(); var store = fixture.Open();
+        store.Append("m", [Batch(Day, apps: [App("a.exe", 5), Else(1)])], Now);
+        var v = Read(store, ProcessRank.Gpu); var r = v.Rows.Single();
+        Assert.Equal(0, v.GpuCoveredSeconds);
+        Assert.Null(r.GpuSeconds); Assert.Null(r.AverageGpuPercent); Assert.Null(r.AverageGpuMemoryBytes);
+        Assert.Equal(0, r.PartOf(ProcessRank.Gpu)); Assert.Equal(0, v.RankTotal);
+    }
+
+    [Fact]
+    public void The_gpu_series_uses_only_minutes_with_gpu_and_leaves_the_rest_as_gaps()
+    {
+        using var fixture = new Fixture(); var store = fixture.Open();
+        store.Append("m", [G(Day, 60, [Gpu("a.exe", 30)]), G(Day.AddMinutes(1), 30, [Gpu("a.exe", 3)]), Batch(Day.AddMinutes(2), apps: [App("a.exe", 1)]),
+            G(Day.AddMinutes(3), 60, [Gpu("a.exe", 6)]), G(Day.AddMinutes(4), 60, [Gpu("b.exe", 1)])], Now);
+        var s = store.ReadSeries("m", "a.exe", ProcessRank.Gpu, Day, Day.AddMinutes(6), 3, Now);
+        Assert.Equal(120_000, s.BucketMilliseconds); Assert.Equal(2, s.Buckets.Count);   // the third bucket has no GPU minute of a.exe
+        var two = s.Buckets[0];
+        Assert.Equal(2L, two.Minutes); Assert.Equal(100.0 * 33 / 90, two.Average, 6); Assert.Equal((10.0, 50.0), (two.Minimum, two.Maximum));   // sum / sum, not the mean 30
+        Assert.Equal((Day.AddMinutes(2), 1L, 10.0), (s.Buckets[1].Start, s.Buckets[1].Minutes, s.Buckets[1].Average));   // minute 2 (no GPU data) is a gap
+        Assert.Equal(26, s.Statistics.Average!.Value, 6);   // 100 x 39 / 150
     }
 
     private sealed class TupleComparer : IEqualityComparer<(double, double)>
