@@ -9,6 +9,7 @@ internal sealed record ConnectionServiceOptions(int QueueCapacity=120,int Maximu
 /// <summary>Shared immutable live publication, independent bounded enrichment and durable writer.</summary>
 public sealed class ConnectionService
 {
+    public static readonly TimeSpan DefaultFlushInterval=TimeSpan.FromSeconds(15);
     private readonly ConnectionDatabaseDownload downloader=new();
     private readonly ConnectionHistoryStore? store;
     private Task? initialization;
@@ -232,81 +233,87 @@ public sealed class ConnectionService
     {
         try {await InitializeAsync().ConfigureAwait(false);}
         catch(Exception error) {lock(gate)storageStatus=$"Connection history unavailable ({error.GetType().Name}). Live capture continues.";}
-        var records=new List<ConnectionHistoryRecord>();var coverage=new List<ConnectionCoverage>();var attempted=new HashSet<string>(StringComparer.Ordinal);int publications=0,held=0;
-        var batchCounts=new Dictionary<string,int>(StringComparer.Ordinal);
-        void Flush(bool final=false,bool maintenance=false)
+        ConnectionMinuteFolder folder;
+        lock(gate)folder=new(locations.TryGetValue,Math.Max(1,options.MaximumBufferedDeltas/2));
+        // Every folder call runs under the gate, because the lookup worker changes the location cache under it.
+        // buffered stays the queued deltas plus the folder's open (Held) and frozen (Waiting) sizes.
+        T Fold<T>(Func<T> call)
         {
-            if(publications==0&&!maintenance)return;
-            // A rollback can strand accepted observations beyond the store's future guard.
-            // Retire entire pending batches, including any already-attempted immutable payload,
-            // rather than poisoning fresh writes or replaying a changed subset under the same ID.
-            var now=clock();var latest=now.AddSeconds(2);
-            var unsafeBatches=records.Where(r=>r.Delta.LastSeen>latest).Select(r=>r.BatchId)
-                .Concat(coverage.Where(c=>c.To>latest).Select(c=>c.BatchId)).ToHashSet(StringComparer.Ordinal);
-            if(unsafeBatches.Count>0)
+            int before=folder.Held+folder.Waiting;
+            var result=call();
+            buffered+=folder.Held+folder.Waiting-before;
+            return result;
+        }
+        // One write attempt. Units are immutable once frozen, so a retry resends exactly the same payload under the same BatchId.
+        void Write(bool final=false,bool maintenance=false)
+        {
+            while(true)
             {
-                records.RemoveAll(r=>unsafeBatches.Contains(r.BatchId));coverage.RemoveAll(c=>unsafeBatches.Contains(c.BatchId));
-                lock(gate)foreach(string batch in unsafeBatches)
+                var now=clock();
+                ConnectionSendable sendable;
+                lock(gate)
                 {
-                    int count=batchCounts[batch];DropLocked(Math.Max(1,count));buffered-=count;held-=count;bufferedPublications--;publications--;
-                    batchCounts.Remove(batch);attempted.Remove(batch);
+                    sendable=Fold(()=>folder.Sendable(now,final));
+                    foreach(var unit in sendable.Retired)DropLocked(Math.Max(1,unit.Observations));
                 }
+                // A maintenance tick still appends with nothing to send, so expiry and Cleanup run.
+                if(sendable.Send.Count==0&&!maintenance)return;
+                maintenance=false;
+                var records=sendable.Send.SelectMany(u=>u.Records).ToArray();var coverage=sendable.Send.SelectMany(u=>u.Coverage).ToArray();
+                try
+                {
+                    append(Array.AsReadOnly(records),Array.AsReadOnly(coverage),now);
+                    lock(gate){storageStatus="Connection history saved locally · rolling 30 days.";Fold(()=>{folder.Sent(sendable.Send);return 0;});}
+                }
+                catch(Exception error)
+                {
+                    lock(gate)
+                    {
+                        storageStatus=$"Connection history unavailable ({error.GetType().Name}). Live capture continues.";
+                        // Not final: every unit waits unchanged for the next attempt.
+                        if(final)
+                        {
+                            var unsent=Fold(folder.DropWaiting);
+                            DropLocked(Math.Max(1,unsent.Sum(u=>u.Observations)));
+                        }
+                    }
+                    return;
+                }
+                if(!final||sendable.Send.Count==0)return;
             }
-            // Freeze geography at the first persistence attempt, after the normal flush window
-            // has given short-lived peers a chance to resolve. Retries retain identical payloads.
-            lock(gate)
-            {
-                for(int i=0;i<records.Count;i++)
-                    if(!attempted.Contains(records[i].BatchId)&&locations.TryGetValue(records[i].Delta.Peer.RemoteAddress,out var location))records[i]=records[i] with {Location=location};
-                foreach(var record in records)attempted.Add(record.BatchId);
-            }
-            try
-            {
-                append(records.AsReadOnly(),coverage.AsReadOnly(),now);
-                lock(gate)storageStatus="Connection history saved locally · rolling 30 days.";
-            }
-            catch(Exception error)
-            {
-                lock(gate)storageStatus=$"Connection history unavailable ({error.GetType().Name}). Live capture continues.";
-                if(!final)return; // Keep the exact immutable batch for a bounded retry.
-                lock(gate)DropLocked(Math.Max(1,held));
-            }
-            lock(gate){buffered-=held;bufferedPublications-=publications;}
-            records.Clear();coverage.Clear();attempted.Clear();batchCounts.Clear();publications=0;held=0;
         }
         async Task Process(Pending item)
         {
             await EnrichAsync(item.Sample).ConfigureAwait(false);
-            string batch=$"{item.Sample.Segment}:{item.Sample.Sequence}:{item.Generation}";
             bool complete=item.Complete&&item.Sample.Available;
-            var valid=new List<ConnectionDelta>();
+            var accepted=new List<ConnectionDelta>();
             foreach(var delta in item.Sample.Deltas)
             {
                 // Never shift skewed/paused observations into a fabricated publication-time minute.
                 if((item.Since.HasValue&&delta.FirstSeen<item.Since)||delta.FirstSeen<item.Sample.Timestamp.AddSeconds(-60)||delta.LastSeen>item.Sample.Timestamp.AddSeconds(2))
                 {lock(gate)DropLocked(1);complete=false;continue;}
-                valid.Add(delta);
+                accepted.Add(delta);
             }
-            lock(gate)foreach(var delta in valid)records.Add(new(batch,item.Sample.Segment,delta,locations.GetValueOrDefault(delta.Peer.RemoteAddress),item.Origin,complete));
-            if(item.Sample.CoverageFrom is { } from&&from<item.Sample.Timestamp&&(item.Sample.Timestamp-from).TotalSeconds<=60)
+            int frozen;
+            lock(gate)
             {
-                from=from.ToUniversalTime();var to=item.Sample.Timestamp.ToUniversalTime();
-                while(from<to)
-                {
-                    var boundary=new DateTimeOffset(from.Year,from.Month,from.Day,from.Hour,from.Minute,0,TimeSpan.Zero).AddMinutes(1);
-                    var end=boundary<to?boundary:to;
-                    coverage.Add(new(batch,item.Sample.Segment,from,end,complete));from=end;
-                }
+                frozen=Fold(()=>folder.Merge(item.Sample,item.Generation,item.Origin,complete,accepted));
+                buffered-=item.Sample.Deltas.Count;bufferedPublications--;
             }
-            batchCounts.Add(batch,item.Sample.Deltas.Count);held+=item.Sample.Deltas.Count;publications++;
-            if(records.Count>=options.MaximumBufferedDeltas||publications>=options.QueueCapacity)Flush();
+            if(frozen>0)Write();
         }
-        using var timer=new PeriodicTimer(options.FlushInterval??TimeSpan.FromSeconds(15));
+        using var timer=new PeriodicTimer(options.FlushInterval??DefaultFlushInterval);
         Task<bool> tick=timer.WaitForNextTickAsync().AsTask(),available=queue.Reader.WaitToReadAsync().AsTask();
         while(true)
         {
             await Task.WhenAny(tick,available).ConfigureAwait(false);
-            if(tick.IsCompleted){if(!await tick.ConfigureAwait(false))break;Flush(maintenance:true);tick=timer.WaitForNextTickAsync().AsTask();}
+            if(tick.IsCompleted)
+            {
+                if(!await tick.ConfigureAwait(false))break;
+                var now=clock();
+                lock(gate)Fold(()=>folder.Tick(now,generation));
+                Write(maintenance:true);tick=timer.WaitForNextTickAsync().AsTask();
+            }
             if(available.IsCompleted)
             {
                 if(!await available.ConfigureAwait(false))break;
@@ -318,7 +325,9 @@ public sealed class ConnectionService
                 available=queue.Reader.WaitToReadAsync().AsTask();
             }
         }
-        Flush(final:true);
+        // R6: the queue is complete and drained, so every open unit is final.
+        lock(gate)Fold(folder.FreezeAll);
+        Write(final:true);
     }
     public Task StopAsync()
     {
