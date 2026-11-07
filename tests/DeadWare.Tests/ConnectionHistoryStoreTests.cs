@@ -11,11 +11,11 @@ public sealed class ConnectionHistoryStoreTests(ITestOutputHelper testOutput) : 
     private string Database => Path.Combine(directory, "connections.db");
     private static readonly DateTimeOffset Epoch = new(2026, 10, 25, 12, 0, 0, TimeSpan.Zero);
     private static readonly ConnectionLocation Place = new("US", "United States", "Illinois", "Chicago", new(41,-87), "fixture");
-    private ConnectionHistoryStore Store(long cap = 268435456) { var store = new ConnectionHistoryStore(Database, cap); store.Initialize(); return store; }
+    private ConnectionHistoryStore Store(long cap = 268435456, int pages = 16384, string? file = null) { var store = new ConnectionHistoryStore(file ?? Database, cap, maximumGroupedTempPages: pages); store.Initialize(); return store; }
     private static ConnectionHistoryRecord Row(int minute = 0, string batch = "b", long received = 10, long sent = 20, long generation = 1, string name = "browser", string address = "8.8.8.8") =>
         new(batch, "segment", new(Epoch.AddMinutes(minute), new(new(7,generation,name), "192.168.1.234", 49123, address, 443, ConnectionProtocol.Tcp), received, sent, Epoch.AddMinutes(minute).AddSeconds(1), Epoch.AddMinutes(minute).AddSeconds(2)), Place, new(40,-80), true);
     private static ConnectionHistoryQuery Query(int minutes = 10) => new(Epoch, Epoch.AddMinutes(minutes));
-    private SqliteConnection Connect() { var db = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource=Database, Pooling=false, DefaultTimeout=1 }.ToString()); db.Open(); return db; }
+    private SqliteConnection Connect(string? file = null) { var db = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource=file ?? Database, Pooling=false, DefaultTimeout=1 }.ToString()); db.Open(); return db; }
     private static void Sql(SqliteConnection db, string sql) { using var cmd = db.CreateCommand(); cmd.CommandText=sql; cmd.ExecuteNonQuery(); }
     public void Dispose() { if(Directory.Exists(directory)) Directory.Delete(directory,true); }
 
@@ -185,7 +185,7 @@ public sealed class ConnectionHistoryStoreTests(ITestOutputHelper testOutput) : 
         var store=Store(); var rows=Enumerable.Range(0,300).Select(i=>Row(i,"b"+i,address:"8.9."+(i/250)+"."+(i%250+1)) with {Location=Place with {City="City "+i,Point=new(i%90,i%180)}}).ToList();
         rows.Add(Row(300,"local",address:"192.168.3.5") with {Location=null}); rows.Add(Row(301,"unknown",address:"9.9.9.9") with {Location=null});
         store.Append(rows,[],Epoch.AddMinutes(302)); var view=store.Read(Query(302));
-        Assert.Equal(256,view.Markers.Count); Assert.Equal(302,view.Summary.Destinations); Assert.Equal(1,view.Summary.Countries); Assert.Equal(2,view.Summary.Unlocated); Assert.Equal(1,view.Summary.Local); Assert.Equal(3020,view.Summary.ReceivedBytes);
+        Assert.Equal(256,view.Markers.Count); Assert.Equal(302,view.Summary.Destinations); Assert.Equal(1,view.Summary.Countries); Assert.Equal(1,view.Summary.Unlocated); Assert.Equal(1,view.Summary.Local); Assert.Equal(3020,view.Summary.ReceivedBytes);
         Assert.Equal(44,view.OmittedMarkers);
     }
     [Fact] public void Additional_schema_objects_are_rejected_without_modifying_existing_database()
@@ -315,5 +315,172 @@ public sealed class ConnectionHistoryStoreTests(ITestOutputHelper testOutput) : 
         using(var db=Connect()) {using var command=db.CreateCommand(); command.CommandText="SELECT count(*) FROM traffic"; Assert.True((long)command.ExecuteScalar()!>0); Sql(db,"DROP TRIGGER fail_cleanup");}
         store.Append(old,[],Epoch.AddMinutes(2)); Assert.Empty(store.Read(Query()).Rows);
         store.Append(incoming,[coverage],Epoch.AddMinutes(2)); var complete=Store().Read(Query()); Assert.Equal(200,complete.TotalRows); Assert.Equal(Epoch.AddMinutes(1),complete.EarliestRetainedTime); Assert.Single(complete.Coverage);
+    }
+
+    private static ConnectionHistoryRecord Peer(string batch, DateTimeOffset minute, string address, ConnectionLocation? location, long received = 10, long sent = 20,
+        int pid = 7, string name = "browser", GeoPoint? origin = null, int firstSecond = 1, int lastSecond = 2, ConnectionProtocol protocol = ConnectionProtocol.Tcp) =>
+        new(batch, "s", new(minute, new(new(pid,1,name), "192.168.1.234", 49123, address, 443, protocol), received, sent, minute.AddSeconds(firstSecond), minute.AddSeconds(lastSecond)), location, origin ?? new(40,-80), true);
+    private long Traffic(string file) { using var db=Connect(file); using var command=db.CreateCommand(); command.CommandText="SELECT count(*) FROM traffic"; return (long)command.ExecuteScalar()!; }
+    private static string Csv(ConnectionHistoryStore store, ConnectionHistoryQuery query) { using var output=new StringWriter(); store.ExportCsv(output,query); return output.ToString(); }
+
+    [Fact] public void Per_minute_rows_read_the_same_as_per_poll_rows()
+    {
+        (string Address, ConnectionLocation? Location)[] pairs=[("8.8.8.8",Place),("192.168.1.5",null),("9.9.9.9",null)];
+        string fileA=Path.Combine(directory,"per-poll.db"), fileB=Path.Combine(directory,"per-minute.db");
+        var a=Store(file:fileA); var b=Store(file:fileB);
+        a.Append([..Enumerable.Range(0,60).SelectMany(i=>pairs.Select(p=>Peer($"s:{i}:1",Epoch,p.Address,p.Location,10,10,firstSecond:i,lastSecond:i)))],
+            [..Enumerable.Range(0,60).Select(i=>new ConnectionCoverage($"s:{i}:1","s",Epoch.AddSeconds(i),Epoch.AddSeconds(i+1),true))],Epoch.AddMinutes(2));
+        string unit=ConnectionMinuteFolder.BatchId("s",Epoch,1,0);
+        b.Append([..pairs.Select(p=>Peer(unit,Epoch,p.Address,p.Location,600,600,firstSecond:0,lastSecond:59))],[new(unit,"s",Epoch,Epoch.AddMinutes(1),true)],Epoch.AddMinutes(2));
+        var viewA=a.Read(Query(2)); var viewB=b.Read(Query(2));
+        Assert.Equal(3,viewA.TotalRows);
+        Assert.Equal(viewA.Rows,viewB.Rows); Assert.Equal(viewA.TotalRows,viewB.TotalRows); Assert.Equal(viewA.Summary,viewB.Summary); Assert.Equal(viewA.Markers,viewB.Markers);
+        Assert.Equal(viewA.Coverage,viewB.Coverage); Assert.Equal(viewA.Gaps,viewB.Gaps); Assert.Equal(viewA.EarliestRetainedTime,viewB.EarliestRetainedTime);
+        Assert.Equal(Csv(a,Query(2)),Csv(b,Query(2)));
+        Assert.Equal((180L,3L),(Traffic(fileA),Traffic(fileB)));
+    }
+
+    [Fact] public void Grouped_read_matches_the_three_scan_reference()
+    {
+        var store=Store(); var records=new List<ConnectionHistoryRecord>();
+        // 300 located groups at minutes 3..302; expiry and floor below hide minutes 3..6, leaving 296 (more than 256 markers).
+        for(int i=0;i<300;i++)
+            records.Add(Peer($"g{i}",Epoch.AddMinutes(3+i),"8.9."+(i/250)+"."+(i%250+1),Place with {City="City "+i,Point=new(i%90,i%180)},
+                i%4==0?0:10+i,i%3==0?0:20+i,pid:i==42?4242:7+i%3,name:"app"+(i%5)));
+        // Per-poll rows: one pair in minute 310 over five batches, plus a per-minute unit sharing that pair in minute 311.
+        for(int k=0;k<5;k++) records.Add(Peer($"p{k}",Epoch.AddMinutes(310),"8.8.8.8",Place,10,10,name:"app2",firstSecond:k,lastSecond:k));
+        records.Add(Peer("q0",Epoch.AddMinutes(311),"8.8.8.8",Place,10,10,name:"app2",firstSecond:3,lastSecond:3));
+        string unit=ConnectionMinuteFolder.BatchId("s",Epoch.AddMinutes(311),1,0);
+        var noPoint=Place with {CountryCode="AU",Country="Australia",City="Sydney",Point=null};
+        records.Add(Peer(unit,Epoch.AddMinutes(311),"8.8.8.8",Place,600,600,name:"app2",firstSecond:0,lastSecond:59));
+        records.Add(Peer(unit,Epoch.AddMinutes(311),"192.168.3.5",null,600,0,name:"app1"));
+        records.Add(Peer(unit,Epoch.AddMinutes(311),"100.64.0.1",null,0,600,name:"app3"));
+        records.Add(Peer(unit,Epoch.AddMinutes(311),"239.255.255.250",null,5,5,name:"app4",protocol:ConnectionProtocol.Udp));
+        records.Add(Peer(unit,Epoch.AddMinutes(311),"9.9.9.9",null,7,7,pid:4242,name:"app0"));
+        records.Add(Peer(unit,Epoch.AddMinutes(311),"1.0.0.1",noPoint,8,8,name:"app2"));
+        // Two origins at one location.
+        records.Add(Peer("o",Epoch.AddMinutes(320),"8.8.4.4",Place,50,50,name:"app2"));
+        records.Add(Peer("o",Epoch.AddMinutes(320),"8.8.4.4",Place,70,0,name:"app2",origin:new(10,10)));
+        store.Append(records,[],Epoch.AddMinutes(400));
+        using(var db=Connect())
+            Sql(db,$"UPDATE metadata SET value={Epoch.AddMinutes(4).UtcTicks} WHERE key='expiry'; UPDATE metadata SET value={Epoch.AddMinutes(6).UtcTicks} WHERE key='floor'");
+        var whole=Reference(Query(600)); Assert.Equal(256,whole.Markers.Count); Assert.Equal(296+2-256,whole.OmittedMarkers);
+        foreach(var q in new[]{Query(600),Query(600) with {Search="app2"},Query(600) with {Search="4242"},Query(600) with {CountryCode="US"},
+            Query(600) with {Direction=ConnectionDirection.Received},Query(600) with {Direction=ConnectionDirection.Sent}})
+        foreach(int offset in new[]{0,200,(int)Reference(q).TotalRows+5})
+        {
+            var mine=store.Read(q with {Offset=offset}); var theirs=Reference(q with {Offset=offset});
+            Assert.Equal(theirs.Rows,mine.Rows); Assert.Equal(theirs.TotalRows,mine.TotalRows); Assert.Equal(theirs.Summary,mine.Summary);
+            Assert.Equal(theirs.Markers,mine.Markers); Assert.Equal(theirs.OmittedMarkers,mine.OmittedMarkers);
+        }
+    }
+
+    private sealed record ReferenceView(IReadOnlyList<ConnectionHistoryRow> Rows, long TotalRows, ConnectionHistorySummary Summary, IReadOnlyList<ConnectionHistoryMarker> Markers, long OmittedMarkers);
+    // The 0.15 statements, copied verbatim from 75d6d65 (ConnectionHistoryStore.cs :22-35, :342, :345 and :351-369), with kind=0 added inside Unlocated's CASE.
+    private const string ReferenceColumns = "minute,pid,generation,name,remote,port,protocol,first_seen,last_seen,received,sent,location,origin,complete";
+    private const string ReferenceRowOrder = "minute DESC,pid,generation,name,remote,port,protocol,location,origin";
+    private const string ReferenceGrouped = """
+        SELECT minute,pid,generation,name,remote,port,protocol,min(first_seen) first_seen,
+          max(last_seen) last_seen,sat_sum(received) received,sat_sum(sent) sent,
+          location,origin,min(complete) complete,country,kind
+        FROM traffic
+        WHERE minute >= max($from,coalesce((SELECT value FROM metadata WHERE key='expiry'),0)) AND minute < $to
+          AND minute > (SELECT value FROM metadata WHERE key='floor')
+          AND ($search='' OR instr(search,$search)>0 OR instr(cast(pid AS TEXT),$search)>0)
+          AND ($country='' OR country=$country)
+        GROUP BY minute,pid,generation,name,remote,port,protocol,location,origin,country,kind
+        HAVING ($direction=0 OR ($direction=1 AND sat_sum(received)>0) OR ($direction=2 AND sat_sum(sent)>0))
+        """;
+    private ReferenceView Reference(ConnectionHistoryQuery query)
+    {
+        using var db=new SqliteConnection(new SqliteConnectionStringBuilder { DataSource=Database, Mode=SqliteOpenMode.ReadOnly, Pooling=false, DefaultTimeout=1 }.ToString());
+        db.Open(); db.CreateAggregate<long,long>("sat_sum",0,(sum,value)=>sum>long.MaxValue-value?long.MaxValue:sum+value);
+        using var tx=db.BeginTransaction(deferred:true);
+        SqliteCommand Command(string sql,bool page=false)
+        {
+            var command=db.CreateCommand(); command.CommandText=sql; command.Transaction=tx;
+            command.Parameters.AddWithValue("$from",query.From.UtcTicks); command.Parameters.AddWithValue("$to",query.To.UtcTicks);
+            command.Parameters.AddWithValue("$search",query.Search); command.Parameters.AddWithValue("$country",query.CountryCode); command.Parameters.AddWithValue("$direction",(int)query.Direction);
+            if(page) {command.Parameters.AddWithValue("$limit",query.Limit); command.Parameters.AddWithValue("$offset",query.Offset);}
+            return command;
+        }
+        static ConnectionHistoryRow ReadRow(SqliteDataReader r) =>
+            new(new(r.GetInt64(0),TimeSpan.Zero),new(r.GetInt32(1),r.GetInt64(2),r.GetString(3)),r.GetString(4),r.GetInt32(5),(ConnectionProtocol)r.GetInt32(6),new(r.GetInt64(7),TimeSpan.Zero),new(r.GetInt64(8),TimeSpan.Zero),
+                r.GetInt64(9),r.GetInt64(10),r.GetInt64(9)/60.0,r.GetInt64(10)/60.0,System.Text.Json.JsonSerializer.Deserialize<ConnectionLocation>(r.GetString(11)),System.Text.Json.JsonSerializer.Deserialize<GeoPoint>(r.GetString(12)),r.GetInt32(13)!=0);
+        var rows=new List<ConnectionHistoryRow>();
+        using(var command=Command("WITH filtered AS ("+ReferenceGrouped+") SELECT "+ReferenceColumns+" FROM filtered ORDER BY "+ReferenceRowOrder+" LIMIT $limit OFFSET $offset",page:true))
+        using(var reader=command.ExecuteReader()) while(reader.Read()) rows.Add(ReadRow(reader));
+        long total; ConnectionHistorySummary summary;
+        static long Value(SqliteDataReader reader,int ordinal) => reader.IsDBNull(ordinal)?0:reader.GetInt64(ordinal);
+        using(var command=Command("WITH filtered AS ("+ReferenceGrouped+") SELECT count(*),sat_sum(received),sat_sum(sent),count(DISTINCT nullif(country,'')),count(DISTINCT remote),count(DISTINCT CASE WHEN kind=0 AND (location='null' OR json_extract(location,'$.Point') IS NULL) THEN remote END),count(DISTINCT CASE WHEN kind=1 THEN remote END) FROM filtered"))
+        using(var reader=command.ExecuteReader()) {reader.Read(); total=reader.GetInt64(0); summary=new(Value(reader,1),Value(reader,2),reader.GetInt64(3),reader.GetInt64(4),reader.GetInt64(5),reader.GetInt64(6));}
+        var markers=new List<ConnectionHistoryMarker>(); long markerCount=0;
+        string markerSql=$"""
+            WITH filtered AS ({ReferenceGrouped}),
+            ranked AS (SELECT *,row_number() OVER (ORDER BY {ReferenceRowOrder})-1 row_index FROM filtered),
+            groups AS (
+              SELECT location,origin,sat_sum(received) total_received,sat_sum(sent) total_sent,min(row_index) representative
+              FROM ranked WHERE location<>'null' AND json_extract(location,'$.Point') IS NOT NULL GROUP BY location,origin),
+            markers AS (
+              SELECT *,count(*) OVER () marker_count FROM groups
+              ORDER BY (cast(total_received AS REAL)+cast(total_sent AS REAL)) DESC,location,origin LIMIT 256)
+            SELECT {string.Join(',',ReferenceColumns.Split(',').Select(c=>"r."+c))},m.total_received,m.total_sent,m.representative,m.marker_count
+            FROM markers m JOIN ranked r ON r.row_index=m.representative
+            ORDER BY (cast(m.total_received AS REAL)+cast(m.total_sent AS REAL)) DESC,m.location,m.origin
+            """;
+        using(var command=Command(markerSql))
+        using(var reader=command.ExecuteReader()) while(reader.Read())
+        {
+            var representative=ReadRow(reader); markerCount=reader.GetInt64(17);
+            markers.Add(new(representative.Location!,representative.Origin,reader.GetInt64(14),reader.GetInt64(15),representative,reader.GetInt64(16)));
+        }
+        return new(rows,total,summary,markers,Math.Max(0,markerCount-markers.Count));
+    }
+
+    [Fact] public void Grouped_read_writes_nothing_to_the_database()
+    {
+        var store=Store(); store.Append([Row(),Row(1,"c",address:"9.9.9.9"),Row(2,"d",address:"192.168.3.5")],[new("c","s",Epoch,Epoch.AddSeconds(30),true)],Epoch.AddMinutes(3));
+        (byte[] Main,byte[]? Wal,long WalLength,long ShmLength,long Storage) Files() =>
+            (File.ReadAllBytes(Database),File.Exists(Database+"-wal")?File.ReadAllBytes(Database+"-wal"):null,File.Exists(Database+"-wal")?new FileInfo(Database+"-wal").Length:-1,
+             File.Exists(Database+"-shm")?new FileInfo(Database+"-shm").Length:-1,store.StorageBytes);
+        void Unchanged(int rows)
+        {
+            var before=Files(); Assert.Equal(rows,store.Read(Query()).TotalRows); var after=Files();
+            Assert.Equal(before.Main,after.Main); Assert.Equal(before.Wal,after.Wal); Assert.Equal(before.WalLength,after.WalLength); Assert.Equal(before.ShmLength,after.ShmLength); Assert.Equal(before.Storage,after.Storage);
+        }
+        // A read-only open after the writer has removed its journal recreates -wal and -shm empty, as 0.15's Read did: no page is written.
+        var closed=Files(); Assert.Equal(3,store.Read(Query()).TotalRows); var opened=Files();
+        Assert.Null(closed.Wal); Assert.Equal(closed.Main,opened.Main); Assert.Equal(0,opened.WalLength);
+        Unchanged(3);
+        using var pinned=Connect(); using var tx=pinned.BeginTransaction(deferred:true);
+        using(var command=pinned.CreateCommand()) {command.Transaction=tx; command.CommandText="SELECT count(*) FROM traffic"; Assert.Equal(3L,command.ExecuteScalar());}
+        // The pinned reader keeps this append's frames in -wal, so the read below runs over a non-empty journal.
+        store.Append([Row(3,"e",address:"1.1.1.1")],[],Epoch.AddMinutes(4));
+        Assert.True(new FileInfo(Database+"-wal").Length>0);
+        Unchanged(4);
+    }
+
+    [Fact] public void Grouped_read_over_the_temp_limit_fails_without_a_partial_view()
+    {
+        var store=Store(pages:16);
+        store.Append([..Enumerable.Range(0,2000).Select(i=>Row(i%9,$"b{i}",address:$"20.{i/250}.{i%250}.1"))],[],Epoch.AddMinutes(10));
+        store.Append([Row(9,"last")],[],Epoch.AddMinutes(10));
+        var error=Assert.Throws<ConnectionHistoryLimitException>(()=>store.Read(Query(10)));
+        Assert.Equal("Connection history interval holds too many saved rows to group.",error.Message);
+        Assert.Equal(13,Assert.IsType<SqliteException>(error.InnerException).SqliteErrorCode);
+        Assert.Single(store.Read(new(Epoch.AddMinutes(9),Epoch.AddMinutes(10))).Rows);
+        Assert.Equal("maximumGroupedTempPages",Assert.Throws<ArgumentOutOfRangeException>(()=>new ConnectionHistoryStore(Database,maximumGroupedTempPages:15)).ParamName);
+        Assert.Equal("maximumGroupedTempPages",Assert.Throws<ArgumentOutOfRangeException>(()=>new ConnectionHistoryStore(Database,maximumGroupedTempPages:16385)).ParamName);
+        Assert.Equal(16384,ConnectionHistoryStore.MaximumGroupedTempPages);
+    }
+
+    [Fact] public void Unlocated_counts_public_peers_without_a_point_only()
+    {
+        var store=Store();
+        store.Append([Row(0,"a",address:"192.168.3.5") with {Location=null},Row(0,"b",address:"9.9.9.9") with {Location=null},
+            Row(0,"c",address:"1.0.0.1") with {Location=Place with {CountryCode="AU",Country="Australia",Point=null}},
+            Row(0,"d",address:"100.64.0.1") with {Location=null},Row(0,"e",address:"239.255.255.250") with {Location=null},Row(0,"f",address:"8.8.8.8")],[],Epoch.AddMinutes(1));
+        var summary=store.Read(Query()).Summary;
+        Assert.Equal((2L,1L,6L),(summary.Unlocated,summary.Local,summary.Destinations));
     }
 }
