@@ -807,6 +807,7 @@ internal static class ConnectionsPageUiChecks
         // Clearing the filter reads every application again.
         reads.Answer(strip: ChromeStrip(reads.Last)); Click(page, "applicationButton");
         Assert.Equal("", reads.Last.Application); Assert.Equal(Visibility.Collapsed, button.Visibility);
+        Assert.Null(button.ToolTip); Assert.Equal("", text.Text);
         reads.Answer(strip: ChromeStrip(reads.Last)); ChooseChrome(); reads.Drain();
         // Live filters by key too: chrome.exe and Chrome.exe, never other.exe.
         mode.SelectedIndex = 0; Assert.Equal(Visibility.Visible, button.Visibility);
