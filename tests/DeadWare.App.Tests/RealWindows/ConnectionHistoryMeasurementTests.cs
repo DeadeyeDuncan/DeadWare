@@ -47,7 +47,7 @@ public sealed class ConnectionHistoryMeasurementTests
         finally
         {
             try {Directory.Delete(root,true);}
-            catch(IOException) {}
+            catch(Exception e) when(e is IOException or UnauthorizedAccessException) {}
         }
     }
 
