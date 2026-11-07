@@ -21,6 +21,15 @@ public class ProcessHistoryStoreTests
         bool complete = true, params ProcessAppMinute[] apps)
         => new(minute, covered, processors, complete, segment, apps);
 
+    private static ProcessMinuteBatch G(DateTimeOffset minute, double covered, ProcessAppMinute[] apps)
+        => Batch(minute, apps: apps) with { GpuCoveredSeconds = covered };
+
+    private static ProcessAppMinute Gpu(string name, double seconds, double memory = 0)
+        => App(name, 1) with { GpuSeconds = seconds, GpuMemoryByteSeconds = memory };
+
+    private static ProcessResourceView Read(ProcessHistoryStore store, ProcessRank rank, int minutes = 1)
+        => store.ReadApplications("m", Day, Day.AddMinutes(minutes), rank, Now);
+
     // 0.14.0's Schema constant, verbatim (dd4fb74:src/DeadWare.Core/ProcessHistoryStore.cs).
     private const string Version1Schema = """
         CREATE TABLE names(id INTEGER PRIMARY KEY, upper TEXT UNIQUE NOT NULL, display TEXT NOT NULL);
@@ -683,6 +692,66 @@ public class ProcessHistoryStoreTests
         Assert.Equal(2, series.Minutes);
         // The next read sees every saved minute.
         Assert.Equal(3, writer.ReadApplications("m", At(12, 0, 0), At(13, 0, 0), ProcessRank.CpuTime, Now).RecordedMinutes);
+    }
+
+    [Fact]
+    public void Rank_by_gpu_orders_by_gpu_seconds_and_the_total_includes_everything_else()
+    {
+        using var fixture = new Fixture(); var store = fixture.Open();
+        store.Append("m", [G(Day, 60, [Gpu("a.exe", 10), Gpu("b.exe", 30), App("c.exe", 99) with { GpuSeconds = 0, GpuMemoryByteSeconds = 0 },
+            Else(1) with { GpuSeconds = 5, GpuMemoryByteSeconds = 0 }])], Now);
+        var v = Read(store, ProcessRank.Gpu);
+        Assert.Equal(["b.exe", "a.exe", "c.exe"], v.Rows.Select(r => r.Name));
+        Assert.Equal(45, v.RankTotal, 6);
+        Assert.Equal(30, v.Rows[0].PartOf(ProcessRank.Gpu), 6);
+    }
+
+    [Fact]
+    public void Avg_gpu_is_a_share_of_gpu_covered_time_only()
+    {
+        using var fixture = new Fixture(); var store = fixture.Open();
+        var none = Else(1) with { GpuSeconds = 0, GpuMemoryByteSeconds = 0 };
+        store.Append("m", [G(Day, 60, [Gpu("a.exe", 30), Else(1) with { GpuSeconds = 180, GpuMemoryByteSeconds = 0 }]), G(Day.AddMinutes(1), 60, [Gpu("a.exe", 0), none]),
+            Batch(Day.AddMinutes(2), apps: [App("a.exe", 1), Else(1)]), Batch(Day.AddMinutes(3), apps: [App("a.exe", 1), Else(1)]), G(Day.AddMinutes(4), 30, [Gpu("b.exe", 6), none])], Now);
+        var v = Read(store, ProcessRank.Gpu, 5);
+        Assert.Equal(150, v.GpuCoveredSeconds, 6);
+        // 100 x 30 / 150: not 25 (/ the 120 s a.exe was listed, or the mean of its minutes' 50 % and 0 %) and not 16.7 (the mean of 50 %, 0 % and 0 %).
+        Assert.Equal(20, v.Rows.Single(r => r.Name == "a.exe").AverageGpuPercent!.Value, 6);
+        Assert.Equal(4, v.Rows.Single(r => r.Name == "b.exe").AverageGpuPercent!.Value, 6);
+        Assert.Equal(120, v.EverythingElse.AverageGpuPercent!.Value, 6);   // unclamped
+    }
+
+    [Fact]
+    public void Avg_gpu_memory_while_listed_divides_by_the_listed_gpu_minutes()
+    {
+        using var fixture = new Fixture(); var store = fixture.Open();
+        store.Append("m", [G(Day, 60, [Gpu("a.exe", 1, 6e9)]), Batch(Day.AddMinutes(1), apps: [App("a.exe", 1)]), G(Day.AddMinutes(2), 60, [Gpu("b.exe", 1)])], Now);
+        Assert.Equal(1e8, Read(store, ProcessRank.Gpu, 3).Rows.Single(r => r.Name == "a.exe").AverageGpuMemoryBytes!.Value, 1);
+    }
+
+    [Fact]
+    public void Gpu_values_are_null_without_gpu_data()
+    {
+        using var fixture = new Fixture(); var store = fixture.Open();
+        store.Append("m", [Batch(Day, apps: [App("a.exe", 5), Else(1)])], Now);
+        var v = Read(store, ProcessRank.Gpu); var r = v.Rows.Single();
+        Assert.Equal(0, v.GpuCoveredSeconds);
+        Assert.Null(r.GpuSeconds); Assert.Null(r.AverageGpuPercent); Assert.Null(r.AverageGpuMemoryBytes);
+        Assert.Equal(0, r.PartOf(ProcessRank.Gpu)); Assert.Equal(0, v.RankTotal);
+    }
+
+    [Fact]
+    public void The_gpu_series_uses_only_minutes_with_gpu_and_leaves_the_rest_as_gaps()
+    {
+        using var fixture = new Fixture(); var store = fixture.Open();
+        store.Append("m", [G(Day, 60, [Gpu("a.exe", 30)]), G(Day.AddMinutes(1), 30, [Gpu("a.exe", 3)]), Batch(Day.AddMinutes(2), apps: [App("a.exe", 1)]),
+            G(Day.AddMinutes(3), 60, [Gpu("a.exe", 6)]), G(Day.AddMinutes(4), 60, [Gpu("b.exe", 1)])], Now);
+        var s = store.ReadSeries("m", "a.exe", ProcessRank.Gpu, Day, Day.AddMinutes(6), 3, Now);
+        Assert.Equal(120_000, s.BucketMilliseconds); Assert.Equal(2, s.Buckets.Count);   // the third bucket has no GPU minute of a.exe
+        var two = s.Buckets[0];
+        Assert.Equal(2L, two.Minutes); Assert.Equal(100.0 * 33 / 90, two.Average, 6); Assert.Equal((10.0, 50.0), (two.Minimum, two.Maximum));   // sum / sum, not the mean 30
+        Assert.Equal((Day.AddMinutes(2), 1L, 10.0), (s.Buckets[1].Start, s.Buckets[1].Minutes, s.Buckets[1].Average));   // minute 2 (no GPU data) is a gap
+        Assert.Equal(26, s.Statistics.Average!.Value, 6);   // 100 x 39 / 150
     }
 
     private sealed class TupleComparer : IEqualityComparer<(double, double)>
