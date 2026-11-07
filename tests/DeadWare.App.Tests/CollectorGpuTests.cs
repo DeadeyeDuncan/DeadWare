@@ -87,16 +87,18 @@ public class CollectorGpuTests : IAsyncLifetime
     {
         var c=Build(gpu,options);c.Start();return c;
     }
-    /// <summary>The second reading a collector publishes, subscribed before it starts.</summary>
-    private async Task<Reading> Second(CollectorOptions options,IGpuCounterSource gpu)
+    /// <summary>The first <paramref name="count"/> readings a collector publishes, subscribed before it starts.</summary>
+    private async Task<IReadOnlyList<Reading>> First(int count,CollectorOptions options,IGpuCounterSource gpu)
     {
         var c=Build(gpu,options);
         var list=new List<Reading>();
-        var tcs=new TaskCompletionSource<Reading>(TaskCreationOptions.RunContinuationsAsynchronously);
-        c.SampleAvailable+=r=>{lock(list){if(list.Count<2){list.Add(r);if(list.Count==2)tcs.TrySetResult(r);}}};
+        var tcs=new TaskCompletionSource<IReadOnlyList<Reading>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        c.SampleAvailable+=r=>{lock(list){if(list.Count<count){list.Add(r);if(list.Count==count)tcs.TrySetResult(list.ToArray());}}};
         c.Start();
         return await tcs.Task.WaitAsync(TimeSpan.FromSeconds(10));
     }
+    /// <summary>The second reading a collector publishes, subscribed before it starts.</summary>
+    private async Task<Reading> Second(CollectorOptions options,IGpuCounterSource gpu)=>(await First(2,options,gpu))[1];
     private static async Task<Reading> NextWhere(Collector c,Func<Reading,bool> match)
     {
         var tcs=new TaskCompletionSource<Reading>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -139,8 +141,9 @@ public class CollectorGpuTests : IAsyncLifetime
     }
     [Fact] public async Task Turning_monitoring_off_closes_the_query_within_one_poll()
     {
-        var c=Start(fake);var on=await NextWhere(c,r=>fake.Reads>=2);c.SetProcessMonitoring(false);
-        var off=await NextReadingAfter(c,on);Assert.Equal(ProcessActivityKind.Off,off.ProcessActivity.Kind);Assert.False(fake.IsOpen);
+        // The first Off reading, not the next one after on: a poll already running when monitoring turns off still publishes as on.
+        var c=Start(fake);await NextWhere(c,r=>fake.Reads>=2);c.SetProcessMonitoring(false);
+        var off=await NextWhere(c,r=>r.ProcessActivity.Kind==ProcessActivityKind.Off);Assert.False(fake.IsOpen);
         int reads=fake.Reads;await NextReadingAfter(c,off);Assert.Equal(reads,fake.Reads);
     }
     [Fact] public async Task A_slow_source_moves_to_its_own_loop_where_an_unrefreshed_poll_adds_nothing()
@@ -155,6 +158,14 @@ public class CollectorGpuTests : IAsyncLifetime
         Assert.All(rejoined.ProcessActivity.Processes,p=>{Assert.NotNull(p.Deltas);Assert.Null(p.Deltas!.GpuSeconds);});Assert.DoesNotContain("windows/gpucounters",rejoined.ProviderMilliseconds!.Keys);
         // Shown, not credited.
         Assert.Equal(25,rejoined.ProcessActivity.Processes.Single(p=>p.Pid==100).GpuPercent);
+    }
+    [Fact] public async Task The_poll_that_moves_the_read_to_its_loop_is_labelled_every_poll()
+    {
+        // Every 30 ms read is slow and the first after open is not counted, so the guard latches on the third poll. That poll's read ran on the
+        // collector thread; the loop takes over from the fourth.
+        var readings=await First(4,new(ProcessMonitoring:true,DiagnosticTimings:true),new FakeGpuCounters(delay:TimeSpan.FromMilliseconds(30)));
+        Assert.Equal([GpuCounterSummary.EveryPoll,GpuCounterSummary.EveryPoll,GpuCounterSummary.EveryPoll,GpuCounterSummary.OwnLoop],readings.Select(r=>r.ProcessSummary!.Gpu!.Placement));
+        Assert.True(Keyed(readings[2]));Assert.False(readings[2].ProcessActivity.GpuStale);
     }
     [Fact] public async Task A_loop_read_older_than_two_periods_is_stale_and_still_carried()
     {

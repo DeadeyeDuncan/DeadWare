@@ -11,9 +11,10 @@ public class GpuCounterLoopTests : IAsyncLifetime
     /// <summary>
     /// A GPU counter source whose read carries the time passed in as MonotonicSeconds and the gap since its previous read as IntervalSeconds
     /// (null for the first after open). It answers at once, except that with <c>block</c> every call, and with <c>blockFrom:k</c> every call
-    /// from the kth on, waits for <see cref="Release"/>; <see cref="Entered"/> completes when the first of them enters.
+    /// from the kth on, waits for <see cref="Release"/>; <see cref="Entered"/> completes when the first of them enters. With <c>throwAt:k</c>
+    /// the kth call throws instead of answering.
     /// </summary>
-    private sealed class FakeGpuSource(bool block=false,int blockFrom=0) : IGpuCounterSource
+    private sealed class FakeGpuSource(bool block=false,int blockFrom=0,int throwAt=0) : IGpuCounterSource
     {
         private readonly object gate=new();
         private readonly List<double> calls=[];
@@ -23,7 +24,7 @@ public class GpuCounterLoopTests : IAsyncLifetime
         private double previous,lastReadAt=double.NaN;
         private int reads,closes,inFlight,maxConcurrent;
         private bool open,lastReadOpened;
-        /// <summary>Calls that have returned.</summary>
+        /// <summary>Calls that have returned or thrown.</summary>
         public int Reads {get{lock(gate)return reads;}}
         public int Closes {get{lock(gate)return closes;}}
         /// <summary>The most calls in flight at once.</summary>
@@ -59,6 +60,7 @@ public class GpuCounterLoopTests : IAsyncLifetime
             // Bounded so a test that fails before Release cannot park the thread for good; the class cleanup releases too.
             if(firstBlocked>0&&call>=firstBlocked) {entered.TrySetResult();released.Wait(TimeSpan.FromSeconds(30));}
             lock(gate) {inFlight--;reads++;lastReadAt=monotonicSeconds;lastReadOpened=opened;}
+            if(call==throwAt)throw new InvalidOperationException("fake GPU read");
             var utc=DateTimeOffset.UnixEpoch.AddSeconds(monotonicSeconds);
             return new(ProcessColumnState.Ready,utc,monotonicSeconds,interval is {} gap?utc.AddSeconds(-gap):null,interval,[],[],[],new Dictionary<long,GpuAdapterName>(),0,0);
         }
@@ -79,6 +81,17 @@ public class GpuCounterLoopTests : IAsyncLifetime
         loop.Start();
         return (loop,source);
     }
+    /// <summary>Takes from <paramref name="loop"/> every 10 ms until a take matches, for at most 15 s; each take before it is used up as a poll's would be.</summary>
+    private static async Task<GpuCounterTake> TakeWhere(GpuCounterLoop loop,Func<GpuCounterTake,bool> match)
+    {
+        var sw=Stopwatch.StartNew();
+        while(true)
+        {
+            if(loop.Take() is {} take&&match(take))return take;
+            if(sw.Elapsed>TimeSpan.FromSeconds(15))throw new TimeoutException("No matching GPU take.");
+            await Task.Delay(10);
+        }
+    }
 
     [Fact] public async Task Period_is_at_least_one_second_and_follows_slower_polling()
     {
@@ -95,6 +108,26 @@ public class GpuCounterLoopTests : IAsyncLifetime
         var again=loop.Take()!;Assert.False(again.Fresh);Assert.False(again.Read.Credit);Assert.Null(again.ReadMilliseconds);
         Assert.Equal(first.Read.MonotonicSeconds,again.Read.MonotonicSeconds);
         fake.Release();
+    }
+    [Fact] public async Task A_take_carries_when_its_read_returned()
+    {
+        // The first read parks for 300 ms, so it returns well after it started (its MonotonicSeconds); a poll ages a loop read from the return.
+        var fake=new FakeGpuSource(block:true);var (loop,_)=Loop(source:fake);
+        await fake.Entered;await Task.Delay(300);fake.Release();
+        var first=await TakeWhere(loop,_=>true);Assert.True(first.Fresh);
+        double took=first.ReturnedSeconds-first.Read.MonotonicSeconds;Assert.True(took>=0.25,$"returned {took:0.000} s after the read started");
+        Assert.Equal(first.Read.MonotonicSeconds+first.ReadMilliseconds!.Value/1000,first.ReturnedSeconds,6);
+        // Taken again without credit, the same read keeps its return time.
+        var again=loop.Take()!;Assert.False(again.Fresh);Assert.Equal(first.ReturnedSeconds,again.ReturnedSeconds);
+    }
+    [Fact] public async Task A_throwing_read_is_kept_as_unavailable_and_the_loop_reads_on()
+    {
+        // Once, a throw ended the loop unobserved, and every later poll joined no read: "first sample" for good.
+        var (loop,fake)=Loop(source:new FakeGpuSource(throwAt:1));
+        var failed=await TakeWhere(loop,_=>true);
+        Assert.True(failed.Fresh);Assert.Equal(new ProcessColumnState(false,GpuCounterStatus.Unavailable),failed.Read.State);
+        await fake.WaitForReads(2);
+        var next=await TakeWhere(loop,t=>t.Read.State.Available);Assert.True(next.Fresh);Assert.False(loop.Stopped.IsCompleted);
     }
     [Fact] public async Task A_read_passed_over_is_never_returned()
     {
