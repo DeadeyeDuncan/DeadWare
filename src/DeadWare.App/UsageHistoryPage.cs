@@ -26,8 +26,11 @@ internal sealed class UsageHistoryPage : ScrollViewer
         ("gpu", "GPU usage", "%", 100), ("gputemp", "GPU temperature", "°C", null),
         ("memory", "RAM usage", "%", 100), ("network", "Network download / upload", "B/s", null),
     ];
-    // Click a moment: these Device charts list a slot's busiest apps in the Application resources card, ranked by their own metric.
-    private static readonly (string Kind, ProcessRank Rank)[] Moments = [("cpu", ProcessRank.CpuTime), ("memory", ProcessRank.AverageMemory)];
+    // Click a moment: the CPU, RAM and GPU charts list a slot's busiest apps in the Application resources card, ranked by their own metric.
+    // The GPU chart plots only the dashboard's selected GPU, but its slots rank by each app's stored GPU-seconds (its busiest engine on any
+    // adapter). Every metric is read with the CPU chart's point count, so the three share one slot grid.
+    private static readonly (string Kind, ProcessRank Rank)[] Moments =
+        [("cpu", ProcessRank.CpuTime), ("memory", ProcessRank.AverageMemory), ("gpu", ProcessRank.Gpu)];
     private readonly UiSession session;
     private readonly ComboBox range = new() { MinWidth = 110 };
     private readonly TextBlock period = Ui.Text("", 13), applicationSummary = Ui.Text("", 12, "Muted"), gapNotice = Ui.Text("", 12, "Warning");
@@ -44,7 +47,7 @@ internal sealed class UsageHistoryPage : ScrollViewer
     private readonly Border resourcesCard;
     private readonly DispatcherTimer timer = new() { Interval = TimeSpan.FromSeconds(60) };
     private UsagePageData? data;
-    // The moment the CPU and RAM hairlines mark: the listed slot's middle, or the bucket Left or Right moved to since; null for none.
+    // The moment the CPU, RAM and GPU hairlines mark: the listed slot's middle, or the bucket Left or Right moved to since; null for none.
     private DateTimeOffset? marked;
     private int revision, offset;
     private bool refreshing, refreshAgain, syncing;
@@ -80,7 +83,7 @@ internal sealed class UsageHistoryPage : ScrollViewer
             grid.Children.Add(cell);
         }
         device.Children.Add(grid);
-        var deviceHint = Ui.Text("Each point is the average of the recorded minutes in its slot; the shaded band spans their minimum and maximum. Minutes with no readings stay empty and partial slots are not connected. Statistics use the stored minute values for the whole period. Dates use local time. Click a CPU or RAM point, or press Enter on it, to list its busiest apps under Application resources.", 11, "Muted");
+        var deviceHint = Ui.Text("Each point is the average of the recorded minutes in its slot; the shaded band spans their minimum and maximum. Minutes with no readings stay empty and partial slots are not connected. Statistics use the stored minute values for the whole period. Dates use local time. Click a CPU, RAM or GPU point, or press Enter on it, to list its busiest apps under Application resources.", 11, "Muted");
         device.Children.Add(deviceHint); body.Children.Add(Card(device));
 
         var apps = new StackPanel(); apps.Children.Add(Ui.Heading("Applications", 16));
@@ -155,9 +158,9 @@ internal sealed class UsageHistoryPage : ScrollViewer
         offset = Math.Max(0, (int)Math.Floor((DateTimeOffset.UtcNow - at).TotalDays));
         resources.ClearSlot(); UpdatePeriod(); RequestRefresh();
     }
-    /// <summary>Lists the busiest apps in the activated CPU or RAM bucket. The bucket is the slot <c>ReadMetric</c> grouped,
-    /// [from + k × bucket, from + (k + 1) × bucket) clipped to the period end, on the grid the CPU and RAM charts share, so the card
-    /// aggregates exactly the minutes the point averaged.</summary>
+    /// <summary>Lists the busiest apps in the activated CPU, RAM or GPU bucket. The bucket is the slot <c>ReadMetric</c> grouped,
+    /// [from + k × bucket, from + (k + 1) × bucket) clipped to the period end, on the grid the CPU, RAM and GPU charts share, so the card
+    /// aggregates exactly the minutes the point averaged. With no GPU selected on the dashboard there is no GPU view, so nothing to list.</summary>
     private void ShowMoment(string kind, int index, ProcessRank ranking)
     {
         if (data?.Metrics.GetValueOrDefault(kind) is not { } view || index >= view.Buckets.Count) return;
@@ -168,16 +171,16 @@ internal sealed class UsageHistoryPage : ScrollViewer
         // this (never the minute refresh), and keyboard focus stays on the chart, so Left, Right and Enter keep working.
         resourcesCard.BringIntoView();
     }
-    /// <summary>Puts the cursor at the bucket Left or Right moved to on one chart and marks its time on both charts; nothing is listed until Enter.</summary>
+    /// <summary>Puts the cursor at the bucket Left or Right moved to on one chart and marks its time on all three charts; nothing is listed until Enter.</summary>
     private void MoveMoment(string kind, int index)
     {
         if (data?.Metrics.GetValueOrDefault(kind) is not { } view || index < 0 || index >= view.Buckets.Count) return;
         marked = Middle(view.Buckets[index]); MarkMoment();
     }
     private static DateTimeOffset Middle(UsageHistoryBucket bucket) => bucket.Start + (bucket.End - bucket.Start) / 2;
-    /// <summary>Draws the hairline on each of the CPU and RAM charts at its own bucket holding <see cref="marked"/>, or none where it has no
-    /// such bucket. The charts match by time, not by index, because their bucket lists differ where one metric has no minutes; and the mark
-    /// follows that time when a refresh moves the grid.</summary>
+    /// <summary>Draws the hairline on each of the CPU, RAM and GPU charts at its own bucket holding <see cref="marked"/>, or none where it has
+    /// no such bucket (the GPU chart has none while no GPU is selected). The charts match by time, not by index, because their bucket lists
+    /// differ where one metric has no minutes; and the mark follows that time when a refresh moves the grid.</summary>
     private void MarkMoment()
     {
         if (data is not { } shown || marked is not { } time) return;
@@ -224,7 +227,7 @@ internal sealed class UsageHistoryPage : ScrollViewer
         var (from, to) = Period();
         int points = (int)Math.Clamp(charts["cpu"].ActualWidth > 0 ? charts["cpu"].ActualWidth : 600, 60, 1500);
         // The card reads on its own, so the Device charts never wait for a month of process history (about a second). It reads the
-        // selected app's series with the same point count, so that chart's buckets are the CPU and RAM charts' slots.
+        // selected app's series with the same point count, so that chart's buckets are the CPU, RAM and GPU charts' slots.
         resources.Load(from, to, points);
         string? gpu = session.GpuName is var name && name != "GPU unavailable" ? name : null;
         var service = session.Usage;

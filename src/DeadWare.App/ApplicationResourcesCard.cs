@@ -87,6 +87,8 @@ internal sealed class ApplicationResourcesCard : StackPanel
     private (DateTimeOffset From, DateTimeOffset To)? period;
     // The Device-chart slot asked for, and the one the shown view was read for; null means the period.
     private (DateTimeOffset From, DateTimeOffset To)? slot, shownSlot;
+    // True while the slot asked for came from the GPU chart, which lists it ranked by GPU (see NoGpuData).
+    private bool slotFromGpu;
     private (string App, ProcessRank Rank, DateTimeOffset From, DateTimeOffset To)? charted;
     // The CPU chart's point count, so the selected app's series has the Device charts' bucket grid; 600 until the page says.
     private int points = 600;
@@ -168,10 +170,11 @@ internal sealed class ApplicationResourcesCard : StackPanel
     internal event Action? SlotCleared;
 
     /// <summary>Lists the busiest apps whose minutes start in [<paramref name="slotStart"/>, <paramref name="slotEnd"/>), ranked by
-    /// <paramref name="ranking"/>, until <see cref="ClearSlot"/>. The slot is read at once; while it is shown the page's refresh reads it again.</summary>
+    /// <paramref name="ranking"/>, until <see cref="ClearSlot"/>. The slot is read at once; while it is shown the page's refresh reads it again.
+    /// A slot ranked by GPU is the GPU chart's: while ranked by GPU, recorded minutes without GPU data say so in place of the table.</summary>
     internal void ShowSlot(DateTimeOffset slotStart, DateTimeOffset slotEnd, ProcessRank ranking)
     {
-        slot = (slotStart, slotEnd);
+        slot = (slotStart, slotEnd); slotFromGpu = ranking == ProcessRank.Gpu;
         // Until the read returns the heading names every minute that starts in the slot.
         heading.Text = SlotHeading(CeilingMinute(slotStart), CeilingMinute(slotEnd), WithDate); clear.Visibility = Visibility.Visible;
         // A new Rank by switches the selected app's chart at once; the slot does not wait for Rank by to settle.
@@ -190,7 +193,7 @@ internal sealed class ApplicationResourcesCard : StackPanel
         var scope = FocusManager.GetFocusScope(clear);
         if ((clear.IsKeyboardFocused || ReferenceEquals(FocusManager.GetFocusedElement(scope), clear)) && !rank.Focus())
             FocusManager.SetFocusedElement(scope, rank);
-        slot = null; heading.Text = Title; clear.Visibility = Visibility.Collapsed;
+        slot = null; slotFromGpu = false; heading.Text = Title; clear.Visibility = Visibility.Collapsed;
         SlotCleared?.Invoke();
         if (listed) ReadWhenSettled();
     }
@@ -359,21 +362,29 @@ internal sealed class ApplicationResourcesCard : StackPanel
             table.SelectedItem = rows.FirstOrDefault(r => r.Name.Equals(SelectedApp, StringComparison.OrdinalIgnoreCase));
         }
         finally { syncing = false; }
-        // A slot without process data (monitoring was off) says so instead of showing an empty table.
-        bool emptySlot = shownSlot is not null && view.RecordedMinutes == 0;
+        // A slot without process data (monitoring was off) says so instead of showing an empty table, and so does a GPU chart slot without
+        // GPU data.
+        bool emptySlot = shownSlot is not null && view.RecordedMinutes == 0, noGpu = NoGpuData(view);
         // A period that starts before the retention cutoff says its earlier minutes are not kept; wholly before it, that is the summary.
         bool expired = shownSlot is null && view.RecordedMinutes == 0 && view.To <= retainedFrom;
         Note(retention, shownSlot is null && view.From < retainedFrom && !expired ? NotKept : "");
         // The read returns the top rows; the period may hold more applications than that.
         bool more = view.ApplicationCount > view.Rows.Count;
-        frame.Visibility = emptySlot ? Visibility.Collapsed : Visibility.Visible;
+        frame.Visibility = emptySlot || noGpu ? Visibility.Collapsed : Visibility.Visible;
         summary.Text = pending ?? (emptySlot ? "No process data in this span."
+            : noGpu ? "No GPU data in this span."
             : expired ? NotKept
             : view.RecordedMinutes == 0 ? "No application resources were recorded in this period."
             : query.Length > 0 ? $"{listed.Count - 1:N0} of {(more ? "the top " : "")}{view.Rows.Count:N0} applications match."
             : $"{(more ? $"Top {view.Rows.Count:N0} of {view.ApplicationCount:N0}" : $"{view.Rows.Count:N0}")} applications · {view.RecordedMinutes:N0} recorded minutes");
         DrawShares(view, listed);
     }
+
+    /// <summary>True when the shown slot was listed from the GPU chart and is ranked by GPU, and its recorded minutes hold no GPU-covered time
+    /// (minutes saved before the upgrade, or without GPU counters). A slot listed from the CPU or RAM chart and then ranked by GPU shows its
+    /// table, with "—" in the GPU columns.</summary>
+    private bool NoGpuData(ProcessResourceView view)
+        => slotFromGpu && shownSlot is not null && shownRank == ProcessRank.Gpu && view.RecordedMinutes > 0 && view.GpuCoveredSeconds == 0;
 
     private void DrawShares(ProcessResourceView view, IReadOnlyList<ProcessResourceRow> listed)
     {
@@ -409,7 +420,8 @@ internal sealed class ApplicationResourcesCard : StackPanel
         if (SelectedApp is not { } app || view is null)
         {
             charted = null; seriesRequest++; seriesDelay.Stop(); chart.Visibility = Visibility.Collapsed;
-            Note(chartHint, view is { RecordedMinutes: > 0 } ? "Select an application to chart it over this period." : "");
+            // A slot without process data, or a GPU chart slot without GPU data, shows no table to select from.
+            Note(chartHint, view is { RecordedMinutes: > 0 } && !NoGpuData(view) ? "Select an application to chart it over this period." : "");
             return;
         }
         Note(chartHint, ""); chart.Visibility = Visibility.Visible;
