@@ -60,6 +60,9 @@ internal static class ConnectionsPageUiChecks
         CheckWholePageLayout(page);
         CheckHistoryQueries(session,now);
         CheckHistoryLimitError(session);
+        CheckStripReads(session, now);
+        CheckStripCursor(session, now);
+        CheckMinuteReadFailureKeepsTheStrip(session, now);
         CheckBoundaryDates();
         CheckIntervalWarning(session);
         CheckExportBusy(session,now);
@@ -176,15 +179,28 @@ internal static class ConnectionsPageUiChecks
         Field<TextBox>(page, "from").Text = "2026-10-29 10:00"; Field<TextBox>(page, "to").Text = "2026-10-29 10:03"; Click(page, "play"); Assert.Equal(TimeSpan.FromMinutes(1), requested[^1].To - requested[^1].From);
         Assert.False(Field<ConnectionMap>(page,"map").AnimationEnabled); // The prior range must stay static while its first minute is pending.
         int before = requested.Count; PageType.GetMethod("AdvancePlayback", All)!.Invoke(page, null); Assert.Equal(before, requested.Count);
-        replies.Dequeue().SetResult(View(requested[^1], "Minute zero")); Pump(); PageType.GetMethod("AdvancePlayback", All)!.Invoke(page, null); Assert.Equal(before + 1, requested.Count); Assert.Equal(TimeSpan.FromMinutes(1), requested[^1].From - requested[^2].From);
+        // After the first minute the whole interval is read for the strip, and playback waits for it as for any read.
+        replies.Dequeue().SetResult(View(requested[^1], "Minute zero")); Pump(); Assert.Equal(before + 1, requested.Count);
+        Assert.Equal((new DateTime(2026, 10, 29, 10, 0, 0), new DateTime(2026, 10, 29, 10, 3, 0)), (requested[^1].From.LocalDateTime, requested[^1].To.LocalDateTime));
+        PageType.GetMethod("AdvancePlayback", All)!.Invoke(page, null); Assert.Equal(before + 1, requested.Count);
+        replies.Dequeue().SetResult(View(requested[^1], "Whole interval")); Pump(); PageType.GetMethod("AdvancePlayback", All)!.Invoke(page, null); Assert.Equal(before + 2, requested.Count); Assert.Equal(TimeSpan.FromMinutes(1), requested[^1].From - requested[^3].From); Assert.Equal(TimeSpan.FromMinutes(1), requested[^1].To - requested[^1].From);
         Assert.False(Field<ConnectionMap>(page,"map").AnimationEnabled); // Pending next minute cannot animate the prior minute.
-        replies.Dequeue().SetResult(View(requested[^1], "Minute one")); Pump(); PageType.GetMethod("AdvancePlayback", All)!.Invoke(page, null); Assert.Equal(before + 2, requested.Count);
-        replies.Dequeue().SetResult(View(requested[^1], "Minute two")); Pump(); PageType.GetMethod("AdvancePlayback", All)!.Invoke(page, null); Assert.Equal(before + 2, requested.Count); Assert.Equal("Play", Field<Button>(page, "play").Content);
+        replies.Dequeue().SetResult(View(requested[^1], "Minute one")); Pump(); PageType.GetMethod("AdvancePlayback", All)!.Invoke(page, null); Assert.Equal(before + 3, requested.Count);
+        replies.Dequeue().SetResult(View(requested[^1], "Minute two")); Pump(); PageType.GetMethod("AdvancePlayback", All)!.Invoke(page, null); Assert.Equal(before + 3, requested.Count); Assert.Equal("Play", Field<Button>(page, "play").Content);
         Assert.False(Field<ConnectionMap>(page,"map").AnimationEnabled);
         Field<TextBox>(page, "search").Text = "pending"; mode.SelectedIndex = 0; replies.Dequeue().SetResult(View(requested[^1], "HISTORY LEAK")); Pump(); Assert.DoesNotContain("HISTORY LEAK", Field<TextBlock>(page, "capture").Text); Assert.False(Field<DispatcherTimer>(page, "playback").IsEnabled);
     }
     private static void CheckWholePageLayout(FrameworkElement page)
     {
+        // The traffic strip sits in row 2, under the map and above the node list, in History only.
+        var card=Field<Border>(page,"trafficCard");var mode=Field<ComboBox>(page,"mode");
+        mode.SelectedIndex=1;Layout(page,671,440);Pump();Layout(page,671,440);
+        var nodeList=(UIElement)VisualTreeHelper.GetParent(Field<ListBox>(page,"mappedConnections"));
+        Assert.Equal(Visibility.Visible,card.Visibility);Assert.Equal(2,Grid.GetRow(card));Assert.Equal(3,Grid.GetRow(nodeList));
+        Assert.True(card.ActualHeight>0);
+        Assert.True(card.TransformToAncestor(page).Transform(new Point()).Y+card.ActualHeight<=nodeList.TransformToAncestor(page).Transform(new Point()).Y+1,"The traffic strip sits above the node list.");
+        Assert.True(Field<ConnectionMap>(page,"map").ActualHeight>=300,$"Map height {Field<ConnectionMap>(page,"map").ActualHeight} with the strip.");
+        mode.SelectedIndex=0;Layout(page,671,440);Assert.Equal(Visibility.Collapsed,card.Visibility);
         Layout(page,671,440);Pump();Layout(page,671,440);
         var map=Field<ConnectionMap>(page,"map");Assert.True(map.ActualHeight>=300);
         Assert.Empty(Elements(page).OfType<DataGrid>());
@@ -221,6 +237,151 @@ internal static class ConnectionsPageUiChecks
     { protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.Forbidden)); }
 
 
+    private static DateTimeOffset Local(int hour, int minute, int second = 0)
+    { var time = new DateTime(2026, 10, 29, hour, minute, second); return new DateTimeOffset(time, TimeZoneInfo.Local.GetUtcOffset(time)); }
+    /// <summary>One-minute slots over the query, one application, leaving out the minute indexes in <paramref name="gaps"/>.</summary>
+    private static TrafficStrip StripFor(ConnectionHistoryQuery query, params int[] gaps)
+    {
+        var slots = new List<TrafficStripSlot>();
+        for (int i = 0; query.From.AddMinutes(i) < query.To; i++)
+        {
+            if (gaps.Contains(i)) continue;
+            var end = query.From.AddMinutes(i + 1);
+            slots.Add(new(query.From.AddMinutes(i), end < query.To ? end : query.To, 1, 60, false, [1000, 0], [500, 0]));
+        }
+        return new(query.From, query.To, 60_000, TrafficMeasure.Total, [new("Browser", "BROWSER", 1000L * slots.Count, 500L * slots.Count)], 0, 0, 0, slots);
+    }
+    private static ConnectionHistoryView StripView(ConnectionHistoryQuery query, long destinations = 1, TrafficStrip? strip = null) =>
+        new(query, [], 0, new(0, 0, 0, destinations, 0, 0), [], [], [], null, 0, "fixture", Strip: strip ?? StripFor(query));
+    /// <summary>A readHistory that queues each request and its reply, as CheckHistoryQueries does.</summary>
+    private sealed class FakeReads
+    {
+        public readonly List<ConnectionHistoryQuery> Requested = [];
+        public readonly Queue<(ConnectionHistoryQuery Query, TaskCompletionSource<ConnectionHistoryView> Reply)> Replies = new();
+        public FakeReads(object page) => PageType.GetField("readHistory", All)!.SetValue(page, (Func<ConnectionHistoryQuery, Task<ConnectionHistoryView>>)(q =>
+        { Requested.Add(q); var reply = new TaskCompletionSource<ConnectionHistoryView>(); Replies.Enqueue((q, reply)); return reply.Task; }));
+        public ConnectionHistoryQuery Last => Requested[^1];
+        /// <summary>Answers the oldest outstanding read with a view of its own query and a strip for it, then lets the pump go on.</summary>
+        public void Answer(long destinations = 1, TrafficStrip? strip = null) { var (query, reply) = Replies.Dequeue(); reply.SetResult(StripView(query, destinations, strip)); Pump(); }
+        public void Fail(Exception error) { Replies.Dequeue().Reply.SetException(error); Pump(); }
+        public void Drain() { while (Replies.Count > 0) Answer(); }
+    }
+    private static bool IsMinute(ConnectionHistoryQuery query, int hour, int minute) => query.From == Local(hour, minute) && query.To == Local(hour, minute + 1);
+    private static bool IsWhole(ConnectionHistoryQuery query, int minutes) => query.From == Local(10, 0) && query.To == Local(10, minutes);
+    private static string? ChartMessage(TrafficStripChart chart) => (string?)typeof(TrafficStripChart).GetField("message", All)!.GetValue(chart);
+    private static void CheckStripReads(UiSession session, DateTimeOffset now)
+    {
+        var page = new ConnectionsPage(session); var reads = new FakeReads(page);
+        var chart = Field<TrafficStripView>(page, "trafficStrip").Chart;
+        var minute = Field<CheckBox>(page, "minute"); var cursor = Field<Slider>(page, "cursor"); var search = Field<TextBox>(page, "search");
+        var summary = Field<TextBlock>(page, "summary"); var status = Field<TextBlock>(page, "actionStatus");
+        // Cursor off: one request per context, and its reply carries the strip.
+        Field<ComboBox>(page, "mode").SelectedIndex = 1; Assert.Single(reads.Requested);
+        var today = StripFor(reads.Last); reads.Answer(strip: today); Assert.Single(reads.Requested); Assert.Same(today, chart.Strip);
+        // Cursor on, 10:00–10:03: the minute, then the whole interval for the strip.
+        Field<TextBox>(page, "from").Text = "2026-10-29 10:00"; Field<TextBox>(page, "to").Text = "2026-10-29 10:03";
+        minute.IsChecked = true; Assert.Equal(2, reads.Requested.Count); Assert.True(IsMinute(reads.Last, 10, 0));
+        reads.Answer(destinations: 4); Assert.Equal(3, reads.Requested.Count); Assert.True(IsWhole(reads.Last, 3));
+        var whole = StripFor(reads.Last); reads.Answer(destinations: 99, strip: whole); Assert.Same(whole, chart.Strip);
+        // A cursor move reads only its minute.
+        cursor.Value = 1; Assert.Equal(4, reads.Requested.Count); Assert.True(IsMinute(reads.Last, 10, 1)); reads.Answer(); Assert.Equal(4, reads.Requested.Count); Assert.Empty(reads.Replies);
+        // A search change reads the minute, then the whole interval; the strip reply applies only its Strip.
+        search.Text = "x"; Assert.True(IsMinute(reads.Last, 10, 0)); Assert.Equal("x", reads.Last.Search); Assert.Null(chart.Strip);
+        reads.Answer(destinations: 4); Assert.True(IsWhole(reads.Last, 3)); Assert.Equal("x", reads.Last.Search);
+        var searched = StripFor(reads.Last); reads.Answer(destinations: 99, strip: searched);
+        Assert.Same(searched, chart.Strip); Assert.Contains("4 destinations", summary.Text); Assert.DoesNotContain("99", summary.Text);
+        // Ten cursor moves while the strip read is in flight start no other strip read; the last minute is read after it.
+        search.Text = "y"; reads.Answer(); Assert.True(IsWhole(reads.Last, 3)); int count = reads.Requested.Count;
+        for (int i = 0; i < 10; i++) cursor.Value = i % 2 + 1;
+        Assert.Equal(count, reads.Requested.Count);
+        reads.Answer(); Assert.Equal(count + 1, reads.Requested.Count); Assert.True(IsMinute(reads.Last, 10, 2)); Assert.Equal("y", reads.Last.Search); reads.Drain();
+        Assert.Equal(count + 1, reads.Requested.Count);
+        // A strip reply for an old context is dropped.
+        search.Text = "z1"; reads.Answer(); Assert.True(IsWhole(reads.Last, 3)); search.Text = "z2"; var stale = StripFor(reads.Last);
+        reads.Answer(strip: stale); Assert.Null(chart.Strip); Assert.True(IsMinute(reads.Last, 10, 0)); Assert.Equal("z2", reads.Last.Search);
+        reads.Answer(); Assert.True(IsWhole(reads.Last, 3)); Assert.Equal("z2", reads.Last.Search); reads.Answer(); Assert.NotNull(chart.Strip); Assert.NotSame(stale, chart.Strip);
+        // A thrown strip read shows "History unavailable" and is not read again for that context.
+        search.Text = "w"; reads.Answer(destinations: 6); Assert.True(IsWhole(reads.Last, 3)); reads.Fail(new IOException());
+        Assert.Null(chart.Strip); Assert.Equal("History unavailable", ChartMessage(chart)); Assert.NotNull(PageType.GetField("stripFailed", All)!.GetValue(page));
+        Assert.Equal("History could not be read (IOException).", status.Text); Assert.Contains("6 destinations", summary.Text);
+        count = reads.Requested.Count; cursor.Value = 1; Assert.Equal(count + 1, reads.Requested.Count); Assert.True(IsMinute(reads.Last, 10, 1));
+        reads.Answer(); Assert.Equal(count + 1, reads.Requested.Count); Assert.Empty(reads.Replies); Assert.Equal("History unavailable", ChartMessage(chart));
+        // A thrown read with the cursor off: every count is "—", with the tooltip naming why.
+        minute.IsChecked = false; Assert.True(IsWhole(reads.Last, 3)); reads.Fail(new IOException());
+        Assert.Equal("History · minute-bucket average rates · — destinations · — countries · — local · — unlocated · ↓ — received / ↑ — sent", summary.Text);
+        Assert.Equal("History unavailable", summary.ToolTip); Assert.Equal("History unavailable", ChartMessage(chart));
+        // Showing again re-reads a strip applied before its interval ended, and keeps one applied after.
+        page.clock = () => Local(10, 2);
+        minute.IsChecked = true; Assert.True(IsMinute(reads.Last, 10, 0)); reads.Answer(); Assert.Empty(reads.Replies);
+        search.Text = "v"; reads.Answer(); Assert.True(IsWhole(reads.Last, 3)); reads.Answer(); Assert.NotNull(chart.Strip);
+        Assert.Null(summary.ToolTip);
+        count = reads.Requested.Count; page.RaiseEvent(new RoutedEventArgs(FrameworkElement.UnloadedEvent)); page.RaiseEvent(new RoutedEventArgs(FrameworkElement.LoadedEvent));
+        Assert.Equal(count + 1, reads.Requested.Count); Assert.Equal(TimeSpan.FromMinutes(1), reads.Last.To - reads.Last.From);
+        page.clock = () => Local(10, 10);
+        reads.Answer(); Assert.Equal(count + 2, reads.Requested.Count); Assert.True(IsWhole(reads.Last, 3)); reads.Answer(); Assert.NotNull(chart.Strip);
+        count = reads.Requested.Count; page.RaiseEvent(new RoutedEventArgs(FrameworkElement.UnloadedEvent)); page.RaiseEvent(new RoutedEventArgs(FrameworkElement.LoadedEvent));
+        Assert.Equal(count + 1, reads.Requested.Count); Assert.Equal(TimeSpan.FromMinutes(1), reads.Last.To - reads.Last.From);
+        reads.Answer(); Assert.Equal(count + 1, reads.Requested.Count); Assert.Empty(reads.Replies);
+        // ReloadHistory re-reads the minute and then the whole interval with the cursor on.
+        page.ReloadHistory(); Assert.Equal(count + 2, reads.Requested.Count); Assert.Equal(TimeSpan.FromMinutes(1), reads.Last.To - reads.Last.From);
+        reads.Answer(); Assert.Equal(count + 3, reads.Requested.Count); Assert.True(IsWhole(reads.Last, 3)); reads.Answer(); Assert.NotNull(chart.Strip); Assert.Empty(reads.Replies);
+    }
+    private static void CheckStripCursor(UiSession session, DateTimeOffset now)
+    {
+        var page = new ConnectionsPage(session); var reads = new FakeReads(page);
+        var chart = Field<TrafficStripView>(page, "trafficStrip").Chart;
+        var minute = Field<CheckBox>(page, "minute"); var cursor = Field<Slider>(page, "cursor");
+        Field<ComboBox>(page, "mode").SelectedIndex = 1; reads.Drain();
+        // 10:00–10:05 with no slot for 10:02.
+        Field<TextBox>(page, "from").Text = "2026-10-29 10:00"; Field<TextBox>(page, "to").Text = "2026-10-29 10:05";
+        Call(page, "RequestHistory", null); Assert.True(IsWhole(reads.Last, 5)); reads.Answer(strip: StripFor(reads.Last, 2));
+        Layout(page, 1000, 700); chart.SlotAt(new Point());
+        Point At(DateTimeOffset time) => new(chart.PlotRect.Left + chart.PlotRect.Width * (time - Local(10, 0)).TotalSeconds / 300, chart.PlotRect.Top + chart.PlotRect.Height / 2);
+        Assert.True(chart.PlotRect.Width > 100, $"Strip plot width {chart.PlotRect.Width}.");
+        Assert.Null(chart.MarkTime); Assert.Null(chart.SelectedIndex);
+        // A click turns the minute cursor on at the minute under the pointer; FiltersChanged does not reset it.
+        chart.HandleClick(At(Local(10, 1, 40)));
+        Assert.True(minute.IsChecked); Assert.Equal(1, cursor.Value); Assert.True(IsMinute(reads.Last, 10, 1)); Assert.Single(reads.Replies);
+        Assert.Equal(Local(10, 1, 30), chart.MarkTime); Assert.Equal(1, chart.SelectedIndex); reads.Drain();
+        // Right and Left go to the first minute of the next or previous listed slot.
+        Assert.True(chart.HandleKey(System.Windows.Input.Key.Right)); Assert.Equal(3, cursor.Value); Assert.True(IsMinute(reads.Last, 10, 3)); reads.Drain();
+        Assert.True(chart.HandleKey(System.Windows.Input.Key.Left)); Assert.Equal(1, cursor.Value); Assert.True(IsMinute(reads.Last, 10, 1)); reads.Drain();
+        // In a gap, to the neighbours; the hairline moves at once, before the minute's reply.
+        cursor.Value = 2; Assert.Equal(Local(10, 2, 30), chart.MarkTime); Assert.Null(chart.SelectedIndex); Assert.True(IsMinute(reads.Last, 10, 2)); reads.Drain();
+        chart.HandleKey(System.Windows.Input.Key.Left); Assert.Equal(1, cursor.Value); Assert.True(IsMinute(reads.Last, 10, 1)); reads.Drain();
+        cursor.Value = 2; reads.Drain(); chart.HandleKey(System.Windows.Input.Key.Right); Assert.Equal(3, cursor.Value); Assert.True(IsMinute(reads.Last, 10, 3)); reads.Drain();
+        cursor.Value = 4; Assert.Equal(Local(10, 4, 30), chart.MarkTime); Assert.Equal(3, chart.SelectedIndex); Assert.Single(reads.Replies); reads.Drain();
+        // Playback moves the hairline as it steps the cursor.
+        cursor.Value = 0; reads.Drain(); Click(page, "play"); reads.Drain(); Assert.Equal("Pause", Field<Button>(page, "play").Content);
+        Call(page, "AdvancePlayback", null); Assert.Equal(1, cursor.Value); Assert.Equal(Local(10, 1, 30), chart.MarkTime); Assert.Equal(1, chart.SelectedIndex); Assert.Single(reads.Replies);
+        Click(page, "play"); reads.Drain();
+        // cursorTime keeps the cursor minute while the strip read is queued and in flight.
+        Field<TextBox>(page, "search").Text = "s"; Assert.Equal(Local(10, 0).ToString("MM-dd HH:mm"), Field<TextBlock>(page, "cursorTime").Text);
+        reads.Answer(); Assert.True(IsWhole(reads.Last, 5)); Assert.Equal(Local(10, 0).ToString("MM-dd HH:mm"), Field<TextBlock>(page, "cursorTime").Text);
+        reads.Answer(strip: StripFor(reads.Last, 2)); Assert.Equal(0, chart.SelectedIndex);
+        // With the from box edited and not applied, a click and a key change nothing.
+        Field<TextBox>(page, "from").Text = "2026-10-29 09:00"; int count = reads.Requested.Count;
+        chart.HandleClick(At(Local(10, 4, 10))); chart.HandleKey(System.Windows.Input.Key.Right);
+        Assert.Equal(count, reads.Requested.Count); Assert.Equal(0, cursor.Value); Assert.Equal(0, chart.SelectedIndex); Assert.Equal(Local(10, 0, 30), chart.MarkTime);
+        Field<TextBox>(page, "from").Text = "2026-10-29 10:00";
+        chart.HandleClick(At(Local(10, 4, 10))); Assert.Equal(4, cursor.Value); Assert.True(IsMinute(reads.Last, 10, 4)); reads.Drain();
+    }
+    /// <summary>Review Focus 3: a minute read that fails while the cursor is on keeps the strip of the whole interval.</summary>
+    private static void CheckMinuteReadFailureKeepsTheStrip(UiSession session, DateTimeOffset now)
+    {
+        var page = new ConnectionsPage(session); var reads = new FakeReads(page);
+        var chart = Field<TrafficStripView>(page, "trafficStrip").Chart; var summary = Field<TextBlock>(page, "summary");
+        Field<ComboBox>(page, "mode").SelectedIndex = 1; reads.Drain();
+        Field<TextBox>(page, "from").Text = "2026-10-29 10:00"; Field<TextBox>(page, "to").Text = "2026-10-29 10:03";
+        Call(page, "RequestHistory", null); var strip = StripFor(reads.Last); reads.Answer(strip: strip); Assert.Same(strip, chart.Strip);
+        Field<CheckBox>(page, "minute").IsChecked = true; Assert.True(IsMinute(reads.Last, 10, 0));
+        reads.Fail(new IOException());
+        Assert.Same(strip, chart.Strip); Assert.Empty(reads.Replies);
+        Assert.Contains("— destinations", summary.Text); Assert.Equal("History unavailable", summary.ToolTip);
+        Assert.Equal("History could not be read (IOException).", Field<TextBlock>(page, "actionStatus").Text);
+        Field<Slider>(page, "cursor").Value = 1; Assert.True(IsMinute(reads.Last, 10, 1));
+        reads.Answer(destinations: 5); Assert.Contains("5 destinations", summary.Text); Assert.Null(summary.ToolTip); Assert.Same(strip, chart.Strip); Assert.Empty(reads.Replies);
+    }
     private static void Pump()
     { var frame = new DispatcherFrame(); Dispatcher.CurrentDispatcher.BeginInvoke(DispatcherPriority.Background, new Action(() => frame.Continue = false)); Dispatcher.PushFrame(frame); }
     private static void CheckBoundaryDates()
@@ -296,7 +457,7 @@ internal static class ConnectionsPageUiChecks
     {
         var place=live.Connections[0].Location!;
         var saved=new ConnectionHistoryRow(history.Query.From,new(9,3,"Saved browser"),"8.8.8.8",443,ConnectionProtocol.Tcp,history.Query.From,history.Query.To,12000,6000,200,100,place,new(41,-87),false);
-        history=history with {Rows=[saved],Markers=[new(place,saved.Origin,12000,6000,saved)],TotalRows=1};
+        history=history with {Rows=[saved],Markers=[new(place,saved.Origin,12000,6000,saved)],TotalRows=1,Strip=StripFor(history.Query)};
         // Constructing a Window registers the resource-invalidation root, without creating an HWND.
         var host = new Window { Content = page };
         var theme = typeof(Collector).Assembly.GetType("DeadWare.App.Theme")!;
@@ -311,6 +472,9 @@ internal static class ConnectionsPageUiChecks
                     Field<ComboBox>(page, "mode").SelectedIndex = historical ? 1 : 0; if (historical) Call(page, "ApplyHistory", history); else Call(page, "ApplyLive", live);scroll.ScrollToTop(); Layout(page, size.Width, size.Height);
                 Pump();Layout(page,size.Width,size.Height);
                 var map = Field<ConnectionMap>(page, "map"); var list=Field<ListBox>(page,"mappedConnections"); Assert.InRange(map.ActualWidth,500,size.Width);Assert.True(map.ActualHeight>=300);Assert.InRange(list.ActualHeight,45,140);
+                var stripCard=Field<Border>(page,"trafficCard");var stripChart=Field<TrafficStripView>(page,"trafficStrip").Chart;
+                Assert.Equal(historical?Visibility.Visible:Visibility.Collapsed,stripCard.Visibility);
+                if(historical){Assert.Same(history.Strip,stripChart.Strip);Assert.True(stripChart.ActualHeight>=120,$"Strip height {stripChart.ActualHeight}.");}
                 Assert.True(Field<TextBlock>(page,"summary").TransformToAncestor(page).Transform(new Point()).Y+Field<TextBlock>(page,"summary").ActualHeight<map.TransformToAncestor(page).Transform(new Point()).Y+1);
                     void Snapshot(string suffix)
                     {
