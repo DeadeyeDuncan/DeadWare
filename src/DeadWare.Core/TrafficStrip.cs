@@ -34,9 +34,14 @@ public static class TrafficStrips
     public static int ConnectionsSlotCount(DateTimeOffset from, DateTimeOffset to)
         => (int)CeilingDivide(WholeMinutesFromOrigin(from, to), ConnectionsBucketMinutes(from, to));
 
-    /// <summary>Slot index: [origin + index·b, min(origin + (index + 1)·b, to)), with origin the first whole minute at or after from.</summary>
+    /// <summary>
+    /// Slot index: [origin + index·b, min(origin + (index + 1)·b, to)), with origin the first whole minute at or after from.
+    /// The index must be in [0, ConnectionsSlotCount(from, to)).
+    /// </summary>
     public static (DateTimeOffset Start, DateTimeOffset End) ConnectionsSlot(DateTimeOffset from, DateTimeOffset to, long index)
     {
+        ArgumentOutOfRangeException.ThrowIfNegative(index);
+        ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(index, (long)ConnectionsSlotCount(from, to));
         var origin = CeilingMinute(from);
         var bucket = TimeSpan.FromTicks(ConnectionsBucketMinutes(from, to) * TimeSpan.TicksPerMinute);
         var start = origin + index * bucket;
@@ -58,7 +63,7 @@ public static class TrafficStrips
         return saved < to ? saved : to;
     }
 
-    /// <summary>The series' measure bytes in the slot; the last series is Other. Total saturates at long.MaxValue.</summary>
+    /// <summary>The series' measure bytes in the slot; the last series is Other. Total saturates at long.MaxValue; Received and Sent must be ≥ 0.</summary>
     public static long Bytes(TrafficStripSlot slot, int series, TrafficMeasure measure) => measure switch
     {
         TrafficMeasure.Received => slot.Received[series],

@@ -14,6 +14,14 @@ public class TrafficStripTests
         {Assert.Equal(b,TrafficStrips.ConnectionsBucketMinutes(a,a+span));Assert.Equal(count,TrafficStrips.ConnectionsSlotCount(a,a+span));}
         var from=T(10,0,20);var to=T(12,0,30);Assert.Equal(T(10,1),TrafficStrips.ConnectionsSlot(from,to,0).Start);
         Assert.Equal(to,TrafficStrips.ConnectionsSlot(from,to,TrafficStrips.ConnectionsSlotCount(from,to)-1).End);}
+    [Fact] public void Connections_slot_rejects_an_index_outside_the_slot_count(){
+        var from=T(10,0,20);var to=T(10,3);Assert.Equal(2,TrafficStrips.ConnectionsSlotCount(from,to));
+        Assert.Equal((T(10,2),to),TrafficStrips.ConnectionsSlot(from,to,1));
+        Assert.Throws<ArgumentOutOfRangeException>(()=>TrafficStrips.ConnectionsSlot(from,to,-1));
+        Assert.Throws<ArgumentOutOfRangeException>(()=>TrafficStrips.ConnectionsSlot(from,to,2));}
+    [Fact] public void Connections_slot_count_is_zero_without_a_whole_minute_and_no_slot_is_valid(){
+        foreach(var (from,to) in new[]{(T(10,0),T(10,0)),(T(10,0,10),T(10,0,50)),(T(10,1),T(10,0))})
+        {Assert.Equal(0,TrafficStrips.ConnectionsSlotCount(from,to));Assert.Throws<ArgumentOutOfRangeException>(()=>TrafficStrips.ConnectionsSlot(from,to,0));}}
     [Fact] public void Is_full_counts_the_whole_minutes_that_start_in_the_slot(){
         Assert.True(TrafficStrips.IsFull(S(T(10,0),T(10,1),60)));Assert.False(TrafficStrips.IsFull(S(T(10,0),T(10,1),59)));
         Assert.True(TrafficStrips.IsFull(S(T(10,0),T(10,10),570)));Assert.False(TrafficStrips.IsFull(S(T(10,0),T(10,10),569)));
@@ -31,7 +39,8 @@ public class TrafficStripTests
     [Fact] public void Slot_at_finds_the_listed_slot_holding_a_time_and_null_in_gaps(){
         var strip=new TrafficStrip(T(10,0),T(10,3),60_000,TrafficMeasure.Total,[],0,0,0,[S(T(10,0),T(10,1),60),S(T(10,2),T(10,3),60)]);
         Assert.Equal(0,TrafficStrips.SlotAt(strip,T(10,0,30)));Assert.Null(TrafficStrips.SlotAt(strip,T(10,1,30)));Assert.Equal(1,TrafficStrips.SlotAt(strip,T(10,2)));Assert.Null(TrafficStrips.SlotAt(strip,T(10,3)));
-        Assert.Null(TrafficStrips.SlotAt(strip,T(9,59,59)));}
+        Assert.Null(TrafficStrips.SlotAt(strip,T(9,59,59)));
+        Assert.Null(TrafficStrips.SlotAt(strip with{Slots=[]},T(10,0,30)));}
     [Fact] public void Connections_target_uses_whole_minutes_and_clips_to_thirty_days(){ var now=T(12,0,30);
         Assert.Equal((T(11,1),T(11,5)),TrafficStrips.ConnectionsTarget(T(11,0,20),T(11,5),now));
         Assert.Equal((TrafficStrips.CeilingMinute(now.AddDays(-30)),TrafficStrips.CeilingMinute(now.AddDays(-29))),TrafficStrips.ConnectionsTarget(now.AddDays(-31),now.AddDays(-29),now));
