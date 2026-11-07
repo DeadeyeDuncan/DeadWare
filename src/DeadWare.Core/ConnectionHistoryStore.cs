@@ -401,17 +401,8 @@ public sealed class ConnectionHistoryStore
         lock(gate)
         {
             EnsureInitialized(); query=Normalize(query);
-            using var db=Open(readOnly:true);
-            // temp_store goes first: changing it discards the temp database. Disposing the unpooled connection drops both TEMP tables.
-            if(!defaultTempStore) Execute(db,"PRAGMA temp_store=MEMORY");
-            Execute(db,"PRAGMA temp.max_page_count="+maximumGroupedTempPages.ToString(CultureInfo.InvariantCulture));
-            using var tx=db.BeginTransaction(deferred:true);
-            var args=Arguments(query);
             // Group the interval once; the page, summary and markers all read the same TEMP snapshot.
-            Grouping(()=>Execute(db,GeoTable,tx));
-            Grouping(()=>Execute(db,GeoInsert,tx,args));
-            Grouping(()=>Execute(db,GroupedTable,tx));
-            Grouping(()=>Execute(db,GroupedInsert,tx,args));
+            using var db=OpenGrouped(query,out var transaction); using var tx=transaction;
             var rows=Grouping(()=>
             {
                 var page=new List<ConnectionHistoryRow>();
@@ -500,8 +491,8 @@ public sealed class ConnectionHistoryStore
                 ? (string.CompareOrdinal(name,total.Name)<0?name:total.Name,Add(total.Received,reader.GetInt64(1)),Add(total.Sent,reader.GetInt64(2)))
                 : (name,reader.GetInt64(1),reader.GetInt64(2));
         }
-        var applications=totals.Where(x=>Measure(x.Value.Received,x.Value.Sent)>0)
-            .OrderByDescending(x=>Measure(x.Value.Received,x.Value.Sent)).ThenBy(x=>x.Key,StringComparer.Ordinal).Take(TrafficStrips.MaximumApplications)
+        var applications=totals.Select(x=>(x.Key,x.Value,Measure:Measure(x.Value.Received,x.Value.Sent))).Where(x=>x.Measure>0)
+            .OrderByDescending(x=>x.Measure).ThenBy(x=>x.Key,StringComparer.Ordinal).Take(TrafficStrips.MaximumApplications)
             .Select(x=>new TrafficStripApplication(x.Value.Name,x.Key,x.Value.Received,x.Value.Sent)).ToList();
         var series=applications.Select((a,i)=>(a.Key,i)).ToDictionary(x=>x.Key,x=>x.i,StringComparer.Ordinal);
         long otherReceived=0,otherSent=0,otherApplications=0;
@@ -577,7 +568,7 @@ public sealed class ConnectionHistoryStore
         // 3. Each kind's top 1,000, at most 3,000 rows.
         var totals=ReadTotals(db,tx,$"SELECT {DestinationColumns} FROM temp.destinations WHERE rank<=$rank ORDER BY {DestinationOrder}",("$rank",ConnectionDestinations.MaximumRowsPerScope));
         // 4. The shared pass over temp.grouped for those rows; 5.–7. read only temp.picked.
-        Execute(db,string.Format(CultureInfo.InvariantCulture,PickedTable,"SELECT remote FROM temp.destinations WHERE rank<=1000"),tx);
+        Execute(db,string.Format(CultureInfo.InvariantCulture,PickedTable,"SELECT remote FROM temp.destinations WHERE rank<=$rank"),tx,("$rank",ConnectionDestinations.MaximumRowsPerScope));
         var lists=ReadLists(db,tx,ConnectionDestinations.MaximumApps,ConnectionDestinations.MaximumPorts,ConnectionDestinations.MaximumPoints);
         return new(totals.Select(t=>Destination(t,lists)).ToList().AsReadOnly(),counts);
     }
@@ -635,6 +626,28 @@ public sealed class ConnectionHistoryStore
         return new(t.Remote,new((NetworkAddressKind)t.Kind,NetworkAddress.Describe(t.Remote).Label),locations.FirstOrDefault(),points.AsReadOnly(),t.Unlocated,
             (lists.Apps.GetValueOrDefault(t.Remote)??[]).AsReadOnly(),t.Apps,(lists.Ports.GetValueOrDefault(t.Remote)??[]).AsReadOnly(),t.Ports,t.Received,t.Sent,
             null,null,null,t.Minutes,Stamp(t.FirstSeen),Stamp(t.LastSeen),t.Complete);
+    }
+    /// <summary>
+    /// Opens a read-only connection with the grouped TEMP limit, begins one deferred transaction and builds temp.geo and
+    /// temp.grouped for <paramref name="query"/>. Disposing the unpooled connection drops the TEMP tables.
+    /// </summary>
+    private SqliteConnection OpenGrouped(ConnectionHistoryQuery query,out SqliteTransaction tx)
+    {
+        var db=Open(readOnly:true); SqliteTransaction? transaction=null;
+        try
+        {
+            // temp_store goes first: changing it discards the temp database.
+            if(!defaultTempStore) Execute(db,"PRAGMA temp_store=MEMORY");
+            Execute(db,"PRAGMA temp.max_page_count="+maximumGroupedTempPages.ToString(CultureInfo.InvariantCulture));
+            var t=transaction=db.BeginTransaction(deferred:true);
+            var args=Arguments(query);
+            Grouping(()=>Execute(db,GeoTable,t));
+            Grouping(()=>Execute(db,GeoInsert,t,args));
+            Grouping(()=>Execute(db,GroupedTable,t));
+            Grouping(()=>Execute(db,GroupedInsert,t,args));
+            tx=t; return db;
+        }
+        catch {transaction?.Dispose(); db.Dispose(); throw;}
     }
     /// <summary>Runs a statement over the TEMP tables; SQLITE_FULL there means the interval exceeds the grouped TEMP limit.</summary>
     private static T Grouping<T>(Func<T> statement)
@@ -724,15 +737,7 @@ public sealed class ConnectionHistoryStore
         lock(gate)
         {
             EnsureInitialized(); query=Normalize(query);
-            using var db=Open(readOnly:true);
-            if(!defaultTempStore) Execute(db,"PRAGMA temp_store=MEMORY");
-            Execute(db,"PRAGMA temp.max_page_count="+maximumGroupedTempPages.ToString(CultureInfo.InvariantCulture));
-            using var tx=db.BeginTransaction(deferred:true);
-            var args=Arguments(query);
-            Grouping(()=>Execute(db,GeoTable,tx));
-            Grouping(()=>Execute(db,GeoInsert,tx,args));
-            Grouping(()=>Execute(db,GroupedTable,tx));
-            Grouping(()=>Execute(db,GroupedInsert,tx,args));
+            using var db=OpenGrouped(query,out var transaction); using var tx=transaction;
             Grouping(()=>Execute(db,DestinationsTable,tx));
             // The scope's export order, numbered so each page of 1,000 is a range.
             Grouping(()=>Execute(db,$"""
