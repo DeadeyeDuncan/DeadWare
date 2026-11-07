@@ -106,6 +106,7 @@ internal static class ApplicationResourcesUiChecks
             A_failed_series_read_keeps_the_chart_name(folder);
             Clear_without_a_chart_hands_its_focus_to_rank_by(folder);
             The_minute_refresh_updates_the_rows_in_place_and_keeps_the_current_cell(folder);
+            A_new_ranking_starts_the_table_at_the_top(folder);
             Status_line_follows_the_recording_switches_without_a_read(folder);
         }
         finally
@@ -761,16 +762,8 @@ internal static class ApplicationResourcesUiChecks
     private static void The_minute_refresh_updates_the_rows_in_place_and_keeps_the_current_cell(string folder)
     {
         var card = new ApplicationResourcesCard(Session(null, folder)); var to = DateTimeOffset.UtcNow;
-        // Forty apps ranked by CPU time, app00.exe first; each minute refresh adds to their CPU time. With app39First, app39.exe has
-        // overtaken the rest and is listed first.
-        ProcessResourceView Ranking(int extra, bool app39First = false)
-        {
-            var from = to.AddDays(-1);
-            var rows = Enumerable.Range(0, 40).Select(i => new ProcessResourceRow($"app{i:00}.exe", 400 - i + extra, 1, 1e6, 1, 1, 60, false, 6e7)).ToList();
-            if (app39First) { rows.RemoveAt(39); rows.Insert(0, new("app39.exe", 1000, 1, 1e6, 1, 1, 60, false, 6e7)); }
-            var everythingElse = new ProcessResourceRow(ProcessHistory.EverythingElse, 10, 1, 1e6, 1, 1, 60, true, 6e7);
-            return new(from, to, rows, 40, everythingElse, rows.Sum(r => r.CpuSeconds) + everythingElse.CpuSeconds, 60, from, to, from, 4096);
-        }
+        // The same day each minute; each refresh adds to the forty apps' CPU time.
+        ProcessResourceView Ranking(int extra, bool app39First = false) => FortyApps(to.AddDays(-1), to, extra, app39First);
         card.Apply(Ranking(0), to); Layout(card);
         var table = Table(card); var scroller = Descendants(table).OfType<ScrollViewer>().First();
         scroller.ScrollToBottom(); WaitFor(() => { Layout(card); return scroller.VerticalOffset > 0; }); double offset = scroller.VerticalOffset;
@@ -793,6 +786,30 @@ internal static class ApplicationResourcesUiChecks
         SetSearch(card, "app1"); Assert.DoesNotContain("app39.exe", RowNames(card)); Assert.Equal("app39.exe", card.SelectedApp);
         SetSearch(card, ""); Assert.Equal("app39.exe", Cell(table.SelectedItem!, "Name")); Assert.Equal("app39.exe", card.SelectedApp);
         FocusManager.SetFocusedElement(scope, null);
+    }
+
+    private static void A_new_ranking_starts_the_table_at_the_top(string folder)
+    {
+        var card = new ApplicationResourcesCard(Session(null, folder)); var to = DateTimeOffset.UtcNow; var from = to.AddDays(-1);
+        card.Apply(FortyApps(from, to), to); Layout(card);
+        var scroller = Descendants(Table(card)).OfType<ScrollViewer>().First();
+        void ScrollDown() { scroller.ScrollToBottom(); WaitFor(() => { Layout(card); return scroller.VerticalOffset > 0; }); }
+        // Every view here lists the same forty apps, so the rows stay where they are and only the new ranking can move the table to its top.
+        void StartsAtTheTop(ProcessResourceView view) { card.Apply(view, to); WaitFor(() => { Layout(card); return scroller.VerticalOffset == 0; }); }
+        // Rank by: with no period loaded it starts no read, and the next view is ranked by average memory.
+        ScrollDown(); SetRank(card, ProcessRank.AverageMemory); StartsAtTheTop(FortyApps(from, to));
+        // ◀ Earlier: the same length a day back. A range change: a week.
+        ScrollDown(); StartsAtTheTop(FortyApps(from.AddDays(-1), from));
+        ScrollDown(); StartsAtTheTop(FortyApps(to.AddDays(-7), to));
+        // A listed slot, as ShowSlot holds it while its read runs: period to slot; the same slot read again by the minute refresh keeps
+        // the offset; another slot; back to the period (Clear or Esc).
+        (DateTimeOffset From, DateTimeOffset To) first = (to.AddMinutes(-30), to.AddMinutes(-27)), second = (to.AddMinutes(-20), to.AddMinutes(-17));
+        ScrollDown(); SetSlot(card, first); StartsAtTheTop(FortyApps(first.From, first.To));
+        ScrollDown(); double offset = scroller.VerticalOffset;
+        card.Apply(FortyApps(first.From, first.To, extra: 60), to); Layout(card);
+        Assert.Equal(offset, scroller.VerticalOffset, 3);
+        SetSlot(card, second); StartsAtTheTop(FortyApps(second.From, second.To));
+        ScrollDown(); SetSlot(card, null); StartsAtTheTop(FortyApps(from, to));
     }
 
     private static void Status_line_follows_the_recording_switches_without_a_read(string folder)
@@ -837,6 +854,22 @@ internal static class ApplicationResourcesUiChecks
         Assert.Equal(Visibility.Visible, Named(card, "Share of period total").Visibility);
         Assert.True(IsShown(Table(card), card));
     }
+
+    /// <summary>Forty apps ranked by CPU time, app00.exe first, and Everything else: more rows than the table shows at once.
+    /// <paramref name="extra"/> adds to each app's CPU time; with <paramref name="app39First"/>, app39.exe has overtaken the rest and is
+    /// listed first.</summary>
+    private static ProcessResourceView FortyApps(DateTimeOffset from, DateTimeOffset to, int extra = 0, bool app39First = false)
+    {
+        var rows = Enumerable.Range(0, 40).Select(i => new ProcessResourceRow($"app{i:00}.exe", 400 - i + extra, 1, 1e6, 1, 1, 60, false, 6e7)).ToList();
+        if (app39First) { rows.RemoveAt(39); rows.Insert(0, new("app39.exe", 1000, 1, 1e6, 1, 1, 60, false, 6e7)); }
+        var everythingElse = new ProcessResourceRow(ProcessHistory.EverythingElse, 10, 1, 1e6, 1, 1, 60, true, 6e7);
+        return new(from, to, rows, 40, everythingElse, rows.Sum(r => r.CpuSeconds) + everythingElse.CpuSeconds, 60, from, to, from, 4096);
+    }
+
+    /// <summary>Sets the slot the card lists, as <see cref="ApplicationResourcesCard.ShowSlot"/> does before its read, without starting a
+    /// read; null is the period ranking, as after <see cref="ApplicationResourcesCard.ClearSlot"/>.</summary>
+    private static void SetSlot(ApplicationResourcesCard card, (DateTimeOffset From, DateTimeOffset To)? slot)
+        => typeof(ApplicationResourcesCard).GetField("slot", All)!.SetValue(card, slot);
 
     private static ProcessResourceView View(DateTimeOffset from, DateTimeOffset to, long recorded, long? applications = null)
         => new(from, to, recorded == 0 ? [] : [new("a.exe", 60, 1, 1e6, 1, 1, recorded, false, 6e7)], applications ?? (recorded == 0 ? 0 : 1),

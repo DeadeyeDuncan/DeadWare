@@ -6,6 +6,7 @@ using System.Windows.Automation;
 using System.Windows.Controls;
 using System.Windows.Data;
 using System.Windows.Input;
+using System.Windows.Media;
 using System.Windows.Shapes;
 using System.Windows.Threading;
 using DeadWare.Core;
@@ -241,6 +242,9 @@ internal sealed class ApplicationResourcesCard : StackPanel
     /// minutes that could have been saved.</summary>
     internal void Apply(ProcessResourceView view, DateTimeOffset now)
     {
+        // Another slot, Rank by or period is a new ranking, so the table starts at its top and its busiest apps show; the minute refresh
+        // shows the same one again and keeps the scroll offset with the row, the current cell and the focus.
+        bool newRanking = !Shows(view.From, view.To, Rank);
         View = view; shownRank = Rank; shownSlot = slot; pending = null;
         // The heading names the minutes listed, from the first one's start to the last one's end.
         if (shownSlot is { } listed)
@@ -256,7 +260,17 @@ internal sealed class ApplicationResourcesCard : StackPanel
         Note(gapNotice, gaps > 0 ? $"{gaps:N0} minutes in this period have no process data (monitoring off, DeadWare not running, or a capture gap)." : "");
         storage.Text = $"process-history.db · {Ui.Bytes(view.StorageBytes)}";
         RefreshRows();
+        if (newRanking) FirstScroller(table)?.ScrollToTop();
         ShowSeries();
+    }
+
+    /// <summary>The first ScrollViewer inside <paramref name="element"/>: for the table, the one its template scrolls the rows with. Null
+    /// until the template is applied, when there is no offset to reset.</summary>
+    private static ScrollViewer? FirstScroller(DependencyObject element)
+    {
+        for (int i = 0; i < VisualTreeHelper.GetChildrenCount(element); i++)
+            if (VisualTreeHelper.GetChild(element, i) is var child && (child as ScrollViewer ?? FirstScroller(child)) is { } found) return found;
+        return null;
     }
 
     /// <summary>How long a minute can take to reach the file after it ends: it closes at the next poll's publication and the service
