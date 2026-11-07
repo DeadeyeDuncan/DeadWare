@@ -8,7 +8,7 @@ using LibreHardwareMonitor.Hardware;
 namespace DeadWare.App;
 public record SensorReading(string Id,string Hardware,string Name,string Unit,double? Value,
     string HardwareId="",string HardwareType="",string SensorType="",string Validity="Unknown");
-public record Reading(Snapshot Sample,IReadOnlyList<Device> Gpus,IReadOnlyList<SensorReading> Sensors,IReadOnlyList<ProcessTraffic> Processes,string CpuName,string HardwareStatus,string NetworkStatus,string EtwStatus,bool Elevated,IReadOnlyDictionary<string,double>? ProviderMilliseconds=null,DiagnosticFailure? EtwFailure=null)
+public record Reading(Snapshot Sample,IReadOnlyList<Device> Gpus,IReadOnlyList<SensorReading> Sensors,[property: System.Text.Json.Serialization.JsonIgnore] IReadOnlyList<ProcessTraffic> Processes,string CpuName,string HardwareStatus,string NetworkStatus,string EtwStatus,bool Elevated,IReadOnlyDictionary<string,double>? ProviderMilliseconds=null,DiagnosticFailure? EtwFailure=null)
 {
     [System.Text.Json.Serialization.JsonIgnore]
     public ConnectionSample? Connections {get;init;}
@@ -18,6 +18,8 @@ public record Reading(Snapshot Sample,IReadOnlyList<Device> Gpus,IReadOnlyList<S
     [System.Text.Json.Serialization.JsonIgnore]
     public ProcessActivity ProcessActivity {get;init;}=ProcessActivity.None;
     public ProcessSummary? ProcessSummary {get;init;}
+    /// <summary>For diagnostics: how many processes have attributed network traffic (the rows of <see cref="Processes"/>, which is never serialized), with no names.</summary>
+    public int NetworkApplications=>Processes.Count;
 }
 
 public sealed record StorageReading(IReadOnlyList<StorageDrive> Drives,IReadOnlyList<StorageHealth> Health,string Status)
@@ -306,7 +308,9 @@ public sealed class Collector : IAsyncDisposable
         finally
         {
             stage="Stopping providers";
-            try {computer?.Close();} finally {await StopEtwAsync();}
+            // Requested before Close, as disposal does, so a worker that ends for any reason leaves no disk session; disposal shares this stop.
+            var diskStop=disk?.StopAsync()??Task.CompletedTask;
+            try {computer?.Close();} finally {await Task.WhenAll(StopEtwAsync(),diskStop);}
             stage="Stopped";
         }
     }

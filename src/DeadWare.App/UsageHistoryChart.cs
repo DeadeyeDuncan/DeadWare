@@ -58,6 +58,9 @@ internal sealed class UsageHistoryChart : FrameworkElement
     }
     /// <summary>Raised with the bucket index when a bucket is clicked or Enter is pressed on the selection.</summary>
     public event Action<int>? BucketActivated;
+    /// <summary>Raised with the new index each time Left or Right moves the selection, even when it stays at an edge. A click and the
+    /// <see cref="SelectedIndex"/> setter never raise it, so a handler can set <see cref="SelectedIndex"/> without being called again.</summary>
+    public event Action<int>? SelectionMoved;
     /// <summary>Index of the bucket under a point from the last render, or null when the point is over no bucket.</summary>
     internal int? BucketAt(Point point) => ChartFrame.Nearest(targets, point, PlotRect) is >= 0 and var index ? index : null;
     protected override void OnMouseLeftButtonDown(System.Windows.Input.MouseButtonEventArgs e)
@@ -83,12 +86,13 @@ internal sealed class UsageHistoryChart : FrameworkElement
         if (!selectable || count == 0) return false;
         switch (key)
         {
-            case System.Windows.Input.Key.Left: SelectedIndex = selectedIndex is { } l ? Math.Max(0, Math.Min(l, count) - 1) : count - 1; return true;
-            case System.Windows.Input.Key.Right: SelectedIndex = selectedIndex is { } r ? Math.Min(count - 1, r + 1) : 0; return true;
+            case System.Windows.Input.Key.Left: Move(selectedIndex is { } l ? Math.Max(0, Math.Min(l, count) - 1) : count - 1); return true;
+            case System.Windows.Input.Key.Right: Move(selectedIndex is { } r ? Math.Min(count - 1, r + 1) : 0); return true;
             case System.Windows.Input.Key.Enter when selectedIndex is { } index && index < count: BucketActivated?.Invoke(index); return true;
             default: return false;
         }
     }
+    private void Move(int index) { SelectedIndex = index; SelectionMoved?.Invoke(index); }
 
     internal Rect PlotRect { get; private set; }
     /// <summary>Index into the first trace's buckets of the bucket under the pointer, or -1.</summary>

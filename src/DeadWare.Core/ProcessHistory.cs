@@ -1,9 +1,21 @@
+using System.Text;
+
 namespace DeadWare.Core;
 
 public static class ProcessHistory
 {
     public const string EverythingElse="Everything else";
     public const int TopPerMetric=10,MaximumApplications=30;
+
+    /// <summary>The name an application's minutes are saved under, or null when they belong in Everything else: an empty name, one that reads as Everything else (ignoring case), or one holding '\', '/' or '*'. Names are cut at 256 characters, each unpaired surrogate becomes U+FFFD (the form SQLite's UTF-8 stores) and the end is trimmed again, so the result is unchanged when saved again.</summary>
+    public static string? SavedName(string? name)
+    {
+        string text=UsageMetrics.NormalizeName(name);
+        if(text.Any(char.IsSurrogate))text=Encoding.UTF8.GetString(Encoding.UTF8.GetBytes(text));
+        text=text.TrimEnd();
+        if(text==UsageMetrics.UnknownName||text.Equals(EverythingElse,StringComparison.OrdinalIgnoreCase)||text.IndexOfAny(['\\','/','*'])>=0)return null;
+        return text;
+    }
 }
 
 /// <summary>One application's totals for a minute. Memory is the sum of private bytes × seconds; divide by the batch's covered seconds for the average.</summary>
@@ -92,8 +104,7 @@ public sealed class ProcessMinuteFolder
         {
             if(p is null)continue;
             Totals target;
-            string name=UsageMetrics.NormalizeName(p.Name);
-            if(name==UsageMetrics.UnknownName)target=other;
+            if(ProcessHistory.SavedName(p.Name) is not{} name)target=other;
             else
             {
                 string key=ProcessGrouping.Key(name);

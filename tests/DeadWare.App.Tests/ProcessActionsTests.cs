@@ -1,5 +1,7 @@
 using System.ComponentModel;
 using System.IO;
+using System.Security.AccessControl;
+using System.Security.Principal;
 using DeadWare.App;
 using Xunit;
 
@@ -173,7 +175,7 @@ public class ProcessActionsTests
     /// <summary>Opens the location of PID 8 with the row's <paramref name="generation"/>; its image path is <paramref name="path"/>, or a new file in a temp folder whose name has a space.
     /// <paramref name="configure"/> adjusts PID 8's script; the reveal waits for <paramref name="hold"/> when given.</summary>
     private static async Task<(string Status,string? Revealed,bool OnSta,string File)> OpenWith(bool reveal=true,Exception? throwOnReveal=null,string? path=null,long? creationTicks=1,long generation=1,
-        Action<FakeProcessControl.Script>? configure=null,ManualResetEventSlim? hold=null,TimeSpan? revealTimeout=null)
+        Action<FakeProcessControl.Script>? configure=null,ManualResetEventSlim? hold=null,TimeSpan? revealTimeout=null,Exception? throwOnAttributes=null)
     {
         string folder=Path.Combine(Path.GetTempPath(),$"DeadWare actions {Guid.NewGuid():N}");
         Directory.CreateDirectory(folder);
@@ -181,7 +183,7 @@ public class ProcessActionsTests
         {
             string file=Path.Combine(folder,"app.exe");
             File.WriteAllBytes(file,[]);
-            var control=new FakeProcessControl();
+            var control=new FakeProcessControl{ThrowOnAttributes=throwOnAttributes};
             control[8].ImagePath=path??file;
             control[8].CreationTicks=creationTicks;
             configure?.Invoke(control[8]);
@@ -200,6 +202,75 @@ public class ProcessActionsTests
             return (status,revealed,onSta,file);
         }
         finally{Directory.Delete(folder,true);}
+    }
+
+    [Fact]
+    public async Task Open_location_tells_a_denied_program_file_from_a_missing_one()
+    {
+        var denied=await OpenWith(throwOnAttributes:new UnauthorizedAccessException());
+        Assert.Equal("Could not open the file location (denied by Windows).",denied.Status);Assert.Null(denied.Revealed);
+        foreach(var gone in new Exception[]{new FileNotFoundException(),new DirectoryNotFoundException()})
+        {
+            var r=await OpenWith(throwOnAttributes:gone);
+            Assert.Equal("The program file is no longer there.",r.Status);Assert.Null(r.Revealed);
+        }
+        var other=await OpenWith(throwOnAttributes:new IOException());
+        Assert.Equal("Could not open the file location (IOException).",other.Status);Assert.Null(other.Revealed);
+        // A folder at the path is not a program file, as File.Exists read it.
+        var folder=await OpenWith(configure:s=>s.ImagePath=Path.GetDirectoryName(s.ImagePath));
+        Assert.Equal("The program file is no longer there.",folder.Status);Assert.Null(folder.Revealed);
+    }
+
+    [Fact]
+    public async Task A_program_file_Windows_denies_is_not_reported_gone()
+    {
+        string folder=Path.Combine(Path.GetTempPath(),$"DeadWare denied {Guid.NewGuid():N}");
+        Directory.CreateDirectory(folder);
+        string file=Path.Combine(folder,"app.exe");
+        var folderRule=new FileSystemAccessRule(WindowsIdentity.GetCurrent().User!,FileSystemRights.ListDirectory,AccessControlType.Deny);
+        var fileRule=new FileSystemAccessRule(WindowsIdentity.GetCurrent().User!,FileSystemRights.ReadAttributes,AccessControlType.Deny);
+        bool folderDenied=false,fileDenied=false;
+        try
+        {
+            File.WriteAllBytes(file,[]);
+            // Listing a folder also grants read-attributes on its files, so both are denied.
+            var fileInfo=new FileInfo(file);var fileSecurity=fileInfo.GetAccessControl();fileSecurity.AddAccessRule(fileRule);fileInfo.SetAccessControl(fileSecurity);fileDenied=true;
+            var dirInfo=new DirectoryInfo(folder);var dirSecurity=dirInfo.GetAccessControl();dirSecurity.AddAccessRule(folderRule);dirInfo.SetAccessControl(dirSecurity);folderDenied=true;
+            Assert.False(File.Exists(file));                       // the bug's premise
+            Assert.Throws<UnauthorizedAccessException>(()=>new NativeProcessControl().Attributes(file));
+            Assert.Throws<FileNotFoundException>(()=>new NativeProcessControl().Attributes(Path.Combine(folder,"gone.exe")));
+            var opened=await OpenWith(path:file);
+            Assert.Equal("Could not open the file location (denied by Windows).",opened.Status);Assert.Null(opened.Revealed);
+        }
+        finally
+        {
+            try
+            {
+                // The folder rule first, then the file rule (the owner keeps WRITE_DAC), so the folder can be deleted even when an assert failed.
+                if(folderDenied){var d=new DirectoryInfo(folder);var s=d.GetAccessControl();s.RemoveAccessRule(folderRule);d.SetAccessControl(s);}
+                if(fileDenied){var f=new FileInfo(file);var s=f.GetAccessControl();s.RemoveAccessRule(fileRule);f.SetAccessControl(s);}
+            }
+            finally{Directory.Delete(folder,true);}
+        }
+    }
+
+    [Fact]
+    public async Task Open_location_reveals_a_program_file_past_260_characters()
+    {
+        string root=Path.Combine(Path.GetTempPath(),$"DeadWare long {Guid.NewGuid():N}");
+        try
+        {
+            string folder=Path.Combine(root,new string('a',120),new string('b',120));
+            Directory.CreateDirectory(folder);
+            string file=Path.Combine(folder,"app.exe");
+            File.WriteAllBytes(file,[]);
+            Assert.True(file.Length>260);
+            // The native read itself, which the fake below replaces: it must find the file, not throw or report it gone.
+            Assert.Equal((FileAttributes)0,new NativeProcessControl().Attributes(file)&FileAttributes.Directory);
+            var opened=await OpenWith(path:file);
+            Assert.Equal("",opened.Status);Assert.Equal(file,opened.Revealed);
+        }
+        finally{Directory.Delete(root,true);}
     }
 
     [Fact]

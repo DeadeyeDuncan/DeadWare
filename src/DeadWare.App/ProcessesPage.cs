@@ -154,7 +154,7 @@ internal sealed class ProcessesPage : UserControl
         live.Children.Add(strip);live.Children.Add(actionStatus);live.Children.Add(status);live.Children.Add(capNote);live.Children.Add(footer);live.Children.Add(table);
         var root=new DockPanel {Margin=new Thickness(6,0,6,6)};root.Children.Add(offCard);root.Children.Add(live);
         Content=root;
-        // Keys: the table's own (Left, Right, Enter, Delete and the navigation hold) come first, before the DataGrid acts on them; Ctrl+F works anywhere on the page.
+        // Keys: the table's own (Left, Right, Enter, Delete and the navigation hold) come first, before the DataGrid acts on them; Ctrl+F, F5 and Esc work anywhere on the page, and MainWindow sends them from its rail and header.
         PreviewKeyDown+=OnPreviewKey;
         CommandBindings.Add(new CommandBinding(ApplicationCommands.Find,(_,_)=>FocusSearch()));
         InputBindings.Add(new KeyBinding(ApplicationCommands.Find,Key.F,ModifierKeys.Control));
@@ -287,8 +287,7 @@ internal sealed class ProcessesPage : UserControl
     private void OnPreviewKey(object sender,KeyEventArgs e)
     {
         if(e.OriginalSource is not Visual source||!source.IsDescendantOf(this))return;
-        if(e.Key==Key.F5){Render(resort:true);e.Handled=true;return;}
-        if(e.Key==Key.Escape&&search.Text.Length>0){search.Text="";e.Handled=true;return;}
+        if((e.Key is Key.F5 or Key.Escape)&&PageKey(e.Key,Keyboard.Modifiers)){e.Handled=true;return;}
         if(source!=Grid&&!source.IsDescendantOf(Grid))return;
         switch(e.Key)
         {
@@ -304,6 +303,19 @@ internal sealed class ProcessesPage : UserControl
             default:return;
         }
         e.Handled=true;
+    }
+
+    /// <summary>The page's keys that work from anywhere it is shown: Ctrl+F (no other modifier) focuses the search box, F5 re-sorts, Esc clears a search that is not empty.
+    /// True when the key acted; false for every other key, so it goes on to whoever else handles it.</summary>
+    internal bool PageKey(Key key,ModifierKeys modifiers)
+    {
+        switch(key)
+        {
+            case Key.F when modifiers==ModifierKeys.Control:FocusSearch();return true;
+            case Key.F5:Render(resort:true);return true;
+            case Key.Escape when search.Text.Length>0:search.Text="";return true;
+            default:return false;
+        }
     }
 
     /// <summary>Ctrl+F. When keyboard focus cannot move (the window is not active), the search box still becomes its scope's focused element, so it has focus once the window does.</summary>

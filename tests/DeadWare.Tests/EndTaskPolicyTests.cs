@@ -17,6 +17,7 @@ public class EndTaskPolicyTests
     public void Failed_facts_only_open_is_undecided(bool elevated,EndTaskVerdict expected)=>Assert.Equal(expected,C(F(terminate:false,factsOpened:false,creation:null,critical:null,prot:null,path:null,sid:null),elevated:elevated));
     [Theory][InlineData(@"C:\Windows\System32\spoolsv.exe","S-1-5-18",EndTaskVerdict.WindowsProcess)][InlineData(@"C:\Windows\System32\notepad.exe",User,EndTaskVerdict.CanEnd)]
     [InlineData(@"C:\Windows.old\x.exe","S-1-5-18",EndTaskVerdict.CanEnd)][InlineData(@"C:\WindowsAzure\x.exe","S-1-5-18",EndTaskVerdict.CanEnd)][InlineData(@"C:\Windows\System32\x.exe","S-1-5-90-0-1",EndTaskVerdict.WindowsProcess)]
+    [InlineData(@"C:\Windows\System32\DriverStoreX\svc.exe","S-1-5-18",EndTaskVerdict.WindowsProcess)]
     public void Windows_folder_plus_service_account(string path,string sid,EndTaskVerdict expected)=>Assert.Equal(expected,C(F(path:path,sid:sid),elevated:true));
     [Fact] public void System32_svchost_of_the_signed_in_user_is_refused()=>Assert.Equal(EndTaskVerdict.WindowsProcess,C(F(path:@"c:\windows\system32\SVCHOST.EXE",sid:User)));
     [Fact] public void Driver_store_service_is_allowed_when_elevated()=>Assert.Equal(EndTaskVerdict.CanEnd,C(F(path:@"C:\Windows\System32\DriverStore\FileRepository\nv.inf_amd64\Display.NvContainer\NVDisplay.Container.exe",sid:"S-1-5-18"),elevated:true));

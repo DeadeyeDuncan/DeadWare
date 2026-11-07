@@ -169,9 +169,27 @@ public class CoolingShutdownTests
             Assert.Null(typeof(UiSession).GetProperty("ProcessHistory")!.GetValue(session));
             var stop=Task.Run(()=>typeof(UiSession).GetMethod("StopCollectorForSessionEnding",Flags)!.Invoke(session,null));await stop.WaitAsync(TimeSpan.FromSeconds(5));
             Assert.True(connections.StopAsync().IsCompleted);string trace=Path.Combine(root,"trace.jsonl");
-            Assert.False(File.Exists(trace)&&File.ReadAllText(trace).Contains("session_end_collector_stop_failed"));
+            string text=File.ReadAllText(trace);Assert.Contains("session_end_collector_stopped",text);Assert.DoesNotContain("session_end_collector_stop_failed",text);
+            // A stage that misses its deadline records collector_stop_timeout and the stop still ends in session_end_collector_stopped.
+            // Quoted, the event name does not match session_end_collector_stop_timeout.
+            Assert.DoesNotContain("\"collector_stop_timeout\"",text);
         }
         finally {await connections.StopAsync();if(Directory.Exists(root))Directory.Delete(root,true);}
+    }
+    [Fact] public async Task Quit_drains_process_history_and_saves_its_open_minute()
+    {
+        string root=Root();var (session,_,connections,worker)=StuckSession(root,new EtwNetwork(_=>new(11,1,"fixture")));worker.SetResult();
+        var history=new ProcessHistoryService(Path.Combine(root,"process-history.db"),"fixture");SetField(session,"<ProcessHistory>k__BackingField",history);
+        try
+        {
+            history.Configure(true,true);history.Start();
+            for(int s=0;s<30;s++)history.TryRecord(ProcessHistoryServiceTests.Reading(s));
+            await Stop(session,TimeSpan.FromSeconds(1)).WaitAsync(TimeSpan.FromSeconds(15));
+            Assert.True(history.StopAsync().IsCompleted);
+            var view=await history.ReadApplicationsAsync(ProcessHistoryServiceTests.Start,ProcessHistoryServiceTests.Start.AddMinutes(1),ProcessRank.CpuTime);
+            Assert.Equal(1,view.RecordedMinutes);Assert.Equal(2.9,Assert.Single(view.Rows).CpuSeconds,6);Assert.False(history.Failed);
+        }
+        finally{await history.StopAsync();await connections.StopAsync();if(Directory.Exists(root))Directory.Delete(root,true);}
     }
     [Fact]
     public async Task Connection_flush_that_outlasts_the_provider_deadline_completes_before_quit_returns()

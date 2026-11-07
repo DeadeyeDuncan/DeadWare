@@ -70,7 +70,7 @@ public class ProcessHistoryStoreTests
         var apps = Enumerable.Range(0, ProcessHistory.MaximumApplications).Select(i => App($"application-{i:00}.exe", big, big, big, big))
             .Append(Else(big, big, big, big)).ToArray();
         for (int start = 0; start < 1440; start += 60)
-            store.Append("m", Enumerable.Range(start, 60).Select(i => Batch(Day.AddMinutes(i), apps: apps)).ToList(), Day.AddDays(1));
+            store.Append("DESKTOP-ABCDEFG", Enumerable.Range(start, 60).Select(i => Batch(Day.AddMinutes(i), apps: apps)).ToList(), Day.AddDays(1));
         Assert.True(store.StorageBytes < 4 * 1024 * 1024, $"One day used {store.StorageBytes:N0} bytes.");
     }
 
@@ -161,7 +161,7 @@ public class ProcessHistoryStoreTests
         var today = Day.AddDays(6);
         // Today lists three times as many apps as the older days, so its save must evict more than one older day to fit.
         for (int d = 0; d <= 6; d++)
-            store.Append("m", Enumerable.Range(0, 120).Select(i => Batch(Day.AddDays(d).AddMinutes(i), apps: Apps(d == 6 ? 30 : 10))).ToList(), today.AddHours(13));
+            store.Append("m", Enumerable.Range(0, 120).Select(i => Batch(Day.AddDays(d).AddMinutes(i * 12), apps: Apps(d == 6 ? 30 : 10))).ToList(), today.AddHours(23).AddMinutes(59));
         var days = fixture.Days();
         Assert.Contains(today.UtcDateTime.Date, days);
         Assert.DoesNotContain(Day.UtcDateTime.Date, days);
@@ -466,6 +466,31 @@ public class ProcessHistoryStoreTests
     }
 
     [Fact]
+    public void Unpaired_surrogate_reserved_and_path_shaped_names_are_rejected_without_writing()
+    {
+        using var fixture = new Fixture(); var store = fixture.Open();
+        // SQLite's UTF-8 stores both as a\uFFFD.exe: one name id twice in a minute failed the primary key and stopped recording.
+        Assert.Throws<ArgumentException>(() => store.Append("m", [Batch(Day, apps: [App("a\uD800.exe", 5), App("a\uD801.exe", 7), Else(1)])], Now));
+        foreach (string name in new[] { "Everything else", "everything ELSE", "*everything else", @"C:\Users\alice\tool.exe", "tools/tool.exe", "Unknown application" })
+            Assert.Throws<ArgumentException>(() => store.Append("m", [Batch(Day, apps: [App(name, 5)])], Now));
+        Assert.Empty(fixture.Days());
+        store.Append("m", [Batch(Day, apps: [App("a\uFFFD.exe", 12), App("\U0001F600.exe", 3), Else(1)])], Now);
+        Assert.Equal(["a\uFFFD.exe", "\U0001F600.exe"], store.ReadApplications("m", Day, Day.AddMinutes(1), ProcessRank.CpuTime, Now).Rows.Select(r => r.Name));
+    }
+
+    [Fact]
+    public void Saved_names_at_the_length_limit_are_accepted_as_they_are()
+    {
+        using var fixture = new Fixture(); var store = fixture.Open();
+        // NormalizeName keeps 256 characters: a cut can end in a space or in half of a surrogate pair.
+        var saved = new[] { new string('x', 255) + " tail.exe", new string('x', 255) + "\U0001F600.exe" }.Select(n => ProcessHistory.SavedName(n)!).ToArray();
+        Assert.Equal([new string('x', 255), new string('x', 255) + "\uFFFD"], saved);
+        Assert.All(saved, s => Assert.Equal(s, ProcessHistory.SavedName(s)));
+        store.Append("m", [Batch(Day, apps: [.. saved.Select(s => App(s, 5)), Else(1)])], Now);
+        Assert.Equal(2, store.ReadApplications("m", Day, Day.AddMinutes(1), ProcessRank.CpuTime, Now).Rows.Count);
+    }
+
+    [Fact]
     public void Limit_above_1000_is_rejected()
     {
         using var fixture = new Fixture(); var store = fixture.Open();
@@ -512,5 +537,23 @@ public class ProcessHistoryStoreTests
     {
         public bool Equals((double, double) x, (double, double) y) => Math.Abs(x.Item1 - y.Item1) < 1e-6 && Math.Abs(x.Item2 - y.Item2) < 1e-6;
         public int GetHashCode((double, double) value) => 0;
+    }
+
+    [Fact]
+    public void A_damaged_table_page_is_reported_and_preserved()
+    {
+        using var fixture = new Fixture(); var store = fixture.Open();
+        store.Append("m", Enumerable.Range(0, 60).Select(i => Batch(Day.AddMinutes(i), apps: [.. Enumerable.Range(0, 30).Select(a => App($"app-{a}.exe", 10 + a)), Else(1)])).ToList(), Now);
+        SqliteConnection.ClearAllPools();
+        long page = fixture.Query("PRAGMA page_size", r => { r.Read(); return r.GetInt64(0); });
+        using (var file = new FileStream(fixture.DbPath, FileMode.Open, FileAccess.Write))
+        {
+            file.Seek(file.Length - page, SeekOrigin.Begin);
+            file.Write(Enumerable.Repeat((byte)0xA5, (int)page).ToArray());
+        }
+        byte[] before = File.ReadAllBytes(fixture.DbPath);
+        var error = Assert.Throws<InvalidDataException>(new ProcessHistoryStore(fixture.DbPath).Initialize);
+        Assert.Null(error.InnerException);   // the integrity_check branch, not the open's error 11/26 catch
+        Assert.Equal(before, File.ReadAllBytes(fixture.DbPath));
     }
 }

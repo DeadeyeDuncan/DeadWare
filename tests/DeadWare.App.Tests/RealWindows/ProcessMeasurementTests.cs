@@ -64,8 +64,8 @@ public sealed class ProcessMeasurementTests
         int chosenSize=chosen?.BufferSizeMB??EtwDisk.DefaultBufferSizeMB*4;
         MeasurementRecorder.Write("disk-attribution",new{elevated=true,sizes=runs.Select(r=>r.Values).ToArray(),chosenBufferSizeMB=chosenSize,lossKnownLimit=chosen is null,diskColumns=ProcessFeatures.DiskColumns});
         if(!ProcessFeatures.DiskColumns)return;
-        double? share=runs.FirstOrDefault(r=>r.BufferSizeMB==chosenSize)?.Share;
-        Assert.True(share>=Gate,$"Disk gate: {share?.ToString("P1")??"no share"} of {TotalBytes:N0} bytes credited to this process at {chosenSize} MB; at least {Gate:P0} is required.");
+        var shipped=runs.FirstOrDefault(r=>r.BufferSizeMB==EtwDisk.BufferSizeMB)??await MeasureAsync(EtwDisk.BufferSizeMB);
+        Assert.True(shipped.Share>=Gate,$"Disk gate: {shipped.Share?.ToString("P1")??"no share"} of {TotalBytes:N0} bytes credited to this process at the shipped {EtwDisk.BufferSizeMB} MB; at least {Gate:P0} is required.");
     }
 
     /// <summary>
