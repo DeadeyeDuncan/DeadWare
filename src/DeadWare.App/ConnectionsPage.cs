@@ -506,7 +506,7 @@ internal sealed class ConnectionsPage : Grid
         if (turnPending && (nodes.Count > 0 || keys.Count == 0))
         {
             turnPending = false;
-            if (nodes.All(p => map.PointPosition(p.Key) is null))
+            if (nodes.Count > 0 && nodes.All(p => map.PointPosition(p.Key) is null))
                 map.SetView(nodes.MaxBy(p => (double)p.ReceivedBytes + p.SentBytes)!.Point, map.Camera.Zoom);
         }
         destinations.SetStatus(nodes.Count > 0 ? DestinationCopy.Highlighted(nodes.Count) : keys.Count > 0 ? DestinationCopy.NotAmongDrawn : DestinationCopy.NotOnMap(selected.Class.Kind));

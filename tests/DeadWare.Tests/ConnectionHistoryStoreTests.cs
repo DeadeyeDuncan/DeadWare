@@ -845,6 +845,7 @@ public sealed class ConnectionHistoryStoreTests(ITestOutputHelper testOutput) : 
     [Fact] public void Destinations_csv_over_the_temp_limit_in_a_page_keeps_what_was_written()
     {
         // 136 pages hold the grouped, destinations and exported tables for 3,000 remotes but not the first page's picked rows.
+        // Probed on this SQLite build: 128–140 pages fail inside the first page; a SQLitePCLRaw/e_sqlite3 bump may need a re-probe.
         var store=Store(pages:136);store.Append([..Enumerable.Range(0,3000).Select(i=>Row(i%9,$"b{i}",address:$"20.{i/250}.{i%250}.1"))],[],Epoch.AddMinutes(10));var writer=new StringWriter();
         Assert.Throws<ConnectionHistoryLimitException>(()=>store.ExportDestinationsCsv(writer,Query(10),DestinationScope.All));
         Assert.Equal(["Address,Class,CountryCode,Country,Region,City,Latitude,Longitude,Applications,ApplicationNames,Ports,PortList,ReceivedBytes,SentBytes,Minutes,FirstSeenUtc,LastSeenUtc,Complete"],Lines(writer.ToString()));
