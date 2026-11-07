@@ -1,6 +1,6 @@
 # Connections history, alerts and controls (0.16.0 and 0.17.0) — design
 
-Status: approved section by section by the user on 2026-11-07, in seven sections (scope and shape, storage, the traffic strip, the Destinations table, first network use, privacy controls, and errors, testing, docs and release). This written spec awaits the user's review. An implementation plan follows only after that review.
+Status: approved section by section by the user on 2026-11-07, in seven sections (scope and shape, storage, the traffic strip, the Destinations table, first network use, privacy controls, and errors, testing, docs and release), and approved as a written spec on 2026-11-07, with the History-speed choice to trim the Destinations steps (decision 15). Two implementation plans follow: one for 0.16.0 and one for 0.17.0.
 
 Date: 2026-11-07.
 
@@ -61,7 +61,7 @@ These two releases close those gaps locally, with no new privilege, account or n
 **What success looks like**, as the approved sections define it:
 - **0.16.0:**
   - **Retention.** Idle and light use keep the full 30 days of Connections history. Today the 256 MiB cap is reached in about 4 days idle, or about 4 hours with 20 busy app–destination pairs.
-  - **History speed.** A 7- or 30-day History view on a full per-minute file opens in about 2–2.5 s (decision 15; see For this review), Today in about 0.25 s, and the minute cursor stays under 5 ms.
+  - **History speed.** A 7- or 30-day History view on a full per-minute file opens in about 2.1–2.75 s on Linux (decision 15), Today in about 0.25 s, and the minute cursor stays under 5 ms.
   - **The strip.** It shows which of the top six apps used the network in each slot. Unrecorded time is hatched, never drawn as zero.
   - **Destinations.** The table's Internet, Local and Unlocated counts equal the summary's, and History's Unlocated count follows the Live rule.
 - **0.17.0:**
@@ -104,8 +104,8 @@ Each rule is tagged with the section in which the user approved it: §1 scope an
 
 **Storage**
 14. **The per-minute merge, as drafted.** One saved row per app and destination per minute, with today's row identity. Each minute is saved 2 s plus one to two polling intervals after it ends. (§2)
-15. **History speed.** 0.16.0 accepts about 2–2.5 s for a 7- or 30-day History view on a full per-minute file, with no cache. (§2)
-16. **The grouped read** uses `temp_store=MEMORY`: about 50 MiB of transient memory during a full-file read, and nothing in `%TEMP%`. (§2)
+15. **History speed.** 0.16.0 accepts about 2–2.5 s for a 7- or 30-day History view on a full per-minute file, with no cache, plus about 0.2 s for *The Destinations table*'s steps, which read `temp.grouped` in one shared pass: about 2.1 s for 7 days and 2.6–2.75 s for 30 days on Linux. (§2; the shared pass was chosen in the user's review of this spec, 2026-11-07, over accepting about 2.8–3.0 s.)
+16. **The grouped read** uses `temp_store=MEMORY`: about 50 MiB of transient memory during a full-file read, and nothing in `%TEMP%`. (§2) With decision 15's shared pass it is up to about 75 MiB (*The Destinations table*, History store step 4).
 17. **Backward clock steps.** A step of up to 60 s holds the frozen minute until the clock passes it. A larger step retires it. (§2)
 
 **Traffic strip**
@@ -145,11 +145,11 @@ Each rule is tagged with the section in which the user approved it: §1 scope an
 29. **Docs.** Each release updates the user guide, CHANGELOG, its release notes and `docs/validation.md`. README gets at most a one-line mention per release. The 0.17.0 notes state the rollback effect. (§7)
 30. **Release order** is 0.15.0, then 0.16.0, then 0.17.0, with one PR each from main. (§7)
 
-**For this review.** These were settled while the sections were joined, after the user approved them, so the user has not yet seen them:
+**Settled in the user's review (2026-11-07).** These were settled while the sections were joined, after the user approved them; the user approved all of them with the written spec:
 - **Cleared time on the strips.** The cleared marks (`cleared-all`, `cleared-one` and `usage-history.cleared.json`, times only), the Cleared band and the Not saved slot state were added after §6 was approved, to meet §3's requirement that the clear section say how cleared time is drawn (*Don't record these apps and Clear history…*).
 - **An app added to Don't record mid-minute.** Connections keeps the entries merged before the change, as §6 states for every store. This replaces §2's note that the writer removes them from open units at its next step (*Connections storage*, Writer hooks).
 - **Read-error counts.** A failed Connections History read now shows "—" for the summary counts, not today's zeros (*Errors, testing, docs and release*), applying §7's rule.
-- **Open question: History speed.** Decision 15's 2–2.5 s came from a benchmark with one simple destinations grouping. *The Destinations table*'s steps as drafted measure about 0.45 s more on Linux, so a 30-day view on a full per-minute file takes about 2.8–3.0 s (*Connections storage*, Timings). The user chooses between accepting that for 0.16.0 and trimming those steps (for example, steps 4–6 reading one shared pass over `temp.grouped`, which measured about 0.25 s faster on Linux) to stay near 2.5 s.
+- **History speed.** Decision 15's 2–2.5 s came from a benchmark with one simple destinations grouping; *The Destinations table*'s steps as first drafted added about 0.45 s (about 2.8–3.0 s for 30 days). The user chose to trim them: steps 4–7 now read `temp.grouped` once into a small table, which measured about 0.25 s faster on Linux, so they add about 0.2 s (decision 15; *Connections storage*, Timings).
 
 ## Architecture
 
@@ -362,7 +362,7 @@ The service calls folder methods under its `gate`, as today's `records.Add` does
 ### Writing closed minutes
 
 - **Write attempts** happen at the end of every writer step that froze a unit, and at every tick. The tick is the existing maintenance call (`Flush(maintenance:true)`, `:309`), which still calls `Append` with an empty list so that expiry and Cleanup run.
-- **When a minute is in the file.** While capture publishes and storage succeeds, a closed minute is in the file within 2 s plus two polling intervals after it ends, plus the `Append` itself, which waits for a running `Read` (up to about 2.5 s on a full file; see The grouped read). That is at most about 24.5 s at 10 s polling, so at every polling interval it falls inside the strip's save delay (the 15 s flush interval plus one polling interval). A minute is saved later only when R4 closes it (up to M + 90 s plus one tick), when the clock check holds it (up to 60 s), or when storage fails (until a retry succeeds). Defined here for the traffic strip.
+- **When a minute is in the file.** While capture publishes and storage succeeds, a closed minute is in the file within 2 s plus two polling intervals after it ends, plus the `Append` itself, which waits for a running `Read` (up to about 2.75 s on a full file; see The grouped read). That is at most about 24.75 s at 10 s polling, so at every polling interval it falls inside the strip's save delay (the 15 s flush interval plus one polling interval). A minute is saved later only when R4 closes it (up to M + 90 s plus one tick), when the clock check holds it (up to 60 s), or when storage fails (until a retry succeeds). Defined here for the traffic strip.
 - **Payload.** Units wait in (Minute, serial) order. A write takes whole sendable units in that order while the payload stays within `Append`'s limits of 32,768 records and 32,768 coverage (`ConnectionHistoryStore.cs:136`). The rest wait for the next attempt.
   - One unit always fits. Entries grow only from admitted deltas, so all entries together never exceed `MaximumBufferedDeltas`. One unit's runs are bounded by the publications of one minute.
 - **Clock check** (replaces `ConnectionService.cs:240-254`). For each waiting unit, `excess = (latest record LastSeen or coverage To) − (now + 2 s)`:
@@ -408,7 +408,7 @@ The service calls folder methods under its `gate`, as today's `records.Add` does
 - **Sign-out:** `StopCollectorForSessionEnding` (`UiSession.cs:339-351`), then the same R6 write.
   - The whole stop has 3 s. The connections stop starts after network capture stops, or after 1.5 s at the latest.
   - If the 3 s pass first, the open minute is lost, up to about 65 s; today it is up to about 15 s.
-  - `Read` holds the store gate for its whole run (`ConnectionHistoryStore.cs:336`), about 2.5 s on a full per-minute file. A History read in progress at sign-out can therefore make the final write miss the deadline.
+  - `Read` holds the store gate for its whole run (`ConnectionHistoryStore.cs:336`), about 2.75 s on a full per-minute file. A History read in progress at sign-out can therefore make the final write miss the deadline.
 
 ### Live and History
 
@@ -523,8 +523,8 @@ A harness drove the real `ConnectionHistoryStore.Append` (same schema, pragmas, 
 ¹ Summary, page, a per-app hourly strip, a destinations grouping and markers, as benchmarked. The traffic strip and the Destinations table own their exact queries.
 
 - **Accepted for 0.16.0.** A 7- or 30-day view on a full per-minute file takes about 2–2.5 s as benchmarked (the Destinations steps add more, next item), the Today (1-day) preset about 0.25 s, and the minute cursor under 5 ms. 0.16.0 ships these timings with no cache. The page keeps its existing busy handling: "Reading saved history…" (`ConnectionsPage.cs:224`) while a read runs, and one pending request that later requests replace (`:214-229`).
-- **The Destinations steps.** The consumers column benchmarked one simple destinations grouping. *The Destinations table*'s History store steps 1–6 as specified, run on the same 31 d file (SQLite 3.53.1, `upper()` standing in for `app_key`), took about 0.72–0.82 s against 0.26–0.39 s for that grouping in the same runs: about 0.45 s more, before the managed `app_key`'s own cost (about +75 ms per per-row call, *The traffic strip*). A 30-day view is then about 2.8–3.0 s and a 7-day view about 2.3–2.4 s.
-  - The 30-day figure is over decision 15's 2–2.5 s. This is an open question for the user (front matter, For this review); the figures in this section that cite about 2.5 s for a full-file `Read` (When a minute is in the file, Sign-out) rise with it.
+- **The Destinations steps.** The consumers column benchmarked one simple destinations grouping. *The Destinations table*'s History store steps as first drafted (three separate passes over `temp.grouped` for apps, ports and locations), run on the same 31 d file (SQLite 3.53.1, `upper()` standing in for `app_key`), took about 0.72–0.82 s against 0.26–0.39 s for that grouping: about 0.45 s more. With the shared pass the user chose (*The Destinations table*, History store step 4), they measured about 0.25 s faster, so they add about 0.2 s, before the managed `app_key`'s own cost (computed once per picked row; *The traffic strip* measured about +75 ms per per-row call). A 30-day view is then about 2.6–2.75 s and a 7-day view about 2.1 s on Linux.
+  - Decision 15 records these figures. The figures in this section that cite a full-file `Read` (When a minute is in the file, Sign-out) use about 2.75 s.
   - The Windows CI measurement records the steps' times (*The Destinations table*, Tests).
 - **Default temp_store on the full per-minute file (31 d):**
   - build 1.24 s and consumers 0.81 s, 2.05 s in total;
@@ -563,7 +563,7 @@ A harness drove the real `ConnectionHistoryStore.Append` (same schema, pragmas, 
   - is not merged, so it adds nothing to `Held` or to any entry's `Observations`;
   - is not counted as dropped, and does not clear the publication's `complete` flag or its coverage;
   - still counts in the `sample.Deltas.Count` that the merge subtracts from `buffered`, so `Held` and `buffered` stay balanced.
-  - The set is read at merge time only, never at a write. A list change never alters an entry already merged or a frozen unit: the part of the open minute merged before the change is saved when its minute closes, as that section states. The approved storage section had the writer remove the app's entries from open units at its next step instead; this follows the later privacy section, which keeps in every store what was folded before the change (front matter, For this review).
+  - The set is read at merge time only, never at a write. A list change never alters an entry already merged or a frozen unit: the part of the open minute merged before the change is saved when its minute closes, as that section states. The approved storage section had the writer remove the app's entries from open units at its next step instead; this follows the later privacy section, which keeps in every store what was folded before the change (front matter, Settled in the user's review).
 - **`Forget(string? appKey)`** on the folder removes from every open unit each entry whose `AppKey.Of(Name)` equals `appKey` (ordinal), or every entry when `appKey` is null.
   - Coverage runs stay, because coverage records capture, not apps.
   - A unit left with no entry and no run is removed.
@@ -950,7 +950,7 @@ public sealed record TrafficStrip(DateTimeOffset From, DateTimeOffset To, long B
 - **Showing the page again.** When `stripContext.To` is after `stripNow`, `stripContext` is cleared, so the next `RequestHistory` re-reads the strip. Otherwise the minutes saved since would stay "Not yet".
 - **Re-reading saved data.** Defined here for *Don't record these apps and Clear history…*: `internal void ReloadHistory()` clears `stripContext` and `stripFailed` and, when the page is in History, calls `RequestHistory()`. The strip is therefore re-read with the minute cursor on as well as off. The page's re-read after a clear uses it; Live is unaffected.
 - **Playback.** Playback waits for the strip read, as it waits for any read (`AdvancePlayback`, `:233`), because the pump stays busy.
-- **Cost.** With the cursor on, a context change reads its minute first (under 5 ms), then the whole interval for the strip: about 1.9–2.5 s for 7 or 30 days as benchmarked, plus about 0.45 s for *The Destinations table*'s steps (an open question), and 0.25 s for one day on a full per-minute file (the timings in *Per-minute merge, the grouped read and the Unlocated fix*). A cursor move during that read waits for it, and moving the cursor never starts another strip read.
+- **Cost.** With the cursor on, a context change reads its minute first (under 5 ms), then the whole interval for the strip: about 1.9–2.5 s for 7 or 30 days as benchmarked, plus about 0.2 s for *The Destinations table*'s steps (one shared pass, decision 15), and 0.25 s for one day on a full per-minute file (the timings in *Per-minute merge, the grouped read and the Unlocated fix*). A cursor move during that read waits for it, and moving the cursor never starts another strip read.
 - **Empty texts.**
   - A failed strip read whose context is still current shows "History unavailable" and records `stripFailed`. actionStatus also shows the existing "History could not be read (TypeName)." (`:226`), or that section's limit text for `ConnectionHistoryLimitException`. The same context is not read again until it changes, the page is shown again, or `ReloadHistory` runs.
   - An interval that does not parse shows "Choose a valid interval".
@@ -1669,7 +1669,7 @@ Updates follow the Application resources card (`App/ApplicationResourcesCard.cs:
   - **Store:** the service calls `ConnectionHistoryStore.ExportDestinationsCsv(TextWriter, ConnectionHistoryQuery, DestinationScope)`. It works like this:
     - It takes the store gate and opens its own read-only connection.
     - It runs *Connections storage*'s pragmas and TEMP build (its steps 1–3) for the whole interval in one deferred transaction, then step 1 of History store below. Its TEMP pages count toward the same 64 MiB limit, and SQLITE_FULL from any of its statements throws `ConnectionHistoryLimitException`, as in `Read`.
-    - It writes the header, then streams the scope's destinations in pages of 1,000. Each page's app lists, port lists and shown locations come from one query each (steps 4–6 restricted to the page's addresses, with the export caps).
+    - It writes the header, then streams the scope's destinations in pages of 1,000. Each page's app lists, port lists and shown locations come from one query each (steps 4–7 restricted to the page's addresses, with the export caps).
     - Like Export CSV (`Core/ConnectionHistoryStore.cs:440`), it holds the gate for the whole export, so the writer's saves wait for it. A Quit or a sign-out during an export can miss the final save's deadline (`App/UiSession.cs:300`; *Connections storage*, sign-out).
   - **Header:** `Address,Class,CountryCode,Country,Region,City,Latitude,Longitude,Applications,ApplicationNames,Ports,PortList,ReceivedBytes,SentBytes,Minutes,FirstSeenUtc,LastSeenUtc,Complete`.
   - **Rows:** every destination in the scope, with no 1,000 cap, ordered by received + sent descending, then address, ordinal.
@@ -1798,13 +1798,25 @@ All of this runs within `Read`'s transaction, in the same snapshot as the summar
    - `port*2+protocol` is unique because protocol is 0 (Tcp) or 1 (Udp) (`Core/ConnectionModels.cs:3`).
 2. **Counts:** `SELECT count(*), sum(kind=0), sum(kind=1), sum(kind=2), sum(unlocated) FROM temp.destinations`, uncapped. These are the figures under Rows.
 3. **Rows:** those with rank ≤ 1,000, at most 3,000.
-4. **Apps:** in one pass over `temp.grouped` for those rows.
-   - Group by (remote, `app_key(name)`) with `sat_sum` totals.
-   - The name comes from `row_number() OVER (PARTITION BY remote, app_key(name) ORDER BY minute DESC, name) = 1`: the latest minute's casing, ties the lower BINARY name.
-   - Keep `row_number() OVER (PARTITION BY remote ORDER BY total DESC, key) ≤ 10`, so at most 30,000 rows cross into .NET.
-   - There is no per-app subquery, because `temp.grouped` has no index on remote.
-5. **Ports:** the same as apps, grouped by (remote, port, protocol), ties by port then protocol. At most 30,000 rows.
-6. **Locations:** for those rows, join `temp.geo` where `x.location <> 'null'`.
+4. **Picked rows (the shared pass):** one pass over `temp.grouped` for those rows, chosen in the user's review (decision 15) so steps 5–7 never scan `temp.grouped` again:
+
+   ```sql
+   CREATE TEMP TABLE picked AS
+   SELECT g.remote, app_key(g.name) app, g.name, g.port, g.protocol,
+          g.geo, g.minute, g.received, g.sent
+   FROM temp.grouped g
+   WHERE g.remote IN (SELECT remote FROM temp.destinations WHERE rank<=1000)
+   ```
+
+   - `app_key` runs once per picked row, never once per step.
+   - `picked` keeps the `geo` id, not the location text, so each row is about the size of a `temp.grouped` row. It holds at most the rows of `temp.grouped` (all of them when there are no more than 3,000 distinct remotes).
+   - **TEMP and memory.** `picked` counts toward the 64 MiB TEMP limit like the other tables. On the measured full per-minute file `temp.grouped` took 23.8 MiB (*Connections storage*, The grouped read), so with `picked` a full-file read stays under the limit; names near the 260-character limit reach it sooner, with the existing `ConnectionHistoryLimitException`. Decision 16's transient memory rises by up to about 25 MiB (to about 75 MiB) for the length of a full-file read.
+5. **Apps:** from `temp.picked`.
+   - Group by (remote, app) with `sat_sum` totals.
+   - The name comes from `row_number() OVER (PARTITION BY remote, app ORDER BY minute DESC, name) = 1`: the latest minute's casing, ties the lower BINARY name.
+   - Keep `row_number() OVER (PARTITION BY remote ORDER BY total DESC, app) ≤ 10`, so at most 30,000 rows cross into .NET.
+6. **Ports:** the same as apps, grouped by (remote, port, protocol), ties by port then protocol. At most 30,000 rows.
+7. **Locations:** from `temp.picked p JOIN temp.geo x ON x.id=p.geo` where `x.location <> 'null'`.
    - Group by (remote, x.location) with `max(minute)` as latest.
    - Keep `row_number() OVER (PARTITION BY remote ORDER BY latest DESC, location) ≤ 8`, so at most 24,000 rows.
    - The first one is the row's Location. Its distinct valid points, in that order, are Points.
@@ -1998,7 +2010,7 @@ Core tests (`Tests/`) run on every run, on Linux and in CI. App tests and the pa
 
 - **`CheckDestinationsNotRecordedMark`** (`ConnectionsPageUiChecks`): with one excluded app in the set, the Live APPS cell, that app's tooltip line and the row's spoken text carry the mark; Copy row includes it; search by the bare name still finds the row; a History row of the same app carries no mark.
 
-**Windows CI measurement.** Defined here for *Connections storage*: `Connection_history_rates_and_read_timings` (`AppTests/RealWindows/ConnectionHistoryMeasurementTests.cs`) also records, for each of its 31 d, 7 d, 1 d and 1-minute reads on its full per-minute file, the elapsed time of History store steps 1–6, in the same `connection-history.json` through `MeasurementRecorder.Write`.
+**Windows CI measurement.** Defined here for *Connections storage*: `Connection_history_rates_and_read_timings` (`AppTests/RealWindows/ConnectionHistoryMeasurementTests.cs`) also records, for each of its 31 d, 7 d, 1 d and 1-minute reads on its full per-minute file, the elapsed time of History store steps 1–7, in the same `connection-history.json` through `MeasurementRecorder.Write`.
 - The store reports that time to an internal `Action<TimeSpan>? destinationStepsTimed`, null by default and set only by this measurement, which reaches it the same way as its internal temp_store switch.
 - It records only and decides nothing.
 
@@ -3597,7 +3609,7 @@ The user approved this as section 7 on 2026-11-07 ("section 7 looks right"). The
 - **Quit and sign-out.**
   - Quit keeps its 20 s history deadline and sign-out its 3 s limit (`UiSession.cs:300`, `:346`). A clear makes them wait for at most one step (250 ms plus one transaction). The final Connections write never purges (`maintenanceTransactions: 0`).
   - Two known risks are accepted.
-    - (*Connections storage*) `Read` holds the store's lock for about 2.5 s on a full per-minute file. A History read in progress at sign-out can therefore make the final write miss the 3 s limit and lose the open minute.
+    - (*Connections storage*) `Read` holds the store's lock for about 2.75 s on a full per-minute file. A History read in progress at sign-out can therefore make the final write miss the 3 s limit and lose the open minute.
     - (*The Destinations table*) Export destinations, like Export CSV, holds the store's lock for the whole export, so a Quit or sign-out during an export can miss the final write's deadline.
 - **No new requirements.** Nothing needs administrator rights beyond per-app capture's existing need. Nothing makes a network request.
 
