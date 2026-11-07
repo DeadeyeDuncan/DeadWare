@@ -57,7 +57,8 @@ internal sealed class ConnectionsPage : Grid
     private readonly Border nodeDetails = new() { Padding = new(10), BorderThickness = new(1), CornerRadius = new(5), Visibility = Visibility.Collapsed };
     private readonly TextBlock nodeText = Ui.Text("", 12);
     private readonly TextBlock mappedStatus = Ui.Text("", 11, "Muted");
-    private readonly Button play, download, cancel, export;
+    private readonly Button play, download, cancel, export, applicationButton;
+    private readonly TextBlock applicationText = new() { TextTrimming = TextTrimming.CharacterEllipsis, TextWrapping = TextWrapping.NoWrap };
     private readonly ProgressBar progress = new() { Minimum = 0, Maximum = 100, Width = 80, Height = 6, Visibility = Visibility.Collapsed };
     private readonly StackPanel historical = new();
     private readonly DispatcherTimer playback = new() { Interval = TimeSpan.FromSeconds(1) };
@@ -78,6 +79,8 @@ internal sealed class ConnectionsPage : Grid
     private long generation;
     private bool syncing, busy, playing, active, exportInProgress, historyMinuteReady;
     private string? selectedKey;
+    // The exact application filter: the key ("" for every application) and the name as given, for display.
+    private string applicationFilter = "", applicationName = "";
     private string historyStorage = "";
     private const string LimitWarning = "This interval holds too many saved rows to show. Choose a shorter interval.";
     private const string UnavailableSummary = "History · minute-bucket average rates · — destinations · — countries · — local · — unlocated · ↓ — received / ↑ — sent";
@@ -101,7 +104,9 @@ internal sealed class ConnectionsPage : Grid
         var dates = new WrapPanel(); dates.Children.Add(Label("From local", from, "History from local time")); dates.Children.Add(Label("To (exclusive)", to, "History to exclusive local time")); dates.Children.Add(Button("Apply interval", () => FiltersChanged())); historical.Children.Add(dates);
         var timeline = new WrapPanel(); timeline.Children.Add(minute); Named(cursor, "History minute cursor"); timeline.Children.Add(cursor); timeline.Children.Add(cursorTime); play = Button("Play", TogglePlayback); timeline.Children.Add(play); historical.Children.Add(timeline); controls.Children.Add(historical);
         var filters = new WrapPanel(); Named(search, "Search application or IP"); search.ToolTip = "Application name, PID or remote IP"; filters.Children.Add(Label("Application / IP", search, "Search application or IP")); country.ToolTip = "ISO country code; blank for all"; Named(country, "Country code"); filters.Children.Add(Label("Country code", country, "Country code"));
-        direction.ItemsSource = Enum.GetValues<ConnectionDirection>(); direction.SelectedIndex = 0; Named(direction, "Traffic direction"); filters.Children.Add(Label("Direction", direction, "Traffic direction")); filters.Children.Add(Button("Filter", () => FiltersChanged())); controls.Children.Add(filters);
+        direction.ItemsSource = Enum.GetValues<ConnectionDirection>(); direction.SelectedIndex = 0; Named(direction, "Traffic direction"); filters.Children.Add(Label("Direction", direction, "Traffic direction"));
+        applicationButton = Button("", ClearApplicationFilter); applicationButton.Content = applicationText; applicationButton.MaxWidth = 240; applicationButton.Visibility = Visibility.Collapsed; Named(applicationButton, "Clear application filter"); filters.Children.Add(applicationButton);
+        filters.Children.Add(Button("Filter", () => FiltersChanged())); controls.Children.Add(filters);
         // Refined glass: the controls sit in a card strip above the map card; the detail box is a card too.
         var strip = Ui.Panel(controls, new Thickness(12, 6, 12, 6)); strip.Margin = new(0, 4, 0, 8);
         var header=layoutHeader=new StackPanel();header.Children.Add(strip);header.Children.Add(summary);header.Children.Add(capture);body.Children.Add(header);
@@ -110,6 +115,7 @@ internal sealed class ConnectionsPage : Grid
         trafficStrip = new TrafficStripView(session, TrafficStripPage.Connections); trafficStrip.Chart.Selectable = true;
         trafficStrip.Chart.SlotActivated += (_, time) => ActivateStripAt(time);
         trafficStrip.Chart.SelectionMoved += index => { if (trafficStrip.Chart.Strip is { } shown) ActivateStripAt(shown.Slots[index].Start); };
+        trafficStrip.ApplicationChosen += (key, name) => { applicationFilter = key; applicationName = name; UpdateApplicationButton(); FiltersChanged(); };
         trafficCard = Ui.Panel(trafficStrip, new Thickness(12, 8, 12, 8)); trafficCard.Margin = new(0, 6, 0, 4); trafficCard.Visibility = Visibility.Collapsed; Grid.SetRow(trafficCard, 2); body.Children.Add(trafficCard);
         nodeDetails.SetResourceReference(StyleProperty, "Card"); nodeDetails.CornerRadius = new(10);
         nodeText.TextWrapping = TextWrapping.Wrap;
@@ -137,7 +143,7 @@ internal sealed class ConnectionsPage : Grid
         var foot = layoutFooter = new StackPanel(); export = Button("Export CSV…", () => _ = ExportAsync()); export.HorizontalAlignment = HorizontalAlignment.Left; foot.Children.Add(export); foot.Children.Add(selection); Grid.SetRow(foot, 4); body.Children.Add(foot);
         var settings = layoutSettings = new StackPanel(); var databaseActions = new WrapPanel(); download = Button("Download / update locations", () => _ = UpdateDatabaseAsync()); cancel = Button("Cancel download", () => downloadCancellation?.Cancel()); cancel.IsEnabled = false; databaseActions.Children.Add(download); databaseActions.Children.Add(cancel); databaseActions.Children.Add(progress); settings.Children.Add(databaseActions); settings.Children.Add(database);
         var options = new StackPanel(); var choices = new WrapPanel(); recording.IsChecked = session.Settings.ConnectionsRecording; databaseActions.Children.Add(recording); Named(citySearch, "Search offline home cities"); citySearch.ToolTip = "Search 7,342 offline cities by name or country"; choices.Children.Add(citySearch); Named(home, "Home city"); choices.Children.Add(home); choices.Children.Add(Button("Clear home city", () => home.SelectedIndex = 0)); options.Children.Add(choices); settings.Children.Add(storage);
-        options.Children.Add(Ui.Text("Origin and destination geography are approximate; curves are illustrative. The list follows the nodes visible on the map. Local / special and unlocated peers remain in totals and history CSV. Rolling history: 30 days, up to 256 MiB locally. CSV exports the full filtered interval to a new file.", 11, "Muted")); settings.Children.Add(new Expander { Header = "Recording, origin and storage", Content = options }); Grid.SetRow(settings, 6); settings.Children.Insert(0, actionStatus); body.Children.Add(settings);
+        options.Children.Add(Ui.Text("Origin and destination geography are approximate; curves are illustrative. The list follows the nodes visible on the map. Local / special and unlocated peers remain in totals and history CSV. The strip under the map stacks the six applications with the most traffic in the interval, plus Other; its colours identify applications, not direction. Click it to move the minute cursor, or click an application to show only it. Rolling history: 30 days, up to 256 MiB locally. CSV exports the full filtered interval to a new file.", 11, "Muted")); settings.Children.Add(new Expander { Header = "Recording, origin and storage", Content = options }); Grid.SetRow(settings, 6); settings.Children.Insert(0, actionStatus); body.Children.Add(settings);
         foreach (var element in new[] { mode, range, direction }) element.Margin = new(0, 0, 6, 3); foreach (var element in new[] { search, from, to, citySearch, country }) element.Margin = new(0, 0, 6, 3);
         selection.MaxHeight = 28; selection.TextTrimming = TextTrimming.CharacterEllipsis;
         layoutHeader.SizeChanged+=(_,_)=>InvalidateMeasure();layoutFooter.SizeChanged+=(_,_)=>InvalidateMeasure();layoutSettings.SizeChanged+=(_,_)=>InvalidateMeasure();trafficCard.SizeChanged+=(_,_)=>InvalidateMeasure();
@@ -219,7 +225,7 @@ internal sealed class ConnectionsPage : Grid
     {
         whole = null;
         if (!TryInterval(out var start, out var end)) return null;
-        whole = new(start, end, search.Text.Trim(), country.Text.Trim().ToUpperInvariant(), direction.SelectedItem is ConnectionDirection value ? value : ConnectionDirection.Both, 0, 200);
+        whole = new(start, end, search.Text.Trim(), country.Text.Trim().ToUpperInvariant(), direction.SelectedItem is ConnectionDirection value ? value : ConnectionDirection.Both, 0, 200, applicationFilter);
         var query = whole;
         if (minute.IsChecked == true) { var first = start.AddMinutes((int)cursor.Value); query = whole with { From = first, To = end < first.AddMinutes(1) ? end : first.AddMinutes(1) }; }
         cursorTime.Text = minute.IsChecked == true ? $"{query.From.ToLocalTime():MM-dd HH:mm}" : "Whole interval";
@@ -314,6 +320,45 @@ internal sealed class ConnectionsPage : Grid
         syncing = true; minute.IsChecked = true; cursor.Value = Math.Clamp(Math.Floor((time - shown.From).TotalMinutes), 0, cursor.Maximum); syncing = false;
         StopPlayback(); ClearSelection(); RequestHistory();
     }
+    private void UpdateApplicationButton()
+    {
+        bool set = applicationFilter.Length > 0;
+        applicationText.Text = set ? $"Application: {applicationName} ✕" : "";
+        applicationButton.ToolTip = set ? $"Only {applicationName} is shown. Click to show every application." : null;
+        applicationButton.Visibility = set ? Visibility.Visible : Visibility.Collapsed;
+    }
+    private void ClearApplicationFilter() { applicationFilter = applicationName = ""; UpdateApplicationButton(); FiltersChanged(); }
+    /// <summary>Opens History for the whole minutes holding [from, to), with every other filter cleared and only the application, when one is given.</summary>
+    internal void ShowHistory(DateTimeOffset from, DateTimeOffset to, string? application)
+    {
+        StopPlayback(); ClearSelection();
+        var start = TrafficStrips.CeilingMinute(from); var end = TrafficStrips.CeilingMinute(to); if (end < start.AddMinutes(1)) end = start.AddMinutes(1);
+        var (fromText, toText) = LocalBoxes(start, end, TimeZoneInfo.Local);
+        syncing = true;
+        try
+        {
+            this.from.Text = fromText; this.to.Text = toText; search.Text = ""; country.Text = ""; direction.SelectedItem = ConnectionDirection.Both;
+            minute.IsChecked = false; cursor.Value = 0;
+            bool set = !string.IsNullOrWhiteSpace(application);
+            applicationFilter = set ? ProcessGrouping.Key(application!) : ""; applicationName = set ? application! : "";
+            UpdateApplicationButton();
+        }
+        finally { syncing = false; }
+        // The range preset is left alone: changing it would apply a preset over these boxes.
+        if (IsHistory) RequestHistory(); else mode.SelectedIndex = 1;
+    }
+    /// <summary>The from/to box text for [start, end) in the zone; an invalid or ambiguous local start moves earlier and end later, at most 180 minutes each, so the boxes always hold the interval.</summary>
+    internal static (string From, string To) LocalBoxes(DateTimeOffset start, DateTimeOffset end, TimeZoneInfo zone)
+    {
+        static string Text(DateTime local) => local.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture);
+        string Widen(DateTimeOffset time, int step)
+        {
+            var local = TimeZoneInfo.ConvertTime(time, zone).DateTime;
+            for (int i = 0; i < 180 && !TryParseLocalTime(Text(local), zone, out _); i++) local = local.AddMinutes(step);
+            return Text(local);
+        }
+        return (Widen(start, -1), Widen(end, 1));
+    }
     private void TogglePlayback() { if (playing) { StopPlayback(); return; } if (!IsHistory || !TryInterval(out _, out _)) return; syncing = true; minute.IsChecked = true; syncing = false; playing = true; play.Content = "Pause"; UpdateMapAnimation(); RequestHistory(); playback.Start(); }
     private void StopPlayback() { playing = false; playback.Stop(); play.Content = "Play"; UpdateMapAnimation(); }
     private void AdvancePlayback() { if (!playing || !IsHistory) { StopPlayback(); return; } if (busy || pending is not null) return; if (cursor.Value >= cursor.Maximum) { StopPlayback(); return; } syncing = true; cursor.Value++; syncing = false; RequestHistory(); }
@@ -402,7 +447,7 @@ internal sealed class ConnectionsPage : Grid
         Canvas.SetTop(nodeDetails,Math.Clamp(anchor.Y-20,8,Math.Max(8,map.ActualHeight-nodeDetails.DesiredSize.Height-8)));
     }
     // Trimmed like the history query, so the same text filters both views alike.
-    private bool Matches(ProcessIdentity process, string address, ConnectionLocation? location, long received, long sent) => (search.Text.Trim() is not { Length: > 0 } text || $"{process.Name} {process.Pid} {address}".Contains(text, StringComparison.OrdinalIgnoreCase)) && (string.IsNullOrWhiteSpace(country.Text) || string.Equals(location?.CountryCode, country.Text.Trim(), StringComparison.OrdinalIgnoreCase)) && (direction.SelectedItem is not ConnectionDirection selected || selected == ConnectionDirection.Both || selected == ConnectionDirection.Received && received > 0 || selected == ConnectionDirection.Sent && sent > 0);
+    private bool Matches(ProcessIdentity process, string address, ConnectionLocation? location, long received, long sent) => (applicationFilter.Length == 0 || ProcessGrouping.Key(process.Name) == applicationFilter) && (search.Text.Trim() is not { Length: > 0 } text || $"{process.Name} {process.Pid} {address}".Contains(text, StringComparison.OrdinalIgnoreCase)) && (string.IsNullOrWhiteSpace(country.Text) || string.Equals(location?.CountryCode, country.Text.Trim(), StringComparison.OrdinalIgnoreCase)) && (direction.SelectedItem is not ConnectionDirection selected || selected == ConnectionDirection.Both || selected == ConnectionDirection.Received && received > 0 || selected == ConnectionDirection.Sent && sent > 0);
     private static string Key(ConnectionPeer peer) => "live:"+JsonSerializer.Serialize(peer);
     private static string Endpoint(string address,int port,ConnectionProtocol protocol)=>$"{(IPAddress.TryParse(address,out var ip)&&ip.AddressFamily==System.Net.Sockets.AddressFamily.InterNetworkV6?$"[{address}]":address)}:{port} {protocol}";
     // Match the store's grouping identity; aggregates and first/last observations may change on refresh.

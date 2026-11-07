@@ -48,6 +48,8 @@ public sealed class MainWindow : Window
     private bool syncingStartup,startupBusy,syncingWidgetGraphs;
     private readonly TextBlock trayNotice=Ui.Text("Close hides to the system tray.\nQuit stops monitoring.",10,"Muted");
     private readonly TextBlock monitoringInfo=Ui.Text("",10,"Muted");
+    /// <summary>Shows the dashboard window; the checks replace it so that no native window is created.</summary>
+    internal Action<Window> present=window=>window.Show();
     public MainWindow(UiSession session,ApplicationLifetime lifetime,Func<bool> trayAvailable,Action quit)
     {
         this.session=session;this.lifetime=lifetime;this.trayAvailable=trayAvailable;Title="DeadWare";MinWidth=900;MinHeight=640;Ui.Icon(this);session.Place(this,"main",1220,900);
@@ -75,8 +77,8 @@ public sealed class MainWindow : Window
         gpu.SelectionChanged+=(_,_)=>{if(!syncingGpu)session.SetGpu((gpu.SelectedItem as Device)?.Id);};
         main.Children.Add(content);
         pages["overview"]=Overview();pages["network"]=Network();pages["storage"]=new StoragePage(session);pages["processes"]=new ProcessesPage(session);pages["connections"]=new ConnectionsPage(session);pages["cooling"]=new CoolingHealthPage(session);pages["battery"]=new BatteryHistoryPage(session);pages["usage"]=new UsageHistoryPage(session);pages["alerts"]=new AlertsPage(session);pages["sensors"]=Sensors();pages["desktop"]=Desktop();pages["updates"]=new UpdatesPage(session);Navigate("overview");
-        session.Changed+=Refresh;session.Updates.Changed+=RefreshUpdateNotice;session.UsageDayRequested+=ShowUsageDay;
-        Closed+=(_,_)=>{session.Changed-=Refresh;session.Updates.Changed-=RefreshUpdateNotice;session.UsageDayRequested-=ShowUsageDay;};Closing+=OnClosing;
+        session.Changed+=Refresh;session.Updates.Changed+=RefreshUpdateNotice;session.UsageDayRequested+=ShowUsageDay;session.ConnectionsHistoryRequested+=ShowConnectionsHistory;
+        Closed+=(_,_)=>{session.Changed-=Refresh;session.Updates.Changed-=RefreshUpdateNotice;session.UsageDayRequested-=ShowUsageDay;session.ConnectionsHistoryRequested-=ShowConnectionsHistory;};Closing+=OnClosing;
         RefreshUpdateNotice();
         IsVisibleChanged+=(_,_)=>{if(IsVisible)Refresh();};
         KeyDown+=(_,e)=>{if(PageKey(e.OriginalSource,e.Key,Keyboard.Modifiers))e.Handled=true;};
@@ -247,6 +249,14 @@ public sealed class MainWindow : Window
     public void ShowUpdates()=>Navigate("updates");
     public void ShowAlerts()=>Navigate("alerts");
     private void ShowUsageDay(DateTimeOffset at) {Navigate("usage");if(pages["usage"] is UsageHistoryPage usage)usage.ShowDay(at);}
+    // The request can come from the separate Usage history window, so the dashboard is shown as App.ShowDashboard shows it; nothing happens during Quit or sign-out.
+    private void ShowConnectionsHistory(ConnectionsHistoryRequest request)
+    {
+        if(lifetime.IsEnding||Dispatcher.HasShutdownStarted)return;
+        present(this);if(WindowState==WindowState.Minimized)WindowState=WindowState.Normal;Activate();
+        Navigate("connections");
+        if(pages["connections"] is ConnectionsPage connections)connections.ShowHistory(request.From,request.To,request.Application);
+    }
     private void RefreshUpdateNotice()
     {
         if(lifetime.IsEnding||Dispatcher.HasShutdownStarted)return;
