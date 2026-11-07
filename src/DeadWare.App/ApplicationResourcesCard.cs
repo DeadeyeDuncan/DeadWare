@@ -321,17 +321,15 @@ internal sealed class ApplicationResourcesCard : StackPanel
     }
 
     /// <summary>Gives the two GPU columns' headers <paramref name="tip"/> (none when null). A header style based on the theme's carries it,
-    /// so those headers keep the theme's padding and captions, and each Header stays its title.</summary>
+    /// so those headers keep the theme's padding and captions, and each Header stays its title. Without a tip the HeaderStyle is cleared,
+    /// never set to null: a locally set null would stop the header taking the theme's implicit style.</summary>
     private void GpuHeaderTips(string? tip)
     {
         if (tip == gpuHeaderTip) return;
         gpuHeaderTip = tip;
-        Style? header = null;
-        if (tip is not null)
-        {
-            header = new Style(typeof(DataGridColumnHeader), TryFindResource(typeof(DataGridColumnHeader)) as Style);
-            header.Setters.Add(new Setter(ToolTipProperty, tip));
-        }
+        if (tip is null) { foreach (var column in gpuColumns) column.ClearValue(DataGridColumn.HeaderStyleProperty); return; }
+        var header = new Style(typeof(DataGridColumnHeader), TryFindResource(typeof(DataGridColumnHeader)) as Style);
+        header.Setters.Add(new Setter(ToolTipProperty, tip));
         foreach (var column in gpuColumns) column.HeaderStyle = header;
     }
 

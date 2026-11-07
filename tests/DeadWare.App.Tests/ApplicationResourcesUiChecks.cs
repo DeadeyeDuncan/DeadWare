@@ -968,6 +968,15 @@ internal static class ApplicationResourcesUiChecks
         Assert.Equal(["10 %", "1.0 MB"], new[] { "AverageGpu", "AverageGpuMemory" }.Select(p => Cell(Row(card, "chrome.exe"), p)));
         // A shown value has no tooltip.
         Assert.Null(Tip(card, "chrome.exe", "Avg GPU")); Assert.Null(Tip(card, "chrome.exe", "Avg GPU memory while listed"));
+        // When the tip clears, the GPU headers take the theme's header style again: 10 px captions and 9,8 padding.
+        typeof(ApplicationResourcesCard).GetMethod("Unavailable", All)!.Invoke(card, ["History unavailable"]);
+        foreach (string gpu in new[] { "Avg GPU", "Avg GPU memory while listed" })
+        {
+            var header = HeaderOf(card, gpu);
+            Assert.Null(header.ToolTip);
+            Assert.True(header.FontSize == 10 && header.Padding == new Thickness(9, 8, 9, 8) && header.FontSize == HeaderOf(card, "Avg CPU").FontSize,
+                $"{gpu} header lost the theme's caption look after its tip cleared: {header.FontSize} px, padding {header.Padding}.");
+        }
     }
 
     private static void Gpu_dashes_name_their_reason(string folder)
