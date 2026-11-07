@@ -100,12 +100,13 @@ internal static class ConnectionsPageUiChecks
         Field<TextBox>(page,"search").Text="192.168"; Assert.Empty(list.Items); Assert.Equal(Visibility.Collapsed,Field<Border>(page,"nodeDetails").Visibility);
         Assert.Contains("1 local",Field<TextBlock>(page,"summary").Text);
         // Surrounding whitespace is trimmed like the history query, so a pasted "Browser " still matches.
-        Field<TextBox>(page,"search").Text=" 8.8.8 "; Assert.Single(list.Items.Cast<object>()); Assert.Contains("1 destinations",Field<TextBlock>(page,"summary").Text);
+        Field<TextBox>(page,"search").Text=" 8.8.8 "; Assert.Single(list.Items.Cast<object>()); Assert.Contains("Live · 1 destination · ",Field<TextBlock>(page,"summary").Text);
         Field<TextBox>(page,"search").Text="   "; Assert.Contains("3 destinations",Field<TextBlock>(page,"summary").Text); Field<TextBox>(page,"search").Text="";
         Field<TextBox>(page,"country").Text="JP"; Assert.Empty(list.Items); Field<TextBox>(page,"country").Text="";
         Call(page,"ApplyLive",live with {Available=false,Status="Permission denied"}); list.SelectedIndex=0;
         Assert.Contains("Permission denied",Field<TextBlock>(page,"capture").Text);Assert.Contains("—",Field<TextBlock>(page,"nodeText").Text);
         var options=Elements(page).OfType<Expander>().Single();options.IsExpanded=true;Layout(page,671,600);
+        Assert.Contains(Elements((DependencyObject)options.Content).OfType<TextBlock>(),t=>t.Text.Contains("The strip under the map stacks the six applications with the most traffic in the interval, plus Other; its colours identify applications, not direction. Click it to move the minute cursor, or click an application to show only it.",StringComparison.Ordinal));
         Field<TextBox>(page,"citySearch").Text="London";var home=Field<ComboBox>(page,"home");Assert.Contains(home.Items.Cast<object>(),item=>item.ToString()!.Contains("London"));Assert.True(home.Items.Count<=82);options.IsExpanded=false;
         Click(page,"download");Assert.Contains("unavailable",Field<TextBlock>(page,"actionStatus").Text);
         Call(page,"ApplyLive",live); list.SelectedIndex=0; Call(page,"ClearSelection",null);
@@ -297,7 +298,7 @@ internal static class ConnectionsPageUiChecks
         var first = live.Connections[0];
         var second = first with { Traffic = first.Traffic with { Peer = first.Traffic.Peer with { RemotePort = 80 }, ReceivedBytes = 10, SentBytes = 0 }, Location = null };
         connections.ApplyLive(live with { Timestamp = live.Timestamp.AddSeconds(4), Connections = [.. live.Connections, second] });
-        Assert.StartsWith("Live · 3 destinations · 1 countries · 1 local · 1 unlocated · ", summary.Text);
+        Assert.StartsWith("Live · 3 destinations · 1 country · 1 local · 1 unlocated · ", summary.Text);
         Assert.Equal("3 destinations: 2 Internet (1 unlocated), 1 local, 0 special-purpose.", card.CountLine.Text);
         Assert.Equal(("443 Tcp +1", "2"), Cell(card, "8.8.8.8", r => (r.Ports, r.Connections)));
         // Each Live empty text.
@@ -765,6 +766,9 @@ internal static class ConnectionsPageUiChecks
         Assert.Equal("History could not be read (IOException).", Field<TextBlock>(page, "actionStatus").Text);
         Field<Slider>(page, "cursor").Value = 1; Assert.True(IsMinute(reads.Last, 10, 1));
         reads.Answer(destinations: 5); Assert.Contains("5 destinations", summary.Text); Assert.Null(summary.ToolTip); Assert.Same(strip, chart.Strip); Assert.Empty(reads.Replies);
+        // The summary groups its counts like the Destinations count line and says "1 destination".
+        Field<Slider>(page, "cursor").Value = 2; reads.Answer(destinations: 1234); Assert.Contains($"· {1234:N0} destinations · 0 countries ·", summary.Text);
+        Field<Slider>(page, "cursor").Value = 1; reads.Answer(destinations: 1); Assert.Contains("· 1 destination · 0 countries ·", summary.Text);
     }
     /// <summary>chrome.exe and two more applications in Other, over the query's first minute.</summary>
     private static TrafficStrip ChromeStrip(ConnectionHistoryQuery query)
