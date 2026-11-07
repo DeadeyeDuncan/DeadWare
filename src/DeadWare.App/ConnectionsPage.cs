@@ -100,6 +100,11 @@ internal sealed class ConnectionsPage : Grid
     private string historyStorage = "";
     private const string LimitWarning = "This interval holds too many saved rows to show. Choose a shorter interval.";
     private const string UnavailableSummary = "History · minute-bucket average rates · — destinations · — countries · — local · — unlocated · ↓ — received / ↑ — sent";
+    // Export CSV… and Export destinations… share their texts.
+    private const string ExportUnavailable = "Connection export unavailable.";
+    private const string ExportExists = "That file already exists; exports never overwrite. Choose a new file name.";
+    private const string ExportDone = "CSV exported to a new file. Saved history is unchanged.";
+    private static string ExportFailed(Exception error) => $"Export failed ({error.GetType().Name}); choose a new writable file.";
     private const string IntervalWarning = "Choose valid local times (yyyy-MM-dd HH:mm), from before exclusive to, at most 31 days. Avoid ambiguous or skipped daylight-saving minutes.";
     private bool IsHistory => mode.SelectedIndex == 1;
 
@@ -108,8 +113,8 @@ internal sealed class ConnectionsPage : Grid
         this.session = session;
         viewport.Content=body;Children.Add(viewport);
         readHistory = q => session.Connections is { } service ? service.ReadViewAsync(q) : Task.FromResult(Empty(q, "Connection history is unavailable."));
-        exportHistory=(path,query)=>session.Connections is { } service?service.ExportCsvAsync(path,query):Task.FromException(new InvalidOperationException("Connection export unavailable."));
-        exportDestinations = (path, query, scope) => session.Connections is { } service ? service.ExportDestinationsCsvAsync(path, query, scope) : Task.FromException(new InvalidOperationException("Connection export unavailable."));
+        exportHistory=(path,query)=>session.Connections is { } service?service.ExportCsvAsync(path,query):Task.FromException(new InvalidOperationException(ExportUnavailable));
+        exportDestinations = (path, query, scope) => session.Connections is { } service ? service.ExportDestinationsCsvAsync(path, query, scope) : Task.FromException(new InvalidOperationException(ExportUnavailable));
         hasLocationDatabase = () => session.Connections?.DatabaseDate is not null;
         Background = System.Windows.Media.Brushes.Transparent; ClipToBounds = true;
         // Rows: header, map card, traffic strip, node list, footer, Destinations card, settings.
@@ -557,7 +562,7 @@ internal sealed class ConnectionsPage : Grid
     private async Task ExportAsync()
     {
         if(exportInProgress)return;
-        if (session.Connections is null) { actionStatus.Text = "Connection export unavailable."; return; }
+        if (session.Connections is null) { actionStatus.Text = ExportUnavailable; return; }
         // The service only ever writes a new file, so the dialog must not promise an overwrite it cannot deliver.
         BuildQuery(out var query); if (query is null) return; var dialog = new SaveFileDialog { Filter = "CSV files (*.csv)|*.csv", FileName = $"connections-{DateTime.Now:yyyyMMdd-HHmmss}.csv", OverwritePrompt = false }; if (dialog.ShowDialog() != true) return;
         await ExportToPathAsync(dialog.FileName,query);
@@ -565,16 +570,16 @@ internal sealed class ConnectionsPage : Grid
     private async Task ExportToPathAsync(string path,ConnectionHistoryQuery query)
     {
         if(exportInProgress)return;
-        if(System.IO.File.Exists(path)){actionStatus.Text="That file already exists; exports never overwrite. Choose a new file name.";return;}
+        if(System.IO.File.Exists(path)){actionStatus.Text=ExportExists;return;}
         exportInProgress=true;UpdateExportEnabled();
-        try {await exportHistory(path,query);actionStatus.Text="CSV exported to a new file. Saved history is unchanged.";}
-        catch(Exception error) {actionStatus.Text=$"Export failed ({error.GetType().Name}); choose a new writable file.";}
+        try {await exportHistory(path,query);actionStatus.Text=ExportDone;}
+        catch(Exception error) {actionStatus.Text=ExportFailed(error);}
         finally {exportInProgress=false;UpdateExportEnabled();}
     }
     private async Task ExportDestinationsAsync()
     {
         if (exportInProgress) return;
-        if (session.Connections is null) { actionStatus.Text = "Connection export unavailable."; return; }
+        if (session.Connections is null) { actionStatus.Text = ExportUnavailable; return; }
         // As for Export CSV: an invalid interval opens no dialog, and the dialog never promises an overwrite.
         BuildQuery(out var whole); if (whole is null) return;
         var dialog = new SaveFileDialog { Filter = "CSV files (*.csv)|*.csv", FileName = $"destinations-{DateTime.Now:yyyyMMdd-HHmmss}.csv", OverwritePrompt = false }; if (dialog.ShowDialog() != true) return;
@@ -586,11 +591,11 @@ internal sealed class ConnectionsPage : Grid
         if (exportInProgress) return;
         BuildQuery(out var whole); if (whole is null) return;
         var scope = destinations.CurrentScope;
-        if (System.IO.File.Exists(path)) { actionStatus.Text = "That file already exists; exports never overwrite. Choose a new file name."; return; }
+        if (System.IO.File.Exists(path)) { actionStatus.Text = ExportExists; return; }
         exportInProgress = true; UpdateExportEnabled();
-        try { await exportDestinations(path, whole, scope); actionStatus.Text = "CSV exported to a new file. Saved history is unchanged."; }
+        try { await exportDestinations(path, whole, scope); actionStatus.Text = ExportDone; }
         catch (ConnectionHistoryLimitException) { actionStatus.Text = DestinationCopy.ExportLimit; }
-        catch (Exception error) { actionStatus.Text = $"Export failed ({error.GetType().Name}); choose a new writable file."; }
+        catch (Exception error) { actionStatus.Text = ExportFailed(error); }
         finally { exportInProgress = false; UpdateExportEnabled(); }
     }
     private async Task UpdateDatabaseAsync()

@@ -461,7 +461,7 @@ internal static class ConnectionsPageUiChecks
         var second = Many(101, 500); connections.ApplyLive(second); Layout(page, 1000, 700); Pump(); Layout(page, 1000, 700);
         Assert.True(rows.SequenceEqual(card.Rows), "The rows were replaced."); Assert.Equal(0, changes); Assert.Equal(40, notified);
         Assert.Same(selected, card.Grid.SelectedItem); Assert.Same(container, card.Grid.ItemContainerGenerator.ContainerFromItem(selected));
-        // Pixel scrolling re-measures the updated rows, so the offset may drift by a fraction of a pixel; it must not jump.
+        // Pixel scrolling re-measures the updated rows, so the offset may drift by up to a pixel; it must not jump.
         Assert.True(Math.Abs(grid.VerticalOffset - offset) <= 1, $"The Destinations grid scrolled from {offset} to {grid.VerticalOffset} across an in-place update.");
         Assert.Equal("20.0.0.6", card.Selected?.Address);
         // An equal view, and a stale view read twice from a ConnectionService (a new copy each read), change nothing.
@@ -473,6 +473,14 @@ internal static class ConnectionsPageUiChecks
         notified = 0; connections.ApplyLive(service.Live); Assert.Equal((0, 0), (changes, notified));
         // A scope change re-sorts and scrolls the grid to its top.
         card.Scope.SelectedIndex = 1; Pump(); Layout(page, 1000, 700); Assert.Equal(0, grid.VerticalOffset); Assert.Same(selected, card.Grid.SelectedItem);
+        // The keyboard menu opens on the selected row, scrolled into view first; the pointer selects the row under it, and off a row there is none.
+        var last = card.Rows[^1]; card.Grid.SelectedItem = last;
+        var keyed = card.RowForMenu(null, true); Assert.NotNull(keyed); Assert.Same(last, keyed!.Item); Assert.True(grid.VerticalOffset > 0, "The selected row was not scrolled into view.");
+        var pointed = Assert.IsType<DataGridRow>(card.Grid.ItemContainerGenerator.ContainerFromItem(card.Rows[^2]));
+        Assert.Same(pointed, card.RowForMenu(pointed, false)); Assert.Same(card.Rows[^2], card.Grid.SelectedItem);
+        Assert.Null(card.RowForMenu(card.Grid, false)); Assert.Same(card.Rows[^2], card.Grid.SelectedItem);
+        card.ClearSelection(); Assert.Null(card.RowForMenu(null, true));
+        grid.ScrollToVerticalOffset(0); Pump(); Layout(page, 1000, 700);
         card.Scope.SelectedIndex = 0; card.ClearSelection(); Assert.Null(card.Selected);
         // While the pointer is over the grid, new data moves nothing: a new destination joins the bottom.
         connections.ApplyLive(live with { Timestamp = live.Timestamp.AddSeconds(200) }); Assert.Equal(["8.8.8.8", "9.9.9.9", "192.168.1.1"], Keys(card));

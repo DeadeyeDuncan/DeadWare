@@ -283,19 +283,28 @@ internal sealed class DestinationsCard : Border
     {
         e.Handled = true;
         bool keyboard = e.CursorLeft < 0 && e.CursorTop < 0;
-        DataGridRow? row;
-        if (keyboard) row = Grid.SelectedItem is { } item ? Grid.ItemContainerGenerator.ContainerFromItem(item) as DataGridRow : null;
-        else
-        {
-            row = e.OriginalSource is DependencyObject source ? ItemsControl.ContainerFromElement(Grid, source) as DataGridRow : null;
-            if (row?.Item is DestinationRow under) Grid.SelectedItem = under;
-        }
+        var row = RowForMenu(e.OriginalSource as DependencyObject, keyboard);
         if (Grid.SelectedItem is null || row is null && !keyboard) return;
         var menu = Grid.ContextMenu!;
-        // A selected row scrolled out of the realized containers opens the menu on the grid.
+        // Should the selected row still have no container, the menu opens on the grid.
         menu.PlacementTarget = (UIElement?)row ?? Grid;
         menu.Placement = keyboard ? System.Windows.Controls.Primitives.PlacementMode.Bottom : System.Windows.Controls.Primitives.PlacementMode.MousePoint;
         menu.IsOpen = true;
+    }
+
+    /// <summary>The row the menu opens on, or null. From the keyboard: the selected row, scrolled into view first so that it has a container.
+    /// From the pointer: the row holding <paramref name="source"/>, which it selects.</summary>
+    internal DataGridRow? RowForMenu(DependencyObject? source, bool keyboard)
+    {
+        if (keyboard)
+        {
+            if (Grid.SelectedItem is not { } item) return null;
+            Grid.ScrollIntoView(item); Grid.UpdateLayout();
+            return Grid.ItemContainerGenerator.ContainerFromItem(item) as DataGridRow;
+        }
+        var row = source is null ? null : ItemsControl.ContainerFromElement(Grid, source) as DataGridRow;
+        if (row?.Item is DestinationRow under) Grid.SelectedItem = under;
+        return row;
     }
 
     /// <summary>Copies the selected row's shown cells in column order, tab-separated, on one line, with no header.</summary>
