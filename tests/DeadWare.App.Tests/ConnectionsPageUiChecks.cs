@@ -815,9 +815,10 @@ internal static class ConnectionsPageUiChecks
         foreach(var header in headers)
         {
             if(atMinimum)Assert.True(Math.Abs(header.Column.ActualWidth-header.Column.MinWidth)<.5,$"{theme} {header.Column.Header} is {header.Column.ActualWidth} wide, not its minimum {header.Column.MinWidth}.");
-            var text=Elements(header).OfType<TextBlock>().First(t=>t.Text==(string)header.Column.Header);
+            // The header's ContentPresenter shows the string through one TextBlock (inside an AccessText when it recognizes access keys).
+            var text=Elements(header).OfType<TextBlock>().First();
             double natural=Natural(text);
-            Assert.True(natural<=header.ActualWidth-header.Padding.Left-header.Padding.Right+.01,$"{theme} header {text.Text} trimmed: {natural} in {header.ActualWidth}.");
+            Assert.True(natural<=header.ActualWidth-header.Padding.Left-header.Padding.Right+.01,$"{theme} header {header.Column.Header} trimmed: {natural} in {header.ActualWidth}.");
         }
         int cells=0;
         foreach(var column in card.Grid.Columns.Where(c=>(string)c.Header is "FIRST SEEN" or "LAST SEEN"))

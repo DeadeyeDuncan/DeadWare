@@ -64,6 +64,9 @@ internal sealed class ConnectionsPage : Grid
     private readonly DispatcherTimer playback = new() { Interval = TimeSpan.FromSeconds(1) };
     private readonly TrafficStripView trafficStrip;
     private readonly Border trafficCard;
+    private readonly DestinationsCard destinations;
+    /// <summary>Whether a location database is installed, for the Destinations table's unlocated reason.</summary>
+    internal Func<bool> hasLocationDatabase;
     private CancellationTokenSource? queryCancellation, downloadCancellation;
     private ConnectionHistoryQuery? pending;
     // The strip: the whole-interval query on screen (and when it was applied), one waiting, one in flight and the last that failed.
@@ -93,6 +96,7 @@ internal sealed class ConnectionsPage : Grid
         viewport.Content=body;Children.Add(viewport);
         readHistory = q => session.Connections is { } service ? service.ReadViewAsync(q) : Task.FromResult(Empty(q, "Connection history is unavailable."));
         exportHistory=(path,query)=>session.Connections is { } service?service.ExportCsvAsync(path,query):Task.FromException(new InvalidOperationException("Connection export unavailable."));
+        hasLocationDatabase = () => session.Connections?.DatabaseDate is not null;
         Background = System.Windows.Media.Brushes.Transparent; ClipToBounds = true;
         // Rows: header, map card, traffic strip, node list, footer, Destinations card, settings.
         foreach (var height in new[] { GridLength.Auto, new GridLength(1, GridUnitType.Star), GridLength.Auto, GridLength.Auto, GridLength.Auto, GridLength.Auto, GridLength.Auto }) body.RowDefinitions.Add(new() { Height = height });
@@ -141,12 +145,13 @@ internal sealed class ConnectionsPage : Grid
         {var trigger=new Trigger {Property=property,Value=true};trigger.Setters.Add(new Setter(Control.BackgroundProperty,new DynamicResourceExtension("GlassControl")));itemStyle.Triggers.Add(trigger);}
         mappedConnections.ItemContainerStyle = itemStyle;
         var foot = layoutFooter = new StackPanel(); export = Button("Export CSV…", () => _ = ExportAsync()); export.HorizontalAlignment = HorizontalAlignment.Left; foot.Children.Add(export); foot.Children.Add(selection); Grid.SetRow(foot, 4); body.Children.Add(foot);
+        destinations = new DestinationsCard(session); Grid.SetRow(destinations, 5); body.Children.Add(destinations);
         var settings = layoutSettings = new StackPanel(); var databaseActions = new WrapPanel(); download = Button("Download / update locations", () => _ = UpdateDatabaseAsync()); cancel = Button("Cancel download", () => downloadCancellation?.Cancel()); cancel.IsEnabled = false; databaseActions.Children.Add(download); databaseActions.Children.Add(cancel); databaseActions.Children.Add(progress); settings.Children.Add(databaseActions); settings.Children.Add(database);
         var options = new StackPanel(); var choices = new WrapPanel(); recording.IsChecked = session.Settings.ConnectionsRecording; databaseActions.Children.Add(recording); Named(citySearch, "Search offline home cities"); citySearch.ToolTip = "Search 7,342 offline cities by name or country"; choices.Children.Add(citySearch); Named(home, "Home city"); choices.Children.Add(home); choices.Children.Add(Button("Clear home city", () => home.SelectedIndex = 0)); options.Children.Add(choices); settings.Children.Add(storage);
-        options.Children.Add(Ui.Text("Origin and destination geography are approximate; curves are illustrative. The list follows the nodes visible on the map. Local / special and unlocated peers remain in totals and history CSV. The strip under the map stacks the six applications with the most traffic in the interval, plus Other; its colours identify applications, not direction. Click it to move the minute cursor, or click an application to show only it. Rolling history: 30 days, up to 256 MiB locally. CSV exports the full filtered interval to a new file.", 11, "Muted")); settings.Children.Add(new Expander { Header = "Recording, origin and storage", Content = options }); Grid.SetRow(settings, 6); settings.Children.Insert(0, actionStatus); body.Children.Add(settings);
+        options.Children.Add(Ui.Text("Origin and destination geography are approximate; curves are illustrative. The node list follows the nodes visible on the map; the Destinations table lists every destination, including local, special-purpose and unlocated ones. The strip under the map stacks the six applications with the most traffic in the interval, plus Other; its colours identify applications, not direction. Click it to move the minute cursor, or click an application to show only it. Rolling history: 30 days, up to 256 MiB locally. CSV exports the full filtered interval to a new file.", 11, "Muted")); settings.Children.Add(new Expander { Header = "Recording, origin and storage", Content = options }); Grid.SetRow(settings, 6); settings.Children.Insert(0, actionStatus); body.Children.Add(settings);
         foreach (var element in new[] { mode, range, direction }) element.Margin = new(0, 0, 6, 3); foreach (var element in new[] { search, from, to, citySearch, country }) element.Margin = new(0, 0, 6, 3);
         selection.MaxHeight = 28; selection.TextTrimming = TextTrimming.CharacterEllipsis;
-        layoutHeader.SizeChanged+=(_,_)=>InvalidateMeasure();layoutFooter.SizeChanged+=(_,_)=>InvalidateMeasure();layoutSettings.SizeChanged+=(_,_)=>InvalidateMeasure();trafficCard.SizeChanged+=(_,_)=>InvalidateMeasure();
+        layoutHeader.SizeChanged+=(_,_)=>InvalidateMeasure();layoutFooter.SizeChanged+=(_,_)=>InvalidateMeasure();layoutSettings.SizeChanged+=(_,_)=>InvalidateMeasure();trafficCard.SizeChanged+=(_,_)=>InvalidateMeasure();destinations.SizeChanged+=(_,_)=>InvalidateMeasure();
         SetPreset(); FilterCities(); historical.Visibility = Visibility.Collapsed;
         mode.SelectionChanged += (_, _) => ChangeMode(); range.SelectionChanged += (_, _) => { SetPreset(); FiltersChanged(); }; search.TextChanged += (_, _) => FiltersChanged(); direction.SelectionChanged += (_, _) => FiltersChanged(); country.TextChanged += (_, _) => FiltersChanged();
         // The hairline follows the cursor at once, also under syncing (playback and strip clicks), before the minute's read returns.
@@ -162,9 +167,9 @@ internal sealed class ConnectionsPage : Grid
         // Keep the map large while allowing the whole page to scroll on compact displays.
         double width=double.IsFinite(availableSize.Width)?Math.Max(1,availableSize.Width-SystemParameters.VerticalScrollBarWidth):1000;
         var measure=new Size(width,double.PositiveInfinity);
-        // A collapsed traffic card (Live) measures 0.
-        layoutHeader.Measure(measure);trafficCard.Measure(measure);layoutFooter.Measure(measure);layoutSettings.Measure(measure);
-        double minimum=layoutHeader.DesiredSize.Height+trafficCard.DesiredSize.Height+layoutFooter.DesiredSize.Height+layoutSettings.DesiredSize.Height+300+170;
+        // A collapsed traffic card (Live) measures 0; the Destinations grid's fixed height keeps its card finite.
+        layoutHeader.Measure(measure);trafficCard.Measure(measure);layoutFooter.Measure(measure);destinations.Measure(measure);layoutSettings.Measure(measure);
+        double minimum=layoutHeader.DesiredSize.Height+trafficCard.DesiredSize.Height+layoutFooter.DesiredSize.Height+destinations.DesiredSize.Height+layoutSettings.DesiredSize.Height+300+170;
         body.Height=Math.Max(minimum,double.IsFinite(availableSize.Height)?availableSize.Height:minimum);
         return base.MeasureOverride(availableSize);
     }
@@ -189,7 +194,7 @@ internal sealed class ConnectionsPage : Grid
     private void RefreshSession()
     {
         if (!Dispatcher.CheckAccess()) { Dispatcher.InvokeAsync(RefreshSession); return; }
-        syncing = true; recording.IsChecked = session.Settings.ConnectionsRecording; animation.IsChecked = session.Settings.ConnectionsAnimation; UpdateMapAnimation(); syncing = false;
+        syncing = true; recording.IsChecked = session.Settings.ConnectionsRecording; animation.IsChecked = session.Settings.ConnectionsAnimation; destinations.SyncScope(ConnectionDestinations.ParseScope(session.Settings.ConnectionsDestinationScope)); UpdateMapAnimation(); syncing = false;
         if (session.Connections is { } service)
         {
             storage.Text = (IsHistory ? historyStorage : "") + service.StorageStatus; database.Text = $"DB-IP Lite · {(service.DatabaseDate is { } date ? $"database {date:yyyy-MM-dd}" : "no location database")} · Download contacts download.db-ip.com · DB-IP.com (CC BY 4.0). {service.LookupStatus}"; live = service.Live; if (!IsHistory) ApplyLive(live);
@@ -245,6 +250,7 @@ internal sealed class ConnectionsPage : Grid
         {
             displayedHistoryQuery=null; rows=[];
             selectedKey=null; map.SetData([],null,true,"Reading saved history…"); RefreshMappedConnections(); summary.Text="History · Reading saved observations…"; summary.ToolTip=null;
+            destinations.ShowText(query is null ? DestinationCopy.InvalidInterval : DestinationCopy.Reading);
         }
         if(query is null || whole is null){StopPlayback();stripContext=null;trafficStrip.ShowText("Choose a valid interval");UpdateHairline();return;}
         bool cursorOn=minute.IsChecked==true;
@@ -367,8 +373,9 @@ internal sealed class ConnectionsPage : Grid
         live = view; var filtered = view.Connections.Where(c => Matches(c.Traffic.Peer.Process, c.Traffic.Peer.RemoteAddress, c.Location, c.Traffic.ReceivedBytes, c.Traffic.SentBytes)).ToArray();
         rows = filtered.Where(c => c.Location?.Point is not null).Select(c => new PeerRow(Key(c.Traffic.Peer), $"{c.Traffic.Peer.Process.Name} / {c.Traffic.Peer.Process.Pid}", Endpoint(c.Traffic.Peer.RemoteAddress,c.Traffic.Peer.RemotePort,c.Traffic.Peer.Protocol), Location(c.Traffic.Peer.RemoteAddress, c.Location), Ui.Bytes(view.Available ? c.Traffic.DownloadBytesPerSecond : null, true), Ui.Bytes(view.Available ? c.Traffic.UploadBytesPerSecond : null, true), Ui.Bytes(c.Traffic.ReceivedBytes), Ui.Bytes(c.Traffic.SentBytes), view.Complete ? "Observed" : "Incomplete", $"First {c.Traffic.FirstSeen.ToLocalTime():g} · Last {c.Traffic.LastSeen.ToLocalTime():g}", c.Location?.Point, view.Origin, c.Traffic.ReceivedBytes, c.Traffic.SentBytes)).ToArray();
         long received = 0, sent = 0; foreach (var item in filtered) { received = Add(received, item.Traffic.ReceivedBytes); sent = Add(sent, item.Traffic.SentBytes); }
-        int local = filtered.Where(c => Kind(c.Traffic.Peer.RemoteAddress) == NetworkAddressKind.Local).Select(c => c.Traffic.Peer.RemoteAddress).Distinct().Count(); int unlocated = filtered.Where(c => Kind(c.Traffic.Peer.RemoteAddress) == NetworkAddressKind.Public && c.Location?.Point is null).Select(c => c.Traffic.Peer.RemoteAddress).Distinct().Count();
-        summary.Text = $"Live · {filtered.Select(c => c.Traffic.Peer.RemoteAddress).Distinct().Count()} destinations · {filtered.Select(c=>c.Location?.CountryCode).Where(c=>!string.IsNullOrEmpty(c)).Distinct(StringComparer.OrdinalIgnoreCase).Count()} countries · {local} local · {unlocated} unlocated · ↓ {Ui.Bytes(received)} received / ↑ {Ui.Bytes(sent)} sent (totals for active peers since first observed)"; summary.ToolTip = null; capture.Text = $"{view.Status}{(!view.Complete ? " · Incomplete capture" : "")} · Current observed rates; geography approximate; curves illustrative.";
+        // The summary counts the table's list, built from the same filtered array, so the two never disagree.
+        destinations.ShowLive(view, filtered, LiveFiltersSet(), hasLocationDatabase()); var counts = destinations.List!.Counts;
+        summary.Text = $"Live · {counts.All} destinations · {filtered.Select(c=>c.Location?.CountryCode).Where(c=>!string.IsNullOrEmpty(c)).Distinct(StringComparer.OrdinalIgnoreCase).Count()} countries · {counts.Local} local · {counts.Unlocated} unlocated · ↓ {Ui.Bytes(received)} received / ↑ {Ui.Bytes(sent)} sent (totals for active peers since first observed)"; summary.ToolTip = null; capture.Text = $"{view.Status}{(!view.Complete ? " · Incomplete capture" : "")} · Current observed rates; geography approximate; curves illustrative.";
         map.SetData(filtered.Where(c => c.Location?.Point is not null).Select(c => new ConnectionMapPoint(Key(c.Traffic.Peer), c.Location!.Point!, c.Traffic.ReceivedBytes, c.Traffic.SentBytes, selectedKey == Key(c.Traffic.Peer),view.Available&&c.Traffic.DownloadBytesPerSecond>0,view.Available&&c.Traffic.UploadBytesPerSecond>0,
             Label: c.Traffic.Peer.Process.Name, Detail: $"{Location(c.Traffic.Peer.RemoteAddress, c.Location)} · ↓ {Ui.Bytes(view.Available ? c.Traffic.DownloadBytesPerSecond : null, true)} · ↑ {Ui.Bytes(view.Available ? c.Traffic.UploadBytesPerSecond : null, true)}")).ToArray(), view.Origin, view.Available, view.Status); UpdateMapAnimation(); RefreshMappedConnections(); UpdateExportEnabled(); range.IsEnabled = IsHistory;
     }
@@ -381,6 +388,7 @@ internal sealed class ConnectionsPage : Grid
         summary.Text = view.Strip is null ? UnavailableSummary : $"History · minute-bucket average rates · {s.Destinations} destinations · {s.Countries} countries · {s.Local} local · {s.Unlocated} unlocated · ↓ {Ui.Bytes(s.ReceivedBytes)} received / ↑ {Ui.Bytes(s.SentBytes)} sent"; summary.ToolTip = view.Strip is null ? "History unavailable" : null;
         // A minute read never touches the strip; with the cursor off the one read carries it.
         if (minute.IsChecked != true) ApplyStrip(view.Query, view.Strip);
+        destinations.ShowHistory(view.Destinations, minute.IsChecked == true, FiltersSet(view.Query));
         capture.Text = $"{view.Query.From.ToLocalTime():g} – {view.Query.To.ToLocalTime():g} (exclusive) · {view.Gaps.Count} gaps · {view.Status}"+(view.OmittedMarkers>0?$" · {view.OmittedMarkers:N0} grouped locations omitted from map":""); historyStorage = $"{Ui.Bytes(view.StorageBytes)} stored · Earliest {(view.EarliestRetainedTime is { } earliest ? earliest.ToLocalTime().ToString("g") : "none")} · rolling 30 days / 256 MiB. "; storage.Text = historyStorage + session.Connections?.StorageStatus;
         map.SetData(view.Markers.Where(m => m.Location.Point is not null).Select(m =>
         {
@@ -390,6 +398,9 @@ internal sealed class ConnectionsPage : Grid
         }).ToArray(), CommonOrigin(view.Markers), true, "Saved approximate geography · illustrative curves"+(view.OmittedMarkers>0?$" · +{view.OmittedMarkers:N0} grouped locations omitted":""));
         UpdateMapAnimation(); RefreshMappedConnections(); UpdateExportEnabled(); range.IsEnabled = IsHistory;
     }
+    /// <summary>Search, country, direction or the application filter is set.</summary>
+    private bool LiveFiltersSet() => search.Text.Trim().Length > 0 || !string.IsNullOrWhiteSpace(country.Text) || direction.SelectedItem is ConnectionDirection value && value != ConnectionDirection.Both || applicationFilter.Length > 0;
+    private static bool FiltersSet(ConnectionHistoryQuery query) => query.Search.Length > 0 || query.CountryCode.Length > 0 || query.Direction != ConnectionDirection.Both || query.Application.Length > 0;
     private static string Description(PeerRow row) => $"{row.Application} · {row.Endpoint} · {row.Location} · {row.Coverage} · {row.Seen}";
     private void UpdateExportEnabled()=>export.IsEnabled=IsHistory&&!exportInProgress;
     private void ClearSelection()

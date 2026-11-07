@@ -25,6 +25,15 @@ internal static class Ui
     {var p=new StackPanel {Orientation=Orientation.Horizontal};foreach(var c in children)p.Children.Add(c);return p;}
     public static Border Panel(UIElement child,Thickness? padding=null)
     {var b=new Border {Child=child,Padding=padding??new Thickness(18)};b.SetResourceReference(FrameworkElement.StyleProperty,"Card");return b;}
+    /// <summary>The value cell style of the Processes and Destinations tables: tabular numerals, so digits never shift as values change, and an ellipsis.</summary>
+    public static readonly Style ValueText=ValueTextStyle();
+    private static Style ValueTextStyle()
+    {
+        var style=new Style(typeof(TextBlock),DataGridTextColumn.DefaultElementStyle);
+        style.Setters.Add(new Setter(TextBlock.TextTrimmingProperty,TextTrimming.CharacterEllipsis));
+        style.Setters.Add(new Setter(Typography.NumeralAlignmentProperty,FontNumeralAlignment.Tabular));
+        style.Seal();return style;
+    }
     public static string Number(double? value,string unit="")=>value.HasValue&&double.IsFinite(value.Value)?$"{value.Value:0.0}{unit}":"—";
     public static string GpuFanText(UiSession session)
     {

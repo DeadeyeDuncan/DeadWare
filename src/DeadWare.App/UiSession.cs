@@ -254,6 +254,8 @@ public sealed class UiSession
         Changed?.Invoke();_ = SaveAsync();
     }
     public void SetConnectionsAnimation(bool enabled) {Settings.ConnectionsAnimation=enabled;Changed?.Invoke();_ = SaveAsync();}
+    /// <summary>Saves the Destinations table's scope: "All", "Internet" or "Local"; anything else is "All".</summary>
+    public void SetConnectionsDestinationScope(string scope) {Settings.ConnectionsDestinationScope=ConnectionDestinations.ParseScope(scope).ToString();Changed?.Invoke();_ = SaveAsync();}
     public void SetCoolingOptions(bool recording,bool notifications,int detailedDays,int summaryDays)
     {
         Settings.CoolingRecording=recording;Settings.CoolingNotifications=notifications;
