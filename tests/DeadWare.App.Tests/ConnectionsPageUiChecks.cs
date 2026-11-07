@@ -806,15 +806,32 @@ internal static class ConnectionsPageUiChecks
         CultureInfo.CurrentCulture=culture;
     }
     /// <summary>No column header and no FIRST SEEN or LAST SEEN cell is trimmed: each text's unconstrained DesiredSize fits its header or cell.
-    /// <paramref name="atMinimum"/>: the table is narrower than its columns' minimums, so every column sits at its MinWidth.</summary>
+    /// <paramref name="atMinimum"/>: every column is first forced to its MinWidth (and asserted to sit there), the check runs at those widths,
+    /// and the columns' own widths are then restored and laid out again.</summary>
     private static void CheckNotTrimmed(DestinationsCard card,string theme,bool atMinimum)
+    {
+        if(!atMinimum){CheckNotTrimmedAsLaidOut(card,theme,false);return;}
+        var saved=card.Grid.Columns.Select(c=>c.Width).ToArray();
+        try
+        {
+            foreach(var column in card.Grid.Columns)column.Width=new DataGridLength(column.MinWidth);
+            card.UpdateLayout();Pump();card.UpdateLayout();
+            CheckNotTrimmedAsLaidOut(card,theme,true);
+        }
+        finally
+        {
+            for(int i=0;i<saved.Length;i++)card.Grid.Columns[i].Width=saved[i];
+            card.UpdateLayout();Pump();card.UpdateLayout();
+        }
+    }
+    private static void CheckNotTrimmedAsLaidOut(DestinationsCard card,string theme,bool atMinimum)
     {
         static double Natural(TextBlock text){text.Measure(new Size(double.PositiveInfinity,double.PositiveInfinity));double width=text.DesiredSize.Width;text.InvalidateMeasure();return width;}
         var headers=Elements(card.Grid).OfType<System.Windows.Controls.Primitives.DataGridColumnHeader>().Where(h=>h.Column is not null).ToArray();
         Assert.Equal(card.Grid.Columns.Count,headers.Length);
         foreach(var header in headers)
         {
-            if(atMinimum)Assert.True(Math.Abs(header.Column.ActualWidth-header.Column.MinWidth)<.5,$"{theme} {header.Column.Header} is {header.Column.ActualWidth} wide, not its minimum {header.Column.MinWidth}.");
+            if(atMinimum)Assert.True(Math.Abs(header.Column.ActualWidth-header.Column.MinWidth)<.5,$"{theme} {header.Column.Header} is {header.Column.ActualWidth} wide after forcing its minimum {header.Column.MinWidth}.");
             // The header's ContentPresenter shows the string through one TextBlock (inside an AccessText when it recognizes access keys).
             var text=Elements(header).OfType<TextBlock>().First();
             double natural=Natural(text);
