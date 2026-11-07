@@ -553,7 +553,14 @@ internal static class ApplicationResourcesUiChecks
         page.Apply(data);
         Assert.Equal(3, cpu.SelectedIndex); Assert.Equal(slot, card.Slot);
         // Enter lists the bucket and leaves the focus on the chart: ShowMoment's BringIntoView scrolls the card in without moving focus.
-        var scope = FocusManager.GetFocusScope(cpu); FocusManager.SetFocusedElement(scope, cpu);
+        // Offscreen nothing can take keyboard focus, and Focus() then takes the scope's logical focus only while nothing holds it. So Enter
+        // is pressed once with nothing focused, where any Focus() call while the bucket is listed would show, and once on the focused chart.
+        var scope = FocusManager.GetFocusScope(cpu); FocusManager.SetFocusedElement(scope, null);
+        Press(cpu, Key.Left); var earlier = Bucket(cpu, 2); Assert.True(cpu.HandleKey(Key.Enter));
+        Assert.Null(FocusManager.GetFocusedElement(scope));
+        WaitFor(() => !card.Loading && card.View is { } shown && shown.From == earlier.Start);
+        Assert.Null(FocusManager.GetFocusedElement(scope));
+        Press(cpu, Key.Right); FocusManager.SetFocusedElement(scope, cpu);
         var bucket = Bucket(cpu, 3); Assert.True(cpu.HandleKey(Key.Enter));
         WaitFor(() => !card.Loading && card.View is { } shown && shown.From == bucket.Start);
         Assert.Equal((bucket.Start, bucket.End), card.Slot);
