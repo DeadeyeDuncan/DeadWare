@@ -402,6 +402,7 @@ public sealed class UserSettings
     public bool StorageSensors {get;set;}=true;
     public bool ProcessMonitoring {get;set;}
     public List<string> ProcessColumns {get;set;}=ProcessColumnKeys.Default.ToList();
+    public int ProcessColumnsVersion {get;set;}=ProcessColumnKeys.CurrentVersion;
     public string Theme {get;set;}="Midnight";
     public string GlassLevel {get;set;}=GlassLevels.Balanced;
     public Dictionary<string,string> GraphColors {get;set;}=new();
@@ -441,6 +442,10 @@ public static class SettingsCodec
             if(!Guid.TryParse(s.CoolingConfigurationId,out _))s.CoolingConfigurationId=Guid.NewGuid().ToString("N");
             s.OpenWindows=DetachedWindowState.Normalize(s.OpenWindows);
             s.ProcessColumns=ProcessColumnKeys.Normalize(s.ProcessColumns);
+            // A list saved before the GPU columns upgrades once, and only while it still equals the 0.13 default.
+            bool legacyColumns=!document.RootElement.TryGetProperty(nameof(UserSettings.ProcessColumnsVersion),out _)||s.ProcessColumnsVersion<ProcessColumnKeys.CurrentVersion;
+            if(legacyColumns&&s.ProcessColumns.ToHashSet(StringComparer.Ordinal).SetEquals(ProcessColumnKeys.PreviousDefault))s.ProcessColumns=[..ProcessColumnKeys.Default];
+            s.ProcessColumnsVersion=ProcessColumnKeys.CurrentVersion;
             s.Alerts=AlertRules.Normalize(s.Alerts);
             s.Windows=s.Windows.Where(p=>p.Value is not null).Take(16).ToDictionary(p=>p.Key,p=>p.Value);
             bool legacyPlacement=!document.RootElement.TryGetProperty(nameof(UserSettings.WindowPlacementFormat),out _)||s.WindowPlacementFormat!=WindowCoordinates.Format;
