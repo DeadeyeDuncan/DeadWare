@@ -74,4 +74,39 @@ public class ConnectionProjectionTests
         Assert.Equal("alias", selected.Key); Assert.Equal(long.MaxValue, selected.ReceivedBytes); Assert.Equal(5, selected.SentBytes);
         Assert.Equal(result.Points, ConnectionProjection.Group(points.AsEnumerable().Reverse()).Points);
     }
+
+    [Fact] public void Location_key_matches_map_grouping()
+    {
+        Assert.Equal((41.881, -87.6), ConnectionProjection.LocationKey(new(41.8806, -87.6)));
+        // 41.8805 is a binary midpoint; Math.Round's ToEven gives 41.88, as Group does.
+        Assert.Equal((41.88, -87.6), ConnectionProjection.LocationKey(new(41.8804, -87.6)));
+        Assert.Equal(ConnectionProjection.LocationKey(new(10, 180)), ConnectionProjection.LocationKey(new(10, -180)));
+        // Forty points in ten clusters of four that differ only below the third decimal; one cluster straddles the ±180° seam.
+        // Each point carries its own bit, so a group's byte total names exactly the points it took in.
+        var points = Enumerable.Range(0, 40).Select(i =>
+        {
+            int cluster = i / 4; double offset = (i % 4 - 1.5) * .0001;
+            var point = cluster == 9 ? new GeoPoint(-5 + offset, i % 2 == 0 ? 180 : -180) : new GeoPoint(10 + cluster * .001 + offset, 20 - offset);
+            return new ConnectionMapPoint($"c{i:00}", point, 1L << i, 0, false);
+        }).ToArray();
+        var expected = points.GroupBy(p => ConnectionProjection.LocationKey(p.Point)).ToDictionary(g => g.Key, g => g.Sum(p => p.ReceivedBytes));
+        Assert.Equal(10, expected.Count);
+        var groups = ConnectionProjection.Group(points).Points;
+        Assert.Equal(10, groups.Count);
+        Assert.Equal(10, groups.Select(g => ConnectionProjection.LocationKey(g.Point)).Distinct().Count());
+        foreach (var group in groups) Assert.Equal(expected[ConnectionProjection.LocationKey(group.Point)], group.ReceivedBytes);
+    }
+
+    [Fact] public void Grouping_keeps_highlighted_locations_within_the_cap()
+    {
+        var points = Enumerable.Range(0, 300).Select(i => new ConnectionMapPoint($"p{i:000}", new(-60 + i * .4, i - 150), 1, 2, i == 150)).ToArray();
+        var key280 = ConnectionProjection.LocationKey(points[280].Point);
+        Assert.DoesNotContain(ConnectionProjection.Group(points).Points, p => ConnectionProjection.LocationKey(p.Point) == key280);
+        var g = ConnectionProjection.Group(points, new HashSet<(double, double)> { key280 });
+        Assert.Contains(g.Points, p => ConnectionProjection.LocationKey(p.Point) == key280);
+        Assert.True(g.Points[0].Selected); Assert.Equal("p150", g.Points[0].Key);
+        Assert.Equal("p280", g.Points[1].Key);
+        Assert.Equal(new[] { "p000", "p001" }, g.Points.Skip(2).Take(2).Select(p => p.Key));
+        Assert.Equal(256, g.Points.Count); Assert.Equal(44, g.Overflow);
+    }
 }
