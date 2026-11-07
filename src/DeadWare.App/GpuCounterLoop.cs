@@ -2,14 +2,15 @@ using DeadWare.Core;
 
 namespace DeadWare.App;
 
-/// <summary>A poll's view of the loop's latest read: <paramref name="Fresh"/>, with its read time, the first time it is taken; afterwards the same read without credit.</summary>
-internal sealed record GpuCounterTake(GpuCounterRead Read,bool Fresh,double? ReadMilliseconds);
+/// <summary>A poll's view of the loop's latest read: <paramref name="Fresh"/>, with its read time, the first time it is taken; afterwards the same read without credit.
+/// <paramref name="ReturnedSeconds"/> is when that read returned, on the collector's monotonic clock: a poll ages the read from there, not from its start.</summary>
+internal sealed record GpuCounterTake(GpuCounterRead Read,bool Fresh,double? ReadMilliseconds,double ReturnedSeconds);
 
 /// <summary>
 /// Reads GPU counters on their own task once <see cref="GpuPlacementGuard"/> moves them off the poll (spec, Placement and cost), in
 /// <see cref="StorageSensorLoop"/>'s style: one read at a time, timed on the collector's monotonic clock, and none while <c>enabled</c> is false.
-/// Each read comes a <see cref="Period"/> after the previous one returned, the first a Period after the loop starts. Nothing else may use the
-/// source until <see cref="Stopped"/> completes.
+/// Each read comes a <see cref="Period"/> after the previous one returned, the first a Period after the loop starts. A read that throws is kept
+/// as "GPU counters unavailable" and the loop reads on. Nothing else may use the source until <see cref="Stopped"/> completes.
 /// </summary>
 internal sealed class GpuCounterLoop(IGpuCounterSource source,Func<double> monotonic,Func<double> pollingInterval,Func<bool> enabled) : IAsyncDisposable
 {
@@ -22,6 +23,8 @@ internal sealed class GpuCounterLoop(IGpuCounterSource source,Func<double> monot
     private readonly object gate=new();
     private int started,disposing;
     private GpuCounterRead? latest;
+    // When the latest read returned.
+    private double returned;
     // The latest read's time while no Take has returned it.
     private double? untaken;
 
@@ -40,8 +43,8 @@ internal sealed class GpuCounterLoop(IGpuCounterSource source,Func<double> monot
         lock(gate)
         {
             if(latest is null)return null;
-            if(untaken is {} milliseconds) {untaken=null;return new(latest,true,milliseconds);}
-            return new(latest with {Credit=false},false,null);
+            if(untaken is {} milliseconds) {untaken=null;return new(latest,true,milliseconds,returned);}
+            return new(latest with {Credit=false},false,null,returned);
         }
     }
     private async Task RunAsync()
@@ -59,9 +62,12 @@ internal sealed class GpuCounterLoop(IGpuCounterSource source,Func<double> monot
                 {
                     closed=false;
                     var readStart=monotonic();
-                    var read=source.Read(readStart,pollingInterval());
+                    GpuCounterRead read;
+                    // A throw would end the loop unobserved and leave every later poll a first sample; the column says unavailable instead.
+                    try {read=source.Read(readStart,pollingInterval());}
+                    catch(Exception) {read=GpuCounterRead.Unavailable(GpuCounterStatus.Unavailable,readStart,DateTimeOffset.UtcNow);}
                     from=monotonic();
-                    lock(gate) {latest=read;untaken=(from-readStart)*1000;}
+                    lock(gate) {latest=read;returned=from;untaken=(from-readStart)*1000;}
                 }
                 else
                 {

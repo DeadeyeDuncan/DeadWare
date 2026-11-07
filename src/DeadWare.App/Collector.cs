@@ -254,7 +254,7 @@ public sealed class Collector : IAsyncDisposable
                     if(beyondEight) hardwareStatus+=" · "+BeyondEightNote;
                     // Process block 1: a scan failure becomes the published activity and never fails the pass.
                     TrackedScan? tracked=null;string? processFailure=null;
-                    GpuCounterRead? gpuRead=null;double? gpuMilliseconds=null;bool gpuOwnLoop=false;
+                    GpuCounterRead? gpuRead=null;double? gpuMilliseconds=null,gpuReturned=null;bool gpuOwnLoop=false;
                     if(!monitoring)
                     {
                         tracker.Reset();
@@ -266,10 +266,11 @@ public sealed class Collector : IAsyncDisposable
                         // Before the scan, in a try of its own: windows/processes still times only the scan and the tracker update, and a GPU
                         // failure stays in the GPU columns instead of reaching the scan's catch.
                         stage="Reading GPU counters";
-                        try {gpuRead=ReadGpu(gpuGuard,intervalSeconds,out gpuMilliseconds);}
-                        catch(Exception) {gpuRead=GpuCounterRead.Unavailable(GpuCounterStatus.Unavailable,clock.Elapsed.TotalSeconds,DateTimeOffset.UtcNow);gpuMilliseconds=null;}
-                        if(timings is not null&&gpuMilliseconds is {} gpuTime)timings["windows/gpucounters"]=gpuTime;
+                        // Before the read: the poll on which the guard latches still reads on this thread, so it is an every-poll read.
                         gpuOwnLoop=gpuLoop is not null;
+                        try {gpuRead=ReadGpu(gpuGuard,intervalSeconds,out gpuMilliseconds,out gpuReturned);}
+                        catch(Exception) {gpuRead=GpuCounterRead.Unavailable(GpuCounterStatus.Unavailable,clock.Elapsed.TotalSeconds,DateTimeOffset.UtcNow);gpuMilliseconds=null;gpuReturned=null;}
+                        if(timings is not null&&gpuMilliseconds is {} gpuTime)timings["windows/gpucounters"]=gpuTime;
                         stage="Scanning processes";providerStarted=Stopwatch.GetTimestamp();
                         try
                         {
@@ -294,7 +295,7 @@ public sealed class Collector : IAsyncDisposable
                         var local=NetworkTrafficSplit.Local(capture.Connections,network.Down,network.Up);
                         values["network/download/local"]=local.Down;values["network/upload/local"]=local.Up;
                         if(timings is not null)timings["etw/snapshot"]=Stopwatch.GetElapsedTime(providerStarted).TotalMilliseconds;
-                        var processActivity=PublishProcesses(monitoring,tracked,processFailure,processorCount,capture,networkLossy,now,timings,gpuRead,gpuMilliseconds,gpuOwnLoop);
+                        var processActivity=PublishProcesses(monitoring,tracked,processFailure,processorCount,capture,networkLossy,now,timings,gpuRead,gpuMilliseconds,gpuReturned,gpuOwnLoop);
                         var sample=new Snapshot(timestamp,now,new System.Collections.ObjectModel.ReadOnlyDictionary<string,double?>(values)) {PollingIntervalSeconds=intervalSeconds};
                         if(timings is not null)timings["poll/total"]=(clock.Elapsed.TotalSeconds-started)*1000;
                         double elapsed=clock.Elapsed.TotalSeconds-started;
@@ -349,16 +350,17 @@ public sealed class Collector : IAsyncDisposable
     /// Process block 1's GPU step (spec, Placement and cost). Every poll reads and times the source and feeds the guard, and starts the loop once the
     /// guard latches; that poll keeps its own read. In loop placement the poll takes the loop's latest read. While a disposed loop's read may still
     /// be in flight, the poll joins no read (null) and does not read, so one thread at a time uses the source. <paramref name="milliseconds"/> is
-    /// set only when a read ran on this poll or the take is fresh.
+    /// set only when a read ran on this poll or the take is fresh; <paramref name="returnedSeconds"/>, when the loop's read returned, only for a take.
     /// </summary>
-    private GpuCounterRead? ReadGpu(GpuPlacementGuard guard,double intervalSeconds,out double? milliseconds)
+    private GpuCounterRead? ReadGpu(GpuPlacementGuard guard,double intervalSeconds,out double? milliseconds,out double? returnedSeconds)
     {
-        milliseconds=null;
+        milliseconds=null;returnedSeconds=null;
         if(gpu is null)return GpuCounterRead.Unavailable(GpuCounterStatus.Unavailable,clock.Elapsed.TotalSeconds,DateTimeOffset.UtcNow);
         if(gpuLoop is {} loop)
         {
             var take=loop.Take();
             if(take is {Fresh:true})milliseconds=take.ReadMilliseconds;
+            returnedSeconds=take?.ReturnedSeconds;
             return take?.Read;
         }
         if(gpuLoopStop is {IsCompleted:false})return null;
@@ -391,7 +393,7 @@ public sealed class Collector : IAsyncDisposable
         if(gpuLoopStop is not {IsCompleted:false})gpu?.Close();
     }
     /// <summary>Process block 2, inside the publication lock after the poll's only ETW snapshot: takes the disk trace and joins the scan to per-app traffic and disk. It never throws, so the reading is always published.</summary>
-    private ProcessActivity PublishProcesses(bool monitoring,TrackedScan? tracked,string? failure,int processorCount,NetworkCaptureSnapshot capture,bool networkLossy,double now,Dictionary<string,double>? timings,GpuCounterRead? gpuRead,double? gpuMilliseconds,bool gpuOwnLoop)
+    private ProcessActivity PublishProcesses(bool monitoring,TrackedScan? tracked,string? failure,int processorCount,NetworkCaptureSnapshot capture,bool networkLossy,double now,Dictionary<string,double>? timings,GpuCounterRead? gpuRead,double? gpuMilliseconds,double? gpuReturned,bool gpuOwnLoop)
     {
         if(!monitoring)return ProcessActivity.Off;
         if(failure is not null||tracked is null)return ProcessActivity.Unavailable(failure??ProcessScanUnavailable);
@@ -409,8 +411,9 @@ public sealed class Collector : IAsyncDisposable
             var network=ProcessJoins.Network(tracked.Processes,capture.Processes,capture.Connections.Available,EtwStatus,networkLossy);
             var joined=ProcessJoins.Disk(network.Processes,diskTake);
             var scan=tracked.Scan;
-            // Only a loop read can age: every poll joins its own read.
-            bool gpuStale=gpuOwnLoop&&gpuRead is not null&&now-gpuRead.MonotonicSeconds>2*GpuCounterLoop.Period(scan.PollingIntervalSeconds);
+            // Only a loop read can age: every poll joins its own read. Its age runs from when it returned, so a healthy loop whose reads take most
+            // of a period never shows "stale reading", while a stuck read turns stale two periods after the last one returned.
+            bool gpuStale=gpuOwnLoop&&gpuReturned is {} returned&&now-returned>2*GpuCounterLoop.Period(scan.PollingIntervalSeconds);
             var gpuSummary=options.DiagnosticTimings?new GpuCounterSummary(gpuRead?.Instances??0,gpuRead?.Skipped??0,gpuRead?.Adapters.Count??0,gpuMilliseconds,tracked.Gpu,
                 gpuOwnLoop?GpuCounterSummary.OwnLoop:GpuCounterSummary.EveryPoll):null;
             return new ProcessActivity(ProcessActivityKind.Available,++processSequence,scan.UtcTime,scan.MonotonicSeconds,scan.PollingIntervalSeconds,processorCount,joined.Processes,tracked.Omitted,tracked.TotalProcesses,tracked.DeltaSeconds)
