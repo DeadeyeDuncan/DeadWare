@@ -170,6 +170,9 @@ public class CoolingShutdownTests
             var stop=Task.Run(()=>typeof(UiSession).GetMethod("StopCollectorForSessionEnding",Flags)!.Invoke(session,null));await stop.WaitAsync(TimeSpan.FromSeconds(5));
             Assert.True(connections.StopAsync().IsCompleted);string trace=Path.Combine(root,"trace.jsonl");
             string text=File.ReadAllText(trace);Assert.Contains("session_end_collector_stopped",text);Assert.DoesNotContain("session_end_collector_stop_failed",text);
+            // A stage that misses its deadline records collector_stop_timeout and the stop still ends in session_end_collector_stopped.
+            // Quoted, the event name does not match session_end_collector_stop_timeout.
+            Assert.DoesNotContain("\"collector_stop_timeout\"",text);
         }
         finally {await connections.StopAsync();if(Directory.Exists(root))Directory.Delete(root,true);}
     }
