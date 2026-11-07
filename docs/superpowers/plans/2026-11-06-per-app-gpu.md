@@ -8,7 +8,7 @@
 
 **Tech Stack:** .NET 10, WPF, `pdh.dll` (`PdhOpenQueryW`, `PdhAddEnglishCounterW`, `PdhCollectQueryData`, `PdhGetFormattedCounterArrayW`, `PdhCloseQuery`), `dxgi.dll` (`CreateDXGIFactory1`, `IDXGIFactory1.EnumAdapters1`, `IDXGIAdapter1.GetDesc1`), Microsoft.Data.Sqlite (existing), xUnit 2.9.3. No new packages.
 
-**Spec:** `docs/superpowers/specs/2026-11-06-per-app-gpu-design.md`, approved 2026-11-06 and binding, including its deliberate departures from the Processes spec (the GPU first-sample rule, 192 MiB in place of 128 MiB, the four GPU status texts). Where it is silent, `docs/superpowers/specs/2026-11-05-processes-design.md` applies. Executors read both.
+**Spec:** `docs/superpowers/specs/2026-11-06-per-app-gpu-design.md`, approved 2026-11-06 and binding, including its deliberate departures from the Processes spec: the GPU first-sample rule (the opposite of CPU and I/O); 192 MiB in place of 128 MiB, with 40 history rows a minute in place of 30 and format version 2; placement decided at run time by a guard, not by the CI measurement, with no `ProcessFeatures` switch; the read cost on a real GPU as a manual check; GPU ENGINE as a text column sorted ascending on the first click; Everything else's Avg GPU shown unclamped. The four GPU status texts are new copy. Where it is silent, `docs/superpowers/specs/2026-11-05-processes-design.md` applies. Executors read both. The Processes spec is not edited: the GPU spec states which of its rules it replaces.
 
 ## Builds on 0.14.1
 
@@ -20,7 +20,7 @@ This plan starts from `main` after the 0.14.1 cleanup release (`/home/user/DeadW
 - `UsageHistoryChart.SelectionMoved`, and on `UsageHistoryPage`: `marked`, `MoveMoment(string kind,int index)`, `Middle(UsageHistoryBucket)` and `MarkMoment()`, which loop over `Moments`.
 - `ApplicationResourcesCard`: the `ResourceRow` class with `Key`, `Name`, six cell properties and `Update(ProcessResourceRow)`, the `rows` collection and `Key(ProcessResourceRow)`.
 - `ProcessesPage.PageKey` and `MainWindow.PageKey`: unchanged here; F5 keeps re-sorting through `Render(resort:true)`.
-- Tests: `ProcessTableTests.Full()` and `Each_column_key_reads_its_own_field`; `One_day_at_the_cap_stays_under_four_mebibytes` with machine `"DESKTOP-ABCDEFG"`.
+- Tests: `ProcessTableTests.Full()` and `Each_column_key_reads_its_own_field`; `One_day_at_the_cap_stays_under_four_mebibytes` with machine `"DESKTOP-ABCDEFG"`; in `ApplicationResourcesUiChecks`, `Left_and_right_mark_both_charts_and_the_minute_refresh_keeps_the_cursor` and `Esc_clears_a_cursor_that_lists_nothing_and_the_refresh_keeps_it_cleared`, run right after `The_minute_refresh_keeps_the_slot_and_moves_its_hairlines_with_the_grid`. The second ends with a CPU slot listed for `A_new_period_clears_the_moment`.
 
 ## Global Constraints
 
@@ -52,7 +52,8 @@ For this plan:
 - App tests (`tests/DeadWare.App.Tests`) and anything that needs real PDH, DXGI or a GPU run only in Windows CI (GitHub `windows-latest`, which may have no GPU). Locally they only need to compile. UI checks run inside the single STA fact `BatteryUiTests.Real_battery_page_renders_dark_light_empty_and_multi_year_without_native_windows`. A UI check "passes in CI" when that fact passes, and "fails" when the fact fails during the named phase.
 - Red checks:
   - A test that needs a new member is red when the local build fails with the named `error CS…`.
-  - A test that compiles without the change is red only in CI. Push its `test(...)` commit alone and confirm the named failure before pushing the change.
+  - A test that compiles without the change is red only in CI. Push its `test(...)` commit alone and confirm the named failure before pushing the change. CI's `dotnet test DeadWare.slnx` runs both test projects, so Core failures in the same commit do not hide the UI fact's.
+- Core verification commands are written out in each task's Step 2. "Run the Step 2 command" in a later step means exactly that command.
 - **Run (CI)** means: `git push`, then the pull request's `build` check on the pushed head must finish green. The `gh` CLI is limited to search here, so whoever runs the plan watches checks, reads failing job logs and fetches artifacts through the GitHub tools (`pull_request_read` → `get_check_runs`, `get_job_logs`; `actions_list` → `list_workflow_run_artifacts`; `actions_get` → `download_workflow_run_artifact`), never `gh`. Under subagent-driven execution the controller does this; implementers push and return without waiting. `build.yml` cancels an in-progress run when a newer push arrives, so let each run finish before pushing again.
 - Workflow:
   - One branch, `claude/per-app-gpu-0.15.0`, from `origin/main` after 0.14.1 has merged, with one pull request to `main`. Open it as a draft with Task 1's push: CI runs on `claude/*` branches only through a pull request.
@@ -70,8 +71,8 @@ For this plan:
 
 ## Review Focus
 
-1. The polling interval changes while the read runs in its own loop (0.5 s → 2 s → 0.5 s). Expected: the loop period follows max(1 s, interval), each read is joined with credit at most once, and no read's interval exceeds `PollingPolicy.FreshnessSeconds` of the current interval, so no first-sample storm. Test in Task 3 (`Interval_changes_keep_each_read_fresh_once`).
-2. Per-process monitoring is turned off and on within one loop period while a slow read is in flight. Expected: the query is never used by two threads at once, it is closed after Off, placement returns to every poll after On, and the first read after On is a first sample. Test in Task 5 (`Rapid_toggles_during_a_loop_read_never_read_concurrently`).
+1. The polling interval changes while the read runs in its own loop (0.5 s → 2 s → 0.5 s). Expected: the loop period follows max(1 s, interval), each read is joined with credit at most once, and no read's interval exceeds `PollingPolicy.FreshnessSeconds(Math.Max(previous interval, current interval))`, the tracker's rule, so no first-sample storm. Tests in Task 3 (`Interval_changes_keep_each_read_fresh_once`) and Task 1 (`A_slower_previous_interval_keeps_its_freshness_limit`).
+2. Per-process monitoring is turned off and on within one loop period while a slow read is in flight. Expected: the query is never used by two threads at once, it is closed once the read in flight ends, placement returns to every poll after On, and the first read after On is a first sample. Test in Task 5 (`Rapid_toggles_during_a_loop_read_never_read_concurrently`).
 3. GPU counters exist but no process has used the GPU yet (an idle VM or a fresh boot), and then one does. Expected: "GPU counters unavailable" while the GPU Engine set is empty, not 0 % for every process; the query is never reopened for it; values appear once instances exist. Test in Task 1 (`Engines_that_appear_later_are_read_without_reopening`).
 4. The dashboard's GPU selection is cleared while a GPU moment is marked or listed. Expected: the GPU chart shows no hairline, the CPU and RAM hairlines and the listed slot stay, and nothing throws. Test in Task 13 (`Clearing_the_dashboard_gpu_keeps_the_listed_gpu_moment`).
 5. Rank by GPU on the first day after the upgrade, over a period holding only version 1 minutes. Expected: the rows rank by name, every Avg GPU cell is "—" with "No GPU data in this range", the share bar is hidden, and a selected app's GPU chart is all gaps. Test in Task 12 (`Rank_by_gpu_over_version_1_minutes_shows_dashes_and_no_share_bar`).
@@ -90,12 +91,12 @@ For this plan:
 - Consumes: `ProcessColumnState` (`ProcessModels.cs`), `PollingPolicy.FreshnessSeconds`.
 - Produces:
   - `public enum GpuCounterKind{Engine,Dedicated,Shared}`
-  - `public sealed record GpuCounterInstance(int Pid,long Luid,int Phys,int? Engine,string? Type){ public static bool TryParse(string? name,GpuCounterKind kind,[NotNullWhen(true)] out GpuCounterInstance? instance); }`. Engine and Type are null for memory names. LUID = (hi << 32) | lo. `<type>` is everything after the first `_engtype_`, kept verbatim ("" allowed). Hex digits are 1–8 of either case; decimals must fit `int`. Never throws.
+  - `public sealed record GpuCounterInstance(int Pid,long Luid,int Phys,int? Engine,string? Type){ public static bool TryParse(string? name,GpuCounterKind kind,[NotNullWhen(true)] out GpuCounterInstance? instance); }`. Engine and Type are null for memory names. LUID = ((long)hi << 32) | lo, both halves unsigned. `<type>` is everything after the first `_engtype_`, kept verbatim ("" allowed). Each LUID half is 1–8 hex digits of either case, checked by length and parsed with `NumberStyles.AllowHexSpecifier` and `CultureInfo.InvariantCulture`. Decimals are parsed with `NumberStyles.None` and `CultureInfo.InvariantCulture` (no sign, no whitespace) and must fit `int`. Never throws.
   - `public static class GpuPdhStatus { public const uint CStatusValidData=0x00000000,CStatusNewData=0x00000001,CStatusNoInstance=0x800007D1,MoreData=0x800007D2,NoData=0x800007D5,CalcNegativeDenominator=0x800007D6,CalcNegativeValue=0x800007D8,CStatusNoObject=0xC0000BB8,CStatusNoCounter=0xC0000BB9,InvalidData=0xC0000BC6; }`. These are the `pdhmsg.h` values; cross-check them against the Windows SDK header.
   - `public readonly record struct GpuRawItem(string Name,uint CStatus,double Value);`: percent for engines, bytes for memory (`PDH_FMT_LARGE` values as double, exact below 2^53).
   - `public sealed record GpuRawArray(uint Status,IReadOnlyList<GpuRawItem> Items);`
   - `public sealed record GpuAdapterInfo(long Luid,string Description,uint Flags){ public const uint SoftwareFlag=2; public bool Software=>(Flags&SoftwareFlag)!=0; }`
-  - `public interface IGpuCounterApi { uint Open(); uint Collect(); GpuRawArray Read(GpuCounterKind kind); IReadOnlyList<GpuAdapterInfo>? Adapters(); void Close(); }`. `Open` returns the first failing status of `PdhOpenQueryW` and the three adds, or 0. `Adapters` returns null on a DXGI failure. `Close` is idempotent.
+  - `public interface IGpuCounterApi { uint Open(); uint Collect(); GpuRawArray Read(GpuCounterKind kind); IReadOnlyList<GpuAdapterInfo>? Adapters(); void Close(); }`. `Open` returns the first failing status of `PdhOpenQueryW` and the three adds, or 0; after a failing add it has already closed its query and holds no handle. `Adapters` returns null on a DXGI failure. `Close` is idempotent.
   - `public sealed record GpuAdapterName(int? Number,string? Description){ public static GpuAdapterName Unknown{get;}=new(null,null); public string Name=>Number is{} n?$"GPU {n}":"GPU ?"; public string Label(string type)=>$"{Name} · {(type.Length==0?"Engine":type)}"; }`
   - `public sealed record GpuEngineItem(GpuCounterInstance Instance,bool Ready,double Percent);` and `public sealed record GpuMemoryItem(GpuCounterInstance Instance,bool Ready,long Bytes);`
   - `public sealed record GpuCounterRead(ProcessColumnState State,DateTimeOffset UtcTime,double MonotonicSeconds,DateTimeOffset? PreviousUtcTime,double? IntervalSeconds,IReadOnlyList<GpuEngineItem> Engines,IReadOnlyList<GpuMemoryItem> Dedicated,IReadOnlyList<GpuMemoryItem> Shared,IReadOnlyDictionary<long,GpuAdapterName> Adapters,int Instances,int Skipped)`, with init members `EnginesReady`, `DedicatedReady`, `SharedReady` and `Credit`, each defaulting to true, and `public static GpuCounterRead Unavailable(string status,double monotonicSeconds,DateTimeOffset utcTime)` (empty lists and no previous collection). `Instances` counts the items of all three arrays.
@@ -103,9 +104,12 @@ For this plan:
   - `public sealed class GpuCounterReader(IGpuCounterApi api){ public const double RetrySeconds=60,NotReadySeconds=60,AdapterRereadSeconds=60; public const int MaximumItems=65536; public GpuCounterRead Read(double monotonicSeconds,DateTimeOffset utcTime,double pollingIntervalSeconds); public void Close(); public bool IsOpen{get;} public bool LastReadOpened{get;} }`
 
 `Read` follows the spec's Data source and Errors and limits. The plan decides what the spec leaves open:
-- While a retry is not yet due, `Read` returns the last failure's state without calling the API. A successful open reads `Adapters()` and sets `LastReadOpened` for that read.
+- While a retry is not yet due, `Read` returns the last failure's state without calling the API. A successful open reads `Adapters()` and sets `LastReadOpened` for that read. After any failed `Open` the reader also calls `api.Close()`.
+- Freshness follows the tracker's Δt rule: the reader keeps the polling interval of its previous successful collection, and the previous collection is null when the interval is not positive or exceeds `PollingPolicy.FreshnessSeconds(Math.Max(that interval, pollingIntervalSeconds))`.
 - A `Collect` that returns `NoData` or `CStatusNoInstance` keeps the query open and does not become the previous collection.
+- No engine instances means `NoData` or `CStatusNoInstance` from the collect call or the engine array call, or an engine array with status 0 and zero items. A benign array status is never "no instances".
 - A benign array status (`InvalidData`, `CalcNegativeDenominator`, `CalcNegativeValue`) returns no items, so it sets that counter's `…Ready` to false. The not-ready run starts at the first read with any benign status and ends at a read with none. The 60 s failure uses that read's status.
+- An exception from `Open`, `Collect` or `Read(kind)` is a failure with state `GpuCounterStatus.Unavailable` (no code): the reader calls `api.Close()` (itself guarded) and waits `RetrySeconds` before the next open, as for a failing status. An exception from `Adapters()` counts as a DXGI failure (null). So `GpuCounterReader.Read` never throws, and a persistent exception never reopens the query on every poll.
 - State order, first match: `Error`, `TooMany`, `Unavailable` (no engine instances), `Unreadable` (`Skipped × 2 > Instances`), else `Ready`.
 - A software adapter keeps its description with `Number` null. A LUID DXGI does not list is absent from `Adapters`, and callers use `GpuAdapterName.Unknown`.
 
@@ -128,9 +132,11 @@ dotnet build DeadWare.slnx -c Release -p:EnableWindowsTargeting=true --nologo 2>
 - [ ] **Step 1: Write the failing tests**
 
 ```csharp
-// FakeGpuApi : IGpuCounterApi holds OpenStatus, CollectStatus, Arrays[kind] (default new(0,[])) and Adapters (default [new(0xA,"NVIDIA GeForce RTX 4070",0)]),
-// and counts Opens, Closes, Collects and AdapterReads. E(pid,eng,value,cstatus=0,luid=0xA,phys=0,type="3D") and M(pid,bytes,cstatus=0,luid=0xA,phys=0) build
-// items with real names ("pid_8_luid_0x00000000_0x0000000A_phys_0_eng_0_engtype_3D"); Bad(n) is a name that does not parse. T(s)=Epoch.AddSeconds(s); R(s,interval=1)=reader.Read(s,T(s),interval).
+// FakeGpuApi : IGpuCounterApi holds OpenStatus, CollectStatus, Arrays[kind] (default new(0,[]): an empty engine array is "no instances") and Adapters
+// (default [new(0xA,"NVIDIA GeForce RTX 4070",0)]), and counts Opens, Closes, Collects and AdapterReads. Throws names the call that throws
+// InvalidOperationException ("" for none, "Open", "Collect", "Read", "Adapters"). E(pid,eng,value,cstatus=0,luid=0xA,phys=0,type="3D") and M(pid,bytes,cstatus=0,luid=0xA,phys=0)
+// build items with real names ("pid_8_luid_0x00000000_0x0000000A_phys_0_eng_0_engtype_3D"); Bad(n) is a name that does not parse.
+// T(s)=Epoch.AddSeconds(s); R(s,interval=1)=reader.Read(s,T(s),interval).
 [Theory]
 [InlineData("pid_1234_luid_0x00000000_0x0000D3A2_phys_0_eng_3_engtype_3D",1234,0xD3A2L,0,3,"3D")]
 [InlineData("pid_8_luid_0x1_0xFFFFFFFF_phys_1_eng_12_engtype_Compute_0",8,0x1FFFFFFFFL,1,12,"Compute_0")]
@@ -143,6 +149,7 @@ public void Engine_names_parse(string name,int pid,long luid,int phys,int engine
     Assert.Equal(new GpuCounterInstance(1234,0xD3A2,1,null,null),i);}
 [Theory][InlineData(null)][InlineData("")][InlineData("pid_x_luid_0x0_0xA_phys_0")][InlineData("pid_1_luid_0x123456789_0xA_phys_0")][InlineData("pid_1_luid_0x_0xA_phys_0")]
 [InlineData("pid_1_luid_0x0_0xG_phys_0")][InlineData("pid_1_luid_0x0_0xA_phys_0_eng_1")][InlineData("pid_1_luid_0x0_0xA_phys_0_tail")][InlineData("pid_99999999999_luid_0x0_0xA_phys_0")]
+[InlineData("pid_+8_luid_0x0_0xA_phys_0")][InlineData("pid_ 8_luid_0x0_0xA_phys_0")][InlineData("pid_8_luid_0x000000000_0xA_phys_0")][InlineData("pid_8_luid_0x 1_0xA_phys_0")]
 public void Malformed_names_do_not_parse(string? name){ Assert.False(GpuCounterInstance.TryParse(name,GpuCounterKind.Engine,out _));Assert.False(GpuCounterInstance.TryParse(name,GpuCounterKind.Shared,out _));}
 [Fact] public void Engine_and_memory_shapes_do_not_cross(){ Assert.False(GpuCounterInstance.TryParse("pid_8_luid_0x0_0xA_phys_0",GpuCounterKind.Engine,out _));
     Assert.False(GpuCounterInstance.TryParse("pid_8_luid_0x0_0xA_phys_0_eng_0_engtype_3D",GpuCounterKind.Dedicated,out _));}
@@ -153,6 +160,8 @@ public void Malformed_names_do_not_parse(string? name){ Assert.False(GpuCounterI
     var second=R(11.5);Assert.False(reader.LastReadOpened);Assert.Equal(T(10),second.PreviousUtcTime);Assert.Equal(1.5,second.IntervalSeconds!.Value,6);}
 [Theory][InlineData(4.01)][InlineData(0.0)][InlineData(-1.0)]
 public void An_interval_outside_freshness_has_no_previous_collection(double dt){ R(10);var r=R(10+dt);Assert.Null(r.PreviousUtcTime);Assert.Null(r.IntervalSeconds);}   // 1 s polling: 4 s
+[Fact] public void A_slower_previous_interval_keeps_its_freshness_limit(){ R(0,interval:10);var r=R(10,interval:0.5);   // FreshnessSeconds(Math.Max(10,0.5)) = 13 s, as the tracker
+    Assert.Equal(T(0),r.PreviousUtcTime);Assert.Equal(10,r.IntervalSeconds!.Value,6);Assert.Null(R(20,interval:0.5).IntervalSeconds);}   // then 0.5 s on both sides: 4 s
 [Theory][InlineData(GpuPdhStatus.InvalidData)][InlineData(GpuPdhStatus.CalcNegativeDenominator)][InlineData(GpuPdhStatus.CalcNegativeValue)]
 public void A_benign_array_status_is_not_ready_and_fails_only_after_60_s(uint status){ api.Arrays[GpuCounterKind.Engine]=new(status,[]);
     foreach(double s in new[]{0,30,59.9}){var r=R(s);Assert.True(r.State.Available);Assert.False(r.EnginesReady);Assert.Equal(0,r.Skipped);}
@@ -164,7 +173,10 @@ public void A_benign_array_status_is_not_ready_and_fails_only_after_60_s(uint st
 [Theory][InlineData(GpuPdhStatus.NoData)][InlineData(GpuPdhStatus.CStatusNoInstance)][InlineData(0u)]
 public void No_engine_instances_make_the_column_unavailable_and_keep_the_query_open(uint status){ api.Arrays[GpuCounterKind.Engine]=new(status,[]);api.Arrays[GpuCounterKind.Dedicated]=new(0,[M(8,100)]);
     Assert.Equal(new ProcessColumnState(false,"GPU counters unavailable"),R(0).State);Assert.True(reader.IsOpen);Assert.Equal(0,api.Closes);}
-[Fact] public void No_data_from_the_collect_call_is_no_instances(){ R(0);api.CollectStatus=GpuPdhStatus.NoData;Assert.Equal("GPU counters unavailable",R(1).State.Status);Assert.True(reader.IsOpen);}
+[Theory][InlineData(GpuPdhStatus.NoData)][InlineData(GpuPdhStatus.CStatusNoInstance)]
+public void No_instances_from_the_collect_call_keep_the_query_open_and_the_previous_collection(uint status){ api.Arrays[GpuCounterKind.Engine]=new(0,[E(8,0,5)]);
+    Assert.True(R(0).State.Available);api.CollectStatus=status;Assert.Equal("GPU counters unavailable",R(1).State.Status);Assert.True(reader.IsOpen);Assert.Equal(0,api.Closes);
+    api.CollectStatus=0;var r=R(2);Assert.True(r.State.Available);Assert.Equal(T(0),r.PreviousUtcTime);}
 [Fact] public void No_memory_instances_are_known_empty(){ api.Arrays[GpuCounterKind.Engine]=new(0,[E(8,0,5)]);api.Arrays[GpuCounterKind.Dedicated]=new(GpuPdhStatus.NoData,[]);
     var r=R(0);Assert.True(r.State.Available);Assert.Empty(r.Dedicated);Assert.True(r.DedicatedReady);}
 [Fact] public void More_than_half_skipped_is_unreadable_for_that_read(){ api.Arrays[GpuCounterKind.Engine]=new(0,[E(8,0,5),Bad(1)]);api.Arrays[GpuCounterKind.Shared]=new(0,[M(8,1),Bad(2),Bad(3)]);
@@ -174,8 +186,15 @@ public void No_engine_instances_make_the_column_unavailable_and_keep_the_query_o
     Assert.Equal(new ProcessColumnState(false,"Too many GPU counter instances"),R(0).State);Assert.True(reader.IsOpen);
     api.Arrays[GpuCounterKind.Engine]=new(0,[..Enumerable.Range(0,65536).Select(i=>E(8,i,1))]);Assert.True(R(1).State.Available);}
 [Theory][InlineData(GpuPdhStatus.CStatusNoObject,"GPU counters unavailable")][InlineData(GpuPdhStatus.CStatusNoCounter,"GPU counters unavailable")][InlineData(0xC0000BBCu,"GPU counters unavailable (error 0xC0000BBC)")]
-public void An_open_failure_is_retried_at_most_once_a_minute(uint status,string text){ api.OpenStatus=status;Assert.Equal(new ProcessColumnState(false,text),R(0).State);
-    Assert.Equal(text,R(59.9).State.Status);Assert.Equal(1,api.Opens);api.OpenStatus=0;Assert.True(R(60).State.Available);Assert.Equal(2,api.Opens);}
+public void An_open_failure_is_retried_at_most_once_a_minute(uint status,string text){ api.OpenStatus=status;Assert.Equal(new ProcessColumnState(false,text),R(0).State);Assert.Equal(api.Opens,api.Closes);
+    Assert.Equal(text,R(59.9).State.Status);Assert.Equal(1,api.Opens);api.OpenStatus=0;api.Arrays[GpuCounterKind.Engine]=new(0,[E(8,0,5)]);Assert.True(R(60).State.Available);Assert.Equal(2,api.Opens);}
+[Theory][InlineData("Open")][InlineData("Collect")][InlineData("Read")]
+public void An_api_exception_is_a_failure_retried_at_most_once_a_minute(string call){ api.Arrays[GpuCounterKind.Engine]=new(0,[E(8,0,5)]);api.Throws=call;
+    Assert.Equal(new ProcessColumnState(false,"GPU counters unavailable"),R(0).State);Assert.False(reader.IsOpen);Assert.Equal(api.Opens,api.Closes);
+    R(30);Assert.Equal(1,api.Opens);api.Throws="";R(59.9);Assert.Equal(1,api.Opens);var r=R(60);Assert.Equal(2,api.Opens);Assert.True(r.State.Available);Assert.Null(r.PreviousUtcTime);}
+[Fact] public void A_throwing_dxgi_read_is_a_dxgi_failure(){ api.Throws="Adapters";api.Arrays[GpuCounterKind.Engine]=new(0,[E(8,0,5)]);var r=R(0);Assert.True(r.State.Available);Assert.Empty(r.Adapters);Assert.True(reader.IsOpen);}
+[Fact] public void A_more_data_status_left_after_sizing_is_a_failure(){ api.Arrays[GpuCounterKind.Engine]=new(GpuPdhStatus.MoreData,[]);
+    Assert.Equal("GPU counters unavailable (error 0x800007D2)",R(0).State.Status);Assert.False(reader.IsOpen);}
 [Fact] public void A_collect_failure_closes_and_reopens_at_most_once_a_minute(){ R(0);api.CollectStatus=0xC0000BBC;Assert.Equal("GPU counters unavailable (error 0xC0000BBC)",R(1).State.Status);Assert.Equal(1,api.Closes);
     api.CollectStatus=0;R(60.9);Assert.Equal(1,api.Opens);var r=R(61);Assert.Equal(2,api.Opens);Assert.Null(r.PreviousUtcTime);}
 [Fact] public void Any_other_array_status_is_a_failure(){ api.Arrays[GpuCounterKind.Shared]=new(0xC0000BBD,[]);Assert.Equal("GPU counters unavailable (error 0xC0000BBD)",R(0).State.Status);Assert.False(reader.IsOpen);}
