@@ -318,6 +318,12 @@ internal static class ConnectionsPageUiChecks
         connections.ApplyLive(live with { Timestamp = live.Timestamp.AddSeconds(9), Connections = [live.Connections[0]] }); card.Scope.SelectedIndex = 2;
         Assert.Equal("No local destinations right now.", EmptyText(card));
         card.Scope.SelectedIndex = 0; connections.ApplyLive(live); Assert.Null(EmptyText(card)); Assert.Equal(3, card.Rows.Count);
+        // An IPv6 destination is written without brackets, in its cell and when spoken.
+        var v6 = first with { Traffic = first.Traffic with { Peer = first.Traffic.Peer with { RemoteAddress = "2001:4860::8888" } } };
+        connections.ApplyLive(live with { Timestamp = live.Timestamp.AddSeconds(10), Connections = [v6] });
+        Assert.Equal("2001:4860::8888", Cell(card, "2001:4860::8888", r => r.Destination));
+        Assert.StartsWith("2001:4860::8888, Internet, ", Cell(card, "2001:4860::8888", r => r.Spoken));
+        connections.ApplyLive(live); Assert.Equal(3, card.Rows.Count);
     }
     private static void CheckDestinationsHistory(UiSession session, DateTimeOffset now)
     {
@@ -392,6 +398,10 @@ internal static class ConnectionsPageUiChecks
             Assert.DoesNotContain(card.Grid.Columns, c => (string)c.Header == "↓ DOWNLOAD");
             Assert.Equal(System.ComponentModel.ListSortDirection.Descending, Column(card, "RECEIVED").SortDirection);
             Assert.All(card.Grid.Columns.Where(c => (string)c.Header != "RECEIVED"), c => Assert.Null(c.SortDirection));
+            // Switching to History while its read is pending shows History's footnote at once.
+            mode.SelectedIndex = 0; Assert.Equal(DestinationCopy.Footnote(false), card.Footnote.Text);
+            PageType.GetField("readHistory", All)!.SetValue(page, (Func<ConnectionHistoryQuery, Task<ConnectionHistoryView>>)(_ => new TaskCompletionSource<ConnectionHistoryView>().Task));
+            mode.SelectedIndex = 1; Assert.Equal("Reading saved destinations…", EmptyText(card)); Assert.Equal(DestinationCopy.Footnote(true), card.Footnote.Text);
         }
         finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
     }

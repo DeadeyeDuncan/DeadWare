@@ -383,10 +383,11 @@ internal sealed class DestinationsCard : Border
         reshow(modeChanged ? Order.Resort : Order.NewData);
     }
 
-    /// <summary>Clears the rows and shows the text in place of the grid (an invalid interval, a read in progress).</summary>
+    /// <summary>Clears the rows and shows the text in place of the grid (History: an invalid interval, a read in progress).
+    /// The card takes History's columns and footnote at once; with no rows left, the first History view sorts the same either way.</summary>
     internal void ShowText(string text)
     {
-        List = null; lastLive = null; topPending = true;
+        SetMode(true); List = null; lastLive = null; topPending = true;
         reshow = _ => ShowState(text, "", null);
         reshow(Order.Resort);
     }
