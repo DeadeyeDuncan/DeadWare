@@ -23,6 +23,8 @@ public sealed class ConnectionHistoryMeasurementTests
     private static readonly GeoPoint Origin=new(41.88,-87.63);
     private static readonly FieldInfo DefaultTempStore=typeof(ConnectionHistoryStore).GetField("defaultTempStore",BindingFlags.Instance|BindingFlags.NonPublic)
         ??throw new MissingFieldException(nameof(ConnectionHistoryStore),"defaultTempStore");
+    private static readonly FieldInfo DestinationStepsTimed=typeof(ConnectionHistoryStore).GetField("destinationStepsTimed",BindingFlags.Instance|BindingFlags.NonPublic)
+        ??throw new MissingFieldException(nameof(ConnectionHistoryStore),"destinationStepsTimed");
 
     [GitHubWindowsFact] public void Connection_history_rates_and_read_timings()
     {
@@ -98,7 +100,10 @@ public sealed class ConnectionHistoryMeasurementTests
         return (store,new{seconds,hours,trafficRows,fileBytes=new FileInfo(file).Length,evicted},last);
     }
 
-    /// <summary>The 31 d, 7 d, 1 d and 1-minute reads ending at <paramref name="end"/>, with temp_store MEMORY and then SQLite's default.</summary>
+    /// <summary>
+    /// The 31 d, 7 d, 1 d and 1-minute reads ending at <paramref name="end"/>, with temp_store MEMORY and then SQLite's default.
+    /// Each entry also records the Destinations table's History steps 1–7, which the store times inside the read.
+    /// </summary>
     private static object[] Reads(ConnectionHistoryStore store,DateTimeOffset end)
     {
         var ranges=new (string Name,TimeSpan Length)[]{("31d",TimeSpan.FromDays(31)),("7d",TimeSpan.FromDays(7)),("1d",TimeSpan.FromDays(1)),("1min",TimeSpan.FromMinutes(1))};
@@ -113,7 +118,8 @@ public sealed class ConnectionHistoryMeasurementTests
             {
                 SQLitePCL.raw.sqlite3_memory_highwater(1);
                 long started=Stopwatch.GetTimestamp();
-                double? ms=null;long? totalRows=null;string? error=null;
+                double? ms=null,destinationStepsMs=null;long? totalRows=null;string? error=null;
+                DestinationStepsTimed.SetValue(store,new Action<TimeSpan>(elapsed=>destinationStepsMs=Math.Round(elapsed.TotalMilliseconds,3)));
                 try
                 {
                     var view=store.Read(new(end-length,end));
@@ -121,8 +127,9 @@ public sealed class ConnectionHistoryMeasurementTests
                     totalRows=view.TotalRows;
                 }
                 catch(Exception e) {error=e.GetType().Name;}
+                finally {DestinationStepsTimed.SetValue(store,null);}
                 long heapHighwaterBytes=SQLitePCL.raw.sqlite3_memory_highwater(0);
-                reads.Add(new{range=name,tempStore=defaultTemp?"default":"memory",ms,heapHighwaterBytes,totalRows,error});
+                reads.Add(new{range=name,tempStore=defaultTemp?"default":"memory",ms,destinationStepsMs,heapHighwaterBytes,totalRows,error});
             }
         }
         return reads.ToArray();

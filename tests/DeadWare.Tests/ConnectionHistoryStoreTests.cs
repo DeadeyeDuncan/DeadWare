@@ -676,4 +676,160 @@ public sealed class ConnectionHistoryStoreTests(ITestOutputHelper testOutput) : 
         var sent=Strip(Query() with {Direction=ConnectionDirection.Sent}); Assert.Equal(["b.exe","a.exe"],sent.Applications.Select(a=>a.Name)); Assert.Equal((0L,0L,0L),(sent.OtherReceived,sent.OtherSent,sent.OtherApplications));
         Assert.DoesNotContain(Strip(Query()).Applications,a=>a.Name=="z.exe");
     }
+    // The Destinations table's History steps and the destinations CSV.
+    private static readonly ConnectionLocation Elsewhere = Place with { City="Elsewhere", Point=new(30,-90) };
+    private static ConnectionHistoryRecord Hit(string batch, int minute, string address, ConnectionLocation? location, string name = "browser", int port = 443,
+        ConnectionProtocol protocol = ConnectionProtocol.Tcp, long received = 10, long sent = 20, bool complete = true, int pid = 7, int firstSecond = 1, int lastSecond = 2) =>
+        new(batch, "s", new(Epoch.AddMinutes(minute), new(new(pid,1,name), "192.168.1.234", 49123, address, port, protocol), received, sent,
+            Epoch.AddMinutes(minute).AddSeconds(firstSecond), Epoch.AddMinutes(minute).AddSeconds(lastSecond)), location, new(40,-80), complete);
+    private static (long,long,long,long,long) Tuple(ConnectionDestinationCounts c) => (c.All,c.Internet,c.Local,c.Special,c.Unlocated);
+    private static string[] Lines(string text) => text.Split(Environment.NewLine,StringSplitOptions.RemoveEmptyEntries);
+    private static string DestinationsCsv(ConnectionHistoryStore store, ConnectionHistoryQuery query, DestinationScope scope)
+    { using var output=new StringWriter(); store.ExportDestinationsCsv(output,query,scope); return output.ToString(); }
+
+    [Fact] public void History_destinations_match_a_brute_force_grouping()
+    {
+        var random=new Random(11);
+        string[] addresses=[..Enumerable.Range(0,20).Select(i=>$"20.1.0.{i+1}"),..Enumerable.Range(0,20).Select(i=>$"192.168.5.{i+1}"),
+            ..Enumerable.Range(0,10).Select(i=>$"100.64.0.{i+1}"),..Enumerable.Range(0,10).Select(i=>$"239.1.1.{i+1}")];
+        string[] names=["alpha.exe","Alpha.exe","beta.exe","gamma.exe","DELTA.exe","epsilon.exe"];
+        int[] ports=[53,80,123,443,8080];
+        ConnectionLocation?[] places=[null,Place,Elsewhere,Place with {CountryCode="AU",Country="Australia",Region=null,City="Sydney",Point=new(-33,151)},
+            Place with {CountryCode="DE",Country="Germany",Region=null,City=null,Point=null}];
+        // One location per address and minute, so the latest one never ties.
+        var located=new Dictionary<(string,int),ConnectionLocation?>();
+        var records=new List<ConnectionHistoryRecord>();
+        for(int i=0;i<900;i++)
+        {
+            string address=addresses[random.Next(addresses.Length)]; int minute=random.Next(30);
+            if(!located.TryGetValue((address,minute),out var location)) located[(address,minute)]=location=places[random.Next(places.Length)];
+            records.Add(Hit($"r{i}",minute,address,location,names[random.Next(names.Length)],ports[random.Next(ports.Length)],(ConnectionProtocol)random.Next(2),
+                random.Next(5)==0?0:random.Next(1,100000),random.Next(5)==0?0:random.Next(1,10000),random.Next(8)!=0,pid:10+random.Next(4),firstSecond:random.Next(0,20),lastSecond:random.Next(20,60)));
+        }
+        store.Append(records,[],Epoch.AddMinutes(31));
+        var list=store.Read(Query(30)).Destinations!;
+        var groups=records.GroupBy(r=>r.Delta.Peer.RemoteAddress).ToDictionary(g=>g.Key,g=>g.ToList());
+        Assert.Equal(groups.Count,list.Rows.Count); Assert.Equal(groups.Count,list.Counts.All);
+        foreach(var row in list.Rows)
+        {
+            var g=groups[row.Address]; var kind=NetworkAddress.Describe(row.Address).Kind;
+            Assert.Equal((g.Sum(r=>r.Delta.ReceivedBytes),g.Sum(r=>r.Delta.SentBytes)),(row.ReceivedBytes,row.SentBytes));
+            Assert.Equal(g.Select(r=>r.Delta.Minute).Distinct().Count(),row.Minutes);
+            Assert.Equal((g.Min(r=>r.Delta.FirstSeen),g.Max(r=>r.Delta.LastSeen)),(row.FirstSeen,row.LastSeen));
+            var apps=g.GroupBy(r=>ProcessGrouping.Key(r.Delta.Peer.Process.Name)).Select(a=>(a.Key,
+                Name:UsageMetrics.NormalizeName(a.OrderByDescending(r=>r.Delta.Minute).ThenBy(r=>r.Delta.Peer.Process.Name,StringComparer.Ordinal).First().Delta.Peer.Process.Name),
+                Received:a.Sum(r=>r.Delta.ReceivedBytes),Sent:a.Sum(r=>r.Delta.SentBytes))).ToList();
+            Assert.Equal(apps.Count,row.AppCount);
+            Assert.Equal(apps.OrderByDescending(a=>a.Received+a.Sent).ThenBy(a=>a.Key,StringComparer.Ordinal).Take(10).Select(a=>new ConnectionDestinationApp(a.Name,a.Received,a.Sent)),row.Apps);
+            var hits=g.GroupBy(r=>(r.Delta.Peer.RemotePort,r.Delta.Peer.Protocol)).Select(p=>new ConnectionDestinationPort(p.Key.RemotePort,p.Key.Protocol,p.Sum(r=>r.Delta.ReceivedBytes),p.Sum(r=>r.Delta.SentBytes))).ToList();
+            Assert.Equal(hits.Count,row.PortCount);
+            Assert.Equal(hits.OrderByDescending(p=>p.ReceivedBytes+p.SentBytes).ThenBy(p=>p.Port).ThenBy(p=>p.Protocol).Take(10),row.Ports);
+            Assert.Equal(g.All(r=>r.Complete),row.Complete);
+            Assert.Equal(NetworkAddress.Describe(row.Address),row.Class);
+            Assert.Equal(kind==NetworkAddressKind.Public&&g.Any(r=>r.Location?.Point is null),row.Unlocated);
+            Assert.Equal(g.Where(r=>r.Location is not null).OrderByDescending(r=>r.Delta.Minute).FirstOrDefault()?.Location,row.Location);
+            Assert.Null(row.DownloadBytesPerSecond); Assert.Null(row.UploadBytesPerSecond); Assert.Null(row.Connections);
+        }
+        Assert.Equal(list.Rows.OrderByDescending(r=>(double)r.ReceivedBytes+r.SentBytes).ThenBy(r=>r.Address,StringComparer.Ordinal).Select(r=>r.Address),list.Rows.Select(r=>r.Address));
+        Assert.Contains(list.Rows,r=>r.Complete==false); Assert.Contains(list.Rows,r=>r.Unlocated); 
+        // alpha.exe and Alpha.exe are one app.
+        Assert.Contains(list.Rows,r=>groups[r.Address].Select(x=>x.Delta.Peer.Process.Name).Distinct().Count(n=>n is "alpha.exe" or "Alpha.exe")==2&&r.Apps.Count(a=>a.Name is "alpha.exe" or "Alpha.exe")==1);
+    }
+    [Fact] public void History_destination_counts_match_the_summary()
+    {
+        var bounded=Store(file:Path.Combine(directory,"bounded.db"));
+        var rows=Enumerable.Range(0,300).Select(i=>Row(i,"b"+i,address:"8.9."+(i/250)+"."+(i%250+1)) with {Location=Place with {City="City "+i,Point=new(i%90,i%180)}}).ToList();
+        rows.Add(Row(300,"local",address:"192.168.3.5") with {Location=null}); rows.Add(Row(301,"unknown",address:"9.9.9.9") with {Location=null});
+        bounded.Append(rows,[],Epoch.AddMinutes(302)); var view=bounded.Read(Query(302));
+        Assert.Equal((302L,301L,1L,0L,1L),Tuple(view.Destinations!.Counts));
+        Assert.Equal((view.Summary.Destinations,view.Summary.Local,view.Summary.Unlocated),(view.Destinations.Counts.All,view.Destinations.Counts.Local,view.Destinations.Counts.Unlocated));
+        store.Append([Row(0,"a",address:"192.168.3.5") with {Location=null},Row(0,"b",address:"9.9.9.9") with {Location=null},
+            Row(0,"c",address:"1.0.0.1") with {Location=Place with {CountryCode="AU",Country="Australia",Point=null}},
+            Row(0,"d",address:"100.64.0.1") with {Location=null},Row(0,"e",address:"239.255.255.250") with {Location=null},Row(0,"f",address:"8.8.8.8")],[],Epoch.AddMinutes(1));
+        Assert.Equal((6L,3L,1L,2L,2L),Tuple(store.Read(Query()).Destinations!.Counts));
+    }
+    [Fact] public void History_destination_shows_the_latest_saved_location_and_every_point()
+    {
+        store.Append([Hit("m0",0,"8.8.8.8",Place),Hit("m1",1,"8.8.8.8",null),Hit("m2",2,"8.8.8.8",Elsewhere),Hit("m3",3,"8.8.8.8",null)],[],Epoch.AddMinutes(5));
+        var view=store.Read(Query()); var d=view.Destinations!.Rows.Single();
+        Assert.Equal(Elsewhere,d.Location); Assert.Equal([Elsewhere.Point!,Place.Point!],d.Points); Assert.True(d.Unlocated);
+        Assert.Equal(view.Summary.Unlocated,view.Destinations.Counts.Unlocated); Assert.Equal(4,d.Minutes);
+    }
+    [Fact] public void History_destinations_follow_search_country_direction_and_the_minute()
+    {
+        var australia=Place with {CountryCode="AU",Country="Australia",Point=new(-33,151)};
+        store.Append([Hit("a",0,"8.8.8.8",Place,"a.exe",received:10,sent:0),Hit("b",1,"1.1.1.1",australia,"b.exe",received:0,sent:5),
+            Hit("d",1,"8.8.8.8",Place,"d.exe",received:3,sent:4),Hit("c",2,"192.168.1.9",null,"c.exe",received:7,sent:7)],[],Epoch.AddMinutes(3));
+        IEnumerable<(string,long,long)> Shown(ConnectionHistoryQuery query) => store.Read(query).Destinations!.Rows.Select(r=>(r.Address,r.ReceivedBytes,r.SentBytes)).OrderBy(r=>r.Address,StringComparer.Ordinal);
+        Assert.Equal([("1.1.1.1",0L,5L),("192.168.1.9",7L,7L),("8.8.8.8",13L,4L)],Shown(Query()));
+        Assert.Equal([("192.168.1.9",7L,7L)],Shown(Query() with {Search="c.exe"}));
+        Assert.Equal([("1.1.1.1",0L,5L)],Shown(Query() with {CountryCode="au"}));
+        Assert.Equal([("192.168.1.9",7L,7L),("8.8.8.8",13L,4L)],Shown(Query() with {Direction=ConnectionDirection.Received}));
+        Assert.Equal([("1.1.1.1",0L,5L),("192.168.1.9",7L,7L),("8.8.8.8",3L,4L)],Shown(Query() with {Direction=ConnectionDirection.Sent}));
+        Assert.Equal([("1.1.1.1",0L,5L)],Shown(Query() with {Application="B.EXE"}));
+        Assert.Equal([("1.1.1.1",0L,5L),("8.8.8.8",3L,4L)],Shown(new(Epoch.AddMinutes(1),Epoch.AddMinutes(2))));
+        var sent=store.Read(Query() with {Direction=ConnectionDirection.Sent}).Destinations!.Rows.Single(r=>r.Address=="8.8.8.8");
+        Assert.Equal((1,"d.exe",1L),(sent.AppCount,sent.Apps[0].Name,sent.Minutes));
+    }
+    [Fact] public void History_destination_lists_are_bounded()
+    {
+        var records=new List<ConnectionHistoryRecord>();
+        for(int i=0;i<1100;i++)
+        {
+            records.Add(Hit($"p{i}",i%20,$"20.{i/250}.{i%250}.1",Place));
+            records.Add(Hit($"l{i}",i%20,$"10.{i/250}.{i%250}.1",null));
+            records.Add(Hit($"s{i}",i%20,$"100.{64+i/250}.{i%250}.1",null));
+        }
+        for(int a=1;a<=5;a++) for(int i=0;i<15;i++) records.Add(Hit($"h{a}-{i}",i,$"8.8.8.{a}",Place,$"app{i}.exe",1000+i,received:1000+i));
+        ConnectionLocation At(int minute) => Place with {City=$"City {minute}",Point=new(minute,minute)};
+        for(int m=0;m<12;m++) records.Add(Hit($"g{m}",m,"9.9.9.9",At(m),received:5000));
+        store.Append(records,[],Epoch.AddMinutes(21));
+        var l=store.Read(Query(20)).Destinations!;
+        Assert.True(l.Rows.Count<=3000); Assert.All(Enum.GetValues<NetworkAddressKind>(),k=>Assert.True(l.Rows.Count(r=>r.Class.Kind==k)<=1000));
+        Assert.Equal((3306L,1106L,1100L,1100L,0L),Tuple(l.Counts));
+        Assert.Equal(5,l.Rows.Count(r=>r.AppCount==15));
+        Assert.All(l.Rows.Where(r=>r.AppCount==15),r=>Assert.Equal((10,15,10),(r.Apps.Count,r.PortCount,r.Ports.Count)));
+        Assert.All(l.Rows.Where(r=>r.AppCount==15),r=>Assert.Equal([..Enumerable.Range(5,10).Reverse().Select(i=>$"app{i}.exe")],r.Apps.Select(x=>x.Name)));
+        var many=l.Rows.Single(r=>r.Points.Count>1); Assert.Equal(8,many.Points.Count); Assert.Equal(At(11),many.Location);
+        Assert.Equal([..Enumerable.Range(4,8).Reverse().Select(m=>At(m).Point!)],many.Points);
+    }
+    [Fact] public void Destinations_csv_lists_every_destination_in_scope()
+    {
+        var records=new List<ConnectionHistoryRecord>();
+        string Address(int i) => i<1000?$"20.{i/250}.{i%250}.1":$"10.0.{i-1000}.1";
+        for(int i=1;i<1200;i++)
+            records.Add(Hit($"r{i}",i%10,Address(i),i<1000?Place:null,i==1?"=formula":"browser",received:i%600+1,sent:0));
+        for(int k=0;k<120;k++) records.Add(Hit($"a{k}",k%10,Address(0),Place,$"app{k:000}.exe",received:k+1,sent:0));
+        store.Append(records,[],Epoch.AddMinutes(11));
+        var lines=Lines(DestinationsCsv(store,Query(10),DestinationScope.All));
+        Assert.Equal("Address,Class,CountryCode,Country,Region,City,Latitude,Longitude,Applications,ApplicationNames,Ports,PortList,ReceivedBytes,SentBytes,Minutes,FirstSeenUtc,LastSeenUtc,Complete",lines[0]);
+        Assert.Equal(1201,lines.Length);
+        var expected=records.GroupBy(r=>r.Delta.Peer.RemoteAddress).OrderByDescending(g=>(double)g.Sum(r=>r.Delta.ReceivedBytes)+g.Sum(r=>r.Delta.SentBytes)).ThenBy(g=>g.Key,StringComparer.Ordinal).Select(g=>"\""+g.Key+"\"");
+        string[][] cells=[..lines.Skip(1).Select(line=>line.Split(','))];
+        Assert.Equal(expected,cells.Select(c=>c[0]));
+        var formula=cells.Single(c=>c[0]=="\"20.0.1.1\"");
+        Assert.Equal(["\"20.0.1.1\"","\"Internet\"","\"US\"","\"United States\"","\"Illinois\"","\"Chicago\"","\"41\"","\"-87\"","\"1\"","\"'=formula\"","\"1\"","\"443 Tcp\"","\"2\"","\"0\"","\"1\"",
+            "\""+Epoch.AddMinutes(1).AddSeconds(1).ToString("O")+"\"","\""+Epoch.AddMinutes(1).AddSeconds(2).ToString("O")+"\"","\"True\""],formula);
+        var busy=cells.Single(c=>c[0]=="\"20.0.0.1\"");
+        Assert.Equal("\"120\"",busy[8]);
+        Assert.Equal("\""+string.Join("; ",Enumerable.Range(20,100).Reverse().Select(k=>$"app{k:000}.exe"))+"; +20 more\"",busy[9]);
+        Assert.Equal("\"7260\"",busy[12]); Assert.Equal("\"10\"",busy[14]);
+        var local=Lines(DestinationsCsv(store,Query(10),DestinationScope.Local));
+        Assert.Equal(201,local.Length); Assert.All(local.Skip(1),line=>Assert.StartsWith("\"10.0.",line));
+        Assert.All(local.Skip(1),line=>Assert.Equal(["\"Local · private\"","\"\"","\"\"","\"\"","\"\"","\"\"","\"\""],line.Split(',')[1..8]));
+        Assert.Equal(1001,Lines(DestinationsCsv(store,Query(10),DestinationScope.Internet)).Length);
+    }
+    [Fact] public void Destinations_csv_caps_ports_and_neutralizes_every_cell()
+    {
+        store.Append([..Enumerable.Range(0,1005).Select(p=>Hit($"p{p}",0,"8.8.8.8",Place,port:p+1,protocol:(ConnectionProtocol)(p%2),received:p+1))],[],Epoch.AddMinutes(1));
+        var cells=Lines(DestinationsCsv(store,Query(),DestinationScope.All))[1].Split(',');
+        Assert.Equal("\"1005\"",cells[10]);
+        var ports=cells[11].Trim('"').Split("; ");
+        Assert.Equal(1001,ports.Length); Assert.Equal("1005 Tcp",ports[0]); Assert.Equal("1004 Udp",ports[1]); Assert.Equal("+5 more",ports[^1]);
+    }
+    [Fact] public void Destinations_csv_over_the_temp_limit_writes_nothing()
+    {
+        var store=Store(pages:16);store.Append([..Enumerable.Range(0,2000).Select(i=>Row(i%9,$"b{i}",address:$"20.{i/250}.{i%250}.1"))],[],Epoch.AddMinutes(10));var writer=new StringWriter();
+        Assert.Throws<ConnectionHistoryLimitException>(()=>store.ExportDestinationsCsv(writer,Query(10),DestinationScope.All));Assert.Equal("",writer.ToString());
+    }
 }
