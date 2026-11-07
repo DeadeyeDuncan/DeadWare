@@ -40,6 +40,7 @@ internal static class UsageHistoryUiChecks
         {
             Assembly.GetType("DeadWare.App.Theme")!.GetMethod("Apply", All)!.Invoke(null, [theme]);
             CheckChart(theme, now, output);
+            CheckFractionalBucketsConnect(now);
             CheckByteUnit(now);
             CheckSelection(now);
             foreach (bool empty in new[] { true, false })
@@ -162,6 +163,18 @@ internal static class UsageHistoryUiChecks
             using var stream = File.Create(Path.Combine(output, $"usage-chart-{theme}.png"));
             var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap)); encoder.Save(stream);
         }
+    }
+
+    // ReadMetric's Week grid at 1,500 points: 403,200 ms (6.72 min) from now − 7 d (a whole minute). A bucket holds 6 or 7 whole-minute starts,
+    // and a fully recorded 6-start bucket must connect.
+    private static void CheckFractionalBucketsConnect(DateTimeOffset now)
+    {
+        var from = now.AddDays(-7);
+        UsageHistoryBucket B(int k, long minutes) => new(from.AddMilliseconds(403_200L * k), from.AddMilliseconds(403_200L * (k + 1)), 50, 40, 60, minutes, minutes, minutes * 60);
+        Assert.Equal(6, TrafficStrips.MinuteStarts(B(3, 0).Start, B(3, 0).End)); Assert.Equal(7, TrafficStrips.MinuteStarts(B(2, 0).Start, B(2, 0).End));
+        Assert.True(UsageHistoryChart.IsFull(B(3, 6), 403_200)); Assert.True(UsageHistoryChart.CanConnect(B(2, 7), B(3, 6), 403_200));
+        Assert.False(UsageHistoryChart.IsFull(B(3, 5), 403_200)); Assert.False(UsageHistoryChart.CanConnect(B(2, 7), B(3, 5), 403_200));
+        Assert.False(UsageHistoryChart.IsFull(B(2, 6), 403_200)); Assert.True(UsageHistoryChart.IsFull(B(2, 7), 403_200));
     }
 
     private static FrameworkElement ChartWith(DateTimeOffset now, string unit, double? maximum, double value)
