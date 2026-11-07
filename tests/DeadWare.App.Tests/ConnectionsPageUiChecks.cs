@@ -665,6 +665,10 @@ internal static class ConnectionsPageUiChecks
         Assert.Equal("History could not be read (IOException).", status.Text); Assert.Contains("6 destinations", summary.Text);
         count = reads.Requested.Count; cursor.Value = 1; Assert.Equal(count + 1, reads.Requested.Count); Assert.True(IsMinute(reads.Last, 10, 1));
         reads.Answer(); Assert.Equal(count + 1, reads.Requested.Count); Assert.Empty(reads.Replies); Assert.Equal("History unavailable", ChartMessage(chart));
+        // A waiting strip read for a context left before it started is dropped: back on the failed context, only its minute is read.
+        search.Text = "w2"; Assert.True(IsMinute(reads.Last, 10, 0)); Assert.Equal("w2", reads.Last.Search); search.Text = "w"; count = reads.Requested.Count;
+        reads.Drain(); Assert.Equal(count + 1, reads.Requested.Count); Assert.True(IsMinute(reads.Last, 10, 0)); Assert.Equal("w", reads.Last.Search);
+        Assert.Equal("History unavailable", ChartMessage(chart));
         // A thrown read with the cursor off: every count is "—", with the tooltip naming why.
         minute.IsChecked = false; Assert.True(IsWhole(reads.Last, 3)); reads.Fail(new IOException());
         Assert.Equal("History · minute-bucket average rates · — destinations · — countries · — local · — unlocated · ↓ — received / ↑ — sent", summary.Text);
@@ -684,6 +688,7 @@ internal static class ConnectionsPageUiChecks
         // ReloadHistory re-reads the minute and then the whole interval with the cursor on.
         page.ReloadHistory(); Assert.Equal(count + 2, reads.Requested.Count); Assert.Equal(TimeSpan.FromMinutes(1), reads.Last.To - reads.Last.From);
         reads.Answer(); Assert.Equal(count + 3, reads.Requested.Count); Assert.True(IsWhole(reads.Last, 3)); reads.Answer(); Assert.NotNull(chart.Strip); Assert.Empty(reads.Replies);
+        page.RaiseEvent(new RoutedEventArgs(FrameworkElement.UnloadedEvent));
     }
     private static void CheckStripCursor(UiSession session, DateTimeOffset now)
     {
@@ -803,6 +808,8 @@ internal static class ConnectionsPageUiChecks
         // From Live: History for the whole minutes, every other filter cleared, the application keyed from its bare name.
         page.ShowHistory(now.AddMinutes(-90).AddSeconds(20), now.AddMinutes(-30), "Chrome.exe");
         Assert.Equal(1, mode.SelectedIndex); Assert.Single(reads.Requested);
+        // Showing the page while that read is in flight reads nothing more.
+        page.RaiseEvent(new RoutedEventArgs(FrameworkElement.LoadedEvent)); Assert.Single(reads.Requested);
         Assert.Equal(Box(now.AddMinutes(-89)), from.Text); Assert.Equal(Box(now.AddMinutes(-30)), to.Text);
         Assert.Equal("", search.Text); Assert.Equal("", country.Text); Assert.Equal(ConnectionDirection.Both, direction.SelectedItem);
         Assert.False(minute.IsChecked); Assert.Equal(0, cursor.Value); Assert.Equal(2, range.SelectedIndex);
@@ -844,6 +851,7 @@ internal static class ConnectionsPageUiChecks
         var spring = ConnectionsPage.LocalBoxes(springStart, invalidEnd, zone);
         Assert.Equal(("2026-03-29 00:30", "2026-03-29 02:00"), spring);
         Assert.Equal((springStart, invalidEnd), (Parse(spring.From), Parse(spring.To)));
+        page.RaiseEvent(new RoutedEventArgs(FrameworkElement.UnloadedEvent));
     }
     private static void Pump()
     { var frame = new DispatcherFrame(); Dispatcher.CurrentDispatcher.BeginInvoke(DispatcherPriority.Background, new Action(() => frame.Continue = false)); Dispatcher.PushFrame(frame); }

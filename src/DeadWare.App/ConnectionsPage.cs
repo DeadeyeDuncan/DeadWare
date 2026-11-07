@@ -78,6 +78,9 @@ internal sealed class ConnectionsPage : Grid
     private DateTimeOffset stripNow;
     // The whole-interval query of the latest request, which a strip reply must match to be applied.
     private ConnectionHistoryQuery? requestedWhole;
+    // The latest requested query, and the generation whose read is in flight (−1 for none).
+    private ConnectionHistoryQuery? requestedQuery;
+    private long readingGeneration = -1;
     /// <summary>The "now" the page passes when it applies a strip.</summary>
     internal Func<DateTimeOffset> clock = () => DateTimeOffset.UtcNow;
     private ConnectionHistoryQuery? displayedHistoryQuery;
@@ -178,7 +181,7 @@ internal sealed class ConnectionsPage : Grid
             if (e.Key == System.Windows.Input.Key.Escape) { ClearSelection(); ClearDestinationSelection(); e.Handled = true; }
             else if (e.Key == System.Windows.Input.Key.F5) { destinations.Resort(); e.Handled = true; }
         }; playback.Tick += (_, _) => AdvancePlayback();
-        Loaded += (_, _) => { active = true; session.Changed += RefreshSession; RefreshSession(); ShowStripAgain(); if (IsHistory) RequestHistory(); }; Unloaded += (_, _) => { active = false; session.Changed -= RefreshSession; CancelHistory(); pendingStrip = null; StopPlayback(); downloadCancellation?.Cancel(); destinations.ReleaseHolds(); }; IsVisibleChanged += (_, _) => { if (!IsVisible) { CancelHistory(); pendingStrip = null; StopPlayback(); destinations.ReleaseHolds(); } else if (active) { RefreshSession(); ShowStripAgain(); if (IsHistory) RequestHistory(); } }; RefreshSession();
+        Loaded += (_, _) => { active = true; session.Changed += RefreshSession; RefreshSession(); ShowStripAgain(); if (IsHistory && !ReadOutstanding()) RequestHistory(); }; Unloaded += (_, _) => { active = false; session.Changed -= RefreshSession; CancelHistory(); pendingStrip = null; StopPlayback(); downloadCancellation?.Cancel(); destinations.ReleaseHolds(); }; IsVisibleChanged += (_, _) => { if (!IsVisible) { CancelHistory(); pendingStrip = null; StopPlayback(); destinations.ReleaseHolds(); } else if (active) { RefreshSession(); ShowStripAgain(); if (IsHistory && !ReadOutstanding()) RequestHistory(); } }; RefreshSession();
     }
     protected override Size MeasureOverride(Size availableSize)
     {
@@ -281,13 +284,17 @@ internal sealed class ConnectionsPage : Grid
         if(!SameContext(whole,stripContext))
         {
             stripContext=null; trafficStrip.ShowText(cursorOn&&SameContext(whole,stripFailed)?"History unavailable":"Reading saved history…"); UpdateHairline();
-            // With the cursor on, a minute read carries no strip, so the whole interval is read after it; a failed context waits for a change.
-            if(cursorOn&&!SameContext(whole,stripReading)&&!SameContext(whole,pendingStrip)&&!SameContext(whole,stripFailed))pendingStrip=whole;
         }
-        // With the cursor off, the one read carries the strip.
-        if(!cursorOn)pendingStrip=null;
-        queryCancellation=new();pending=query;_=PumpHistoryAsync();
+        // With the cursor on, a minute read carries no strip, so the whole interval is read after it, unless it is on screen, in flight or failed
+        // (a failed context waits for a change). With the cursor off, the one read carries the strip. Any other waiting strip read is stale.
+        pendingStrip=cursorOn&&!SameContext(whole,stripContext)&&!SameContext(whole,stripReading)&&!SameContext(whole,stripFailed)?whole:null;
+        requestedQuery=query;queryCancellation=new();pending=query;_=PumpHistoryAsync();
     }
+    /// <summary>
+    /// A read of exactly the query the boxes give is waiting or in flight and not cancelled, with the cursor off so that it carries the strip too.
+    /// Show in Connections from another page requests its read before the page is shown; showing it then reads nothing more.
+    /// </summary>
+    private bool ReadOutstanding() => minute.IsChecked != true && (pending is not null || readingGeneration == generation) && requestedQuery is { } asked && BuildQuery(out _) == asked;
     /// <summary>Re-reads saved data, the strip included, with the minute cursor on as well as off.</summary>
     internal void ReloadHistory() { stripContext = null; stripFailed = null; if (IsHistory) RequestHistory(); }
     // Showing the page again re-reads a strip that may hold minutes saved since, and retries a failed one.
@@ -302,10 +309,11 @@ internal sealed class ConnectionsPage : Grid
             {
                 if (pending is { } query)
                 {
-                    pending = null; long requested = generation; var token = queryCancellation!.Token; capture.Text = "Reading saved history…";
+                    pending = null; long requested = generation; var token = queryCancellation!.Token; capture.Text = "Reading saved history…"; readingGeneration = requested;
                     try { var result = await readHistory(query); if (!token.IsCancellationRequested && requested == generation && IsHistory) ApplyHistory(result); }
                     catch (ConnectionHistoryLimitException) { if (!token.IsCancellationRequested && requested == generation && IsHistory) { actionStatus.Text = LimitWarning; ApplyHistory(Empty(query, "History unavailable; no saved observations shown.")); StopPlayback(); } }
                     catch (Exception error) { if (!token.IsCancellationRequested && requested == generation && IsHistory) { actionStatus.Text = $"History could not be read ({error.GetType().Name})."; ApplyHistory(Empty(query, "History unavailable; no saved observations shown.")); StopPlayback(); } }
+                    finally { readingGeneration = -1; }
                     continue;
                 }
                 // The strip read takes no cancellation token and is not invalidated by generation; only its Strip is ever applied.
