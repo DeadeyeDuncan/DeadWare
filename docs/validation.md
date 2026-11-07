@@ -1,5 +1,51 @@
 # Release validation
 
+## Per-app GPU (0.15.0, 2026-11-07)
+
+### CI measurement (a floor)
+
+`Gpu_counter_timing_over_240_reads` on `windows-latest` (run 42339286794): `counters` present, p50 0.177 ms and p95 0.245 ms over 240 reads, a first read of 281.3 ms, 45 engine, 11 dedicated-memory and 11 shared-memory instances, 2 adapters (one of them a software adapter), and 0 skipped and 0 unavailable reads. The runner has no real GPU workload, so these are a floor that decides nothing: the case that matters, a desktop whose GPU Engine set holds one instance per GPU-using process, engine and adapter, often thousands, cannot be measured in CI. Placement is therefore decided at run time (the last 20 reads, not counting the first after the query opens; when more than one exceeds 15 ms the read moves to its own loop). On that runner the first collection after the query opens reports utilization as `PDH_CSTATUS_INVALID_DATA` (0xC0000BBA), which DeadWare treats as not ready for that read, as the spec describes, and not as an error.
+
+### Automated coverage
+
+Core, run locally on Linux and on the Windows CI build:
+
+- `GpuCounterTests`: instance-name parsing (engine and memory names, LUID halves, types with `_`, digits and spaces, malformed names), ready and not-ready items (never skipped, never 0), the first read having no previous collection and a freshness limit that keeps a slower previous interval, the benign array statuses (including 0xC0000BBA) as not ready and an error only after 60 s, no engine instances as "GPU counters unavailable" with the query kept open, `Engines_that_appear_later_are_read_without_reopening`, more than half skipped as "GPU counters unreadable", 65,537 items as "Too many GPU counter instances", open and collect failures retried at most once a minute, adapter naming and DXGI re-reads at most once a minute, and `GpuPlacementGuard` (one slow read in twenty keeps every poll, a second moves the read, the first read after open is not counted, the loop placement holds until reset).
+- `GpuProcessJoinTests`: the busiest ready engine with ties in engine order, not-ready engines and memory items, known zeros, clamping, the 32-engine cap, the first-sample rule for a process created at or after the previous collection less one second, no previous collection, GPU deltas and omitted processes' GPU sums.
+- `ProcessActivityTrackerTests`, `ProcessTableTests` (app-row aggregation by engine, engine tooltips, GPU ENGINE sorting, the footer line) and `ProcessSettingsTests` (defaults, column order, the one-time upgrade of a saved 0.13 or 0.14 default list, a customized list kept, round trips, `Normalize` and `Toggle` never upgrading).
+- `ProcessMinuteFolderTests`: the GPU list as a fourth top 10, app-level GPU-seconds, Everything else, GPU-covered seconds, `Zero_gpu_never_qualifies_and_gpu_ties_break_by_key`.
+- `ProcessHistoryStoreTests`: the upgrade from a real version 1 file, a failed upgrade leaving version 1, a new file at version 2, a version 2 file missing a column rejected, GPU values stored and rejected, Rank by GPU with the total including Everything else, Avg GPU over GPU-covered time only, Avg GPU memory over the listed GPU minutes, null GPU without GPU data, the GPU series with gaps, and `Cap_and_retention_constants` at 192 MiB.
+- One-day size: `One_day_at_the_cap_stays_under_six_mebibytes` writes 1,440 complete minutes with the same 40 app names plus Everything else, full-width values in every column and the machine key "DESKTOP-ABCDEFG". A throwaway copy that printed `StorageBytes` (not committed) measured 5,898,240 bytes (5.6 MiB), recorded in the pull request's description under "History size"; 31 days at that size (about 174 MiB) fit under the 192 MiB cap.
+
+App, on the Windows CI build only:
+
+- `GpuCounterLoopTests`: the loop's period is at least one second and follows slower polling; the first read waits one period; a shorter interval takes effect within 0.5 s; each read is taken fresh once (`Interval_changes_keep_each_read_fresh_once`); a passed-over read is never returned; a disabled or disposed loop closes the query after its read.
+- `CollectorGpuTests`: GPU values join the published activity; a throwing source keeps CPU, memory and the process columns; turning monitoring off closes the query within one poll; a slow source moves to its own loop where an unrefreshed poll adds nothing; a stale loop read is carried; the `windows/gpucounters` timing key appears only when a read ran; `Rapid_toggles_during_a_loop_read_never_read_concurrently`; a worker that stops after an error stops the loop; disposal waits for the read in flight.
+- `DiagnosticOptionsTests`: `Diagnostic_report_has_the_gpu_summary_and_no_names_or_adapters`, `The_summary_has_no_gpu_part_while_monitoring_is_off`.
+- `ProcessesPageUiChecks`: `Gpu_dashes_name_each_reason`, `Gpu_engine_cell_tooltip_and_known_zeros`, `Gpu_engine_sorts_ascending_first_and_gpu_descending_first`, `Gpu_spoken_labels`, `Gpu_columns_show_for_fresh_and_0_13_settings_but_not_a_custom_list`.
+- `ApplicationResourcesUiChecks`: `Table_has_the_nine_columns_and_everything_else_last`, `The_note_names_gpu`, `Selecting_an_app_while_ranked_by_gpu_charts_its_gpu`, `Gpu_rank_columns_and_header_tooltips`, `Gpu_dashes_name_their_reason`, `Rank_by_gpu_over_version_1_minutes_shows_dashes_and_no_share_bar`, `A_gpu_slot_with_gpu_data_lists_apps_by_gpu_and_everything_else`, and on the Usage history page `Only_the_cpu_ram_and_gpu_charts_are_selectable`, `Clicking_a_gpu_point_ranks_the_slot_by_gpu`, `Keys_on_the_gpu_chart_move_all_three_and_esc_clears`, `Clear_removes_the_gpu_hairline_too`, `A_gpu_click_on_a_slot_without_process_data_says_so` and `Clearing_the_dashboard_gpu_keeps_the_listed_gpu_moment`.
+- `GpuCounterChecks` on the elevated runner (says nothing about standard users): `Gpu_counters_open_and_parse` (every parsed instance's process ID appears in one of two scans) and `Gpu_counter_timing_over_240_reads` (the floor above).
+
+Two behaviours from the GPU loop: once the read moves to its own loop, its first read waits one period, so the polls in between show "first sample"; and the loop follows polling-interval changes within 0.5 s.
+
+### Pending by eye
+
+Never claimed as verified in this release:
+
+- GPU % and GPU memory against Task Manager while a game or video plays.
+- The read cost: `DeadWare.exe --diagnose gpu.json --samples 60` while a game plays; `docs/validation.md` records `windows/gpucounters` p50 and p95 from the 60 samples, the instances read and the placement. A p95 above 15 ms with the read still on the collector thread is a failed check.
+- GPU engine naming on a laptop with integrated and discrete GPUs, and whether GPU numbers match Task Manager there and, where available, on a desktop whose monitor is on the discrete GPU while the integrated GPU is enabled, and on a PC with an NPU (whether NPU engines appear in GPU %).
+- A remote desktop session: record what the GPU, GPU engine and GPU memory columns show next to Task Manager in the same session; no outcome is claimed in advance.
+- DeadWare started without administrator rights (the Processes banner offers Restart as administrator), with Per-process monitoring on: GPU and GPU memory show values that agree with Task Manager, not "GPU counters unavailable". This is the only check of the no-administrator assumption.
+- History and the card after a day with GPU data.
+- Launch and close apps while watching the GPU column: note whether every row blanks to "first sample" for a poll when a new GPU instance appears (a whole-array benign status), and whether that ever runs on long enough to show "GPU counters unavailable (error …)". The CI runner's not-ready reads on an idle machine are in the floor above.
+- A non-English Windows display language: record the GPU column state and the `--diagnose` GPU summary. The English counter paths are meant to work there; this has not been tested.
+- Application resources at the Usage history window's 720 px minimum and in the main window at 900 px: the nine columns fit without horizontal scroll; record which headers or names clip.
+
+### Results
+
+`dotnet build DeadWare.slnx -c Release -p:EnableWindowsTargeting=true --nologo` finished with 0 errors and the 14 existing warnings, none in a file this release changed. The Core suite on Linux passed 1,040 tests with 1 skipped and 26 failures, the known Windows-only Core tests that cannot run there. The App tests run only on the Windows CI build on the pull request (#84), which runs both suites on each pushed head; the latest green run at the time of writing is 42356991780 on `5965ba0` (Task 13's head, before this version bump and the final review's fixes). The run on the final head is recorded by a later `docs:` commit.
+
 ## Processes and history fixes (0.14.1, 2026-11-07)
 
 ### Behaviour the release notes describe
