@@ -441,8 +441,14 @@ public sealed class ConnectionHistoryStoreTests(ITestOutputHelper testOutput) : 
     {
         var store=Store(); store.Append([Row(),Row(1,"c",address:"9.9.9.9"),Row(2,"d",address:"192.168.3.5")],[new("c","s",Epoch,Epoch.AddSeconds(30),true)],Epoch.AddMinutes(3));
         (byte[] Main,byte[]? Wal,long WalLength,long ShmLength,long Storage) Files() =>
-            (File.ReadAllBytes(Database),File.Exists(Database+"-wal")?File.ReadAllBytes(Database+"-wal"):null,File.Exists(Database+"-wal")?new FileInfo(Database+"-wal").Length:-1,
+            (Bytes(Database),File.Exists(Database+"-wal")?Bytes(Database+"-wal"):null,File.Exists(Database+"-wal")?new FileInfo(Database+"-wal").Length:-1,
              File.Exists(Database+"-shm")?new FileInfo(Database+"-shm").Length:-1,store.StorageBytes);
+        // SQLite keeps the files open for writing; Windows refuses File.ReadAllBytes (FileShare.Read) while it does.
+        static byte[] Bytes(string path)
+        {
+            using var stream=new FileStream(path,FileMode.Open,FileAccess.Read,FileShare.ReadWrite|FileShare.Delete);
+            using var copy=new MemoryStream(); stream.CopyTo(copy); return copy.ToArray();
+        }
         void Unchanged(int rows)
         {
             var before=Files(); Assert.Equal(rows,store.Read(Query()).TotalRows); var after=Files();
