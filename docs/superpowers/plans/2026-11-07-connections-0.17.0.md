@@ -45,7 +45,7 @@
 **Untouched by 0.15.0 and 0.16.0**, so the spec's numbers hold:
 - Core: `AlertRules.cs`, `AlertStore.cs`, `AlertEvaluator.cs`, `UsageHistory.cs` and `ConnectionLedger.cs`.
 - App: `AlertService.cs`, `AlertsPage.cs`, `App.xaml.cs`, `TrayIcon.cs`, `ProcessHistoryService.cs`, `ConnectionsWidget.cs`, `ProcessActions.cs`, `NativeProcessIdentity.cs` and `EtwNetwork.cs`.
-- Tests: `AlertRuleTests.cs` (:68, :83), `AlertStoreTests.cs` (:68), `AlertEvaluatorTests.cs`, `AlertServiceTests.cs`, `AlertsUiChecks.cs` (:35, :50, :72-73), `ShellUiChecks.cs` (:89), `CoolingShutdownTests.cs` and `RealWindows/ProcessScanChecks.cs` (:44).
+- Tests: `AlertRuleTests.cs` (:68, :83), `AlertStoreTests.cs` (:68), `AlertEvaluatorTests.cs`, `AlertServiceTests.cs`, `AlertsUiChecks.cs` (:35, :50, :72-73), `CoolingShutdownTests.cs` and `RealWindows/ProcessScanChecks.cs` (:44).
 
 **Moved by 0.15.0**, re-anchored here:
 - `Core/ProcessHistory.cs`: `SavedName` :11-18; `ProcessMinuteFolder` :39; `Fold` :110-152 (spec :100-121), with the unknown-name branch at :120-125 (spec :107), the key at :128 (spec :110) and the GPU busiest-engine loop at :141-147.
@@ -65,6 +65,7 @@
 - `App/UsageHistoryPage.cs`: Keep a longer record :116-121 (spec :113-117); `RefreshAsync` :208-224 (spec :205-221).
 - `docs/user-guide.md`: Connections :129-145 (retention :145); Usage history :165-179; Alerts :181-189 (:183 "Open **Alerts** in the sidebar", :187 "Every crossing is one **episode**", :189 "Device and network rules evaluate"); Network measurements and privacy :205-215 (:207 "Interface totals work independently"); Build :230.
 - `docs/validation.md`: the expiry-watermark finding of the 0.12.2 connections review is at :832 (spec :785).
+- `tests/DeadWare.App.Tests/ShellUiChecks.cs`: edited in place at :87 (the usage-help assert); the alert-help check stays at :89.
 
 **Changed again by 0.16.0.** Numbers below are at 75d6d65 and name the member or quote the text; anchor on that. The files are `ConnectionService.cs`, `ConnectionHistoryStore.cs`, `ConnectionModels.cs`, `ConnectionsPage.cs`, `UiSession.cs`, `UsageHistoryStore.cs`, `UsageHistoryService.cs`, `UsageHistoryPage.cs`, `ApplicationResourcesCard.cs`, `Windows.cs`, `Monitoring.cs`, `ProcessesPage.cs`, the docs, and the tests `BatteryUiTests.cs`, `ConnectionsPageUiChecks.cs`, `UsageHistoryUiChecks.cs`, `ConnectionServiceTests.cs`, `ConnectionHistoryStoreTests.cs` and `UsageHistoryStoreTests.cs`.
 
@@ -112,7 +113,7 @@ For this plan:
   - One branch, `claude/connections-0.17.0`, from `origin/main` after v0.16.0 has merged, with one pull request to `main`, opened as a draft with Task 1's push. CI runs on `claude/*` branches only through a pull request.
   - Fetch and inspect `origin` before each task. Keep unrelated local work. Never force-push or rewrite pushed commits.
   - Each task ends with its commits pushed, `git fetch origin && git status -sb` showing nothing ahead or behind, and CI green, as `AGENTS.md` requires.
-  - Tasks 3–25 start only after Task 2's gate has passed. Mark the PR ready after Task 25.
+  - Tasks 3–25 start only after Task 2's gate has passed, and Task 5 only after the user has decided the `AlertStoreTests.cs:68` conflict (Task 5, Before this task). Mark the PR ready after Task 25.
 - **Merging and publishing.** The spec sets one PR from `main` with CI as the gate; neither it nor the user's approval of it ("spec approved") gives a go-ahead to merge or publish 0.17.0. When every task has been reviewed, the final review and its fix wave are done and CI is green, the controller asks the user for that go-ahead. On it, the controller does what it did for 0.15.0:
   1. Updates the `docs/validation.md` Results line with the final run id and head SHA, and lets that run finish green.
   2. Merges the PR (merge commit).
@@ -131,7 +132,7 @@ The five failure modes the spec implies but its listed tests do not exercise, mo
 2. **A one-app clear for an app with no saved history** (a typo such as `chrom.exe`). Expected: each store's first step finishes, `Percent` is 100 where the store shows one, every marker is gone, and nothing is deleted. Test: Task 11, `Clearing_an_app_with_no_saved_history_finishes_at_once`.
 3. **An app added to Don't record in the middle of a minute** (Connections). Expected: the part of that minute merged before the change is saved when the minute closes, and nothing after the change; the next minute holds none of it. Test: Task 15, `Excluding_an_app_mid_minute_keeps_what_was_merged_before`.
 4. **Clear history while Usage recording and Per-process monitoring are off.** Expected: both clears still run and finish ("the workers run while recording is paused"), and nothing is recorded meanwhile. Test: Task 17, `Clear_runs_while_recording_is_paused`.
-5. **A step fails and the user presses Try again** (the yield limit passes with a reader pinned). Expected: the store reads `failed (IOException); it resumes when DeadWare next starts`, recording continues, a second `ClearHistory` is refused, and **Try again** finishes the clear from its marker. Test: Task 17, `Try_again_after_a_failed_step_finishes_the_clear`.
+5. **A step fails (an IOException, as when the 60 s yield limit passes) and the user presses Try again.** Expected: ClearState is Failed with `MarkerSaved` true and the status suffix ` · Clearing history failed (IOException); it resumes when DeadWare next starts.`; recording continues; `UiSession.ClearHistory` refuses a new request; **Try again** finishes the clear from its marker. Tests: Task 17, `Try_again_after_a_failed_step_finishes_the_clear`, and Task 19, `ClearHistory_refuses_a_second_request_and_reports_a_stopped_worker_as_unavailable`.
 
 ## File structure
 
@@ -220,7 +221,8 @@ Then recheck every anchor this plan names in the files 0.16.0 changed (Anchors),
     Assert.Equal("UNKNOWN APPLICATION",AppKey.Of(null));Assert.Equal("UNKNOWN APPLICATION",AppKey.Of(""));
     foreach(var n in Names){Assert.Equal(AppKey.Of(n),ProcessGrouping.Key(n));Assert.Equal(AppKey.Of(n),AppKey.Of(AppKey.Of(n)));}
     Assert.True(AppKey.IsPidName("pid 4294967295"));Assert.False(AppKey.IsPidName("PID 4.exe"));Assert.False(AppKey.IsPidName("PID 12345678901"));
-    // process-history.db: one appended minute lists "a\uD800b.exe", "Chrome.EXE" and "Ärger.exe"; `SELECT display,upper FROM names` on a Pooling=false read-only
+    // process-history.db: one appended minute lists ProcessHistory.SavedName("a\uD800b.exe") ("a�b.exe"; Append rejects a name that differs from its SavedName),
+    //   "Chrome.EXE" and "Ärger.exe"; `SELECT display,upper FROM names` on a Pooling=false read-only
     //   connection gives upper == AppKey.Of(display) for each.
     // connections.db and alerts.db: each store's private Open, reached by reflection (alerts.db with readOnly:true too), gives a connection on which
     //   `SELECT app_key($n)` equals AppKey.Of(n) for every name in Names.
@@ -375,8 +377,8 @@ Spec: *First network use alerts* → The rule (all of it), Who counts (`IsLearna
     Assert.Equal(["a.exe"],SettingsCodec.Read("{\"FirstUseIgnoredApps\":[\"PID 4\",\"a.exe\",\"A.EXE\"]}").Settings.FirstUseIgnoredApps);
     var s=new UserSettings{FirstUseIgnoredApps=["a.exe"]};var back=SettingsCodec.Read(SettingsCodec.Write(s)).Settings;
     Assert.Equal(s.Alerts,back.Alerts);Assert.Equal(["a.exe"],back.FirstUseIgnoredApps);Assert.True(back.FirstUseRuleAdded);}
-// Changed, Settings_keep_rules_and_the_notification_switch_and_default_to_none_and_on (:68): :70's Assert.Empty(fresh.Alerts) becomes
-//   Assert.Equal("first-network-use",Assert.Single(fresh.Alerts).Id); :77 expects ["a","c","first-network-use"]; :83 becomes
+// Changed, Settings_keep_rules_and_the_notification_switch_and_default_to_none_and_on (:68): :71's Assert.Empty(fresh.Alerts) becomes
+//   Assert.Equal("first-network-use",Assert.Single(fresh.Alerts).Id); :78 expects ["a","c","first-network-use"]; :83 becomes
 //   Assert.Equal(AlertKind.FirstNetworkUse,Assert.Single(SettingsCodec.Read("""{"Alerts":null}""").Settings.Alerts).Kind).
 // AlertEvaluatorTests
 [Fact] public void First_network_use_rules_are_never_evaluated_by_minutes_or_battery_and_budget_episodes_carry_their_application(){
@@ -429,7 +431,8 @@ The spec's Observe steps 1–4, Groups, TakeChanges, Expire and Forget fix the b
 
 ```csharp
 // Z = TimeZoneInfo.Utc; S = 2026-11-02 09:00Z; E = FirstNetworkUse.LearningEnd(S,Z) (2026-11-05 00:00Z). R = AlertRules.DefaultFirstNetworkUse(S).
-// Tr(rule=R, ignored=[], excluded=[]) => a tracker with a 60 s window, configured, restored from new FirstUseState(null,null,null,null,[]).
+// Tr(AlertRule? rule = null, IEnumerable<string>? ignored = null, IEnumerable<string>? excluded = null, bool noRule = false) => a tracker with a 60 s window,
+//   configured with noRule ? null : rule ?? R and the two lists (empty when null), restored from new FirstUseState(null,null,null,null,[]).
 // U(name, at) = new NetworkUse(name, at). Obs(t, at, params NetworkUse[] u) => t.Observe(at, u, at). Ups(t) => t.TakeChanges(1024).Upserts.
 [Fact] public void Apps_seen_during_learning_are_learned_quietly_and_after_learning_alert_once(){ var t=Tr();
     Assert.Empty(Obs(t,S,U("a.exe",S)));Assert.Empty(Obs(t,E.AddMinutes(-1),U("b.exe",E.AddMinutes(-1))));
@@ -437,11 +440,11 @@ The spec's Observe steps 1–4, Groups, TakeChanges, Expire and Forget fix the b
     Assert.Equal((AlertKind.FirstNetworkUse,E.AddMinutes(4.5),(DateTimeOffset?)E.AddMinutes(4.5),0d,"c.exe","c.exe used the network for the first time","first-network-use"),
         (e.Kind,e.Start,e.End,e.Peak,e.Application,e.Summary,e.RuleId));Assert.DoesNotContain(Ups(t),k=>k.Key=="C.EXE");
     Assert.Empty(Obs(t,E.AddMinutes(9),U("C.exe",E.AddMinutes(9))));Assert.Equal(E.AddMinutes(9),Assert.Single(Ups(t),k=>k.Key=="C.EXE").Last);}
-[Fact] public void Seeded_names_merge_by_key_never_alert_never_evict_and_a_failed_store_stays_unseeded(){ var t=Tr(excluded:["ex.exe"]);var now=E.AddDays(1);
+[Fact] public void Seeded_names_merge_by_key_never_alert_never_evict_and_a_failed_store_stays_unseeded(){ var t=Tr(excluded:["ex.exe"]);Obs(t,S,[]);var now=E.AddDays(1);
     t.Seed(FirstUseSource.Usage,[new("chrome.exe",now.AddDays(-9),now.AddDays(-2)),new("Chrome.exe",now.AddDays(-10),now.AddDays(-3)),new("PID 4",now,now),
         new("Unknown application",now,now),new("old.exe",now.AddDays(-500),now.AddDays(-401)),new("ex.exe",now,now)],now);
     var c=t.TakeChanges(1024);var k=Assert.Single(c.Upserts);Assert.Equal(("CHROME.EXE",now.AddDays(-10),now.AddDays(-2)),(k.Key,k.First,k.Last));Assert.Equal(now,c.Metadata.SeededUsage);
-    Assert.Empty(Obs(t,now,U("chrome.exe",now)));
+    Assert.Empty(Obs(t,now,U("chrome.exe",now)));Assert.Single(Obs(t,now,U("new.exe",now)));   // learning has ended: only the seeded name is quiet
     t.Seed(FirstUseSource.Connections,null,now);Assert.True(t.NeedsSeed(FirstUseSource.Connections));t.Seed(FirstUseSource.Connections,[],now);Assert.False(t.NeedsSeed(FirstUseSource.Connections));
     // A fresh tracker that knows 10 keys, seeded with 8,200 names: it knows 8,192 keys, the 10 included, the seeded ones being those with the latest last seen; no delete is recorded.
 }
@@ -450,7 +453,7 @@ The spec's Observe steps 1–4, Groups, TakeChanges, Expire and Forget fix the b
     Assert.Equal((start,E),(t.Status.LearningStart,t.Status.LearningEnd));}
 [Fact] public void A_switched_off_rule_learns_quietly_and_no_rule_learns_nothing(){
     var off=Tr(R with{Enabled=false});Assert.Empty(Obs(off,E.AddHours(1),U("a.exe",E.AddHours(1))));Assert.Single(Ups(off));
-    var none=Tr(null);Assert.Empty(Obs(none,E.AddHours(1),U("a.exe",E.AddHours(1))));Assert.Empty(none.TakeChanges(1024).Upserts);Assert.Null(none.Status.LearningStart);}
+    var none=Tr(noRule:true);Assert.Empty(Obs(none,E.AddHours(1),U("a.exe",E.AddHours(1))));Assert.Empty(none.TakeChanges(1024).Upserts);Assert.Null(none.Status.LearningStart);}
 [Fact] public void Excluded_pid_and_unknown_names_are_never_learned_or_alerted_and_dont_alert_names_are_learned_without_an_episode(){
     var t=Tr(ignored:["quiet.exe"],excluded:["ex.exe"]);Obs(t,S,[]);
     Assert.Empty(Obs(t,E.AddHours(1),U("PID 4",E),U("Unknown application",E),U("ex.exe",E),U("quiet.exe",E)));Assert.Equal(["QUIET.EXE"],Ups(t).Select(k=>k.Key));
@@ -516,14 +519,15 @@ Spec: *First network use alerts* → alerts.db (all of it); *Don't record these 
 - [ ] **Step 1: Write the failing tests**
 
 ```csharp
-// V016(path, closed, open) writes a file with 0.16's exact schema (Initialize's :38-45 statements and user_version 1) and the given episodes, through raw SQL.
-// Cap(path) = new AlertStore(path, 65536). M = "DESKTOP-ABCDEFG". Fu(name, start) = a closed kind-4 episode (Summary, Start = End, Peak 0, Application name, RuleId "first-network-use").
+// The class's Fixture (:111-118): Store() = fixture.Open(); Cap() = fixture.Open(2 * 1024 * 1024). At 64 KiB or 256 KiB, evicting a tenth of the closed episodes
+//   frees 0 to 2 pages, fewer than the four root pages the new tables need; at 2 MiB it frees 11 or more (SQLite 3.53.1).
+// V016(fixture.Path, closed, open) writes a file with 0.16's exact schema (Initialize's :38-45 statements and user_version 1) and the given episodes, through raw SQL. M = "DESKTOP-ABCDEFG". Fu(name, start) = a closed kind-4 episode (Summary, Start = End, Peak 0, Application name, RuleId "first-network-use").
 // Kn(key, first, last) = new KnownApplication(key, first, last). Ch(upserts, deletes, metadata) = new FirstUseChanges(…). Empty = new FirstUseMetadata(null,null,null,null). Minute0 = a whole UTC minute an hour ago.
 [Fact] public void A_version_1_file_gains_the_first_use_tables_without_a_version_change(){ // V016 with two episodes; Initialize:
     // sqlite_master holds known_apps, episode_apps, alert_metadata and pending_clear; PRAGMA user_version is 1; the episodes row of sqlite_master has the same sql text as before.
 }
 [Fact] public void Initialize_at_the_cap_evicts_closed_episodes_and_retries_the_first_use_tables_once(){
-    // V016 filled with closed episodes until SQLITE_FULL at Cap's page count: Cap(path).Initialize() passes, the three first-use tables exist, and the oldest tenth of the closed episodes is gone.
+    // V016 filled with closed episodes until SQLITE_FULL at Cap's page count: Cap() (which runs Initialize) passes, the three first-use tables exist, and the oldest tenth of the closed episodes is gone.
     // The same fill with open episodes only: Assert.ThrowsAny<Exception>(Initialize) and no first-use table or pending_clear exists.
 }
 [Fact] public void First_use_episodes_save_closed_with_their_link_and_known_row_in_one_transaction(){ var s=Store();var t=Minute0;
@@ -551,12 +555,14 @@ Spec: *First network use alerts* → alerts.db (all of it); *Don't record these 
     // A V016 file filled to Cap's page count with an empty freelist (closed episodes) initializes: the oldest tenth of the closed episodes is evicted, and pending_clear and the three
     // first-use tables appear together. The eviction on that 0.16 file, which has no episode_apps, deletes episodes only.
 }
-// Kept and unchanged: Retention_drops_old_episodes_and_the_cap_evicts_the_oldest_closed_ones_first (:68), in its 64 KiB file with the four new tables.
+// Retention_drops_old_episodes_and_the_cap_evicts_the_oldest_closed_ones_first (:68): as the user decides (Before this task, below).
 ```
 
-- [ ] **Step 2: Run to verify failure.** Run: `dotnet test tests/DeadWare.Tests -c Release -p:EnableWindowsTargeting=true --nologo --filter "FullyQualifiedName~AlertStoreTests"`. Expected: the build fails with `error CS1739` (`firstUse`) and `error CS1061` (`ReadFirstUse`).
+**Before this task (controller).** `Retention_drops_old_episodes_and_the_cap_evicts_the_oldest_closed_ones_first` (:68) cannot pass unchanged. In its 64 KiB file the four new root pages leave room for about 394 of its episodes in one Append, against 577 with 0.16's schema (measured on SQLite 3.53.1), and it appends 400 (:75-77): the first batch throws "full of open episodes". With the spec's three tables it still passes (spec :2613), but `pending_clear` is created in the same transaction (spec, Alert log → Table). This conflicts with the spec's "Kept and named" rule, so the controller takes it to the user before Task 5 starts. Proposal: batches of 300 (`Enumerable.Range(0, 300)`, minutes `batch * 300 + i`, the last `Contains` `c7-299`), every other assertion unchanged, listed in the PR and `docs/validation.md` as a changed test.
+
+- [ ] **Step 2: Run to verify failure.** Run: `dotnet test tests/DeadWare.Tests -c Release -p:EnableWindowsTargeting=true --nologo --filter "FullyQualifiedName~AlertStoreTests"`. Expected: the build fails with `error CS1501` (no overload for `Append` takes 4 arguments) and `error CS1061` (`ReadFirstUse`).
 - [ ] **Step 3: Implement the tables, the retry, the sweep, the links, the known rows, the metadata, `ReadFirstUse` and the validation**
-- [ ] **Step 4: Run the Step 2 command, then the Core baseline.** Expected: PASS, with :68 passing unchanged, then no output.
+- [ ] **Step 4: Run the Step 2 command, then the Core baseline.** Expected: PASS, with :68 passing as the user decided, then no output.
 - [ ] **Step 5: Commit and push**
 
 ```bash
@@ -605,14 +611,16 @@ Spec: *Don't record these apps and Clear history…* → Where recording stops (
 - [ ] **Step 1: Write the failing tests**
 
 ```csharp
-// UsageHistoryTests. P(f, seconds, bytes) calls f.Observe with a snapshot at Minute0 + seconds and one ProcessTraffic (pid 10, gen 1, "chrome.exe", cumulative ReceivedBytes = bytes).
+// UsageHistoryTests. Minute0 = the class's Start (:8). P(f, seconds, bytes) calls f.Observe with Sample(seconds) (:10) and one ProcessTraffic (pid 10, gen 1, "chrome.exe",
+//   cumulative ReceivedBytes = bytes).
 [Fact] public void Usage_folder_skips_an_excluded_app_and_keeps_its_baseline(){ var f=new UsageMinuteFolder();var key=AppExclusions.Keys(["chrome.exe"]);
     P(f,1,100);f.Excluded=key;P(f,2,200);P(f,3,300);f.Excluded=FrozenSet<string>.Empty;P(f,4,400);P(f,5,500);
     Assert.Equal(200,Assert.Single(f.Flush()!.Applications).Received);
     // Added mid-minute: bytes folded before Excluded is set are in the closed batch, none after. Forget("CHROME.EXE") empties the app's open-minute bytes, and the next
     // publication counts only its own delta (the baseline was kept). Boundary = HistoryClear(null, Minute0 + 1 min, …): the open minute's bytes are dropped, baselines still move.
 }
-// ProcessMinuteFolderTests. Activity(processes) with GPU interval 1 s; ex.exe runs two processes on different engines (40 % and 30 %), with GPU memory.
+// ProcessMinuteFolderTests, with the class's helpers: P(...) samples, A(0, ps, gpuInterval: 1) (:13-14) for the activity and CloseGpu(...) (:19) to close the minute;
+//   ex.exe runs two processes on different engines (40 % and 30 %), with GPU memory.
 [Fact] public void Process_folder_counts_an_excluded_app_in_Everything_else(){
     // With Excluded = {EX.EXE}: Everything else's CPU, I/O and memory = the unknown-name processes' plus ex.exe's app-level sums; its GPU-seconds add 0.4 × 1 (the busiest
     // engine of the members' summed per-engine use), not 0.7, and its GPU memory byte-seconds add ex.exe's.
@@ -670,7 +678,8 @@ Spec: *Connections storage* → Writer hooks for 0.17.0 (`Forget`) and Tests (0.
 [Fact] public void Forget_removes_one_app_or_every_entry_and_keeps_coverage(){ var f=F();
     Merge(f,Pub(10,9,[D(9.5,name:"Chrome.exe"),D(9.6,name:"other.exe",remote:"9.9.9.9")]));Merge(f,Pub(11,10,[D(10.5,name:"CHROME.EXE",localPort:200)]));int held=f.Held;
     var frozen=F();Merge(frozen,Pub(30,29,[D(29.5,name:"chrome.exe")]));Merge(frozen,Pub(63,62,[]));var before=Units(frozen)[0];Assert.Equal(0,frozen.Forget("CHROME.EXE"));Assert.Same(before,Units(frozen)[0]);
-    Assert.Equal(2,f.Forget("CHROME.EXE"));Assert.Equal(held-2,f.Held);   // "Chrome.exe" and "CHROME.EXE" are two entries of one keyf.FreezeAll();var u=Assert.Single(Units(f));Assert.Equal(["other.exe"],u.Records.Select(r=>r.Delta.Peer.Process.Name));
+    Assert.Equal(2,f.Forget("CHROME.EXE"));Assert.Equal(held-2,f.Held);   // "Chrome.exe" and "CHROME.EXE" are two entries of one key
+    f.FreezeAll();var u=Assert.Single(Units(f));Assert.Equal(["other.exe"],u.Records.Select(r=>r.Delta.Peer.Process.Name));
     Assert.Equal((M0.AddSeconds(9),M0.AddSeconds(11)),(u.Coverage[0].From,u.Coverage[^1].To));
     var all=F();Merge(all,Pub(10,null,[D(9.5)]));Assert.Equal(1,all.Forget(null));Assert.Equal(0,all.Held);all.FreezeAll();Assert.Empty(Units(all));}   // the unit had no run: removed
 // ConnectionHistoryStoreTests. Hidden(db) = traffic rows with minute < expiry.
@@ -731,7 +740,7 @@ Spec: *Don't record these apps and Clear history…* → How each store clears �
       - The last transaction, which finds nothing left, deletes the marker; the cleared mark stays. Each transaction is followed by `PRAGMA wal_checkpoint(TRUNCATE)`. The cursor lives in memory; a resumed clear restarts from the first row.
     - `GroupedWhere` gains `AND NOT ($clearKey<>'' AND minute<$clearBefore AND app_key(name)=$clearKey)`, and the earliest-retained query's traffic branch the same predicate. `Arguments` adds both values from `PendingClear` (`''` and 0 when there is no one-app marker), so `Read`, the strip, the Destinations steps, `ExportCsv` and `ExportDestinationsCsv` all hide the rows.
     - While `PendingClear` is non-null, every write connection runs `PRAGMA secure_delete=ON`.
-    - Seams set by reflection: `private Func<TimeSpan> clearClock` (monotonic elapsed), `private Action<int>? clearCommitted` (rows deleted per clear transaction) and `private Action<SqliteConnection>? clearConnectionOpened`.
+    - Seams set by reflection: `private Func<TimeSpan> clearClock` (monotonic elapsed), `private Action<int>? clearCommitted` (rows deleted per clear transaction, invoked after the commit and before its TRUNCATE checkpoint, so a reader of the `-wal` there sees the transaction's frames) and `private Action<SqliteConnection>? clearConnectionOpened`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -754,7 +763,8 @@ Spec: *Don't record these apps and Clear history…* → How each store clears �
     // (AppKey, Before) of the request, and C(new store) finishes; PendingClear is null after the last step and non-null before it.
 }
 [Fact] public void Clear_steps_stay_inside_the_transaction_and_journal_budgets(){
-    // 20,000 rows alternating "a.exe" and "b.exe" before Before. clearCommitted (seam) never sees more than 512. With no reader, the -wal is ≤ 8 MiB after each step.
+    // 20,000 rows alternating "a.exe" and "b.exe" before Before. clearCommitted (seam) never sees more than 512. With no reader, the -wal is ≤ 8 MiB after each step and when read
+    // inside clearCommitted.
     // A pinned reader (a second Pooling=false connection holding a read transaction): the step yields once the -wal passes 4 MiB and the -wal never exceeds 10 MiB; with clearClock
     // advanced past 60 s of yielding, ClearStep throws IOException, and not before. ClearStep(TimeSpan.FromMilliseconds(1)) commits exactly one transaction.
 }
@@ -810,7 +820,7 @@ Spec: *Don't record these apps and Clear history…* → How each store clears �
       - a checkpoint and the yield check after each transaction; `Total` = the scope's rows at the first step;
       - the last step writes `ClearedMarks.With(clear)` and then deletes the marker;
     - `secure_delete=ON` on write connections while a marker exists;
-    - the seams `clearClock`, `clearCommitted` and `clearConnectionOpened`, as in Task 8.
+    - the seams `clearClock`, `clearCommitted` (invoked after each commit and before its checkpoint) and `clearConnectionOpened`, as in Task 8.
   - `TrafficStrip(…, DateTimeOffset? RetainedFrom = null, bool CapacityShortened = false, bool RetainedByClear = false, DateTimeOffset? AppClearedBefore = null)`.
   - Connections `Read`: step 4 also reads `cleared-all` and `cleared-one` in the same transaction. `RetainedByClear` = `RetainedFrom` set, `CapacityShortened` false and `cleared-all` == `expiry`. `AppClearedBefore` = `cleared-one` when after the origin and after `RetainedFrom`.
   - `ReadApplicationSeries`: no minute before `AllAppsBefore` counts in any slot. `RetainedFrom` = the first whole minute at or after `AllAppsBefore` when that is after `from`, with `RetainedByClear` true. `AppClearedBefore` = `OneAppBefore` when after the origin and after `RetainedFrom`.
@@ -821,7 +831,7 @@ Spec: *Don't record these apps and Clear history…* → How each store clears �
 // UsageHistoryStoreTests. Fill(store, machines ["A","B"], apps a minute 64 incl. "Chrome.exe" (A) and "chrome.exe" (B), minutes, metrics and capture gaps).
 [Fact] public void Usage_one_app_clear_removes_every_spelling_on_every_machine(){
     // BeginClear(HistoryClear("CHROME.EXE", Before, Before)) and steps: no Chrome row of either spelling or machine before Before; Chrome rows at or after Before stay;
-    // metric_minutes and capture_gaps counts unchanged; clearCommitted never sees more than 512; with no reader the -wal is ≤ 8 MiB after each transaction.
+    // metric_minutes and capture_gaps counts unchanged; clearCommitted never sees more than 512; with no reader the -wal read inside clearCommitted is ≤ 8 MiB.
 }
 [Fact] public void Usage_all_apps_clear_keeps_device_minutes(){ // clearCommitted ≤ 4,096 each; metric_minutes and capture_gaps unchanged; no application row before Before
 }
@@ -840,11 +850,11 @@ Spec: *Don't record these apps and Clear history…* → How each store clears �
 }
 ```
 
-In `History_clear_timing_on_large_files`, after each fill (Task 2), time two clears on that file: one app (`HistoryClear.Create("app0.exe", allTime: true, UtcNow)`, the app holding about 10 % of the rows), then all apps for all time. Each runs `BeginClear` and then `ClearStep(TimeSpan.FromMilliseconds(250))` until `Finished`, timing each step and reading the `-wal` length after it, with no reader. `clears` gets four entries `{ store, scope, totalMs, steps, p95StepMs, largestWalBytes, finished, error }`: `store` is "connections" or "usage", `scope` is "oneApp" or "allApps", and `p95StepMs` uses `ProcessMeasurementTests.Percentile`. The measurement then asserts, for each entry, `largestWalBytes ≤ 8 MiB` and `finished`.
+In `History_clear_timing_on_large_files`, after each fill (Task 2), time two clears on that file: one app (`HistoryClear.Create("app0.exe", allTime: true, UtcNow)`, the app holding about 10 % of the rows), then all apps for all time. Each runs `BeginClear` and then `ClearStep(TimeSpan.FromMilliseconds(250))` until `Finished`, timing each step, with no reader. `largestWalBytes` is the largest `-wal` length read inside the store's `clearCommitted` seam (set by reflection), which runs after each clear transaction commits and before its TRUNCATE checkpoint. `clears` gets four entries `{ store, scope, totalMs, steps, p95StepMs, largestWalBytes, finished, error }`: `store` is "connections" or "usage", `scope` is "oneApp" or "allApps", and `p95StepMs` = `ProcessMeasurementTests.Percentile(stepMs.Order().ToArray(), 0.95)` (the helper indexes a sorted array). The measurement then asserts, for each entry, `largestWalBytes ≤ 8 MiB` and `finished`.
 
 - [ ] **Step 2: Run to verify failure.** Run: `dotnet test tests/DeadWare.Tests -c Release -p:EnableWindowsTargeting=true --nologo --filter "FullyQualifiedName~UsageHistoryStoreTests|FullyQualifiedName~HistoryClearTests"`. Expected: the build fails with `error CS1061` for `BeginClear`, `ClearPending` and `RetainedByClear`.
 - [ ] **Step 3: Implement the marker codec, the cleared marks, the Usage clear and both strips' cleared time**
-- [ ] **Step 4: Run the Step 2 command, then the Core baseline.** Expected: PASS, then no output.
+- [ ] **Step 4: Run the Step 2 command, the build, then the Core baseline.** Expected: PASS, 0 errors (the measurement compiles), then no output.
 - [ ] **Step 5: Commit, push and record the timings**
 
 ```bash
@@ -874,7 +884,7 @@ Spec: *Don't record these apps and Clear history…* → How each store clears �
 **Interfaces:**
 - Consumes: Task 9's `HistoryClearMarker` and the Usage marker; Task 8 `HistoryClearProgress`; `KeyOf`'s `names.upper` (= `AppKey.Of` of a saved name).
 - Produces, on `ProcessHistoryStore` (marker `process-history.clear.json`, the Usage format):
-  - `ClearPending`, `PendingClear`, `DiscardedInvalidMarker`, `public void BeginClear(HistoryClear clear)` and `public HistoryClearProgress ClearStep(TimeSpan budget)`, as Usage's.
+  - `ClearPending`, `PendingClear`, `DiscardedInvalidMarker` and `public void BeginClear(HistoryClear clear)`, as Usage's, and `public HistoryClearProgress ClearStep(TimeSpan budget, DateTimeOffset now)`, whose `now` is used only for the `Expire` after the last step (the store has no clock). `ProcessHistoryService` passes `time.GetUtcNow()`; its `ClearStepOverride` keeps the `Func<TimeSpan, HistoryClearProgress>` shape.
   - Windows: 6-hour UTC windows from the oldest saved minute up to `Before`, one transaction per window and machine (the store loops over machines itself). `Total` = windows × machines at the first step.
   - One app, found by `names.upper` = key (none: nothing to do), in each window:
     1. the spec's `UPDATE app_minutes AS e SET … FROM app_minutes AS a …` into Everything else, each GPU `<sum>` null when both are null, else their sum with null as 0;
@@ -883,7 +893,7 @@ Spec: *Don't record these apps and Clear history…* → How each store clears �
 
     After the last window, its `names` row goes when no `app_minutes` row refers to it.
   - All apps: per window and machine, `DeleteMinutes`' two statements for that machine with `minute < min(window end, Before)`; `DeleteOrphanedNames` after the last window.
-  - The last step deletes the marker and then calls `Expire(now)`.
+  - The last step deletes the marker and then calls `Expire(now)` with the step's `now`.
   - `secure_delete=ON` on write connections while a marker exists. Seams: `clearClock`, `clearConnectionOpened`, and `private Action<string, long, long>? clearWindowCommitted` (machine, from, to in Unix ms).
 - Both stores' expiry (`Append`'s retention delete; process `Expire` and `ExpireByDay`) deletes nothing while `ClearPending`. Eviction on `SQLITE_FULL` still runs.
 
@@ -903,7 +913,8 @@ Spec: *Don't record these apps and Clear history…* → How each store clears �
 // HistoryClearTests
 [Fact] public void Retention_expiry_waits_while_a_marker_exists(){
     // With a marker on each store: Usage's Append at a time 401 days after its oldest day, and Application resources' Expire and Append 31 days after theirs, delete no expired day.
-    // After each clear finishes (the marker gone), the next Append (Usage) and the store's own Expire after the last step (Application resources) delete them.
+    // After each clear finishes (the marker gone), the next Append (Usage) and the store's own Expire after the last step (Application resources, whose steps pass that
+    // simulated now: oldest day + 31 d) delete them.
 }
 ```
 
@@ -935,11 +946,12 @@ Spec: *Don't record these apps and Clear history…* → How each store clears �
 - Consumes: Task 5's tables; Tasks 8–10's store clears; Task 1 `app_key`.
 - Produces, on `AlertStore`:
   - `public HistoryClear? PendingClear { get; }`, from `pending_clear`, read by `Initialize`.
-  - `public void BeginClear(string machine, HistoryClear clear)`: one transaction writes the `pending_clear` row and, for all time, deletes `machine`'s in-scope `known_apps` rows (`app_key=$key`, or every row). It throws on failure, writing nothing.
+  - `public void BeginClear(string machine, HistoryClear clear)`: one transaction writes the `pending_clear` row and, for all time, deletes `machine`'s in-scope `known_apps` rows (`app_key=$key`, or every row). It throws on failure, writing nothing. An existing equal `pending_clear` row commits nothing and deletes no known row; a different one throws `InvalidOperationException`.
   - `public HistoryClearProgress ClearStep(string machine, TimeSpan budget)` (`Total` null: the alert log shows no percent).
     - In scope: closed episodes with `start < clear.AlertCutoff` on every machine key, of two kinds. First-use episodes are found through `episode_apps` (`app_key(name)=$key`, or any link). ApplicationDaily episodes are matched in C#: the text before the last " ≥ " of a summary that ends " in a day", by `AppKey.Of`.
     - Transactions of at most 256 episodes with their links; then, for all time, other machine keys' in-scope known rows, at most 1,024 a transaction. The last transaction deletes the marker.
-  - `secure_delete=ON` on write connections while the marker exists, and the seams `clearClock` and `clearConnectionOpened`.
+    - The shared rules, as Task 8's: delete transactions run until `budget` has passed on `clearClock` (always at least one unless it yields), and each is followed by `PRAGMA wal_checkpoint(TRUNCATE)`. Before each, when `-wal` is over 4 MiB after a TRUNCATE checkpoint attempt, the step ends early; after 60 s of yielding without a transaction it throws `IOException`.
+  - `secure_delete=ON` on write connections while the marker exists, and the seams `clearClock`, `clearCommitted` (`Action<int>`, after each commit and before its checkpoint) and `clearConnectionOpened`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -952,10 +964,16 @@ Spec: *Don't record these apps and Clear history…* → How each store clears �
     // Older than 7 days keeps open episodes and every known row. One app, All time deletes CHROME.EXE's row on M inside BeginClear's transaction, and an upsert of CHROME.EXE appended after it
     // is kept; the steps delete CHROME.EXE on OTHER-PC. All apps, All time empties known_apps on every machine; first_use_learning_start is unchanged.
     // pending_clear is empty afterwards; user_version is 1. A 0.16 file without the new tables gains them in place, then clears.
+    // BeginClear again with the equal request writes nothing (a CHROME.EXE row upserted after the first BeginClear stays); a different request throws InvalidOperationException.
+    // With a pinned reader (a second Pooling=false connection holding a read transaction) and enough in-scope budget episodes with 500-character summaries that their deletes
+    // write more than 4 MiB of -wal, a step yields once the -wal passes 4 MiB, and throws
+    // IOException only after clearClock passes 60 s of yielding; clearCommitted never sees more than 256.
 }
 // HistoryClearTests
 [Fact] public void Clear_marker_that_cannot_be_saved_clears_nothing(){
-    // connections.db at its fixture cap (65,536 bytes) with an empty freelist: BeginClear throws, PendingClear is null, no row is deleted.
+    // connections.db at its fixture cap (65,536 bytes): after Initialize, metadata rows ('pad-' + i:D5, 0), keys no build reads, are inserted one at a time until SQLITE_FULL,
+    // so the metadata table's last leaf is full and the freelist is empty (a file full of traffic alone still takes the marker in the metadata pages' free space).
+    // BeginClear (one app and all apps) then needs a new page and throws; PendingClear is null, no metadata key starts with 'clear-', and no row is deleted.
     // Usage history with its sidecar unwritable (a directory created at the marker's .tmp path after Initialize, which blocks the write on Linux and Windows alike): BeginClear throws,
     // ClearPending is false, no row is deleted.
 }
@@ -965,8 +983,10 @@ Spec: *Don't record these apps and Clear history…* → How each store clears �
     // clearConnectionOpened saw PRAGMA secure_delete return 1 on every store's clearing connection.
 }
 [Fact] public void One_app_clear_matches_non_ascii_case_in_every_store(){   // Review Focus 1
-    // Rows for "ärger.exe" and "Ärger.exe" in all four stores (alerts.db: a budget for each spelling and a first-use episode); HistoryClear.Create("ÄRGER.EXE", allTime: true, now):
-    // after every store's steps, no row of either spelling remains in any store, and rows of "other.exe" are untouched.
+    // Rows for "ärger.exe" and "Ärger.exe" in all four stores (alerts.db: a budget for each spelling and a first-use episode); HistoryClear.Create("ÄRGER.EXE", allTime: true, now).
+    // In process-history.db the two spellings are saved in different minutes (one batch cannot hold two apps of one key) and share one names row (upper "ÄRGER.EXE",
+    // display the first spelling). After every store's steps, no row of either spelling remains in any store (no app_minutes or names row for that key), and rows of
+    // "other.exe" are untouched.
 }
 [Fact] public void Clearing_an_app_with_no_saved_history_finishes_at_once(){   // Review Focus 2
     // Each store holds other apps only; HistoryClear.Create("chrom.exe", allTime: false, now): each store's first ClearStep returns Finished (Percent 100 where Total is set),
@@ -1226,11 +1246,13 @@ Spec: *Connections storage* → Writer hooks for 0.17.0 (`Forget`, Write result,
     - `public static class HistoryClearCopy { public static string StatusSuffix(HistoryClearState state, bool alertLog); }`: " · Clearing history (37 %).", " · Clearing history." for the alert log, " · Clearing history failed (IOException); it resumes when DeadWare next starts.", " · Clearing history failed (IOException); not cleared.", and "" otherwise.
   - `public IReadOnlyList<ConnectionMinuteUnit> RetireWaiting(Func<ConnectionHistoryRecord, bool> inScope)` on the folder: removes and returns every waiting unit holding a record in scope.
   - `internal sealed record ConnectionFlushResult(bool Saved, string? FailureType);`, returned by the write attempt. `Saved` is false exactly when an `Append` it called threw; held units do not make it false.
-  - `internal const int MaintenanceTransactions = 64;`. `InitializeAsync`'s empty `Append`, every write attempt and the tick pass 64; every `Append` of the R6 final write passes 0. A seam, `internal Action<int>? maintenanceObserved`, receives each value.
+  - `internal const int MaintenanceTransactions = 64;`. `InitializeAsync`'s empty `Append`, every write attempt and the tick pass 64; every `Append` of the R6 final write passes 0. A seam, `internal Action<int>? maintenanceObserved`, receives each value, `InitializeAsync`'s direct `store.Append` included.
+  - `internal delegate void ConnectionAppend(IReadOnlyList<ConnectionHistoryRecord> records, IReadOnlyList<ConnectionCoverage> coverage, DateTimeOffset now, int maintenanceTransactions);`, the type of the `append` field. The fake-append constructor (:77-80) keeps its signature.
+  - `internal ConnectionService(string path, IConnectionGeolocation resolver, Func<DateTimeOffset> clock, Func<ConnectionAppend, ConnectionAppend> wrapAppend, ConnectionServiceOptions? options = null, long maximumDatabaseBytes = ConnectionHistoryStore.MaximumDatabaseBytes)`: a real store at that cap whose write attempts go through `wrapAppend(store.Append)`, for the clear tests (the path constructor at :19-22 has no wrap, the fake one no store).
   - Members shared by all four services (Tasks 17 and 18 repeat them):
-    - `public HistoryClearState ClearState { get; }`;
+    - `public HistoryClearState ClearState { get; internal set; }`; the internal setter is a test seam for Task 22's checks, never called by the app;
     - `public void Clear(HistoryClear request)` puts the request in a command channel of capacity 1 and sets Queued;
-    - `public void RetryClear()` re-posts the kept request while Failed and the worker runs;
+    - `public void RetryClear()` re-posts the kept request while Failed and the worker runs. With `MarkerSaved` false it runs the full order. With `MarkerSaved` true it runs as a resume and repeats nothing that already ran: Connections' `BeginClear` re-commits nothing (equal marker), `Forget` is skipped and the boundary rule is installed only while `Before` is still ahead of now, then the write attempts, `RetireWaiting` and the steps; Usage and Application resources skip `BeginClear`, `Forget` and `Discard`, then `Flush()` and the steps; the alert log runs only its first-step (3) and (6), then the later steps (Task 18). An All time clear so loses at most the 60 s its first run dropped;
     - `public bool CanRetryClear { get; }`;
     - `internal Func<TimeSpan, HistoryClearProgress>? ClearStepOverride { get; set; }`, a test seam that replaces the store's step.
   - The writer takes the command before its next queue item and alternates data with one `ClearStep(HistoryClear.StepBudget)`. A step never starts after `StopAsync`.
@@ -1255,7 +1277,12 @@ Spec: *Connections storage* → Writer hooks for 0.17.0 (`Forget`, Write result,
     // a.exe frozen units are appended before the delete (a fake append records order against the store's PendingClear). After an All time clear, a.exe deltas of minutes before Before
     // are not appended and those at or after it are. Older than 7 days leaves the open units alone (Held unchanged).
     // An append that throws during the clear's write: ClearState is Failed, Error "IOException", MarkerSaved true, and PendingClear is set.
+    // With that clear an All time "A.EXE" one: RetryClear() then reaches Done, and an a.exe delta merged after the first run (its minute at or after Before) is appended
+    // (Forget is not repeated).
     // maintenanceObserved: InitializeAsync passes 64, write attempts pass 64, the final write passes 0.
+    // A service at maximumDatabaseBytes 65,536 whose metadata table was padded after InitializeAsync as in Task 11's Clear_marker_that_cannot_be_saved_clears_nothing:
+    // Clear(...) gives ClearState Failed, MarkerSaved false, Error the exception's type name, and no row is deleted.
+    // (Every service built through the wrapAppend constructor.)
 }
 ```
 
@@ -1288,13 +1315,13 @@ Spec: *Don't record these apps and Clear history…* → Settings model (`SetExc
 - Consumes: Task 6's folder members; Tasks 9–10's store clears; Task 16's shared members and types.
 - Produces, on both services:
   - `public void SetExclusions(IReadOnlySet<string> keys)`; the worker sets `folder.Excluded` before each item.
-  - Task 16's clear members, with the worker alternating one queued data item and one step.
+  - Task 16's clear members, with the worker alternating one data pass as today (up to 120 queued items per wake, flush timer unchanged) and one step.
   - The order: `BeginClear` (a throw: Failed, `MarkerSaved` false, nothing cleared); for all time, `Forget` and `Boundary`; `Flush()`; then the steps.
     - Usage: `folder.Forget(AppKey)`.
     - Application resources: `folder.Forget(AppKey)` for one app, or `folder.Discard()` when `OpenMinute < Before` for all apps. During the boundary window, closed batches with `Minute < Before` are discarded for all apps.
     - The boundary lasts until the worker folds a minute at or after `Before`, or `HistoryClear.BoundaryLimit`.
   - A flush failure stops the worker as today; the clear then shows Failed and resumes at the next start.
-  - Resume after `Initialize` (Application resources: after the start-up expiry) from `store.PendingClear`, with `Resumed` true. `DiscardedInvalidMarker` gives Failed (InvalidDataException), `MarkerSaved` false, `Resumed` true. A clear posted after the worker stopped on a failure gives Unavailable with that failure's type.
+  - Resume after `Initialize` (Application resources: after the start-up expiry) from `store.PendingClear`, with `Resumed` true. A resumed clear whose `Before` is still ahead of now sets `folder.Boundary` again, with the same end (a minute at or after `Before` folded, or `HistoryClear.BoundaryLimit`), and for all apps Application resources again discards closed batches with `Minute < Before`. `DiscardedInvalidMarker` gives Failed (InvalidDataException), `MarkerSaved` false, `Resumed` true. A clear posted after the worker stopped on a failure gives Unavailable with that failure's type.
   - `Status` ends with `HistoryClearCopy.StatusSuffix(ClearState, false)`.
   - `ProcessHistoryService.TryReadApplicationsAsync(DateTimeOffset from, DateTimeOffset to, ProcessRank rank, int limit = 200)`, passed to the store's `limit`.
 
@@ -1304,6 +1331,8 @@ Spec: *Don't record these apps and Clear history…* → Settings model (`SetExc
 [Fact] public async Task Usage_clear_interleaves_with_recording_and_resumes_after_quit(){
     // A store with 200,000 app rows; Clear(all apps, all time) while publications arrive each 10 ms: DroppedSamples stays 0. StopAsync during the clear completes within 1 s and the marker remains.
     // A new service on the file: ClearState.Resumed true, it finishes (Done), and no application row before Before remains.
+    // A new service on a file whose usage-history.clear.json holds "{": ClearState is Failed, Error "InvalidDataException", MarkerSaved false, Resumed true, and nothing is deleted.
+    // A directory created at the marker's .tmp path before Clear: Failed, MarkerSaved false, nothing deleted.
 }
 [Fact] public async Task Process_clear_moves_the_open_minute_into_Everything_else(){
     // A one-app All time clear mid-minute: the closed minute's Everything else holds the app's CPU, I/O, memory, GPU-seconds and GPU memory byte-seconds folded before the clear, and no row names it.
@@ -1346,8 +1375,9 @@ Spec: *Don't record these apps and Clear history…* → How each store clears �
 - Consumes: Task 11 `BeginClear(machine, clear)`, `ClearStep(machine, budget)`, `PendingClear`; Task 6 `EndScope`; Task 4 `Forget`; Task 16's shared members.
 - Produces: Task 16's clear members on `AlertService`.
   - The first step, with no other work between: (1) `Flush()`; (2) `store.BeginClear(machine, clear)`, where a throw gives Failed, `MarkerSaved` false, with nothing cleared and the tracker unchanged; (3) all time: `evaluator.EndScope(AppKey, Requested, resetDay: true)`, whose episodes join pending; (4) all time: `tracker.Forget(AppKey, Requested)`; (5) all time: `Interlocked.Increment(ref knownGeneration)`; (6) `Flush()`.
-  - The later steps alternate with work.
-  - Resume after `Restore` and the seed runs (3) and (6), then the steps.
+  - The later steps alternate with one data pass as today (up to 128 queued works per wake, flush timer unchanged).
+  - Resume after `Restore` and the seed runs (3) and (6), then the steps. `RetryClear` with `MarkerSaved` true runs the same (Task 16).
+  - Phases: a `ClearStep` exception is caught on the worker and gives Failed with its type and `MarkerSaved` true; it never reaches the catch at :177-181, so the log keeps working and `RetryClear` re-posts. A clear posted after the alert worker stopped on a failure gives Unavailable with that failure's type and writes nothing.
   - `Status` ends with `HistoryClearCopy.StatusSuffix(ClearState, true)`. The alert log has no percent.
 
 - [ ] **Step 1: Write the failing tests**
@@ -1358,11 +1388,14 @@ Spec: *Don't record these apps and Clear history…* → How each store clears �
     // An a.exe poll between BeginClear and the last episode chunk keeps its new row and episode, also when its FirstSeen is before Requested.
     // All apps, all time: known_apps is empty on every machine key; learning dates and seed markers unchanged. Older than 7 days: every known row and FirstUse.KnownApps unchanged.
     // BeginClear failing (a read-only file): no known row deleted, the app still known. After a restart mid-clear: only episodes are deleted, known rows written after BeginClear stay.
-    // Configure's ignored list is unchanged throughout.
+    // Configure's ignored list is unchanged throughout. ClearStepOverride throws once after a.exe has been learned again: after RetryClear() reaches Done, a.exe's new known row
+    // and episode are kept and its next poll gives no second episode.
 }
 [Fact] public async Task Alert_clear_runs_in_steps_and_deletes_an_open_budget_episode_for_good(){
     // An open "chrome.exe" budget episode; Clear(one app, all time): later 600-byte minutes do not recreate the row; the known app is removed; the Don't alert list is unchanged.
     // StopAsync mid-clear (ClearStepOverride slow) completes within 1 s and pending_clear remains; a new service runs EndScope and Flush again and finishes.
+    // ClearStepOverride throws IOException once: ClearState is Failed, MarkerSaved true, the service's Failed stays false, and a later NetworkUseWork is still saved.
+    // A service whose worker stopped on a store failure: Clear(...) gives Unavailable with that failure's type, and pending_clear stays empty.
 }
 ```
 
@@ -1389,8 +1422,8 @@ Spec: *Don't record these apps and Clear history…* → Settings model (`SetExc
 **Files:**
 - Modify: `src/DeadWare.Core/HistoryClear.cs` (`HistoryClearLine`)
 - Modify: `src/DeadWare.App/UiSession.cs`: the constructor (:69-89), the timer tick (:84-89), new members.
-- Modify: `src/DeadWare.App/ConnectionsPage.cs`, `src/DeadWare.App/UsageHistoryPage.cs`, `src/DeadWare.App/AlertsPage.cs`: subscribe while loaded (their `Loaded`/`Unloaded` handlers).
-- Test: `tests/DeadWare.App.Tests/HistoryClearSessionTests.cs` (new)
+- Modify: `src/DeadWare.App/ConnectionsPage.cs`, `src/DeadWare.App/UsageHistoryPage.cs`, `src/DeadWare.App/AlertsPage.cs`: subscribe while loaded (their `Loaded`/`Unloaded` handlers); `AlertsPage`'s and `UsageHistoryPage`'s read seams.
+- Test: `tests/DeadWare.App.Tests/HistoryClearSessionTests.cs` (new); the page half in the STA fact: `tests/DeadWare.App.Tests/ConnectionsPageUiChecks.cs`, `UsageHistoryUiChecks.cs`, `AlertsUiChecks.cs`
 
 **Interfaces:**
 - Consumes: Tasks 13 and 15–18 (`SetExclusions`, `Configure`'s lists, the clear members); 0.16.0's `ReloadHistory`.
@@ -1405,7 +1438,9 @@ Spec: *Don't record these apps and Clear history…* → Settings model (`SetExc
     - `public IReadOnlyList<HistoryClearLine> ClearLines()`: Connections, Usage, ProcessHistory, Alerts, the stores whose phase is not None, in that order.
     - `public bool ClearActive { get; }` (the refusal condition) and `public bool ClearWaitingForRestart { get; }` (a store is Failed with `MarkerSaved` and cannot retry, so its worker has stopped).
     - `public event Action<HistoryClearStore>? HistoryClearChanged;`, raised on the UI thread by `internal void CheckClearStates()`, which the 1-second timer calls. It fires when a store's phase becomes Clearing and when it leaves Clearing.
+    - **Fixture sessions.** The UI checks build `UiSession` with `GetUninitializedObject` and set only some members (`ConnectionsPageUiChecks.cs:30-31` sets only `Settings`; the dashboard session at `BatteryUiTests.cs:101-106` has no `Connections` or `ProcessHistory`). So `ExcludedKeys` returns its cached set or, when unset, `AppExclusions.Keys(Settings.ExcludedApps)`, and `IsExcluded` never throws. `SetExcludedApps` calls `Connections?.SetExclusions`, `Usage?.SetExclusions`, `ProcessHistory?.SetExclusions` and `Alerts?.Configure`, as `SetUsageRecording` does for `ProcessHistory` (`UiSession.cs:228`). `ClearHistory`, `RetryClear`, `ClearLines`, `ClearActive`, `ClearWaitingForRestart` and `CheckClearStates` skip a null service.
   - Pages, while loaded: `ConnectionsPage` calls `ReloadHistory()` on Connections; `UsageHistoryPage` refreshes (`RequestRefresh()`) on Usage or ProcessHistory; `AlertsPage` re-reads its log (`RequestRefresh()`) on Alerts.
+  - Read seams for the page checks, replaced by reflection: `ConnectionsPage`'s `readHistory` (:80); `UsageHistoryPage`'s `readStrip` and `showing` (0.16.0), with every `IsLoaded && IsVisible` test in `RefreshAsync` (:208-224) reading `showing()`; on `AlertsPage`, new `private Func<bool> showing` (`() => IsLoaded && IsVisible`, read by every such test in `RefreshAsync` :186-202) and `private Func<DateTimeOffset, DateTimeOffset, Task<AlertLogView>> readLog` (`(from, to) => session.Alerts.ReadEpisodesAsync(from, to)`, at :194), both assigned in the constructor.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1413,17 +1448,27 @@ Spec: *Don't record these apps and Clear history…* → Settings model (`SetExc
 // Session(...) builds an uninitialized UiSession with real services on temp files, as CoolingShutdownTests does, and Settings with ExcludedApps.
 [Fact] public async Task ClearHistory_refuses_a_second_request_and_reports_a_stopped_worker_as_unavailable(){
     // ClearHistory(all apps, all time) → true; a second call while any store is Queued or Clearing → false; after all are Done → true again.
+    // With Usage Failed and MarkerSaved true (its ClearStepOverride throws once) and its worker running: ClearActive is true, ClearWaitingForRestart false, ClearHistory returns false;
+    // after RetryClear(HistoryClearStore.Usage) reaches Done, it returns true.
     // The Usage worker stopped by a failure: its ClearState is Unavailable with that failure's type and nothing is written. A failed Usage read with its worker running (Failed true) is not Unavailable.
 }
 [Fact] public void HistoryClearChanged_rereads_the_open_pages(){
-    // States driven through ClearStepOverride: CheckClearStates raises HistoryClearChanged(store) once when each store reaches Clearing and once when it leaves it.
-    // On an STA thread, pages built on the session and loaded by raising FrameworkElement.LoadedEvent (as BatteryUiTests does): a Connections page in History issues a new whole-interval read
-    // on Connections and not on Usage; a Usage history page starts a new strip read on Usage and on ProcessHistory; an Alerts page calls ReadEpisodesAsync again on Alerts. After Unloaded, none reads.
+    // The session half only (page checks run in the STA fact, below): states driven through ClearStepOverride, CheckClearStates raises HistoryClearChanged(store) once when each store
+    // reaches Clearing and once when it leaves Clearing.
 }
 [Fact] public async Task Quit_during_a_clear_meets_the_history_deadline(){
-    // ClearStepOverride sleeps 200 ms per step on every service. ShutdownAsync finishes within 20 s with no stage outstanding (collector_stop_timeout not recorded).
+    // A session built like CoolingShutdownTests.StuckSession (:81-98), whose collector worker completes, with ProcessHistory set and diagnostics as at :95; ClearStepOverride sleeps
+    // 200 ms per step on every service.
+    // StopCollectorAsync, invoked by reflection with Quit's deadlines (5 s, 5 s, 20 s) as CoolingShutdownTests.Stop (:68) does, finishes within 20 s, and the trace has no
+    // collector_stop_timeout. (ShutdownAsync itself needs layout, timer and saveTimer, which such a session lacks.)
     // StopCollectorForSessionEnding during a clear, with a hidden Connections backlog (expiry raised, maintenanceTransactions 0 so far), returns within 3 s with no stage outstanding.
 }
+// The page half, in the STA fact, each raising the session's HistoryClearChanged backing delegate by reflection on a page loaded by raising FrameworkElement.LoadedEvent,
+// with the read seams above replaced by counting fakes and showing() true:
+// ConnectionsPageUiChecks: a page in History repeats its whole-interval read on Connections, and not on Usage.
+// UsageHistoryUiChecks: a new strip read on Usage and on ProcessHistory.
+// AlertsUiChecks: readLog is called again on Alerts.
+// Each: after raising FrameworkElement.UnloadedEvent, the event causes no read.
 ```
 
 - [ ] **Step 2: Build to verify failure.** Expected: `error CS1061` for `ClearHistory`, `CheckClearStates` and `HistoryClearChanged`.
@@ -1432,13 +1477,13 @@ Spec: *Don't record these apps and Clear history…* → Settings model (`SetExc
 - [ ] **Step 5: Commit, push and verify pass**
 
 ```bash
-git add tests/DeadWare.App.Tests/HistoryClearSessionTests.cs
+git add tests/DeadWare.App.Tests/HistoryClearSessionTests.cs tests/DeadWare.App.Tests/ConnectionsPageUiChecks.cs tests/DeadWare.App.Tests/UsageHistoryUiChecks.cs tests/DeadWare.App.Tests/AlertsUiChecks.cs
 git commit -m "test(session): one clear at a time, page re-reads and the quit deadline"
 git add src/DeadWare.Core/HistoryClear.cs src/DeadWare.App/UiSession.cs src/DeadWare.App/ConnectionsPage.cs src/DeadWare.App/UsageHistoryPage.cs src/DeadWare.App/AlertsPage.cs
 git commit -m "feat(session): Don't record list, clear requests and HistoryClearChanged"
 ```
 
-Run (CI). Expected: green.
+Run (CI). Expected: green; the UI fact passes "Connections page (all themes)", "usage history" and "alerts".
 
 ---
 
@@ -1480,7 +1525,8 @@ Spec: *First network use alerts* → The rule (Don't alert list: `IgnoreFirstUse
 
 ```csharp
 // AlertsUiChecks, after the existing theme loop, in Midnight, Daylight and Blackout. Fu = DefaultFirstNetworkUse; St(...) = a FirstUseStatus.
-// The nine rule lines, each through Apply(new(rules:[Fu], …, FirstUse:…, Elevated:…, CaptureAvailable:…)) and session.Alerts' Failed set by reflection for the first:
+// The nine rule lines, each through Apply(new([Fu], true, log, "status", FirstUse:…, Elevated:…, CaptureAvailable:…)) (the first four positional, as :50) and session.Alerts' Failed set
+//   by reflection for the first:
 //   "Paused: the alert log is unavailable." · "Starting: reading the known-app list." · "Switched off: apps are learned without alerts · 1 app known." ·
 //   "Waiting for per-app capture, which runs while DeadWare runs as administrator. Learning starts then." · "Waiting for per-app capture to start. Learning starts then." ·
 //   "Learning quietly through Wednesday 4 November · 12 apps known." (en-GB culture, end Thursday 00:00) · "Watching for new apps · 12 apps known." ·
@@ -1520,26 +1566,30 @@ Spec: *Don't record these apps and Clear history…* → Settings → History an
 - Test: `tests/DeadWare.App.Tests/ShellUiChecks.cs`
 
 **Interfaces:**
-- Consumes: Task 19 `SetExcludedApps`; Task 1 `AppExclusions`; Task 17's `TryReadApplicationsAsync(…, limit)`; `UsageHistoryService.ReadApplicationsAsync`.
+- Consumes: Task 19 `SetExcludedApps` and its null-service guards; Task 1 `AppExclusions`; Task 17's `TryReadApplicationsAsync(…, limit)`; `UsageHistoryService.ReadApplicationsAsync`.
 - Produces:
   - `internal sealed class AppSuggestions(UiSession session, Func<DateTimeOffset> clock)`:
-    - `internal Task RefreshAsync()`: at most once a minute, `Usage.ReadApplicationsAsync(now − 400 d, now + 1 min, 1000)` and `ProcessHistory.TryReadApplicationsAsync(now − 30 d, now, ProcessRank.CpuTime, limit: 1000)`, off the UI thread; a failed read leaves its names out.
-    - `internal IReadOnlyList<string> Names(bool includeListed)`: the union by key of the current reading's apps (`Reading.Processes` names, then the `ProcessActivity` app names), the Usage names and the Application resources names, in that order. Each key keeps its first source's spelling. Names `Accepts` rejects are dropped, and listed ones too unless `includeListed`. Sorted `StringComparer.OrdinalIgnoreCase`.
+    - `internal Task RefreshAsync()`: at most once a minute, `Usage.ReadApplicationsAsync(now − 400 d, now + 1 min, 1000)` and `ProcessHistory.TryReadApplicationsAsync(now − 30 d, now, ProcessRank.CpuTime, limit: 1000)`, off the UI thread; a failed read, or a null service (fixture sessions), leaves its names out.
+    - `internal IReadOnlyList<string> Names(bool includeListed)`: the union by key of the current reading's apps (`Reading.Processes` names, then the `ProcessActivity` app names; none while `session.Current` is null), the Usage names and the Application resources names, in that order. Each key keeps its first source's spelling. Names `Accepts` rejects are dropped, and listed ones too unless `includeListed`. Sorted `StringComparer.OrdinalIgnoreCase`.
   - `internal sealed class ExcludedAppsBlock : StackPanel` with `internal ExcludedAppsBlock(UiSession session, AppSuggestions suggestions)`:
     - the heading `Don't record these apps` (16) and the help text;
     - `internal ComboBox Box` (editable, automation name `App to stop recording`, at most 260 characters), `internal Button Add` (Enter in the box adds too);
     - `internal TextBlock Error` (Warning) and `internal TextBlock Note` (Muted);
     - `internal StackPanel List`, one row per entry sorted `OrdinalIgnoreCase`, each with `Remove` (automation name `Remove <name> from Don't record these apps`), or `No apps are excluded.`.
-    - Add errors: `Enter an app's executable name, such as chrome.exe.`, `That app is already in the list.`, `At most 64 apps can be listed.`. After an add or a remove the note reads `Saved history for this app is kept. Use Clear history… to remove it.` until the next one.
-    - Tab order: box, `Add`, each `Remove`. After a remove, focus moves to the next row's `Remove`, or to the box when the list empties. Every brush is a `DynamicResource` token. `Loaded` and showing the Settings page call `suggestions.RefreshAsync()`.
+    - Add errors: `Enter an app's executable name, such as chrome.exe.`, `That app is already in the list.`, `At most 64 apps can be listed.`. After a successful Add the note reads `Saved history for this app is kept. Use Clear history… to remove it.`; the next add or remove hides it, and a successful add shows it again.
+    - Tab order: box, `Add`, each `Remove`. After a remove, focus moves to the next row's `Remove`, or to the box when the list empties, with `if (!next.Focus()) FocusManager.SetFocusedElement(scope, next)`, as `ApplicationResourcesCard.ClearSlot` does (:193-195). Every brush is a `DynamicResource` token. `Loaded` and showing the Settings page call `suggestions.RefreshAsync()`.
 
 - [ ] **Step 1: Write the checks**
 
 ```csharp
-// ShellUiChecks, a new Settings check on the dashboard's Settings page (session with real services): Block = the ExcludedAppsBlock found in the History and alerts card, after the Connections block.
-// Exact strings: the heading, the help text, "Add", "No apps are excluded.". Choosing a suggestion (the fixture reading's "fixture.exe") and Add: session.Settings.ExcludedApps == ["fixture.exe"], the box
+// ShellUiChecks, a new Settings check on the dashboard's Settings page: Block = the ExcludedAppsBlock found in the History and alerts card, after the Connections block. The dashboard
+// session (BatteryUiTests.cs:101-106) has no Connections or ProcessHistory and collector.latest is null (:241), so the check first sets collector.latest to a Reading whose Processes
+// hold a ProcessTraffic named "fixture.exe" (back to null at the end) and awaits the block's suggestions.RefreshAsync(); SetExcludedApps' null guards (Task 19) cover the rest.
+// Exact strings: the heading, the help text, "Add", "No apps are excluded.". Choosing the suggestion "fixture.exe" and Add: session.Settings.ExcludedApps == ["fixture.exe"], the box
 // cleared, the note shown. Typing "Steam.exe" + Enter adds it. Errors: "C:\\x.exe" → the first error; "STEAM.EXE" → the second; with 64 listed → the third. The list's first Remove has the automation
-// name "Remove fixture.exe from Don't record these apps"; after it, Keyboard.FocusedElement is the next Remove, and after the last, the box. Suggestions exclude listed apps.
+// name "Remove fixture.exe from Don't record these apps". Focus (logical; offscreen nothing takes keyboard focus): scope = FocusManager.GetFocusScope(Block);
+// FocusManager.SetFocusedElement(scope, the first Remove); clicking it leaves FocusManager.GetFocusedElement(scope) on the next row's Remove; removing the last row leaves Box focused.
+// After a Remove, Note is collapsed. Suggestions exclude listed apps. The list is emptied again at the end.
 ```
 
 - [ ] **Step 2: Build to verify failure.** Expected: `error CS0246` for `ExcludedAppsBlock`.
@@ -1567,12 +1617,13 @@ Spec: *Don't record these apps and Clear history…* → Settings → History an
 - Modify:
   - `src/DeadWare.App/Windows.cs` (after Task 21's block);
   - `src/DeadWare.App/ConnectionsPage.cs` (the Recording, origin and storage expander, :122-124);
-  - `src/DeadWare.App/UsageHistoryPage.cs` (Keep a longer record, :116-121).
+  - `src/DeadWare.App/UsageHistoryPage.cs` (Keep a longer record, :116-121);
+  - `src/DeadWare.App/UiSession.cs` (`Ending`).
 - Create: `tests/DeadWare.App.Tests/HistoryClearUiChecks.cs`
-- Modify: `tests/DeadWare.App.Tests/BatteryUiTests.cs`: `Phase("history clear"); HistoryClearUiChecks.Run(app);` right after `AlertsUiChecks.Run(app);` (:87). Also `ShellUiChecks.cs`, `UsageHistoryUiChecks.cs` and `ApplicationResourcesUiChecks.cs`.
+- Modify: `tests/DeadWare.App.Tests/BatteryUiTests.cs`: `Phase("history clear"); HistoryClearUiChecks.Run(app);` right after `AlertsUiChecks.Run(app);` (:87). Also `ShellUiChecks.cs`, `ConnectionsPageUiChecks.cs`, `UsageHistoryUiChecks.cs` and `ApplicationResourcesUiChecks.cs`.
 
 **Interfaces:**
-- Consumes: Task 19 (`ClearHistory`, `RetryClear`, `ClearLines`, `ClearActive`, `ClearWaitingForRestart`, `Changed`); Task 21 `AppSuggestions`; Task 1 `HistoryClear.Create`, `AppExclusions.Accepts`.
+- Consumes: Task 19 (`ClearHistory`, `RetryClear`, `ClearLines`, `ClearActive`, `ClearWaitingForRestart`, `Changed`, the null-service guards); Task 16's `ClearState` internal setter and `CanRetryClear`; Task 21 `AppSuggestions`; Task 1 `HistoryClear.Create`, `AppExclusions.Accepts`.
 - Produces:
   - `HistoryClearCopy`:
     - `Confirmation(HistoryClear clear, string appName, TimeZoneInfo zone, CultureInfo culture)` (the four texts, `<before>` in local "g");
@@ -1583,8 +1634,8 @@ Spec: *Don't record these apps and Clear history…* → Settings → History an
   - `internal static class ClearHistoryEntry { internal static Button Create(UiSession session, Func<Window?> owner); }`: a `Clear history…` button, disabled while `ClearActive` or `ClearWaitingForRestart`, with `ToolTipService.ShowOnDisabled` and the two tooltips. It refreshes on `Changed` and opens a `ClearHistoryWindow` owned by `owner()`.
   - `internal sealed class ClearHistoryWindow : Window` (Title `Clear history`, Width 480, `SizeToContent.Height`, every brush a `DynamicResource` token):
     - the controls `OneApp`, `AllApps`, `OlderThan7Days`, `AllTime` (RadioButtons; defaults One app and Older than 7 days), `AppBox` (editable ComboBox, automation name `App to clear`, `suggestions.Names(includeListed: true)`), `Validation`, `ClearButton` (not default), `CancelButton` (`IsCancel`) and `Progress`;
-    - `internal Func<Window, string, bool> Confirm`, by default `MessageBox.Show(owner, text, "DeadWare", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No) == MessageBoxResult.Yes`;
-    - `internal bool Submit()`: T = `DateTimeOffset.UtcNow`, `HistoryClear.Create`, the confirmation naming `SavedName(text)`; No sends nothing; Yes calls `ClearHistory` and shows the progress view with focus on `Close`, which then takes Esc.
+    - `internal Func<Window, string, bool> Confirm`, by default `MessageBox.Show(owner, text, "DeadWare", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No) == MessageBoxResult.Yes`, with this window as `owner`, so the confirmation closes with it;
+    - `internal bool Submit()`: T = `DateTimeOffset.UtcNow`, `HistoryClear.Create`, the confirmation naming `SavedName(text)`; No sends nothing; Yes calls `ClearHistory` and shows the progress view with focus on `Close`, which then takes Esc. After `Confirm` returns, it sends nothing when the window has closed meanwhile or the session has begun ending (a new `internal bool Ending => layout?.Ending ?? false` on `UiSession`; Quit and sign-out call `layout.BeginShutdown()` first, `UiSession.cs:421`, `:292`).
     - It closes when its owner closes or the session ends.
   - `internal sealed class HistoryClearProgressView : StackPanel` with `internal TextBlock Header` (`AutomationProperties.LiveSetting` Polite), `internal IReadOnlyList<TextBlock> Lines`, `internal TextBlock Summary`, `internal Button TryAgain` (shown when a line `CanRetry`, calling `RetryClear`), `internal Button? Close` (the window's only) and `internal void Apply(IReadOnlyList<HistoryClearLine> lines)`. It refreshes on `Changed`.
   - Placement:
@@ -1595,18 +1646,25 @@ Spec: *Don't record these apps and Clear history…* → Settings → History an
 - [ ] **Step 1: Write the checks**
 
 ```csharp
-// HistoryClearUiChecks.Run(app): a session with fake services whose ClearState each check sets (ClearStepOverride), in Midnight, Daylight and Blackout.
+// HistoryClearUiChecks.Run(app), in Midnight, Daylight and Blackout, on an uninitialized session with Settings, a Collector whose latest reading has no processes (Current is read
+// by AppSuggestions), a fixture DetachedWindowState as layout, and unstarted Usage and Alerts services. Progress lines, headers and summaries are driven by calling HistoryClearProgressView.Apply and HistoryClearCopy with constructed HistoryClearLine values; the session-level
+// states the entry buttons read are set through the services' internal ClearState setter (Task 16).
 // Defaults: OneApp, OlderThan7Days checked, ClearButton disabled. Typing "a*" shows Validation "Enter an app's executable name, such as chrome.exe."; "chrome.exe" enables ClearButton; AllApps enables it.
-// Confirm hook: the four texts for (one app, all apps) × (Older than 7 days, All time) with <before> in local "g"; answering No sends nothing (every ClearState None).
+// Confirm hook: the four texts for (one app, all apps) × (Older than 7 days, All time) with <before> in local "g"; answering No sends nothing (every ClearState None). A Confirm hook that
+//   calls layout.BeginShutdown() and returns Yes also leaves every ClearState None.
 // Progress: each line form ("Connections history · waiting", "Usage history · clearing (37 %)", "Application resources · done", "Alert log · failed (IOException); it resumes when DeadWare next starts",
 //   "… · failed (IOException); not cleared", "… · unavailable (IOException); not cleared"); 99 % shown for Done 999 of 1,000; the headers "Clearing history…", "Finishing a clear that was
 //   interrupted…", "History cleared." with "Freed space is reused for new history; the files don't shrink. Exported CSV files and Windows notification history are not cleared.", and
 //   "History partly cleared." with "2 of 4 finished. Failed histories resume when DeadWare next starts. Histories marked not cleared need Clear history again.".
-// TryAgain visible only while a line CanRetry; Close closes the window and the clear keeps running (states unchanged). Tab order: the Apps group, AppBox, the Range group, ClearButton, CancelButton;
-// Esc cancels; Enter in AppBox does not submit. Header's LiveSetting is Polite. A theme change while open restyles the window (its Background and text brushes equal the new theme's resources).
-// ShellUiChecks: with a fake clear Clearing, the Settings Clear history… button is disabled and its ToolTip is "A clear is in progress." with ShowOnDisabled true; with a stopped worker holding a
-//   marker, "A clear is waiting to finish; it resumes when DeadWare next starts."; the result stays in Settings until a new clear starts.
-// UsageHistoryUiChecks and ApplicationResourcesUiChecks: Keep a longer record shows the new line and then Clear history…; the Connections expander holds Clear history….
+// TryAgain visible only while a line CanRetry; Close closes the window and the clear keeps running (states unchanged). Keyboard (offscreen nothing takes keyboard focus): the window's
+// focusable controls, in tree order, are the Apps radios, AppBox, the Range radios, ClearButton and CancelButton, with no TabIndex override; ClearButton.IsDefault is false and
+// CancelButton.IsCancel is true; Enter pressed in AppBox through the Press helper (ApplicationResourcesUiChecks.cs:1267-1272, with its KeySource) changes no ClearState; after
+// Submit, FocusManager.GetFocusedElement(scope) is Close. Header's LiveSetting is Polite. A theme change while open restyles the window (its Background and text brushes equal the new theme's resources).
+// ShellUiChecks: with session.Usage's ClearState set to Clearing, the Settings Clear history… button is disabled and its ToolTip is "A clear is in progress." with ShowOnDisabled true;
+//   set to Failed with MarkerSaved true (its worker not started, so CanRetryClear is false), "A clear is waiting to finish; it resumes when DeadWare next starts."; the result stays in
+//   Settings until a new clear starts. The state is set back to None at the end.
+// UsageHistoryUiChecks and ApplicationResourcesUiChecks: Keep a longer record shows the new line and then Clear history….
+// ConnectionsPageUiChecks: the Recording, origin and storage expander holds Clear history….
 ```
 
 - [ ] **Step 2: Build to verify failure.** Expected: `error CS0246` for `ClearHistoryWindow` and `HistoryClearProgressView`.
@@ -1614,13 +1672,13 @@ Spec: *Don't record these apps and Clear history…* → Settings → History an
 - [ ] **Step 4: Build, commit, push and verify pass**
 
 ```bash
-git add tests/DeadWare.App.Tests/HistoryClearUiChecks.cs tests/DeadWare.App.Tests/BatteryUiTests.cs tests/DeadWare.App.Tests/ShellUiChecks.cs tests/DeadWare.App.Tests/UsageHistoryUiChecks.cs tests/DeadWare.App.Tests/ApplicationResourcesUiChecks.cs
+git add tests/DeadWare.App.Tests/HistoryClearUiChecks.cs tests/DeadWare.App.Tests/BatteryUiTests.cs tests/DeadWare.App.Tests/ShellUiChecks.cs tests/DeadWare.App.Tests/ConnectionsPageUiChecks.cs tests/DeadWare.App.Tests/UsageHistoryUiChecks.cs tests/DeadWare.App.Tests/ApplicationResourcesUiChecks.cs
 git commit -m "test(ui): Clear history window, progress and entry points"
-git add src/DeadWare.Core/HistoryClear.cs src/DeadWare.App/ClearHistoryWindow.cs src/DeadWare.App/Windows.cs src/DeadWare.App/ConnectionsPage.cs src/DeadWare.App/UsageHistoryPage.cs
+git add src/DeadWare.Core/HistoryClear.cs src/DeadWare.App/ClearHistoryWindow.cs src/DeadWare.App/Windows.cs src/DeadWare.App/ConnectionsPage.cs src/DeadWare.App/UsageHistoryPage.cs src/DeadWare.App/UiSession.cs
 git commit -m "feat(ui): Clear history… from Settings, Connections and Usage history"
 ```
 
-Run (CI). Expected: green; the UI fact passes "history clear", "usage history" and "shell chrome".
+Run (CI). Expected: green; the UI fact passes "Connections page (all themes)", "usage history", "history clear" and "shell chrome".
 
 ---
 
@@ -1630,7 +1688,7 @@ Spec: *Don't record these apps and Clear history…* → "not recorded" marks, C
 
 **Files:**
 - Modify:
-  - `src/DeadWare.App/Windows.cs`: the Network footer :100 and the Application cell :310-311;
+  - `src/DeadWare.App/Windows.cs`: the Network footer :100 and the Application column :99;
   - `src/DeadWare.App/ConnectionsPage.cs`: `ApplyLive`'s `PeerRow` (:237), the map labels (:241-242) and the expander note (:124);
   - `src/DeadWare.App/ConnectionsWidget.cs:36`;
   - `src/DeadWare.App/DestinationsCard.cs`;
@@ -1640,9 +1698,10 @@ Spec: *Don't record these apps and Clear history…* → "not recorded" marks, C
 - Test: `tests/DeadWare.App.Tests/ConnectionsPageUiChecks.cs`, `ProcessesPageUiChecks.cs`, `BatteryUiTests.cs`, `ApplicationResourcesUiChecks.cs`; `tests/DeadWare.Tests/ProcessTableTests.cs` (:69, :79)
 
 **Interfaces:**
-- Consumes: Task 19 `IsExcluded`; 0.16.0's `DestinationRow` and `DestinationsCard.ShowLive`.
+- Consumes: Task 19 `IsExcluded`, `SetExcludedApps` and its null-service guards (the check sessions); 0.16.0's `DestinationRow` and `DestinationsCard.ShowLive`.
 - Produces:
-  - The suffix ` · not recorded` after an excluded app's name: the Network page's Application cell (search still on the bare name); each Live `PeerRow`'s application text (so the node list and the detail box show it); map hover labels on the page and the widget.
+  - The suffix ` · not recorded` after an excluded app's name: the Network page's Application cell; each Live `PeerRow`'s application text (so the node list and the detail box show it); map hover labels on the page and the widget.
+  - The Network page's Application column (:99) becomes a `DataGridTemplateColumn` (header "Application", `SortMemberPath` "Name"). Its cell is a TextBlock built from the row's `Name`: the Name run and, when `session.IsExcluded(Name)`, a Muted run ` · not recorded`; cells are rebuilt on `session.Changed`. `RefreshTables` (:305-313) keeps projecting the bare `Name`, so its search and the sort are unchanged; the mark does not depend on `RefreshTables`, which returns early while the page is not visible (:307).
   - `DestinationRowContext(…, Func<string, bool>? IsExcluded = null)`. In Live, when the busiest app is excluded, the APPS cell gets the suffix after its name (before " +{n:N0}"). That app's tooltip line reads "{name} · not recorded · ↓ {received} · ↑ {sent}", and the spoken text gains ", not recorded" after its name. Copy row copies the shown cell. Grouping, the busiest choice, sorting and search use the bare name; History rows pass no `IsExcluded`.
   - `public string Mark { get; }` on `ProcessRowView` ("not recorded" or ""), shown Muted after the name on app rows only. The spoken summary becomes `<name>, not recorded, <lead>, …`. `Name`, sorting and search are unchanged.
   - The footers, exactly:
@@ -1655,19 +1714,22 @@ Spec: *Don't record these apps and Clear history…* → "not recorded" marks, C
 - [ ] **Step 1: Write and update the checks**
 
 ```csharp
-// ConnectionsPageUiChecks, called after the Destinations checks: session.SetExcludedApps(["browser.exe"]) on the Live fixture.
-static void CheckDestinationsNotRecordedMark(UiSession session, ConnectionLiveView live){ // the 8.8.8.8 row's busiest app is browser.exe
-    // Apps starts "browser.exe · not recorded", the tooltip has "browser.exe · not recorded · ↓ ", Spoken has "browser.exe, not recorded"; Copy row (SetClipboard fake) includes " · not recorded";
-    // search "browser.exe" still finds the row; a History row of browser.exe carries no mark.
+// ConnectionsPageUiChecks, called after the Destinations checks: session.SetExcludedApps(["Browser"]) on the Live fixture, whose 8.8.8.8 peer is "Browser" (:34; AppExclusions.Accepts
+// it, key "BROWSER"). The list is cleared again at the end.
+static void CheckDestinationsNotRecordedMark(UiSession session, ConnectionLiveView live){ // the 8.8.8.8 row's busiest app is Browser
+    // Apps starts "Browser · not recorded", the tooltip has "Browser · not recorded · ↓ ", Spoken has "Browser, not recorded"; Copy row (SetClipboard fake) includes " · not recorded";
+    // search "Browser" still finds the row; a History row whose busiest app is "Browser" (ShowHistory) carries no mark.
 }
-// Also: the node list label and the detail box show "browser.exe · not recorded"; map.Points' Label for its node ends " · not recorded"; the expander text ends with the new sentence.
+// Also: the node list label and the detail box show "Browser · not recorded"; map.DisplayedPoints' Label for its node ends " · not recorded"; the expander text ends with the new
+// sentence. The page search "Browser" still keeps its node, and "not recorded" matches no node.
 // ProcessesPageUiChecks: an excluded app row's Mark is "not recorded" and its Spoken starts "<name>, not recorded, "; its process rows have Mark ""; sorting by Name and search are unchanged.
-// BatteryUiTests network block (:464-480): with "Fixture application" excluded, the Application cell reads "Fixture application · not recorded", and the footer ends with the new sentence.
+// BatteryUiTests network block (:464-480): with "Fixture application" excluded (set before the fixture assigns ItemsSource, cleared after the block), the Application cell reads
+// "Fixture application · not recorded", the column's SortMemberPath is "Name" and the row's Name is the bare name, and the footer ends with the new sentence.
 // ApplicationResourcesUiChecks.The_note_names_gpu: Contains "…; Everything else holds the rest, including apps in Don't record these apps. Usage after".
 // ProcessTableTests :69 Count 6, :79 Count 5 and 6.
 ```
 
-- [ ] **Step 2: Build to verify failure.** Expected: `error CS1061` for `ProcessRowView.Mark`, and `error CS1739` for `IsExcluded` in `DestinationRowContext`.
+- [ ] **Step 2: Build and run to verify failure.** Build. Expected: `error CS1061` for `ProcessRowView.Mark`, and `error CS1739` for `IsExcluded` in `DestinationRowContext`. Then run `dotnet test tests/DeadWare.Tests -c Release -p:EnableWindowsTargeting=true --nologo --filter "FullyQualifiedName~ProcessTableTests"` (the Core project builds alone). Expected: `The_footer_ends_with_the_gpu_line` fails at `Assert.Equal(6, …)` (actual 5), and `Footer_omits_disk_without_the_disk_build` fails at `Assert.Equal(5, …)` (actual 4).
 - [ ] **Step 3: Implement the marks, the context member and the copy**
 - [ ] **Step 4: Run the Processes Core tests (`--filter "FullyQualifiedName~ProcessTableTests"`), build, commit, push and verify pass**
 
@@ -1770,7 +1832,7 @@ Spec: section 7 → Docs and release (0.17.0), Rollback (0.17 to 0.16 or older),
   - **Clear history…:** what it clears and keeps, and that it resumes after Quit or a crash.
   - **Returning to 0.16 or older:** the rollback paragraph below.
 - [ ] **Step 2: Write `docs/releases/v0.17.0.md`.** It holds the same points as user-facing bullets and one rollback paragraph shared by both sections.
-  - The first-use sentences (spec, *First network use alerts* → Docs and release): that build's first save drops the rule and the Don't alert list; alerts.db keeps the known apps and the learning date, and older builds show first-use episodes with "peak 0"; reinstalling 0.17 adds the rule again once with no new learning period; apps first used meanwhile alert at their next use, and Don't alert entries are gone.
+  - The first-use sentences (spec, *First network use alerts* → Docs and release): that build's first save drops the rule and the Don't alert list; alerts.db keeps the known apps and the learning date, and older builds show first-use episodes with "peak 0"; reinstalling 0.17 adds the rule again once, even if it had been removed, with no new learning period; apps first used meanwhile alert at their next use, and Don't alert entries are gone.
   - Then the spec's Don't record paragraph verbatim ("Going back to 0.16 or earlier drops the Don't record these apps and Don't alert lists from settings.json on that version's first save, …").
   - Then `## Verification`: automated coverage by area, the CI measurements as measured, and the checks by eye as pending.
 - [ ] **Step 3: Write the `docs/validation.md` section:**
@@ -1796,7 +1858,8 @@ grep -c 'Five kinds are available' docs/user-guide.md                           
 grep -c 'first network use is the exception, below' docs/user-guide.md                             # 1
 grep -c 'Going back to 0.16 or earlier drops the Don' docs/releases/v0.17.0.md                     # 1
 grep -c 'a real three-day learning run on an administrator install' docs/validation.md             # 1
-git diff origin/main -- README.md | grep -c '^[-+][^-+]'                                           # 2 (one line changed)
+grep -c 'even if it had been removed' docs/releases/v0.17.0.md                                     # 1
+git diff --numstat origin/main -- README.md                                                        # 1	1	README.md (one line changed)
 ```
 
 Then run the build and the Core baseline. Expected: as in Global Constraints.
