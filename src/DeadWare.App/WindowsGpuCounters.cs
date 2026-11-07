@@ -34,8 +34,7 @@ internal sealed class PdhGpuApi : IGpuCounterApi
     internal const uint FormatDouble=0x00000200,FormatLarge=0x00000400;
     // x64 PDH_FMT_COUNTERVALUE_ITEM_W: the szName pointer, then PDH_FMT_COUNTERVALUE's CStatus and its 8-byte-aligned value union.
     private const int ItemBytes=24,StatusOffset=8,ValueOffset=16;
-    // The first call uses the current buffer (none at first) and each MoreData grows it to the size PDH asks for. Instances can
-    // appear between calls, so the size asked for can grow again; a third MoreData is a failure.
+    // At most three PdhGetFormattedCounterArrayW calls per read; a third MoreData is a failure.
     private const int MaximumArrayCalls=3;
     private const int DxgiErrorNotFound=unchecked((int)0x887A0002);
     private static readonly string[] Paths=[EnginePath,DedicatedPath,SharedPath];
@@ -62,19 +61,25 @@ internal sealed class PdhGpuApi : IGpuCounterApi
     {
         var i=(int)kind;
         var format=kind==GpuCounterKind.Engine?FormatDouble:FormatLarge;
+        // A data call passes the current buffer; a sizing call passes size 0 (the first read's first call is one).
+        var size=bufferBytes[i];
         for(var call=1;;call++)
         {
-            var bytes=bufferBytes[i];
-            var status=PdhGetFormattedCounterArrayW(counters[i],format,ref bytes,out var count,buffers[i]);
+            var bytes=size;
+            var status=PdhGetFormattedCounterArrayW(counters[i],format,ref bytes,out var count,size==0?IntPtr.Zero:buffers[i]);
             if(status==GpuPdhStatus.MoreData)
             {
                 if(call==MaximumArrayCalls)return new(GpuPdhStatus.MoreData,[]);
+                // PDH's documentation: after a too-small non-zero buffer the returned size is unreliable, so ask again with
+                // size 0; the size a size-0 call returns is trusted.
+                if(size!=0) {size=0;continue;}
                 // Zeroed before allocating, so a failed allocation leaves nothing for Close to free twice.
                 Marshal.FreeHGlobal(buffers[i]);
                 buffers[i]=IntPtr.Zero;
                 bufferBytes[i]=0;
                 buffers[i]=Marshal.AllocHGlobal((nint)bytes);
                 bufferBytes[i]=bytes;
+                size=bytes;
                 continue;
             }
             return status==0?new(0,Items(buffers[i],count,format)):new(status,[]);
