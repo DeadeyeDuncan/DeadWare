@@ -456,7 +456,7 @@ internal sealed class DestinationsCard : Border
             if (at == i) continue;
             if (at >= 0) Grid.Columns.Move(at, i); else Grid.Columns.Insert(i, wanted[i]);
         }
-        foreach (var spec in Specs) columns[spec.Key].HeaderStyle = HeaderStyle(DestinationCopy.HeaderTip(spec.Key, history));
+        foreach (var spec in Specs) SetHeaderTip(columns[spec.Key], DestinationCopy.HeaderTip(spec.Key, history));
         Footnote.Text = DestinationCopy.Footnote(history);
         ShowSortDirections();
         return true;
@@ -553,13 +553,15 @@ internal sealed class DestinationsCard : Border
         return column;
     }
 
-    /// <summary>A header style based on the theme's, so the header keeps its padding and caption look, carrying the tooltip; null without one.</summary>
-    private Style? HeaderStyle(string? tip)
+    /// <summary>Gives the column's header <paramref name="tip"/> through a style based on the theme's, so it keeps its padding and caption look.
+    /// Without a tip the column's HeaderStyle is cleared, never set to null: DataGrid transfers a column's locally set HeaderStyle to its header
+    /// ahead of the header's implicit style, so a local null would drop the theme's 10 px caption and 9,8 padding.</summary>
+    private void SetHeaderTip(DataGridColumn column, string? tip)
     {
-        if (tip is null) return null;
+        if (tip is null) { column.ClearValue(DataGridColumn.HeaderStyleProperty); return; }
         var header = new Style(typeof(System.Windows.Controls.Primitives.DataGridColumnHeader), TryFindResource(typeof(System.Windows.Controls.Primitives.DataGridColumnHeader)) as Style);
         header.Setters.Add(new Setter(ToolTipProperty, tip));
-        return header;
+        column.HeaderStyle = header;
     }
 
     private static Style TextCellStyle()

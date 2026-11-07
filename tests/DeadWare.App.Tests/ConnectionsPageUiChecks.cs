@@ -1099,6 +1099,8 @@ internal static class ConnectionsPageUiChecks
         Assert.Equal(card.Grid.Columns.Count,headers.Length);
         foreach(var header in headers)
         {
+            // Every header keeps the theme's caption look (App.xaml): 10 px text with 9,8 padding, with or without a tooltip.
+            Assert.True(header.FontSize==10&&header.Padding==new Thickness(9,8,9,8),$"{theme} header {header.Column.Header} lost the theme's caption look: {header.FontSize} px, padding {header.Padding}.");
             if(atMinimum)Assert.True(Math.Abs(header.Column.ActualWidth-header.Column.MinWidth)<.5,$"{theme} {header.Column.Header} is {header.Column.ActualWidth} wide after forcing its minimum {header.Column.MinWidth}.");
             // The header's ContentPresenter shows the string through one TextBlock (inside an AccessText when it recognizes access keys).
             var text=Elements(header).OfType<TextBlock>().First();
