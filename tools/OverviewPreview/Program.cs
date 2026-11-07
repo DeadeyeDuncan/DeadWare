@@ -312,6 +312,7 @@ internal static class Program
                     string suffix=size.Width==1220?"":$"-{size.Width:0}x{size.Height:0}";
                     Save(frame,(int)size.Width,(int)size.Height,Path.Combine(output,$"glass-shell-{theme}-{route}{suffix}.png"));
                     checks.Add(new {theme,route,width=size.Width,height=size.Height,tableHeight,appRows,chartHeight,chartTrace,synthetic=true,nativeWindow=false,storesOpened=false});
+                    if(route=="connections") RenderDestinations(frame,pages[route],theme,size,output,checks,failures);
                     }
                 }
             }
@@ -322,9 +323,27 @@ internal static class Program
         }
         File.WriteAllText(Path.Combine(output,"shell-checks.json"),JsonSerializer.Serialize(new
         {
-            Note="Actual MainWindow and all ten production pages with in-memory synthetic fixtures; Network, Processes and Settings also at the supported 900x640 minimum. No hardware/ETW workers, installed settings, history queries, native windows, startup-task actions or network requests. Offscreen at 96 DPI; no native input/compositor/soak proof.",checks,failures
+            Note="Actual MainWindow and all ten production pages with in-memory synthetic fixtures; Network, Processes and Settings also at the supported 900x640 minimum; Connections also scrolled to its Destinations table. No hardware/ETW workers, installed settings, history queries, native windows, startup-task actions or network requests. Offscreen at 96 DPI; no native input/compositor/soak proof.",checks,failures
         },new JsonSerializerOptions {WriteIndented=true}));
         if(failures.Count>0)throw new InvalidOperationException(string.Join(Environment.NewLine,failures));
+    }
+
+    /// <summary>Checks the Destinations table of the Live fixture (four reserved documentation addresses: "Special · documentation", no location)
+    /// and saves the page scrolled to the card. The card, its rows and their cells are internal, so they are read by reflection.</summary>
+    private static void RenderDestinations(Grid frame,FrameworkElement page,string theme,Size size,string output,List<object> checks,List<string> failures)
+    {
+        var card=Field<FrameworkElement>(page,"destinations");
+        var rows=Field<System.Collections.IEnumerable>(card,"Rows").Cast<object>().ToArray();
+        static string Cell(object row,string name)=>(string)row.GetType().GetProperty(name,All)!.GetValue(row)!;
+        if(rows.Length!=4||rows.Any(row=>Cell(row,"Class")!="Special · documentation"||Cell(row,"Location")!="—"))
+            failures.Add($"{theme} Destinations table shows {rows.Length} rows ({string.Join("; ",rows.Select(row=>Cell(row,"Class")+" / "+Cell(row,"Location")))}); 4 \"Special · documentation\" rows located \"—\" are required.");
+        var viewport=Field<ScrollViewer>(page,"viewport");
+        double top=card.TransformToAncestor((Visual)viewport.Content).Transform(new Point()).Y;
+        viewport.ScrollToVerticalOffset(Math.Max(0,top-8));frame.UpdateLayout();Pump();frame.UpdateLayout();
+        Save(frame,(int)size.Width,(int)size.Height,Path.Combine(output,$"glass-shell-{theme}-connections-destinations.png"));
+        checks.Add(new {theme,route="connections-destinations",width=size.Width,height=size.Height,destinationRows=rows.Length,offset=viewport.VerticalOffset,synthetic=true});
+        // The next theme's page capture starts at the top again.
+        viewport.ScrollToTop();frame.UpdateLayout();Pump();frame.UpdateLayout();
     }
 
     private static void RefreshSampleCards(MainWindow dashboard,FrameworkElement page)

@@ -53,6 +53,25 @@ internal sealed class DestinationRow : INotifyPropertyChanged
     internal ConnectionDestination Value { get; private set; } = null!;
     public event PropertyChangedEventHandler? PropertyChanged;
 
+    /// <summary>The shown text of one column's cell, as Copy row copies it.</summary>
+    internal string Cell(ConnectionDestinationColumn column) => column switch
+    {
+        ConnectionDestinationColumn.Destination => Destination,
+        ConnectionDestinationColumn.Class => Class,
+        ConnectionDestinationColumn.Location => Location,
+        ConnectionDestinationColumn.Apps => Apps,
+        ConnectionDestinationColumn.Ports => Ports,
+        ConnectionDestinationColumn.Download => Download,
+        ConnectionDestinationColumn.Upload => Upload,
+        ConnectionDestinationColumn.Received => Received,
+        ConnectionDestinationColumn.Sent => Sent,
+        ConnectionDestinationColumn.Connections => Connections,
+        ConnectionDestinationColumn.Minutes => Minutes,
+        ConnectionDestinationColumn.FirstSeen => FirstSeen,
+        ConnectionDestinationColumn.LastSeen => LastSeen,
+        _ => throw new ArgumentOutOfRangeException(nameof(column)),
+    };
+
     /// <summary>Sets every cell's text and tooltip; raises one PropertyChanged(string.Empty) only when one of them changed.</summary>
     internal DestinationRow Update(ConnectionDestination value, DestinationRowContext context)
     {
@@ -177,6 +196,8 @@ internal sealed class DestinationsCard : Border
 
     internal readonly DataGrid Grid = new() { Height = 315 };
     internal readonly ComboBox Scope = new() { Width = 120 };
+    /// <summary>Export destinations…: enabled only in History while no export runs; the page sets its state and handles its click.</summary>
+    internal readonly Button Export = new() { Content = "Export destinations…", Padding = new Thickness(7, 4, 7, 4), Margin = new Thickness(8, 0, 0, 0) };
     internal readonly TextBlock CountLine = Ui.Text("", 11, "Muted"), Status = Ui.Text("", 11, "Muted"), Footnote = Ui.Text(DestinationCopy.Footnote(false), 11, "Muted");
     internal readonly Border Empty = new() { Height = 315, Visibility = Visibility.Collapsed };
     internal readonly ObservableCollection<DestinationRow> Rows = [];
@@ -190,6 +211,8 @@ internal sealed class DestinationsCard : Border
     internal ConnectionDestination? Selected => (Grid.SelectedItem as DestinationRow)?.Value;
     /// <summary>Raised when the selected row changes, to another row or to none (also when the selected row leaves).</summary>
     internal event Action? SelectionChanged;
+    /// <summary>Raised with the text Ctrl+C, Copy row or Copy address puts on the clipboard; the page writes it and reports the result.</summary>
+    internal event Action<string>? CopyRequested;
 
     internal DestinationsCard(UiSession session)
     {
@@ -200,6 +223,7 @@ internal sealed class DestinationsCard : Border
         var toolbar = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 4, 0, 4) };
         var show = Ui.Text("Show", 11, "Muted"); show.Margin = new Thickness(0, 0, 6, 0); toolbar.Children.Add(show);
         Scope.ItemsSource = new[] { "All", "Internet", "Local" }; Scope.SelectedIndex = 0; AutomationProperties.SetName(Scope, "Destinations shown"); toolbar.Children.Add(Scope);
+        AutomationProperties.SetName(Export, "Export destinations…"); ToolTipService.SetShowOnDisabled(Export, true); toolbar.Children.Add(Export);
         layout.Children.Add(toolbar);
         CountLine.Margin = new Thickness(0, 0, 0, 4); layout.Children.Add(CountLine);
         AutomationProperties.SetName(Grid, "Destinations");
@@ -217,6 +241,10 @@ internal sealed class DestinationsCard : Border
         Grid.MouseLeave += (_, _) => Hold.PointerOver = false;
         // Arrow keys move the selection and hold the order; the DataGrid still acts on them.
         Grid.PreviewKeyDown += (_, e) => { if (e.Key is Key.Up or Key.Down or Key.PageUp or Key.PageDown or Key.Home or Key.End) Hold.KeyNavigated(clockSeconds()); };
+        // Ctrl+C copies the selected row; this binding replaces the grid's own Copy, which never runs. With no selection it does nothing.
+        Grid.CommandBindings.Add(new CommandBinding(ApplicationCommands.Copy, (_, e) => { CopyRow(); e.Handled = true; }, (_, e) => { e.CanExecute = true; e.Handled = true; }));
+        Grid.ContextMenu = RowMenu();
+        Grid.ContextMenuOpening += OnContextMenuOpening;
         layout.Children.Add(Grid);
         emptyText.HorizontalAlignment = HorizontalAlignment.Center; emptyText.TextAlignment = TextAlignment.Center; emptyText.Margin = new Thickness(12);
         Empty.Child = emptyText; Empty.SetResourceReference(Border.BackgroundProperty, "GlassTable"); layout.Children.Add(Empty);
@@ -232,7 +260,56 @@ internal sealed class DestinationsCard : Border
         };
     }
 
-    private DestinationScope CurrentScope => (DestinationScope)Math.Max(0, Scope.SelectedIndex);
+    /// <summary>The scope shown, which Export destinations… exports.</summary>
+    internal DestinationScope CurrentScope => (DestinationScope)Math.Max(0, Scope.SelectedIndex);
+
+    /// <summary>The row menu: Copy row and Copy address. While it is open the order is held.</summary>
+    private ContextMenu RowMenu()
+    {
+        var menu = new ContextMenu();
+        foreach (var (header, copy) in new (string, Action)[] { ("Copy row", CopyRow), ("Copy address", CopyAddress) })
+        {
+            var item = new MenuItem { Header = header }; AutomationProperties.SetName(item, header);
+            item.Click += (_, _) => copy(); menu.Items.Add(item);
+        }
+        menu.Opened += (_, _) => Hold.MenuOpen = true;
+        menu.Closed += (_, _) => Hold.MenuOpen = false;
+        return menu;
+    }
+
+    /// <summary>Opens the row menu itself: from the pointer on the row under it, which it selects first; from the Menu key or Shift+F10 on the selected row.
+    /// Off a row, or with no selection, no menu opens.</summary>
+    private void OnContextMenuOpening(object sender, ContextMenuEventArgs e)
+    {
+        e.Handled = true;
+        bool keyboard = e.CursorLeft < 0 && e.CursorTop < 0;
+        DataGridRow? row;
+        if (keyboard) row = Grid.SelectedItem is { } item ? Grid.ItemContainerGenerator.ContainerFromItem(item) as DataGridRow : null;
+        else
+        {
+            row = e.OriginalSource is DependencyObject source ? ItemsControl.ContainerFromElement(Grid, source) as DataGridRow : null;
+            if (row?.Item is DestinationRow under) Grid.SelectedItem = under;
+        }
+        if (Grid.SelectedItem is null || row is null && !keyboard) return;
+        var menu = Grid.ContextMenu!;
+        // A selected row scrolled out of the realized containers opens the menu on the grid.
+        menu.PlacementTarget = (UIElement?)row ?? Grid;
+        menu.Placement = keyboard ? System.Windows.Controls.Primitives.PlacementMode.Bottom : System.Windows.Controls.Primitives.PlacementMode.MousePoint;
+        menu.IsOpen = true;
+    }
+
+    /// <summary>Copies the selected row's shown cells in column order, tab-separated, on one line, with no header.</summary>
+    private void CopyRow()
+    {
+        if (Grid.SelectedItem is not DestinationRow row) return;
+        CopyRequested?.Invoke(string.Join("\t", Grid.Columns.OrderBy(c => c.DisplayIndex).Select(c => row.Cell(Enum.Parse<ConnectionDestinationColumn>(c.SortMemberPath)))));
+    }
+
+    /// <summary>Copies the selected row's address only.</summary>
+    private void CopyAddress()
+    {
+        if (Grid.SelectedItem is DestinationRow row) CopyRequested?.Invoke(row.Value.Address);
+    }
 
     /// <summary>Sets the scope from the saved setting without saving it back; the table follows when it changed.</summary>
     internal void SyncScope(DestinationScope scope)

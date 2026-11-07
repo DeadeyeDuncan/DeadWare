@@ -42,6 +42,10 @@ internal sealed class ConnectionsPage : Grid
     private readonly StackPanel layoutHeader,layoutFooter,layoutSettings;
     private readonly Func<ConnectionHistoryQuery, Task<ConnectionHistoryView>> readHistory;
     private readonly Func<string,ConnectionHistoryQuery,Task> exportHistory;
+    /// <summary>Writes the destinations of the whole-interval query in a scope to a new file; the service's, or a failure without one.</summary>
+    internal Func<string, ConnectionHistoryQuery, DestinationScope, Task> exportDestinations;
+    /// <summary>Puts copied Destinations text on the clipboard, on the UI thread.</summary>
+    internal Action<string> SetClipboard = Clipboard.SetText;
     private readonly ComboBox mode = new(), range = new(), direction = new();
     private readonly TextBox country = new() { Width = 65, MaxLength = 2, CharacterCasing = CharacterCasing.Upper };
     private readonly TextBox search = new() { Width = 170, MaxLength = 256 }, from = new() { Width = 139 }, to = new() { Width = 139 }, citySearch = new() { Width = 145, MaxLength = 128 };
@@ -102,6 +106,7 @@ internal sealed class ConnectionsPage : Grid
         viewport.Content=body;Children.Add(viewport);
         readHistory = q => session.Connections is { } service ? service.ReadViewAsync(q) : Task.FromResult(Empty(q, "Connection history is unavailable."));
         exportHistory=(path,query)=>session.Connections is { } service?service.ExportCsvAsync(path,query):Task.FromException(new InvalidOperationException("Connection export unavailable."));
+        exportDestinations = (path, query, scope) => session.Connections is { } service ? service.ExportDestinationsCsvAsync(path, query, scope) : Task.FromException(new InvalidOperationException("Connection export unavailable."));
         hasLocationDatabase = () => session.Connections?.DatabaseDate is not null;
         Background = System.Windows.Media.Brushes.Transparent; ClipToBounds = true;
         // Rows: header, map card, traffic strip, node list, footer, Destinations card, settings.
@@ -153,6 +158,7 @@ internal sealed class ConnectionsPage : Grid
         var foot = layoutFooter = new StackPanel(); export = Button("Export CSV…", () => _ = ExportAsync()); export.HorizontalAlignment = HorizontalAlignment.Left; foot.Children.Add(export); foot.Children.Add(selection); Grid.SetRow(foot, 4); body.Children.Add(foot);
         destinations = new DestinationsCard(session); Grid.SetRow(destinations, 5); body.Children.Add(destinations);
         destinations.clockSeconds = () => stopwatch.Elapsed.TotalSeconds; destinations.SelectionChanged += OnDestinationSelectionChanged;
+        destinations.CopyRequested += CopyDestination; destinations.Export.Click += (_, _) => _ = ExportDestinationsAsync();
         var settings = layoutSettings = new StackPanel(); var databaseActions = new WrapPanel(); download = Button("Download / update locations", () => _ = UpdateDatabaseAsync()); cancel = Button("Cancel download", () => downloadCancellation?.Cancel()); cancel.IsEnabled = false; databaseActions.Children.Add(download); databaseActions.Children.Add(cancel); databaseActions.Children.Add(progress); settings.Children.Add(databaseActions); settings.Children.Add(database);
         var options = new StackPanel(); var choices = new WrapPanel(); recording.IsChecked = session.Settings.ConnectionsRecording; databaseActions.Children.Add(recording); Named(citySearch, "Search offline home cities"); citySearch.ToolTip = "Search 7,342 offline cities by name or country"; choices.Children.Add(citySearch); Named(home, "Home city"); choices.Children.Add(home); choices.Children.Add(Button("Clear home city", () => home.SelectedIndex = 0)); options.Children.Add(choices); settings.Children.Add(storage);
         options.Children.Add(Ui.Text("Origin and destination geography are approximate; curves are illustrative. The node list follows the nodes visible on the map; the Destinations table lists every destination, including local, special-purpose and unlocated ones. The strip under the map stacks the six applications with the most traffic in the interval, plus Other; its colours identify applications, not direction. Click it to move the minute cursor, or click an application to show only it. Rolling history: 30 days, up to 256 MiB locally. CSV exports the full filtered interval to a new file.", 11, "Muted")); settings.Children.Add(new Expander { Header = "Recording, origin and storage", Content = options }); Grid.SetRow(settings, 6); settings.Children.Insert(0, actionStatus); body.Children.Add(settings);
@@ -421,7 +427,18 @@ internal sealed class ConnectionsPage : Grid
     private bool LiveFiltersSet() => search.Text.Trim().Length > 0 || !string.IsNullOrWhiteSpace(country.Text) || direction.SelectedItem is ConnectionDirection value && value != ConnectionDirection.Both || applicationFilter.Length > 0;
     private static bool FiltersSet(ConnectionHistoryQuery query) => query.Search.Length > 0 || query.CountryCode.Length > 0 || query.Direction != ConnectionDirection.Both || query.Application.Length > 0;
     private static string Description(PeerRow row) => $"{row.Application} · {row.Endpoint} · {row.Location} · {row.Coverage} · {row.Seen}";
-    private void UpdateExportEnabled()=>export.IsEnabled=IsHistory&&!exportInProgress;
+    /// <summary>Export CSV… and Export destinations… share one busy state and are enabled only in History; in Live the latter says why.</summary>
+    private void UpdateExportEnabled()
+    {
+        export.IsEnabled = destinations.Export.IsEnabled = IsHistory && !exportInProgress;
+        destinations.Export.ToolTip = IsHistory ? null : DestinationCopy.ExportLiveOnly;
+    }
+    /// <summary>Puts Destinations text on the clipboard; the action status says whether it worked, naming only the exception type.</summary>
+    private void CopyDestination(string text)
+    {
+        try { SetClipboard(text); actionStatus.Text = DestinationCopy.Copied; }
+        catch (Exception error) { actionStatus.Text = DestinationCopy.CopyFailed(error.GetType().Name); }
+    }
     private void ClearSelection()
     {
         selectedKey=null; nodeDetails.Visibility=Visibility.Collapsed; nodeText.Text="";
@@ -541,6 +558,28 @@ internal sealed class ConnectionsPage : Grid
         try {await exportHistory(path,query);actionStatus.Text="CSV exported to a new file. Saved history is unchanged.";}
         catch(Exception error) {actionStatus.Text=$"Export failed ({error.GetType().Name}); choose a new writable file.";}
         finally {exportInProgress=false;UpdateExportEnabled();}
+    }
+    private async Task ExportDestinationsAsync()
+    {
+        if (exportInProgress) return;
+        if (session.Connections is null) { actionStatus.Text = "Connection export unavailable."; return; }
+        // As for Export CSV: an invalid interval opens no dialog, and the dialog never promises an overwrite.
+        BuildQuery(out var whole); if (whole is null) return;
+        var dialog = new SaveFileDialog { Filter = "CSV files (*.csv)|*.csv", FileName = $"destinations-{DateTime.Now:yyyyMMdd-HHmmss}.csv", OverwritePrompt = false }; if (dialog.ShowDialog() != true) return;
+        await ExportDestinationsToPathAsync(dialog.FileName);
+    }
+    /// <summary>Exports the scope's destinations over the whole-interval query, every filter included and the minute cursor ignored, to a new file.</summary>
+    private async Task ExportDestinationsToPathAsync(string path)
+    {
+        if (exportInProgress) return;
+        BuildQuery(out var whole); if (whole is null) return;
+        var scope = destinations.CurrentScope;
+        if (System.IO.File.Exists(path)) { actionStatus.Text = "That file already exists; exports never overwrite. Choose a new file name."; return; }
+        exportInProgress = true; UpdateExportEnabled();
+        try { await exportDestinations(path, whole, scope); actionStatus.Text = "CSV exported to a new file. Saved history is unchanged."; }
+        catch (ConnectionHistoryLimitException) { actionStatus.Text = DestinationCopy.ExportLimit; }
+        catch (Exception error) { actionStatus.Text = $"Export failed ({error.GetType().Name}); choose a new writable file."; }
+        finally { exportInProgress = false; UpdateExportEnabled(); }
     }
     private async Task UpdateDatabaseAsync()
     {

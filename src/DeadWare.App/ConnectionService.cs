@@ -45,6 +45,17 @@ public sealed class ConnectionService
             store!.ExportCsv(writer,query);
         }).ConfigureAwait(false);
     }
+    /// <summary>Writes every destination in <paramref name="scope"/> over the whole interval to a new file, off the UI thread, in UTF-8 without a BOM.</summary>
+    public async Task ExportDestinationsCsvAsync(string path,ConnectionHistoryQuery query,DestinationScope scope)
+    {
+        await InitializeAsync().ConfigureAwait(false);
+        await Task.Run(()=>
+        {
+            using var stream=new FileStream(path,FileMode.CreateNew,FileAccess.Write,FileShare.None);
+            using var writer=new StreamWriter(stream,new System.Text.UTF8Encoding(false));
+            store!.ExportDestinationsCsv(writer,query,scope);
+        }).ConfigureAwait(false);
+    }
     public async Task UpdateLocationDatabaseAsync(IProgress<double>? progress=null,CancellationToken cancellationToken=default)
     {
         using var linked=CancellationTokenSource.CreateLinkedTokenSource(cancellationToken,finishing.Token);
