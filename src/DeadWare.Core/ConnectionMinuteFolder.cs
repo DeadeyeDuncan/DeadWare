@@ -128,13 +128,15 @@ public sealed class ConnectionMinuteFolder
     {
         var send = new List<ConnectionMinuteUnit>(); var retired = new List<ConnectionMinuteUnit>();
         int records = 0, coverage = 0;
+        bool full = false; // After the first sendable unit that does not fit, take no more sendables but keep retiring.
         for (int i = 0; i < waiting.Count; i++)
         {
             var unit = waiting[i];
             long excess = Latest(unit) - now.UtcTicks - FutureGuard.Ticks;
             if (excess <= 0)
             {
-                if (send.Count > 0 && (records + unit.Records.Count > maximumRecords || coverage + unit.Coverage.Count > maximumCoverage)) break;
+                if (full) continue;
+                if (send.Count > 0 && (records + unit.Records.Count > maximumRecords || coverage + unit.Coverage.Count > maximumCoverage)) { full = true; continue; }
                 send.Add(unit); records += unit.Records.Count; coverage += unit.Coverage.Count;
             }
             else if (excess <= ClockHold.Ticks && !final) continue;

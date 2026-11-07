@@ -177,6 +177,23 @@ public sealed class ConnectionMinuteFolderTests : IDisposable
         Assert.Empty(rest.Retired);
         f.Sent(rest.Send);
         Assert.Equal(0, f.Waiting);
+
+        // The first sendable unit is always taken, even over the limits.
+        var over = F();
+        Merge(over, Pub(10, 9, [D(9.5), D(9.6, remote: "9.9.9.9")])); over.FreezeAll(); // 2 records + 1 run
+        Assert.Equal([M0], over.Sendable(M0.AddHours(1), false, 1, 1).Send.Select(u => u.Minute));
+    }
+
+    [Fact] public void Full_payload_still_retires_later_units_in_the_same_pass()
+    {
+        var f = F();
+        Merge(f, Pub(10, 9, [D(9.5), D(9.6, remote: "9.9.9.9")])); f.FreezeAll();    // minute 0: 2 records + 1 run, latest M0+10 s
+        Merge(f, Pub(70, 69, [D(69.5), D(69.6, remote: "9.9.9.9")])); f.FreezeAll(); // minute 1: 2 records + 1 run, latest M0+70 s; does not fit
+        Merge(f, Pub(200, 199, [D(199.5)])); f.FreezeAll();                           // minute 3: latest M0+200 s, 128 s ahead
+        var result = f.Sendable(M0.AddSeconds(70), false, 3, 3);
+        Assert.Equal([M0], result.Send.Select(u => u.Minute));
+        Assert.Equal([M0.AddMinutes(3)], result.Retired.Select(u => u.Minute));
+        Assert.Equal(6, f.Waiting);
     }
 
     [Fact] public void Clock_check_holds_up_to_sixty_seconds_then_retires()
@@ -192,6 +209,15 @@ public sealed class ConnectionMinuteFolderTests : IDisposable
         Assert.Equal([M0], f.Sendable(M0.AddSeconds(8), false).Send.Select(u => u.Minute));
         Assert.Equal([M0], f.Sendable(M0.AddSeconds(7), true).Retired.Select(u => u.Minute));
         Assert.Equal(0, f.Waiting);
+
+        // Boundary: latest M0+10 s, so excess = M0+8 s - now. Exactly ClockHold is held; one tick more is retired.
+        var edge = F();
+        Merge(edge, Pub(10, 9, [D(9.5)])); edge.FreezeAll();
+        var atHold = M0.AddSeconds(8) - ConnectionMinuteFolder.ClockHold;
+        var held = edge.Sendable(atHold, false);
+        Assert.Empty(held.Send); Assert.Empty(held.Retired); Assert.Equal(2, edge.Waiting);
+        Assert.Equal([M0], edge.Sendable(atHold.AddTicks(-1), false).Retired.Select(u => u.Minute));
+        Assert.Equal(0, edge.Waiting);
 
         var dropped = F();
         Merge(dropped, Pub(10, 9, [D(9.5)])); dropped.FreezeAll();
