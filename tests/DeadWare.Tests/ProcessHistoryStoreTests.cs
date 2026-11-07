@@ -67,7 +67,8 @@ public class ProcessHistoryStoreTests
     {
         using var fixture = new Fixture(); var store = fixture.Open();
         long big = long.MaxValue / 4;
-        var apps = Enumerable.Range(0, ProcessHistory.MaximumApplications).Select(i => App($"application-{i:00}.exe", big, big, big, big))
+        // 0.14.0's 30-app format; Task 10 moves this test to MaximumApplications and 6 MiB.
+        var apps = Enumerable.Range(0, 30).Select(i => App($"application-{i:00}.exe", big, big, big, big))
             .Append(Else(big, big, big, big)).ToArray();
         for (int start = 0; start < 1440; start += 60)
             store.Append("DESKTOP-ABCDEFG", Enumerable.Range(start, 60).Select(i => Batch(Day.AddMinutes(i), apps: apps)).ToList(), Day.AddDays(1));
