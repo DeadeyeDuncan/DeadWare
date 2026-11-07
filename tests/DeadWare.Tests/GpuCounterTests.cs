@@ -52,7 +52,7 @@ public class GpuCounterTests
     public void An_interval_outside_freshness_has_no_previous_collection(double dt){ R(10);var r=R(10+dt);Assert.Null(r.PreviousUtcTime);Assert.Null(r.IntervalSeconds);}   // 1 s polling: 4 s
     [Fact] public void A_slower_previous_interval_keeps_its_freshness_limit(){ R(0,interval:10);var r=R(10,interval:0.5);   // FreshnessSeconds(Math.Max(10,0.5)) = 13 s, as the tracker
         Assert.Equal(T(0),r.PreviousUtcTime);Assert.Equal(10,r.IntervalSeconds!.Value,6);Assert.Null(R(20,interval:0.5).IntervalSeconds);}   // then 0.5 s on both sides: 4 s
-    [Theory][InlineData(GpuPdhStatus.InvalidData)][InlineData(GpuPdhStatus.CalcNegativeDenominator)][InlineData(GpuPdhStatus.CalcNegativeValue)]
+    [Theory][InlineData(GpuPdhStatus.InvalidData)][InlineData(GpuPdhStatus.CStatusInvalidData)][InlineData(GpuPdhStatus.CalcNegativeDenominator)][InlineData(GpuPdhStatus.CalcNegativeValue)]
     public void A_benign_array_status_is_not_ready_and_fails_only_after_60_s(uint status){ api.Arrays[GpuCounterKind.Engine]=new(status,[]);
         foreach(double s in new[]{0,30,59.9}){var r=R(s);Assert.True(r.State.Available);Assert.False(r.EnginesReady);Assert.Equal(0,r.Skipped);}
         Assert.Equal(new ProcessColumnState(false,$"GPU counters unavailable (error 0x{status:X8})"),R(60).State);Assert.Equal(1,api.Closes);
