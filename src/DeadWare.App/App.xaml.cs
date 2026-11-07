@@ -116,6 +116,8 @@ public partial class App : Application
         bool processes=!args.Contains("--no-processes"),etw=!args.Contains("--no-etw");
         return new(HardwareEnabled:!args.Contains("--no-hardware"),EtwEnabled:etw,DiagnosticTimings:true,ProcessMonitoring:processes,ProcessDiskTracing:ProcessFeatures.DiskColumns&&elevated&&processes&&etw);
     }
+    internal static string DiagnosticReport(string status,string? stage,int deadlineSeconds,CollectorOptions options,IReadOnlyList<Reading> samples)=>
+        JsonSerializer.Serialize(new{Version=BuildInfo.Version,Status=status,Stage=stage,CollectionDeadlineSeconds=deadlineSeconds,ShutdownDeadlineSeconds=3,Options=options,Samples=samples},new JsonSerializerOptions{WriteIndented=true});
     private static async Task<int> DiagnoseAsync(string[] args)
     {
         Collector? collector=null;string? output=null;int exit=0;string status="Starting";
@@ -125,7 +127,7 @@ public partial class App : Application
         {
             if(output is null)return;
             Directory.CreateDirectory(Path.GetDirectoryName(output)!);
-            var text=JsonSerializer.Serialize(new{Version=BuildInfo.Version,Status=status,Stage=collector?.Stage,CollectionDeadlineSeconds=deadlineSeconds,ShutdownDeadlineSeconds=3,Options=options,Samples=readings},new JsonSerializerOptions{WriteIndented=true});
+            var text=DiagnosticReport(status,collector?.Stage,deadlineSeconds,options,readings);
             string temporary=output+".tmp";await File.WriteAllTextAsync(temporary,text);File.Move(temporary,output,true);
         }
         try

@@ -92,6 +92,8 @@ internal static class ApplicationResourcesUiChecks
             Ram_click_ranks_by_average_memory(page, card);
             Arrow_keys_move_the_selection_and_enter_lists_it(page, card);
             The_minute_refresh_keeps_the_slot_and_moves_its_hairlines_with_the_grid(page, card);
+            Left_and_right_mark_both_charts_and_the_minute_refresh_keeps_the_cursor(page, card);
+            Esc_clears_a_cursor_that_lists_nothing_and_the_refresh_keeps_it_cleared(page, card);
             A_new_period_clears_the_moment(page, card);
             Clicking_a_slot_without_process_data_says_so(page, card, minute.AddMinutes(-11));
             Slot_heading_formats();
@@ -103,6 +105,8 @@ internal static class ApplicationResourcesUiChecks
             More_applications_than_the_rows_read_say_top_n_of_m(folder);
             A_failed_series_read_keeps_the_chart_name(folder);
             Clear_without_a_chart_hands_its_focus_to_rank_by(folder);
+            The_minute_refresh_updates_the_rows_in_place_and_keeps_the_current_cell(folder);
+            A_new_ranking_starts_the_table_at_the_top(folder);
             Status_line_follows_the_recording_switches_without_a_read(folder);
         }
         finally
@@ -497,7 +501,7 @@ internal static class ApplicationResourcesUiChecks
     private static void Arrow_keys_move_the_selection_and_enter_lists_it(UsageHistoryPage page, ApplicationResourcesCard card)
     {
         var cpu = page.Chart("cpu"); var memory = page.Chart("memory");
-        // Right moves the selection on the focused chart; nothing is listed until Enter.
+        // Right moves the selection on both charts; nothing is listed until Enter.
         Assert.True(cpu.HandleKey(Key.Right)); Assert.True(cpu.HandleKey(Key.Right));
         Assert.Equal(1, cpu.SelectedIndex);
         Assert.Null(card.Slot);
@@ -520,13 +524,73 @@ internal static class ApplicationResourcesUiChecks
         var slot = card.Slot; string heading = Heading(card);
         Assert.NotNull(slot);
         // A refresh reads the period again a little later, so the bucket grid moves under the slot: here two earlier slots now come first.
-        static UsageHistoryBucket At(UsageHistoryView view, int k) => new(view.From.AddMilliseconds(k * view.BucketMilliseconds),
-            view.From.AddMilliseconds((k + 1) * view.BucketMilliseconds), 40, 20, 60, 1, 1, 60);
         page.Apply(data with { Metrics = data.Metrics.ToDictionary(p => p.Key, p => p.Value with { Buckets = [At(p.Value, 0), At(p.Value, 1), .. p.Value.Buckets] }) });
         Assert.Equal(3, page.Chart("cpu").SelectedIndex); Assert.Equal(3, page.Chart("memory").SelectedIndex);
         Assert.Equal(slot, card.Slot); Assert.Equal(heading, Heading(card));
         page.Apply(data);
         Assert.Equal(1, page.Chart("cpu").SelectedIndex); Assert.Equal(1, page.Chart("memory").SelectedIndex);
+    }
+
+    private static void Left_and_right_mark_both_charts_and_the_minute_refresh_keeps_the_cursor(UsageHistoryPage page, ApplicationResourcesCard card)
+    {
+        var data = (UsagePageData)typeof(UsageHistoryPage).GetField("data", All)!.GetValue(page)!;
+        var cpu = page.Chart("cpu"); var memory = page.Chart("memory"); var slot = card.Slot; string heading = Heading(card);
+        int moves = 0; Action<int> count = _ => moves++; cpu.SelectionMoved += count;
+        Press(cpu, Key.Right); Press(cpu, Key.Right); cpu.SelectionMoved -= count; Assert.Equal(2, moves);
+        Assert.Equal(3, cpu.SelectedIndex); Assert.Equal(3, memory.SelectedIndex);
+        Layout(page); Assert.Equal(1, Hairlines(cpu)); Assert.Equal(1, Hairlines(memory));
+        Press(memory, Key.Left);
+        Assert.Equal(2, cpu.SelectedIndex); Assert.Equal(2, memory.SelectedIndex);
+        Assert.Equal(slot, card.Slot); Assert.Equal(heading, Heading(card));
+        // RAM lacks its first bucket: the charts match by time, not by index.
+        page.Apply(data with { Metrics = data.Metrics.ToDictionary(p => p.Key, p => p.Key == "memory" ? p.Value with { Buckets = [.. p.Value.Buckets.Skip(1)] } : p.Value) });
+        Assert.Equal(2, cpu.SelectedIndex); Assert.Equal(1, memory.SelectedIndex);
+        Press(cpu, Key.Right);
+        Assert.Equal(3, cpu.SelectedIndex); Assert.Equal(2, memory.SelectedIndex);
+        page.Apply(data);
+        Assert.Equal(3, cpu.SelectedIndex); Assert.Equal(3, memory.SelectedIndex);   // not back to the listed slot (1)
+        // Two earlier slots now come first: the cursor follows its time.
+        page.Apply(data with { Metrics = data.Metrics.ToDictionary(p => p.Key, p => p.Value with { Buckets = [At(p.Value, 0), At(p.Value, 1), .. p.Value.Buckets] }) });
+        Assert.Equal(5, cpu.SelectedIndex); Assert.Equal(5, memory.SelectedIndex);
+        page.Apply(data);
+        Assert.Equal(3, cpu.SelectedIndex); Assert.Equal(slot, card.Slot);
+        // Enter lists the bucket and leaves the focus on the chart: ShowMoment's BringIntoView scrolls the card in without moving focus.
+        // Offscreen nothing can take keyboard focus, and Focus() then takes the scope's logical focus only while nothing holds it. So Enter
+        // is pressed once with nothing focused, where any Focus() call while the bucket is listed would show, and once on the focused chart.
+        var scope = FocusManager.GetFocusScope(cpu); FocusManager.SetFocusedElement(scope, null);
+        Press(cpu, Key.Left); var earlier = Bucket(cpu, 2); Assert.True(cpu.HandleKey(Key.Enter));
+        Assert.Null(FocusManager.GetFocusedElement(scope));
+        WaitFor(() => !card.Loading && card.View is { } shown && shown.From == earlier.Start);
+        Assert.Null(FocusManager.GetFocusedElement(scope));
+        Press(cpu, Key.Right); FocusManager.SetFocusedElement(scope, cpu);
+        var bucket = Bucket(cpu, 3); Assert.True(cpu.HandleKey(Key.Enter));
+        WaitFor(() => !card.Loading && card.View is { } shown && shown.From == bucket.Start);
+        Assert.Equal((bucket.Start, bucket.End), card.Slot);
+        Assert.Equal(3, cpu.SelectedIndex); Assert.Equal(3, memory.SelectedIndex);
+        Assert.Same(cpu, FocusManager.GetFocusedElement(scope)); FocusManager.SetFocusedElement(scope, null);
+    }
+
+    private static void Esc_clears_a_cursor_that_lists_nothing_and_the_refresh_keeps_it_cleared(UsageHistoryPage page, ApplicationResourcesCard card)
+    {
+        var data = (UsagePageData)typeof(UsageHistoryPage).GetField("data", All)!.GetValue(page)!;
+        var cpu = page.Chart("cpu"); var memory = page.Chart("memory");
+        Press(cpu, Key.Escape); Assert.Null(card.Slot);
+        Press(cpu, Key.Right);
+        Assert.Equal(0, cpu.SelectedIndex); Assert.Equal(0, memory.SelectedIndex); Assert.Null(card.Slot);
+        Press(cpu, Key.Escape);
+        Assert.Null(cpu.SelectedIndex); Assert.Null(memory.SelectedIndex);
+        page.Apply(data);
+        Assert.Null(cpu.SelectedIndex); Assert.Null(memory.SelectedIndex);
+        // A refresh can leave the cursor's time in no bucket (here both charts lose their first), so neither chart draws it. Esc still
+        // clears it, so a later refresh does not bring it back.
+        Press(cpu, Key.Right); Assert.Equal(0, cpu.SelectedIndex);
+        page.Apply(data with { Metrics = data.Metrics.ToDictionary(p => p.Key, p => p.Value with { Buckets = [.. p.Value.Buckets.Skip(1)] }) });
+        Assert.Null(cpu.SelectedIndex); Assert.Null(memory.SelectedIndex);
+        Press(cpu, Key.Escape); page.Apply(data);
+        Assert.Null(cpu.SelectedIndex); Assert.Null(memory.SelectedIndex);
+        // Leaves a listed slot for A_new_period_clears_the_moment.
+        Activate(cpu, 1); var bucket = Bucket(cpu, 1);
+        WaitFor(() => !card.Loading && card.View is { } shown && shown.From == bucket.Start);
     }
 
     private static void A_new_period_clears_the_moment(UsageHistoryPage page, ApplicationResourcesCard card)
@@ -695,6 +759,59 @@ internal static class ApplicationResourcesUiChecks
         Assert.Same(RankBy(card), FocusManager.GetFocusedElement(scope));
     }
 
+    private static void The_minute_refresh_updates_the_rows_in_place_and_keeps_the_current_cell(string folder)
+    {
+        var card = new ApplicationResourcesCard(Session(null, folder)); var to = DateTimeOffset.UtcNow;
+        // The same day each minute; each refresh adds to the forty apps' CPU time.
+        ProcessResourceView Ranking(int extra, bool app39First = false) => FortyApps(to.AddDays(-1), to, extra, app39First);
+        card.Apply(Ranking(0), to); Layout(card);
+        var table = Table(card); var scroller = Descendants(table).OfType<ScrollViewer>().First();
+        scroller.ScrollToBottom(); WaitFor(() => { Layout(card); return scroller.VerticalOffset > 0; }); double offset = scroller.VerticalOffset;
+        Select(card, "app39.exe"); var row = Rows(card).Single(r => Cell(r, "Name") == "app39.exe"); var column = table.Columns[1];
+        table.CurrentCell = new DataGridCellInfo(row, column); Layout(card);
+        var container = (DataGridRow)table.ItemContainerGenerator.ContainerFromItem(row); var cell = (DataGridCell)column.GetCellContent(container).Parent;
+        var scope = FocusManager.GetFocusScope(cell); FocusManager.SetFocusedElement(scope, cell);
+        // The next minute: the same rows with new numbers, so the row, its container, the cell with the focus and the scroll offset stay.
+        card.Apply(Ranking(60), to); Layout(card);
+        Assert.Same(row, Rows(card).Single(r => Cell(r, "Name") == "app39.exe")); Assert.Equal(ApplicationResourcesCard.Duration(421), Cell(row, "CpuTime"));
+        Assert.Same(container, table.ItemContainerGenerator.ContainerFromItem(row)); Assert.Equal(ApplicationResourcesCard.Duration(421), ((TextBlock)cell.Content).Text);
+        Assert.True(cell.IsDescendantOf(table)); Assert.Same(cell, FocusManager.GetFocusedElement(scope));
+        Assert.Same(row, table.SelectedItem); Assert.Same(row, table.CurrentCell.Item); Assert.Same(column, table.CurrentCell.Column);
+        Assert.Equal(offset, scroller.VerticalOffset, 3); Assert.Equal("app39.exe", card.SelectedApp);
+        // A new order moves the row itself, still selected.
+        card.Apply(Ranking(120, app39First: true), to); Layout(card);
+        Assert.Equal("app39.exe", RowNames(card)[0]); Assert.Equal("Everything else", LastRowName(card)); Assert.Equal(41, Rows(card).Count);
+        Assert.Same(row, Rows(card)[0]); Assert.Same(row, table.SelectedItem);
+        // Review Focus 5: a search that hides the selected row keeps the app selected; clearing it selects the row again.
+        SetSearch(card, "app1"); Assert.DoesNotContain("app39.exe", RowNames(card)); Assert.Equal("app39.exe", card.SelectedApp);
+        SetSearch(card, ""); Assert.Equal("app39.exe", Cell(table.SelectedItem!, "Name")); Assert.Equal("app39.exe", card.SelectedApp);
+        FocusManager.SetFocusedElement(scope, null);
+    }
+
+    private static void A_new_ranking_starts_the_table_at_the_top(string folder)
+    {
+        var card = new ApplicationResourcesCard(Session(null, folder)); var to = DateTimeOffset.UtcNow; var from = to.AddDays(-1);
+        card.Apply(FortyApps(from, to), to); Layout(card);
+        var scroller = Descendants(Table(card)).OfType<ScrollViewer>().First();
+        void ScrollDown() { scroller.ScrollToBottom(); WaitFor(() => { Layout(card); return scroller.VerticalOffset > 0; }); }
+        // Every view here lists the same forty apps, so the rows stay where they are and only the new ranking can move the table to its top.
+        void StartsAtTheTop(ProcessResourceView view) { card.Apply(view, to); WaitFor(() => { Layout(card); return scroller.VerticalOffset == 0; }); }
+        // Rank by: with no period loaded it starts no read, and the next view is ranked by average memory.
+        ScrollDown(); SetRank(card, ProcessRank.AverageMemory); StartsAtTheTop(FortyApps(from, to));
+        // ◀ Earlier: the same length a day back. A range change: a week.
+        ScrollDown(); StartsAtTheTop(FortyApps(from.AddDays(-1), from));
+        ScrollDown(); StartsAtTheTop(FortyApps(to.AddDays(-7), to));
+        // A listed slot, as ShowSlot holds it while its read runs: period to slot; the same slot read again by the minute refresh keeps
+        // the offset; another slot; back to the period (Clear or Esc).
+        (DateTimeOffset From, DateTimeOffset To) first = (to.AddMinutes(-30), to.AddMinutes(-27)), second = (to.AddMinutes(-20), to.AddMinutes(-17));
+        ScrollDown(); SetSlot(card, first); StartsAtTheTop(FortyApps(first.From, first.To));
+        ScrollDown(); double offset = scroller.VerticalOffset;
+        card.Apply(FortyApps(first.From, first.To, extra: 60), to); Layout(card);
+        Assert.Equal(offset, scroller.VerticalOffset, 3);
+        SetSlot(card, second); StartsAtTheTop(FortyApps(second.From, second.To));
+        ScrollDown(); SetSlot(card, null); StartsAtTheTop(FortyApps(from, to));
+    }
+
     private static void Status_line_follows_the_recording_switches_without_a_read(string folder)
     {
         string root = Path.Combine(folder, "status"); Directory.CreateDirectory(root);
@@ -737,6 +854,22 @@ internal static class ApplicationResourcesUiChecks
         Assert.Equal(Visibility.Visible, Named(card, "Share of period total").Visibility);
         Assert.True(IsShown(Table(card), card));
     }
+
+    /// <summary>Forty apps ranked by CPU time, app00.exe first, and Everything else: more rows than the table shows at once.
+    /// <paramref name="extra"/> adds to each app's CPU time; with <paramref name="app39First"/>, app39.exe has overtaken the rest and is
+    /// listed first.</summary>
+    private static ProcessResourceView FortyApps(DateTimeOffset from, DateTimeOffset to, int extra = 0, bool app39First = false)
+    {
+        var rows = Enumerable.Range(0, 40).Select(i => new ProcessResourceRow($"app{i:00}.exe", 400 - i + extra, 1, 1e6, 1, 1, 60, false, 6e7)).ToList();
+        if (app39First) { rows.RemoveAt(39); rows.Insert(0, new("app39.exe", 1000, 1, 1e6, 1, 1, 60, false, 6e7)); }
+        var everythingElse = new ProcessResourceRow(ProcessHistory.EverythingElse, 10, 1, 1e6, 1, 1, 60, true, 6e7);
+        return new(from, to, rows, 40, everythingElse, rows.Sum(r => r.CpuSeconds) + everythingElse.CpuSeconds, 60, from, to, from, 4096);
+    }
+
+    /// <summary>Sets the slot the card lists, as <see cref="ApplicationResourcesCard.ShowSlot"/> does before its read, without starting a
+    /// read; null is the period ranking, as after <see cref="ApplicationResourcesCard.ClearSlot"/>.</summary>
+    private static void SetSlot(ApplicationResourcesCard card, (DateTimeOffset From, DateTimeOffset To)? slot)
+        => typeof(ApplicationResourcesCard).GetField("slot", All)!.SetValue(card, slot);
 
     private static ProcessResourceView View(DateTimeOffset from, DateTimeOffset to, long recorded, long? applications = null)
         => new(from, to, recorded == 0 ? [] : [new("a.exe", 60, 1, 1e6, 1, 1, recorded, false, 6e7)], applications ?? (recorded == 0 ? 0 : 1),
@@ -842,6 +975,9 @@ internal static class ApplicationResourcesUiChecks
         Assert.Equal(index, chart.SelectedIndex);
     }
     private static UsageHistoryBucket Bucket(UsageHistoryChart chart, int index) => Traces(chart)[0].View.Buckets[index];
+    /// <summary>Bucket <paramref name="k"/> of the view's grid, one recorded minute, for a refresh whose grid holds a slot the fixture's does not.</summary>
+    private static UsageHistoryBucket At(UsageHistoryView view, int k) => new(view.From.AddMilliseconds(k * view.BucketMilliseconds),
+        view.From.AddMilliseconds((k + 1) * view.BucketMilliseconds), 40, 20, 60, 1, 1, 60);
     /// <summary>Accent hairlines the chart drew at its last render.</summary>
     private static int Hairlines(UsageHistoryChart chart)
     {

@@ -44,6 +44,8 @@ internal sealed class UsageHistoryPage : ScrollViewer
     private readonly Border resourcesCard;
     private readonly DispatcherTimer timer = new() { Interval = TimeSpan.FromSeconds(60) };
     private UsagePageData? data;
+    // The moment the CPU and RAM hairlines mark: the listed slot's middle, or the bucket Left or Right moved to since; null for none.
+    private DateTimeOffset? marked;
     private int revision, offset;
     private bool refreshing, refreshAgain, syncing;
     private int Days => (range.SelectedItem as RangeChoice)?.Days ?? 1;
@@ -96,13 +98,15 @@ internal sealed class UsageHistoryPage : ScrollViewer
         {
             charts[kind].Selectable = true;
             charts[kind].BucketActivated += index => ShowMoment(kind, index, ranking);
+            charts[kind].SelectionMoved += index => MoveMoment(kind, index);
         }
-        resources.SlotCleared += () => { foreach (var (kind, _) in Moments) charts[kind].SelectedIndex = null; };
+        resources.SlotCleared += () => { marked = null; foreach (var (kind, _) in Moments) charts[kind].SelectedIndex = null; };
         PreviewKeyDown += (_, e) =>
         {
-            // Esc returns the card to the period ranking from anywhere on the page; keys in a drop-down (its own popup) stay its own.
+            // Esc returns the card to the period ranking from anywhere on the page, and clears the cursor even where a refresh left its
+            // time in no bucket and no hairline shows; keys in a drop-down (its own popup) stay its own.
             if (e.Key == Key.Escape && e.OriginalSource is Visual source && source.IsDescendantOf(this)
-                && (resources.Slot is not null || Moments.Any(m => charts[m.Kind].SelectedIndex is not null)))
+                && (resources.Slot is not null || marked is not null))
             { resources.ClearSlot(); e.Handled = true; }
         };
 
@@ -159,22 +163,29 @@ internal sealed class UsageHistoryPage : ScrollViewer
         if (data?.Metrics.GetValueOrDefault(kind) is not { } view || index >= view.Buckets.Count) return;
         var bucket = view.Buckets[index];
         resources.ShowSlot(bucket.Start, bucket.End, ranking);
-        MarkMoment();
+        marked = Middle(bucket); MarkMoment();
         // The card sits below the Device charts, out of view at a window's height: a click or Enter scrolls it in. Only activation does
         // this (never the minute refresh), and keyboard focus stays on the chart, so Left, Right and Enter keep working.
         resourcesCard.BringIntoView();
     }
-    /// <summary>Draws the listed slot's hairline on both charts at the bucket holding its middle, so it follows the slot's time when a
-    /// refresh moves the grid.</summary>
+    /// <summary>Puts the cursor at the bucket Left or Right moved to on one chart and marks its time on both charts; nothing is listed until Enter.</summary>
+    private void MoveMoment(string kind, int index)
+    {
+        if (data?.Metrics.GetValueOrDefault(kind) is not { } view || index < 0 || index >= view.Buckets.Count) return;
+        marked = Middle(view.Buckets[index]); MarkMoment();
+    }
+    private static DateTimeOffset Middle(UsageHistoryBucket bucket) => bucket.Start + (bucket.End - bucket.Start) / 2;
+    /// <summary>Draws the hairline on each of the CPU and RAM charts at its own bucket holding <see cref="marked"/>, or none where it has no
+    /// such bucket. The charts match by time, not by index, because their bucket lists differ where one metric has no minutes; and the mark
+    /// follows that time when a refresh moves the grid.</summary>
     private void MarkMoment()
     {
-        if (data is not { } shown || resources.Slot is not { } slot) return;
-        var middle = slot.From + (slot.To - slot.From) / 2;
+        if (data is not { } shown || marked is not { } time) return;
         foreach (var (kind, _) in Moments)
         {
             var buckets = shown.Metrics.GetValueOrDefault(kind)?.Buckets ?? [];
             int at = -1;
-            for (int i = 0; i < buckets.Count && at < 0; i++) if (buckets[i].Start <= middle && middle < buckets[i].End) at = i;
+            for (int i = 0; i < buckets.Count && at < 0; i++) if (buckets[i].Start <= time && time < buckets[i].End) at = i;
             charts[kind].SelectedIndex = at >= 0 ? at : null;
         }
     }

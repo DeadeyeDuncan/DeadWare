@@ -33,9 +33,9 @@ public sealed class ProcessHistoryStore(string path, long maximumDatabaseBytes =
     public const int ApplicationId = 0x44575052;
     private const long MaximumJournalBytes = 8L * 1024 * 1024;
     private const long MinuteMilliseconds = 60_000, DayMilliseconds = 86_400_000, FutureToleranceMilliseconds = 5 * MinuteMilliseconds;
-    private const int MaximumNameLength = 260, MaximumProcessors = 4096;
+    private const int MaximumProcessors = 4096;
     private const double TicksPerSecond = 10_000_000;
-    // Windows file names cannot contain '*', so no real image name collides with the reserved key.
+    // Saved names never contain '*' (ProcessHistory.SavedName), so no application's key is the reserved one.
     private const string EverythingElseKey = "*EVERYTHING ELSE";
     private const string Schema = """
         CREATE TABLE names(id INTEGER PRIMARY KEY, upper TEXT UNIQUE NOT NULL, display TEXT NOT NULL);
@@ -305,7 +305,7 @@ public sealed class ProcessHistoryStore(string path, long maximumDatabaseBytes =
         foreach (var app in batch.Applications)
         {
             if (app is null || app.CpuTime < 0 || app.IoRead < 0 || app.IoWrite < 0 || !double.IsFinite(app.MemoryByteSeconds) || app.MemoryByteSeconds < 0 ||
-                (!app.EverythingElse && (string.IsNullOrWhiteSpace(app.Name) || app.Name.Length > MaximumNameLength || app.Name.Any(char.IsControl))) ||
+                (!app.EverythingElse && (app.Name is null || ProcessHistory.SavedName(app.Name) != app.Name)) ||
                 !keys.Add(KeyOf(app)))
                 throw new ArgumentException("Invalid process history application minute.", nameof(batch));
         }

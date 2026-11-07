@@ -120,8 +120,7 @@ internal static class ProcessesPageUiChecks
         var (p,_)=Page(elevated:true);
         Expand(p,"chrome.exe");
         Assert.Equal([31,32,30],ChildPids(p,"chrome.exe"));
-        Assert.All(["cpu","memory","io","disk","network"],k=>Assert.NotEqual("",Cell(p,31,k)));
-        Assert.Equal("5 %",Cell(p,31,"cpu"));
+        Assert.Equal(["5 %","64.0 MB","3.0 KB/s","7.5 KB/s","4.0 KB/s"],new[]{"cpu","memory","io","disk","network"}.Select(k=>Cell(p,31,k)).ToArray());
         Assert.Equal("app:EXPLORER.EXE",Rows(p)[4].Id);
         // Process rows have no chevron of their own.
         Assert.Empty(Shown(Container(p,Row(p,31))).OfType<ToggleButton>());
@@ -338,17 +337,21 @@ internal static class ProcessesPageUiChecks
         var (asking,_)=Page();
         using var open=new ManualResetEventSlim();
         using var answer=new ManualResetEventSlim();
-        asking.Confirm=(_,_)=>{open.Set();answer.Wait(TimeSpan.FromSeconds(10));return false;};
+        int asks=0;
+        asking.Confirm=(_,_)=>{Interlocked.Increment(ref asks);open.Set();answer.Wait(TimeSpan.FromSeconds(10));return false;};
         try
         {
             Select(asking,"chrome.exe");
             Click(Button(asking,"End task…"));
             WaitFor(()=>open.IsSet);
+            Assert.False(Button(asking,"End task…")!.IsEnabled);Assert.False(Button(asking,"Open file location")!.IsEnabled);
+            Click(Button(asking,"End task…"));Press(asking,Key.Delete);
             Publish(asking,2,cpu:("Code.exe",99));
             Assert.Equal(held,AppNames(asking));
         }
         finally{answer.Set();}
         WaitFor(()=>Button(asking,"End task…")!.IsEnabled);
+        Assert.Equal(1,Volatile.Read(ref asks));
         Publish(asking,3);
         Assert.Equal("Code.exe",AppNames(asking)[0]);
     }
@@ -378,7 +381,9 @@ internal static class ProcessesPageUiChecks
         Select(p,"app40.exe");
         ScrollTo(p,200);
         Assert.Equal(200,VerticalOffset(p),tolerance:1);
-        Publish(p,2);
+        Publish(p,2,cpu:("app41.exe",40.5));
+        var names=AppNames(p);Assert.Equal(Sorted(p),names);Assert.True(Array.IndexOf(names,"app41.exe")<Array.IndexOf(names,"app40.exe"));
+        Assert.Equal([30,31,32],ChildPids(p,"chrome.exe"));
         Assert.Equal("app40.exe",Selected(p));
         Assert.True(IsExpanded(p,"chrome.exe"));
         Assert.Equal(200,VerticalOffset(p),tolerance:1);
@@ -432,6 +437,32 @@ internal static class ProcessesPageUiChecks
         Select(p,"chrome.exe");
         Press(p,Key.Delete);
         WaitFor(()=>Volatile.Read(ref asked)==1&&Button(p,"End task…")!.IsEnabled);
+    }
+
+    internal static void CheckShellKeys(MainWindow dashboard)
+    {
+        // The fixture's real, unshown MainWindow; its Processes page is off and has no reading. Fields by reflection (All).
+        var rail=((Dictionary<string,Button>)typeof(MainWindow).GetField("navigation",All)!.GetValue(dashboard)!)["processes"];
+        var page=(ProcessesPage)((Dictionary<string,FrameworkElement>)typeof(MainWindow).GetField("pages",All)!.GetValue(dashboard)!)["processes"];
+        var search=(TextBox)typeof(ProcessesPage).GetField("search",All)!.GetValue(page)!;
+        void Navigate(string key)=>typeof(MainWindow).GetMethod("Navigate",All)!.Invoke(dashboard,[key]);
+        Navigate("processes");var shell=(FrameworkElement)dashboard.Content;shell.Measure(new Size(1220,900));shell.Arrange(new Rect(0,0,1220,900));shell.UpdateLayout();
+        var widget=Assert.Single(Shown(shell).OfType<Button>(),b=>b.Content as string=="↗ Open widget");
+        search.Text="code";Assert.True(Press(rail,Key.Escape));Assert.Equal("",search.Text);
+        Assert.False(Press(rail,Key.Escape));                                   // nothing to clear
+        Assert.True(Press(widget,Key.F5));                                      // from the header, page off
+        search.Text="code";Assert.True(Press(dashboard,Key.Escape));Assert.Equal("",search.Text);   // nothing focused
+        // Offscreen the modifier state cannot be set (0.13.0 Task 17 ruling): the window's method is called with Control.
+        Assert.True(dashboard.PageKey(rail,Key.F,ModifierKeys.Control));Assert.Same(search,FocusManager.GetFocusedElement(FocusManager.GetFocusScope(search)));
+        Assert.False(dashboard.PageKey(rail,Key.F,ModifierKeys.None));
+        foreach(var key in new[]{Key.Delete,Key.Enter,Key.Left,Key.Right,Key.Down})Assert.False(dashboard.PageKey(rail,key,ModifierKeys.None));
+        search.Text="code";
+        Assert.False(dashboard.PageKey(page.Grid,Key.Escape,ModifierKeys.None));
+        Assert.False(dashboard.PageKey(PickerItems(page)[0],Key.Escape,ModifierKeys.None));Assert.False(dashboard.PageKey(PickerItems(page)[0],Key.F5,ModifierKeys.None));
+        Assert.Equal("code",search.Text);
+        Navigate("connections");
+        Assert.False(Press(rail,Key.Escape));Assert.False(Press(rail,Key.F5));Assert.False(dashboard.PageKey(rail,Key.F,ModifierKeys.Control));Assert.Equal("code",search.Text);
+        search.Text="";FocusManager.SetFocusedElement(dashboard,null);Navigate("overview");
     }
 
     private static void Selected_app_exiting_clears_selection_and_disables_actions()
@@ -492,6 +523,10 @@ internal static class ProcessesPageUiChecks
         Click(Button(p,"Open file location"));
         WaitFor(()=>StatusText(p)!="");
         Assert.Equal("The program file is no longer there.",StatusText(p));
+        Fake(p).ThrowOnAttributes=new UnauthorizedAccessException();
+        Click(Button(p,"Open file location"));
+        WaitFor(()=>StatusText(p)=="Could not open the file location (denied by Windows)."&&Button(p,"Open file location")!.IsEnabled);
+        Fake(p).ThrowOnAttributes=null;
         // An app whose processes run from two places asks for a process row.
         Fake(p)[31].ImagePath=Path.Combine(missing,"other","app.exe");
         Select(p,"chrome.exe");
@@ -695,11 +730,15 @@ internal static class ProcessesPageUiChecks
         }
         Layout(page);
     }
-    private static void Press(UIElement target,Key key)
+    /// <summary>A key pressed with <paramref name="target"/> focused: PreviewKeyDown, then KeyDown unless handled; true when either was handled.</summary>
+    private static bool Press(UIElement target,Key key)
     {
         var preview=new KeyEventArgs(Keyboard.PrimaryDevice,new KeySource(),0,key) {RoutedEvent=Keyboard.PreviewKeyDownEvent};
         target.RaiseEvent(preview);
-        if(!preview.Handled)target.RaiseEvent(new KeyEventArgs(Keyboard.PrimaryDevice,new KeySource(),0,key) {RoutedEvent=Keyboard.KeyDownEvent});
+        if(preview.Handled)return true;
+        var down=new KeyEventArgs(Keyboard.PrimaryDevice,new KeySource(),0,key) {RoutedEvent=Keyboard.KeyDownEvent};
+        target.RaiseEvent(down);
+        return down.Handled;
     }
     /// <summary>The input source a key event must name; it is never added to the sources, and offscreen nothing reads it.</summary>
     private sealed class KeySource : PresentationSource

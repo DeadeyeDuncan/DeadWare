@@ -30,6 +30,9 @@ internal interface IProcessControl
     /// Throws <see cref="System.ComponentModel.Win32Exception"/> when a running process's creation time cannot be read, so it is never mistaken for an exited one.</summary>
     long? CreationTicks(int pid);
     string? ImagePath(int pid);
+    /// <summary>The attributes of the file at <paramref name="path"/>, read and thrown as <see cref="File.GetAttributes(string)"/> reads and throws them.
+    /// <see cref="FileNotFoundException"/> or <see cref="DirectoryNotFoundException"/> means the file is gone; <see cref="UnauthorizedAccessException"/> means Windows denies access. <c>File.Exists</c> reads both as false.</summary>
+    FileAttributes Attributes(string path);
 }
 
 /// <summary>End task's and Open file location's Windows calls (spec, Actions). Only the terminate open may enable the debug privilege, and only on its own short-lived thread.</summary>
@@ -137,6 +140,8 @@ internal sealed class NativeProcessControl : IProcessControl
         using var process=OpenProcess(ProcessQueryLimitedInformation,false,pid);
         return process.IsInvalid?null:NativeProcessIdentity.ImagePath(process);
     }
+    /// <summary>Kept on <see cref="File.GetAttributes(string)"/> for .NET's long-path handling, which a raw <c>GetFileAttributesW</c> would lose.</summary>
+    public FileAttributes Attributes(string path)=>File.GetAttributes(path);
     private static string ReadWindowsFolder()
     {
         var folder=new StringBuilder(260);
@@ -169,7 +174,7 @@ internal sealed class NativeProcessControl : IProcessControl
 internal sealed class ProcessActions(IProcessControl control,Func<string,string?,bool> confirm,Func<string,bool> reveal,int ownPid,bool elevated)
 {
     internal static readonly TimeSpan EndWait=TimeSpan.FromSeconds(2);
-    private const string ProcessExited="The process has already exited.",CouldNotOpen="Could not open the file location.";
+    private const string ProcessExited="The process has already exited.",CouldNotOpen="Could not open the file location.",NoLongerThere="The program file is no longer there.";
     /// <summary>How long Open file location waits for the shell before it reports failure, so a hung Explorer never leaves the action pending.</summary>
     internal TimeSpan RevealTimeout {get;init;}=TimeSpan.FromSeconds(10);
 
@@ -267,7 +272,10 @@ internal sealed class ProcessActions(IProcessControl control,Func<string,string?
         if(paths.Count>1)return $"runs from {paths.Count} locations; expand to choose one";
         if(paths.Count==0)return unreadable is not null?Failed(unreadable):unreadPaths>0?CouldNotOpen:ProcessExited;
         string only=paths[0];
-        if(!File.Exists(only))return "The program file is no longer there.";
+        // File.Exists reads a denied file as missing, so the attributes are read instead; a folder at the path is not a program file.
+        try{if((control.Attributes(only)&FileAttributes.Directory)!=0)return NoLongerThere;}
+        catch(Exception e) when(e is FileNotFoundException or DirectoryNotFoundException){return NoLongerThere;}
+        catch(UnauthorizedAccessException){return "Could not open the file location (denied by Windows).";}
         return RevealOnSta(only)?"":CouldNotOpen;
     }
     /// <summary>Runs <c>reveal</c> on a short-lived STA thread, as the shell calls require, and rethrows what it threw; false when it has not returned within <see cref="RevealTimeout"/>.</summary>

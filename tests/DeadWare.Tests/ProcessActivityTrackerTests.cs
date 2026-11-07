@@ -89,4 +89,13 @@ public class ProcessActivityTrackerTests
     [Fact] public void Deltas_add_treats_null_as_zero_only_when_the_other_side_is_known(){
         var a=new ProcessDeltas(5,null,null,10,1);var b=new ProcessDeltas(null,7,null,20,2);var c=a.Add(b);
         Assert.Equal((5L,7L,(long?)null),(c.CpuTime,c.IoReadBytes,c.IoWriteBytes));Assert.Equal(30,c.MemoryByteSeconds,6);Assert.Equal(3,c.Seconds,6);}
+    [Theory][InlineData(true,false)][InlineData(false,true)]
+    public void Cpu_or_read_counter_going_backwards_is_null(bool cpuBack,bool readBack){ var t=new ProcessActivityTracker(8);t.Update(Scan(0,Entry(8,cpu:1000,read:100,write:100)));
+        var s=First(t.Update(Scan(1,Entry(8,cpu:cpuBack?500:2000,read:readBack?50:200,write:200))));
+        Assert.Null(s.CpuPercent);Assert.Null(s.IoReadPerSecond);Assert.Null(s.IoWritePerSecond);Assert.Equal(ProcessGap.FirstSample,s.RateGap);
+        Assert.Null(s.Deltas!.CpuTime);Assert.Null(s.Deltas.IoReadBytes);Assert.Null(s.Deltas.IoWriteBytes);}
+    [Fact] public void A_stale_scan_still_becomes_the_next_baseline(){ var t=new ProcessActivityTracker(8);t.Update(Scan(0,Entry(8)));
+        Assert.Null(First(t.Update(Scan(10,Entry(8,cpu:50*Second,read:5000)))).CpuPercent);
+        var s=First(t.Update(Scan(11,Entry(8,cpu:51*Second,read:5500))));
+        Assert.Equal(12.5,s.CpuPercent!.Value,6);Assert.Equal(500,s.IoReadPerSecond!.Value,6);Assert.Equal(Second,s.Deltas!.CpuTime);Assert.Equal(1,s.Deltas.Seconds,6);}
 }

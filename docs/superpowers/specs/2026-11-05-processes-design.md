@@ -78,7 +78,7 @@ Minor-version milestones:
   - Disk is physical drive transfers. Delayed cache writes are credited to System.
 - **Keyboard and accessibility:**
   - Left and Right collapse and expand, Enter toggles, Delete opens End task…, and Ctrl+F focuses the search box.
-  - Esc clears the search, and F5 re-sorts.
+  - Esc clears the search, and F5 re-sorts. From 0.14.1, Ctrl+F, F5 and Esc work whenever the page is shown, also while keyboard focus is in the sidebar or the header. A menu, pop-up or other control that uses one of these keys keeps it, so with the **Color theme** menu open, Esc first closes the menu.
   - The grid, search box, buttons and chevrons have automation names, and each row has a spoken summary.
   - Colours come from theme resources only.
 
@@ -119,7 +119,7 @@ Minor-version milestones:
   - All native work runs off the UI thread. The app manifest stays `asInvoker`.
 - **Open file location:**
   - Checks that the process still has the row's Generation.
-  - Reads the image path on demand with `QueryFullProcessImageNameW` and checks the file exists.
+  - Reads the image path on demand with `QueryFullProcessImageNameW` and checks the file is there. A file Windows reports not found says "The program file is no longer there."; one Windows denies access to says "Could not open the file location (denied by Windows)." and nothing is revealed, since Explorer has no more access.
   - A short-lived STA thread calls `SHOpenFolderAndSelectItems`, falling back to `explorer.exe /select,"<path>"`.
   - The path stays in local variables and is never stored or logged.
   - An app whose processes run from more than one path says "runs from 2 locations; expand to choose one".
@@ -162,7 +162,7 @@ Minor-version milestones:
   - The list aggregates exactly the stored minutes the clicked point averaged, those whose start falls in the slot (`ReadMetric`'s (minute − from) ÷ bucket grouping), with the card's formulas: CPU time and I/O summed, Avg CPU over the slot's covered seconds, and memory as each app's Σ(memory × Δt) ÷ the covered seconds of the minutes it was listed.
   - The heading names the minutes listed, from the first one's start to the last one's end, in local time, with the date on Week and Month (for example "Busiest apps · Nov 3 03:05–03:28").
   - The selection draws as a hairline on both charts. Esc or **Clear** returns to the period ranking.
-  - Keyboard: the CPU and RAM charts become focusable. Left and Right move the selected bucket, Enter lists it.
+  - Keyboard: the CPU and RAM charts become focusable. Left and Right move the selected bucket on both charts, matched by time, and the minute refresh keeps it at that time; Enter lists it. Esc, **Clear** and a range or period change also clear a cursor that lists nothing (Esc also when no slot is listed; **Clear** shows only while one is).
   - This extends the shared `UsageHistoryChart` with an optional selection and the byte unit, so the other charts are unchanged.
 - **Gaps:** a notice states how many minutes in the period have no process data (monitoring off, DeadWare not running, or a capture gap), plus a storage line for the history file.
 
@@ -280,6 +280,7 @@ When at least 4 ETW rows have their PID in the scan and more than 50 % of them m
 - **Lifecycle:**
   - Every start and stop runs on one serialized pool task, never on the poll thread. A start costs about 200 ms plus rundown.
   - **Shutdown:** `Collector.DisposeCoreAsync` requests the disk stop before it awaits the worker, next to `StopNetworkCaptureAsync()`, and awaits it with the network stop. A stuck hardware provider therefore cannot delay it. It is not part of the network stop, so the final connections drain never waits for it. Disposal first closes the lifecycle task to new starts: a queued start is dropped, and a start already running finishes and is then stopped. The new field is null-guarded, because the shutdown fixtures build `Collector` with `GetUninitializedObject` (`CoolingShutdownTests`).
+  - **Worker exit:** whenever the collector's worker ends, after an error it cannot publish past or on cancellation, its `finally` requests the disk stop before it closes the hardware providers and awaits it with the network stop, so no disk session outlives the worker. Disposal's stop is the same task.
   - **Deadline:** the existing 5 s `HardwareStopBudget` bounds only the storage-health join (and the scan loop's join, if Cost moves the scan there), not the disk stop, so the collector adds no timeout of its own. The callers bound the stop: UiSession's provider deadline (5 s on Quit, 3 s at sign-out) and `--diagnose`'s 3 s shutdown wait, which fails the run when exceeded. A normal stop, including one queued behind a start, must therefore finish within 3 s. A stop still running at the deadline appears as the outstanding "hardware provider" stage in `collector_stop_timeout`. The orphan cleanup before the next disk-session start removes any session it left.
   - Before starting, it stops sessions named `DeadWare-Disk-<pid>-*` or `DeadWare-<pid>-*` whose PID is not a running DeadWare. These are orphans from a crash.
 - **Gating:** `CollectorOptions` gains `ProcessDiskTracing`, default false. It only permits a disk session and never changes after the collector is built.
@@ -309,7 +310,7 @@ When at least 4 ETW rows have their PID in the scan and more than 50 % of them m
   - The scan and the tracker update run in the first, just before `lock(publicationGate)` (inside the loop when Cost moves the scan there).
   - The disk take and then the network and disk joins run in the second, inside the lock, right after the poll's only `etw.TakeSnapshot` (the network join needs `capture.Processes`) and before the `Reading` is built. It is skipped when the scan failed, and the activity is that `Unavailable`.
   - The `Reading` is then built and published as usual. Neither block wraps `new Reading`, `History.Add` or `SampleAvailable`, so a process failure never reaches the pass's own catch, which would publish an empty Snapshot.
-- **Unchanged:** `Reading.Processes`, `EtwNetwork`, usage-history.db (v1), `AlertKind`, `Snapshot.Values` and the six-hour graph cache.
+- **Unchanged:** `Reading.Processes` (in memory; from 0.14.1 it is not serialized in diagnostics), `EtwNetwork`, usage-history.db (v1), `AlertKind`, `Snapshot.Values` and the six-hour graph cache.
 - **Diagnostics:**
   - `--diagnose` builds its own `CollectorOptions` and never reads settings.json, so the saved Per-process monitoring switch does not apply to it. The app itself is unaffected: it follows the saved switch, which is off by default.
     - It sets `ProcessMonitoring`, so it runs the process scan, unless a new `--no-processes` flag is given.
@@ -320,7 +321,7 @@ When at least 4 ETW rows have their PID in the scan and more than 50 % of them m
     - The collector sets it on all three publish paths, only when `DiagnosticTimings` is on, like `ProviderMilliseconds`.
     - With `--no-processes` it reports Off.
   - Timing keys: `windows/processes` and `processes/join` appear whenever the scan runs. `etw/disk` and `open/etwdisk` appear only when the disk session ran (elevated, in a build that includes the Disk columns, without `--no-processes` or `--no-etw`).
-  - No per-process names or paths are written for the new data, and the existing network list is unchanged.
+  - No per-process names or paths are written for the new data. From 0.14.1 the existing network list (`Reading.Processes`) is not written either: each sample keeps only its count, `NetworkApplications`.
 
 ## History (0.14.0)
 
@@ -329,6 +330,7 @@ When at least 4 ETW rows have their PID in the scan and more than 50 % of them m
   - Each minute also stores, once and not per app, its covered seconds (the summed Δt of its scans that produced deltas) and the processor count N. For one minute, an app's memory is Σ(memory × Δt) ÷ covered seconds, its CPU % is 100 × CPU time in seconds ÷ (N × covered seconds), and its I/O rate is (read + write) ÷ covered seconds.
   - At each minute's close it keeps the union of the top 10 apps by CPU time, by that memory and by I/O read + write (at most 30 apps). A zero value never qualifies, and ties break by name.
   - Everything else is stored as one row. Processes with an empty name (shown live as "Unknown application"), and each publication's omitted sums, go into Everything else, so it remains the total of everything not listed. PID 0 never reaches the folder, so idle time is never counted.
+    - From 0.14.1, a name that reads as Everything else (ignoring case), or that holds `\`, `/` or `*`, which Windows file names never contain, goes into Everything else too. Each unpaired surrogate is saved as U+FFFD, the form SQLite's UTF-8 stores, so names that differ only there are one app (the live table still lists them apart). A name cut at 256 characters is trimmed again, so a saved name is stable (`SavedName` returns it unchanged) and the store accepts it. `ProcessHistoryStore` rejects a batch with any other name (`ProcessHistory.SavedName`).
   - Partial minutes keep their rows with `complete = 0`, and their stored covered seconds show how much of the minute was observed. Minutes with zero covered time are skipped.
 - **`ProcessHistoryStore`** writes `process-history.db`, its own file with its own `application_id` and `user_version` 1.
   - **On open:** the file is inspected read-only with an integrity check first, as Connections history does.
@@ -387,8 +389,8 @@ When at least 4 ETW rows have their PID in the scan and more than 50 % of them m
   - 0.14.0: the minute folder (at most 30 apps plus Everything else a minute) and the store, including the one-day size test at that cap.
 - **App:**
   - Collector tests with a fake and a throwing process source: CPU and memory keys survive, and switching off takes effect within one poll. Switching on starts `EtwDisk` only when `ProcessDiskTracing` is set, without rebuilding the collector.
-  - `EtwDisk` through test seams, including a stuck hardware worker that still stops the disk session (`CoolingShutdownTests`' stuck-worker fixture).
-  - `--diagnose` builds options that run the scan (Off with `--no-processes`), and its JSON, serialized from a reading whose `ProcessActivity` holds named processes, contains a `ProcessSummary` that is not Off and none of those names.
+  - `EtwDisk` through test seams, including a stuck hardware worker that still stops the disk session (`CoolingShutdownTests`' stuck-worker fixture), and a worker that ends after an error still stops the disk session (`EtwDiskTests`).
+  - `--diagnose` builds options that run the scan (Off with `--no-processes`), and its JSON, serialized from a reading whose `ProcessActivity` holds named processes, contains a `ProcessSummary` that is not Off and none of those names, nor the names in Reading.Processes.
   - Actions through the native-control and confirm hooks.
 - **UI checks:**
   - A Processes-page phase after Storage: the off state, rows, expansion, the column picker, the hidden admin columns, disabled picker entries and banner from a fixture reading with `Elevated` false, the full column set with `Elevated` true, and tooltips.
@@ -448,4 +450,3 @@ When at least 4 ETW rows have their PID in the scan and more than 50 % of them m
 - Command lines and services views.
 - Per-process disk or network history (network per app is already in Usage history's Applications).
 - Feeding `EtwNetwork`'s identity from the process scan, in place of its native lookups and 5 s reconcile. `EtwNetwork` keeps its 5 s reconcile through `NativeProcessIdentity.Read`, so its "PID n" fallback names, which are Usage history's application keys, stay as they are. Only `EtwDisk`'s reconcile reads the scan index (see Disk column).
-- Excluding the existing `Reading.Processes` from `--diagnose`.
