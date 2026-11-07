@@ -87,8 +87,8 @@ internal sealed class ApplicationResourcesCard : StackPanel
     private (DateTimeOffset From, DateTimeOffset To)? period;
     // The Device-chart slot asked for, and the one the shown view was read for; null means the period.
     private (DateTimeOffset From, DateTimeOffset To)? slot, shownSlot;
-    // True while the slot asked for came from the GPU chart, which lists it ranked by GPU (see NoGpuData).
-    private bool slotFromGpu;
+    // True while the slot asked for, and the one the shown view was read for, came from the GPU chart, which lists it ranked by GPU (see NoGpuData).
+    private bool slotFromGpu, shownFromGpu;
     private (string App, ProcessRank Rank, DateTimeOffset From, DateTimeOffset To)? charted;
     // The CPU chart's point count, so the selected app's series has the Device charts' bucket grid; 600 until the page says.
     private int points = 600;
@@ -268,7 +268,7 @@ internal sealed class ApplicationResourcesCard : StackPanel
         // Another slot, Rank by or period is a new ranking, so the table starts at its top and its busiest apps show; the minute refresh
         // shows the same one again and keeps the scroll offset with the row, the current cell and the focus.
         bool newRanking = !Shows(view.From, view.To, Rank);
-        View = view; shownRank = Rank; shownSlot = slot; pending = null;
+        View = view; shownRank = Rank; shownSlot = slot; shownFromGpu = slotFromGpu; pending = null;
         // The heading names the minutes listed, from the first one's start to the last one's end.
         if (shownSlot is { } listed)
             heading.Text = view is { FirstMinute: { } first, LastMinuteEnd: { } end } ? SlotHeading(first, end, WithDate)
@@ -384,7 +384,7 @@ internal sealed class ApplicationResourcesCard : StackPanel
     /// (minutes saved before the upgrade, or without GPU counters). A slot listed from the CPU or RAM chart and then ranked by GPU shows its
     /// table, with "—" in the GPU columns.</summary>
     private bool NoGpuData(ProcessResourceView view)
-        => slotFromGpu && shownSlot is not null && shownRank == ProcessRank.Gpu && view.RecordedMinutes > 0 && view.GpuCoveredSeconds == 0;
+        => shownFromGpu && shownSlot is not null && shownRank == ProcessRank.Gpu && view.RecordedMinutes > 0 && view.GpuCoveredSeconds == 0;
 
     private void DrawShares(ProcessResourceView view, IReadOnlyList<ProcessResourceRow> listed)
     {
