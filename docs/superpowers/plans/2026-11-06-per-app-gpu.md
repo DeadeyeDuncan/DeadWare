@@ -12,13 +12,13 @@
 
 ## Builds on 0.14.1
 
-This plan starts from `main` after the 0.14.1 cleanup release (`/home/user/DeadWare-cleanup/docs/superpowers/plans/2026-11-06-cleanup-0.14.1.md`) has merged. It never re-implements 0.14.1 work. Where it touches the same members, it uses 0.14.1's names:
+This plan starts from `main` after the 0.14.1 cleanup release (`docs/superpowers/plans/2026-11-06-cleanup-0.14.1.md`, merged as `181eb54` and published as v0.14.1) has merged. It never re-implements 0.14.1 work. Where it touches the same members, it uses 0.14.1's names:
 
 - `ProcessHistory.SavedName(string?)`: the folder's target rule (`if(ProcessHistory.SavedName(p.Name) is not{} name)target=other;`) and the store's name clause in `ValidateBatch`. `ProcessHistoryStore.MaximumNameLength` no longer exists.
 - `Collector.RunAsync`'s `finally` already requests `diskStop` before `computer?.Close()` and awaits it with `StopEtwAsync()`.
 - `App.DiagnosticReport(string status,string? stage,int deadlineSeconds,CollectorOptions options,IReadOnlyList<Reading> samples)` and `Reading.NetworkApplications`.
 - `UsageHistoryChart.SelectionMoved`, and on `UsageHistoryPage`: `marked`, `MoveMoment(string kind,int index)`, `Middle(UsageHistoryBucket)` and `MarkMoment()`, which loop over `Moments`.
-- `ApplicationResourcesCard`: the `ResourceRow` class with `Key`, `Name`, six cell properties and `Update(ProcessResourceRow)`, the `rows` collection and `Key(ProcessResourceRow)`.
+- `ApplicationResourcesCard`: the `ResourceRow` class with `Key`, `Name`, six cell properties and `Update(ProcessResourceRow)`, the `rows` collection and `Key(ProcessResourceRow)`, which is `"\0"` for Everything else (no stored name can be a control character) and the name otherwise. `RefreshRows` reconciles `rows` in place by `Key`: it removes gone rows, moves kept rows with `CalmOrderPlanner.Plan`, inserts new ones and sets `table.SelectedItem` again under `syncing`. GPU work extends `ResourceRow` and this reconcile; it never rebuilds the collection or keys Everything else another way. `Apply` computes `bool newRanking = !Shows(view.From, view.To, Rank)` before it stores the view, and after `RefreshRows` it calls `FirstScroller(table)?.ScrollToTop()` only when `newRanking`. So another Rank by (GPU included), another listed slot or another period starts the table at the top, and the minute refresh keeps the scroll offset; code added to `Apply` keeps that order. The folder checks `The_minute_refresh_updates_the_rows_in_place_and_keeps_the_current_cell` and `A_new_ranking_starts_the_table_at_the_top` (both built from `FortyApps`) must keep passing.
 - `ProcessesPage.PageKey` and `MainWindow.PageKey`: unchanged here; F5 keeps re-sorting through `Render(resort:true)`.
 - Tests: `ProcessTableTests.Full()` and `Each_column_key_reads_its_own_field`; `One_day_at_the_cap_stays_under_four_mebibytes` with machine `"DESKTOP-ABCDEFG"`; in `ApplicationResourcesUiChecks`, `Left_and_right_mark_both_charts_and_the_minute_refresh_keeps_the_cursor` and `Esc_clears_a_cursor_that_lists_nothing_and_the_refresh_keeps_it_cleared`, run right after `The_minute_refresh_keeps_the_slot_and_moves_its_hairlines_with_the_grid`. The second ends with a CPU slot listed for `A_new_period_clears_the_moment`.
 
@@ -45,23 +45,23 @@ For this plan:
 
 - Every task's requirements include the spec. Where this plan and the spec differ, the spec wins.
 - Local checks run on Linux with .NET SDK 10.0.114.
-  - Build: `dotnet build DeadWare.slnx -c Release -p:EnableWindowsTargeting=true --nologo`. Expected: 0 errors, and only the warnings `main` had at the branch point (Task 1 Step 0 records the count), none in a file the task touched.
+  - Build: `dotnet build DeadWare.slnx -c Release -p:EnableWindowsTargeting=true --nologo`. Expected: 0 errors, and only the warnings `main` had at the branch point (Task 1 Step 0 records the count), none in a file the task touched. Count them with Step 0's command, `--no-incremental` included, since an incremental build re-reports only the projects it rebuilt. At 0.14.1 there are 14, in `ConnectionMapUiChecks`, `GraphHistoryServiceTests`, `RangeSegmentsUiChecks`, `StorageChartUiChecks` and `StorageSensorLoopTests`.
   - Core tests: `dotnet test tests/DeadWare.Tests -c Release -p:EnableWindowsTargeting=true --nologo --filter "<filter>"`.
   - **Core baseline**: the full Core run fails exactly the 26 Windows-only tests in `/home/user/DeadWare-processes/.superpowers/sdd/2026-11-05-processes/linux-baseline-failures.txt`. This prints nothing:
     `dotnet test tests/DeadWare.Tests -c Release -p:EnableWindowsTargeting=true --nologo 2>&1 | grep -E '^  Failed ' | sed -E 's/ \[[^]]*\]$//' | sort | diff - <(sort /home/user/DeadWare-processes/.superpowers/sdd/2026-11-05-processes/linux-baseline-failures.txt)`
 - App tests (`tests/DeadWare.App.Tests`) and anything that needs real PDH, DXGI or a GPU run only in Windows CI (GitHub `windows-latest`, which may have no GPU). Locally they only need to compile. UI checks run inside the single STA fact `BatteryUiTests.Real_battery_page_renders_dark_light_empty_and_multi_year_without_native_windows`. A UI check "passes in CI" when that fact passes, and "fails" when the fact fails during the named phase.
 - Red checks:
   - A test that needs a new member is red when the local build fails with the named `error CS…`.
-  - A test that compiles without the change is red only in CI. Push its `test(...)` commit alone and confirm the named failure before pushing the change. CI's `dotnet test DeadWare.slnx` runs both test projects, so Core failures in the same commit do not hide the UI fact's.
+  - A Core test that compiles without the change is red when the task's local run fails as named (Task 10's tests, for example), and needs no CI-red push of its own. A Windows-only test (an App test or a UI check) that compiles without the change is red only in CI. Push its `test(...)` commit alone, with any Core tests it holds, and confirm the named failure before pushing the change. CI's `dotnet test DeadWare.slnx` runs both test projects, so Core failures in the same commit do not hide the UI fact's.
 - Core verification commands are written out in full where a task first runs them. A later step that says "Run the Step N command" means exactly that command.
 - **Run (CI)** means: `git push`, then the pull request's `build` check on the pushed head must finish green. The `gh` CLI is limited to search here, so whoever runs the plan watches checks, reads failing job logs and fetches artifacts through the GitHub tools (`pull_request_read` → `get_check_runs`, `get_job_logs`; `actions_list` → `list_workflow_run_artifacts`; `actions_get` → `download_workflow_run_artifact`), never `gh`. Under subagent-driven execution the controller does this; implementers push and return without waiting. `build.yml` cancels an in-progress run when a newer push arrives, so let each run finish before pushing again.
 - Workflow:
   - One branch, `claude/per-app-gpu-0.15.0`, from `origin/main` after 0.14.1 has merged, with one pull request to `main`. Open it as a draft with Task 1's push: CI runs on `claude/*` branches only through a pull request.
   - Fetch and inspect `origin` before each task. Keep unrelated local work. Never force-push or rewrite pushed commits.
   - Each task ends with its commits pushed, `git fetch origin && git status -sb` showing no ahead or behind, and CI green, as `AGENTS.md` requires.
-  - Tasks 4–14 start only after Task 2 has recorded the CI floor in the PR description. Mark the PR ready after Task 14. Merging and tagging v0.15.0 wait for the user's go-ahead.
+  - Tasks 4–14 start only after Task 2 has recorded the CI floor in the PR description. Mark the PR ready after Task 14. The user gave a standing go-ahead on 2026-11-07: when every task is reviewed, the final review and its fixes are done and CI is green, the controller merges the PR (merge commit) and publishes v0.15.0 without asking again.
 - Commits use `test(...)` for tests, `feat(...)` for features, `fix(...)` for fixes and `docs:` for docs.
-  - Every commit message ends with two lines: `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>` and `Claude-Session: https://claude.ai/code/session_017AZ6FXcD7T9s63fqUnw9Js`. The `git commit -m` commands below show the subject only; add the two lines as a final `-m` paragraph.
+  - Every commit message ends with two lines: the `Co-Authored-By:` line the committing session's own attribution reminder gives (`Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>` for the controller; a subagent on another model uses its own, as 0.14.1 ruled) and `Claude-Session: https://claude.ai/code/session_017AZ6FXcD7T9s63fqUnw9Js`. The `git commit -m` commands below show the subject only; add the two lines as a final `-m` paragraph.
   - The PR body ends with `🤖 Generated with [Claude Code](https://claude.com/claude-code)`, a blank line, then the same session link.
   - Never commit anything under `.superpowers/`.
 - Line numbers are at `dd4fb74` (v0.14.0). 0.14.1 moves some of them; anchor on the quoted text or member.
@@ -126,7 +126,7 @@ git checkout claude/determined-keller-uggb29 -- docs/superpowers/specs/2026-11-0
 # The plan: check it out the same way if it is committed on claude/determined-keller-uggb29, otherwise copy the file from that worktree.
 git add docs/superpowers/specs/2026-11-06-per-app-gpu-design.md docs/superpowers/plans/2026-11-06-per-app-gpu.md
 git commit -m "docs: per-app GPU spec and plan (0.15.0)"
-dotnet build DeadWare.slnx -c Release -p:EnableWindowsTargeting=true --nologo 2>&1 | grep -cE 'warning [A-Z]+[0-9]+'   # record this count in the PR body
+dotnet build DeadWare.slnx -c Release -p:EnableWindowsTargeting=true --nologo --no-incremental 2>&1 | grep -E 'warning [A-Za-z]+[0-9]+' | sed -E 's/^ +//' | sort -u | wc -l   # record this count in the PR body (14 at 0.14.1): an incremental build re-reports only the projects it rebuilt, xUnit analyzer IDs start with a lower-case x, and MSBuild prints each warning twice
 ```
 
 - [ ] **Step 1: Write the failing tests**
@@ -322,7 +322,7 @@ The loop follows `StorageSensorLoop`'s style. The period is recomputed each pass
   - Otherwise the same read comes back with `Read with{Credit=false}`, `Fresh` false and null milliseconds.
   - A read that a newer one replaced before any `Take` is never returned.
 - `Stopped` completes only after the loop has exited, its last read has returned and `source.Close()` has run. The collector gates every other use of the source on it (Task 5).
-- `DisposeAsync` cancels the loop and waits for `Stopped` for at most 5 s, the hardware stop budget, then returns. A read still in flight keeps running; the loop calls `source.Close()` once it ends, never under it.
+- `DisposeAsync` cancels the loop and waits for `Stopped` for at most 5 s, the hardware stop budget, then returns. A read still in flight keeps running; the loop calls `source.Close()` once it ends, never under it. `DisposeAsync` is idempotent and never throws: a second call returns the first call's task, because monitoring off, the worker's `finally` and `DisposeCoreAsync` can each reach the same loop (Task 5). `StorageSensorLoop.DisposeAsync` is no model for this: it cancels and then disposes its `CancellationTokenSource`, so a second call would throw `ObjectDisposedException`. `Dispose_completes_within_the_hardware_budget_and_closes_after_the_read` ends with a second `await loop.DisposeAsync()` that returns at once and leaves `Closes` at 1.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -335,7 +335,8 @@ The loop follows `StorageSensorLoop`'s style. The period is recomputed each pass
 [Fact] public void The_loop_placement_holds_until_reset(){ var g=new GpuPlacementGuard();g.Record(20,false);g.Record(20,false);for(int i=0;i<100;i++)g.Record(1,false);Assert.True(g.OwnLoop);
     g.Reset();Assert.False(g.OwnLoop);g.Record(20,false);Assert.False(g.OwnLoop);}
 
-// GpuCounterLoopTests (App). FakeGpuSource : IGpuCounterSource returns reads with MonotonicSeconds = the time passed and IntervalSeconds = the gap since its previous read
+// GpuCounterLoopTests (App; [Collection(TestHostThreadPool.TimingCollection)] like the other App classes with wall-clock deadlines, and IAsyncLifetime disposes every loop Loop started).
+// FakeGpuSource : IGpuCounterSource returns reads with MonotonicSeconds = the time passed and IntervalSeconds = the gap since its previous read
 // (null for the first after open), records each call's time (CallGaps(), LastReadAt), counts Reads and Closes, tracks IsOpen and the most Reads in flight at once (MaxConcurrent),
 // and has WaitForReads(n) (15 s limit). With block:true each Read waits for Release(); Entered completes on the first Read.
 // Loop(interval=()=>0.5, enabled=()=>true, source=new FakeGpuSource()) starts a GpuCounterLoop on a Stopwatch clock and returns (loop, source).
@@ -348,7 +349,8 @@ The loop follows `StorageSensorLoop`'s style. The period is recomputed each pass
     int reads=fake.Reads;await Task.Delay(1500);Assert.Equal(reads,fake.Reads);Assert.False(fake.IsOpen);Assert.Null(loop.Take());}
 [Fact] public async Task Dispose_completes_within_the_hardware_budget_and_closes_after_the_read(){ var fake=new FakeGpuSource(block:true);var (loop,_)=Loop(source:fake);await fake.Entered;
     var sw=Stopwatch.StartNew();await loop.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(6));Assert.True(sw.Elapsed<TimeSpan.FromSeconds(5.5));Assert.Equal(0,fake.Closes);
-    Assert.False(loop.Stopped.IsCompleted);fake.Release();await loop.Stopped.WaitAsync(TimeSpan.FromSeconds(5));Assert.Equal(1,fake.Closes);Assert.Equal(1,fake.MaxConcurrent);}
+    Assert.False(loop.Stopped.IsCompleted);fake.Release();await loop.Stopped.WaitAsync(TimeSpan.FromSeconds(5));Assert.Equal(1,fake.Closes);Assert.Equal(1,fake.MaxConcurrent);
+    await loop.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(1));Assert.Equal(1,fake.Closes);}   // a second disposal (Task 5: monitoring off, the worker's finally, DisposeCoreAsync) returns at once and never throws
 [Fact] public async Task Interval_changes_keep_each_read_fresh_once(){   // Review Focus 1
     double interval=0.5,before=0.5;var (loop,fake)=Loop(()=>interval);var fresh=new List<double>();   // before: the interval in effect until the latest change
     async Task Poll(int count){for(int i=0;i<count;i++){if(loop.Take() is {Fresh:true} t){fresh.Add(t.Read.MonotonicSeconds);
@@ -438,7 +440,7 @@ Join rules: the spec's Joining to processes, plus these plan decisions:
 [Fact] public void Gpu_deltas_add_with_the_cpu_rule(){ var a=new ProcessDeltas(1,1,1,1,1);Assert.Null(a.Add(a).GpuSeconds);Assert.Equal(0.5,a.Add(a with{GpuSeconds=0.5}).GpuSeconds);
     Assert.Equal(0,ProcessDeltas.Zero.GpuSeconds);Assert.Equal(0,ProcessDeltas.Zero.GpuMemoryByteSeconds);}
 // ProcessActivityTrackerTests
-[Fact] public void Omitted_processes_carry_their_gpu_sums(){ /* 4,100 entries; a GpuCounterRead with previous collection and interval 1 giving each PID 1 % and 1,000 dedicated bytes */
+[Fact] public void Omitted_processes_carry_their_gpu_sums(){ /* 4,100 entries over two scans, Scan(0,…) then Scan(1,…) as Omitted_carries_summed_exact_deltas does (the first scan has no Δt, so its Deltas are null and its omitted sum is ProcessDeltas.Zero with GpuSeconds 0); the second Update(scan,read) passes a GpuCounterRead with previous collection and interval 1 giving each PID 1 % and 1,000 dedicated bytes */
     Assert.Equal(4*0.01,r.Omitted.Deltas.GpuSeconds!.Value,9);Assert.Equal(4000,r.Omitted.Deltas.GpuMemoryByteSeconds!.Value,6);Assert.True(r.Gpu.Available);Assert.Equal(1,r.GpuIntervalSeconds);}
 [Fact] public void Omitted_gpu_sums_start_unknown_when_no_process_knows_them(){ /* 4,100 entries, second scan, Update(scan,null) */ Assert.Null(r.Omitted.Deltas.GpuSeconds);Assert.Null(r.GpuIntervalSeconds);}
 ```
@@ -478,7 +480,7 @@ Run (CI). Expected: green.
   - `ProcessActivity` init members `bool GpuStale` and `GpuCounterSummary? GpuSummary`. `ProcessSummary` gains `public GpuCounterSummary? Gpu{get;init;}`, which `From` copies from `activity.GpuSummary`.
 
 Rules (spec, Placement and cost):
-- Block 1, with monitoring on, runs just before `processes.Scan` with `stage="Reading GPU counters"`.
+- Block 1, with monitoring on, runs the GPU read just before the scan with `stage="Reading GPU counters"`. It goes in the `else` branch after `if(!monitoring)tracker.Reset();`, before `stage="Scanning processes";providerStarted=Stopwatch.GetTimestamp();`, in a `try` of its own. That way `windows/processes` still times only the scan and the tracker update, and a GPU exception never reaches the scan's `catch`, which would make the whole activity Unavailable.
   - Every poll: `gpu.Read(clock.Elapsed.TotalSeconds,intervalSeconds)`, timed, then `guard.Record(ms,gpu.LastReadOpened)`. Once `guard.OwnLoop` is true, start `new GpuCounterLoop(gpu,()=>clock.Elapsed.TotalSeconds,()=>PollingIntervalSeconds,()=>processMonitoring)`. This poll keeps its own read; later polls use `loop.Take()`.
   - An exception from the source gives `GpuCounterRead.Unavailable(GpuCounterStatus.Unavailable,…)`. The scan, the other joins and the hardware readings continue.
   - `timings["windows/gpucounters"]` is that read's milliseconds, recorded only when a read ran (every poll) or the take is `Fresh` (loop).
@@ -489,8 +491,8 @@ Rules (spec, Placement and cost):
   - Loop placement: start `loop.DisposeAsync()` without awaiting it on the poll, keep `gpuLoopStop=loop.Stopped` and set the loop to null. The query closes as soon as the read in flight ends, at most one read later.
   - Then `guard.Reset()`.
   - While `gpuLoopStop` has not completed, a poll with monitoring on joins a null read and does not read, so one thread at a time uses the source.
-- The worker's `finally` calls `gpu?.Close()` before `computer?.Close()` only when no loop exists and `gpuLoopStop` is null or completed; otherwise the loop's own `Close` covers it. `DisposeCoreAsync` disposes the loop and awaits any pending `gpuLoopStop` beside `healthLoop` under `HardwareStopBudget`; on a timeout the loop still closes the query when its read ends.
-- `PublishProcesses` gains the joined read (or null), its milliseconds and the placement. It sets `Gpu`, `GpuIntervalSeconds` (from `tracked`) and `GpuStale`. With `options.DiagnosticTimings`, it also sets `GpuSummary`: Instances, Skipped, `Adapters.Count`, the milliseconds, `State` and `Placement`. For a null joined read it is `new(0,0,0,null,tracked.Gpu,placement)`, so a poll with monitoring on always has a summary.
+- The worker's `finally` keeps 0.14.1's order: after `stage="Stopping providers"`, `var diskStop=disk?.StopAsync()??Task.CompletedTask;` stays its first step, so no GPU step can skip the disk stop. No GPU read outlives the worker either (the Processes spec's **Worker exit** rule; the GPU spec closes the query "on stop"). The GPU steps go inside the existing `try`, in a `try`/`finally` of their own, so a throwing GPU step still closes the hardware: `try {try {/* GPU steps */} finally {computer?.Close();}} finally {await Task.WhenAll(StopEtwAsync(),diskStop);}`. First, a loop this worker started that is still running is stopped the way monitoring off stops it: start `loop.DisposeAsync()` without awaiting it and keep `gpuLoopStop=loop.Stopped`; the loop closes the query once its read ends. Without this, a worker that ends after an error leaves the loop reading until Quit. Then, only when this worker started no loop, or `gpuLoopStop` has completed, it calls `gpu?.Close()`. It decides from the loop it started itself, not from a field that disposal may have cleared, so it never closes the source under a loop read. `DisposeCoreAsync` disposes the loop alongside `healthStop`: once before the worker join (a worker stuck in a hardware provider never reaches its `finally`), and again in its `finally` for a loop the worker created after cancellation began, as `healthStop??=` does. In that `finally` it awaits that loop's `Stopped`, or any pending `gpuLoopStop`, within what is left of `HardwareStopBudget`; on a timeout the loop still closes the query when its read ends. Every new GPU field is null-guarded, as `disk` is: `CoolingShutdownTests` builds `Collector` with `GetUninitializedObject` and sets only `cancellation`, `worker`, `etwStopGate`, `publicationGate`, `clock`, `options` and `etw`, and its sign-out fact requires no "collector_stop_timeout".
+- `PublishProcesses` gains the joined read (or null), its milliseconds and the placement. It sets `Gpu`, `GpuIntervalSeconds` (from `tracked`) and `GpuStale`. With `options.DiagnosticTimings`, it also sets `GpuSummary`: Instances, Skipped, `Adapters.Count`, the milliseconds, `State` and `Placement`. For a null joined read it is `new(0,0,0,null,tracked.Gpu,placement)`, so every Available activity has a summary. A poll whose scan failed keeps `PublishProcesses`' early `ProcessActivity.Unavailable` return (and its `catch`) with no GPU summary, as it has no network or disk state; that return is unchanged.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -498,7 +500,11 @@ Rules (spec, Placement and cost):
 // CollectorGpuTests (HardwareEnabled:false, EtwEnabled:false, interval 0.5, FakeProcesses). FakeGpuCounters : IGpuCounterSource returns ready reads giving PID 100
 // "GPU 0 · 3D" at 25 % and 64,000,000 dedicated bytes. The first Read after construction or after Close has no previous collection and sets LastReadOpened;
 // later reads have one. It can delay each read (delay:), and after Stall() each Read waits for Release(). It counts Reads and Closes, tracks IsOpen and MaxConcurrent.
-// ThrowingGpuCounters throws InvalidOperationException from Read. Start/NextWhere/NextReadingAfter as in CollectorProcessTests; WaitFor(condition,limit) polls every 20 ms
+// ThrowingGpuCounters throws InvalidOperationException from Read. The class is [Collection(TestHostThreadPool.TimingCollection)] and IAsyncLifetime and disposes every collector it built,
+// as CollectorProcessTests does. fake is a FakeGpuCounters field (xUnit builds the class anew for each test). Start(gpu,options=null) builds new Collector((options??new(ProcessMonitoring:true))
+// with{HardwareEnabled=false,EtwEnabled=false,PollingIntervalSeconds=0.5},null,processes:new FakeProcesses(),gpuCounters:gpu), starts it and returns the Collector; Second(options,gpu) builds
+// the same collector, subscribes before starting it (as CollectorProcessTests.Readings does) and returns its second Reading. CollectorProcessTests' own Start(options) and Second(options) build
+// no GPU source and return (…,FakeProcesses) tuples, so copy only NextWhere and NextReadingAfter from it. WaitFor(condition,limit) polls every 20 ms
 // and fails at the limit.
 [Fact] public async Task Gpu_values_join_the_published_activity(){ var r=await NextWhere(Start(fake),r=>r.ProcessActivity.GpuIntervalSeconds is not null);var a=r.ProcessActivity.Processes.Single(p=>p.Pid==100);
     Assert.Equal(25,a.GpuPercent);Assert.Equal("GPU 0 · 3D",a.GpuEngine);Assert.Equal(64_000_000,a.GpuDedicatedBytes);Assert.Equal(0,r.ProcessActivity.Processes.Single(p=>p.Pid==200).GpuPercent);Assert.True(r.ProcessActivity.Gpu.Available);
@@ -529,6 +535,13 @@ Rules (spec, Placement and cost):
     var back=await NextWhere(c,r=>r.ProcessActivity.Kind==ProcessActivityKind.Available&&r.Sample.MonotonicSeconds>off.Sample.MonotonicSeconds);
     Assert.Equal(GpuCounterSummary.EveryPoll,back.ProcessSummary!.Gpu!.Placement);Assert.All(back.ProcessActivity.Processes,p=>Assert.Null(p.GpuPercent));Assert.Equal(1,fake.MaxConcurrent);
     c.SetProcessMonitoring(false);await NextReadingAfter(c,await NextReadingAfter(c,back));Assert.False(fake.IsOpen);}
+[Fact] public async Task A_worker_that_stops_after_an_error_stops_the_gpu_loop(){   // as EtwDiskTests.Worker_that_stops_after_an_error_stops_the_disk_trace
+    var fake=new FakeGpuCounters(delay:TimeSpan.FromMilliseconds(30));var c=Start(fake,new(ProcessMonitoring:true,DiagnosticTimings:true));
+    await NextWhere(c,r=>r.ProcessSummary?.Gpu?.Placement==GpuCounterSummary.OwnLoop);
+    // Throws from the pass's publication and again from the failed pass's, so the worker leaves through its outer catch.
+    int throws=2;c.SampleAvailable+=_=>{if(Interlocked.Decrement(ref throws)>=0)throw new InvalidOperationException("subscriber");};
+    await c.Completion.WaitAsync(TimeSpan.FromSeconds(10));Assert.StartsWith("Collector stopped (InvalidOperationException)",c.Latest!.HardwareStatus);
+    await WaitFor(()=>!fake.IsOpen,TimeSpan.FromSeconds(3));int reads=fake.Reads;await Task.Delay(1500);Assert.Equal(reads,fake.Reads);Assert.Equal(1,fake.MaxConcurrent);}
 // DiagnosticOptionsTests
 [Fact] public void Diagnostic_report_has_the_gpu_summary_and_no_names_or_adapters(){ var activity=ActivityWith("secret-app.exe") with{Processes=[/* secret-app.exe with GpuEngine "GPU 0 · 3D",
     GpuAdapter "Secret Adapter 9000", GpuEngines=[that engine] */],GpuSummary=new(12,1,1,0.8,ProcessColumnState.Ready,GpuCounterSummary.EveryPoll)};
@@ -608,7 +621,7 @@ public void Engine_tooltip_names_the_adapter_and_type(string? adapter,string typ
 // Scan_sentence_adds_the_history_sentence: "Turning it on adds one Windows process scan per poll and one GPU counter read per poll. While usage history is recorded, it also keeps the busiest apps for 30 days."
 ```
 
-- [ ] **Step 2: Run to verify failure.** Run: `dotnet test tests/DeadWare.Tests -c Release -p:EnableWindowsTargeting=true --nologo --filter "FullyQualifiedName~ProcessTableTests|FullyQualifiedName~ProcessSettingsTests"`. Expected: `error CS0117` for `GpuUse`, `EngineText`, `EngineTip` and `AscendingFirst`, and `error CS1061` for `ProcessAppRow.Gpu`, `GpuBusiest`, `GpuMemory` and `GpuShared`.
+- [ ] **Step 2: Run to verify failure.** Run: `dotnet test tests/DeadWare.Tests -c Release -p:EnableWindowsTargeting=true --nologo --filter "FullyQualifiedName~ProcessTableTests|FullyQualifiedName~ProcessSettingsTests"`. Expected: `error CS0117` for `EngineText`, `EngineTip` and `AscendingFirst` (no test calls `GpuUse` directly; `ProcessAppRow.Gpu` reaches it), and `error CS1061` for `ProcessAppRow.Gpu`, `GpuBusiest`, `GpuMemory` and `GpuShared`.
 - [ ] **Step 3: Implement the members, the text sort and the copy**
 - [ ] **Step 4: Run the Step 2 command, then the Core baseline.** Expected: PASS, then no output.
 - [ ] **Step 5: Commit and push**
@@ -630,12 +643,12 @@ Run (CI). Expected: green. The page footer, off state and Settings help line fol
 - Modify: `src/DeadWare.Core/ProcessTable.cs` (`ProcessTableColumns.PickerOrder`, `Header`)
 - Modify: `src/DeadWare.App/ProcessesPage.cs`:
   - `OnSorting` (:257-264): `sortDescending=!ProcessTableColumns.AscendingFirst(key)`, and its comment;
-  - `Cells`, `State`, `Gap` and `Format` (:426-460);
-  - `SpokenLabels` and `Spoken` (:462-476).
+  - `Cells`, `State`, `Gap` and `Format` (:437-472 at 0.14.1). `Cells` is static and sees a value only through `Func<string,double?> value`, so it also takes the row's engine text and the `GpuEngineUse` for its tooltip (`GpuBusiest` on an app row; `GpuEngines![0]` on a process row whose text is a label). Both `Cells` calls in `ShowRows` (app :381, process :390) pass them;
+  - `SpokenLabels` and `Spoken` (:474-489 at 0.14.1).
 - Test: `tests/DeadWare.Tests/ProcessSettingsTests.cs`, `tests/DeadWare.Tests/ProcessTableTests.cs`, `tests/DeadWare.App.Tests/ProcessesPageUiChecks.cs`
 
 **Interfaces:**
-- Consumes: Tasks 4 and 6.
+- Consumes: Tasks 4 and 6, and Task 5's `ProcessActivity.GpuStale`.
 - Produces:
   - `ProcessColumnKeys.All` gains `"gpu","gpuengine","gpumemory","gpushared"` after `"upload"`. `Default` becomes `["cpu","memory","io","disk","network","gpu","gpumemory"]`. `AdministratorOnly` and `DiskKeys` are unchanged.
   - `Header`: `"gpu"=>"GPU","gpuengine"=>"GPU ENGINE","gpumemory"=>"GPU MEMORY","gpushared"=>"SHARED GPU MEMORY"`. `PickerOrder` becomes `["cpu","memory","io","disk","network","gpu","gpumemory","pid","ioread","iowrite","diskread","diskwrite","download","upload","gpuengine","gpushared"]`.
@@ -797,7 +810,7 @@ Run (CI). Expected: green. The UI fact passes `"processes page"`.
     - adds g to the minute's GPU-covered seconds;
     - groups the activity's processes by the same target rule as CPU (0.14.1's `SavedName`, then `ProcessGrouping.Key`) and adds `GpuUse(members).Percent / 100 × g` to each app; an all-null app adds nothing;
     - adds Σ members' known `GpuDedicatedBytes` × g to each app's GPU memory;
-    - credits unknown-name processes and `activity.Omitted.Deltas` to Everything else with their `Deltas.GpuSeconds`/`GpuMemoryByteSeconds` (null as 0).
+    - credits every process whose `ProcessHistory.SavedName` is null (the target rule's `target=other` branch: an empty or unknown name, "Everything else" in any case, and names holding `\`, `/` or `*`, as 0.14.1's `Reserved_and_path_shaped_names_go_to_everything_else` pins for CPU) and `activity.Omitted.Deltas` to Everything else with their own `Deltas.GpuSeconds`/`GpuMemoryByteSeconds` (null as 0); these never go through `GpuUse`.
   - `Close` takes a fourth `Top(apps,t=>t.Gpu)`; zero never qualifies and ties go by key ordinal. Unlisted apps' GPU goes to Everything else. When GPU-covered is 0, every row's GPU values are null; otherwise they are the sums (0 when none was known).
 
 - [ ] **Step 1: Write the failing tests**
@@ -808,14 +821,14 @@ Run (CI). Expected: green. The UI fact passes `"processes page"`.
 [Fact] public void Gpu_is_a_fourth_top_ten(){ /* 50 apps: 10 CPU leaders, 10 memory leaders, 10 I/O leaders, 10 GPU leaders (gpu 10..19 %), 10 small; 60 activities with gpuInterval 1 */
     Assert.Equal(40,ProcessHistory.MaximumApplications);Assert.Equal(41,b.Applications.Count);Assert.All(gpuLeaders,n=>Assert.Contains(b.Applications,a=>a.Name==n));Assert.Equal(60,b.GpuCoveredSeconds,6);}
 [Fact] public void Two_members_busy_on_different_engines_record_the_higher_sum(){ /* a.exe pid 1 "3D" 30 %, pid 2 "Copy" 50 %, 60 activities, gpuInterval 1 */ Assert.Equal(30,App(b,"a.exe").GpuSeconds!.Value,6);}   // 0.5 × 60, not 0.8 × 60
-[Fact] public void Gpu_memory_adds_known_members_times_the_interval(){ /* a.exe pid 1 gpuMem 1e6, pid 2 gpuMem null, 60 × gpuInterval 1 */ Assert.Equal(6e7,App(b,"a.exe").GpuMemoryByteSeconds!.Value,1);}
-[Fact] public void Everything_else_holds_unlisted_unknown_name_and_omitted_gpu(){ /* 11 GPU apps (11th is the smallest); "" with Deltas.GpuSeconds 0.2; Omitted Deltas GpuSeconds 0.3, GpuMemoryByteSeconds 10; 60 activities */
-    var e=b.Applications.Single(a=>a.EverythingElse);Assert.Equal(unlisted+60*0.2+60*0.3,e.GpuSeconds!.Value,6);Assert.Equal(600,e.GpuMemoryByteSeconds!.Value,6);}
+[Fact] public void Gpu_memory_adds_known_members_times_the_interval(){ /* a.exe pid 1 cpu 1 gpuMem 1_000_000, pid 2 gpuMem null (both gpu null; the cpu lists a.exe, since GPU memory is not ranked and zero never qualifies), 60 × gpuInterval 1 */ Assert.Equal(6e7,App(b,"a.exe").GpuMemoryByteSeconds!.Value,1);}
+[Fact] public void Everything_else_holds_unlisted_unknown_name_and_omitted_gpu(){ /* 11 GPU apps (11th is the smallest); "" with Deltas.GpuSeconds 0.2; "tools/tool.exe" (SavedName null since 0.14.1) with Deltas.GpuSeconds 0.1; Omitted Deltas GpuSeconds 0.3, GpuMemoryByteSeconds 10; 60 activities with gpuInterval 1 */
+    var e=b.Applications.Single(a=>a.EverythingElse);Assert.Equal(unlisted+60*0.2+60*0.1+60*0.3,e.GpuSeconds!.Value,6);Assert.Equal(600,e.GpuMemoryByteSeconds!.Value,6);Assert.DoesNotContain(b.Applications,a=>a.Name=="tools/tool.exe");}
 [Fact] public void Gpu_covered_seconds_count_only_folded_activities_with_an_interval(){ /* 30 with gpuInterval 1, 30 with gpuInterval null, 1 with dt null and gpuInterval 1 */ Assert.Equal(30,b.GpuCoveredSeconds,6);}
 [Fact] public void A_minute_without_gpu_data_has_null_gpu_on_every_row(){ var b=Close(P("a.exe",cpu:5),P("b.exe",cpu:1,pid:2));Assert.Equal(0,b.GpuCoveredSeconds);
     Assert.All(b.Applications,a=>{Assert.Null(a.GpuSeconds);Assert.Null(a.GpuMemoryByteSeconds);});}
-[Fact] public void A_minute_with_gpu_data_reads_zero_for_apps_without_known_values(){ /* a.exe gpu 10; b.exe gpu null, gpuMem null; gpuInterval 1 */ Assert.Equal(0,App(b,"b.exe").GpuSeconds);Assert.Equal(0,App(b,"b.exe").GpuMemoryByteSeconds);}
-[Fact] public void Zero_gpu_never_qualifies_and_gpu_ties_break_by_key(){ /* 12 apps with only gpu: "idle.exe" 0 %, eleven tied at 5 % named k00..k10 */ Assert.DoesNotContain(b.Applications,a=>a.Name=="idle.exe");Assert.DoesNotContain(b.Applications,a=>a.Name=="k10.exe");}
+[Fact] public void A_minute_with_gpu_data_reads_zero_for_apps_without_known_values(){ /* a.exe gpu 10; b.exe cpu 1 (so it is listed), gpu null, gpuMem null; gpuInterval 1 */ Assert.Equal(0,App(b,"b.exe").GpuSeconds);Assert.Equal(0,App(b,"b.exe").GpuMemoryByteSeconds);}
+[Fact] public void Zero_gpu_never_qualifies_and_gpu_ties_break_by_key(){ /* 12 apps with only gpu: "idle.exe" 0 %, eleven tied at 5 % named k00..k10; one activity with gpuInterval 1, closed by the next minute (Close's A has no gpuInterval, so it would fold no GPU and pass vacuously) */ Assert.DoesNotContain(b.Applications,a=>a.Name=="idle.exe");Assert.DoesNotContain(b.Applications,a=>a.Name=="k10.exe");Assert.Contains(b.Applications,a=>a.Name=="k09.exe");Assert.Equal(10,b.Applications.Count(a=>!a.EverythingElse));}
 // ProcessHistoryStoreTests.One_day_at_the_cap_stays_under_four_mebibytes: Enumerable.Range(0,ProcessHistory.MaximumApplications) becomes Enumerable.Range(0,30), with the comment
 // "// 0.14.0's 30-app format; Task 10 moves this test to MaximumApplications and 6 MiB." At 41 rows a minute this setup is about 4.4 MiB (0.14.0 measured 3,522,560 B at 31 rows).
 ```
@@ -997,8 +1010,8 @@ Run (CI). Expected: green. `ProcessHistoryService` passes `ProcessRank.Gpu` thro
 - Consumes: Task 11 `ProcessRank.Gpu`, the row and view members.
 - Produces (card-private):
   - `new RankChoice("GPU",ProcessRank.Gpu)` after I/O.
-  - Columns "Avg GPU" and "Avg GPU memory while listed" after "Avg memory while listed", each with a cell tooltip binding. Their header tooltips read `$"GPU recorded for {Duration(view.GpuCoveredSeconds)} of this range"` and are refreshed on each `Apply`.
-  - `ResourceRow` gains `AverageGpu`, `AverageGpuMemory`, `AverageGpuTip` and `AverageGpuMemoryTip`, and `Update(ProcessResourceRow row,double gpuCovered)` fills them:
+  - Columns "Avg GPU" and "Avg GPU memory while listed" after "Avg memory while listed", each with a cell tooltip binding through a `DataGridCell` style based on the theme's (`TryFindResource(typeof(DataGridCell)) as Style`, as `ProcessesPage.Column` builds its cell style). Their header tooltips read `$"GPU recorded for {Duration(view.GpuCoveredSeconds)} of this range"` and are refreshed on each `Apply`. The `Header` stays the string title (the checks' `Headers` casts it to string), and the tooltip goes in the column's `HeaderStyle`: a `DataGridColumnHeader` style based on the theme's (`TryFindResource(typeof(DataGridColumnHeader)) as Style`, as `ProcessesPage` builds its header style). App.xaml's implicit `DataGridCell` and `DataGridColumnHeader` styles give the cell padding, the selection colours and the 10 px Muted captions; an explicit style not based on them drops all of that for the two GPU columns.
+  - `ResourceRow` gains `AverageGpu`, `AverageGpuMemory`, `AverageGpuTip` and `AverageGpuMemoryTip`, and `Update(ProcessResourceRow row,double gpuCovered)` fills them. 0.14.1's `Update` returns early when its cell tuple is unchanged (`if (cells == (CpuTime, AverageCpu, …)) return this;`) and assigns the cells only after that test. So the two GPU cells and both tips join that tuple: a tip can change on its own (`gpuCovered` 0 → 60 with the value still null) and must still be assigned and raise `PropertyChanged`. `RefreshRows` passes `view.GpuCoveredSeconds`:
     - A null value shows "—". Its tip is "No GPU data in this range" when `gpuCovered` is 0, else "No GPU data in the minutes this app was listed".
     - Avg GPU is `"0.#"` + " %", unclamped. Everything else's tip is "Sum over many apps; can exceed 100 %".
     - Avg GPU memory uses `Ui.Bytes`.
@@ -1025,7 +1038,10 @@ private static void Gpu_dashes_name_their_reason(string folder){ var card=new Ap
 private static void Selecting_an_app_while_ranked_by_gpu_charts_its_gpu(ApplicationResourcesCard card){ SetRank(card,ProcessRank.Gpu);WaitFor(()=>!card.Loading&&card.Rank==ProcessRank.Gpu);
     Select(card,"chrome.exe");WaitFor(()=>Traces(card).Count==1);Assert.Contains("chrome.exe · GPU % of the busiest engine",Texts(card));Assert.Equal("chrome.exe GPU",Traces(card)[0].Label);
     Assert.Equal("%",ChartUnit(card));Assert.Equal(100d,ChartMaximum(card));
-    Select(card,"Everything else");Assert.Null(ChartMaximum(card));SetRank(card,ProcessRank.CpuTime);}
+    Select(card,"Everything else");Assert.Null(ChartMaximum(card));
+    // Hands back the state Selecting_an_app_shows_its_chart_and_rank_by_redraws left: The_app_chart_shares_the_device_charts_grid reads chrome.exe's CPU trace
+    // and Range_change_reloads_the_card expects chrome.exe selected.
+    Select(card,"chrome.exe");SetRank(card,ProcessRank.CpuTime);WaitFor(()=>!card.Loading&&card.Rank==ProcessRank.CpuTime&&Traces(card).Count==1&&Traces(card)[0].Label=="chrome.exe CPU");}
 private static void Rank_by_gpu_over_version_1_minutes_shows_dashes_and_no_share_bar(string folder){   // Review Focus 5
     // A ProcessHistoryStore at Path.Combine(folder,"gpu-v1","process-history.db") holds 60 minutes ending ten minutes ago without GPU data (GpuCoveredSeconds 0) for chrome.exe,
     // code.exe and Everything else. card=new ApplicationResourcesCard(Session(new ProcessHistoryService(path,Machine),folder)); card.Load(now.AddDays(-1),now,Points).
@@ -1038,7 +1054,12 @@ private static void The_note_names_gpu(ApplicationResourcesCard card){ var note=
     Assert.Contains("Avg GPU is its busiest GPU engine's share of the time GPU data was recorded; Avg GPU memory while listed averages its dedicated GPU memory over the minutes it was listed with GPU data.",note);}
 // New helpers beside Headers and Cell: GpuView (above); Row(card,name)=Rows(card).Single(r=>Cell(r,"Name")==name); HeaderTip(card,header), the column header's tooltip text;
 // Tip(card,app,header), the tooltip text of that row's cell; RankLabels(card), the Rank by choices' labels. ChartMaximum, ChartUnit, Traces, Texts and Named already exist.
-// Run calls the folder checks with the other folder checks, and the card checks after Selecting_an_app_shows_its_chart_and_rank_by_redraws.
+// Headers casts each column's Header to string (:1024 at 671c133), so the card keeps every Header a string and puts the GPU header tooltips in the column's HeaderStyle:
+// a DataGridColumnHeader style based on the theme's (TryFindResource(typeof(DataGridColumnHeader)) as Style, as ProcessesPage builds its header style) with a ToolTip
+// setter, replaced on each Apply, which HeaderTip reads. Cards built alone are never laid out, so Tip first calls Layout(card) and reaches the realized cell as
+// The_minute_refresh_updates_the_rows_in_place_and_keeps_the_current_cell does (ContainerFromItem, then GetCellContent).
+// Run calls the folder checks with the other folder checks, and the card checks right after Selecting_an_app_shows_its_chart_and_rank_by_redraws, before
+// The_app_chart_shares_the_device_charts_grid, which reads chrome.exe's CPU trace that Selecting_an_app_while_ranked_by_gpu_charts_its_gpu hands back.
 ```
 
 - [ ] **Step 2: Build to verify the checks compile, commit, push and verify failure**
@@ -1056,25 +1077,25 @@ Run (CI). Expected: the UI fact fails at the first changed copy assertion, in ph
 git add src/DeadWare.App/ApplicationResourcesCard.cs src/DeadWare.App/Windows.cs src/DeadWare.App/UsageHistoryPage.cs
 git commit -m "feat(usage): rank and average application resources by GPU"
 ```
-Run (CI). Expected: green. The UI fact passes `"shell chrome"` and `"usage history"`, including 0.14.1's in-place row check (`The_minute_refresh_updates_the_rows_in_place_and_keeps_the_current_cell`).
+Run (CI). Expected: green. The UI fact passes `"shell chrome"` and `"usage history"`, including 0.14.1's in-place row check (`The_minute_refresh_updates_the_rows_in_place_and_keeps_the_current_cell`) and its scroll-to-top check (`A_new_ranking_starts_the_table_at_the_top`).
 
 ---
 
 ### Task 13: Click a moment on the GPU chart
 
 **Files:**
-- Modify: `src/DeadWare.App/UsageHistoryPage.cs`: `Moments` (:30) and its comment (:29); `ShowMoment`'s doc comment (:154-156)
+- Modify: `src/DeadWare.App/UsageHistoryPage.cs`: `Moments` (:30) and its comment (:29); `ShowMoment`'s doc comment (:154-156). Also, at `671c133`: the Device hint's last sentence (`deviceHint`, :83), "Click a CPU or RAM point, or press Enter on it, to list its busiest apps under Application resources.", becomes "Click a CPU, RAM or GPU point, or press Enter on it, to list its busiest apps under Application resources.", and `Only_the_cpu_ram_and_gpu_charts_are_selectable` asserts that `Texts(page)` holds a text ending with it. 0.14.1's comments that name two charts, on `marked` (:47), `MoveMoment` (:171) and `MarkMoment` (:178), name all three.
 - Modify: `src/DeadWare.App/ApplicationResourcesCard.cs`: `ShowSlot` (:122-130) and `ClearSlot` (the GPU chart flag), and `RefreshRows`'s summary (:275-289: the "No GPU data in this span." text)
 - Test: `tests/DeadWare.App.Tests/ApplicationResourcesUiChecks.cs`
 
 **Interfaces:**
-- Consumes: 0.14.1's `SelectionMoved`, `marked`, `MoveMoment`, `MarkMoment` and the Esc handler, all of which loop over `Moments`; `ShowSlot(DateTimeOffset,DateTimeOffset,ProcessRank)`; Task 11's `ProcessResourceView.GpuCoveredSeconds`.
+- Consumes: 0.14.1's `SelectionMoved`, `marked`, `MoveMoment`, `MarkMoment` and the Esc handler. The constructor's loop over `Moments` sets `Selectable` and wires `BucketActivated` to `ShowMoment` and `SelectionMoved` to `MoveMoment`; `MarkMoment` and the `SlotCleared` handler loop over `Moments`. The Esc handler does not loop over `Moments`: its guard is `resources.Slot is not null || marked is not null` (a 0.14.1 ruling, because a refresh can leave `marked` in no bucket), and it stays exactly so. Do not bring back a guard that reads the charts' `SelectedIndex`. `ShowMoment` and `MoveMoment` already return when `data` has no view for their chart, and `MarkMoment` already gives a chart with no bucket at `marked` a null index, so adding the GPU entry needs no new guard in them; `ShowSlot(DateTimeOffset,DateTimeOffset,ProcessRank)`; Task 11's `ProcessResourceView.GpuCoveredSeconds`.
 - Produces: `Moments = [("cpu", ProcessRank.CpuTime), ("memory", ProcessRank.AverageMemory), ("gpu", ProcessRank.Gpu)]`.
   - The GPU chart becomes `Selectable` and focusable. It shares the CPU chart's grid, because every metric is read with the CPU chart's `points`.
   - `ShowMoment` and `MoveMoment` return when `data` has no `"gpu"` view, so with no GPU selected there is nothing to click.
   - `MarkMoment` sets the GPU chart's index to null when it has no bucket at `marked`.
   - The comment at :29 names CPU, RAM and GPU.
-  - On the card, `private bool slotFromGpu` is set by `ShowSlot` to `ranking == ProcessRank.Gpu` (the GPU chart's call) and cleared by `ClearSlot`. While `slotFromGpu` and Rank by is GPU, a slot whose view has recorded minutes but `GpuCoveredSeconds` 0 shows "No GPU data in this span." in place of the table (frame collapsed), as the empty-slot case does. "No process data in this span." still wins when the slot has no recorded minutes. A slot listed from the CPU or RAM chart and then ranked by GPU shows its table, with "—" in the GPU columns (spec: the message follows a GPU chart click). Clear stays.
+  - On the card, `private bool slotFromGpu` is set by `ShowSlot` to `ranking == ProcessRank.Gpu` (the GPU chart's call) and cleared by `ClearSlot`. While `slotFromGpu` and Rank by is GPU, a slot whose view has recorded minutes but `GpuCoveredSeconds` 0 shows "No GPU data in this span." in place of the table (frame collapsed), as the empty-slot case does. "No process data in this span." still wins when the slot has no recorded minutes. In the GPU state the chart hint is hidden too, as it is for an empty slot: `ShowSeries` shows "Select an application to chart it over this period." whenever the view has recorded minutes (:376 at `671c133`), and a GPU slot without GPU data has them. A slot listed from the CPU or RAM chart and then ranked by GPU shows its table, with "—" in the GPU columns (spec: the message follows a GPU chart click). Clear stays.
 
 - [ ] **Step 1: Write the failing checks**
 
@@ -1149,15 +1170,16 @@ Run (CI). Expected: green. The UI fact passes `"usage history"`, including the 0
 - Modify: `CHANGELOG.md` (new top section)
 - Create: `docs/releases/v0.15.0.md`, in the shape of `docs/releases/v0.14.1.md`
 - Modify: `docs/validation.md` (new top section)
-- Modify: `README.md` (line numbers at `dd4fb74`; anchor on the quoted text):
-  - :23 (feature list): "Processes: CPU, memory and I/O per app for every user" becomes "Processes: CPU, memory, I/O, GPU and GPU memory per app for every user"; the rest of the bullet stays.
-  - :35 (feature list, "Usage history: …"): Application resources ranks the busiest apps' CPU, memory, I/O and GPU, and clicking a CPU, RAM or GPU point lists that moment's busiest apps.
-  - :47: the download link's `v0.14.1` (both occurrences) becomes `v0.15.0`. This is the same release mechanics as 0.14.1.
-  - The Processes paragraph (:105, "Enable **Per-process monitoring**…"): the default columns gain GPU and GPU memory, and the picker list gains GPU engine and Shared GPU memory. Add one sentence on GPU (busiest engine, as in Task Manager; dedicated memory; no administrator needed). Its last sentence saves "the busiest apps' CPU, memory, I/O and GPU".
-  - :157 (Application resources): Rank by **GPU**, and the Avg GPU and Avg GPU memory while listed columns with their definitions.
-  - :159 (click a moment): the Device **CPU**, **RAM** or **GPU** chart; a GPU point ranks the slot by GPU and needs a GPU selected on the dashboard; a hairline marks the slot on all three charts; a GPU slot without GPU data says "No GPU data in this span."
-  - :163 (process-history.db): the top 10 by CPU time, by memory, by I/O and by GPU, at most 40 apps; the file is capped at 192 MiB; "a full day at the 40-app cap measured N MiB, so 30 such days fit", where N is the one-day size Task 10 noted in the PR description, in MiB to one decimal; GPU history begins when 0.15.0 first runs, and earlier minutes have no GPU data.
-  - Privacy (:191-199): :193's saved values include GPU; adapter descriptions appear only in tooltips and are never saved; `--diagnose` gains a GPU summary with counts and timings only, which `--no-processes` also leaves out.
+- Modify: `docs/user-guide.md`. Since PR 83, README is a landing page, and the feature, history and privacy text that the 0.14.0 README held lives here; 0.14.1 made its doc edits here too. Line numbers are at `671c133`; anchor on the quoted text:
+  - :35 (Features): "Processes: CPU, memory and I/O per app for every user" becomes "Processes: CPU, memory, I/O, GPU and GPU memory per app for every user"; the rest of the bullet stays.
+  - :47 (Features, "Usage history: …"): Application resources ranks the busiest apps' CPU, memory, I/O and GPU, and clicking a CPU, RAM or GPU point lists that moment's busiest apps.
+  - :230 (Build): `pwsh -File scripts/publish.ps1 -Version 0.14.1` becomes `-Version 0.15.0`. 0.14.1 handled its release the same way: README no longer has a versioned download link (it links to `releases/latest`), so 0.14.1 bumped this sample instead.
+  - The Processes paragraph (:119, "Enable **Per-process monitoring**…"): the default columns gain GPU and GPU memory, and the picker list gains GPU engine and Shared GPU memory. Add one sentence on GPU (busiest engine, as in Task Manager; dedicated memory; no administrator needed). Its last sentence saves "the busiest apps' CPU, memory, I/O and GPU".
+  - :171 (Application resources): its first sentence ranks the apps that used the most CPU time, memory, I/O or GPU; Rank by **GPU**; the Avg GPU and Avg GPU memory while listed columns with their definitions; and "GPU % of the busiest engine" as the selected app's chart while ranked by GPU.
+  - :173 (click a moment, as 0.14.1 reworded it): the Device **CPU**, **RAM** or **GPU** chart; the keyboard cursor and the hairline show on all three charts, where the paragraph now says "on both charts" (twice); a GPU point ranks the slot by GPU and needs a GPU selected on the dashboard; a GPU slot without GPU data says "No GPU data in this span."
+  - :177 (process-history.db): the top 10 by CPU time, by memory, by I/O and by GPU, at most 40 apps; the file is capped at 192 MiB; "a full day at the 40-app cap measured N MiB, so 30 such days fit", where N is the one-day size Task 10 noted in the PR description, in MiB to one decimal; GPU history begins when 0.15.0 first runs, and earlier minutes have no GPU data.
+  - Network measurements and privacy (:205-213): the saved values at :207 include GPU; adapter descriptions appear only in tooltips and are never saved; at :213 (0.14.1's wording), `--diagnose` gains a GPU summary with counts and timings only, which `--no-processes` also leaves out.
+- Modify: `README.md` :21 only, the landing page's "**Find busy apps:**" bullet: "compare CPU, memory and I/O" becomes "compare CPU, memory, I/O and GPU". The rest of README stays as it is.
 
 **Interfaces:**
 - Consumes: Tasks 1–13 as merged on the branch. Re-read the touched code before writing; the docs describe the code, not this plan.
@@ -1190,12 +1212,12 @@ Run (CI). Expected: green. The UI fact passes `"usage history"`, including the 0
 ```bash
 grep -c '<Version>0.15.0</Version>' Directory.Build.props                 # 1
 grep -c '^## 0.15.0 — Per-app GPU$' CHANGELOG.md                          # 1
-grep -c 'releases/tag/v0.15.0' README.md                                  # 1
+grep -c 'publish.ps1 -Version 0.15.0' docs/user-guide.md                 # 1
 grep -c '0.14.x' docs/releases/v0.15.0.md                                 # at least 1
-grep -c '192 MiB' README.md docs/releases/v0.15.0.md                      # at least 1 each
+grep -c '192 MiB' docs/user-guide.md docs/releases/v0.15.0.md             # at least 1 each
 grep -c 'must run before tagging' docs/releases/v0.15.0.md docs/validation.md   # 0 and 0
-grep -cE 'at most 30 apps|30-app cap|128 MiB|CPU or RAM point|CPU, memory and I/O' README.md   # 0
-grep -c 'No GPU data in this span.' README.md                              # 1
+grep -cE 'at most 30 apps|30-app cap|128 MiB|CPU or RAM point|CPU, memory and I/O|on both charts' README.md docs/user-guide.md   # 0 and 0
+grep -c 'No GPU data in this span.' docs/user-guide.md                     # 1
 grep -c 'whether NPU engines appear in GPU %' docs/validation.md          # 1
 ```
 Then run the build and the Core baseline. Expected: as in Global Constraints.
@@ -1203,7 +1225,7 @@ Then run the build and the Core baseline. Expected: as in Global Constraints.
 - [ ] **Step 5: Commit, push, verify, mark ready**
 
 ```bash
-git add Directory.Build.props CHANGELOG.md docs/releases/v0.15.0.md docs/validation.md README.md
+git add Directory.Build.props CHANGELOG.md docs/releases/v0.15.0.md docs/validation.md docs/user-guide.md README.md
 git commit -m "docs: 0.15.0 release notes, validation and version"
 ```
-Run (CI). Expected: green. Mark the PR ready, confirm GitHub has the commit (GitHub tools) and report the PR link. Merging, running the Release workflow for `v0.15.0` and checking the published release wait for the user's go-ahead.
+Run (CI). Expected: green. Mark the PR ready, confirm GitHub has the commit (GitHub tools) and report the PR link. Then, under the standing go-ahead in Global Constraints, the controller merges the PR, runs the Release workflow for `v0.15.0` on `main` (`actions_run_trigger` `run_workflow`, input `tag`) and checks the published release (`get_release_by_tag`: body equals `docs/releases/v0.15.0.md`, the ZIP and its `.sha256` are attached).
