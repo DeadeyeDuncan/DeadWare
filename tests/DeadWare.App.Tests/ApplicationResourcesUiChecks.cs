@@ -92,6 +92,8 @@ internal static class ApplicationResourcesUiChecks
             Ram_click_ranks_by_average_memory(page, card);
             Arrow_keys_move_the_selection_and_enter_lists_it(page, card);
             The_minute_refresh_keeps_the_slot_and_moves_its_hairlines_with_the_grid(page, card);
+            Left_and_right_mark_both_charts_and_the_minute_refresh_keeps_the_cursor(page, card);
+            Esc_clears_a_cursor_that_lists_nothing_and_the_refresh_keeps_it_cleared(page, card);
             A_new_period_clears_the_moment(page, card);
             Clicking_a_slot_without_process_data_says_so(page, card, minute.AddMinutes(-11));
             Slot_heading_formats();
@@ -497,7 +499,7 @@ internal static class ApplicationResourcesUiChecks
     private static void Arrow_keys_move_the_selection_and_enter_lists_it(UsageHistoryPage page, ApplicationResourcesCard card)
     {
         var cpu = page.Chart("cpu"); var memory = page.Chart("memory");
-        // Right moves the selection on the focused chart; nothing is listed until Enter.
+        // Right moves the selection on both charts; nothing is listed until Enter.
         Assert.True(cpu.HandleKey(Key.Right)); Assert.True(cpu.HandleKey(Key.Right));
         Assert.Equal(1, cpu.SelectedIndex);
         Assert.Null(card.Slot);
@@ -520,13 +522,66 @@ internal static class ApplicationResourcesUiChecks
         var slot = card.Slot; string heading = Heading(card);
         Assert.NotNull(slot);
         // A refresh reads the period again a little later, so the bucket grid moves under the slot: here two earlier slots now come first.
-        static UsageHistoryBucket At(UsageHistoryView view, int k) => new(view.From.AddMilliseconds(k * view.BucketMilliseconds),
-            view.From.AddMilliseconds((k + 1) * view.BucketMilliseconds), 40, 20, 60, 1, 1, 60);
         page.Apply(data with { Metrics = data.Metrics.ToDictionary(p => p.Key, p => p.Value with { Buckets = [At(p.Value, 0), At(p.Value, 1), .. p.Value.Buckets] }) });
         Assert.Equal(3, page.Chart("cpu").SelectedIndex); Assert.Equal(3, page.Chart("memory").SelectedIndex);
         Assert.Equal(slot, card.Slot); Assert.Equal(heading, Heading(card));
         page.Apply(data);
         Assert.Equal(1, page.Chart("cpu").SelectedIndex); Assert.Equal(1, page.Chart("memory").SelectedIndex);
+    }
+
+    private static void Left_and_right_mark_both_charts_and_the_minute_refresh_keeps_the_cursor(UsageHistoryPage page, ApplicationResourcesCard card)
+    {
+        var data = (UsagePageData)typeof(UsageHistoryPage).GetField("data", All)!.GetValue(page)!;
+        var cpu = page.Chart("cpu"); var memory = page.Chart("memory"); var slot = card.Slot; string heading = Heading(card);
+        int moves = 0; Action<int> count = _ => moves++; cpu.SelectionMoved += count;
+        Press(cpu, Key.Right); Press(cpu, Key.Right); cpu.SelectionMoved -= count; Assert.Equal(2, moves);
+        Assert.Equal(3, cpu.SelectedIndex); Assert.Equal(3, memory.SelectedIndex);
+        Layout(page); Assert.Equal(1, Hairlines(cpu)); Assert.Equal(1, Hairlines(memory));
+        Press(memory, Key.Left);
+        Assert.Equal(2, cpu.SelectedIndex); Assert.Equal(2, memory.SelectedIndex);
+        Assert.Equal(slot, card.Slot); Assert.Equal(heading, Heading(card));
+        // RAM lacks its first bucket: the charts match by time, not by index.
+        page.Apply(data with { Metrics = data.Metrics.ToDictionary(p => p.Key, p => p.Key == "memory" ? p.Value with { Buckets = [.. p.Value.Buckets.Skip(1)] } : p.Value) });
+        Assert.Equal(2, cpu.SelectedIndex); Assert.Equal(1, memory.SelectedIndex);
+        Press(cpu, Key.Right);
+        Assert.Equal(3, cpu.SelectedIndex); Assert.Equal(2, memory.SelectedIndex);
+        page.Apply(data);
+        Assert.Equal(3, cpu.SelectedIndex); Assert.Equal(3, memory.SelectedIndex);   // not back to the listed slot (1)
+        // Two earlier slots now come first: the cursor follows its time.
+        page.Apply(data with { Metrics = data.Metrics.ToDictionary(p => p.Key, p => p.Value with { Buckets = [At(p.Value, 0), At(p.Value, 1), .. p.Value.Buckets] }) });
+        Assert.Equal(5, cpu.SelectedIndex); Assert.Equal(5, memory.SelectedIndex);
+        page.Apply(data);
+        Assert.Equal(3, cpu.SelectedIndex); Assert.Equal(slot, card.Slot);
+        // Enter lists the bucket and leaves the focus on the chart: ShowMoment's BringIntoView scrolls the card in without moving focus.
+        var scope = FocusManager.GetFocusScope(cpu); FocusManager.SetFocusedElement(scope, cpu);
+        var bucket = Bucket(cpu, 3); Assert.True(cpu.HandleKey(Key.Enter));
+        WaitFor(() => !card.Loading && card.View is { } shown && shown.From == bucket.Start);
+        Assert.Equal((bucket.Start, bucket.End), card.Slot);
+        Assert.Equal(3, cpu.SelectedIndex); Assert.Equal(3, memory.SelectedIndex);
+        Assert.Same(cpu, FocusManager.GetFocusedElement(scope)); FocusManager.SetFocusedElement(scope, null);
+    }
+
+    private static void Esc_clears_a_cursor_that_lists_nothing_and_the_refresh_keeps_it_cleared(UsageHistoryPage page, ApplicationResourcesCard card)
+    {
+        var data = (UsagePageData)typeof(UsageHistoryPage).GetField("data", All)!.GetValue(page)!;
+        var cpu = page.Chart("cpu"); var memory = page.Chart("memory");
+        Press(cpu, Key.Escape); Assert.Null(card.Slot);
+        Press(cpu, Key.Right);
+        Assert.Equal(0, cpu.SelectedIndex); Assert.Equal(0, memory.SelectedIndex); Assert.Null(card.Slot);
+        Press(cpu, Key.Escape);
+        Assert.Null(cpu.SelectedIndex); Assert.Null(memory.SelectedIndex);
+        page.Apply(data);
+        Assert.Null(cpu.SelectedIndex); Assert.Null(memory.SelectedIndex);
+        // A refresh can leave the cursor's time in no bucket (here both charts lose their first), so neither chart draws it. Esc still
+        // clears it, so a later refresh does not bring it back.
+        Press(cpu, Key.Right); Assert.Equal(0, cpu.SelectedIndex);
+        page.Apply(data with { Metrics = data.Metrics.ToDictionary(p => p.Key, p => p.Value with { Buckets = [.. p.Value.Buckets.Skip(1)] }) });
+        Assert.Null(cpu.SelectedIndex); Assert.Null(memory.SelectedIndex);
+        Press(cpu, Key.Escape); page.Apply(data);
+        Assert.Null(cpu.SelectedIndex); Assert.Null(memory.SelectedIndex);
+        // Leaves a listed slot for A_new_period_clears_the_moment.
+        Activate(cpu, 1); var bucket = Bucket(cpu, 1);
+        WaitFor(() => !card.Loading && card.View is { } shown && shown.From == bucket.Start);
     }
 
     private static void A_new_period_clears_the_moment(UsageHistoryPage page, ApplicationResourcesCard card)
@@ -842,6 +897,9 @@ internal static class ApplicationResourcesUiChecks
         Assert.Equal(index, chart.SelectedIndex);
     }
     private static UsageHistoryBucket Bucket(UsageHistoryChart chart, int index) => Traces(chart)[0].View.Buckets[index];
+    /// <summary>Bucket <paramref name="k"/> of the view's grid, one recorded minute, for a refresh whose grid holds a slot the fixture's does not.</summary>
+    private static UsageHistoryBucket At(UsageHistoryView view, int k) => new(view.From.AddMilliseconds(k * view.BucketMilliseconds),
+        view.From.AddMilliseconds((k + 1) * view.BucketMilliseconds), 40, 20, 60, 1, 1, 60);
     /// <summary>Accent hairlines the chart drew at its last render.</summary>
     private static int Hairlines(UsageHistoryChart chart)
     {

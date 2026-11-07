@@ -209,6 +209,7 @@ internal static class UsageHistoryUiChecks
         var chart = ChartWith(now, "%", 100d, 40);
         int activated = -1;
         ChartType.GetEvent("BucketActivated")!.AddEventHandler(chart, new Action<int>(i => activated = i));
+        var moved = new List<int>(); ChartType.GetEvent("SelectionMoved")!.AddEventHandler(chart, new Action<int>(moved.Add));
         ChartType.GetProperty("Selectable")!.SetValue(chart, true);
         Assert.True(chart.Focusable);
         Assert.Equal(0, Hairlines(chart));
@@ -245,6 +246,8 @@ internal static class UsageHistoryUiChecks
         Assert.Equal(1, Selected(chart));
         handleClick.Invoke(chart, [new Point(2, plot.Top + 20)]);
         Assert.Equal(1, activated);
+        // Each Left and Right reports its index, even at an edge where it stays (Right at 35); SetValue, Enter and clicks report nothing.
+        Assert.Equal([3, 2, 1, 0, 0, 35], moved);
     }
 
     private static object Data(DateTimeOffset now, bool empty)
