@@ -105,6 +105,7 @@ internal static class ApplicationResourcesUiChecks
             More_applications_than_the_rows_read_say_top_n_of_m(folder);
             A_failed_series_read_keeps_the_chart_name(folder);
             Clear_without_a_chart_hands_its_focus_to_rank_by(folder);
+            The_minute_refresh_updates_the_rows_in_place_and_keeps_the_current_cell(folder);
             Status_line_follows_the_recording_switches_without_a_read(folder);
         }
         finally
@@ -755,6 +756,43 @@ internal static class ApplicationResourcesUiChecks
         Click(clear);
         Assert.False(IsShown(clear, card));
         Assert.Same(RankBy(card), FocusManager.GetFocusedElement(scope));
+    }
+
+    private static void The_minute_refresh_updates_the_rows_in_place_and_keeps_the_current_cell(string folder)
+    {
+        var card = new ApplicationResourcesCard(Session(null, folder)); var to = DateTimeOffset.UtcNow;
+        // Forty apps ranked by CPU time, app00.exe first; each minute refresh adds to their CPU time. With app39First, app39.exe has
+        // overtaken the rest and is listed first.
+        ProcessResourceView Ranking(int extra, bool app39First = false)
+        {
+            var from = to.AddDays(-1);
+            var rows = Enumerable.Range(0, 40).Select(i => new ProcessResourceRow($"app{i:00}.exe", 400 - i + extra, 1, 1e6, 1, 1, 60, false, 6e7)).ToList();
+            if (app39First) { rows.RemoveAt(39); rows.Insert(0, new("app39.exe", 1000, 1, 1e6, 1, 1, 60, false, 6e7)); }
+            var everythingElse = new ProcessResourceRow(ProcessHistory.EverythingElse, 10, 1, 1e6, 1, 1, 60, true, 6e7);
+            return new(from, to, rows, 40, everythingElse, rows.Sum(r => r.CpuSeconds) + everythingElse.CpuSeconds, 60, from, to, from, 4096);
+        }
+        card.Apply(Ranking(0), to); Layout(card);
+        var table = Table(card); var scroller = Descendants(table).OfType<ScrollViewer>().First();
+        scroller.ScrollToBottom(); WaitFor(() => { Layout(card); return scroller.VerticalOffset > 0; }); double offset = scroller.VerticalOffset;
+        Select(card, "app39.exe"); var row = Rows(card).Single(r => Cell(r, "Name") == "app39.exe"); var column = table.Columns[1];
+        table.CurrentCell = new DataGridCellInfo(row, column); Layout(card);
+        var container = (DataGridRow)table.ItemContainerGenerator.ContainerFromItem(row); var cell = (DataGridCell)column.GetCellContent(container).Parent;
+        var scope = FocusManager.GetFocusScope(cell); FocusManager.SetFocusedElement(scope, cell);
+        // The next minute: the same rows with new numbers, so the row, its container, the cell with the focus and the scroll offset stay.
+        card.Apply(Ranking(60), to); Layout(card);
+        Assert.Same(row, Rows(card).Single(r => Cell(r, "Name") == "app39.exe")); Assert.Equal(ApplicationResourcesCard.Duration(421), Cell(row, "CpuTime"));
+        Assert.Same(container, table.ItemContainerGenerator.ContainerFromItem(row)); Assert.Equal(ApplicationResourcesCard.Duration(421), ((TextBlock)cell.Content).Text);
+        Assert.True(cell.IsDescendantOf(table)); Assert.Same(cell, FocusManager.GetFocusedElement(scope));
+        Assert.Same(row, table.SelectedItem); Assert.Same(row, table.CurrentCell.Item); Assert.Same(column, table.CurrentCell.Column);
+        Assert.Equal(offset, scroller.VerticalOffset, 3); Assert.Equal("app39.exe", card.SelectedApp);
+        // A new order moves the row itself, still selected.
+        card.Apply(Ranking(120, app39First: true), to); Layout(card);
+        Assert.Equal("app39.exe", RowNames(card)[0]); Assert.Equal("Everything else", LastRowName(card)); Assert.Equal(41, Rows(card).Count);
+        Assert.Same(row, Rows(card)[0]); Assert.Same(row, table.SelectedItem);
+        // Review Focus 5: a search that hides the selected row keeps the app selected; clearing it selects the row again.
+        SetSearch(card, "app1"); Assert.DoesNotContain("app39.exe", RowNames(card)); Assert.Equal("app39.exe", card.SelectedApp);
+        SetSearch(card, ""); Assert.Equal("app39.exe", Cell(table.SelectedItem!, "Name")); Assert.Equal("app39.exe", card.SelectedApp);
+        FocusManager.SetFocusedElement(scope, null);
     }
 
     private static void Status_line_follows_the_recording_switches_without_a_read(string folder)
