@@ -460,7 +460,9 @@ internal static class ConnectionsPageUiChecks
         // A view with a new Timestamp (every RECEIVED cell 0.5 KB higher, same order) updates the same rows in place: row containers, the selection and the scroll offset survive.
         var second = Many(101, 500); connections.ApplyLive(second); Layout(page, 1000, 700); Pump(); Layout(page, 1000, 700);
         Assert.True(rows.SequenceEqual(card.Rows), "The rows were replaced."); Assert.Equal(0, changes); Assert.Equal(40, notified);
-        Assert.Same(selected, card.Grid.SelectedItem); Assert.Same(container, card.Grid.ItemContainerGenerator.ContainerFromItem(selected)); Assert.Equal(offset, grid.VerticalOffset);
+        Assert.Same(selected, card.Grid.SelectedItem); Assert.Same(container, card.Grid.ItemContainerGenerator.ContainerFromItem(selected));
+        // Pixel scrolling re-measures the updated rows, so the offset may drift by a fraction of a pixel; it must not jump.
+        Assert.True(Math.Abs(grid.VerticalOffset - offset) <= 1, $"The Destinations grid scrolled from {offset} to {grid.VerticalOffset} across an in-place update.");
         Assert.Equal("20.0.0.6", card.Selected?.Address);
         // An equal view, and a stale view read twice from a ConnectionService (a new copy each read), change nothing.
         notified = 0; connections.ApplyLive(second); connections.ApplyLive(second with { }); Assert.Equal((0, 0), (changes, notified));
