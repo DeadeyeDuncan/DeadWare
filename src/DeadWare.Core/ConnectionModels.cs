@@ -46,7 +46,8 @@ public sealed record ConnectionHistoryView(ConnectionHistoryQuery Query,
     IReadOnlyList<ConnectionHistoryRow> Rows, long TotalRows, ConnectionHistorySummary Summary,
     IReadOnlyList<ConnectionHistoryMarker> Markers, IReadOnlyList<ConnectionHistoryInterval> Coverage,
     IReadOnlyList<ConnectionHistoryGap> Gaps, DateTimeOffset? EarliestRetainedTime,
-    long StorageBytes, string Status, long OmittedMarkers = 0, TrafficStrip? Strip = null);
+    long StorageBytes, string Status, long OmittedMarkers = 0, TrafficStrip? Strip = null,
+    ConnectionDestinationList? Destinations = null);
 public enum DestinationScope { All, Internet, Local }
 public sealed record NetworkAddressClass(NetworkAddressKind Kind, string Label);
 public sealed record ConnectionDestinationApp(string Name, long ReceivedBytes, long SentBytes);
