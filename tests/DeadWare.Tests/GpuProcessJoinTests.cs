@@ -44,8 +44,12 @@ public class GpuProcessJoinTests
         Assert.Null(ps[0].GpuPercent);Assert.Equal(ProcessGap.FirstSample,ps[0].GpuGap);Assert.Equal(100,ps[0].GpuDedicatedBytes);Assert.Equal(0,ps[1].GpuPercent);   // before the known-zero rule
         Assert.Null(ps[2].GpuPercent);Assert.Equal(ProcessGap.FirstSample,ps[2].GpuGap);}   // exactly previous − 1 s: "at or after"
     [Fact] public void Without_a_previous_collection_gpu_percent_is_unknown_and_memory_is_published(){ var ps=Join(Read([En(8,0xA,0,50)],[Mem(8,0xA,100)],previous:null,interval:null),S(8),S(9));
-        Assert.All(ps,p=>{Assert.Null(p.GpuPercent);Assert.Equal(ProcessGap.FirstSample,p.GpuGap);});Assert.Equal(100,ps[0].GpuDedicatedBytes);Assert.Equal(0,ps[1].GpuDedicatedBytes);}
-    [Fact] public void A_not_ready_engine_counter_is_a_first_sample_for_every_process(){ var p=Join(Read([],[Mem(8,0xA,7)]) with{EnginesReady=false},S(8)).Single();Assert.Null(p.GpuPercent);Assert.Equal(7,p.GpuDedicatedBytes);}
+        Assert.All(ps,p=>{Assert.Null(p.GpuPercent);Assert.Equal(ProcessGap.FirstSample,p.GpuGap);});Assert.Equal(100,ps[0].GpuDedicatedBytes);Assert.Equal(0,ps[1].GpuDedicatedBytes);
+        // Memory is shown, but a read without a previous collection adds no GPU time or GPU memory to history.
+        Assert.All(ps,p=>{Assert.Null(p.Deltas!.GpuSeconds);Assert.Null(p.Deltas!.GpuMemoryByteSeconds);});}
+    [Fact] public void A_not_ready_engine_counter_is_a_first_sample_for_every_process(){ var ps=Join(Read([],[Mem(8,0xA,7)]) with{EnginesReady=false},S(8),S(9));
+        // PID 9 has no engine item, so without the counter flag it would be a known 0 %.
+        Assert.All(ps,p=>{Assert.Null(p.GpuPercent);Assert.Equal(ProcessGap.FirstSample,p.GpuGap);});Assert.Equal(7,ps[0].GpuDedicatedBytes);Assert.Equal(0,ps[1].GpuDedicatedBytes);}
     [Fact] public void A_not_ready_memory_counter_is_a_first_sample_for_every_process(){ var r=Read([En(8,0xA,0,30)],[Mem(8,0xA,7)],[Mem(8,0xA,3)]);
         // PID 9 has no memory item, so without the counter flag it would be a known 0 B.
         var dedicated=GpuProcessJoin.Join([S(8),S(9)],r with{DedicatedReady=false}).Processes;
@@ -58,7 +62,9 @@ public class GpuProcessJoinTests
         Assert.Equal("GPU counters unreadable",off.State.Status);Assert.Null(p.GpuPercent);Assert.Null(p.GpuDedicatedBytes);Assert.Equal(ProcessGap.None,p.GpuGap);}
     [Fact] public void Gpu_deltas_are_percent_and_bytes_times_the_interval(){ var r=Read([En(8,0xA,0,40)],[Mem(8,0xA,300)],interval:2);var p=GpuProcessJoin.Join([S(8)],r).Processes[0];
         Assert.Equal(0.8,p.Deltas!.GpuSeconds!.Value,9);Assert.Equal(600,p.Deltas.GpuMemoryByteSeconds!.Value,9);Assert.Equal(2,GpuProcessJoin.IntervalSeconds(r));
+        // A read joined again for display only shows its values and adds nothing to history, GPU memory included.
         var display=GpuProcessJoin.Join([S(8)],r with{Credit=false});Assert.Null(display.IntervalSeconds);Assert.Null(display.Processes[0].Deltas!.GpuSeconds);Assert.Equal(40,display.Processes[0].GpuPercent);
+        Assert.Null(display.Processes[0].Deltas!.GpuMemoryByteSeconds);Assert.Equal(300,display.Processes[0].GpuDedicatedBytes);
         Assert.Null(GpuProcessJoin.Join([S(8) with{Deltas=null}],r).Processes[0].Deltas);
         Assert.Null(GpuProcessJoin.IntervalSeconds(r with{State=new(false,GpuCounterStatus.Unavailable)}));}
     [Fact] public void Gpu_deltas_add_with_the_cpu_rule(){ var a=new ProcessDeltas(1,1,1,1,1);Assert.Null(a.Add(a).GpuSeconds);Assert.Equal(0.5,a.Add(a with{GpuSeconds=0.5}).GpuSeconds);
