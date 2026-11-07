@@ -319,7 +319,8 @@ internal sealed class UsageHistoryPage : ScrollViewer
         period.Text = Days == 1 ? $"{from.ToLocalTime():MMM d HH:mm} – {to.ToLocalTime():MMM d HH:mm}" : $"{from.ToLocalTime():MMM d yyyy} – {to.ToLocalTime():MMM d yyyy}";
         later.IsEnabled = offset > 0;
     }
-    private void RequestRefresh() { revision++; UpdatePeriod(); _ = RefreshAsync(); }
+    // A strip read still in flight is for the period before this request, so it is dropped when it answers.
+    private void RequestRefresh() { revision++; stripRequest++; UpdatePeriod(); _ = RefreshAsync(); }
     private async Task RefreshAsync()
     {
         if (!IsLoaded || !IsVisible) return;

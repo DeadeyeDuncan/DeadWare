@@ -466,7 +466,33 @@ internal static class UsageHistoryUiChecks
         var third = LoadAsync(page);
         Assert.Equal(3, reads.Count);
         WaitFor(() => third.IsCompleted);
-        reads[2].Reply.SetResult(null); Pump();
+        // A range change or Refresh drops the strip read still in flight for the old period.
+        typeof(UsageHistoryPage).GetMethod("RequestRefresh", All)!.Invoke(page, []);
+        reads[2].Reply.SetResult(For(2)); Pump();
+        Assert.Same(day, chart.Strip);
+        var fourth = LoadAsync(page);
+        Assert.Equal(4, reads.Count);
+        WaitFor(() => fourth.IsCompleted);
+        reads[3].Reply.SetResult(null); Pump();
+        Assert.Null(chart.Strip); Assert.Equal("History unavailable", typeof(TrafficStripChart).GetField("message", All)!.GetValue(chart));
+        // A listed slot: an older slot read answering after a newer one is dropped, and a load reads the listed slot again.
+        var slotReads = new List<(DateTimeOffset From, DateTimeOffset To, TaskCompletionSource<UsageApplicationView?> Reply)>();
+        SetField(page, "readSlotApplications", (Func<DateTimeOffset, DateTimeOffset, Task<UsageApplicationView?>>)((from, to) =>
+            { var reply = new TaskCompletionSource<UsageApplicationView?>(); slotReads.Add((from, to, reply)); return reply.Task; }));
+        var slots = StripFor(now).Slots; page.ApplyStrip(StripFor(now), now);
+        void ListSlot(int index) => typeof(UsageHistoryPage).GetMethod("ShowApplicationsSlot", All)!.Invoke(page, [index]);
+        var summary = Field<TextBlock>(page, "applicationSummary");
+        ListSlot(3); ListSlot(5); Assert.Equal(2, slotReads.Count); Assert.Equal((slots[5].Start, slots[5].End), (slotReads[1].From, slotReads[1].To));
+        slotReads[1].Reply.SetResult(SlotView(slots[5])); Pump();
+        Assert.StartsWith("4 applications · ", summary.Text);
+        slotReads[0].Reply.SetResult(new UsageApplicationView(slots[3].Start, slots[3].End, [], 0, 0, 0, 0, 28, null, 0)); Pump();
+        Assert.StartsWith("4 applications · ", summary.Text);
+        var fifth = LoadAsync(page);
+        WaitFor(() => fifth.IsCompleted);
+        Assert.Equal(3, slotReads.Count); Assert.Equal((slots[5].Start, slots[5].End), (slotReads[2].From, slotReads[2].To));
+        slotReads[2].Reply.SetResult(new UsageApplicationView(slots[5].Start, slots[5].End, [], 0, 0, 0, 0, 28, null, 0)); Pump();
+        Assert.Equal(EmptySlot, summary.Text);
+        reads[^1].Reply.SetResult(null); Pump();
     }
 
     private static void CheckShowInConnections(UiSession session, DateTimeOffset now)
