@@ -54,6 +54,7 @@ internal static class ProcessesPageUiChecks
             Gpu_engine_cell_tooltip_and_known_zeros();
             Gpu_engine_sorts_ascending_first_and_gpu_descending_first();
             Gpu_spoken_labels();
+            Gpu_columns_show_for_fresh_and_0_13_settings_but_not_a_custom_list();
             Automation_names_and_spoken_summary();
             Changed_without_a_new_reading_does_not_resort();
             New_reading_outside_a_hold_resorts();
@@ -322,6 +323,16 @@ internal static class ProcessesPageUiChecks
         Assert.DoesNotContain("GPU engine",Row(p,"Explorer.EXE").Spoken);
         var (u,_)=Page(columns:[..ProcessColumnKeys.All],activity:Unknown(Fixture(),ProcessGap.FirstSample));
         Assert.Contains("GPU engine unknown (first sample)",Row(u,"Code.exe").Spoken);
+    }
+
+    private static void Gpu_columns_show_for_fresh_and_0_13_settings_but_not_a_custom_list()
+    {
+        IReadOnlyList<string> Saved(string json)=>SettingsCodec.Read(json).Settings.ProcessColumns;
+        Assert.Equal(["NAME","CPU","MEMORY","I/O","GPU","GPU MEMORY"],Headers(Page(columns:Saved("{}")).Page));
+        Assert.Equal(["NAME","CPU","MEMORY","I/O","GPU","GPU MEMORY"],Headers(Page(columns:Saved("{\"ProcessColumns\":[\"cpu\",\"memory\",\"io\",\"disk\",\"network\"]}")).Page));
+        var custom=Page(columns:Saved("{\"ProcessColumns\":[\"cpu\",\"memory\"]}")).Page;
+        Assert.Equal(["NAME","CPU","MEMORY"],Headers(custom));
+        Assert.False(PickerItem(custom,"GPU").IsChecked);Assert.False(PickerItem(custom,"GPU MEMORY").IsChecked);
     }
 
     private static void Automation_names_and_spoken_summary()
