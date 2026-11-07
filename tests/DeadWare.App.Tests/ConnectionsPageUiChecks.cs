@@ -72,6 +72,9 @@ internal static class ConnectionsPageUiChecks
         CheckDestinationsLive(page, live);
         CheckDestinationsHistory(session, now);
         CheckDestinationScopeSaved(live);
+        CheckDestinationsInPlace(page, live);
+        CheckDestinationHighlight(page, live);
+        CheckScopeChangeClearsTheSelection(page);
         CheckBoundaryDates();
         CheckIntervalWarning(session);
         CheckExportBusy(session,now);
@@ -342,6 +345,15 @@ internal static class ConnectionsPageUiChecks
             card.Scope.SelectedIndex = 2; Assert.Equal("No saved destinations match the filters in this interval.", EmptyText(card));
             Field<TextBox>(page, "search").Text = ""; Assert.Equal("No saved local destinations in this interval.", EmptyText(card));
             card.Scope.SelectedIndex = 0; Assert.Null(EmptyText(card));
+            // The two-location row highlights both of its nodes; minute-cursor moves keep it selected while its address is listed.
+            var map = Field<ConnectionMap>(page, "map"); var minuteBox = Field<CheckBox>(page, "minute");
+            card.Grid.SelectedItem = Assert.Single(card.Rows);
+            Assert.Equal(2, map.HighlightedKeys.Count); Assert.Equal("Highlighted 2 map nodes.", card.Status.Text); Assert.Equal(Visibility.Visible, card.Status.Visibility);
+            minuteBox.IsChecked = true; Assert.Equal("8.8.8.8", card.Selected?.Address);
+            Assert.Equal([map.DisplayedPoints.Single(p => p.Point == place.Point).Key], map.HighlightedKeys); Assert.Equal("Highlighted 1 map node.", card.Status.Text);
+            Field<Slider>(page, "cursor").Value = 1; Assert.Equal("8.8.8.8", card.Selected?.Address);
+            Assert.Equal([map.DisplayedPoints.Single(p => p.Point == new GeoPoint(40, -90)).Key], map.HighlightedKeys);
+            minuteBox.IsChecked = false; Assert.Equal("8.8.8.8", card.Selected?.Address); Assert.Equal(2, map.HighlightedKeys.Count);
             // An invalid interval, a pending read, then a thrown one.
             from.Text = "bad date"; Call(page, "RequestHistory", null); Assert.Equal("Choose a valid interval to list saved destinations.", EmptyText(card)); Assert.Empty(card.Rows);
             var pending = new TaskCompletionSource<ConnectionHistoryView>();
@@ -355,6 +367,15 @@ internal static class ConnectionsPageUiChecks
             from.Text = start.AddMinutes(-10).ToLocalTime().ToString("yyyy-MM-dd HH:mm"); Field<CheckBox>(page, "minute").IsChecked = true;
             Assert.Equal("No saved destinations in this minute.", EmptyText(card)); Assert.Null(card.CountLine.ToolTip);
             Field<CheckBox>(page, "minute").IsChecked = false; from.Text = startText; Call(page, "RequestHistory", null); Assert.Single(card.Rows);
+            // A destination whose location is outside the 256 markers drawn has no node to highlight.
+            var drawn = Enumerable.Range(0, 256).Select(i => new ConnectionHistoryMarker(place with { Point = new(0, -150 + i) }, null, 1000, 0)).ToArray();
+            var outside = new ConnectionDestination("1.1.1.1", NetworkAddress.Describe("1.1.1.1"), place, [new(50, 50)], false, [new("Peer", 1, 0)], 1,
+                [new(443, ConnectionProtocol.Tcp, 1, 0)], 1, 1, 0, null, null, null, 1, start, start, true);
+            var interval = new ConnectionHistoryQuery(start, now);
+            page.ApplyHistory(new(interval, [], 0, new(1, 0, 1, 1, 0, 0), drawn, [], [], null, 0, "fixture", Strip: StripFor(interval), Destinations: new([outside], new(1, 1, 0, 0, 0))));
+            Assert.Equal(256, map.DisplayedPointCount);
+            card.Grid.SelectedItem = Assert.Single(card.Rows); Assert.Empty(map.HighlightedKeys);
+            Assert.Equal("Not on the map: its location is not among the 256 drawn.", card.Status.Text);
             // Sorted by ↓ DOWNLOAD in Live, History falls back to RECEIVED descending.
             mode.SelectedIndex = 0;
             LocatedConnection Peer(string address, long received, double download) => new(new(new ConnectionPeer(new(1, 1, "Browser"), "", 0, address, 443, ConnectionProtocol.Tcp), now, now, received, 0, download, 0), null);
@@ -392,6 +413,158 @@ internal static class ConnectionsPageUiChecks
         reopened.ApplyLive(live); Assert.Equal(["192.168.1.1"], Keys(Card(reopened)));
         card.Scope.SelectedIndex = 0; Assert.Equal("All", session.Settings.ConnectionsDestinationScope); Assert.Equal(3, card.Rows.Count);
         var save = session.SaveAsync(); PumpUntil(() => save.IsCompleted); save.GetAwaiter().GetResult(); File.Delete(settingsPath);
+    }
+    private static void Select(DestinationsCard card, string address) => card.Grid.SelectedItem = card.Rows.Single(r => r.Key == address);
+    /// <summary>Presses a key on an element as the keyboard does: the preview first, then the key itself unless it was handled.</summary>
+    private static void Press(UIElement target, System.Windows.Input.Key key)
+    {
+        var preview = new System.Windows.Input.KeyEventArgs(System.Windows.Input.Keyboard.PrimaryDevice, new KeySource(), 0, key) { RoutedEvent = System.Windows.Input.Keyboard.PreviewKeyDownEvent };
+        target.RaiseEvent(preview);
+        if (!preview.Handled) target.RaiseEvent(new System.Windows.Input.KeyEventArgs(System.Windows.Input.Keyboard.PrimaryDevice, new KeySource(), 0, key) { RoutedEvent = System.Windows.Input.Keyboard.KeyDownEvent });
+    }
+    /// <summary>The input source a key event must name; it is never added to the sources, and offscreen nothing reads it.</summary>
+    private sealed class KeySource : PresentationSource
+    {
+        public override Visual RootVisual { get => null!; set { } }
+        protected override CompositionTarget GetCompositionTargetCore() => null!;
+        public override bool IsDisposed => false;
+    }
+    /// <summary>Scrolls the page so that the Destinations grid is in view, and returns the grid's own ScrollViewer.</summary>
+    private static ScrollViewer GridInView(FrameworkElement page, DestinationsCard card)
+    {
+        var scroll = Assert.IsType<ScrollViewer>(((Grid)page).Children[0]);
+        Layout(page, 1000, 700);
+        double top = card.Grid.TransformToAncestor((Visual)scroll.Content).Transform(new Point()).Y;
+        scroll.ScrollToVerticalOffset(top - 40); Pump(); Layout(page, 1000, 700);
+        return Elements(card.Grid).OfType<ScrollViewer>().First();
+    }
+    private static void CheckDestinationsInPlace(FrameworkElement page, ConnectionLiveView live)
+    {
+        var card = Card(page); var connections = (ConnectionsPage)page; var search = Field<TextBox>(page, "search");
+        var clock = card.clockSeconds; double seconds = 1000; card.clockSeconds = () => seconds;
+        Field<ComboBox>(page, "mode").SelectedIndex = 0; card.Scope.SelectedIndex = 0;
+        var first = live.Connections[0];
+        LocatedConnection Peer(string address, long received) => first with { Traffic = first.Traffic with { Peer = first.Traffic.Peer with { RemoteAddress = address }, ReceivedBytes = received }, Location = null };
+        // 40 Internet destinations, enough rows to scroll the grid.
+        ConnectionLiveView Many(int second, long extra) => live with { Timestamp = live.Timestamp.AddSeconds(second), Connections = Enumerable.Range(0, 40).Select(i => Peer($"20.0.0.{i + 1}", 100_000 - i * 1000 + extra)).ToArray() };
+        connections.ApplyLive(Many(100, 0));
+        var grid = GridInView(page, card);
+        grid.ScrollToVerticalOffset(100); Pump(); Layout(page, 1000, 700);
+        double offset = grid.VerticalOffset; Assert.True(offset > 0, $"The Destinations grid did not scroll ({grid.ScrollableHeight} scrollable).");
+        var rows = card.Rows.ToArray(); var selected = rows[5]; card.Grid.SelectedItem = selected; Layout(page, 1000, 700);
+        var container = card.Grid.ItemContainerGenerator.ContainerFromItem(selected); Assert.NotNull(container);
+        int changes = 0, notified = 0; card.Rows.CollectionChanged += (_, _) => changes++;
+        foreach (var row in rows) row.PropertyChanged += (_, _) => notified++;
+        // A view with a new Timestamp updates the same rows in place: row containers, the selection and the scroll offset survive.
+        var second = Many(101, 7); connections.ApplyLive(second); Layout(page, 1000, 700); Pump(); Layout(page, 1000, 700);
+        Assert.True(rows.SequenceEqual(card.Rows), "The rows were replaced."); Assert.Equal(0, changes); Assert.Equal(40, notified);
+        Assert.Same(selected, card.Grid.SelectedItem); Assert.Same(container, card.Grid.ItemContainerGenerator.ContainerFromItem(selected)); Assert.Equal(offset, grid.VerticalOffset);
+        Assert.Equal("20.0.0.6", card.Selected?.Address);
+        // An equal view, and a stale view read twice from a ConnectionService (a new copy each read), change nothing.
+        notified = 0; connections.ApplyLive(second); connections.ApplyLive(second with { }); Assert.Equal((0, 0), (changes, notified));
+        var service = new ConnectionService(Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".db"));
+        typeof(ConnectionService).GetField("live", All)!.SetValue(service, second);
+        var stale = service.Live; Assert.NotSame(stale, service.Live); Assert.False(stale.Available);
+        connections.ApplyLive(stale); Assert.Equal(0, changes); Assert.Equal(40, notified); Assert.Equal("—", selected.Download);
+        notified = 0; connections.ApplyLive(service.Live); Assert.Equal((0, 0), (changes, notified));
+        // A scope change re-sorts and scrolls the grid to its top.
+        card.Scope.SelectedIndex = 1; Pump(); Layout(page, 1000, 700); Assert.Equal(0, grid.VerticalOffset); Assert.Same(selected, card.Grid.SelectedItem);
+        card.Scope.SelectedIndex = 0; card.ClearSelection(); Assert.Null(card.Selected);
+        // While the pointer is over the grid, new data moves nothing: a new destination joins the bottom.
+        connections.ApplyLive(live with { Timestamp = live.Timestamp.AddSeconds(200) }); Assert.Equal(["8.8.8.8", "9.9.9.9", "192.168.1.1"], Keys(card));
+        var kept = card.Rows.ToArray();
+        LocatedConnection big = Peer("1.1.1.1", 5000), small = Peer("1.1.1.1", 10);
+        ConnectionLiveView With(int s, params LocatedConnection[] extra) => live with { Timestamp = live.Timestamp.AddSeconds(s), Connections = [.. live.Connections, .. extra] };
+        card.Hold.PointerOver = true;
+        connections.ApplyLive(With(201, big)); Assert.Equal(["8.8.8.8", "9.9.9.9", "192.168.1.1", "1.1.1.1"], Keys(card)); Assert.True(kept.SequenceEqual(card.Rows.Take(3)));
+        // During the hold, F5, a header click and a Live search change each re-sort at once.
+        Press(card.Grid, System.Windows.Input.Key.F5); Assert.Equal(["1.1.1.1", "8.8.8.8", "9.9.9.9", "192.168.1.1"], Keys(card));
+        connections.ApplyLive(With(202, small)); Assert.Equal(["1.1.1.1", "8.8.8.8", "9.9.9.9", "192.168.1.1"], Keys(card));
+        Sort(card, "RECEIVED"); Assert.Equal(["1.1.1.1", "192.168.1.1", "9.9.9.9", "8.8.8.8"], Keys(card));
+        Sort(card, "RECEIVED"); Assert.Equal(["8.8.8.8", "9.9.9.9", "192.168.1.1", "1.1.1.1"], Keys(card));
+        connections.ApplyLive(With(203, big)); Assert.Equal(["8.8.8.8", "9.9.9.9", "192.168.1.1", "1.1.1.1"], Keys(card));
+        search.Text = "."; Assert.Equal(["1.1.1.1", "8.8.8.8", "9.9.9.9", "192.168.1.1"], Keys(card)); search.Text = "";
+        // A selected row that leaves clears the selection.
+        Select(card, "9.9.9.9"); Assert.Equal("9.9.9.9", card.Selected?.Address);
+        connections.ApplyLive(live with { Timestamp = live.Timestamp.AddSeconds(204), Connections = [live.Connections[0], live.Connections[1], big] });
+        Assert.Null(card.Grid.SelectedItem); Assert.Null(card.Selected); Assert.Equal(["1.1.1.1", "8.8.8.8", "192.168.1.1"], Keys(card));
+        // Without the hold the next new Timestamp re-sorts.
+        card.Hold.PointerOver = false;
+        connections.ApplyLive(With(205, small)); Assert.Equal(["8.8.8.8", "9.9.9.9", "192.168.1.1", "1.1.1.1"], Keys(card));
+        // A navigation key holds the order for 3 s on the card's clock.
+        Press(card.Grid, System.Windows.Input.Key.Down); seconds += 2.9; Assert.True(card.Hold.IsHeld(card.clockSeconds()));
+        connections.ApplyLive(With(206, big)); Assert.Equal(["8.8.8.8", "9.9.9.9", "192.168.1.1", "1.1.1.1"], Keys(card));
+        seconds += .2; Assert.False(card.Hold.IsHeld(card.clockSeconds()));
+        connections.ApplyLive(With(207, big)); Assert.Equal(["1.1.1.1", "8.8.8.8", "9.9.9.9", "192.168.1.1"], Keys(card));
+        // Unloading the page releases the pointer and menu holds.
+        card.Hold.PointerOver = true; card.Hold.MenuOpen = true;
+        page.RaiseEvent(new RoutedEventArgs(FrameworkElement.UnloadedEvent)); Assert.False(card.Hold.PointerOver); Assert.False(card.Hold.MenuOpen);
+        card.clockSeconds = clock; card.ClearSelection(); connections.ApplyLive(live);
+        Assert.IsType<ScrollViewer>(((Grid)page).Children[0]).ScrollToTop(); Pump(); Layout(page, 671, 440);
+    }
+    private static void CheckDestinationHighlight(FrameworkElement page, ConnectionLiveView live)
+    {
+        var card = Card(page); var map = Field<ConnectionMap>(page, "map"); var connections = (ConnectionsPage)page; var box = Field<Border>(page, "nodeDetails");
+        var first = live.Connections[0]; var place = first.Location!;
+        connections.ApplyLive(live with { Timestamp = live.Timestamp.AddSeconds(400) }); Layout(page, 1000, 700);
+        string node = map.DisplayedPoints.Single(p => p.Point == place.Point).Key;
+        // With the globe turned away, selecting the row turns the map to its node.
+        map.Flat = false; map.SetView(new(-40, 90), 1); Assert.Null(map.PointPosition(node));
+        Select(card, "8.8.8.8");
+        Assert.Equal([node], map.HighlightedKeys); Assert.Equal(Visibility.Collapsed, box.Visibility);
+        Assert.Equal("Highlighted 1 map node.", card.Status.Text); Assert.Equal(Visibility.Visible, card.Status.Visibility);
+        Assert.NotNull(map.PointPosition(node));
+        Select(card, "192.168.1.1"); Assert.Empty(map.HighlightedKeys); Assert.Equal("Not on the map: local addresses are not located.", card.Status.Text);
+        Select(card, "9.9.9.9"); Assert.Equal("Not on the map: no map position for this address.", card.Status.Text);
+        // A located special-purpose peer is drawn, so its row highlights its node.
+        var special = first with { Traffic = first.Traffic with { Peer = first.Traffic.Peer with { RemoteAddress = "100.64.0.1" } }, Location = place with { Point = new(10, 10) } };
+        connections.ApplyLive(live with { Timestamp = live.Timestamp.AddSeconds(401), Connections = [.. live.Connections, special] });
+        Select(card, "100.64.0.1"); Assert.Single(map.HighlightedKeys); Assert.Equal("Highlighted 1 map node.", card.Status.Text);
+        // A node selected after a row clears the table selection and the highlight; the node stays selected after the regroup and the next update.
+        connections.ApplyLive(live with { Timestamp = live.Timestamp.AddSeconds(402) }); map.Flat = true; map.ResetView(); Layout(page, 1000, 700);
+        Select(card, "8.8.8.8"); Assert.Single(map.HighlightedKeys);
+        SelectNode(page, node); Layout(page, 1000, 700);
+        Assert.Null(card.Selected); Assert.Null(card.Grid.SelectedItem); Assert.Empty(map.HighlightedKeys); Assert.Equal(Visibility.Collapsed, card.Status.Visibility);
+        Assert.True(map.DisplayedPoints.Single(p => p.Key == node).Selected); Assert.Equal(Visibility.Visible, box.Visibility);
+        connections.ApplyLive(live with { Timestamp = live.Timestamp.AddSeconds(403) }); Assert.True(map.DisplayedPoints.Single(p => p.Key == node).Selected);
+        // Selecting a row clears the node selection and its detail box.
+        Select(card, "8.8.8.8"); Assert.Equal(Visibility.Collapsed, box.Visibility); Assert.DoesNotContain(map.DisplayedPoints, p => p.Selected);
+        Assert.Null(PageType.GetField("selectedKey", All)!.GetValue(page)); Assert.Equal([node], map.HighlightedKeys);
+        // Esc clears both selections.
+        Press(card.Grid, System.Windows.Input.Key.Escape); Assert.Null(card.Selected); Assert.Empty(map.HighlightedKeys); Assert.Equal(Visibility.Collapsed, card.Status.Visibility);
+        SelectNode(page, node); Layout(page, 1000, 700); Assert.Equal(Visibility.Visible, box.Visibility);
+        Press(page, System.Windows.Input.Key.Escape); Assert.Equal(Visibility.Collapsed, box.Visibility); Assert.DoesNotContain(map.DisplayedPoints, p => p.Selected);
+        // The detail box's Close leaves the table selection.
+        Select(card, "8.8.8.8");
+        var close = Elements(box).OfType<Button>().Single(b => AutomationProperties.GetName(b) == "Close"); close.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        Assert.Equal("8.8.8.8", card.Selected?.Address); Assert.Equal([node], map.HighlightedKeys);
+        // Live: the selected row gains a location in a later view with the same Timestamp; its node is highlighted and the camera stays.
+        card.ClearSelection(); map.Flat = false; map.SetView(place.Point!, 1);
+        var located = live with { Timestamp = live.Timestamp.AddSeconds(410) }; connections.ApplyLive(located);
+        Select(card, "9.9.9.9"); var camera = map.Camera; Assert.Empty(map.HighlightedKeys);
+        connections.ApplyLive(located with { Connections = [located.Connections[0], located.Connections[1], located.Connections[2] with { Location = place with { City = "Late", Point = new(-30, 150) } }] });
+        string late = map.DisplayedPoints.Single(p => p.Point == new GeoPoint(-30, 150)).Key;
+        Assert.Equal("9.9.9.9", card.Selected?.Address); Assert.Equal([late], map.HighlightedKeys); Assert.Equal(camera, map.Camera); Assert.Equal("Highlighted 1 map node.", card.Status.Text);
+        // Live with 300 locations: a highlighted location beyond the first 256 keys is drawn.
+        card.ClearSelection();
+        var many = live with { Timestamp = live.Timestamp.AddSeconds(420), Connections = Enumerable.Range(0, 300).Select(i => first with { Traffic = first.Traffic with { Peer = first.Traffic.Peer with { RemoteAddress = $"20.0.{i / 200}.{i % 200 + 1}" } }, Location = place with { Point = new(0, -150 + i) } }).ToArray() };
+        connections.ApplyLive(many); Assert.Equal(256, map.DisplayedPointCount); Assert.Equal(300, card.Rows.Count);
+        var hidden = many.Connections.First(c => !map.DisplayedPoints.Any(p => p.Point == c.Location!.Point));
+        Select(card, hidden.Traffic.Peer.RemoteAddress);
+        Assert.Equal(256, map.DisplayedPointCount); Assert.Contains(map.DisplayedPoints, p => p.Point == hidden.Location!.Point);
+        Assert.Single(map.HighlightedKeys); Assert.Equal("Highlighted 1 map node.", card.Status.Text);
+        card.ClearSelection(); Assert.Empty(map.HighlightedKeys); Assert.Equal(Visibility.Collapsed, card.Status.Visibility);
+        connections.ApplyLive(live); map.Flat = true; map.ResetView(); Layout(page, 671, 440);
+    }
+    /// <summary>Review Focus 5: a scope that hides the selected row clears the selection, the highlight and the status line.</summary>
+    private static void CheckScopeChangeClearsTheSelection(FrameworkElement page)
+    {
+        var card = Card(page); var map = Field<ConnectionMap>(page, "map");
+        Assert.Equal(0, card.Scope.SelectedIndex); Assert.Equal(3, card.Rows.Count);
+        Select(card, "8.8.8.8"); Assert.Single(map.HighlightedKeys); Assert.Equal(Visibility.Visible, card.Status.Visibility);
+        card.Scope.SelectedIndex = 2;
+        Assert.Null(card.Selected); Assert.Empty(map.HighlightedKeys); Assert.Equal(Visibility.Collapsed, card.Status.Visibility); Assert.Equal("", card.Status.Text);
+        card.Scope.SelectedIndex = 0; Assert.Null(card.Grid.SelectedItem); Assert.Equal(3, card.Rows.Count);
     }
     private static void CheckDownloadControls(DateTimeOffset now)
     {
