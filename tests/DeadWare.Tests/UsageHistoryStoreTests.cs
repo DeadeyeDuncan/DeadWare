@@ -209,6 +209,104 @@ public class UsageHistoryStoreTests
         Assert.Throws<ArgumentOutOfRangeException>(() => new UsageHistoryStore(fixture.Path, 1024));
     }
 
+    [Theory]
+    [InlineData(1, 60)] [InlineData(1, 450)] [InlineData(1, 1500)]
+    [InlineData(7, 60)] [InlineData(7, 450)] [InlineData(7, 1500)]
+    [InlineData(30, 60)] [InlineData(30, 450)] [InlineData(30, 1500)] [InlineData(30, 4000)]
+    public void Application_series_uses_the_metric_bucket_grid(int days, int points)
+    {
+        using var fixture = new Fixture(); var store = fixture.Open(); var end = Day.AddDays(days);
+        // A CPU minute and an a.exe row every 7 minutes over the period; 2 rows a batch keeps each Append within MaximumBatchRows.
+        var batches = Enumerable.Range(0, (days * 1440 + 6) / 7).Select(i => Batch(Day.AddMinutes(7 * i), apps: [("a.exe", 100, 10)])).ToArray();
+        foreach (var chunk in batches.Chunk(UsageHistoryStore.MaximumBatchRows / 2)) store.Append("m", chunk, end);
+        var series = store.ReadApplicationSeries("m", Day, end, points);
+        var cpu = store.ReadMetric("m", UsageMetrics.Cpu, null, Day, end, points);
+        Assert.Equal(cpu.BucketMilliseconds, series.BucketMilliseconds);
+        Assert.Equal(cpu.Buckets.Count, series.Slots.Count);
+        Assert.All(cpu.Buckets, b => Assert.Contains(series.Slots, s => s.Start == b.Start && s.End == b.End && s.Minutes == b.Minutes));
+        Assert.Equal((TrafficMeasure.Total, (DateTimeOffset?)null, Day, end), (series.Measure, series.RetainedFrom, series.From, series.To));
+        Assert.Equal(batches.Length * 100L, series.Slots.Sum(s => s.Received[0]));
+    }
+
+    [Fact]
+    public void Application_series_ranks_like_the_applications_read()
+    {
+        using var fixture = new Fixture(); var store = fixture.Open(); var end = Day.AddDays(1);
+        // Nine names: c and d tie on received + sent, and f and g tie across the sixth place, so the name decides both.
+        (string Name, long Received, long Sent)[] totals =
+            [("i.exe", 50, 0), ("a.exe", 800, 100), ("d.exe", 100, 600), ("c.exe", 600, 100), ("b.exe", 700, 100),
+             ("e.exe", 500, 0), ("g.exe", 300, 100), ("f.exe", 100, 300), ("h.exe", 90, 10)];
+        // Each name's traffic is split over two minutes an hour apart, so the ranking sums across slots.
+        store.Append("m", [Batch(Day.AddMinutes(10), apps: totals.Select(t => (t.Name, t.Received - t.Received / 2, t.Sent - t.Sent / 2)).ToArray()),
+            Batch(Day.AddMinutes(70), apps: totals.Select(t => (t.Name, t.Received / 2, t.Sent / 2)).ToArray())], end);
+        var series = store.ReadApplicationSeries("m", Day, end);
+        var applications = store.ReadApplications("m", Day, end);
+        Assert.Equal(new[] { "a.exe", "b.exe", "c.exe", "d.exe", "e.exe", "f.exe" }, series.Applications.Select(a => a.Name));
+        Assert.Equal(applications.Applications.Take(6).Select(a => (a.Name, a.Received, a.Sent)), series.Applications.Select(a => (a.Name, a.Received, a.Sent)));
+        Assert.All(series.Applications, a => Assert.Equal(a.Name, a.Key));
+        Assert.Equal((applications.Applications.Skip(6).Sum(a => a.Received) + applications.OtherReceived,
+            applications.Applications.Skip(6).Sum(a => a.Sent) + applications.OtherSent,
+            applications.Applications.Count - 6 + applications.OtherApplications), (series.OtherReceived, series.OtherSent, series.OtherApplications));
+        Assert.Equal((440L, 110L, 3L), (series.OtherReceived, series.OtherSent, series.OtherApplications));
+        Assert.All(series.Slots, s => Assert.Equal((7, 7), (s.Received.Count, s.Sent.Count)));
+        Assert.Equal(totals.Sum(t => t.Received), series.Slots.Sum(s => s.Received.Sum()));
+        Assert.Equal(series.OtherSent, series.Slots.Sum(s => s.Sent[6]));
+    }
+
+    [Fact]
+    public void Application_series_keeps_capture_gap_minutes_out_of_slot_bytes()
+    {
+        using var fixture = new Fixture(); var store = fixture.Open(); var end = Day.AddDays(1);
+        // 288 points over a day gives 5-minute slots. Slot 0: minutes 0-3 captured and minute 4 a capture gap, each with a.exe 100 B;
+        // b.exe appears only in the gap minute. Slot 1: two capture-gap minutes only.
+        var batches = Enumerable.Range(0, 4).Select(i => Batch(Day.AddMinutes(i), apps: [("a.exe", 100, 0)])).ToList();
+        batches.Add(Batch(Day.AddMinutes(4), gap: true, apps: [("a.exe", 100, 0), ("b.exe", 50, 5)]));
+        batches.Add(Batch(Day.AddMinutes(5), gap: true, apps: [("a.exe", 100, 0)]));
+        batches.Add(Batch(Day.AddMinutes(6), gap: true, apps: [("a.exe", 100, 0)]));
+        store.Append("m", batches, end);
+        var series = store.ReadApplicationSeries("m", Day, end, 288);
+        Assert.Equal(300_000, series.BucketMilliseconds);
+        Assert.Equal(new[] { ("a.exe", 700L, 0L), ("b.exe", 50L, 5L) }, series.Applications.Select(a => (a.Name, a.Received, a.Sent)));
+        Assert.Equal(2, series.Slots.Count);
+        var first = series.Slots[0];
+        Assert.Equal((Day, Day.AddMinutes(5), 5L, 240L, true), (first.Start, first.End, first.Minutes, first.RecordedSeconds, first.Incomplete));
+        Assert.Equal(new long[] { 400, 0, 0 }, first.Received); Assert.Equal(new long[] { 0, 0, 0 }, first.Sent);
+        var second = series.Slots[1];
+        Assert.Equal((Day.AddMinutes(5), Day.AddMinutes(10), 2L, 0L, true), (second.Start, second.End, second.Minutes, second.RecordedSeconds, second.Incomplete));
+        Assert.Equal(new long[] { 0, 0, 0 }, second.Received); Assert.Equal(new long[] { 0, 0, 0 }, second.Sent);
+    }
+
+    [Fact]
+    public void Application_series_lists_recorded_minutes_without_traffic_as_zero_slots()
+    {
+        using var fixture = new Fixture(); var store = fixture.Open(); var end = Day.AddDays(1);
+        // 5-minute slots. Slot 0: metric rows only. Slot 1: nothing. Slot 2: one minute with traffic. Slot 3: one minute with an
+        // application row and no metric row, which still counts as recorded.
+        var batches = Enumerable.Range(0, 5).Select(i => Batch(Day.AddMinutes(i))).ToList();
+        batches.Add(Batch(Day.AddMinutes(10), apps: [("a.exe", 30, 3)]));
+        batches.Add(Batch(Day.AddMinutes(15), metrics: [], apps: [("a.exe", 20, 2)]));
+        store.Append("m", batches, end);
+        var series = store.ReadApplicationSeries("m", Day, end, 288);
+        Assert.Equal(new[] { Day, Day.AddMinutes(10), Day.AddMinutes(15) }, series.Slots.Select(s => s.Start));
+        Assert.Equal(new[] { (5L, 300L, false), (1L, 60L, false), (1L, 60L, false) }, series.Slots.Select(s => (s.Minutes, s.RecordedSeconds, s.Incomplete)));
+        Assert.Equal(new long[] { 0, 0 }, series.Slots[0].Received); Assert.Equal(new long[] { 0, 0 }, series.Slots[0].Sent);
+        Assert.Equal(new long[] { 30, 0 }, series.Slots[1].Received); Assert.Equal(new long[] { 3, 0 }, series.Slots[1].Sent);
+        Assert.Equal(new long[] { 20, 0 }, series.Slots[2].Received);
+        Assert.Empty(store.ReadApplicationSeries("m", Day.AddDays(-1), Day).Slots);
+    }
+
+    [Fact]
+    public void Application_series_rejects_bad_arguments()
+    {
+        using var fixture = new Fixture(); var store = fixture.Open();
+        Assert.Throws<ArgumentOutOfRangeException>(() => store.ReadApplicationSeries("m", Day, Day.AddDays(1), 0));
+        Assert.Throws<ArgumentOutOfRangeException>(() => store.ReadApplicationSeries("m", Day, Day.AddDays(1), 4001));
+        Assert.ThrowsAny<ArgumentException>(() => store.ReadApplicationSeries("m", Day, Day.AddDays(-1)));
+        Assert.ThrowsAny<ArgumentException>(() => store.ReadApplicationSeries("m", Day, Day.AddDays(402)));
+        Assert.ThrowsAny<ArgumentException>(() => store.ReadApplicationSeries("", Day, Day.AddDays(1)));
+        Assert.Throws<InvalidOperationException>(() => new UsageHistoryStore(fixture.Path).ReadApplicationSeries("m", Day, Day.AddDays(1)));
+    }
+
     private sealed class Fixture : IDisposable
     {
         private readonly string root = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "DeadWare-usage-" + Guid.NewGuid().ToString("N"));
