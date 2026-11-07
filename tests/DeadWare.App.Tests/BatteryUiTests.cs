@@ -81,6 +81,8 @@ public class BatteryUiTests
                 RuneTraceUiChecks.Run();
                 Phase("typography and range segments");
                 RangeSegmentsUiChecks.Run(app);
+                Phase("traffic strip");
+                TrafficStripUiChecks.Run(app);
                 Phase("usage history");
                 UsageHistoryUiChecks.Run(app);
                 Phase("alerts");
