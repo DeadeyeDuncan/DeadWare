@@ -28,7 +28,7 @@ public sealed record ProcessResourceView(DateTimeOffset From, DateTimeOffset To,
 /// never call from the collector or UI thread.</summary>
 public sealed class ProcessHistoryStore(string path, long maximumDatabaseBytes = ProcessHistoryStore.MaximumDatabaseBytes)
 {
-    public const long MaximumDatabaseBytes = 128L * 1024 * 1024;
+    public const long MaximumDatabaseBytes = 192L * 1024 * 1024;
     public const int RetentionDays = 30, MaximumReadDays = 31, MaximumRows = 1000;
     public const int ApplicationId = 0x44575052;
     private const long MaximumJournalBytes = 8L * 1024 * 1024;
@@ -37,21 +37,25 @@ public sealed class ProcessHistoryStore(string path, long maximumDatabaseBytes =
     private const double TicksPerSecond = 10_000_000;
     // Saved names never contain '*' (ProcessHistory.SavedName), so no application's key is the reserved one.
     private const string EverythingElseKey = "*EVERYTHING ELSE";
+    // Version 2: the GPU columns sit where Upgrade's ADD COLUMN puts them in a version 1 file, so both layouts are the same.
+    // A minute without GPU-covered time holds NULL in all three, as upgraded version 1 rows do.
     private const string Schema = """
         CREATE TABLE names(id INTEGER PRIMARY KEY, upper TEXT UNIQUE NOT NULL, display TEXT NOT NULL);
         CREATE TABLE minutes(
             machine TEXT NOT NULL, minute INTEGER NOT NULL, covered REAL NOT NULL, processors INTEGER NOT NULL,
-            complete INTEGER NOT NULL CHECK(complete IN(0,1)), segment TEXT NOT NULL, PRIMARY KEY(machine,minute)) WITHOUT ROWID;
+            complete INTEGER NOT NULL CHECK(complete IN(0,1)), segment TEXT NOT NULL, gpu_covered REAL NULL, PRIMARY KEY(machine,minute)) WITHOUT ROWID;
         CREATE INDEX minutes_time ON minutes(minute);
         CREATE TABLE app_minutes(
             machine TEXT NOT NULL, minute INTEGER NOT NULL, name_id INTEGER NOT NULL, cpu INTEGER NOT NULL, io_read INTEGER NOT NULL,
             io_write INTEGER NOT NULL, memory_seconds REAL NOT NULL, everything_else INTEGER NOT NULL CHECK(everything_else IN(0,1)),
-            PRIMARY KEY(machine,minute,name_id)) WITHOUT ROWID;
+            gpu_seconds REAL NULL, gpu_memory_seconds REAL NULL, PRIMARY KEY(machine,minute,name_id)) WITHOUT ROWID;
         """;
     private readonly string path = Path.GetFullPath(path);
     private bool initialized;
     // Test seam, set by reflection: runs after a read's first statement so a test can save a minute mid-read. Always null in the app.
     private Action? afterFirstRead = null;
+    // Test seam, set by reflection: runs inside the upgrade transaction just before it commits, so a test can fail it. Always null in the app.
+    private Action? beforeUpgradeCommit = null;
 
     public long StorageBytes => new[] { path, path + "-wal", path + "-shm" }
         .Where(File.Exists).Sum(file => new FileInfo(file).Length);
@@ -73,9 +77,10 @@ public sealed class ProcessHistoryStore(string path, long maximumDatabaseBytes =
         {
             using var transaction = db.BeginTransaction();
             Execute(db, Schema, transaction);
-            Execute(db, $"PRAGMA application_id={ApplicationId.ToString(CultureInfo.InvariantCulture)}; PRAGMA user_version=1", transaction);
+            Execute(db, $"PRAGMA application_id={ApplicationId.ToString(CultureInfo.InvariantCulture)}; PRAGMA user_version=2", transaction);
             transaction.Commit();
         }
+        else Upgrade(db, beforeUpgradeCommit);
         Checkpoint(db); initialized = true;
     }
 
@@ -86,15 +91,37 @@ public sealed class ProcessHistoryStore(string path, long maximumDatabaseBytes =
             using var db = Open(readOnly: true);
             if (Convert.ToString(Scalar(db, "PRAGMA integrity_check"), CultureInfo.InvariantCulture) != "ok")
                 throw new InvalidDataException("Process history is corrupt; the file was preserved.");
-            if (Number(db, "PRAGMA user_version") != 1 || Number(db, "PRAGMA application_id") != ApplicationId)
+            long version = Number(db, "PRAGMA user_version");
+            if (version is not (1 or 2) || Number(db, "PRAGMA application_id") != ApplicationId)
                 throw new InvalidDataException("Unsupported process history; the file was preserved.");
-            if (Number(db, "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN('names','minutes','app_minutes')") != 3)
+            // A version 1 file gains the GPU columns in Upgrade; a version 2 file must already have all three.
+            if (Number(db, "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN('names','minutes','app_minutes')") != 3 ||
+                (version == 2 && (Number(db, "SELECT COUNT(*) FROM pragma_table_info('app_minutes') WHERE name IN('gpu_seconds','gpu_memory_seconds')") != 2 ||
+                    Number(db, "SELECT COUNT(*) FROM pragma_table_info('minutes') WHERE name='gpu_covered'") != 1)))
                 throw new InvalidDataException("Incompatible process history objects; the file was preserved.");
         }
         catch (SqliteException error) when (error.SqliteErrorCode is 11 or 26)
         {
             throw new InvalidDataException("Process history is corrupt; the file was preserved.", error);
         }
+    }
+
+    /// <summary>Moves a version 1 file to version 2 in one transaction on the writable connection: the three GPU columns, which leave every
+    /// existing row NULL, and the version. Adding a nullable column rewrites only the schema, so the journal stays small. Any failure rolls back
+    /// and leaves a valid version 1 file. <paramref name="beforeCommit"/> is the test seam.</summary>
+    private static void Upgrade(SqliteConnection db, Action? beforeCommit)
+    {
+        using var transaction = db.BeginTransaction();
+        // Inspect read the version on another connection; another writer may have upgraded the file since.
+        if (Convert.ToInt64(ScalarWith(db, "PRAGMA user_version", transaction), CultureInfo.InvariantCulture) != 1) return;
+        Execute(db, """
+            ALTER TABLE app_minutes ADD COLUMN gpu_seconds REAL NULL;
+            ALTER TABLE app_minutes ADD COLUMN gpu_memory_seconds REAL NULL;
+            ALTER TABLE minutes ADD COLUMN gpu_covered REAL NULL;
+            PRAGMA user_version=2;
+            """, transaction);
+        beforeCommit?.Invoke();
+        transaction.Commit();
     }
 
     /// <summary>Writes closed minutes. Rows older than the retention window or more than five minutes ahead of now are ignored.
@@ -127,11 +154,13 @@ public sealed class ProcessHistoryStore(string path, long maximumDatabaseBytes =
                             Execute(db, "UPDATE minutes SET complete=0 WHERE machine=$machine AND minute=$minute", transaction, ("$machine", machine), ("$minute", minute));
                         continue;
                     }
+                    // A minute without GPU-covered time stores NULL, never 0, as version 1 minutes read.
                     Execute(db, """
-                        INSERT INTO minutes(machine,minute,covered,processors,complete,segment)
-                        VALUES($machine,$minute,$covered,$processors,$complete,$segment)
+                        INSERT INTO minutes(machine,minute,covered,processors,complete,segment,gpu_covered)
+                        VALUES($machine,$minute,$covered,$processors,$complete,$segment,$gpu)
                         """, transaction, ("$machine", machine), ("$minute", minute), ("$covered", batch.CoveredSeconds),
-                        ("$processors", batch.ProcessorCount), ("$complete", batch.Complete ? 1 : 0), ("$segment", batch.Segment));
+                        ("$processors", batch.ProcessorCount), ("$complete", batch.Complete ? 1 : 0), ("$segment", batch.Segment),
+                        ("$gpu", batch.GpuCoveredSeconds == 0 ? DBNull.Value : batch.GpuCoveredSeconds));
                     foreach (var app in batch.Applications)
                     {
                         string key = KeyOf(app);
@@ -143,10 +172,11 @@ public sealed class ProcessHistoryStore(string path, long maximumDatabaseBytes =
                             ids[key] = id;
                         }
                         Execute(db, """
-                            INSERT INTO app_minutes(machine,minute,name_id,cpu,io_read,io_write,memory_seconds,everything_else)
-                            VALUES($machine,$minute,$name,$cpu,$read,$write,$memory,$other)
+                            INSERT INTO app_minutes(machine,minute,name_id,cpu,io_read,io_write,memory_seconds,everything_else,gpu_seconds,gpu_memory_seconds)
+                            VALUES($machine,$minute,$name,$cpu,$read,$write,$memory,$other,$gpu,$gpuMemory)
                             """, transaction, ("$machine", machine), ("$minute", minute), ("$name", id), ("$cpu", app.CpuTime),
-                            ("$read", app.IoRead), ("$write", app.IoWrite), ("$memory", app.MemoryByteSeconds), ("$other", app.EverythingElse ? 1 : 0));
+                            ("$read", app.IoRead), ("$write", app.IoWrite), ("$memory", app.MemoryByteSeconds), ("$other", app.EverythingElse ? 1 : 0),
+                            ("$gpu", (object?)app.GpuSeconds ?? DBNull.Value), ("$gpuMemory", (object?)app.GpuMemoryByteSeconds ?? DBNull.Value));
                     }
                 }
                 transaction.Commit();
@@ -299,17 +329,22 @@ public sealed class ProcessHistoryStore(string path, long maximumDatabaseBytes =
         if (batch is null || batch.Applications is null || batch.Minute.UtcTicks % TimeSpan.TicksPerMinute != 0 || !double.IsFinite(batch.CoveredSeconds) ||
             batch.CoveredSeconds <= 0 || batch.ProcessorCount is < 1 or > MaximumProcessors ||
             string.IsNullOrWhiteSpace(batch.Segment) || batch.Segment.Length > 64 || batch.Segment.Any(c => !char.IsAsciiLetterOrDigit(c) && c != '-') ||
+            !double.IsFinite(batch.GpuCoveredSeconds) || batch.GpuCoveredSeconds < 0 ||
             batch.Applications.Count > ProcessHistory.MaximumApplications + 1)
             throw new ArgumentException("Invalid process history batch.", nameof(batch));
         var keys = new HashSet<string>(StringComparer.Ordinal);
         foreach (var app in batch.Applications)
         {
             if (app is null || app.CpuTime < 0 || app.IoRead < 0 || app.IoWrite < 0 || !double.IsFinite(app.MemoryByteSeconds) || app.MemoryByteSeconds < 0 ||
+                !ValidGpu(app.GpuSeconds, batch.GpuCoveredSeconds) || !ValidGpu(app.GpuMemoryByteSeconds, batch.GpuCoveredSeconds) ||
                 (!app.EverythingElse && (app.Name is null || ProcessHistory.SavedName(app.Name) != app.Name)) ||
                 !keys.Add(KeyOf(app)))
                 throw new ArgumentException("Invalid process history application minute.", nameof(batch));
         }
     }
+
+    /// <summary>An application's GPU value is null, or finite and at least 0 in a minute with GPU-covered time; a minute without any holds only nulls.</summary>
+    private static bool ValidGpu(double? value, double gpuCovered) => value is not { } gpu || gpuCovered > 0 && double.IsFinite(gpu) && gpu >= 0;
 
     /// <summary>Deletes every minute before <paramref name="cutoff"/> and its application rows, for every machine.</summary>
     private static void DeleteMinutes(SqliteConnection db, SqliteTransaction transaction, long cutoff)
