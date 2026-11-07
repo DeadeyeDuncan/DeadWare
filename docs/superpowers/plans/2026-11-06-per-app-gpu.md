@@ -270,7 +270,7 @@ Native details (no unsafe code; `DeadWare.App.csproj` does not allow it):
 4. Record: `counters="present"`; `open`, `collect1` and `collect2` as `0x{status:X8}`; for `early` and `late`, each kind's array status and its item count per CStatus; `instances` and `skipped` per kind; `unmatched` (parsed instances whose PID is in neither scan) with up to 10 of those PIDs; up to 10 skipped instance names (they carry only PIDs, LUIDs, engine numbers and types); `readyEngines` and `readyMemory`; `adapters` (null on a DXGI failure, else the count) with each adapter's `Flags`; and for each LUID seen, whether DXGI lists it, its flags and its engine types. A set with no instances (below) records `instances=0`.
 5. Assert, in order:
    - `open` is 0 (message `Open failed with 0x{open:X8}`).
-   - No instances: if `collect1` or `collect2` is `NoData` or `CStatusNoInstance`, or every `late` array has status `NoData` or `CStatusNoInstance` or no items, return (it passes).
+   - No instances: if `collect1` or `collect2` is `NoData` or `CStatusNoInstance`, or every `late` array has status `NoData` or `CStatusNoInstance` or status 0 with no items, return (it passes).
    - Both collects are 0. Every `early` and `late` array status is one of 0, `NoData`, `CStatusNoInstance`, `CStatusInvalidData`, `InvalidData`, `CalcNegativeDenominator` or `CalcNegativeValue`; the message names the kind, the read and the status.
    - `unmatched` is 0 (message: the kind and the PID). Parsing never threw (no exception reached the test).
    - `adapters` is not null and not empty, and every entry has a non-empty `Description`.

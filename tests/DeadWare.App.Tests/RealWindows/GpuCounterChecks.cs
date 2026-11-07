@@ -41,7 +41,7 @@ public sealed class GpuCounterChecks
             var pids=first.Processes.Select(p=>p.Pid).Concat(second.Processes.Select(p=>p.Pid)).ToHashSet();
             var parsed=Kinds.ToDictionary(kind=>kind,kind=>late[(int)kind].Items.Select(item=>new Parsed(item,GpuCounterInstance.TryParse(item.Name,kind,out var instance)?instance:null)).ToList());
             var unmatched=Kinds.SelectMany(kind=>parsed[kind].Where(p=>p.Instance is {} instance&&!pids.Contains(instance.Pid)).Select(p=>(Kind:kind,Pid:p.Instance!.Pid))).ToList();
-            var noInstances=NoInstances(collect1)||NoInstances(collect2)||late.All(array=>NoInstances(array.Status)||array.Items.Count==0);
+            var noInstances=NoInstances(collect1)||NoInstances(collect2)||late.All(array=>NoInstances(array.Status)||array.Status==0&&array.Items.Count==0);
             var engineValues=late[(int)GpuCounterKind.Engine].Items.Where(Ready).Select(item=>item.Value).ToList();
             var memoryValues=late[(int)GpuCounterKind.Dedicated].Items.Concat(late[(int)GpuCounterKind.Shared].Items).Where(Ready).Select(item=>item.Value).ToList();
             var luids=Kinds.SelectMany(kind=>parsed[kind]).Select(p=>p.Instance).OfType<GpuCounterInstance>().GroupBy(instance=>instance.Luid).OrderBy(group=>group.Key).Select(group=>
