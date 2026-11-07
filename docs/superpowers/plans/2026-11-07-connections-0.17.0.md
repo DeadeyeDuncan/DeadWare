@@ -113,8 +113,8 @@ For this plan:
   - One branch, `claude/connections-0.17.0`, from `origin/main` after v0.16.0 has merged, with one pull request to `main`, opened as a draft with Task 1's push. CI runs on `claude/*` branches only through a pull request.
   - Fetch and inspect `origin` before each task. Keep unrelated local work. Never force-push or rewrite pushed commits.
   - Each task ends with its commits pushed, `git fetch origin && git status -sb` showing nothing ahead or behind, and CI green, as `AGENTS.md` requires.
-  - Tasks 3–25 start only after Task 2's gate has passed, and Task 5 only after the user has decided the `AlertStoreTests.cs:68` conflict (Task 5, Before this task). Mark the PR ready after Task 25.
-- **Merging and publishing.** The spec sets one PR from `main` with CI as the gate; neither it nor the user's approval of it ("spec approved") gives a go-ahead to merge or publish 0.17.0. When every task has been reviewed, the final review and its fix wave are done and CI is green, the controller asks the user for that go-ahead. On it, the controller does what it did for 0.15.0:
+  - Tasks 3–25 start only after Task 2's gate has passed, Task 5 uses the user's decision on the `AlertStoreTests.cs:68` conflict (batches of 300, approved 2026-11-07). Mark the PR ready after Task 25.
+- **Merging and publishing.** The user gave the go-ahead on 2026-11-07 when approving this plan ("same as 0.15.0"): when every task has been reviewed, the final review and its fix wave are done and CI is green, the controller updates the validation Results line to the final run, marks the PR ready, merges it with a merge commit, runs `release.yml` with the tag `v0.17.0` on `main`, and verifies the published release (body equals `docs/releases/v0.17.0.md`, ZIP and `.sha256` attached), without asking again.
   1. Updates the `docs/validation.md` Results line with the final run id and head SHA, and lets that run finish green.
   2. Merges the PR (merge commit).
   3. Runs `release.yml` for tag `v0.17.0` on `main` (`actions_run_trigger` `run_workflow`, input `tag`).
@@ -558,11 +558,11 @@ Spec: *First network use alerts* → alerts.db (all of it); *Don't record these 
 // Retention_drops_old_episodes_and_the_cap_evicts_the_oldest_closed_ones_first (:68): as the user decides (Before this task, below).
 ```
 
-**Before this task (controller).** `Retention_drops_old_episodes_and_the_cap_evicts_the_oldest_closed_ones_first` (:68) cannot pass unchanged. In its 64 KiB file the four new root pages leave room for about 394 of its episodes in one Append, against 577 with 0.16's schema (measured on SQLite 3.53.1), and it appends 400 (:75-77): the first batch throws "full of open episodes". With the spec's three tables it still passes (spec :2613), but `pending_clear` is created in the same transaction (spec, Alert log → Table). This conflicts with the spec's "Kept and named" rule, so the controller takes it to the user before Task 5 starts. Proposal: batches of 300 (`Enumerable.Range(0, 300)`, minutes `batch * 300 + i`, the last `Contains` `c7-299`), every other assertion unchanged, listed in the PR and `docs/validation.md` as a changed test.
+**Before this task (controller).** `Retention_drops_old_episodes_and_the_cap_evicts_the_oldest_closed_ones_first` (:68) cannot pass unchanged. In its 64 KiB file the four new root pages leave room for about 394 of its episodes in one Append, against 577 with 0.16's schema (measured on SQLite 3.53.1), and it appends 400 (:75-77): the first batch throws "full of open episodes". With the spec's three tables it still passes (spec :2613), but `pending_clear` is created in the same transaction (spec, Alert log → Table). This conflicts with the spec's "Kept and named" rule, The user approved (2026-11-07): batches of 300 (`Enumerable.Range(0, 300)`, minutes `batch * 300 + i`, the last `Contains` `c7-299`), every other assertion unchanged, listed in the PR and `docs/validation.md` as a changed test.
 
 - [ ] **Step 2: Run to verify failure.** Run: `dotnet test tests/DeadWare.Tests -c Release -p:EnableWindowsTargeting=true --nologo --filter "FullyQualifiedName~AlertStoreTests"`. Expected: the build fails with `error CS1501` (no overload for `Append` takes 4 arguments) and `error CS1061` (`ReadFirstUse`).
 - [ ] **Step 3: Implement the tables, the retry, the sweep, the links, the known rows, the metadata, `ReadFirstUse` and the validation**
-- [ ] **Step 4: Run the Step 2 command, then the Core baseline.** Expected: PASS, with :68 passing as the user decided, then no output.
+- [ ] **Step 4: Run the Step 2 command, then the Core baseline.** Expected: PASS, with :68 passing in batches of 300, as the user approved, then no output.
 - [ ] **Step 5: Commit and push**
 
 ```bash
@@ -1870,4 +1870,4 @@ git add Directory.Build.props CHANGELOG.md docs/releases/v0.17.0.md docs/validat
 git commit -m "docs: 0.17.0 release notes, validation and version"
 ```
 
-Run (CI). Expected: green. Mark the PR ready, confirm through the GitHub tools that GitHub has the commit, and report the PR link. Merging and publishing then follow Global Constraints → Merging and publishing, which needs the user's go-ahead.
+Run (CI). Expected: green. Mark the PR ready, confirm through the GitHub tools that GitHub has the commit, and report the PR link. Merging and publishing then follow Global Constraints → Merging and publishing (the user's standing go-ahead).

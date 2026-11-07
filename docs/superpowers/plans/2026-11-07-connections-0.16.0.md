@@ -104,7 +104,7 @@ For this plan:
   - Each task ends with its commits pushed, `git fetch origin && git status -sb` showing nothing ahead or behind, and CI green, as `AGENTS.md` requires.
   - Tasks 4–20 start only after Task 3's gate has passed.
   - Mark the PR ready after Task 20.
-- **Merging and publishing.** The spec's section 7 sets one PR from `main` with CI as the gate. It holds no go-ahead to merge or publish 0.16.0, and the user's approval of the spec grants none. When every task has been reviewed, the final review and its fix wave are done and CI is green, the controller asks the user for the go-ahead. On that go-ahead, the controller does what it did for 0.15.0:
+- **Merging and publishing.** The user gave the go-ahead on 2026-11-07 when approving this plan ("same as 0.15.0"): when every task has been reviewed, the final review and its fix wave are done and CI is green, the controller updates the validation Results line to the final run, marks the PR ready, merges it with a merge commit, runs `release.yml` with the tag `v0.16.0` on `main`, and verifies the published release (body equals `docs/releases/v0.16.0.md`, ZIP and `.sha256` attached), without asking again.
   1. Updates the `docs/validation.md` Results line with the final run id and SHA, and lets that run finish green.
   2. Merges the PR (merge commit).
   3. Runs `release.yml` for tag `v0.16.0` on `main` (`actions_run_trigger` `run_workflow`, input `tag`).
@@ -1757,4 +1757,4 @@ git add Directory.Build.props CHANGELOG.md docs/releases/v0.16.0.md docs/validat
 git commit -m "docs: 0.16.0 release notes, validation and version"
 ```
 
-Run (CI). Expected: green. Mark the PR ready, confirm through the GitHub tools that GitHub has the commit, and report the PR link. Merging and publishing then follow Global Constraints → Merging and publishing, which needs the user's go-ahead.
+Run (CI). Expected: green. Mark the PR ready, confirm through the GitHub tools that GitHub has the commit, and report the PR link. Merging and publishing then follow Global Constraints → Merging and publishing (the user's standing go-ahead).
