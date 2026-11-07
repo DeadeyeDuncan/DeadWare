@@ -17,4 +17,12 @@ public class ConnectionSettingsTests
         settings.ConnectionsHomeCityId=new string('a',1024);
         Assert.Null(SettingsCodec.Read(SettingsCodec.Write(settings)).Settings.ConnectionsHomeCityId);
     }
+    [Fact] public void Destination_scope_setting_normalizes_and_round_trips()
+    {
+        foreach(var json in new[]{"{}","{\"ConnectionsDestinationScope\":null}","{\"ConnectionsDestinationScope\":\"Bogus\"}","{\"ConnectionsDestinationScope\":\"local\"}"})
+            Assert.Equal("All",SettingsCodec.Read(json).Settings.ConnectionsDestinationScope);
+        foreach(var scope in new[]{"All","Internet","Local"})
+            Assert.Equal(scope,SettingsCodec.Read(SettingsCodec.Write(new UserSettings{ConnectionsDestinationScope=scope})).Settings.ConnectionsDestinationScope);
+        Assert.Null(SettingsCodec.Read("{\"ConnectionsDestinationScope\":\"Bogus\"}").Error);
+    }
 }
