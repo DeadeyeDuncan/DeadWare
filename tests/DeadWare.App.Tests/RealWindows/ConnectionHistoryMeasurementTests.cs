@@ -39,7 +39,8 @@ public sealed class ConnectionHistoryMeasurementTests
             string file=Path.Combine(root,"fill","connections.db");
             var (store,fill,end)=Fill(file);
             var reads=Reads(store,end);
-            MeasurementRecorder.Write("connection-history",new{rates,fill,reads});
+            var strip30d=StripReads(store,end);
+            MeasurementRecorder.Write("connection-history",new{rates,fill,reads,strip30d});
         }
         finally
         {
@@ -125,6 +126,41 @@ public sealed class ConnectionHistoryMeasurementTests
             }
         }
         return reads.ToArray();
+    }
+
+    /// <summary>
+    /// Five 30-day reads [end − 30 d, end) with temp_store MEMORY, then five with the busiest application's exact filter: the key of
+    /// the first run's first strip application. The key and its name are never recorded.
+    /// </summary>
+    private static object StripReads(ConnectionHistoryStore store,DateTimeOffset end)
+    {
+        const int Runs=5;
+        DefaultTempStore.SetValue(store,false);
+        var interval=new ConnectionHistoryQuery(end-TimeSpan.FromDays(30),end);
+        string? busiest=null;
+        object Timings(ConnectionHistoryQuery query,bool first)
+        {
+            var times=new List<double>(Runs);string? error=null;
+            for(int run=0;run<Runs;run++)
+            {
+                long started=Stopwatch.GetTimestamp();
+                try
+                {
+                    var view=store.Read(query);
+                    times.Add(Stopwatch.GetElapsedTime(started).TotalMilliseconds);
+                    if(first&&run==0)busiest=view.Strip?.Applications.FirstOrDefault()?.Key;
+                }
+                catch(Exception e) {error??=e.GetType().Name;}
+            }
+            times.Sort();
+            // Nearest rank over the successful runs: p50 is the median of five, p95 the slowest.
+            double? Percentile(double p)=>times.Count==0?null:Math.Round(times[(int)Math.Ceiling(p*times.Count)-1],3);
+            return new{p50Ms=Percentile(0.5),p95Ms=Percentile(0.95),runs=times.Count,error};
+        }
+        var allApplications=Timings(interval,true);
+        // Null when the first run failed or found no application.
+        object? busiestApplication=busiest is null?null:Timings(interval with{Application=busiest},false);
+        return new{allApplications,busiestApplication};
     }
 
     private static ConnectionHistoryStore Open(string file)

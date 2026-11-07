@@ -489,4 +489,163 @@ public sealed class ConnectionHistoryStoreTests(ITestOutputHelper testOutput) : 
         var summary=store.Read(Query()).Summary;
         Assert.Equal((2L,1L,6L),(summary.Unlocated,summary.Local,summary.Destinations));
     }
+
+    // The traffic strip and the exact application filter.
+    private static ConnectionHistoryRecord A(string name, long received, long sent, int minute = 0) => Row(minute, $"b-{name}-{minute}", received, sent, name:name);
+    private ConnectionHistoryStore? opened;
+    // The strip tests' shared store, opened on first use.
+    private ConnectionHistoryStore store => opened ??= Store();
+    private TrafficStrip Strip(ConnectionHistoryQuery query) => store.Read(query).Strip!;
+    private void Metadata(long floor, long expiry) { using var db=Connect(); Sql(db,$"UPDATE metadata SET value={floor} WHERE key='floor'; UPDATE metadata SET value={expiry} WHERE key='expiry'"); }
+    private static byte[] SharedBytes(string path)
+    {
+        using var stream=new FileStream(path,FileMode.Open,FileAccess.Read,FileShare.ReadWrite|FileShare.Delete);
+        using var copy=new MemoryStream(); stream.CopyTo(copy); return copy.ToArray();
+    }
+    private sealed class StripEquality : IEqualityComparer<TrafficStrip?>
+    {
+        public bool Equals(TrafficStrip? x, TrafficStrip? y) => x is null || y is null ? x is null && y is null :
+            (x.From,x.To,x.BucketMilliseconds,x.Measure,x.OtherReceived,x.OtherSent,x.OtherApplications,x.RetainedFrom,x.CapacityShortened)==
+            (y.From,y.To,y.BucketMilliseconds,y.Measure,y.OtherReceived,y.OtherSent,y.OtherApplications,y.RetainedFrom,y.CapacityShortened) &&
+            x.Applications.SequenceEqual(y.Applications) && x.Slots.Count==y.Slots.Count && x.Slots.Zip(y.Slots).All(p=>
+                (p.First.Start,p.First.End,p.First.Minutes,p.First.RecordedSeconds,p.First.Incomplete)==(p.Second.Start,p.Second.End,p.Second.Minutes,p.Second.RecordedSeconds,p.Second.Incomplete) &&
+                p.First.Received.SequenceEqual(p.Second.Received) && p.First.Sent.SequenceEqual(p.Second.Sent));
+        public int GetHashCode(TrafficStrip? strip) => strip?.Slots.Count ?? 0;
+    }
+    private static readonly StripEquality StripComparer = new();
+
+    [Fact] public void Strip_ranks_six_applications_by_the_direction_measure_and_folds_the_rest_into_other()
+    {
+        store.Append([A("b.exe",70,11),A("a.exe",80,1),A("c.exe",60,3),A("d.exe",50,4),A("e.exe",40,5),A("f.exe",30,6),A("g.exe",20,7),A("h.exe",10,0),A("z.exe",0,0)],[],Epoch.AddMinutes(2));
+        var both=Strip(Query()); Assert.Equal(["a.exe","b.exe","c.exe","d.exe","e.exe","f.exe"],both.Applications.Select(a=>a.Name)); Assert.Equal((30L,7L,2L),(both.OtherReceived,both.OtherSent,both.OtherApplications));
+        Assert.Equal(TrafficMeasure.Total,both.Measure);
+        Assert.Equal(["a.exe","b.exe","c.exe","d.exe","e.exe","f.exe"],Strip(Query() with {Direction=ConnectionDirection.Received}).Applications.Select(a=>a.Name));
+        var sent=Strip(Query() with {Direction=ConnectionDirection.Sent}); Assert.Equal(["b.exe","g.exe","f.exe","e.exe","d.exe","c.exe"],sent.Applications.Select(a=>a.Name));
+        Assert.Equal((80L,1L,1L),(sent.OtherReceived,sent.OtherSent,sent.OtherApplications)); Assert.Equal(TrafficMeasure.Sent,sent.Measure);
+        foreach(var d in Enum.GetValues<ConnectionDirection>())
+        {
+            var v=store.Read(Query() with {Direction=d});
+            Assert.Equal(v.Summary.ReceivedBytes,v.Strip!.Applications.Sum(a=>a.Received)+v.Strip.OtherReceived); Assert.Equal(v.Summary.SentBytes,v.Strip.Applications.Sum(a=>a.Sent)+v.Strip.OtherSent);
+        }
+    }
+    [Fact] public void Strip_groups_names_by_application_key_and_shows_the_ordinal_smallest_name()
+    {
+        store.Append([A("chrome.exe",10,0),A("Chrome.exe",20,0),A("PID 4",5,0)],[],Epoch.AddMinutes(2));
+        Assert.Equal([("Chrome.exe","CHROME.EXE",30L),("PID 4","PID 4",5L)],Strip(Query()).Applications.Select(a=>(a.Name,a.Key,a.Received)));
+    }
+    [Fact] public void Strip_slots_match_a_reference_fold_of_every_read_row()
+    {
+        var random=new Random(7);
+        string[] names=["a.exe","A.EXE","b.exe","c.exe","C.exe","d.exe","e.exe","f.exe","g.exe"];
+        (string Address,ConnectionLocation Location)[] remotes=[("8.8.8.8",Place),("9.9.9.9",Place with {City="Elsewhere",Point=new(30,-90)}),
+            ("1.1.1.1",Place with {CountryCode="AU",Country="Australia",Region=null,City="Sydney",Point=new(-33,151)}),("1.0.0.1",Place with {CountryCode="AU",Country="Australia",Region=null,City=null,Point=new(-35,149)})];
+        int minutes=3*24*60; var records=new List<ConnectionHistoryRecord>(); var coverage=new List<ConnectionCoverage>();
+        for(int m=0;m<minutes;m++)
+        {
+            var minute=Epoch.AddMinutes(m);
+            foreach(int n in Enumerable.Range(0,random.Next(0,3)).Select(_=>random.Next(names.Length)).Distinct())
+            {
+                var (address,location)=remotes[random.Next(remotes.Length)];
+                records.Add(Peer($"m{m}",minute,address,location,random.Next(4)==0?0:random.Next(1,5000),random.Next(4)==0?0:random.Next(1,500),pid:10+n,name:names[n]));
+            }
+            if(random.Next(10)!=0) coverage.Add(new($"m{m}","s",minute,minute.AddSeconds(random.Next(10)==0?30:60),random.Next(20)!=0));
+        }
+        store.Append(records,coverage,Epoch.AddMinutes(minutes+1));
+        var interval=new ConnectionHistoryQuery(Epoch,Epoch.AddMinutes(minutes),Limit:500);
+        foreach(var query in new[]{interval,interval with {Search="c.exe"},interval with {CountryCode="AU"},interval with {Direction=ConnectionDirection.Received},
+            interval with {Direction=ConnectionDirection.Sent},interval with {Application="A.exe"}})
+        {
+            var first=store.Read(query); var strip=first.Strip!; long bucket=strip.BucketMilliseconds*TimeSpan.TicksPerMillisecond;
+            Assert.Equal(5*60_000L,strip.BucketMilliseconds); Assert.True(first.TotalRows>500);
+            var keys=strip.Applications.Select(a=>a.Key).ToList(); int series=keys.Count+1;
+            var fold=new Dictionary<long,(long[] Received,long[] Sent)>();
+            for(int offset=0;offset<first.TotalRows;offset+=500)
+                foreach(var row in store.Read(query with {Offset=offset}).Rows)
+                {
+                    long slot=(row.Minute-Epoch).Ticks/bucket; int index=keys.IndexOf(ProcessGrouping.Key(row.Process.Name)); if(index<0) index=keys.Count;
+                    if(!fold.TryGetValue(slot,out var sums)) fold[slot]=sums=(new long[series],new long[series]);
+                    sums.Received[index]+=row.ReceivedBytes; sums.Sent[index]+=row.SentBytes;
+                }
+            var listed=strip.Slots.ToDictionary(s=>(s.Start-Epoch).Ticks/bucket);
+            Assert.All(fold.Keys,slot=>Assert.True(listed.ContainsKey(slot)));
+            foreach(var (slot,s) in listed)
+            {
+                Assert.Equal(Epoch.AddTicks(slot*bucket),s.Start);
+                (long[] Received,long[] Sent) expected=fold.TryGetValue(slot,out var sums)?sums:(new long[series],new long[series]);
+                Assert.Equal(expected.Received,s.Received); Assert.Equal(expected.Sent,s.Sent);
+            }
+        }
+    }
+    [Fact] public void Strip_recorded_seconds_come_from_coverage_and_rows_without_coverage_are_incomplete()
+    {
+        ConnectionCoverage C(string batch,int minute,double from,double to,bool complete=true) => new(batch,"s",Epoch.AddMinutes(minute).AddSeconds(from),Epoch.AddMinutes(minute).AddSeconds(to),complete);
+        store.Append([..Enumerable.Range(0,5).Select(m=>A("a.exe",10,10,m))],
+            [C("c0",0,0,30),C("c1",1,0,60),C("c2",2,0,40),C("d2",2,20,60),C("c3",3,0,60,false),C("c5",5,0,60),C("c6",6,0,0.7)],Epoch.AddMinutes(8));
+        var s=Strip(Query(8)); Assert.Equal([0,1,2,3,4,5,6],s.Slots.Select(x=>(int)(x.Start-Epoch).TotalMinutes));
+        Assert.Equal([30L,60L,60L,60L,60L,60L,0L],s.Slots.Select(x=>x.RecordedSeconds)); Assert.Equal([false,false,false,true,true,false,false],s.Slots.Select(x=>x.Incomplete));
+        Assert.All(s.Slots,x=>Assert.Equal(1,x.Minutes));
+        Assert.Equal(0,TrafficStrips.Bytes(s.Slots[5],s.Applications.Count,TrafficMeasure.Total)+TrafficStrips.Bytes(s.Slots[5],0,TrafficMeasure.Total));
+        var other=Strip(Query(8) with {Application="other.exe"}); Assert.DoesNotContain(other.Slots,x=>x.Start==Epoch.AddMinutes(4)); Assert.Contains(other.Slots,x=>x.Start==Epoch.AddMinutes(5));
+    }
+    [Fact] public void Strip_reports_retained_from_after_expiry_and_capacity_eviction()
+    {
+        var e=Epoch.AddHours(5);
+        store.Append([..new[]{-150,-30,30,90}.Select(m=>Row(300+m,$"r{m}"))],[..new[]{-150,-30,30,90}.Select(m=>new ConnectionCoverage($"r{m}","s",e.AddMinutes(m),e.AddMinutes(m+1),true))],e.AddHours(2));
+        var around=new ConnectionHistoryQuery(e.AddHours(-1),e.AddHours(1));
+        Metadata(0,e.UtcTicks); var s=Strip(around); Assert.Equal((e,false),(s.RetainedFrom,s.CapacityShortened)); Assert.Equal([e.AddMinutes(30)],s.Slots.Select(x=>x.Start));
+        Metadata(e.AddMinutes(10).UtcTicks,e.UtcTicks); s=Strip(around); Assert.Equal((e.AddMinutes(11),true),(s.RetainedFrom,s.CapacityShortened)); Assert.Equal([e.AddMinutes(30)],s.Slots.Select(x=>x.Start));
+        Metadata(e.AddMinutes(-10).UtcTicks,e.UtcTicks); s=Strip(around); Assert.Equal((e,false),(s.RetainedFrom,s.CapacityShortened));
+        Assert.Null(Strip(new(e.AddHours(1),e.AddHours(2))).RetainedFrom);
+        var old=Strip(new(e.AddHours(-3),e.AddHours(-2))); Assert.True(old.RetainedFrom>=old.To); Assert.Empty(old.Slots);
+    }
+    [Fact] public void Strip_leaves_out_the_minute_that_holds_the_expiry_instant()
+    {
+        store.Append([Row()],[new("b","s",Epoch,Epoch.AddMinutes(1),true)],Epoch.AddMinutes(2));
+        var interval=new ConnectionHistoryQuery(Epoch.AddMinutes(-10),Epoch.AddMinutes(10));
+        Metadata(0,Epoch.AddSeconds(30).UtcTicks); var s=Strip(interval); Assert.DoesNotContain(s.Slots,x=>x.Start==Epoch); Assert.Equal(Epoch.AddMinutes(1),s.RetainedFrom);
+        Metadata(0,Epoch.UtcTicks); s=Strip(interval); var slot=Assert.Single(s.Slots); Assert.Equal(Epoch,slot.Start); Assert.True(TrafficStrips.IsFull(slot)); Assert.Equal(Epoch,s.RetainedFrom);
+    }
+    [Fact] public void Capacity_shortened_status_matches_the_strip()
+    {
+        store.Append([Row(20)],[],Epoch.AddMinutes(21));
+        Metadata(Epoch.AddMinutes(5).UtcTicks,Epoch.UtcTicks); var view=store.Read(Query(30)); Assert.Contains("Capacity shortened retention.",view.Status); Assert.True(view.Strip!.CapacityShortened);
+        Metadata(Epoch.AddMinutes(-10).UtcTicks,Epoch.UtcTicks); view=store.Read(Query(30)); Assert.DoesNotContain("Capacity shortened",view.Status); Assert.False(view.Strip!.CapacityShortened);
+    }
+    [Fact] public void Application_filter_matches_the_key_exactly_everywhere()
+    {
+        ConnectionHistoryRecord Named(string name,long received,string address,string city) => Row(0,"b-"+name,received,0,name:name,address:address) with {Location=Place with {City=city}};
+        store.Append([Named("chrome.exe",1,"8.8.8.8","One"),Named("Chrome.exe",2,"8.8.4.4","Two"),Named("chrome",4,"9.9.9.9","Three"),Named("other.exe",8,"1.1.1.1","Four")],[],Epoch.AddMinutes(1));
+        var bare=store.Read(Query() with {Application="chrome"}); Assert.Equal(["chrome"],bare.Rows.Select(r=>r.Process.Name)); Assert.Equal(4,bare.Summary.ReceivedBytes);
+        var exe=store.Read(Query() with {Application="CHROME.EXE"});
+        Assert.Equal(["Chrome.exe","chrome.exe"],exe.Rows.Select(r=>r.Process.Name).Order(StringComparer.Ordinal)); Assert.Equal(2,exe.TotalRows); Assert.Equal(3,exe.Summary.ReceivedBytes);
+        Assert.Equal(["One","Two"],exe.Markers.Select(m=>m.Location.City!).Order(StringComparer.Ordinal));
+        var app=Assert.Single(exe.Strip!.Applications); Assert.Equal(("Chrome.exe","CHROME.EXE",3L),(app.Name,app.Key,app.Received)); Assert.Equal(0,exe.Strip.OtherApplications);
+        var lines=Csv(store,Query() with {Application="CHROME.EXE"}).Split(Environment.NewLine,StringSplitOptions.RemoveEmptyEntries)[1..];
+        Assert.Equal(["\"Chrome.exe\"","\"chrome.exe\""],lines.Select(l=>l.Split(',')[1]).Order(StringComparer.Ordinal));
+        Assert.Equal(4,store.Read(Query() with {Application=""}).TotalRows); Assert.Equal(4,store.Read(Query() with {Application="   "}).TotalRows);
+        Assert.Throws<ArgumentException>(()=>store.Read(Query() with {Application=new string('a',261)}));
+        Assert.Throws<ArgumentException>(()=>store.Read(Query() with {Application=null!}));
+        // A schema v1 file is read with the filter set and never rewritten.
+        var legacy=Store(file:Path.Combine(directory,"legacy.db")); legacy.Append([Row()],[],Epoch.AddMinutes(1));
+        using(var db=Connect(Path.Combine(directory,"legacy.db"))) Sql(db,"UPDATE traffic SET pid=7654321");
+        var before=SharedBytes(Path.Combine(directory,"legacy.db"));
+        Assert.Single(legacy.Read(Query() with {Application="Browser"}).Rows);
+        Assert.Equal(before,SharedBytes(Path.Combine(directory,"legacy.db")));
+    }
+    [Fact] public void Strip_is_the_same_for_per_sample_and_merged_minute_rows()
+    {
+        (string Address, ConnectionLocation? Location)[] pairs=[("8.8.8.8",Place),("192.168.1.5",null),("9.9.9.9",null)];
+        var storeA=Store(file:Path.Combine(directory,"per-poll.db")); var storeB=Store(file:Path.Combine(directory,"per-minute.db"));
+        storeA.Append([..Enumerable.Range(0,60).SelectMany(i=>pairs.Select(p=>Peer($"s:{i}:1",Epoch,p.Address,p.Location,10,10,firstSecond:i,lastSecond:i)))],
+            [..Enumerable.Range(0,60).Select(i=>new ConnectionCoverage($"s:{i}:1","s",Epoch.AddSeconds(i),Epoch.AddSeconds(i+1),true))],Epoch.AddMinutes(2));
+        string unit=ConnectionMinuteFolder.BatchId("s",Epoch,1,0);
+        storeB.Append([..pairs.Select(p=>Peer(unit,Epoch,p.Address,p.Location,600,600,firstSecond:0,lastSecond:59))],[new(unit,"s",Epoch,Epoch.AddMinutes(1),true)],Epoch.AddMinutes(2));
+        Assert.Equal(60,Assert.Single(storeA.Read(Query(2)).Strip!.Slots).RecordedSeconds);
+        Assert.Equal(storeA.Read(Query(2)).Strip,storeB.Read(Query(2)).Strip,StripComparer);
+    }
+    [Fact] public void Application_filter_folds_non_ascii_case_and_never_pattern_matches()
+    {
+        store.Append([A("ärger.exe",1,0),A("ÄRGER.EXE",2,0),A("a_b.exe",4,0),A("aXb.exe",8,0),A("50%.exe",16,0),A("500.exe",32,0)],[],Epoch.AddMinutes(2));
+        long R(string app)=>store.Read(Query() with {Application=app}).Summary.ReceivedBytes; Assert.Equal((3L,4L,16L),(R("Ärger.exe"),R("a_b.exe"),R("50%.exe")));
+    }
 }
