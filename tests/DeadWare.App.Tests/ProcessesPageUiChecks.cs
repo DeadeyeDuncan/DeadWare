@@ -50,6 +50,10 @@ internal static class ProcessesPageUiChecks
             Hidden_sort_column_falls_back();
             Cap_note_is_shown();
             Footer_lists_the_definitions();
+            Gpu_dashes_name_each_reason();
+            Gpu_engine_cell_tooltip_and_known_zeros();
+            Gpu_engine_sorts_ascending_first_and_gpu_descending_first();
+            Gpu_spoken_labels();
             Automation_names_and_spoken_summary();
             Changed_without_a_new_reading_does_not_resort();
             New_reading_outside_a_hold_resorts();
@@ -140,8 +144,8 @@ internal static class ProcessesPageUiChecks
     private static void Column_picker_has_every_column_in_fixed_order()
     {
         var p=Page(elevated:true,disk:true).Page;
-        Assert.Equal(["CPU","MEMORY","I/O","DISK","NETWORK","PID","I/O READ","I/O WRITE","DISK READ","DISK WRITE","↓ DOWNLOAD","↑ UPLOAD"],PickerHeaders(p));
-        Assert.Equal([true,true,true,true,true,false,false,false,false,false,false,false],PickerItems(p).Select(i=>i.IsChecked).ToArray());
+        Assert.Equal(["CPU","MEMORY","I/O","DISK","NETWORK","GPU","GPU MEMORY","PID","I/O READ","I/O WRITE","DISK READ","DISK WRITE","↓ DOWNLOAD","↑ UPLOAD","GPU ENGINE","SHARED GPU MEMORY"],PickerHeaders(p));
+        Assert.Equal([true,true,true,true,true,true,true,false,false,false,false,false,false,false,false,false],PickerItems(p).Select(i=>i.IsChecked).ToArray());
         Assert.All(PickerItems(p),i=>Assert.True(i.IsEnabled));
     }
 
@@ -150,7 +154,7 @@ internal static class ProcessesPageUiChecks
         var (p,_)=Page(elevated:true);
         RightClick(Header(p,"CPU"));
         Assert.True(PickerMenu(p).IsOpen);
-        Assert.Equal(12,PickerItems(p).Count);
+        Assert.Equal(16,PickerItems(p).Count);
         PickerMenu(p).IsOpen=false;
         // The Columns button opens the same menu under itself.
         var columns=Button(p,"Columns");
@@ -164,18 +168,18 @@ internal static class ProcessesPageUiChecks
     {
         var (p,session)=Page(elevated:false,disk:false);
         Toggle(PickerItem(p,"PID"));
-        Assert.Equal(["pid","cpu","memory","io","disk","network"],session.Settings.ProcessColumns);
-        Assert.Equal(["NAME","PID","CPU","MEMORY","I/O"],Headers(p));
+        Assert.Equal(["pid","cpu","memory","io","disk","network","gpu","gpumemory"],session.Settings.ProcessColumns);
+        Assert.Equal(["NAME","PID","CPU","MEMORY","I/O","GPU","GPU MEMORY"],Headers(p));
         Toggle(PickerItem(p,"CPU"));
-        Assert.Equal(["pid","memory","io","disk","network"],session.Settings.ProcessColumns);
-        Assert.Equal(["NAME","PID","MEMORY","I/O"],Headers(p));
+        Assert.Equal(["pid","memory","io","disk","network","gpu","gpumemory"],session.Settings.ProcessColumns);
+        Assert.Equal(["NAME","PID","MEMORY","I/O","GPU","GPU MEMORY"],Headers(p));
         Assert.False(PickerItem(p,"CPU").IsChecked);Assert.True(PickerItem(p,"PID").IsChecked);
     }
 
     private static void Standard_user_hides_admin_columns_disables_picker_entries_and_shows_banner()
     {
         var (p,_)=Page(elevated:false,disk:true);
-        Assert.Equal(["NAME","CPU","MEMORY","I/O"],Headers(p));
+        Assert.Equal(["NAME","CPU","MEMORY","I/O","GPU","GPU MEMORY"],Headers(p));
         var admin=PickerItems(p).Where(i=>Label(i).EndsWith(" (administrator)",StringComparison.Ordinal)).ToArray();
         Assert.Equal(["DISK (administrator)","NETWORK (administrator)","DISK READ (administrator)","DISK WRITE (administrator)","↓ DOWNLOAD (administrator)","↑ UPLOAD (administrator)"],admin.Select(Label).ToArray());
         Assert.All(admin,i=>Assert.False(i.IsEnabled));
@@ -188,7 +192,7 @@ internal static class ProcessesPageUiChecks
     private static void Elevated_shows_the_full_set_with_dash_and_status()
     {
         var (p,_)=Page(elevated:true,network:new(false,"Per-app ETW unavailable (X)"));
-        Assert.Equal(["NAME","CPU","MEMORY","I/O","DISK","NETWORK"],Headers(p));
+        Assert.Equal(["NAME","CPU","MEMORY","I/O","DISK","NETWORK","GPU","GPU MEMORY"],Headers(p));
         Assert.Equal("—",Cell(p,"chrome.exe","network"));
         Assert.Equal("Per-app ETW unavailable (X)",Tip(p,"chrome.exe","network"));
         Assert.Null(Tip(p,"chrome.exe","cpu"));
@@ -259,6 +263,67 @@ internal static class ProcessesPageUiChecks
         Assert.Equal(ProcessCopy.Footer(false),FooterTexts(Page(elevated:true,disk:false).Page));
     }
 
+    private static void Gpu_dashes_name_each_reason()
+    {
+        // Each GPU column status is the tooltip of every GPU "—".
+        foreach(string status in new[]{"GPU counters unavailable (error 0xC0000BBC)","GPU counters unavailable","GPU counters unreadable","Too many GPU counter instances"})
+        {
+            var (p,_)=Page(activity:Unknown(Fixture()) with {Gpu=new(false,status)});
+            Assert.Equal("—",Cell(p,"Code.exe","gpu"));
+            Assert.Equal(status,Tip(p,"Code.exe","gpu"));Assert.Equal(status,Tip(p,"Code.exe","gpumemory"));
+        }
+        // A null GPU engine shows "—" with the GPU cell's reason.
+        var (first,_)=Page(columns:[..ProcessColumnKeys.All],activity:Unknown(Fixture(),ProcessGap.FirstSample));
+        Assert.Equal("first sample",Tip(first,"Code.exe","gpu"));
+        Assert.Equal("—",Cell(first,"Code.exe","gpuengine"));Assert.Equal("first sample",Tip(first,"Code.exe","gpuengine"));
+        // A stale GPU read comes before first sample, and leaves the other columns alone.
+        var (stale,_)=Page(activity:Unknown(Fixture(),ProcessGap.FirstSample) with {GpuStale=true});
+        Assert.Equal("stale reading",Tip(stale,"Code.exe","gpu"));Assert.Null(Tip(stale,"Code.exe","cpu"));
+        // It also hides known GPU values, the engine included.
+        var (old,_)=Page(columns:[..ProcessColumnKeys.All],activity:WithEngine(40,"Code.exe","GPU 1 · 3D","NVIDIA GeForce RTX 4070") with {GpuStale=true});
+        foreach(string key in new[]{"gpu","gpuengine","gpumemory"}){Assert.Equal("—",Cell(old,"Code.exe",key));Assert.Equal("stale reading",Tip(old,"Code.exe",key));}
+        Assert.Equal("0.5 %",Cell(old,"Code.exe","cpu"));Assert.Null(Tip(old,"Code.exe","cpu"));
+    }
+
+    private static void Gpu_engine_cell_tooltip_and_known_zeros()
+    {
+        var (p,_)=Page(columns:[..ProcessColumnKeys.All],activity:WithEngine(40,"Code.exe","GPU 1 · 3D","NVIDIA GeForce RTX 4070"));
+        Assert.Equal("GPU 1 · 3D",Cell(p,"Code.exe","gpuengine"));Assert.Equal("NVIDIA GeForce RTX 4070 · 3D engine",Tip(p,"Code.exe","gpuengine"));
+        Assert.Equal("40 %",Cell(p,"Code.exe","gpu"));
+        // Known zeros: "0 %", an empty engine and "0 B", none with a tooltip.
+        Assert.Equal("0 %",Cell(p,"Explorer.EXE","gpu"));Assert.Null(Tip(p,"Explorer.EXE","gpu"));
+        Assert.Equal("",Cell(p,"Explorer.EXE","gpuengine"));Assert.Null(Tip(p,"Explorer.EXE","gpuengine"));
+        Assert.Equal("0 B",Cell(p,"Explorer.EXE","gpushared"));
+        // A process row's engine and tooltip are its own busiest engine's; this one has no adapter description.
+        var fixture=Fixture();
+        var (rows,_)=Page(columns:[..ProcessColumnKeys.All],activity:fixture with {Processes=[..fixture.Processes.Select(s=>s.Pid==31?OnEngine(s,new(0xA,0,1,"Copy","GPU 0 · Copy",null,7)):s)]});
+        Expand(rows,"chrome.exe");
+        Assert.Equal("GPU 0 · Copy",Cell(rows,31,"gpuengine"));Assert.Equal("Copy engine",Tip(rows,31,"gpuengine"));
+        Assert.Equal("",Cell(rows,30,"gpuengine"));Assert.Null(Tip(rows,30,"gpuengine"));
+    }
+
+    private static void Gpu_engine_sorts_ascending_first_and_gpu_descending_first()
+    {
+        var (p,_)=Page(columns:[..ProcessColumnKeys.All],activity:WithEngines());
+        // GPU ENGINE is text: ascending first, like NAME. An empty engine, then "—", sort last both ways.
+        ClickHeader(p,"GPU ENGINE");
+        Assert.Equal(ListSortDirection.Ascending,ColumnNamed(p,"GPU ENGINE").SortDirection);
+        Assert.Equal(["a.exe","b.exe","zero.exe","unknown.exe"],AppNames(p));
+        ClickHeader(p,"GPU ENGINE");
+        Assert.Equal(["b.exe","a.exe","zero.exe","unknown.exe"],AppNames(p));
+        foreach(string header in new[]{"GPU","GPU MEMORY","SHARED GPU MEMORY"}){ClickHeader(p,header);Assert.Equal(ListSortDirection.Descending,ColumnNamed(p,header).SortDirection);}
+    }
+
+    private static void Gpu_spoken_labels()
+    {
+        var (p,_)=Page(columns:[..ProcessColumnKeys.All],activity:WithEngine(40,"Code.exe","GPU 1 · 3D","NVIDIA GeForce RTX 4070"));
+        Assert.EndsWith(", GPU 40 %, GPU engine GPU 1 · 3D, GPU memory 1.0 MB, shared GPU memory 0 B",Row(p,"Code.exe").Spoken);
+        // An empty engine cell is left out.
+        Assert.DoesNotContain("GPU engine",Row(p,"Explorer.EXE").Spoken);
+        var (u,_)=Page(columns:[..ProcessColumnKeys.All],activity:Unknown(Fixture(),ProcessGap.FirstSample));
+        Assert.Contains("GPU engine unknown (first sample)",Row(u,"Code.exe").Spoken);
+    }
+
     private static void Automation_names_and_spoken_summary()
     {
         var (p,_)=Page(elevated:true);
@@ -272,7 +337,7 @@ internal static class ProcessesPageUiChecks
         Assert.Equal("Collapse chrome.exe",AutomationProperties.GetName(Chevron(p,"chrome.exe")!));
         var chrome=Row(p,"chrome.exe");
         Assert.StartsWith("chrome.exe, 3 processes, CPU ",chrome.Spoken);
-        Assert.Equal("chrome.exe, 3 processes, CPU 9 %, memory 192.0 MB, I/O 9.0 KB/s, disk 22.5 KB/s, network 12.0 KB/s",chrome.Spoken);
+        Assert.Equal("chrome.exe, 3 processes, CPU 9 %, memory 192.0 MB, I/O 9.0 KB/s, disk 22.5 KB/s, network 12.0 KB/s, GPU 0 %, GPU memory 3.0 MB",chrome.Spoken);
         Assert.Equal(chrome.Spoken,AutomationProperties.GetName(Container(p,chrome)));
         Assert.StartsWith("chrome.exe, PID 31, CPU 5 %, ",Row(p,31).Spoken);
         Assert.StartsWith("Code.exe, PID 40, CPU 0.5 %, ",Row(p,"Code.exe").Spoken);
@@ -534,10 +599,10 @@ internal static class ProcessesPageUiChecks
         WaitFor(()=>StatusText(p)=="runs from 2 locations; expand to choose one"&&Button(p,"Open file location")!.IsEnabled);
     }
 
-    // Fixtures: Generation 1 for every PID, the creation ticks FakeProcessControl reads.
+    // Fixtures: Generation 1 for every PID, the creation ticks FakeProcessControl reads. Every sample holds GPU known zeros and 1 MB of GPU memory.
     private static ProcessSample Sample(int pid,string name,double? cpu)=>
         new(pid,1,name,1,cpu,64_000_000+pid,2_000,1_000,ProcessGap.None,null)
-        {DownloadPerSecond=3_000,UploadPerSecond=1_000,DiskReadPerSecond=5_000,DiskWritePerSecond=2_500};
+        {DownloadPerSecond=3_000,UploadPerSecond=1_000,DiskReadPerSecond=5_000,DiskWritePerSecond=2_500,GpuPercent=0,GpuEngine="",GpuEngines=[],GpuDedicatedBytes=1_000_000,GpuSharedBytes=0};
 
     private static ProcessActivity Activity(params ProcessSample[] processes)=>
         new(ProcessActivityKind.Available,1,Epoch,0,1,8,processes,ProcessOmitted.None,processes.Length,1);
@@ -555,6 +620,28 @@ internal static class ProcessesPageUiChecks
     private static ProcessActivity WithGaps()=>Activity(
         Sample(50,"new.exe",null) with {IoReadPerSecond=null,IoWritePerSecond=null,RateGap=ProcessGap.FirstSample},
         Sample(60,"moved.exe",2) with {DownloadPerSecond=null,UploadPerSecond=null,NetworkGap=ProcessGap.NotMatched,DiskReadPerSecond=null,DiskWritePerSecond=null,DiskGap=ProcessGap.NotMatched});
+
+    /// <summary><paramref name="sample"/> with every GPU value unknown and <paramref name="gap"/> as its GPU gap.</summary>
+    private static ProcessSample NoGpu(ProcessSample sample,ProcessGap gap=ProcessGap.None)=>
+        sample with {GpuPercent=null,GpuEngine=null,GpuAdapter=null,GpuEngines=null,GpuDedicatedBytes=null,GpuSharedBytes=null,GpuGap=gap};
+    /// <summary><paramref name="activity"/> with every sample's GPU values unknown, each with <paramref name="gap"/>.</summary>
+    private static ProcessActivity Unknown(ProcessActivity activity,ProcessGap gap=ProcessGap.None)=>activity with {Processes=[..activity.Processes.Select(s=>NoGpu(s,gap))]};
+    /// <summary><paramref name="sample"/> busy on one engine only: GPU %, engine and adapter come from it, as the join writes them.</summary>
+    private static ProcessSample OnEngine(ProcessSample sample,GpuEngineUse engine)=>
+        sample with {GpuPercent=engine.Percent,GpuEngine=engine.Label,GpuAdapter=engine.Adapter,GpuEngines=[engine]};
+    /// <summary>The fixture with its single process named <paramref name="name"/> on one 3D engine of adapter LUID 0xB.</summary>
+    private static ProcessActivity WithEngine(double percent,string name,string label,string adapter)
+    {
+        var activity=Fixture();
+        int pid=Assert.Single(activity.Processes,s=>s.Name==name).Pid;
+        return activity with {Processes=[..activity.Processes.Select(s=>s.Pid==pid?OnEngine(s,new(0xB,0,0,"3D",label,adapter,percent)):s)]};
+    }
+    /// <summary>a.exe on "GPU 0 · Copy", b.exe on "GPU 1 · 3D", zero.exe a known zero and unknown.exe unknown; CPU rises in that order, so CPU order is the reverse.</summary>
+    private static ProcessActivity WithEngines()=>Activity(
+        OnEngine(Sample(1,"a.exe",1),new(0xA,0,1,"Copy","GPU 0 · Copy",null,20)),
+        OnEngine(Sample(2,"b.exe",2),new(0xB,0,0,"3D","GPU 1 · 3D",null,10)),
+        Sample(3,"zero.exe",3),
+        NoGpu(Sample(4,"unknown.exe",4)));
 
     private static (ProcessesPage Page,UiSession Session) Page(bool monitoring=true,bool elevated=false,bool disk=true,bool stale=false,
         IReadOnlyList<string>? columns=null,ProcessActivity? activity=null,ProcessColumnState? network=null)
@@ -626,10 +713,12 @@ internal static class ProcessesPageUiChecks
     private static string Cell(ProcessesPage page,string app,string key)=>Assert.IsType<TextBlock>(RenderedCell(page,Row(page,app),key).Content).Text;
     private static string Cell(ProcessesPage page,int pid,string key)=>Assert.IsType<TextBlock>(RenderedCell(page,Row(page,pid),key).Content).Text;
     private static string? Tip(ProcessesPage page,string app,string key)=>(string?)RenderedCell(page,Row(page,app),key).ToolTip;
+    private static string? Tip(ProcessesPage page,int pid,string key)=>(string?)RenderedCell(page,Row(page,pid),key).ToolTip;
     private static ToggleButton? Chevron(ProcessesPage page,string app)=>Shown(Container(page,Row(page,app))).OfType<ToggleButton>().SingleOrDefault();
     private static void Expand(ProcessesPage page,string app){Click(Chevron(page,app));Layout(page);}
 
     private static string[] Headers(ProcessesPage page)=>page.Grid.Columns.Select(c=>(string)c.Header).ToArray();
+    private static DataGridColumn ColumnNamed(ProcessesPage page,string header)=>page.Grid.Columns.Single(c=>c.Header as string==header);
     private static DataGridColumnHeader Header(ProcessesPage page,string header){Layout(page);return Shown(page.Grid).OfType<DataGridColumnHeader>().Single(h=>h.Column?.Header as string==header);}
     /// <summary>What ContextMenuService does on a right-button release over a header: open that header's context menu there.</summary>
     private static void RightClick(DataGridColumnHeader header)

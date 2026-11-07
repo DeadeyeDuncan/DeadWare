@@ -28,10 +28,14 @@ public class ProcessTableTests
     public void Search_trims_and_matches_name_or_pid(string q,bool hit)=>Assert.Equal(hit,ProcessGrouping.Matches(G(S(1234,"chrome.exe")),q));
     [Fact] public void Search_matches_any_member_pid_of_the_app(){ var row=G(S(1234,"chrome.exe"),S(777,"Chrome.exe"));Assert.True(ProcessGrouping.Matches(row," 77 "));Assert.True(ProcessGrouping.Matches(row,"CHROME"));Assert.False(ProcessGrouping.Matches(row,"55"));}
     [Fact] public void Visible_columns_keep_the_fixed_order()=>Assert.Equal(["pid","cpu","upload"],ProcessTableColumns.Visible(["upload","cpu","pid"],true,true));
-    [Fact] public void Standard_user_hides_the_six_administrator_columns()=>Assert.Equal(["cpu","memory","io"],ProcessTableColumns.Visible(ProcessColumnKeys.All.Except(["pid","ioread","iowrite"]).ToList(),false,true));
+    [Fact] public void Standard_user_hides_the_six_administrator_columns()=>Assert.Equal(["cpu","memory","io","gpu","gpuengine","gpumemory","gpushared"],ProcessTableColumns.Visible(ProcessColumnKeys.All.Except(["pid","ioread","iowrite"]).ToList(),false,true));
     [Fact] public void Disk_build_off_removes_disk_from_table_and_picker(){ Assert.DoesNotContain("disk",ProcessTableColumns.Visible(ProcessColumnKeys.Default,true,false));Assert.DoesNotContain(ProcessTableColumns.Picker(ProcessColumnKeys.Default,false,false),c=>c.Key.StartsWith("disk"));}
     [Fact] public void Picker_disables_admin_entries_and_keeps_their_saved_state(){ var p=ProcessTableColumns.Picker(["network"],false,true);var n=p.Single(c=>c.Key=="network");Assert.False(n.Enabled);Assert.True(n.Checked);Assert.Equal("NETWORK (administrator)",n.Label);
-        Assert.Equal(["cpu","memory","io","disk","network","pid","ioread","iowrite","diskread","diskwrite","download","upload"],p.Select(c=>c.Key));}
+        Assert.Equal(["cpu","memory","io","disk","network","gpu","gpumemory","pid","ioread","iowrite","diskread","diskwrite","download","upload","gpuengine","gpushared"],p.Select(c=>c.Key));
+        Assert.All(p.Where(c=>c.Key.StartsWith("gpu",StringComparison.Ordinal)),c=>{Assert.True(c.Enabled);Assert.Equal(c.Header,c.Label);});}
+    [Fact] public void Gpu_keys_follow_upload_and_none_needs_administrator(){ Assert.Equal(["gpu","gpuengine","gpumemory","gpushared"],ProcessColumnKeys.All.Skip(12));Assert.Equal(16,ProcessColumnKeys.All.Count);
+        Assert.Empty(ProcessColumnKeys.AdministratorOnly.Intersect(ProcessColumnKeys.All.Skip(12)));
+        Assert.Equal(["GPU","GPU ENGINE","GPU MEMORY","SHARED GPU MEMORY"],ProcessColumnKeys.All.Skip(12).Select(ProcessTableColumns.Header));}
     [Fact] public void Hidden_sort_column_falls_back_to_cpu_then_name(){ Assert.Equal(("cpu",true),ProcessTableColumns.EffectiveSort("upload",false,["cpu"]));Assert.Equal(("name",false),ProcessTableColumns.EffectiveSort("upload",false,["memory"]));}
     [Fact] public void Nulls_sort_last_both_ways_and_ties_by_name_then_pid(){ Assert.Equal(["b","c","a"],SortBy(true));Assert.Equal(["b","c","a"],SortBy(false));
         Assert.Equal([2,9],new[]{S(9,"a",5),S(2,"a",5)}.Order(Comparer<ProcessSample>.Create((x,y)=>ProcessSort.Compare(x,y,"cpu",true))).Select(p=>p.Pid));}
