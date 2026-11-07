@@ -142,7 +142,8 @@ public sealed class ProcessMinuteFolder
             foreach(var (t,members) in named)
             {
                 if(ProcessGrouping.GpuUse(members).Percent is{} percent)t.Gpu+=percent/100*gpuInterval;
-                t.GpuMemory+=members.Sum(m=>m.GpuDedicatedBytes??0)*gpuInterval;
+                // Summed as double: LINQ's long Sum is checked, and an overflow here would fail the history worker.
+                t.GpuMemory+=members.Sum(m=>(double)(m.GpuDedicatedBytes??0))*gpuInterval;
             }
         var omitted=activity.Omitted.Deltas;
         other.Cpu+=omitted.CpuTime??0;other.Read+=omitted.IoReadBytes??0;other.Write+=omitted.IoWriteBytes??0;

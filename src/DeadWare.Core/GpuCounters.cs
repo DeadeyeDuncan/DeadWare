@@ -92,6 +92,8 @@ public sealed class GpuCounterReader(IGpuCounterApi api)
 {
     public const double RetrySeconds=60,NotReadySeconds=60,AdapterRereadSeconds=60;
     public const int MaximumItems=65536;
+    // 2^50 bytes (1 PiB): a memory item reporting more is counter garbage.
+    const double MaximumBytes=1125899906842624d;
     sealed record Collection(DateTimeOffset UtcTime,double MonotonicSeconds,double PollingIntervalSeconds);
     string failure=GpuCounterStatus.Unavailable;
     double? retryAt,notReadyStart,adaptersReadAt;
@@ -160,7 +162,7 @@ public sealed class GpuCounterReader(IGpuCounterApi api)
         {
             foreach(var item in engineArray.Items)
             {
-                if(GpuCounterInstance.TryParse(item.Name,GpuCounterKind.Engine,out var instance))engines.Add(new(instance,IsReady(item),IsReady(item)?item.Value:0));
+                if(GpuCounterInstance.TryParse(item.Name,GpuCounterKind.Engine,out var instance)){var itemReady=IsReady(item);engines.Add(new(instance,itemReady,itemReady?item.Value:0));}
                 else skipped++;
             }
             skipped+=Memory(arrays[1],GpuCounterKind.Dedicated,dedicated)+Memory(arrays[2],GpuCounterKind.Shared,shared);
@@ -178,13 +180,17 @@ public sealed class GpuCounterReader(IGpuCounterApi api)
         retryAt=null;
         LastReadOpened=false;
     }
-    static bool IsReady(GpuRawItem item)=>item.CStatus is GpuPdhStatus.CStatusValidData or GpuPdhStatus.CStatusNewData;
+    /// <summary>A valid CStatus and a finite value: a value that is not finite is unknown, never 0 % or 100 %.</summary>
+    static bool IsReady(GpuRawItem item)=>item.CStatus is GpuPdhStatus.CStatusValidData or GpuPdhStatus.CStatusNewData&&double.IsFinite(item.Value);
+    /// <summary>Also 0 to <see cref="MaximumBytes"/>: 0xFFFF… reads as -1 under PDH_FMT_LARGE, and a negative or wrapped value in the
+    /// byte-seconds would fail the history worker and stop every app's history.</summary>
+    static bool IsReadyBytes(GpuRawItem item)=>IsReady(item)&&item.Value is >=0 and <=MaximumBytes;
     static int Memory(GpuRawArray array,GpuCounterKind kind,List<GpuMemoryItem> into)
     {
         var skipped=0;
         foreach(var item in array.Items)
         {
-            if(GpuCounterInstance.TryParse(item.Name,kind,out var instance))into.Add(new(instance,IsReady(item),IsReady(item)?(long)item.Value:0));
+            if(GpuCounterInstance.TryParse(item.Name,kind,out var instance)){var itemReady=IsReadyBytes(item);into.Add(new(instance,itemReady,itemReady?(long)item.Value:0));}
             else skipped++;
         }
         return skipped;
