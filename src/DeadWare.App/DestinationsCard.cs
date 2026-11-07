@@ -341,7 +341,7 @@ internal sealed class DestinationsCard : Border
         {
             if (parent is not ScrollViewer page) continue;
             e.Handled = true;
-            page.RaiseEvent(new MouseWheelEventArgs(e.MouseDevice, e.Timestamp, e.Delta) { RoutedEvent = MouseWheelEvent, Source = Grid });
+            page.RaiseEvent(new MouseWheelEventArgs(e.MouseDevice, e.Timestamp, e.Delta) { RoutedEvent = MouseWheelEvent });
             return;
         }
     }
