@@ -42,7 +42,7 @@ internal static class ConnectionsPageUiChecks
         Call(page, "ApplyLive", live);
         Layout(page, 671, 440);
         CheckCards(page);
-        Assert.Empty(Elements(page).OfType<DataGrid>());
+        Assert.Equal("Destinations", AutomationProperties.GetName(Assert.Single(Elements(page).OfType<DataGrid>())));
         string text = Text(page);
         Assert.Contains("Live", text);
         Assert.Contains("3 destinations", text);
@@ -69,6 +69,9 @@ internal static class ConnectionsPageUiChecks
         CheckMinuteReadFailureKeepsTheStrip(session, now);
         CheckApplicationFilter(session, now);
         CheckShowHistory(session, now);
+        CheckDestinationsLive(page, live);
+        CheckDestinationsHistory(session, now);
+        CheckDestinationScopeSaved(live);
         CheckBoundaryDates();
         CheckIntervalWarning(session);
         CheckExportBusy(session,now);
@@ -209,13 +212,186 @@ internal static class ConnectionsPageUiChecks
         mode.SelectedIndex=0;Layout(page,671,440);Assert.Equal(Visibility.Collapsed,card.Visibility);
         Layout(page,671,440);Pump();Layout(page,671,440);
         var map=Field<ConnectionMap>(page,"map");Assert.True(map.ActualHeight>=300);
-        Assert.Empty(Elements(page).OfType<DataGrid>());
+        Assert.Equal("Destinations",AutomationProperties.GetName(Assert.Single(Elements(page).OfType<DataGrid>())));
         var scroll=Assert.IsType<ScrollViewer>(((Grid)page).Children[0]);Assert.True(double.IsFinite(scroll.ExtentHeight));
         scroll.ScrollToBottom();Pump();Layout(page,671,440);
         var download=Field<Button>(page,"download");Assert.InRange(download.TransformToAncestor(page).Transform(new Point()).Y,0,440-download.ActualHeight);
         var expander=Elements(page).OfType<Expander>().Single();expander.IsExpanded=true;Layout(page,671,440);scroll.ScrollToBottom();Pump();Layout(page,671,440);
         var city=Field<ComboBox>(page,"home");Assert.InRange(city.TransformToAncestor(page).Transform(new Point()).Y,0,440-city.ActualHeight);
         expander.IsExpanded=false;scroll.ScrollToTop();Pump();Layout(page,671,440);
+        // The Destinations card: a fixed 315 DIP grid, reached by scrolling the page.
+        var destinations=Card(page);Assert.Equal(5,Grid.GetRow(destinations));Assert.Equal(315,destinations.Grid.ActualHeight);
+        double top=destinations.Grid.TransformToAncestor((Visual)scroll.Content).Transform(new Point()).Y;
+        scroll.ScrollToVerticalOffset(top-40);Pump();Layout(page,671,440);
+        double shown=destinations.Grid.TransformToAncestor(page).Transform(new Point()).Y;
+        Assert.True(shown>=0&&shown+315<=440,$"Destinations grid at {shown} after scrolling.");
+        // A wheel down over the grid's last row, which cannot scroll further, scrolls the page.
+        scroll.ScrollToTop();Pump();Layout(page,671,440);Assert.Equal(0,scroll.VerticalOffset);
+        var last=Assert.IsType<DataGridRow>(destinations.Grid.ItemContainerGenerator.ContainerFromIndex(destinations.Rows.Count-1));
+        var preview=new System.Windows.Input.MouseWheelEventArgs(System.Windows.Input.Mouse.PrimaryDevice,0,-120) {RoutedEvent=UIElement.PreviewMouseWheelEvent};last.RaiseEvent(preview);
+        if(!preview.Handled)last.RaiseEvent(new System.Windows.Input.MouseWheelEventArgs(System.Windows.Input.Mouse.PrimaryDevice,0,-120) {RoutedEvent=UIElement.MouseWheelEvent});
+        Pump();Layout(page,671,440);Assert.True(scroll.VerticalOffset>0,"The wheel over the grid's last row did not scroll the page.");
+        scroll.ScrollToTop();Pump();Layout(page,671,440);
+    }
+    private static DestinationsCard Card(object page) => (DestinationsCard)PageType.GetField("destinations", All)!.GetValue(page)!;
+    private static T Cell<T>(DestinationsCard card, string key, Func<DestinationRow, T> pick) => pick(card.Rows.Single(r => r.Key == key));
+    private static DataGridColumn Column(DestinationsCard card, string header) => card.Grid.Columns.Single(c => (string)c.Header == header);
+    private static string[] Keys(DestinationsCard card) => card.Rows.Select(r => r.Key).ToArray();
+    /// <summary>The empty text when the empty border replaces the grid, or null when the grid shows.</summary>
+    private static string? EmptyText(DestinationsCard card)
+    {
+        bool empty = card.Empty.Visibility == Visibility.Visible;
+        Assert.Equal(empty ? Visibility.Collapsed : Visibility.Visible, card.Grid.Visibility);
+        return empty ? ((TextBlock)card.Empty.Child).Text : null;
+    }
+    /// <summary>The realized header's tooltip, through the card's real header style.</summary>
+    private static string? HeaderTip(FrameworkElement page, DestinationsCard card, string header)
+    {
+        Layout(page, 1000, 700);
+        return (string?)Elements(card.Grid).OfType<System.Windows.Controls.Primitives.DataGridColumnHeader>().Single(h => h.Column?.Header as string == header).ToolTip;
+    }
+    /// <summary>A header click through DataGrid's own Sorting event.</summary>
+    private static void Sort(DestinationsCard card, string header) => typeof(DataGrid).GetMethod("OnSorting", All)!.Invoke(card.Grid, [new DataGridSortingEventArgs(Column(card, header))]);
+    private static void CheckDestinationsLive(FrameworkElement page, ConnectionLiveView live)
+    {
+        var card = Card(page); var connections = (ConnectionsPage)page; var summary = Field<TextBlock>(page, "summary");
+        Field<ComboBox>(page, "mode").SelectedIndex = 0; connections.ApplyLive(live);
+        Assert.Equal(["DESTINATION", "CLASS", "LOCATION", "APPS", "PORTS", "↓ DOWNLOAD", "↑ UPLOAD", "RECEIVED", "SENT", "CONNECTIONS"], card.Grid.Columns.Select(c => (string)c.Header));
+        Assert.Equal("Destinations shown", AutomationProperties.GetName(card.Scope)); Assert.Equal(120, card.Scope.Width);
+        Assert.True(card.Grid.IsReadOnly); Assert.Equal(DataGridSelectionMode.Single, card.Grid.SelectionMode); Assert.False(card.Grid.CanUserReorderColumns); Assert.False(card.Grid.CanUserResizeRows);
+        // RECEIVED descending by default.
+        Assert.Equal(["8.8.8.8", "9.9.9.9", "192.168.1.1"], Keys(card)); Assert.Equal(System.ComponentModel.ListSortDirection.Descending, Column(card, "RECEIVED").SortDirection);
+        Assert.Equal(3, card.Rows.Count); card.Scope.SelectedIndex = 1; Assert.Equal(2, card.Rows.Count); card.Scope.SelectedIndex = 2; Assert.Single(card.Rows); card.Scope.SelectedIndex = 0;
+        Assert.Equal(["Local · private", "Internet", "Internet"], card.Rows.OrderBy(r => r.Key, StringComparer.Ordinal).Select(r => r.Class));
+        Assert.Equal("Local address: counted under Local.", Cell(card, "192.168.1.1", r => r.ClassTip)); Assert.Equal("Public Internet address.", Cell(card, "8.8.8.8", r => r.ClassTip));
+        Assert.Equal("Since each flow was first observed.", HeaderTip(page, card, "RECEIVED"));
+        Assert.Equal("Observed flows to this address: one per app process, local address and port, remote port and protocol. A flow idle for 60 s drops out.", HeaderTip(page, card, "CONNECTIONS"));
+        Assert.Null(HeaderTip(page, card, "DESTINATION"));
+        string tip = Cell(card, "8.8.8.8", r => r.DestinationTip)!;
+        Assert.StartsWith("8.8.8.8", tip); Assert.Contains(DestinationCopy.ObservedSince(live.Timestamp), tip); Assert.Contains("Capture is incomplete; totals may be low.", tip);
+        Assert.Equal("Fixture, United States", Cell(card, "8.8.8.8", r => r.Location)); Assert.Null(Cell(card, "8.8.8.8", r => r.LocationTip));
+        Assert.Equal("—", Cell(card, "192.168.1.1", r => r.Location)); Assert.Equal("Local addresses are not located.", Cell(card, "192.168.1.1", r => r.LocationTip));
+        Assert.Equal(("Browser", "443 Tcp", "1.0 KB", "512.0 B", "128.0 B/s", "64.0 B/s", "1"), Cell(card, "8.8.8.8", r => (r.Apps, r.Ports, r.Received, r.Sent, r.Download, r.Upload, r.Connections)));
+        Assert.Equal("Browser · ↓ 1.0 KB · ↑ 512.0 B", Cell(card, "8.8.8.8", r => r.AppsTip));
+        Assert.Equal("8.8.8.8, Internet, Fixture, United States, 1 app: Browser, port 443 Tcp, received 1.0 KB, sent 512.0 B, download 128.0 B/s, upload 64.0 B/s, 1 connection, incomplete", Cell(card, "8.8.8.8", r => r.Spoken));
+        Layout(page, 1000, 700); Assert.Equal(card.Rows[0].Spoken, AutomationProperties.GetName(Assert.IsType<DataGridRow>(card.Grid.ItemContainerGenerator.ContainerFromIndex(0))));
+        // The unlocated public row's reason follows the location database hook.
+        var hook = connections.hasLocationDatabase;
+        connections.hasLocationDatabase = () => false; connections.ApplyLive(live with { Timestamp = live.Timestamp.AddSeconds(1) });
+        Assert.Equal("—", Cell(card, "9.9.9.9", r => r.Location)); Assert.Equal("No location database. Use Download / update locations at the bottom of the page.", Cell(card, "9.9.9.9", r => r.LocationTip));
+        connections.hasLocationDatabase = () => true; connections.ApplyLive(live with { Timestamp = live.Timestamp.AddSeconds(2) });
+        Assert.Equal("Not in the location database, or its lookup has not finished.", Cell(card, "9.9.9.9", r => r.LocationTip));
+        connections.hasLocationDatabase = hook;
+        Assert.Equal("3 destinations: 2 Internet (1 unlocated), 1 local, 0 special-purpose.", card.CountLine.Text);
+        Assert.Equal(DestinationCopy.Footnote(false), card.Footnote.Text); Assert.Equal(Visibility.Collapsed, card.Status.Visibility);
+        // A stale view has no current rates.
+        connections.ApplyLive(live with { Timestamp = live.Timestamp.AddSeconds(3), Available = false });
+        Assert.Equal(("—", "—"), Cell(card, "8.8.8.8", r => (r.Download, r.Upload)));
+        Assert.Equal("Endpoint capture is stale or unavailable; no current rate.", Cell(card, "8.8.8.8", r => r.DownloadTip)); Assert.Equal("Endpoint capture is stale or unavailable; no current rate.", Cell(card, "8.8.8.8", r => r.UploadTip));
+        // The summary's counts come from the table's list: an address with a located and an unlocated peer is located in both.
+        var first = live.Connections[0];
+        var second = first with { Traffic = first.Traffic with { Peer = first.Traffic.Peer with { RemotePort = 80 }, ReceivedBytes = 10, SentBytes = 0 }, Location = null };
+        connections.ApplyLive(live with { Timestamp = live.Timestamp.AddSeconds(4), Connections = [.. live.Connections, second] });
+        Assert.StartsWith("Live · 3 destinations · 1 countries · 1 local · 1 unlocated · ", summary.Text);
+        Assert.Equal("3 destinations: 2 Internet (1 unlocated), 1 local, 0 special-purpose.", card.CountLine.Text);
+        Assert.Equal(("443 Tcp +1", "2"), Cell(card, "8.8.8.8", r => (r.Ports, r.Connections)));
+        // Each Live empty text.
+        connections.ApplyLive(live with { Timestamp = live.Timestamp.AddSeconds(5), Available = false, Connections = [] });
+        Assert.Equal("No destinations: per-app capture is not running. The capture status above says why.", EmptyText(card)); Assert.Empty(card.Rows);
+        connections.ApplyLive(live with { Timestamp = live.Timestamp.AddSeconds(6), Connections = [] });
+        Assert.Equal("No destinations yet. Apps that send or receive traffic appear here.", EmptyText(card));
+        connections.ApplyLive(live); var search = Field<TextBox>(page, "search");
+        search.Text = "no such app"; Assert.Equal("No destinations match the filters.", EmptyText(card));
+        // Filters that remove every connection win over the scope, and the application filter counts as a filter.
+        card.Scope.SelectedIndex = 1; Assert.Equal("No destinations match the filters.", EmptyText(card));
+        search.Text = ""; Assert.Null(EmptyText(card));
+        PageType.GetField("applicationFilter", All)!.SetValue(page, "NO SUCH APP"); connections.ApplyLive(live with { Timestamp = live.Timestamp.AddSeconds(7) });
+        Assert.Equal("No destinations match the filters.", EmptyText(card));
+        PageType.GetField("applicationFilter", All)!.SetValue(page, "");
+        connections.ApplyLive(live with { Timestamp = live.Timestamp.AddSeconds(8), Connections = [live.Connections[1]] });
+        Assert.Equal("No Internet destinations right now.", EmptyText(card));
+        connections.ApplyLive(live with { Timestamp = live.Timestamp.AddSeconds(9), Connections = [live.Connections[0]] }); card.Scope.SelectedIndex = 2;
+        Assert.Equal("No local destinations right now.", EmptyText(card));
+        card.Scope.SelectedIndex = 0; connections.ApplyLive(live); Assert.Null(EmptyText(card)); Assert.Equal(3, card.Rows.Count);
+    }
+    private static void CheckDestinationsHistory(UiSession session, DateTimeOffset now)
+    {
+        string root = Path.Combine(Path.GetTempPath(), "DeadWare-destinations-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            // The two-location fixture of CheckSavedMapDetails: 201 minutes to 8.8.8.8 from 201 apps, the first one busiest.
+            var store = new ConnectionHistoryStore(Path.Combine(root, "history.db")); store.Initialize();
+            var start = now.AddMinutes(-201); var place = new ConnectionLocation("JP", "Japan", null, "Saved Tokyo", new(35, 139), "old source");
+            var records = Enumerable.Range(0, 201).Select(i => new ConnectionHistoryRecord("b" + i, "fixture", new(start.AddMinutes(i), new(new(10 + i, 1, "Peer " + i), "", 0, "8.8.8.8", 443, ConnectionProtocol.Tcp), i == 0 ? 10000 : 1, 0, start.AddMinutes(i), start.AddMinutes(i)), i == 0 ? place : place with { City = "Revised", Point = new(40, -90) }, i == 0 ? new(41, -87) : new(51, 0), true)).ToArray(); store.Append(records, [], now);
+            var page = new ConnectionsPage(session); var card = Card(page); var from = Field<TextBox>(page, "from");
+            string startText = start.ToLocalTime().ToString("yyyy-MM-dd HH:mm"); from.Text = startText; Field<TextBox>(page, "to").Text = now.ToLocalTime().ToString("yyyy-MM-dd HH:mm");
+            var read = (Func<ConnectionHistoryQuery, Task<ConnectionHistoryView>>)(q => Task.FromResult(store.Read(q)));
+            PageType.GetField("readHistory", All)!.SetValue(page, read);
+            var mode = Field<ComboBox>(page, "mode"); mode.SelectedIndex = 1;
+            Assert.Equal(["DESTINATION", "CLASS", "LOCATION", "APPS", "PORTS", "RECEIVED", "SENT", "MINUTES", "FIRST SEEN", "LAST SEEN"], card.Grid.Columns.Select(c => (string)c.Header));
+            Assert.Equal("Saved in the shown interval.", HeaderTip(page, card, "RECEIVED"));
+            Assert.Equal("Saved minutes with traffic to this address in the shown interval.", HeaderTip(page, card, "MINUTES"));
+            var row = Assert.Single(card.Rows);
+            Assert.Equal(("8.8.8.8", "Internet", "Revised, Japan", "Peer 0 +200", "443 Tcp", "201"), (row.Key, row.Class, row.Location, row.Apps, row.Ports, row.Minutes));
+            Assert.Equal((start.ToLocalTime().ToString("g"), now.AddMinutes(-1).ToLocalTime().ToString("g")), (row.FirstSeen, row.LastSeen));
+            Assert.Equal("8.8.8.8, Internet, Revised, Japan, 201 apps: Peer 0 and 200 more, port 443 Tcp, received 10.2 KB, sent 0.0 B, 201 minutes, last seen " + now.AddMinutes(-1).ToLocalTime().ToString("g"), row.Spoken);
+            Assert.Equal("1 destination: 1 Internet (0 unlocated), 0 local, 0 special-purpose.", card.CountLine.Text); Assert.Null(card.CountLine.ToolTip);
+            Assert.Equal(DestinationCopy.Footnote(true), card.Footnote.Text);
+            // Filters that leave no rows win over the scope; the scope alone names its kind.
+            Field<TextBox>(page, "search").Text = "nobody"; Assert.Equal("No saved destinations match the filters in this interval.", EmptyText(card));
+            card.Scope.SelectedIndex = 2; Assert.Equal("No saved destinations match the filters in this interval.", EmptyText(card));
+            Field<TextBox>(page, "search").Text = ""; Assert.Equal("No saved local destinations in this interval.", EmptyText(card));
+            card.Scope.SelectedIndex = 0; Assert.Null(EmptyText(card));
+            // An invalid interval, a pending read, then a thrown one.
+            from.Text = "bad date"; Call(page, "RequestHistory", null); Assert.Equal("Choose a valid interval to list saved destinations.", EmptyText(card)); Assert.Empty(card.Rows);
+            var pending = new TaskCompletionSource<ConnectionHistoryView>();
+            PageType.GetField("readHistory", All)!.SetValue(page, (Func<ConnectionHistoryQuery, Task<ConnectionHistoryView>>)(_ => pending.Task));
+            from.Text = startText; Call(page, "RequestHistory", null); Assert.Equal("Reading saved destinations…", EmptyText(card)); Assert.Empty(card.Rows);
+            pending.SetException(new IOException()); Pump();
+            Assert.Equal("Destinations unavailable; no saved observations shown.", EmptyText(card));
+            Assert.Equal("— destinations: — Internet (— unlocated), — local, — special-purpose.", card.CountLine.Text); Assert.Equal("History unavailable", card.CountLine.ToolTip);
+            // The minute cursor on a minute with no saved rows.
+            PageType.GetField("readHistory", All)!.SetValue(page, read);
+            from.Text = start.AddMinutes(-10).ToLocalTime().ToString("yyyy-MM-dd HH:mm"); Field<CheckBox>(page, "minute").IsChecked = true;
+            Assert.Equal("No saved destinations in this minute.", EmptyText(card)); Assert.Null(card.CountLine.ToolTip);
+            Field<CheckBox>(page, "minute").IsChecked = false; from.Text = startText; Call(page, "RequestHistory", null); Assert.Single(card.Rows);
+            // Sorted by ↓ DOWNLOAD in Live, History falls back to RECEIVED descending.
+            mode.SelectedIndex = 0;
+            LocatedConnection Peer(string address, long received, double download) => new(new(new ConnectionPeer(new(1, 1, "Browser"), "", 0, address, 443, ConnectionProtocol.Tcp), now, now, received, 0, download, 0), null);
+            page.ApplyLive(new ConnectionLiveView(now, [Peer("8.8.8.8", 1024, 1), Peer("1.1.1.1", 10, 500)], null, true, true, "fixture"));
+            Assert.Equal(["8.8.8.8", "1.1.1.1"], Keys(card));
+            Sort(card, "↓ DOWNLOAD"); Assert.Equal(["1.1.1.1", "8.8.8.8"], Keys(card));
+            Assert.Equal(System.ComponentModel.ListSortDirection.Descending, Column(card, "↓ DOWNLOAD").SortDirection); Assert.Null(Column(card, "RECEIVED").SortDirection);
+            Sort(card, "↓ DOWNLOAD"); Assert.Equal(["8.8.8.8", "1.1.1.1"], Keys(card)); Assert.Equal(System.ComponentModel.ListSortDirection.Ascending, Column(card, "↓ DOWNLOAD").SortDirection);
+            Sort(card, "DESTINATION"); Assert.Equal(["1.1.1.1", "8.8.8.8"], Keys(card)); Assert.Equal(System.ComponentModel.ListSortDirection.Ascending, Column(card, "DESTINATION").SortDirection);
+            Sort(card, "↓ DOWNLOAD"); Assert.Equal(System.ComponentModel.ListSortDirection.Descending, Column(card, "↓ DOWNLOAD").SortDirection);
+            mode.SelectedIndex = 1; Assert.Single(card.Rows);
+            Assert.DoesNotContain(card.Grid.Columns, c => (string)c.Header == "↓ DOWNLOAD");
+            Assert.Equal(System.ComponentModel.ListSortDirection.Descending, Column(card, "RECEIVED").SortDirection);
+            Assert.All(card.Grid.Columns.Where(c => (string)c.Header != "RECEIVED"), c => Assert.Null(c.SortDirection));
+        }
+        finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
+    }
+    private static void CheckDestinationScopeSaved(ConnectionLiveView live)
+    {
+        var session = (UiSession)RuntimeHelpers.GetUninitializedObject(typeof(UiSession));
+        typeof(UiSession).GetField("<Settings>k__BackingField", All)!.SetValue(session, new UserSettings());
+        var service = new ConnectionService(Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".db")); typeof(UiSession).GetField("<Connections>k__BackingField", All)!.SetValue(session, service);
+        string settingsPath = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + "-destinations-settings.json");
+        typeof(UiSession).GetField("writer", All)!.SetValue(session, new SettingsSnapshotWriter(settingsPath));
+        typeof(UiSession).GetField("layout", All)!.SetValue(session, new DetachedWindowState([]));
+        var page = new ConnectionsPage(session); var card = Card(page); Assert.Equal(0, card.Scope.SelectedIndex);
+        page.ApplyLive(live); Layout(page, 1000, 700); var map = Field<ConnectionMap>(page, "map"); map.Flat = true; map.ResetView(); Layout(page, 1000, 700);
+        string[] Nodes() => Field<ListBox>(page, "mappedConnections").Items.Cast<object>().Select(item => item.ToString()!).ToArray();
+        string summary = Field<TextBlock>(page, "summary").Text; var nodes = Nodes(); Assert.Single(nodes);
+        card.Scope.SelectedIndex = 2;
+        Assert.Equal("Local", session.Settings.ConnectionsDestinationScope); Assert.Equal(["192.168.1.1"], Keys(card));
+        // The scope narrows the table only.
+        Assert.Equal(summary, Field<TextBlock>(page, "summary").Text); Assert.Equal(nodes, Nodes());
+        var reopened = new ConnectionsPage(session); Assert.Equal(2, Card(reopened).Scope.SelectedIndex);
+        reopened.ApplyLive(live); Assert.Equal(["192.168.1.1"], Keys(Card(reopened)));
+        card.Scope.SelectedIndex = 0; Assert.Equal("All", session.Settings.ConnectionsDestinationScope); Assert.Equal(3, card.Rows.Count);
+        var save = session.SaveAsync(); PumpUntil(() => save.IsCompleted); save.GetAwaiter().GetResult(); File.Delete(settingsPath);
     }
     private static void CheckDownloadControls(DateTimeOffset now)
     {
@@ -567,7 +743,12 @@ internal static class ConnectionsPageUiChecks
     {
         var place=live.Connections[0].Location!;
         var saved=new ConnectionHistoryRow(history.Query.From,new(9,3,"Saved browser"),"8.8.8.8",443,ConnectionProtocol.Tcp,history.Query.From,history.Query.To,12000,6000,200,100,place,new(41,-87),false);
-        history=history with {Rows=[saved],Markers=[new(place,saved.Origin,12000,6000,saved)],TotalRows=1,Strip=StripFor(history.Query)};
+        var destination=new ConnectionDestination("8.8.8.8",NetworkAddress.Describe("8.8.8.8"),place,[place.Point!],false,[new("Saved browser",12000,6000)],1,
+            [new(443,ConnectionProtocol.Tcp,12000,6000)],1,12000,6000,null,null,null,3,history.Query.From,history.Query.To,false);
+        history=history with {Rows=[saved],Markers=[new(place,saved.Origin,12000,6000,saved)],TotalRows=1,Strip=StripFor(history.Query),Destinations=new([destination],new(1,1,0,0,0))};
+        // 50 local destinations: none is drawn, so the node list and the map keep their size.
+        var locals=Enumerable.Range(1,50).Select(i=>new LocatedConnection(live.Connections[0].Traffic with {Peer=live.Connections[0].Traffic.Peer with {RemoteAddress=$"192.168.0.{i}"}},null)).ToArray();
+        var culture=CultureInfo.CurrentCulture;CultureInfo.CurrentCulture=CultureInfo.GetCultureInfo("en-US");
         // Constructing a Window registers the resource-invalidation root, without creating an HWND.
         var host = new Window { Content = page };
         var theme = typeof(Collector).Assembly.GetType("DeadWare.App.Theme")!;
@@ -586,6 +767,15 @@ internal static class ConnectionsPageUiChecks
                 Assert.Equal(historical?Visibility.Visible:Visibility.Collapsed,stripCard.Visibility);
                 if(historical){Assert.Same(history.Strip,stripChart.Strip);Assert.True(stripChart.ActualHeight>=120,$"Strip height {stripChart.ActualHeight}.");}
                 Assert.True(Field<TextBlock>(page,"summary").TransformToAncestor(page).Transform(new Point()).Y+Field<TextBlock>(page,"summary").ActualHeight<map.TransformToAncestor(page).Transform(new Point()).Y+1);
+                var destinations=Card(page);Assert.Equal(315,destinations.Grid.ActualHeight);Assert.Equal(historical?1:3,destinations.Rows.Count);
+                CheckNotTrimmed(destinations,name,size.Width<900);
+                if(!historical)
+                {
+                    Call(page,"ApplyLive",live with {Connections=[]});Layout(page,size.Width,size.Height);Pump();Layout(page,size.Width,size.Height);double empty=map.ActualHeight;
+                    Call(page,"ApplyLive",live with {Connections=locals});Layout(page,size.Width,size.Height);Pump();Layout(page,size.Width,size.Height);
+                    Assert.Equal(50,destinations.Rows.Count);Assert.Equal(empty,map.ActualHeight,3);Assert.Equal(315,destinations.Grid.ActualHeight);
+                    Call(page,"ApplyLive",live);Layout(page,size.Width,size.Height);Pump();Layout(page,size.Width,size.Height);
+                }
                     void Snapshot(string suffix)
                     {
                         var bitmap = new RenderTargetBitmap((int)size.Width, (int)size.Height, 96, 96, PixelFormats.Pbgra32);bitmap.Render(page);
@@ -613,6 +803,32 @@ internal static class ConnectionsPageUiChecks
         theme.GetMethod("SetGraphColors",BindingFlags.Public|BindingFlags.Static)!.Invoke(null,[new Dictionary<string,string>()]);
         theme.GetMethod("Apply", BindingFlags.Public | BindingFlags.Static)!.Invoke(null, ["Midnight"]);
         host.Content = null; host.Close();
+        CultureInfo.CurrentCulture=culture;
+    }
+    /// <summary>No column header and no FIRST SEEN or LAST SEEN cell is trimmed: each text's unconstrained DesiredSize fits its header or cell.
+    /// <paramref name="atMinimum"/>: the table is narrower than its columns' minimums, so every column sits at its MinWidth.</summary>
+    private static void CheckNotTrimmed(DestinationsCard card,string theme,bool atMinimum)
+    {
+        static double Natural(TextBlock text){text.Measure(new Size(double.PositiveInfinity,double.PositiveInfinity));double width=text.DesiredSize.Width;text.InvalidateMeasure();return width;}
+        var headers=Elements(card.Grid).OfType<System.Windows.Controls.Primitives.DataGridColumnHeader>().Where(h=>h.Column is not null).ToArray();
+        Assert.Equal(card.Grid.Columns.Count,headers.Length);
+        foreach(var header in headers)
+        {
+            if(atMinimum)Assert.True(Math.Abs(header.Column.ActualWidth-header.Column.MinWidth)<.5,$"{theme} {header.Column.Header} is {header.Column.ActualWidth} wide, not its minimum {header.Column.MinWidth}.");
+            var text=Elements(header).OfType<TextBlock>().First(t=>t.Text==(string)header.Column.Header);
+            double natural=Natural(text);
+            Assert.True(natural<=header.ActualWidth-header.Padding.Left-header.Padding.Right+.01,$"{theme} header {text.Text} trimmed: {natural} in {header.ActualWidth}.");
+        }
+        int cells=0;
+        foreach(var column in card.Grid.Columns.Where(c=>(string)c.Header is "FIRST SEEN" or "LAST SEEN"))
+            foreach(var row in card.Rows)
+            {
+                if(column.GetCellContent(row) is not TextBlock text)continue;
+                DependencyObject parent=text;while(parent is not DataGridCell)parent=VisualTreeHelper.GetParent(parent);
+                var cell=(DataGridCell)parent;double natural=Natural(text);cells++;
+                Assert.True(natural<=cell.ActualWidth-cell.BorderThickness.Left-cell.BorderThickness.Right+.01,$"{theme} {column.Header} cell {text.Text} trimmed: {natural} in {cell.ActualWidth}.");
+            }
+        if(card.Grid.Columns.Any(c=>(string)c.Header=="FIRST SEEN"))Assert.True(cells>0,"No FIRST SEEN or LAST SEEN cell was realized.");
     }
     internal static void CheckNavigation(MainWindow dashboard)
     {
