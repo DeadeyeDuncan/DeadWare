@@ -31,6 +31,7 @@ public sealed class ConnectionHistoryStore
           AND minute > (SELECT value FROM metadata WHERE key='floor')
           AND ($search='' OR instr(search,$search)>0 OR instr(cast(pid AS TEXT),$search)>0)
           AND ($country='' OR country=$country)
+          AND ($application='' OR app_key(name)=$application)
         """;
     private const string DirectionHaving = "($direction=0 OR ($direction=1 AND sat_sum(received)>0) OR ($direction=2 AND sat_sum(sent)>0))";
     private const string Grouped = $"""
@@ -432,12 +433,102 @@ public sealed class ConnectionHistoryStore
                     WHERE finish>coalesce((SELECT value FROM metadata WHERE key='expiry'),0)
                       AND stamp>(SELECT value FROM metadata WHERE key='floor'))
                 """,tx);
-            long floor=Convert.ToInt64(Scalar(db,"SELECT value FROM metadata WHERE key='floor'",tx),CultureInfo.InvariantCulture);
-            string status=floor>0?"Capacity shortened retention. ":"";
+            var strip=Grouping(()=>ReadStrip(db,tx,query));
+            string status=strip.CapacityShortened?"Capacity shortened retention. ":"";
             if(gaps.Count>0||coverage.Any(x=>!x.Complete)) status+="History contains recording gaps.";
             else status+="Recorded coverage available.";
-            return new(query,rows.AsReadOnly(),total,summary,markers.AsReadOnly(),coverage.AsReadOnly(),gaps.AsReadOnly(),earliest is null or DBNull?null:Stamp(Convert.ToInt64(earliest,CultureInfo.InvariantCulture)),StorageBytes,status,Math.Max(0,markerCount-markers.Count));
+            return new(query,rows.AsReadOnly(),total,summary,markers.AsReadOnly(),coverage.AsReadOnly(),gaps.AsReadOnly(),earliest is null or DBNull?null:Stamp(Convert.ToInt64(earliest,CultureInfo.InvariantCulture)),StorageBytes,status,Math.Max(0,markerCount-markers.Count),Strip:strip);
         }
+    }
+    private sealed class StripSlot(int series)
+    {
+        public readonly long[] Received=new long[series], Sent=new long[series];
+        public readonly HashSet<long> Minutes=[];
+        public long CoveredTicks;
+        public bool Incomplete;
+    }
+    /// <summary>The traffic strip over temp.grouped and coverage, in the read's transaction.</summary>
+    private static TrafficStrip ReadStrip(SqliteConnection db,SqliteTransaction tx,ConnectionHistoryQuery query)
+    {
+        var measure=query.Direction switch {ConnectionDirection.Received=>TrafficMeasure.Received,ConnectionDirection.Sent=>TrafficMeasure.Sent,_=>TrafficMeasure.Total};
+        long Measure(long received,long sent) => measure switch {TrafficMeasure.Received=>received,TrafficMeasure.Sent=>sent,_=>Add(received,sent)};
+        // 1. Grid.
+        var origin=TrafficStrips.CeilingMinute(query.From);
+        long bucket=TrafficStrips.ConnectionsBucketMinutes(query.From,query.To)*TimeSpan.TicksPerMinute;
+        int slotCount=TrafficStrips.ConnectionsSlotCount(query.From,query.To);
+        // 2. Totals by stored name, folded to app keys here so app_key never runs per row.
+        var keys=new Dictionary<string,string>(StringComparer.Ordinal);
+        var totals=new Dictionary<string,(string Name,long Received,long Sent)>(StringComparer.Ordinal);
+        using(var command=Command(db,"SELECT name,sat_sum(received),sat_sum(sent) FROM temp.grouped GROUP BY name",tx))
+        using(var reader=command.ExecuteReader()) while(reader.Read())
+        {
+            string name=reader.GetString(0), key=ProcessGrouping.Key(name); keys[name]=key;
+            totals[key]=totals.TryGetValue(key,out var total)
+                ? (string.CompareOrdinal(name,total.Name)<0?name:total.Name,Add(total.Received,reader.GetInt64(1)),Add(total.Sent,reader.GetInt64(2)))
+                : (name,reader.GetInt64(1),reader.GetInt64(2));
+        }
+        var applications=totals.Where(x=>Measure(x.Value.Received,x.Value.Sent)>0)
+            .OrderByDescending(x=>Measure(x.Value.Received,x.Value.Sent)).ThenBy(x=>x.Key,StringComparer.Ordinal).Take(TrafficStrips.MaximumApplications)
+            .Select(x=>new TrafficStripApplication(x.Value.Name,x.Key,x.Value.Received,x.Value.Sent)).ToList();
+        var series=applications.Select((a,i)=>(a.Key,i)).ToDictionary(x=>x.Key,x=>x.i,StringComparer.Ordinal);
+        long otherReceived=0,otherSent=0,otherApplications=0;
+        foreach(var (key,total) in totals)
+        {
+            if(series.ContainsKey(key)) continue;
+            otherReceived=Add(otherReceived,total.Received); otherSent=Add(otherSent,total.Sent);
+            if(total.Received>0||total.Sent>0) otherApplications++;
+        }
+        // 4. Retained start, from floor and expiry only.
+        long floor,expiry;
+        using(var command=Command(db,"SELECT (SELECT value FROM metadata WHERE key='floor'),coalesce((SELECT value FROM metadata WHERE key='expiry'),0)",tx))
+        using(var reader=command.ExecuteReader()) {reader.Read(); floor=reader.GetInt64(0); expiry=reader.GetInt64(1);}
+        long expiryMinute=TrafficStrips.CeilingMinute(Stamp(expiry)).UtcTicks;
+        long retained=Math.Max(expiryMinute,floor+TimeSpan.TicksPerMinute);
+        var slots=new Dictionary<long,StripSlot>();
+        StripSlot SlotAt(long index) {if(!slots.TryGetValue(index,out var slot)) slots[index]=slot=new(applications.Count+1); return slot;}
+        StripSlot SlotOf(long minute) => SlotAt((minute-origin.UtcTicks)/bucket);
+        if(slotCount>0)
+        {
+            // 3. Slot bytes by stored name.
+            using(var command=Command(db,"SELECT (minute-$origin)/$bucket,name,sat_sum(received),sat_sum(sent),min(complete) FROM temp.grouped GROUP BY 1,name",tx,("$origin",origin.UtcTicks),("$bucket",bucket)))
+            using(var reader=command.ExecuteReader()) while(reader.Read())
+            {
+                var slot=SlotAt(reader.GetInt64(0));
+                int at=series.TryGetValue(keys[reader.GetString(1)],out int found)?found:applications.Count;
+                slot.Received[at]=Add(slot.Received[at],reader.GetInt64(2)); slot.Sent[at]=Add(slot.Sent[at],reader.GetInt64(3));
+                if(reader.GetInt64(4)==0) slot.Incomplete=true;
+            }
+            // 5. Recorded time per minute: coverage pieces clipped to the interval, capped at a minute.
+            var covered=new HashSet<long>();
+            using(var command=Command(db,"""
+                SELECT stamp,sum(min(finish,$to)-max(start,$from)),min(complete) FROM coverage
+                WHERE stamp>$floor AND stamp>=$retained AND stamp>=$origin AND finish>$from AND start<$to GROUP BY stamp
+                """,tx,("$floor",floor),("$retained",retained),("$origin",origin.UtcTicks),("$from",query.From.UtcTicks),("$to",query.To.UtcTicks)))
+            using(var reader=command.ExecuteReader()) while(reader.Read())
+            {
+                long minute=reader.GetInt64(0); var slot=SlotOf(minute); covered.Add(minute); slot.Minutes.Add(minute);
+                slot.CoveredTicks+=Math.Min(reader.GetInt64(1),TimeSpan.TicksPerMinute);
+                if(reader.GetInt64(2)==0) slot.Incomplete=true;
+            }
+            // A minute with rows but no coverage counts as a whole, incomplete minute.
+            using(var command=Command(db,"SELECT minute FROM temp.grouped GROUP BY minute",tx))
+            using(var reader=command.ExecuteReader()) while(reader.Read())
+            {
+                long minute=reader.GetInt64(0); var slot=SlotOf(minute); slot.Minutes.Add(minute);
+                if(covered.Contains(minute)) continue;
+                slot.CoveredTicks+=TimeSpan.TicksPerMinute; slot.Incomplete=true;
+            }
+        }
+        // 6. Slot fields; slots without a recorded minute are left out.
+        var listed=slots.Where(x=>x.Value.Minutes.Count>0).OrderBy(x=>x.Key).Select(x=>
+        {
+            var (start,end)=TrafficStrips.ConnectionsSlot(query.From,query.To,x.Key);
+            return new TrafficStripSlot(start,end,x.Value.Minutes.Count,x.Value.CoveredTicks/TimeSpan.TicksPerSecond,x.Value.Incomplete,x.Value.Received.AsReadOnly(),x.Value.Sent.AsReadOnly());
+        }).ToList();
+        // 7. and 8.
+        DateTimeOffset? retainedFrom=retained>origin.UtcTicks?Stamp(retained):null;
+        bool capacityShortened=floor>0&&floor+TimeSpan.TicksPerMinute>expiryMinute;
+        return new(query.From,query.To,bucket/TimeSpan.TicksPerMillisecond,measure,applications.AsReadOnly(),otherReceived,otherSent,otherApplications,listed.AsReadOnly(),retainedFrom,capacityShortened);
     }
     /// <summary>Runs a statement over the TEMP tables; SQLITE_FULL there means the interval exceeds the grouped TEMP limit.</summary>
     private static T Grouping<T>(Func<T> statement)
@@ -455,10 +546,13 @@ public sealed class ConnectionHistoryStore
     }
     private static ConnectionHistoryQuery Normalize(ConnectionHistoryQuery query)
     {
-        if(query is null||query.To<=query.From||query.Search is null||query.Search.Length>260||query.CountryCode is null||query.CountryCode.Length>2||!Enum.IsDefined(query.Direction)) throw Invalid();
-        return query with {From=query.From.ToUniversalTime(),To=query.To.ToUniversalTime(),Search=query.Search.Trim().ToLowerInvariant(),CountryCode=query.CountryCode.Trim().ToUpperInvariant(),Offset=Math.Max(0,query.Offset),Limit=Math.Clamp(query.Limit,1,500)};
+        if(query is null||query.To<=query.From||query.Search is null||query.Search.Length>260||query.CountryCode is null||query.CountryCode.Length>2||!Enum.IsDefined(query.Direction)||
+            query.Application is null||query.Application.Length>260) throw Invalid();
+        string application=query.Application.Trim();
+        return query with {From=query.From.ToUniversalTime(),To=query.To.ToUniversalTime(),Search=query.Search.Trim().ToLowerInvariant(),CountryCode=query.CountryCode.Trim().ToUpperInvariant(),Offset=Math.Max(0,query.Offset),Limit=Math.Clamp(query.Limit,1,500),
+            Application=application.Length==0?"":ProcessGrouping.Key(application)};
     }
-    private static (string,object)[] Arguments(ConnectionHistoryQuery query) => [("$from",query.From.UtcTicks),("$to",query.To.UtcTicks),("$search",query.Search),("$country",query.CountryCode),("$direction",(int)query.Direction)];
+    private static (string,object)[] Arguments(ConnectionHistoryQuery query) => [("$from",query.From.UtcTicks),("$to",query.To.UtcTicks),("$search",query.Search),("$country",query.CountryCode),("$direction",(int)query.Direction),("$application",query.Application)];
     private static (List<ConnectionHistoryInterval>,List<ConnectionHistoryGap>) ReadCoverage(SqliteConnection db,SqliteTransaction tx,ConnectionHistoryQuery query)
     {
         // Sweep interval edges in SQL order; memory is proportional to the published merged result, not raw samples.
@@ -533,6 +627,7 @@ public sealed class ConnectionHistoryStore
         try
         {
             db.Open(); db.CreateAggregate<long,long>("sat_sum",0,(sum,value)=>Add(sum,value));
+            db.CreateFunction<string,string>("app_key",ProcessGrouping.Key,isDeterministic:true);
             if(!readOnly)
             {
                 if(File.Exists(path+"-wal")&&new FileInfo(path+"-wal").Length>MaximumJournalBytes)
