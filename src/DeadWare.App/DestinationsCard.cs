@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
+using System.Diagnostics;
 using System.Globalization;
 using System.Windows;
 using System.Windows.Automation;
@@ -128,9 +129,12 @@ internal sealed class DestinationRow : INotifyPropertyChanged
     private static string Lines(IEnumerable<string> lines, int more) => string.Join("\n", more > 0 ? lines.Append(DestinationCopy.MoreLine(more)) : lines);
 }
 
-/// <summary>The Destinations card below the map: one row per remote address in Live and in History, narrowed by the All / Internet / Local scope.</summary>
+/// <summary>The Destinations card below the map: one row per remote address in Live and in History, narrowed by the All / Internet / Local scope.
+/// Rows update in place and stay calm: new data re-sorts only outside a hold, while header clicks, the scope, F5, a mode change and filter changes re-sort at once.</summary>
 internal sealed class DestinationsCard : Border
 {
+    /// <summary>How a show orders the rows: re-sorted at once, re-sorted unless the order is held (new data), or kept in place (same data, other values).</summary>
+    private enum Order { Resort, NewData, Values }
     private sealed record ColumnSpec(ConnectionDestinationColumn Key, string Header, string Binding, string? Tip, double Star, double Listed, bool Value);
     // Star sizes and listed minimums; each MinWidth also fits the header, and FIRST SEEN and LAST SEEN fit a time.
     private static readonly ColumnSpec[] Specs =
@@ -162,8 +166,13 @@ internal sealed class DestinationsCard : Border
     private ConnectionDestinationColumn sortKey = ConnectionDestinationColumn.Received;
     private bool sortDescending = true, syncing;
     private bool? history;
-    // Shows the last data again, for a scope change.
-    private Action? reshow;
+    // Shows the last data again, ordered as asked (a scope change re-sorts).
+    private Action<Order>? reshow;
+    // The last Live view shown with what else its rows depend on; an equal one changes nothing. Null outside Live.
+    private (ConnectionLiveView View, bool FiltersSet, bool HasLocationDatabase)? lastLive;
+    // A mode change or a new History context scrolls the grid to its top when its rows are next shown.
+    private bool topPending;
+    private static readonly Stopwatch Monotonic = Stopwatch.StartNew();
     private (FontFamily? Font, double Size, string Culture) measured;
 
     internal readonly DataGrid Grid = new() { Height = 315 };
@@ -173,6 +182,14 @@ internal sealed class DestinationsCard : Border
     internal readonly ObservableCollection<DestinationRow> Rows = [];
     /// <summary>The list on screen: the Live list grouped from the filtered connections, or the History list; null before any or when History is unavailable.</summary>
     internal ConnectionDestinationList? List { get; private set; }
+    /// <summary>Holds the order: the pointer over the grid, the row menu open, or 3 s after a navigation key in the grid.</summary>
+    internal OrderHold Hold { get; } = new();
+    /// <summary>The key hold's clock in seconds: monotonic, so a wall-clock change can neither extend nor end it. The page passes its own Stopwatch.</summary>
+    internal Func<double> clockSeconds = () => Monotonic.Elapsed.TotalSeconds;
+    /// <summary>The selected row's destination, or null.</summary>
+    internal ConnectionDestination? Selected => (Grid.SelectedItem as DestinationRow)?.Value;
+    /// <summary>Raised when the selected row changes, to another row or to none (also when the selected row leaves).</summary>
+    internal event Action? SelectionChanged;
 
     internal DestinationsCard(UiSession session)
     {
@@ -195,6 +212,11 @@ internal sealed class DestinationsCard : Border
         foreach (var spec in Specs) columns[spec.Key] = Column(spec);
         Grid.Sorting += OnSorting;
         Grid.PreviewMouseWheel += OnPreviewMouseWheel;
+        Grid.SelectionChanged += (_, e) => { if (ReferenceEquals(e.OriginalSource, Grid)) SelectionChanged?.Invoke(); };
+        Grid.MouseEnter += (_, _) => Hold.PointerOver = true;
+        Grid.MouseLeave += (_, _) => Hold.PointerOver = false;
+        // Arrow keys move the selection and hold the order; the DataGrid still acts on them.
+        Grid.PreviewKeyDown += (_, e) => { if (e.Key is Key.Up or Key.Down or Key.PageUp or Key.PageDown or Key.Home or Key.End) Hold.KeyNavigated(clockSeconds()); };
         layout.Children.Add(Grid);
         emptyText.HorizontalAlignment = HorizontalAlignment.Center; emptyText.TextAlignment = TextAlignment.Center; emptyText.Margin = new Thickness(12);
         Empty.Child = emptyText; Empty.SetResourceReference(Border.BackgroundProperty, "GlassTable"); layout.Children.Add(Empty);
@@ -206,7 +228,7 @@ internal sealed class DestinationsCard : Border
         {
             if (syncing) return;
             if (session.Connections is not null) session.SetConnectionsDestinationScope(CurrentScope.ToString());
-            reshow?.Invoke();
+            ShowScope();
         };
     }
 
@@ -219,58 +241,107 @@ internal sealed class DestinationsCard : Border
         syncing = true;
         try { Scope.SelectedIndex = (int)scope; }
         finally { syncing = false; }
-        reshow?.Invoke();
+        ShowScope();
     }
 
-    /// <summary>Groups the page's filtered live connections, one row per remote address.</summary>
-    internal void ShowLive(ConnectionLiveView view, IReadOnlyList<LocatedConnection> filtered, bool filtersSet, bool hasLocationDatabase)
+    /// <summary>A scope change re-sorts at once and scrolls the grid to its top.</summary>
+    private void ShowScope()
     {
+        reshow?.Invoke(Order.Resort);
+        ScrollToTop();
+    }
+
+    /// <summary>Clears the table selection.</summary>
+    internal void ClearSelection() => Grid.SelectedItem = null;
+
+    /// <summary>Re-sorts the rows on screen at once, even during a hold (F5).</summary>
+    internal void Resort() => Reconcile(Sorted(Rows));
+
+    /// <summary>Releases the pointer and menu holds, for a page that is unloaded or hidden.</summary>
+    internal void ReleaseHolds() { Hold.PointerOver = false; Hold.MenuOpen = false; }
+
+    /// <summary>Sets the status line under the grid; empty collapses it.</summary>
+    internal void SetStatus(string text)
+    {
+        Status.Text = text;
+        Status.Visibility = text.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
+    }
+
+    /// <summary>Groups the page's filtered live connections, one row per remote address. A view equal to the last one (record equality) changes nothing;
+    /// one with a new Timestamp is new data; one with the same Timestamp and other values updates values only. <paramref name="resort"/>: the filters changed, so the rows re-sort at once.</summary>
+    internal void ShowLive(ConnectionLiveView view, IReadOnlyList<LocatedConnection> filtered, bool filtersSet, bool hasLocationDatabase, bool resort = false)
+    {
+        bool modeChanged = SetMode(false);
+        (ConnectionLiveView, bool, bool) shown = (view, filtersSet, hasLocationDatabase);
+        if (!resort && !modeChanged && lastLive is { } last && last.Equals(shown)) return;
+        bool newData = lastLive is not { } previous || previous.View.Timestamp != view.Timestamp;
+        lastLive = shown;
         var list = ConnectionDestinations.FromLive(filtered, view.Available);
         var context = new DestinationRowContext(false, view.Available, view.Complete, hasLocationDatabase);
-        SetMode(false); List = list;
-        reshow = () => Present(list, context, scope => DestinationCopy.LiveEmpty(view.Available, view.Connections.Count > 0, filtersSet, scope));
-        reshow();
+        List = list;
+        reshow = order => Present(list, context, scope => DestinationCopy.LiveEmpty(view.Available, view.Connections.Count > 0, filtersSet, scope), order);
+        reshow(resort || modeChanged ? Order.Resort : newData ? Order.NewData : Order.Values);
     }
 
     /// <summary>Shows a History list; null (a failed read, the TEMP limit or no service) shows "Destinations unavailable" and "—" counts.</summary>
     internal void ShowHistory(ConnectionDestinationList? list, bool minute, bool filtersSet)
     {
-        SetMode(true); List = list;
-        if (list is null) reshow = () => ShowState(DestinationCopy.Unavailable, DestinationCopy.UnavailableCountLine, "History unavailable");
+        bool modeChanged = SetMode(true); List = list; lastLive = null;
+        if (list is null) reshow = _ => ShowState(DestinationCopy.Unavailable, DestinationCopy.UnavailableCountLine, "History unavailable");
         else
         {
             var context = new DestinationRowContext(true, true, true, false);
-            reshow = () => Present(list, context, scope => DestinationCopy.HistoryEmpty(minute, filtersSet, scope));
+            reshow = order => Present(list, context, scope => DestinationCopy.HistoryEmpty(minute, filtersSet, scope), order);
         }
-        reshow();
+        // Every applied History view is new data.
+        reshow(modeChanged ? Order.Resort : Order.NewData);
     }
 
     /// <summary>Clears the rows and shows the text in place of the grid (an invalid interval, a read in progress).</summary>
     internal void ShowText(string text)
     {
-        List = null;
-        reshow = () => ShowState(text, "", null);
-        reshow();
+        List = null; lastLive = null; topPending = true;
+        reshow = _ => ShowState(text, "", null);
+        reshow(Order.Resort);
     }
 
     private void ShowState(string text, string countLine, string? countTip)
     {
-        Rows.Clear(); kept.Clear();
+        ClearSelection(); Rows.Clear(); kept.Clear();
         CountLine.Text = countLine; CountLine.ToolTip = countTip;
         ShowEmpty(text);
     }
 
-    private void Present(ConnectionDestinationList list, DestinationRowContext context, Func<DestinationScope, string> empty)
+    private void Present(ConnectionDestinationList list, DestinationRowContext context, Func<DestinationScope, string> empty, Order order)
     {
         var scope = CurrentScope;
         // A culture or font change since the last measure shows in the time column's width at once.
         UpdateMinimumWidths();
         CountLine.Text = DestinationCopy.CountLine(list.Counts, scope, context.History); CountLine.ToolTip = null;
         var rows = ConnectionDestinations.InScope(list, scope).Select(d => kept.TryGetValue(d.Address, out var row) ? row.Update(d, context) : new DestinationRow(d, context)).ToList();
-        Reconcile(rows);
+        var sorted = Sorted(rows);
+        bool resort = order == Order.Resort || order == Order.NewData && !Hold.IsHeld(clockSeconds());
+        if (resort) Reconcile(sorted);
+        else
+        {
+            // Held: gone rows leave, new rows join the bottom in sorted order, and nothing moves.
+            var byKey = sorted.ToDictionary(r => r.Key, StringComparer.Ordinal);
+            Reconcile([.. CalmOrderPlanner.Held([.. Rows.Select(r => r.Key)], [.. sorted.Select(r => r.Key)], _ => null).Select(key => byKey[key])]);
+        }
         // An empty list names why it is empty; the scope only when it emptied the table.
         ShowEmpty(rows.Count > 0 ? null : empty(list.Counts.All == 0 ? DestinationScope.All : scope));
+        if (topPending) { topPending = false; ScrollToTop(); }
     }
+
+    private List<DestinationRow> Sorted(IEnumerable<DestinationRow> rows)
+    {
+        var sorted = rows.ToList();
+        sorted.Sort((a, b) => ConnectionDestinationSort.Compare(a.Value, b.Value, sortKey, sortDescending));
+        return sorted;
+    }
+
+    /// <summary>Scrolls the grid to its first row; nothing before its template is applied, when there is no offset to reset.</summary>
+    private void ScrollToTop() => Descendant<ScrollViewer>(Grid)?.ScrollToTop();
 
     private void ShowEmpty(string? text)
     {
@@ -279,25 +350,25 @@ internal sealed class DestinationsCard : Border
         Grid.Visibility = text is null ? Visibility.Visible : Visibility.Collapsed;
     }
 
-    /// <summary>Sorts the rows and moves the collection to that order: gone rows leave, kept rows move and new rows are inserted at their place.</summary>
-    private void Reconcile(List<DestinationRow> rows)
+    /// <summary>Moves the collection to <paramref name="target"/>: gone rows leave (a selected one clears the selection), kept rows move as few as
+    /// <see cref="CalmOrderPlanner.Plan"/> allows, and new rows are inserted at their place. Row instances are kept per address, so row containers,
+    /// the selection, keyboard focus and the scroll offset survive.</summary>
+    private void Reconcile(IReadOnlyList<DestinationRow> target)
     {
-        rows.Sort((a, b) => ConnectionDestinationSort.Compare(a.Value, b.Value, sortKey, sortDescending));
-        kept.Clear(); foreach (var row in rows) kept[row.Key] = row;
-        for (int i = Rows.Count - 1; i >= 0; i--) if (!kept.TryGetValue(Rows[i].Key, out var row) || !ReferenceEquals(row, Rows[i])) Rows.RemoveAt(i);
-        for (int i = 0; i < rows.Count; i++)
-        {
-            int at = Rows.IndexOf(rows[i]);
-            if (at == i) continue;
-            if (at >= 0) Rows.Move(at, i); else Rows.Insert(i, rows[i]);
-        }
+        kept.Clear(); foreach (var row in target) kept[row.Key] = row;
+        var keep = target.ToHashSet();
+        if (Grid.SelectedItem is DestinationRow selected && !keep.Contains(selected)) ClearSelection();
+        for (int i = Rows.Count - 1; i >= 0; i--) if (!keep.Contains(Rows[i])) Rows.RemoveAt(i);
+        foreach (var move in CalmOrderPlanner.Plan([.. Rows.Select(r => r.Key)], [.. target.Select(r => r.Key)])) Rows.Move(move.From, move.To);
+        for (int i = 0; i < target.Count; i++) if (i >= Rows.Count || !ReferenceEquals(Rows[i], target[i])) Rows.Insert(i, target[i]);
     }
 
     /// <summary>Swaps in the mode's columns; the sort stays when its column exists in the new mode and otherwise returns to RECEIVED descending.</summary>
-    private void SetMode(bool history)
+    /// <summary>True when the mode changed: the rows then re-sort and the grid scrolls to its top.</summary>
+    private bool SetMode(bool history)
     {
-        if (this.history == history) return;
-        this.history = history;
+        if (this.history == history) return false;
+        this.history = history; topPending = true;
         var key = ConnectionDestinationSort.InMode(sortKey, history);
         if (key != sortKey) { sortKey = key; sortDescending = true; }
         var wanted = ConnectionDestinationSort.Columns(history).Select(k => columns[k]).ToList();
@@ -311,6 +382,7 @@ internal sealed class DestinationsCard : Border
         foreach (var spec in Specs) columns[spec.Key].HeaderStyle = HeaderStyle(DestinationCopy.HeaderTip(spec.Key, history));
         Footnote.Text = DestinationCopy.Footnote(history);
         ShowSortDirections();
+        return true;
     }
 
     private void ShowSortDirections()
@@ -327,7 +399,7 @@ internal sealed class DestinationsCard : Border
         if (key == sortKey) sortDescending = !sortDescending;
         else { sortKey = key; sortDescending = ConnectionDestinationSort.DescendingFirst(key); }
         ShowSortDirections();
-        Reconcile(Rows.ToList());
+        Reconcile(Sorted(Rows));
     }
 
     /// <summary>The map takes the wheel for zoom, so a wheel the grid cannot use any further that way scrolls the page instead.</summary>

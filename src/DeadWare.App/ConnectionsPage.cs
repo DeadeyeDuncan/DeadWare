@@ -82,6 +82,12 @@ internal sealed class ConnectionsPage : Grid
     private long generation;
     private bool syncing, busy, playing, active, exportInProgress, historyMinuteReady;
     private string? selectedKey;
+    // The Destinations table: the location keys passed to the map's highlight, whether the map may still turn for the current selection,
+    // the whole-interval context its History rows belong to, and the page's monotonic clock for the key hold.
+    private HashSet<(double Latitude, double Longitude)> highlighted = [];
+    private bool turnPending;
+    private ConnectionHistoryQuery? destinationsWhole;
+    private readonly System.Diagnostics.Stopwatch stopwatch = System.Diagnostics.Stopwatch.StartNew();
     // The exact application filter: the key ("" for every application) and the name as given, for display.
     private string applicationFilter = "", applicationName = "";
     private string historyStorage = "";
@@ -146,6 +152,7 @@ internal sealed class ConnectionsPage : Grid
         mappedConnections.ItemContainerStyle = itemStyle;
         var foot = layoutFooter = new StackPanel(); export = Button("Export CSV…", () => _ = ExportAsync()); export.HorizontalAlignment = HorizontalAlignment.Left; foot.Children.Add(export); foot.Children.Add(selection); Grid.SetRow(foot, 4); body.Children.Add(foot);
         destinations = new DestinationsCard(session); Grid.SetRow(destinations, 5); body.Children.Add(destinations);
+        destinations.clockSeconds = () => stopwatch.Elapsed.TotalSeconds; destinations.SelectionChanged += OnDestinationSelectionChanged;
         var settings = layoutSettings = new StackPanel(); var databaseActions = new WrapPanel(); download = Button("Download / update locations", () => _ = UpdateDatabaseAsync()); cancel = Button("Cancel download", () => downloadCancellation?.Cancel()); cancel.IsEnabled = false; databaseActions.Children.Add(download); databaseActions.Children.Add(cancel); databaseActions.Children.Add(progress); settings.Children.Add(databaseActions); settings.Children.Add(database);
         var options = new StackPanel(); var choices = new WrapPanel(); recording.IsChecked = session.Settings.ConnectionsRecording; databaseActions.Children.Add(recording); Named(citySearch, "Search offline home cities"); citySearch.ToolTip = "Search 7,342 offline cities by name or country"; choices.Children.Add(citySearch); Named(home, "Home city"); choices.Children.Add(home); choices.Children.Add(Button("Clear home city", () => home.SelectedIndex = 0)); options.Children.Add(choices); settings.Children.Add(storage);
         options.Children.Add(Ui.Text("Origin and destination geography are approximate; curves are illustrative. The node list follows the nodes visible on the map; the Destinations table lists every destination, including local, special-purpose and unlocated ones. The strip under the map stacks the six applications with the most traffic in the interval, plus Other; its colours identify applications, not direction. Click it to move the minute cursor, or click an application to show only it. Rolling history: 30 days, up to 256 MiB locally. CSV exports the full filtered interval to a new file.", 11, "Muted")); settings.Children.Add(new Expander { Header = "Recording, origin and storage", Content = options }); Grid.SetRow(settings, 6); settings.Children.Insert(0, actionStatus); body.Children.Add(settings);
@@ -159,8 +166,13 @@ internal sealed class ConnectionsPage : Grid
         recording.Checked += (_, _) => SetRecording(true); recording.Unchecked += (_, _) => SetRecording(false); animation.Checked += (_, _) => SetAnimation(true); animation.Unchecked += (_, _) => SetAnimation(false);
         mappedConnections.SelectionChanged += (_, _) => { if (!syncing && mappedConnections.SelectedItem is MapRow row) SelectMapPeer(row.Key); };
         map.PointSelected += SelectMapPeer; map.ViewChanged += RefreshMappedConnections;
-        PreviewKeyDown += (_, e) => { if (e.Key == System.Windows.Input.Key.Escape) { ClearSelection(); e.Handled = true; } }; playback.Tick += (_, _) => AdvancePlayback();
-        Loaded += (_, _) => { active = true; session.Changed += RefreshSession; RefreshSession(); ShowStripAgain(); if (IsHistory) RequestHistory(); }; Unloaded += (_, _) => { active = false; session.Changed -= RefreshSession; CancelHistory(); pendingStrip = null; StopPlayback(); downloadCancellation?.Cancel(); }; IsVisibleChanged += (_, _) => { if (!IsVisible) { CancelHistory(); pendingStrip = null; StopPlayback(); } else if (active) { RefreshSession(); ShowStripAgain(); if (IsHistory) RequestHistory(); } }; RefreshSession();
+        // Esc clears the node and the table selection; F5 re-sorts the Destinations table.
+        PreviewKeyDown += (_, e) =>
+        {
+            if (e.Key == System.Windows.Input.Key.Escape) { ClearSelection(); ClearDestinationSelection(); e.Handled = true; }
+            else if (e.Key == System.Windows.Input.Key.F5) { destinations.Resort(); e.Handled = true; }
+        }; playback.Tick += (_, _) => AdvancePlayback();
+        Loaded += (_, _) => { active = true; session.Changed += RefreshSession; RefreshSession(); ShowStripAgain(); if (IsHistory) RequestHistory(); }; Unloaded += (_, _) => { active = false; session.Changed -= RefreshSession; CancelHistory(); pendingStrip = null; StopPlayback(); downloadCancellation?.Cancel(); destinations.ReleaseHolds(); }; IsVisibleChanged += (_, _) => { if (!IsVisible) { CancelHistory(); pendingStrip = null; StopPlayback(); destinations.ReleaseHolds(); } else if (active) { RefreshSession(); ShowStripAgain(); if (IsHistory) RequestHistory(); } }; RefreshSession();
     }
     protected override Size MeasureOverride(Size availableSize)
     {
@@ -204,7 +216,7 @@ internal sealed class ConnectionsPage : Grid
     private void ChangeMode()
     {
         CancelHistory(); pendingStrip = null; if (!IsHistory) { stripContext = null; stripFailed = null; }
-        displayedHistoryQuery=null; StopPlayback(); ClearSelection(); historical.Visibility = trafficCard.Visibility = IsHistory ? Visibility.Visible : Visibility.Collapsed; range.IsEnabled = IsHistory; UpdateExportEnabled(); if (IsHistory) RequestHistory(); else ApplyLive(live);
+        displayedHistoryQuery=null; destinationsWhole=null; StopPlayback(); ClearSelection(); ClearDestinationSelection(); historical.Visibility = trafficCard.Visibility = IsHistory ? Visibility.Visible : Visibility.Collapsed; range.IsEnabled = IsHistory; UpdateExportEnabled(); if (IsHistory) RequestHistory(); else ShowLiveView(live, true);
     }
     private void SetPreset()
     { int days = range.SelectedIndex switch { 1 => 7, 2 => 30, _ => 1 }; from.Text = DateTime.Today.AddDays(1 - days).ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture); to.Text = DateTime.Today.AddDays(1).ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture); syncing = true; cursor.Value = 0; syncing = false; }
@@ -236,7 +248,7 @@ internal sealed class ConnectionsPage : Grid
         cursorTime.Text = minute.IsChecked == true ? $"{query.From.ToLocalTime():MM-dd HH:mm}" : "Whole interval";
         return query;
     }
-    private void FiltersChanged(bool resetCursor = true) { if (syncing) return; StopPlayback(); ClearSelection(); if (resetCursor) { syncing = true; cursor.Value = 0; syncing = false; } if (IsHistory) RequestHistory(); else ApplyLive(live); }
+    private void FiltersChanged(bool resetCursor = true) { if (syncing) return; StopPlayback(); ClearSelection(); if (resetCursor) { syncing = true; cursor.Value = 0; syncing = false; } if (IsHistory) RequestHistory(); else ShowLiveView(live, true); }
     private void CancelHistory() { generation++; queryCancellation?.Cancel(); queryCancellation?.Dispose(); queryCancellation = null; pending = null; historyMinuteReady=false; UpdateMapAnimation(); }
     private static bool SameHistoryContext(ConnectionHistoryQuery left,ConnectionHistoryQuery right)=>
         left.From==right.From&&left.To==right.To&&left.Direction==right.Direction&&
@@ -250,6 +262,11 @@ internal sealed class ConnectionsPage : Grid
         {
             displayedHistoryQuery=null; rows=[];
             selectedKey=null; map.SetData([],null,true,"Reading saved history…"); RefreshMappedConnections(); summary.Text="History · Reading saved observations…"; summary.ToolTip=null;
+        }
+        // The Destinations rows clear only for a new whole-interval context: a cursor move or a playback step keeps them until the next view.
+        if(query is null || whole is null || !SameContext(whole,destinationsWhole))
+        {
+            destinationsWhole=null;
             destinations.ShowText(query is null ? DestinationCopy.InvalidInterval : DestinationCopy.Reading);
         }
         if(query is null || whole is null){StopPlayback();stripContext=null;trafficStrip.ShowText("Choose a valid interval");UpdateHairline();return;}
@@ -368,16 +385,18 @@ internal sealed class ConnectionsPage : Grid
     private void TogglePlayback() { if (playing) { StopPlayback(); return; } if (!IsHistory || !TryInterval(out _, out _)) return; syncing = true; minute.IsChecked = true; syncing = false; playing = true; play.Content = "Pause"; UpdateMapAnimation(); RequestHistory(); playback.Start(); }
     private void StopPlayback() { playing = false; playback.Stop(); play.Content = "Play"; UpdateMapAnimation(); }
     private void AdvancePlayback() { if (!playing || !IsHistory) { StopPlayback(); return; } if (busy || pending is not null) return; if (cursor.Value >= cursor.Maximum) { StopPlayback(); return; } syncing = true; cursor.Value++; syncing = false; RequestHistory(); }
-    internal void ApplyLive(ConnectionLiveView view)
+    internal void ApplyLive(ConnectionLiveView view) => ShowLiveView(view, false);
+    /// <summary>Shows a Live view; <paramref name="resort"/>: a filter or mode change, so the Destinations table re-sorts at once.</summary>
+    private void ShowLiveView(ConnectionLiveView view, bool resort)
     {
         live = view; var filtered = view.Connections.Where(c => Matches(c.Traffic.Peer.Process, c.Traffic.Peer.RemoteAddress, c.Location, c.Traffic.ReceivedBytes, c.Traffic.SentBytes)).ToArray();
         rows = filtered.Where(c => c.Location?.Point is not null).Select(c => new PeerRow(Key(c.Traffic.Peer), $"{c.Traffic.Peer.Process.Name} / {c.Traffic.Peer.Process.Pid}", Endpoint(c.Traffic.Peer.RemoteAddress,c.Traffic.Peer.RemotePort,c.Traffic.Peer.Protocol), Location(c.Traffic.Peer.RemoteAddress, c.Location), Ui.Bytes(view.Available ? c.Traffic.DownloadBytesPerSecond : null, true), Ui.Bytes(view.Available ? c.Traffic.UploadBytesPerSecond : null, true), Ui.Bytes(c.Traffic.ReceivedBytes), Ui.Bytes(c.Traffic.SentBytes), view.Complete ? "Observed" : "Incomplete", $"First {c.Traffic.FirstSeen.ToLocalTime():g} · Last {c.Traffic.LastSeen.ToLocalTime():g}", c.Location?.Point, view.Origin, c.Traffic.ReceivedBytes, c.Traffic.SentBytes)).ToArray();
         long received = 0, sent = 0; foreach (var item in filtered) { received = Add(received, item.Traffic.ReceivedBytes); sent = Add(sent, item.Traffic.SentBytes); }
         // The summary counts the table's list, built from the same filtered array, so the two never disagree.
-        destinations.ShowLive(view, filtered, LiveFiltersSet(), hasLocationDatabase()); var counts = destinations.List!.Counts;
+        destinations.ShowLive(view, filtered, LiveFiltersSet(), hasLocationDatabase(), resort); var counts = destinations.List!.Counts;
         summary.Text = $"Live · {counts.All} destinations · {filtered.Select(c=>c.Location?.CountryCode).Where(c=>!string.IsNullOrEmpty(c)).Distinct(StringComparer.OrdinalIgnoreCase).Count()} countries · {counts.Local} local · {counts.Unlocated} unlocated · ↓ {Ui.Bytes(received)} received / ↑ {Ui.Bytes(sent)} sent (totals for active peers since first observed)"; summary.ToolTip = null; capture.Text = $"{view.Status}{(!view.Complete ? " · Incomplete capture" : "")} · Current observed rates; geography approximate; curves illustrative.";
         map.SetData(filtered.Where(c => c.Location?.Point is not null).Select(c => new ConnectionMapPoint(Key(c.Traffic.Peer), c.Location!.Point!, c.Traffic.ReceivedBytes, c.Traffic.SentBytes, selectedKey == Key(c.Traffic.Peer),view.Available&&c.Traffic.DownloadBytesPerSecond>0,view.Available&&c.Traffic.UploadBytesPerSecond>0,
-            Label: c.Traffic.Peer.Process.Name, Detail: $"{Location(c.Traffic.Peer.RemoteAddress, c.Location)} · ↓ {Ui.Bytes(view.Available ? c.Traffic.DownloadBytesPerSecond : null, true)} · ↑ {Ui.Bytes(view.Available ? c.Traffic.UploadBytesPerSecond : null, true)}")).ToArray(), view.Origin, view.Available, view.Status); UpdateMapAnimation(); RefreshMappedConnections(); UpdateExportEnabled(); range.IsEnabled = IsHistory;
+            Label: c.Traffic.Peer.Process.Name, Detail: $"{Location(c.Traffic.Peer.RemoteAddress, c.Location)} · ↓ {Ui.Bytes(view.Available ? c.Traffic.DownloadBytesPerSecond : null, true)} · ↑ {Ui.Bytes(view.Available ? c.Traffic.UploadBytesPerSecond : null, true)}")).ToArray(), view.Origin, view.Available, view.Status); UpdateDestinationHighlight(); UpdateMapAnimation(); RefreshMappedConnections(); UpdateExportEnabled(); range.IsEnabled = IsHistory;
     }
     internal void ApplyHistory(ConnectionHistoryView view)
     {
@@ -388,7 +407,7 @@ internal sealed class ConnectionsPage : Grid
         summary.Text = view.Strip is null ? UnavailableSummary : $"History · minute-bucket average rates · {s.Destinations} destinations · {s.Countries} countries · {s.Local} local · {s.Unlocated} unlocated · ↓ {Ui.Bytes(s.ReceivedBytes)} received / ↑ {Ui.Bytes(s.SentBytes)} sent"; summary.ToolTip = view.Strip is null ? "History unavailable" : null;
         // A minute read never touches the strip; with the cursor off the one read carries it.
         if (minute.IsChecked != true) ApplyStrip(view.Query, view.Strip);
-        destinations.ShowHistory(view.Destinations, minute.IsChecked == true, FiltersSet(view.Query));
+        destinations.ShowHistory(view.Destinations, minute.IsChecked == true, FiltersSet(view.Query)); destinationsWhole = requestedWhole;
         capture.Text = $"{view.Query.From.ToLocalTime():g} – {view.Query.To.ToLocalTime():g} (exclusive) · {view.Gaps.Count} gaps · {view.Status}"+(view.OmittedMarkers>0?$" · {view.OmittedMarkers:N0} grouped locations omitted from map":""); historyStorage = $"{Ui.Bytes(view.StorageBytes)} stored · Earliest {(view.EarliestRetainedTime is { } earliest ? earliest.ToLocalTime().ToString("g") : "none")} · rolling 30 days / 256 MiB. "; storage.Text = historyStorage + session.Connections?.StorageStatus;
         map.SetData(view.Markers.Where(m => m.Location.Point is not null).Select(m =>
         {
@@ -396,7 +415,7 @@ internal sealed class ConnectionsPage : Grid
             return new ConnectionMapPoint(representative is not null ? Key(representative) : "saved:" + JsonSerializer.Serialize(new { m.Location, m.Origin }), m.Location.Point!, m.ReceivedBytes, m.SentBytes, selectedKey == (m.Representative is not null ? Key(m.Representative) : null),
                 Label: representative?.Process.Name, Detail: representative is null ? null : $"{Location(representative.RemoteAddress, representative.Location)} · ↓ {Ui.Bytes(representative.DownloadBytesPerSecond, true)} · ↑ {Ui.Bytes(representative.UploadBytesPerSecond, true)}");
         }).ToArray(), CommonOrigin(view.Markers), true, "Saved approximate geography · illustrative curves"+(view.OmittedMarkers>0?$" · +{view.OmittedMarkers:N0} grouped locations omitted":""));
-        UpdateMapAnimation(); RefreshMappedConnections(); UpdateExportEnabled(); range.IsEnabled = IsHistory;
+        UpdateDestinationHighlight(); UpdateMapAnimation(); RefreshMappedConnections(); UpdateExportEnabled(); range.IsEnabled = IsHistory;
     }
     /// <summary>Search, country, direction or the application filter is set.</summary>
     private bool LiveFiltersSet() => search.Text.Trim().Length > 0 || !string.IsNullOrWhiteSpace(country.Text) || direction.SelectedItem is ConnectionDirection value && value != ConnectionDirection.Both || applicationFilter.Length > 0;
@@ -414,9 +433,46 @@ internal sealed class ConnectionsPage : Grid
     {
         if(IsHistory&&displayedHistoryQuery is null || map.PointPosition(key) is null)return;
         if(!rows.Any(r=>r.Key==key))return;
+        // Only a real node selection clears the table selection and its highlight.
+        ClearDestinationSelection();
         selectedKey=key;
         map.SelectPoint(key);
         RefreshMappedConnections();
+    }
+    /// <summary>Clears the Destinations selection, the map highlight and the status line.</summary>
+    private void ClearDestinationSelection()
+    {
+        destinations.ClearSelection();
+        UpdateDestinationHighlight();
+    }
+    /// <summary>Selecting a row clears the node selection and its detail box, then highlights the row's points; the map may turn once for it.</summary>
+    private void OnDestinationSelectionChanged()
+    {
+        if (destinations.Selected is not null) { ClearSelection(); turnPending = true; }
+        UpdateDestinationHighlight();
+    }
+    /// <summary>Passes the selected row's current points to the map's highlight, turns the map once per selection when no highlighted node is in view,
+    /// and sets the status line. Runs after every update, so a finished lookup or a new minute shows at once; only a selection turns the map.</summary>
+    private void UpdateDestinationHighlight()
+    {
+        var selected = destinations.Selected;
+        IReadOnlyList<GeoPoint> points = selected?.Points ?? [];
+        var keys = points.Where(ConnectionProjection.IsValid).Select(ConnectionProjection.LocationKey).ToHashSet();
+        if (!keys.SetEquals(highlighted))
+        {
+            highlighted = keys; map.Highlight(keys.Count == 0 ? null : [.. points]);
+            // With more than 256 groups the displayed nodes can change.
+            RefreshMappedConnections();
+        }
+        if (selected is null) { turnPending = false; destinations.SetStatus(""); return; }
+        var nodes = map.DisplayedPoints.Where(p => map.HighlightedKeys.Contains(p.Key)).ToList();
+        if (turnPending)
+        {
+            turnPending = false;
+            if (nodes.Count > 0 && nodes.All(p => map.PointPosition(p.Key) is null))
+                map.SetView(nodes.MaxBy(p => (double)p.ReceivedBytes + p.SentBytes)!.Point, map.Camera.Zoom);
+        }
+        destinations.SetStatus(nodes.Count > 0 ? DestinationCopy.Highlighted(nodes.Count) : keys.Count > 0 ? DestinationCopy.NotAmongDrawn : DestinationCopy.NotOnMap(selected.Class.Kind));
     }
     private void RefreshMappedConnections()
     {
