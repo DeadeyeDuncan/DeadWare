@@ -4,6 +4,7 @@ using System.Globalization;
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Data;
 using System.Windows.Input;
 using System.Windows.Media;
@@ -13,7 +14,7 @@ using DeadWare.Core;
 
 namespace DeadWare.App;
 
-/// <summary>Usage history's Application resources card: the busiest apps' saved CPU, memory and I/O for the page's period, from
+/// <summary>Usage history's Application resources card: the busiest apps' saved CPU, memory, I/O and GPU for the page's period, from
 /// process-history.db, or for one Device-chart slot while <see cref="ShowSlot"/> holds it. Reads run off the UI thread through
 /// <see cref="ProcessHistoryService"/> and only the latest request is shown; the search filters the rows already read, and Rank by and
 /// row changes wait a moment so stepping through them starts one read. <see cref="UiSession.ProcessHistory"/> may be null in fixtures.</summary>
@@ -29,21 +30,33 @@ internal sealed class ApplicationResourcesCard : StackPanel
         public string CpuTime { get; private set; } = "";
         public string AverageCpu { get; private set; } = "";
         public string AverageMemory { get; private set; } = "";
+        public string AverageGpu { get; private set; } = "";
+        public string AverageGpuMemory { get; private set; } = "";
+        /// <summary>The GPU cells' tooltips: the reason for a "—", and Everything else's note on a shown Avg GPU; null otherwise.</summary>
+        public string? AverageGpuTip { get; private set; }
+        public string? AverageGpuMemoryTip { get; private set; }
         public string IoRead { get; private set; } = "";
         public string IoWritten { get; private set; } = "";
         public string MinutesListed { get; private set; } = "";
         public event PropertyChangedEventHandler? PropertyChanged;
 
-        /// <summary>Shows <paramref name="row"/>'s numbers, raising <see cref="PropertyChanged"/> only when a cell changed.</summary>
-        internal ResourceRow Update(ProcessResourceRow row)
+        /// <summary>Shows <paramref name="row"/>'s numbers, raising <see cref="PropertyChanged"/> only when a cell or a GPU tooltip changed.
+        /// <paramref name="gpuCovered"/> is the view's GPU-covered seconds, which name the reason for a GPU "—".</summary>
+        internal ResourceRow Update(ProcessResourceRow row, double gpuCovered)
         {
-            var cells = (Duration(row.CpuSeconds), row.AverageCpuPercent.ToString("0.#", CultureInfo.CurrentCulture) + " %", Ui.Bytes(row.AverageMemoryBytes),
-                Ui.Bytes(row.IoRead), Ui.Bytes(row.IoWritten), row.MinutesListed.ToString("N0", CultureInfo.CurrentCulture));
-            if (cells == (CpuTime, AverageCpu, AverageMemory, IoRead, IoWritten, MinutesListed)) return this;
-            (CpuTime, AverageCpu, AverageMemory, IoRead, IoWritten, MinutesListed) = cells;
+            string missing = gpuCovered > 0 ? "No GPU data in the minutes this app was listed" : "No GPU data in this range";
+            // Everything else's GPU is a sum over many apps, shown unclamped.
+            string? gpuTip = row.AverageGpuPercent is null ? missing : row.EverythingElse ? "Sum over many apps; can exceed 100 %" : null;
+            // A tooltip can change while its cell does not (a "—" whose range gained GPU time), so the tooltips are cells here too.
+            var cells = (Duration(row.CpuSeconds), Percent(row.AverageCpuPercent), Ui.Bytes(row.AverageMemoryBytes),
+                row.AverageGpuPercent is { } gpu ? Percent(gpu) : "—", gpuTip, row.AverageGpuMemoryBytes is { } bytes ? Ui.Bytes(bytes) : "—",
+                row.AverageGpuMemoryBytes is null ? missing : null, Ui.Bytes(row.IoRead), Ui.Bytes(row.IoWritten), row.MinutesListed.ToString("N0", CultureInfo.CurrentCulture));
+            if (cells == (CpuTime, AverageCpu, AverageMemory, AverageGpu, AverageGpuTip, AverageGpuMemory, AverageGpuMemoryTip, IoRead, IoWritten, MinutesListed)) return this;
+            (CpuTime, AverageCpu, AverageMemory, AverageGpu, AverageGpuTip, AverageGpuMemory, AverageGpuMemoryTip, IoRead, IoWritten, MinutesListed) = cells;
             PropertyChanged?.Invoke(this, new(string.Empty));
             return this;
         }
+        private static string Percent(double value) => value.ToString("0.#", CultureInfo.CurrentCulture) + " %";
 
         // A row's automation name falls back to ToString().
         public override string ToString() => Name;
@@ -67,10 +80,15 @@ internal sealed class ApplicationResourcesCard : StackPanel
     private readonly TextBlock chartHint = Ui.Text("", 11, "Muted"), chartTitle = Ui.Text("", 13, "Heading", "HeadingFont");
     private readonly TextBlock status = Ui.Text("", 11, "Muted"), storage = Ui.Text("", 11, "Muted");
     private readonly StackPanel chart = new() { Visibility = Visibility.Collapsed };
+    // Avg GPU and Avg GPU memory while listed, whose header tooltips give the shown view's GPU-covered time.
+    private readonly DataGridColumn[] gpuColumns;
+    private string? gpuHeaderTip;
     private readonly DispatcherTimer rankDelay = new() { Interval = Settle }, seriesDelay = new() { Interval = Settle };
     private (DateTimeOffset From, DateTimeOffset To)? period;
     // The Device-chart slot asked for, and the one the shown view was read for; null means the period.
     private (DateTimeOffset From, DateTimeOffset To)? slot, shownSlot;
+    // True while the slot asked for, and the one the shown view was read for, came from the GPU chart, which lists it ranked by GPU (see NoGpuData).
+    private bool slotFromGpu, shownFromGpu;
     private (string App, ProcessRank Rank, DateTimeOffset From, DateTimeOffset To)? charted;
     // The CPU chart's point count, so the selected app's series has the Device charts' bucket grid; 600 until the page says.
     private int points = 600;
@@ -91,7 +109,8 @@ internal sealed class ApplicationResourcesCard : StackPanel
         Children.Add(Ui.Row(heading, clear));
         var controls = new WrapPanel { Margin = new(0, 8, 0, 4) };
         var rankLabel = Ui.Text("Rank by", 12, "Muted"); rankLabel.Margin = new(0, 0, 8, 0); controls.Children.Add(rankLabel);
-        rank.ItemsSource = new[] { new RankChoice("CPU time", ProcessRank.CpuTime), new("Average memory", ProcessRank.AverageMemory), new("I/O", ProcessRank.Io) };
+        rank.ItemsSource = new[] { new RankChoice("CPU time", ProcessRank.CpuTime), new("Average memory", ProcessRank.AverageMemory), new("I/O", ProcessRank.Io),
+            new("GPU", ProcessRank.Gpu) };
         rank.SelectedIndex = 0; AutomationProperties.SetName(rank, "Rank application resources by"); controls.Children.Add(rank);
         var searchLabel = Ui.Text("Find application", 12, "Muted"); searchLabel.Margin = new(20, 0, 12, 0); controls.Children.Add(searchLabel);
         AutomationProperties.SetName(search, "Find application in application resources"); controls.Children.Add(search);
@@ -100,12 +119,14 @@ internal sealed class ApplicationResourcesCard : StackPanel
         Children.Add(summary); Note(retention, ""); Children.Add(retention); gapNotice.Margin = new(0, 4, 0, 4); Note(gapNotice, ""); Children.Add(gapNotice);
         Column("Application", nameof(ResourceRow.Name), 2.4); Column("CPU time", nameof(ResourceRow.CpuTime), 1.1);
         Column("Avg CPU", nameof(ResourceRow.AverageCpu), 0.9); Column("Avg memory while listed", nameof(ResourceRow.AverageMemory), 1.5);
+        gpuColumns = [Column("Avg GPU", nameof(ResourceRow.AverageGpu), 0.9, nameof(ResourceRow.AverageGpuTip)),
+            Column("Avg GPU memory while listed", nameof(ResourceRow.AverageGpuMemory), 1.7, nameof(ResourceRow.AverageGpuMemoryTip))];
         Column("I/O read", nameof(ResourceRow.IoRead), 1); Column("I/O written", nameof(ResourceRow.IoWritten), 1); Column("Minutes listed", nameof(ResourceRow.MinutesListed), 1);
         AutomationProperties.SetName(table, "Application resources"); table.ItemsSource = rows;
         frame = Ui.Panel(table, new Thickness(0)); frame.Margin = new(0, 6, 0, 8); Children.Add(frame);
         Note(chartHint, ""); Children.Add(chartHint);
         chart.Children.Add(chartTitle); chart.Children.Add(Chart); Children.Add(chart);
-        Children.Add(Ui.Text("CPU time, I/O read and I/O written are summed over the minutes each application was listed. Avg CPU is its share of all logical processors across every recorded minute; Avg memory while listed averages its private working set over the minutes it was listed. Each minute lists up to 30 of the busiest applications by CPU, memory and I/O; Everything else holds the rest of the apps the scan saw. Usage after the last scan that saw a process is not counted, nor is a process that starts and exits between scans.", 11, "Muted"));
+        Children.Add(Ui.Text("CPU time, I/O read and I/O written are summed over the minutes each application was listed. Avg CPU is its share of all logical processors across every recorded minute; Avg memory while listed averages its private working set over the minutes it was listed. Avg GPU is its busiest GPU engine's share of the time GPU data was recorded; Avg GPU memory while listed averages its dedicated GPU memory over the minutes it was listed with GPU data. Each minute lists up to 40 of the busiest applications by CPU, memory, I/O and GPU; Everything else holds the rest. Usage after the last scan that saw a process is not counted, nor is a process that starts and exits between scans.", 11, "Muted"));
         status.Margin = new(0, 8, 0, 0); Children.Add(status); Children.Add(storage);
         rank.SelectionChanged += (_, _) => RankChanged();
         rankDelay.Tick += (_, _) => { rankDelay.Stop(); _ = ReloadAsync(); };
@@ -149,10 +170,11 @@ internal sealed class ApplicationResourcesCard : StackPanel
     internal event Action? SlotCleared;
 
     /// <summary>Lists the busiest apps whose minutes start in [<paramref name="slotStart"/>, <paramref name="slotEnd"/>), ranked by
-    /// <paramref name="ranking"/>, until <see cref="ClearSlot"/>. The slot is read at once; while it is shown the page's refresh reads it again.</summary>
+    /// <paramref name="ranking"/>, until <see cref="ClearSlot"/>. The slot is read at once; while it is shown the page's refresh reads it again.
+    /// A slot ranked by GPU is the GPU chart's: while ranked by GPU, recorded minutes without GPU data say so in place of the table.</summary>
     internal void ShowSlot(DateTimeOffset slotStart, DateTimeOffset slotEnd, ProcessRank ranking)
     {
-        slot = (slotStart, slotEnd);
+        slot = (slotStart, slotEnd); slotFromGpu = ranking == ProcessRank.Gpu;
         // Until the read returns the heading names every minute that starts in the slot.
         heading.Text = SlotHeading(CeilingMinute(slotStart), CeilingMinute(slotEnd), WithDate); clear.Visibility = Visibility.Visible;
         // A new Rank by switches the selected app's chart at once; the slot does not wait for Rank by to settle.
@@ -171,7 +193,7 @@ internal sealed class ApplicationResourcesCard : StackPanel
         var scope = FocusManager.GetFocusScope(clear);
         if ((clear.IsKeyboardFocused || ReferenceEquals(FocusManager.GetFocusedElement(scope), clear)) && !rank.Focus())
             FocusManager.SetFocusedElement(scope, rank);
-        slot = null; heading.Text = Title; clear.Visibility = Visibility.Collapsed;
+        slot = null; slotFromGpu = false; heading.Text = Title; clear.Visibility = Visibility.Collapsed;
         SlotCleared?.Invoke();
         if (listed) ReadWhenSettled();
     }
@@ -232,6 +254,7 @@ internal sealed class ApplicationResourcesCard : StackPanel
         finally { syncing = false; }
         shareBar.Children.Clear(); shareBar.ColumnDefinitions.Clear(); shareBar.Visibility = Visibility.Collapsed;
         Note(retention, ""); Note(gapNotice, ""); storage.Text = ""; frame.Visibility = Visibility.Visible;
+        GpuHeaderTips(null);
         ShowSeries();
     }
     /// <summary>True when the view on screen already answers the request: the same slot, or the period a minute refresh moved slightly.</summary>
@@ -245,7 +268,7 @@ internal sealed class ApplicationResourcesCard : StackPanel
         // Another slot, Rank by or period is a new ranking, so the table starts at its top and its busiest apps show; the minute refresh
         // shows the same one again and keeps the scroll offset with the row, the current cell and the focus.
         bool newRanking = !Shows(view.From, view.To, Rank);
-        View = view; shownRank = Rank; shownSlot = slot; pending = null;
+        View = view; shownRank = Rank; shownSlot = slot; shownFromGpu = slotFromGpu; pending = null;
         // The heading names the minutes listed, from the first one's start to the last one's end.
         if (shownSlot is { } listed)
             heading.Text = view is { FirstMinute: { } first, LastMinuteEnd: { } end } ? SlotHeading(first, end, WithDate)
@@ -259,6 +282,7 @@ internal sealed class ApplicationResourcesCard : StackPanel
         long gaps = shownSlot is null ? ElapsedMinutes(view.From > retainedFrom ? view.From : retainedFrom, view.To, now - SaveDelay) - view.RecordedMinutes : 0;
         Note(gapNotice, gaps > 0 ? $"{gaps:N0} minutes in this period have no process data (monitoring off, DeadWare not running, or a capture gap)." : "");
         storage.Text = $"process-history.db · {Ui.Bytes(view.StorageBytes)}";
+        GpuHeaderTips($"GPU recorded for {Duration(view.GpuCoveredSeconds)} of this range");
         RefreshRows();
         if (newRanking) FirstScroller(table)?.ScrollToTop();
         ShowSeries();
@@ -296,6 +320,21 @@ internal sealed class ApplicationResourcesCard : StackPanel
         return time.TotalHours >= 1 ? $"{(long)time.TotalHours:N0} h {time.Minutes} min" : $"{time.Minutes} min {time.Seconds} s";
     }
 
+    /// <summary>Gives the two GPU columns' headers <paramref name="tip"/> (none when null). A header style based on the theme's carries it,
+    /// so those headers keep the theme's padding and captions, and each Header stays its title.</summary>
+    private void GpuHeaderTips(string? tip)
+    {
+        if (tip == gpuHeaderTip) return;
+        gpuHeaderTip = tip;
+        Style? header = null;
+        if (tip is not null)
+        {
+            header = new Style(typeof(DataGridColumnHeader), TryFindResource(typeof(DataGridColumnHeader)) as Style);
+            header.Setters.Add(new Setter(ToolTipProperty, tip));
+        }
+        foreach (var column in gpuColumns) column.HeaderStyle = header;
+    }
+
     private void RefreshRows()
     {
         if (View is not { } view) return;
@@ -314,7 +353,7 @@ internal sealed class ApplicationResourcesCard : StackPanel
             // Each listed application keeps its row and only its numbers change. A name whose casing changed (its old minutes expired)
             // gets a new row, so the old casing is never shown. No two rows share a key (see Key).
             var current = rows.ToDictionary(r => r.Key, StringComparer.Ordinal);
-            var target = listed.Select(r => (current.GetValueOrDefault(Key(r)) ?? new ResourceRow(Key(r), r.Name)).Update(r)).ToList();
+            var target = listed.Select(r => (current.GetValueOrDefault(Key(r)) ?? new ResourceRow(Key(r), r.Name)).Update(r, view.GpuCoveredSeconds)).ToList();
             // As on the Processes page: gone rows leave, kept rows move as few as the planner allows, and new rows go in at their place.
             var keep = target.ToHashSet();
             for (int i = rows.Count - 1; i >= 0; i--) if (!keep.Contains(rows[i])) rows.RemoveAt(i);
@@ -323,21 +362,29 @@ internal sealed class ApplicationResourcesCard : StackPanel
             table.SelectedItem = rows.FirstOrDefault(r => r.Name.Equals(SelectedApp, StringComparison.OrdinalIgnoreCase));
         }
         finally { syncing = false; }
-        // A slot without process data (monitoring was off) says so instead of showing an empty table.
-        bool emptySlot = shownSlot is not null && view.RecordedMinutes == 0;
+        // A slot without process data (monitoring was off) says so instead of showing an empty table, and so does a GPU chart slot without
+        // GPU data.
+        bool emptySlot = shownSlot is not null && view.RecordedMinutes == 0, noGpu = NoGpuData(view);
         // A period that starts before the retention cutoff says its earlier minutes are not kept; wholly before it, that is the summary.
         bool expired = shownSlot is null && view.RecordedMinutes == 0 && view.To <= retainedFrom;
         Note(retention, shownSlot is null && view.From < retainedFrom && !expired ? NotKept : "");
         // The read returns the top rows; the period may hold more applications than that.
         bool more = view.ApplicationCount > view.Rows.Count;
-        frame.Visibility = emptySlot ? Visibility.Collapsed : Visibility.Visible;
+        frame.Visibility = emptySlot || noGpu ? Visibility.Collapsed : Visibility.Visible;
         summary.Text = pending ?? (emptySlot ? "No process data in this span."
+            : noGpu ? "No GPU data in this span."
             : expired ? NotKept
             : view.RecordedMinutes == 0 ? "No application resources were recorded in this period."
             : query.Length > 0 ? $"{listed.Count - 1:N0} of {(more ? "the top " : "")}{view.Rows.Count:N0} applications match."
             : $"{(more ? $"Top {view.Rows.Count:N0} of {view.ApplicationCount:N0}" : $"{view.Rows.Count:N0}")} applications · {view.RecordedMinutes:N0} recorded minutes");
         DrawShares(view, listed);
     }
+
+    /// <summary>True when the shown slot was listed from the GPU chart and is ranked by GPU, and its recorded minutes hold no GPU-covered time
+    /// (minutes saved before the upgrade, or without GPU counters). A slot listed from the CPU or RAM chart and then ranked by GPU shows its
+    /// table, with "—" in the GPU columns.</summary>
+    private bool NoGpuData(ProcessResourceView view)
+        => shownFromGpu && shownSlot is not null && shownRank == ProcessRank.Gpu && view.RecordedMinutes > 0 && view.GpuCoveredSeconds == 0;
 
     private void DrawShares(ProcessResourceView view, IReadOnlyList<ProcessResourceRow> listed)
     {
@@ -373,7 +420,8 @@ internal sealed class ApplicationResourcesCard : StackPanel
         if (SelectedApp is not { } app || view is null)
         {
             charted = null; seriesRequest++; seriesDelay.Stop(); chart.Visibility = Visibility.Collapsed;
-            Note(chartHint, view is { RecordedMinutes: > 0 } ? "Select an application to chart it over this period." : "");
+            // A slot without process data, or a GPU chart slot without GPU data, shows no table to select from.
+            Note(chartHint, view is { RecordedMinutes: > 0 } && !NoGpuData(view) ? "Select an application to chart it over this period." : "");
             return;
         }
         Note(chartHint, ""); chart.Visibility = Visibility.Visible;
@@ -382,7 +430,7 @@ internal sealed class ApplicationResourcesCard : StackPanel
         if (charted == (app, metric, from, to)) return;
         bool redraw = charted is not { } shown || shown.App != app || shown.Rank != metric;
         charted = (app, metric, from, to); seriesRequest++;
-        var (unit, maximum, title, label, _) = Metric(metric);
+        var (unit, maximum, title, label, _) = Metric(metric, app);
         chartTitle.Text = $"{app} · {title}";
         // A new app or metric shows an empty plot in its unit until the read returns, never the previous metric on the wrong scale;
         // a new period for the same series keeps the old line until then, so the page's minute refresh does not flicker.
@@ -401,7 +449,7 @@ internal sealed class ApplicationResourcesCard : StackPanel
         try { history = await service.TryReadSeriesAsync(app, metric, from, to, points); }
         catch (ArgumentException) { history = null; }
         if (current != seriesRequest) return;
-        var (unit, maximum, title, label, color) = Metric(metric);
+        var (unit, maximum, title, label, color) = Metric(metric, app);
         if (history is null)
         {
             // Reported like the ranking: an empty plot under a title that says so, and the service status says why.
@@ -411,10 +459,13 @@ internal sealed class ApplicationResourcesCard : StackPanel
         }
         Chart.SetData([new UsageTrace(history, color, false, $"{app} {label}")], unit, maximum);
     }
-    private static (string Unit, double? Maximum, string Title, string Label, string Color) Metric(ProcessRank metric) => metric switch
+    /// <summary>The chart for <paramref name="metric"/>; <paramref name="app"/> is the charted application.</summary>
+    private static (string Unit, double? Maximum, string Title, string Label, string Color) Metric(ProcessRank metric, string app) => metric switch
     {
         ProcessRank.CpuTime => ("%", 100, "CPU % of all logical processors", "CPU", Theme.GraphKey("cpu")),
         ProcessRank.AverageMemory => ("B", null, "memory (private working set)", "memory", Theme.GraphKey("memory")),
+        // Everything else's GPU is a sum over many apps and can exceed 100 %, so its scale is automatic.
+        ProcessRank.Gpu => ("%", app == ProcessHistory.EverythingElse ? null : 100, "GPU % of the busiest engine", "GPU", Theme.GraphKey("gpu")),
         _ => ("B/s", null, "I/O read + written per second", "I/O", Theme.GraphKey("diskread")),
     };
 
@@ -422,7 +473,19 @@ internal sealed class ApplicationResourcesCard : StackPanel
     /// characters (every version of the store rejects them), so no app's name is "\0"; and the store keeps one name per <c>upper</c>, its
     /// display fixed when first saved, and ranks one row per name, so no two apps' names are equal.</summary>
     private static string Key(ProcessResourceRow row) => row.EverythingElse ? "\0" : row.Name;
-    private void Column(string title, string binding, double weight)
-        => table.Columns.Add(new DataGridTextColumn { Header = title, Binding = new Binding(binding), Width = new DataGridLength(weight, DataGridLengthUnitType.Star) });
+    /// <summary>Adds a column. With <paramref name="tip"/>, its cells take their tooltip from that row property, through a cell style based on
+    /// the theme's, so they keep its padding and selection colours.</summary>
+    private DataGridColumn Column(string title, string binding, double weight, string? tip = null)
+    {
+        var column = new DataGridTextColumn { Header = title, Binding = new Binding(binding), Width = new DataGridLength(weight, DataGridLengthUnitType.Star) };
+        if (tip is not null)
+        {
+            var cell = new Style(typeof(DataGridCell), TryFindResource(typeof(DataGridCell)) as Style);
+            cell.Setters.Add(new Setter(ToolTipProperty, new Binding(tip)));
+            column.CellStyle = cell;
+        }
+        table.Columns.Add(column);
+        return column;
+    }
     private static void Note(TextBlock note, string text) { note.Text = text; note.Visibility = text.Length == 0 ? Visibility.Collapsed : Visibility.Visible; }
 }

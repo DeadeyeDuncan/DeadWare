@@ -9,7 +9,8 @@ public sealed class ProcessActivityTracker(int processorCount)
     ProcessScan? previous;
     public int TrackedCount=>baselines.Count;
     public void Reset(){baselines=new();previous=null;}
-    public TrackedScan Update(ProcessScan scan)
+    /// <param name="gpu">The GPU counter read to join (<see cref="GpuProcessJoin"/>), or null when none has completed.</param>
+    public TrackedScan Update(ProcessScan scan,GpuCounterRead? gpu=null)
     {
         double? dt=null;
         if(previous is not null)
@@ -46,11 +47,14 @@ public sealed class ProcessActivityTracker(int processorCount)
         }
         baselines=next;
         previous=scan;
+        // Every sample, before the cut, so omitted processes carry their GPU values into the sums.
+        var gpuJoin=GpuProcessJoin.Join(samples,gpu);
+        var joined=gpuJoin.Processes;
         var omitted=ProcessOmitted.None;
-        IReadOnlyList<ProcessSample> published=samples;
-        if(samples.Count>MaximumPublished)
+        var published=joined;
+        if(joined.Count>MaximumPublished)
         {
-            var ranked=samples.OrderByDescending(s=>s.CpuPercent??0).ThenByDescending(s=>(s.IoReadPerSecond??0)+(s.IoWritePerSecond??0))
+            var ranked=joined.OrderByDescending(s=>s.CpuPercent??0).ThenByDescending(s=>(s.IoReadPerSecond??0)+(s.IoWritePerSecond??0))
                 .ThenByDescending(s=>s.PrivateBytes).ThenBy(s=>s.Pid).ToList();
             published=ranked.GetRange(0,MaximumPublished);
             var rest=ranked.GetRange(MaximumPublished,ranked.Count-MaximumPublished);
@@ -59,6 +63,6 @@ public sealed class ProcessActivityTracker(int processorCount)
             foreach(var s in rest)if(s.Deltas is not null)sum=sum.Add(s.Deltas);
             omitted=new ProcessOmitted(rest.Count,rest.Sum(s=>s.PrivateBytes),sum with{Seconds=dt??0});
         }
-        return new TrackedScan(scan,published,omitted,dt,samples.Count,index);
+        return new TrackedScan(scan,published,omitted,dt,samples.Count,index){Gpu=gpuJoin.State,GpuIntervalSeconds=gpuJoin.IntervalSeconds};
     }
 }

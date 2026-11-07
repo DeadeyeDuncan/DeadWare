@@ -43,7 +43,7 @@ public sealed class ProcessMeasurementTests
         MeasurementRecorder.Write("scan-timing",new{elevated=true,scans=Scans,p50Ms=Percentile(milliseconds,0.50),p95Ms=Percentile(milliseconds,0.95),bufferBytes=last?.BufferBytes,processes=last?.Processes.Count,threads=last?.Threads,failures});
     }
     // Nearest rank in an ascending array, in milliseconds to the microsecond.
-    private static double Percentile(double[] sorted,double fraction)=>Math.Round(sorted[Math.Clamp((int)Math.Ceiling(fraction*sorted.Length)-1,0,sorted.Length-1)],3);
+    internal static double Percentile(double[] sorted,double fraction)=>Math.Round(sorted[Math.Clamp((int)Math.Ceiling(fraction*sorted.Length)-1,0,sorted.Length-1)],3);
 
     [GitHubWindowsFact] public async Task Disk_attribution_and_event_loss()
     {

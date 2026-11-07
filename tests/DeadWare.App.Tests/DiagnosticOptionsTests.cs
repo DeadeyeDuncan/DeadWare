@@ -43,6 +43,15 @@ public class DiagnosticOptionsTests : IAsyncLifetime
         Assert.Equal(2,s.GetProperty("NetworkApplications").GetInt32());
         Assert.Equal("Available",s.GetProperty("ProcessSummary").GetProperty("State").GetString());Assert.Equal(2,s.GetProperty("ProcessSummary").GetProperty("Processes").GetInt32());
         Assert.Equal("Completed",doc.RootElement.GetProperty("Status").GetString());Assert.Equal(3,doc.RootElement.GetProperty("ShutdownDeadlineSeconds").GetInt32());}
+    [Fact] public void Diagnostic_report_has_the_gpu_summary_and_no_names_or_adapters(){
+        var engine=new GpuEngineUse(0xA,0,0,"3D","GPU 0 · 3D","Secret Adapter 9000",40);
+        var process=new ProcessSample(1,1,"secret-app.exe",1,1.0,1000,null,null,ProcessGap.None,null){GpuPercent=40,GpuEngine=engine.Label,GpuAdapter=engine.Adapter,GpuEngines=[engine]};
+        var activity=ActivityWith("secret-app.exe") with {Processes=[process],GpuSummary=new(12,1,1,0.8,ProcessColumnState.Ready,GpuCounterSummary.EveryPoll)};
+        string json=App.DiagnosticReport("Completed","Idle between samples",15,App.DiagnosticOptions(["--diagnose","o.json"],false),[Fixture() with {ProcessActivity=activity,ProcessSummary=ProcessSummary.From(activity)}]);
+        Assert.DoesNotContain("Secret Adapter",json);Assert.DoesNotContain("secret-app",json,StringComparison.OrdinalIgnoreCase);
+        using var doc=JsonDocument.Parse(json);var gpu=doc.RootElement.GetProperty("Samples")[0].GetProperty("ProcessSummary").GetProperty("Gpu");
+        Assert.Equal(12,gpu.GetProperty("Instances").GetInt32());Assert.Equal(1,gpu.GetProperty("Adapters").GetInt32());Assert.Equal("every poll",gpu.GetProperty("Placement").GetString());}
+    [Fact] public void The_summary_has_no_gpu_part_while_monitoring_is_off()=>Assert.Null(ProcessSummary.From(ProcessActivity.Off).Gpu);
     [Fact] public void Network_applications_counts_the_in_memory_list(){ var r=Fixture() with {Processes=[new(7,1,"a.exe",1,1,1,1)]};
         Assert.Single(r.Processes);Assert.Equal(1,r.NetworkApplications);}
     [Fact] public async Task Summary_is_set_only_with_diagnostic_timings_and_reports_off(){ var off=await FirstReading(new(DiagnosticTimings:true));Assert.NotNull(off.ProcessSummary);Assert.Equal("Off",off.ProcessSummary!.State);

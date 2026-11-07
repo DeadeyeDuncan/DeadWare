@@ -30,12 +30,16 @@ internal static class ApplicationResourcesUiChecks
     private const string Loading = "Loading application resources…";
     private const string NothingRecorded = "No application resources were recorded in this period.";
     private const string NoProcessData = "No process data in this span.";
+    private const string NoGpuData = "No GPU data in this span.";
+    private const string SelectToChart = "Select an application to chart it over this period.";
     private const string KeptForThirtyDays = "Application resources are kept for 30 days; earlier minutes are not kept.";
     private const string Paused = "recorded while Per-process monitoring and usage history are both on";
     // The page passes its CPU chart's point count to the card; cards built alone here pass the page's fallback width.
     private const int Points = 600;
     private const int DayMinutes = 90;
     private static readonly Size PageSize = new(1050, 2600);
+    // The Device charts a moment can be clicked on.
+    private static readonly string[] Three = ["cpu", "memory", "gpu"];
     // Every recorded minute of the fixture day (60 covered seconds, 8 processors): CPU 100-ns ticks, I/O read, I/O written, Σ memory × Δt.
     private static readonly ProcessAppMinute[] DayApps =
     [
@@ -69,11 +73,13 @@ internal static class ApplicationResourcesUiChecks
             Card_sits_between_applications_and_keep_a_longer_record(page);
             Before_the_first_read_the_card_says_it_is_loading(card);
             Load(page); WaitFor(() => card.View is not null && !card.Loading);
-            Table_has_the_seven_columns_and_everything_else_last(card);
+            Table_has_the_nine_columns_and_everything_else_last(card);
             Rows_show_the_period_totals(card);
             Search_filters_rows_and_keeps_everything_else(card);
             Share_bar_has_a_segment_per_row(card);
             Selecting_an_app_shows_its_chart_and_rank_by_redraws(card);
+            Selecting_an_app_while_ranked_by_gpu_charts_its_gpu(card);
+            The_note_names_gpu(card);
             The_app_chart_shares_the_device_charts_grid(page, card);
             Cpu_labels_show_tenths_under_ten_percent_on_the_app_chart_only(page, card);
             Gap_notice_counts_minutes_without_process_data(card);
@@ -83,7 +89,7 @@ internal static class ApplicationResourcesUiChecks
             // Click a moment, back on Day: the Device charts show the fixture's usage minutes.
             SelectRange(page, "Day"); Load(page);
             Shows_the_day_ranking(card, ["chrome.exe", "Code.exe", "steam.exe", "explorer.exe", "Everything else"]);
-            Only_the_cpu_and_ram_charts_are_selectable(page);
+            Only_the_cpu_ram_and_gpu_charts_are_selectable(page);
             Selectable_charts_draw_a_frame_while_they_have_keyboard_focus(page);
             Clicking_a_point_brings_the_card_into_view(page, card);
             Clicking_a_cpu_point_lists_the_busiest_apps_in_its_slot(page, card);
@@ -96,6 +102,12 @@ internal static class ApplicationResourcesUiChecks
             Esc_clears_a_cursor_that_lists_nothing_and_the_refresh_keeps_it_cleared(page, card);
             A_new_period_clears_the_moment(page, card);
             Clicking_a_slot_without_process_data_says_so(page, card, minute.AddMinutes(-11));
+            // Click a moment on the GPU chart: each check shows the dashboard's GPU selected first (WithGpu).
+            Clicking_a_gpu_point_ranks_the_slot_by_gpu(page, card);
+            Keys_on_the_gpu_chart_move_all_three_and_esc_clears(page, card);
+            Clear_removes_the_gpu_hairline_too(page, card);
+            A_gpu_click_on_a_slot_without_process_data_says_so(page, card, minute.AddMinutes(-11));
+            Clearing_the_dashboard_gpu_keeps_the_listed_gpu_moment(page, card);
             Slot_heading_formats();
             Gap_notice_is_exact_and_hidden_without_gaps(folder);
             Empty_period_and_missing_history_say_why(folder);
@@ -107,6 +119,10 @@ internal static class ApplicationResourcesUiChecks
             Clear_without_a_chart_hands_its_focus_to_rank_by(folder);
             The_minute_refresh_updates_the_rows_in_place_and_keeps_the_current_cell(folder);
             A_new_ranking_starts_the_table_at_the_top(folder);
+            Gpu_rank_columns_and_header_tooltips(folder);
+            Gpu_dashes_name_their_reason(folder);
+            Rank_by_gpu_over_version_1_minutes_shows_dashes_and_no_share_bar(folder);
+            A_gpu_slot_with_gpu_data_lists_apps_by_gpu_and_everything_else(folder);
             Status_line_follows_the_recording_switches_without_a_read(folder);
         }
         finally
@@ -127,9 +143,10 @@ internal static class ApplicationResourcesUiChecks
         Assert.Contains(Loading, Texts(card));
     }
 
-    private static void Table_has_the_seven_columns_and_everything_else_last(ApplicationResourcesCard card)
+    private static void Table_has_the_nine_columns_and_everything_else_last(ApplicationResourcesCard card)
     {
-        Assert.Equal(["Application", "CPU time", "Avg CPU", "Avg memory while listed", "I/O read", "I/O written", "Minutes listed"], Headers(card));
+        Assert.Equal(["Application", "CPU time", "Avg CPU", "Avg memory while listed", "Avg GPU", "Avg GPU memory while listed", "I/O read", "I/O written",
+            "Minutes listed"], Headers(card));
         Assert.Equal("Everything else", LastRowName(card));
         Assert.Equal(ProcessRank.CpuTime, card.Rank);
         Assert.Equal(["chrome.exe", "Code.exe", "steam.exe", "explorer.exe", "Everything else"], RowNames(card));
@@ -226,9 +243,35 @@ internal static class ApplicationResourcesUiChecks
         Assert.Equal(before + 1, Volatile.Read(ref reads));
     }
 
+    private static void Selecting_an_app_while_ranked_by_gpu_charts_its_gpu(ApplicationResourcesCard card)
+    {
+        SetRank(card, ProcessRank.Gpu);
+        WaitFor(() => !card.Loading && card.Rank == ProcessRank.Gpu);
+        Select(card, "chrome.exe");
+        WaitFor(() => Traces(card).Count == 1);
+        Assert.Contains("chrome.exe · GPU % of the busiest engine", Texts(card));
+        Assert.Equal("chrome.exe GPU", Traces(card)[0].Label);
+        Assert.Equal("%", ChartUnit(card)); Assert.Equal(100d, ChartMaximum(card));
+        // Everything else's GPU is a sum over many apps and can exceed 100 %, so its scale is automatic.
+        Select(card, "Everything else");
+        Assert.Null(ChartMaximum(card));
+        // Hands back the state Selecting_an_app_shows_its_chart_and_rank_by_redraws left: The_app_chart_shares_the_device_charts_grid reads
+        // chrome.exe's CPU trace and Range_change_reloads_the_card expects chrome.exe selected. Both reads have returned, so none is left
+        // waiting for the checks after it.
+        Select(card, "chrome.exe"); SetRank(card, ProcessRank.CpuTime);
+        WaitFor(() => !card.Loading && card.Rank == ProcessRank.CpuTime && Traces(card).Count == 1 && Traces(card)[0].Label == "chrome.exe CPU");
+    }
+
+    private static void The_note_names_gpu(ApplicationResourcesCard card)
+    {
+        var note = Texts(card).Single(t => t.StartsWith("CPU time, I/O read and I/O written", StringComparison.Ordinal));
+        Assert.Contains("Each minute lists up to 40 of the busiest applications by CPU, memory, I/O and GPU; Everything else holds the rest. Usage after", note);
+        Assert.Contains("Avg GPU is its busiest GPU engine's share of the time GPU data was recorded; Avg GPU memory while listed averages its dedicated GPU memory over the minutes it was listed with GPU data.", note);
+    }
+
     private static void The_app_chart_shares_the_device_charts_grid(UsageHistoryPage page, ApplicationResourcesCard card)
     {
-        // The selected app's series is read with the CPU chart's point count, so its buckets are the CPU and RAM charts' slots.
+        // The selected app's series is read with the CPU chart's point count, so its buckets are the CPU, RAM and GPU charts' slots.
         var device = Traces(page.Chart("cpu"))[0].View; var app = Traces(card)[0].View;
         Assert.Equal("chrome.exe CPU", Traces(card)[0].Label);
         Assert.Equal((device.From, device.To, device.BucketMilliseconds), (app.From, app.To, app.BucketMilliseconds));
@@ -369,18 +412,21 @@ internal static class ApplicationResourcesUiChecks
         Assert.Equal("not a database", File.ReadAllText(path));
     }
 
-    private static void Only_the_cpu_and_ram_charts_are_selectable(UsageHistoryPage page)
+    private static void Only_the_cpu_ram_and_gpu_charts_are_selectable(UsageHistoryPage page)
     {
-        foreach (string kind in new[] { "cpu", "memory" }) { Assert.True(page.Chart(kind).Selectable); Assert.True(page.Chart(kind).Focusable); }
-        foreach (string kind in new[] { "cputemp", "gpu", "gputemp", "network" }) Assert.False(page.Chart(kind).Selectable);
+        foreach (string kind in Three) { Assert.True(page.Chart(kind).Selectable); Assert.True(page.Chart(kind).Focusable); }
+        foreach (string kind in new[] { "cputemp", "gputemp", "network" }) Assert.False(page.Chart(kind).Selectable);
         Assert.InRange(Traces(page.Chart("cpu"))[0].View.Buckets.Count, 20, DayMinutes + 10);
+        // The Device card's hint names all three.
+        Assert.Contains(Texts(page), t => t.EndsWith(" Click a CPU, RAM or GPU point, or press Enter on it, to list its busiest apps under Application resources.",
+            StringComparison.Ordinal));
     }
 
     private static void Selectable_charts_draw_a_frame_while_they_have_keyboard_focus(UsageHistoryPage page)
     {
-        // Tab reaches the CPU and RAM charts, and each draws an Accent frame while it has keyboard focus, as the app's other focusable
+        // Tab reaches the CPU, RAM and GPU charts, and each draws an Accent frame while it has keyboard focus, as the app's other focusable
         // controls do. Offscreen pages cannot take keyboard focus, so each chart is told its focus changed, as the keyboard tells it.
-        foreach (string kind in new[] { "cpu", "memory" })
+        foreach (string kind in Three)
         {
             var chart = page.Chart(kind);
             Layout(page); Assert.Equal(0, FocusFrames(chart));
@@ -520,7 +566,7 @@ internal static class ApplicationResourcesUiChecks
 
     private static void The_minute_refresh_keeps_the_slot_and_moves_its_hairlines_with_the_grid(UsageHistoryPage page, ApplicationResourcesCard card)
     {
-        var data = (UsagePageData)typeof(UsageHistoryPage).GetField("data", All)!.GetValue(page)!;
+        var data = Data(page);
         var slot = card.Slot; string heading = Heading(card);
         Assert.NotNull(slot);
         // A refresh reads the period again a little later, so the bucket grid moves under the slot: here two earlier slots now come first.
@@ -533,7 +579,7 @@ internal static class ApplicationResourcesUiChecks
 
     private static void Left_and_right_mark_both_charts_and_the_minute_refresh_keeps_the_cursor(UsageHistoryPage page, ApplicationResourcesCard card)
     {
-        var data = (UsagePageData)typeof(UsageHistoryPage).GetField("data", All)!.GetValue(page)!;
+        var data = Data(page);
         var cpu = page.Chart("cpu"); var memory = page.Chart("memory"); var slot = card.Slot; string heading = Heading(card);
         int moves = 0; Action<int> count = _ => moves++; cpu.SelectionMoved += count;
         Press(cpu, Key.Right); Press(cpu, Key.Right); cpu.SelectionMoved -= count; Assert.Equal(2, moves);
@@ -572,7 +618,7 @@ internal static class ApplicationResourcesUiChecks
 
     private static void Esc_clears_a_cursor_that_lists_nothing_and_the_refresh_keeps_it_cleared(UsageHistoryPage page, ApplicationResourcesCard card)
     {
-        var data = (UsagePageData)typeof(UsageHistoryPage).GetField("data", All)!.GetValue(page)!;
+        var data = Data(page);
         var cpu = page.Chart("cpu"); var memory = page.Chart("memory");
         Press(cpu, Key.Escape); Assert.Null(card.Slot);
         Press(cpu, Key.Right);
@@ -622,9 +668,7 @@ internal static class ApplicationResourcesUiChecks
 
     private static void Clicking_a_slot_without_process_data_says_so(UsageHistoryPage page, ApplicationResourcesCard card, DateTimeOffset lastProcessMinute)
     {
-        var cpu = page.Chart("cpu"); int emptySlot = Traces(cpu)[0].View.Buckets.Count - 1; var bucket = Bucket(cpu, emptySlot);
-        // The fixture's last ten Device minutes were recorded while monitoring was off: this slot has CPU readings but no process data.
-        Assert.True(bucket.Start > lastProcessMinute && bucket.Minutes > 0);
+        var cpu = page.Chart("cpu"); int emptySlot = EmptyIndex(page, lastProcessMinute); var bucket = Bucket(cpu, emptySlot);
         Activate(cpu, emptySlot);
         WaitFor(() => !card.Loading && card.View is { } shown && shown.From == bucket.Start);
         var texts = Texts(card);
@@ -646,6 +690,99 @@ internal static class ApplicationResourcesUiChecks
         // Esc returns to the period ranking: its rows and table are back, and the span's sentence is gone.
         Shows_the_day_ranking(card, ["chrome.exe", "Code.exe", "steam.exe", "explorer.exe", "Everything else"]);
         Assert.DoesNotContain(NoProcessData, Texts(card));
+    }
+
+    private static void Clicking_a_gpu_point_ranks_the_slot_by_gpu(UsageHistoryPage page, ApplicationResourcesCard card)
+    {
+        WithGpu(page);
+        Activate(page.Chart("gpu"), 1);
+        WaitFor(() => !card.Loading && card.Slot is not null && card.Rank == ProcessRank.Gpu);
+        Assert.StartsWith("Busiest apps · ", Heading(card));
+        // The GPU chart has the CPU chart's slots, so all three charts mark the one listed.
+        Assert.Equal([1, 1, 1], Three.Select(k => page.Chart(k).SelectedIndex));
+        Layout(page); Assert.All(Three, k => Assert.Equal(1, Hairlines(page.Chart(k))));
+        // The fixture's minutes hold no GPU data: the span says so in place of the table, which leaves no app to select for the chart.
+        Assert.Contains(NoGpuData, Texts(card));
+        Assert.DoesNotContain(SelectToChart, Texts(card));
+        Assert.False(IsShown(Table(card), card));
+        Assert.True(IsShown(Button(card, "Clear"), card));
+        // Another Rank by asked for, before its read returns, keeps the shown state: no hint over the hidden table.
+        SetRank(card, ProcessRank.CpuTime);
+        Assert.DoesNotContain(SelectToChart, Texts(card));
+        Assert.False(IsShown(Table(card), card));
+        // The same slot listed from the CPU chart shows its table, and keeps it when ranked by GPU, with "—" in the GPU columns: the
+        // sentence follows a GPU chart click.
+        Activate(page.Chart("cpu"), 1);
+        WaitFor(() => !card.Loading && card.Rank == ProcessRank.CpuTime);
+        Assert.DoesNotContain(NoGpuData, Texts(card)); Assert.True(IsShown(Table(card), card));
+        SetRank(card, ProcessRank.Gpu);
+        WaitFor(() => !card.Loading && card.Rank == ProcessRank.Gpu);
+        Assert.DoesNotContain(NoGpuData, Texts(card)); Assert.True(IsShown(Table(card), card));
+        Assert.Equal("—", Cell(Row(card, "chrome.exe"), "AverageGpu"));
+        Click(Button(card, "Clear"));
+    }
+
+    private static void Keys_on_the_gpu_chart_move_all_three_and_esc_clears(UsageHistoryPage page, ApplicationResourcesCard card)
+    {
+        WithGpu(page); var gpu = page.Chart("gpu");
+        // Left and Right on the GPU chart move the cursor on all three charts; nothing is listed until Enter.
+        Press(gpu, Key.Right); Assert.Equal([0, 0, 0], Three.Select(k => page.Chart(k).SelectedIndex));
+        Press(gpu, Key.Right); Press(gpu, Key.Right); Assert.Equal([2, 2, 2], Three.Select(k => page.Chart(k).SelectedIndex));
+        Press(gpu, Key.Left); Assert.Equal([1, 1, 1], Three.Select(k => page.Chart(k).SelectedIndex));
+        Assert.Null(card.Slot);
+        var bucket = Bucket(gpu, 1);
+        Assert.True(gpu.HandleKey(Key.Enter));
+        WaitFor(() => !card.Loading && card.Rank == ProcessRank.Gpu && card.Slot is not null);
+        Assert.Equal((bucket.Start, bucket.End), card.Slot);
+        Press(gpu, Key.Escape);
+        Assert.Null(card.Slot); Assert.All(Three, k => Assert.Null(page.Chart(k).SelectedIndex));
+    }
+
+    private static void Clear_removes_the_gpu_hairline_too(UsageHistoryPage page, ApplicationResourcesCard card)
+    {
+        WithGpu(page);
+        Activate(page.Chart("gpu"), 1); WaitFor(() => card.Slot is not null);
+        Click(Button(card, "Clear"));
+        Assert.All(Three, k => Assert.Null(page.Chart(k).SelectedIndex));
+        Layout(page); Assert.All(Three, k => Assert.Equal(0, Hairlines(page.Chart(k))));
+    }
+
+    private static void A_gpu_click_on_a_slot_without_process_data_says_so(UsageHistoryPage page, ApplicationResourcesCard card, DateTimeOffset lastProcessMinute)
+    {
+        // The span Clicking_a_slot_without_process_data_says_so lists, from the GPU chart: no process data comes before no GPU data.
+        WithGpu(page);
+        Activate(page.Chart("gpu"), EmptyIndex(page, lastProcessMinute));
+        WaitFor(() => !card.Loading && card.Slot is not null);
+        Assert.Contains(NoProcessData, Texts(card)); Assert.DoesNotContain(NoGpuData, Texts(card));
+        Assert.False(IsShown(Table(card), card));
+        Assert.True(IsShown(Button(card, "Clear"), card));
+        Click(Button(card, "Clear"));
+    }
+
+    private static void Clearing_the_dashboard_gpu_keeps_the_listed_gpu_moment(UsageHistoryPage page, ApplicationResourcesCard card)
+    {
+        // Review Focus 4: the dashboard's GPU selection is cleared while a GPU moment is listed. The GPU chart loses its points and its
+        // hairline; the CPU and RAM hairlines and the listed slot stay.
+        WithGpu(page);
+        Activate(page.Chart("gpu"), 1); WaitFor(() => card.Slot is not null);
+        var slot = card.Slot; var gpu = page.Chart("gpu");
+        page.Apply(WithoutGpu(Data(page)));
+        Assert.Null(gpu.SelectedIndex); Assert.Equal(1, page.Chart("cpu").SelectedIndex); Assert.Equal(1, page.Chart("memory").SelectedIndex);
+        Assert.Equal(slot, card.Slot);
+        Layout(page);
+        Assert.Equal(0, Hairlines(gpu)); Assert.Equal(1, Hairlines(page.Chart("cpu"))); Assert.Equal(1, Hairlines(page.Chart("memory")));
+        // The empty GPU chart has no point to click (Activate would assert one) and its keys do nothing.
+        gpu.HandleClick(new(gpu.PlotRect.Left + gpu.PlotRect.Width / 2, gpu.PlotRect.Top + gpu.PlotRect.Height / 2));
+        Assert.False(gpu.HandleKey(Key.Right)); Assert.False(gpu.HandleKey(Key.Enter));
+        Assert.Null(gpu.SelectedIndex); Assert.Equal(slot, card.Slot); Assert.Equal(1, page.Chart("cpu").SelectedIndex);
+        // The CPU chart's cursor still moves the RAM chart's, never the GPU chart's, and Esc clears the slot.
+        Press(page.Chart("cpu"), Key.Right);
+        Assert.Equal(2, page.Chart("memory").SelectedIndex); Assert.Null(gpu.SelectedIndex);
+        Press(page.Chart("cpu"), Key.Escape);
+        Assert.Null(card.Slot);
+        // Like the other page checks, it ends on the day ranking by CPU time, with no read left waiting.
+        SetRank(card, ProcessRank.CpuTime);
+        Shows_the_day_ranking(card, ["chrome.exe", "Code.exe", "steam.exe", "explorer.exe", "Everything else"]);
     }
 
     private static void Slot_heading_formats()
@@ -812,6 +949,103 @@ internal static class ApplicationResourcesUiChecks
         ScrollDown(); SetSlot(card, null); StartsAtTheTop(FortyApps(from, to));
     }
 
+    private static void Gpu_rank_columns_and_header_tooltips(string folder)
+    {
+        var card = new ApplicationResourcesCard(Session(null, folder));
+        Assert.Equal(["CPU time", "Average memory", "I/O", "GPU"], RankLabels(card));
+        card.Apply(GpuView(43_440, 10, 20), DateTimeOffset.UtcNow);
+        Assert.Equal("GPU recorded for 12 h 4 min of this range", HeaderTip(card, "Avg GPU"));
+        Assert.Equal("GPU recorded for 12 h 4 min of this range", HeaderTip(card, "Avg GPU memory while listed"));
+        // The minute refresh gives the headers already shown the new range's GPU time.
+        card.Apply(GpuView(60, 10, 20), DateTimeOffset.UtcNow);
+        Assert.Equal("GPU recorded for 1 min 0 s of this range", HeaderTip(card, "Avg GPU"));
+        Assert.Equal("GPU recorded for 1 min 0 s of this range", HeaderTip(card, "Avg GPU memory while listed"));
+        // Their explicit styles are based on the theme's, so the GPU headers and cells keep its captions, padding and selection colours.
+        Assert.Equal(HeaderOf(card, "Avg CPU").FontSize, HeaderOf(card, "Avg GPU").FontSize);
+        Assert.Equal(HeaderOf(card, "Avg CPU").Padding, HeaderOf(card, "Avg GPU memory while listed").Padding);
+        Assert.Equal(CellOf(card, "chrome.exe", "Avg CPU").Padding, CellOf(card, "chrome.exe", "Avg GPU").Padding);
+        Assert.Equal(CellOf(card, "chrome.exe", "Avg CPU").Padding, CellOf(card, "chrome.exe", "Avg GPU memory while listed").Padding);
+        Assert.Equal(["10 %", "1.0 MB"], new[] { "AverageGpu", "AverageGpuMemory" }.Select(p => Cell(Row(card, "chrome.exe"), p)));
+        // A shown value has no tooltip.
+        Assert.Null(Tip(card, "chrome.exe", "Avg GPU")); Assert.Null(Tip(card, "chrome.exe", "Avg GPU memory while listed"));
+    }
+
+    private static void Gpu_dashes_name_their_reason(string folder)
+    {
+        var card = new ApplicationResourcesCard(Session(null, folder));
+        card.Apply(GpuView(0, null, null), DateTimeOffset.UtcNow);
+        Assert.Equal("—", Cell(Row(card, "chrome.exe"), "AverageGpu"));
+        Assert.Equal("No GPU data in this range", Tip(card, "chrome.exe", "Avg GPU"));
+        // The minute refresh keeps the row: the same "—" now has GPU time in the range, so only its reason changes.
+        var chrome = Row(card, "chrome.exe");
+        card.Apply(GpuView(60, null, 30), DateTimeOffset.UtcNow);
+        Assert.Same(chrome, Row(card, "chrome.exe"));
+        Assert.Equal("—", Cell(chrome, "AverageGpuMemory"));
+        Assert.Equal("No GPU data in the minutes this app was listed", Tip(card, "chrome.exe", "Avg GPU memory while listed"));
+        Assert.Equal("No GPU data in the minutes this app was listed", Tip(card, "chrome.exe", "Avg GPU"));
+        card.Apply(GpuView(60, 10, 125), DateTimeOffset.UtcNow);
+        Assert.Equal("125 %", Cell(Row(card, "Everything else"), "AverageGpu"));
+        Assert.Equal("Sum over many apps; can exceed 100 %", Tip(card, "Everything else", "Avg GPU"));
+    }
+
+    private static void Rank_by_gpu_over_version_1_minutes_shows_dashes_and_no_share_bar(string folder)
+    {
+        // Review Focus 5: the first day after the upgrade, over minutes saved without GPU data. code.exe leads by CPU time, memory and I/O,
+        // so only the name order puts chrome.exe first.
+        string root = Path.Combine(folder, "gpu-v1"); Directory.CreateDirectory(root);
+        string path = Path.Combine(root, "process-history.db");
+        var store = new ProcessHistoryStore(path); store.Initialize();
+        var now = DateTimeOffset.UtcNow; var minute = UsageMetrics.Floor(now);
+        ProcessAppMinute[] apps =
+        [
+            new("chrome.exe", 10_000_000, 100_000, 100_000, 100e6 * 60, false),
+            new("code.exe", 60_000_000, 5_000_000, 5_000_000, 900e6 * 60, false),
+            new(ProcessHistory.EverythingElse, 5_000_000, 1_000_000, 1_000_000, 1e9 * 60, true),
+        ];
+        store.Append(Machine, Enumerable.Range(0, 60).Select(i => new ProcessMinuteBatch(minute.AddMinutes(i - 70), 60, 8, true, "fixture", apps)).ToList(), now);
+        var card = new ApplicationResourcesCard(Session(new ProcessHistoryService(path, Machine), folder));
+        card.Load(now.AddDays(-1), now, Points);
+        SetRank(card, ProcessRank.Gpu);
+        WaitFor(() => !card.Loading && card.Rank == ProcessRank.Gpu && card.View is { GpuCoveredSeconds: 0 });
+        Assert.Equal(["chrome.exe", "code.exe", "Everything else"], RowNames(card));
+        Assert.All(Rows(card), r => Assert.Equal("—", Cell(r, "AverageGpu")));
+        Assert.Equal("No GPU data in this range", Tip(card, "chrome.exe", "Avg GPU"));
+        Assert.Equal("No GPU data in this range", Tip(card, "Everything else", "Avg GPU"));
+        Assert.Equal(Visibility.Collapsed, Named(card, "Share of period total").Visibility);
+        Select(card, "chrome.exe");
+        WaitFor(() => Traces(card).Count == 1);
+        Assert.Empty(Traces(card)[0].View.Buckets);
+    }
+
+    private static void A_gpu_slot_with_gpu_data_lists_apps_by_gpu_and_everything_else(string folder)
+    {
+        // One minute, ten minutes ago, with 60 GPU-covered seconds. a.exe and b.exe have the same CPU time, memory and I/O, so only the GPU
+        // ranking puts b.exe first. Without a ProcessHistory service the card would only say "Application resource history is not available."
+        string root = Path.Combine(folder, "gpu-slot"); Directory.CreateDirectory(root);
+        string path = Path.Combine(root, "process-history.db");
+        var store = new ProcessHistoryStore(path); store.Initialize();
+        var now = DateTimeOffset.UtcNow; var minute = UsageMetrics.Floor(now).AddMinutes(-10);
+        ProcessAppMinute[] apps =
+        [
+            new("a.exe", 10_000_000, 0, 0, 100e6 * 60, false) { GpuSeconds = 6 },
+            new("b.exe", 10_000_000, 0, 0, 100e6 * 60, false) { GpuSeconds = 30 },
+            new(ProcessHistory.EverythingElse, 5_000_000, 0, 0, 1e9 * 60, true) { GpuSeconds = 3 },
+        ];
+        store.Append(Machine, [new ProcessMinuteBatch(minute, 60, 8, true, "fixture", apps) { GpuCoveredSeconds = 60 }], now);
+        var card = new ApplicationResourcesCard(Session(new ProcessHistoryService(path, Machine), folder));
+        card.ShowSlot(minute, minute.AddMinutes(1), ProcessRank.Gpu);
+        WaitFor(() => !card.Loading && card.View is not null);
+        Assert.Equal(ProcessRank.Gpu, card.Rank);
+        Assert.Equal(["b.exe", "a.exe", "Everything else"], RowNames(card));
+        // Avg GPU is a share of the slot's GPU-covered seconds; Everything else's included.
+        Assert.Equal("50 %", Cell(Row(card, "b.exe"), "AverageGpu"));
+        Assert.Equal("10 %", Cell(Row(card, "a.exe"), "AverageGpu"));
+        Assert.Equal("5 %", Cell(Row(card, "Everything else"), "AverageGpu"));
+        // The span has GPU data, so it shows its table.
+        Assert.DoesNotContain(NoGpuData, Texts(card));
+        Assert.True(IsShown(Table(card), card));
+    }
+
     private static void Status_line_follows_the_recording_switches_without_a_read(string folder)
     {
         string root = Path.Combine(folder, "status"); Directory.CreateDirectory(root);
@@ -876,6 +1110,17 @@ internal static class ApplicationResourcesUiChecks
             new(ProcessHistory.EverythingElse, recorded, 1, 1e6, 1, 1, recorded, true, recorded * 6e7), recorded == 0 ? 0 : 60 + recorded,
             recorded, recorded == 0 ? null : from, recorded == 0 ? null : to, recorded == 0 ? null : from, 4096);
 
+    /// <summary>The last day's 60 recorded minutes with <paramref name="covered"/> GPU-covered seconds: chrome.exe and Everything else at the
+    /// given Avg GPU, with GPU-seconds to match and 1 MB of GPU memory, or no GPU data when the value is null.</summary>
+    private static ProcessResourceView GpuView(double covered, double? chrome, double? everythingElse)
+    {
+        var to = DateTimeOffset.UtcNow; var from = to.AddDays(-1);
+        ProcessResourceRow Gpu(ProcessResourceRow row, double? percent)
+            => row with { GpuSeconds = percent * covered / 100, AverageGpuPercent = percent, AverageGpuMemoryBytes = percent is null ? null : 1e6 };
+        return new(from, to, [Gpu(new("chrome.exe", 60, 1, 1e6, 1, 1, 60, false, 6e7), chrome)], 1,
+            Gpu(new(ProcessHistory.EverythingElse, 60, 1, 1e6, 1, 1, 60, true, 60 * 6e7), everythingElse), 120, 60, from, to, from, 4096) { GpuCoveredSeconds = covered };
+    }
+
     /// <summary>A process-history.db with a fixture day (90 minutes ending ten minutes before <paramref name="minute"/>) and 30 minutes
     /// three days ago, read through a service whose store counts every read and can hold one read until released.</summary>
     private static ProcessHistoryService Service(string folder, DateTimeOffset minute)
@@ -937,10 +1182,27 @@ internal static class ApplicationResourcesUiChecks
     private static string Status(ApplicationResourcesCard card) => ((TextBlock)typeof(ApplicationResourcesCard).GetField("status", All)!.GetValue(card)!).Text;
     private static (DateTimeOffset From, DateTimeOffset To) Period(UsageHistoryPage page)
         => ((DateTimeOffset, DateTimeOffset))typeof(UsageHistoryPage).GetMethod("Period", All)!.Invoke(page, [])!;
-    private static (DateTimeOffset From, DateTimeOffset To) PageData(UsageHistoryPage page)
+    private static (DateTimeOffset From, DateTimeOffset To) PageData(UsageHistoryPage page) => (Data(page).From, Data(page).To);
+    /// <summary>What the page last applied.</summary>
+    private static UsagePageData Data(UsageHistoryPage page) => (UsagePageData)typeof(UsageHistoryPage).GetField("data", All)!.GetValue(page)!;
+    /// <summary>Applies the page's data as it reads with a GPU selected on the dashboard: "Fixture GPU", whose view is the CPU view, so the GPU
+    /// chart has the CPU chart's buckets. The fixture's process minutes hold no GPU data.</summary>
+    private static void WithGpu(UsageHistoryPage page)
     {
-        var data = (UsagePageData)typeof(UsageHistoryPage).GetField("data", All)!.GetValue(page)!;
-        return (data.From, data.To);
+        var data = Data(page);
+        page.Apply(data with { GpuName = "Fixture GPU",
+            Metrics = new Dictionary<string, UsageHistoryView>(data.Metrics, StringComparer.Ordinal) { [UsageMetrics.Gpu] = data.Metrics[UsageMetrics.Cpu] } });
+    }
+    /// <summary>The data as the page reads it with no GPU selected on the dashboard: no GPU name and no GPU view.</summary>
+    private static UsagePageData WithoutGpu(UsagePageData data) => data with { GpuName = null,
+        Metrics = data.Metrics.Where(p => p.Key != UsageMetrics.Gpu).ToDictionary(p => p.Key, p => p.Value, StringComparer.Ordinal) };
+    /// <summary>The CPU chart's last bucket. It lies in the fixture's last ten Device minutes, after <paramref name="lastProcessMinute"/>, which were
+    /// recorded while monitoring was off: it has CPU readings but no process data.</summary>
+    private static int EmptyIndex(UsageHistoryPage page, DateTimeOffset lastProcessMinute)
+    {
+        var cpu = page.Chart("cpu"); int index = Traces(cpu)[0].View.Buckets.Count - 1; var bucket = Bucket(cpu, index);
+        Assert.True(bucket.Start > lastProcessMinute && bucket.Minutes > 0);
+        return index;
     }
     private static void Near((DateTimeOffset From, DateTimeOffset To) period, ProcessResourceView view)
     {
@@ -1022,6 +1284,25 @@ internal static class ApplicationResourcesUiChecks
     private static string LastRowName(ApplicationResourcesCard card) => RowNames(card)[^1];
     private static string Cell(object row, string property) => (string)row.GetType().GetProperty(property)!.GetValue(row)!;
     private static string[] Headers(ApplicationResourcesCard card) => Table(card).Columns.Select(c => (string)c.Header).ToArray();
+    private static object Row(ApplicationResourcesCard card, string name) => Rows(card).Single(r => Cell(r, "Name") == name);
+    /// <summary>The realized header of a column. Cards built alone are never laid out, so the card is laid out first.</summary>
+    private static DataGridColumnHeader HeaderOf(ApplicationResourcesCard card, string header)
+    {
+        Layout(card);
+        return Descendants(Table(card)).OfType<DataGridColumnHeader>().Single(h => h.Column?.Header as string == header);
+    }
+    private static string? HeaderTip(ApplicationResourcesCard card, string header) => (string?)HeaderOf(card, header).ToolTip;
+    /// <summary>The realized cell of an app's row in a column, so its text and tooltip come through the card's real bindings and styles.</summary>
+    private static DataGridCell CellOf(ApplicationResourcesCard card, string app, string header)
+    {
+        Layout(card);
+        var table = Table(card);
+        var container = Assert.IsType<DataGridRow>(table.ItemContainerGenerator.ContainerFromItem(Row(card, app)));
+        var content = Assert.IsAssignableFrom<FrameworkElement>(table.Columns.Single(c => (string)c.Header == header).GetCellContent(container));
+        return Assert.IsType<DataGridCell>(content.Parent);
+    }
+    private static string? Tip(ApplicationResourcesCard card, string app, string header) => (string?)CellOf(card, app, header).ToolTip;
+    private static string[] RankLabels(ApplicationResourcesCard card) => RankBy(card).Items.Cast<object>().Select(item => item.ToString()!).ToArray();
     private static void Select(ApplicationResourcesCard card, string name) => Table(card).SelectedItem = Rows(card).Single(r => Cell(r, "Name") == name);
     private static void SetSearch(ApplicationResourcesCard card, string text)
         => Descendants(card).OfType<TextBox>().Single(t => AutomationProperties.GetName(t) == "Find application in application resources").Text = text;
