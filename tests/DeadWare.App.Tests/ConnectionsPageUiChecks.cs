@@ -75,6 +75,8 @@ internal static class ConnectionsPageUiChecks
         CheckDestinationsInPlace(page, live);
         CheckDestinationHighlight(page, live);
         CheckScopeChangeClearsTheSelection(page);
+        CheckDestinationsCopy(session, live);
+        CheckDestinationsExport(session, now);
         CheckBoundaryDates();
         CheckIntervalWarning(session);
         CheckExportBusy(session,now);
@@ -855,6 +857,97 @@ internal static class ConnectionsPageUiChecks
         Assert.False(Parse("0001-01-01 00:00",6,out _));
         Assert.True(Parse("9999-12-31 17:59",-6,out var maximum));Assert.Equal(new DateTimeOffset(9999,12,31,23,59,0,TimeSpan.Zero),maximum);
         Assert.True(Parse("0001-01-01 06:00",6,out var minimum));Assert.Equal(DateTimeOffset.MinValue,minimum);
+    }
+    /// <summary>Ctrl+C and the row menu copy the selected row's shown cells, or its address, through SetClipboard; the grid's own copy never runs.</summary>
+    private static void CheckDestinationsCopy(UiSession session, ConnectionLiveView live)
+    {
+        var page = new ConnectionsPage(session); Call(page, "ApplyLive", live); Layout(page, 1000, 700); var card = Card(page); var status = Field<TextBlock>(page, "actionStatus");
+        string? copied = null; Exception? failure = null;
+        PageType.GetField("SetClipboard", All)!.SetValue(page, (Action<string>)(text => { if (failure is not null) throw failure; copied = text; }));
+        int gridCopies = 0; card.Grid.CopyingRowClipboardContent += (_, _) => gridCopies++;
+        void CtrlC() => System.Windows.Input.ApplicationCommands.Copy.Execute(null, card.Grid);
+        MenuItem Item(string header) => card.Grid.ContextMenu!.Items.OfType<MenuItem>().Single(i => (string)i.Header == header);
+        Assert.Equal("Copy row", AutomationProperties.GetName(Item("Copy row"))); Assert.Equal("Copy address", AutomationProperties.GetName(Item("Copy address")));
+        // With no selection Ctrl+C does nothing.
+        CtrlC(); Assert.Null(copied); Assert.Equal("", status.Text);
+        // Ctrl+C: the shown cells in column order, tab-separated, on one line, with no header.
+        Select(card, "8.8.8.8"); var row = card.Rows.Single(r => r.Key == "8.8.8.8");
+        string expected = string.Join("\t", row.Destination, row.Class, row.Location, row.Apps, row.Ports, row.Download, row.Upload, row.Received, row.Sent, row.Connections);
+        Assert.Equal(["DESTINATION", "CLASS", "LOCATION", "APPS", "PORTS", "↓ DOWNLOAD", "↑ UPLOAD", "RECEIVED", "SENT", "CONNECTIONS"], card.Grid.Columns.OrderBy(c => c.DisplayIndex).Select(c => (string)c.Header));
+        CtrlC();
+        Assert.Equal(expected, copied); Assert.StartsWith("8.8.8.8\tInternet\tFixture, United States\tBrowser\t443 Tcp\t", copied);
+        Assert.DoesNotContain('\n', copied!); Assert.Equal(10, copied!.Split('\t').Length);
+        Assert.Equal("Copied to the clipboard.", status.Text); Assert.Equal(0, gridCopies);
+        // The row menu: Copy row copies the same line, Copy address only the address.
+        copied = null; status.Text = ""; Item("Copy row").RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent)); Assert.Equal(expected, copied); Assert.Equal("Copied to the clipboard.", status.Text);
+        copied = null; status.Text = ""; Item("Copy address").RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent)); Assert.Equal("8.8.8.8", copied); Assert.Equal("Copied to the clipboard.", status.Text);
+        // A clipboard that fails names the exception type only.
+        failure = new System.Runtime.InteropServices.ExternalException(); copied = null;
+        CtrlC(); Assert.Null(copied); Assert.Equal("Copy failed (ExternalException); try again.", status.Text);
+        failure = null; status.Text = "";
+        // While the row menu is open the order is held.
+        var menu = card.Grid.ContextMenu!;
+        menu.RaiseEvent(new RoutedEventArgs(ContextMenu.OpenedEvent)); Assert.True(card.Hold.MenuOpen);
+        menu.RaiseEvent(new RoutedEventArgs(ContextMenu.ClosedEvent)); Assert.False(card.Hold.MenuOpen);
+        // Cleared again, Ctrl+C does nothing.
+        card.ClearSelection(); copied = null; CtrlC(); Assert.Null(copied); Assert.Equal("", status.Text); Assert.Equal(0, gridCopies);
+    }
+    /// <summary>Export destinations… exports the whole-interval query with every filter and the card's scope, shares Export CSV's busy state and texts,
+    /// and names the TEMP limit.</summary>
+    private static void CheckDestinationsExport(UiSession session, DateTimeOffset now)
+    {
+        var page = new ConnectionsPage(session); var card = Card(page); var button = card.Export; var csv = Field<Button>(page, "export"); var status = Field<TextBlock>(page, "actionStatus");
+        Assert.Equal("Export destinations…", AutomationProperties.GetName(button)); Assert.Equal("Export destinations…", button.Content);
+        var calls = new List<(string Path, ConnectionHistoryQuery Query, DestinationScope Scope)>(); Func<Task> result = () => Task.CompletedTask;
+        PageType.GetField("exportDestinations", All)!.SetValue(page, (Func<string, ConnectionHistoryQuery, DestinationScope, Task>)((path, query, scope) => { calls.Add((path, query, scope)); return result(); }));
+        // Live: disabled, with a tooltip that shows on the disabled button.
+        Assert.False(button.IsEnabled); Assert.Equal("Export is available in History.", button.ToolTip); Assert.True(ToolTipService.GetShowOnDisabled(button));
+        Field<ComboBox>(page, "mode").SelectedIndex = 1; Pump();
+        Assert.True(button.IsEnabled); Assert.Null(button.ToolTip);
+        // Every filter, the application filter included; the minute cursor is ignored.
+        var fromLocal = new DateTime(2026, 10, 29, 10, 0, 0); var toLocal = fromLocal.AddHours(1);
+        Field<TextBox>(page, "from").Text = fromLocal.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture); Field<TextBox>(page, "to").Text = toLocal.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture);
+        Field<TextBox>(page, "search").Text = "8.8"; Field<TextBox>(page, "country").Text = "us"; Field<ComboBox>(page, "direction").SelectedItem = ConnectionDirection.Received;
+        PageType.GetField("applicationFilter", All)!.SetValue(page, "BROWSER");
+        Field<CheckBox>(page, "minute").IsChecked = true; Field<Slider>(page, "cursor").Value = 3; card.Scope.SelectedIndex = 1; Pump();
+        static DateTimeOffset Utc(DateTime local) => new DateTimeOffset(local, TimeZoneInfo.Local.GetUtcOffset(local)).ToUniversalTime();
+        var whole = new ConnectionHistoryQuery(Utc(fromLocal), Utc(toLocal), "8.8", "US", ConnectionDirection.Received, 0, 200, "BROWSER");
+        var exportTo = PageType.GetMethod("ExportDestinationsToPathAsync", All)!;
+        Task ExportTo(string path) => (Task)exportTo.Invoke(page, [path])!;
+        string root = Path.Combine(Path.GetTempPath(), "DeadWare-destinations-export-" + Guid.NewGuid().ToString("N")); Directory.CreateDirectory(root);
+        try
+        {
+            string fresh = Path.Combine(root, "destinations.csv");
+            var exporting = ExportTo(fresh); PumpUntil(() => exporting.IsCompleted); exporting.GetAwaiter().GetResult();
+            var call = Assert.Single(calls); Assert.Equal((fresh, whole, DestinationScope.Internet), call);
+            Assert.Equal("CSV exported to a new file. Saved history is unchanged.", status.Text); Assert.True(button.IsEnabled); Assert.True(csv.IsEnabled);
+            // An existing file is refused before the export runs.
+            string existing = Path.Combine(root, "existing.csv"); File.WriteAllText(existing, "keep");
+            var refused = ExportTo(existing); Assert.True(refused.IsCompleted); Assert.Single(calls); Assert.Equal("keep", File.ReadAllText(existing));
+            Assert.Equal("That file already exists; exports never overwrite. Choose a new file name.", status.Text);
+            // While Export CSV runs this button is disabled and starts nothing; while this one runs Export CSV is disabled and starts nothing.
+            var csvDone = new TaskCompletionSource(); int csvCalls = 0;
+            PageType.GetField("exportHistory", All)!.SetValue(page, (Func<string, ConnectionHistoryQuery, Task>)((_, _) => { csvCalls++; return csvDone.Task; }));
+            var csvExport = (Task)PageType.GetMethod("ExportToPathAsync", All)!.Invoke(page, [Path.Combine(root, "connections.csv"), whole])!;
+            Assert.False(button.IsEnabled); Assert.False(csv.IsEnabled);
+            var skipped = ExportTo(Path.Combine(root, "skipped.csv")); Assert.True(skipped.IsCompleted); Assert.Single(calls);
+            csvDone.SetResult(); PumpUntil(() => csvExport.IsCompleted); Assert.True(button.IsEnabled); Assert.True(csv.IsEnabled);
+            var mine = new TaskCompletionSource(); result = () => mine.Task;
+            var running = ExportTo(Path.Combine(root, "running.csv")); Assert.Equal(2, calls.Count);
+            Assert.False(button.IsEnabled); Assert.False(csv.IsEnabled);
+            var csvSkipped = (Task)PageType.GetMethod("ExportToPathAsync", All)!.Invoke(page, [Path.Combine(root, "connections-2.csv"), whole])!; Assert.True(csvSkipped.IsCompleted); Assert.Equal(1, csvCalls);
+            Field<ComboBox>(page, "mode").SelectedIndex = 0; Assert.False(button.IsEnabled); Assert.Equal("Export is available in History.", button.ToolTip);
+            Field<ComboBox>(page, "mode").SelectedIndex = 1; Pump(); Assert.False(button.IsEnabled);
+            mine.SetResult(); PumpUntil(() => running.IsCompleted); Assert.True(button.IsEnabled); Assert.True(csv.IsEnabled);
+            // The TEMP limit names itself; any other failure uses Export CSV's text.
+            result = () => Task.FromException(new ConnectionHistoryLimitException(new IOException()));
+            var limited = ExportTo(Path.Combine(root, "limited.csv")); PumpUntil(() => limited.IsCompleted);
+            Assert.Equal("This interval holds too many saved rows to export destinations. Choose a shorter interval.", status.Text); Assert.True(button.IsEnabled);
+            result = () => Task.FromException(new UnauthorizedAccessException());
+            var failed = ExportTo(Path.Combine(root, "failed.csv")); PumpUntil(() => failed.IsCompleted);
+            Assert.Equal("Export failed (UnauthorizedAccessException); choose a new writable file.", status.Text); Assert.True(button.IsEnabled);
+        }
+        finally { Directory.Delete(root, true); }
     }
     private static void CheckHistoryLimitError(UiSession session)
     {

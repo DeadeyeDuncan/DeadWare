@@ -337,6 +337,28 @@ public class ConnectionServiceTests
         service.TryRecord(Reading(1,1));await service.ReloadGeolocationAsync().WaitAsync(TimeSpan.FromSeconds(10));
         Assert.Null(Assert.Single(service.Live.Connections).Location);await service.StopAsync();
     }
+    [Fact] public async Task Destinations_export_writes_a_new_utf8_file_without_a_bom_and_never_overwrites()
+    {
+        string root=System.IO.Path.Combine(System.IO.Path.GetTempPath(),"DeadWare-connections-"+Guid.NewGuid().ToString("N"));string path=System.IO.Path.Combine(root,"history.db");
+        var store=new ConnectionHistoryStore(path);store.Initialize();
+        store.Append([new("saved","saved",Reading(1,1).Connections!.Deltas[0],null,null,true)],[],Epoch.AddSeconds(70));
+        var service=new ConnectionService(path,new Resolver(_=>null),()=>Epoch.AddSeconds(100));string target=System.IO.Path.Combine(root,"destinations.csv");
+        try
+        {
+            await service.ExportDestinationsCsvAsync(target,new(Epoch,Epoch.AddMinutes(2)),DestinationScope.Internet);
+            byte[] bytes=await System.IO.File.ReadAllBytesAsync(target);
+            Assert.False(bytes.Length>=3&&bytes[0]==0xEF&&bytes[1]==0xBB&&bytes[2]==0xBF,"The export starts with a UTF-8 BOM.");
+            string[] lines=System.Text.Encoding.UTF8.GetString(bytes).Split(['\r','\n'],StringSplitOptions.RemoveEmptyEntries);
+            Assert.Equal("Address,Class,CountryCode,Country,Region,City,Latitude,Longitude,Applications,ApplicationNames,Ports,PortList,ReceivedBytes,SentBytes,Minutes,FirstSeenUtc,LastSeenUtc,Complete",lines[0]);
+            Assert.StartsWith("8.8.8.8,Internet,",Assert.Single(lines.Skip(1)));
+            // The Local scope leaves only the header.
+            string local=System.IO.Path.Combine(root,"local.csv");await service.ExportDestinationsCsvAsync(local,new(Epoch,Epoch.AddMinutes(2)),DestinationScope.Local);
+            Assert.Single((await System.IO.File.ReadAllTextAsync(local)).Split(['\r','\n'],StringSplitOptions.RemoveEmptyEntries));
+            await Assert.ThrowsAsync<System.IO.IOException>(()=>service.ExportDestinationsCsvAsync(target,new(Epoch,Epoch.AddMinutes(2)),DestinationScope.All));
+            Assert.Equal(bytes,await System.IO.File.ReadAllBytesAsync(target));
+        }
+        finally {await service.StopAsync();System.IO.Directory.Delete(root,true);}
+    }
     [Fact] public async Task Export_refuses_to_overwrite_an_existing_file_and_preserves_its_bytes()
     {
         string root=System.IO.Path.Combine(System.IO.Path.GetTempPath(),"DeadWare-connections-"+Guid.NewGuid().ToString("N"));System.IO.Directory.CreateDirectory(root);
