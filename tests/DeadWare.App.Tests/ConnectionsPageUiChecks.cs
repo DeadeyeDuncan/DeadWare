@@ -481,8 +481,10 @@ internal static class ConnectionsPageUiChecks
         ConnectionLiveView With(int s, params LocatedConnection[] extra) => live with { Timestamp = live.Timestamp.AddSeconds(s), Connections = [.. live.Connections, .. extra] };
         card.Hold.PointerOver = true;
         connections.ApplyLive(With(201, big)); Assert.Equal(["8.8.8.8", "9.9.9.9", "192.168.1.1", "1.1.1.1"], Keys(card)); Assert.True(kept.SequenceEqual(card.Rows.Take(3)));
-        // During the hold, F5, a header click and a Live search change each re-sort at once.
+        // During the hold, F5, a header click and a Live search change each re-sort at once; a selected row that F5 moves stays selected.
+        Select(card, "1.1.1.1"); var moved = card.Grid.SelectedItem;
         Press(card.Grid, System.Windows.Input.Key.F5); Assert.Equal(["1.1.1.1", "8.8.8.8", "9.9.9.9", "192.168.1.1"], Keys(card));
+        Assert.Same(moved, card.Grid.SelectedItem); Assert.Equal("1.1.1.1", card.Selected?.Address); card.ClearSelection();
         connections.ApplyLive(With(202, small)); Assert.Equal(["1.1.1.1", "8.8.8.8", "9.9.9.9", "192.168.1.1"], Keys(card));
         Sort(card, "RECEIVED"); Assert.Equal(["1.1.1.1", "192.168.1.1", "9.9.9.9", "8.8.8.8"], Keys(card));
         Sort(card, "RECEIVED"); Assert.Equal(["8.8.8.8", "9.9.9.9", "192.168.1.1", "1.1.1.1"], Keys(card));

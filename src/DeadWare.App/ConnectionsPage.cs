@@ -270,7 +270,7 @@ internal sealed class ConnectionsPage : Grid
         if(query is null || displayedHistoryQuery is null || !SameHistoryContext(displayedHistoryQuery,query))
         {
             displayedHistoryQuery=null; rows=[];
-            selectedKey=null; map.SetData([],null,true,"Reading saved history…"); RefreshMappedConnections(); summary.Text="History · Reading saved observations…"; summary.ToolTip=null;
+            selectedKey=null; map.SetData([],null,true,"Reading saved history…"); RefreshMappedConnections(); UpdateDestinationHighlight(); summary.Text="History · Reading saved observations…"; summary.ToolTip=null;
         }
         // The Destinations rows clear only for a new whole-interval context: a cursor move or a playback step keeps them until the next view.
         if(query is null || whole is null || !SameContext(whole,destinationsWhole))
@@ -467,8 +467,10 @@ internal sealed class ConnectionsPage : Grid
     /// <summary>Clears the Destinations selection, the map highlight and the status line.</summary>
     private void ClearDestinationSelection()
     {
+        // Clearing a selection raises SelectionChanged, which updates the highlight; with nothing selected, update it here.
+        bool selected = destinations.Selected is not null;
         destinations.ClearSelection();
-        UpdateDestinationHighlight();
+        if (!selected) UpdateDestinationHighlight();
     }
     /// <summary>Selecting a row clears the node selection and its detail box, then highlights the row's points; the map may turn once for it.</summary>
     private void OnDestinationSelectionChanged()
@@ -491,10 +493,12 @@ internal sealed class ConnectionsPage : Grid
         }
         if (selected is null) { turnPending = false; destinations.SetStatus(""); return; }
         var nodes = map.DisplayedPoints.Where(p => map.HighlightedKeys.Contains(p.Key)).ToList();
-        if (turnPending)
+        // The turn waits while the row has points but no highlighted node is displayed, as while History reads after clearing the map;
+        // a row without points uses it up, so a location found later keeps the camera.
+        if (turnPending && (nodes.Count > 0 || keys.Count == 0))
         {
             turnPending = false;
-            if (nodes.Count > 0 && nodes.All(p => map.PointPosition(p.Key) is null))
+            if (nodes.All(p => map.PointPosition(p.Key) is null))
                 map.SetView(nodes.MaxBy(p => (double)p.ReceivedBytes + p.SentBytes)!.Point, map.Camera.Zoom);
         }
         destinations.SetStatus(nodes.Count > 0 ? DestinationCopy.Highlighted(nodes.Count) : keys.Count > 0 ? DestinationCopy.NotAmongDrawn : DestinationCopy.NotOnMap(selected.Class.Kind));
