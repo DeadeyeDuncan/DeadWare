@@ -41,6 +41,11 @@ public class ProcessTableTests
         Assert.Equal([2,9],new[]{S(9,"a",5),S(2,"a",5)}.Order(Comparer<ProcessSample>.Create((x,y)=>ProcessSort.Compare(x,y,"cpu",true))).Select(p=>p.Pid));}
     [Fact] public void An_app_sums_each_engine_across_members(){ var r=G(GS(1,[U(0xA,1,50,"Copy"),U(0xA,0,30)]),GS(2,[U(0xA,0,40)]));
         Assert.Equal(70,r.Gpu);Assert.Equal("GPU 0 · 3D",r.GpuBusiest!.Label);Assert.Equal(70,r.GpuBusiest.Percent);}   // no member's own busiest
+    [Fact] public void The_cached_gpu_use_keeps_record_equality_and_follows_a_new_member_list(){ var a=G(GS(1,[U(0xA,0,30)]));var copy=a with{};
+        // a has worked out its GPU use and the copy has not; they are still equal, with equal hash codes.
+        Assert.Equal(30,a.Gpu);Assert.Equal(a,copy);Assert.Equal(a.GetHashCode(),copy.GetHashCode());
+        var other=a with{Members=[GS(2,[U(0xA,1,60,"Copy")])]};Assert.Equal(60,other.Gpu);Assert.Equal("GPU 0 · Copy",other.GpuBusiest!.Label);Assert.NotEqual(a,other);
+        Assert.Equal(30,a.Gpu);Assert.Equal(30,copy.Gpu);}
     [Fact] public void Two_phys_values_under_one_luid_stay_apart()=>Assert.Equal(40,G(GS(1,[U(0xA,0,30,phys:0)]),GS(2,[U(0xA,0,40,phys:1)])).Gpu);
     [Fact] public void Empty_lists_are_zero_and_all_unknown_is_unknown(){ var zero=G(GS(1,[]),S(2,"a.exe",1));Assert.Equal(0,zero.Gpu);Assert.Null(zero.GpuBusiest);Assert.Equal("",ProcessGrouping.EngineText(zero));
         var unknown=G(S(1,"a.exe",1),S(2,"a.exe",1));Assert.Null(unknown.Gpu);Assert.Null(ProcessGrouping.EngineText(unknown));}

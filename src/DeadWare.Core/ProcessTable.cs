@@ -45,10 +45,24 @@ public sealed record ProcessAppRow(string Key,string Name,IReadOnlyList<ProcessS
     public double? Network=>Sum("network");
     public double? Download=>Sum("download");
     public double? Upload=>Sum("upload");
+    sealed record GpuUseCache(IReadOnlyList<ProcessSample> Members,double? Percent,GpuEngineUse? Busiest);
+    // GpuUse runs once per member list rather than on each of the several reads per row per render and per sort comparison. Keyed by the list,
+    // so a copy made with a new list works its own out; Equals and GetHashCode below leave it out, so equality stays the positional members'.
+    GpuUseCache? gpuUse;
     /// <summary>The busiest engine across members, with the clamped sum as its Percent; see <see cref="ProcessGrouping.GpuUse"/>.</summary>
-    (double? Percent,GpuEngineUse? Busiest) Use=>ProcessGrouping.GpuUse(Members);
+    GpuUseCache Use
+    {
+        get
+        {
+            if(gpuUse is{} cached&&ReferenceEquals(cached.Members,Members))return cached;
+            var (percent,busiest)=ProcessGrouping.GpuUse(Members);
+            return gpuUse=new(Members,percent,busiest);
+        }
+    }
     public double? Gpu=>Use.Percent;
     public GpuEngineUse? GpuBusiest=>Use.Busiest;
+    public bool Equals(ProcessAppRow? other)=>other is not null&&Key==other.Key&&Name==other.Name&&EqualityComparer<IReadOnlyList<ProcessSample>>.Default.Equals(Members,other.Members);
+    public override int GetHashCode()=>HashCode.Combine(Key,Name,Members);
     public double? GpuMemory=>Sum("gpumemory");
     public double? GpuShared=>Sum("gpushared");
     double? Sum(string key)
