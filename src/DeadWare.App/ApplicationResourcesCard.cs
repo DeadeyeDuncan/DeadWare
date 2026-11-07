@@ -1,3 +1,5 @@
+using System.Collections.ObjectModel;
+using System.ComponentModel;
 using System.Globalization;
 using System.Windows;
 using System.Windows.Automation;
@@ -17,7 +19,34 @@ namespace DeadWare.App;
 internal sealed class ApplicationResourcesCard : StackPanel
 {
     private sealed record RankChoice(string Label, ProcessRank Rank) { public override string ToString() => Label; }
-    private sealed record ResourceRow(string Name, string CpuTime, string AverageCpu, string AverageMemory, string IoRead, string IoWritten, string MinutesListed);
+    /// <summary>One application's row, kept per key and updated in place by each refresh, so the minute refresh keeps its container, the
+    /// current cell, the keyboard focus and the scroll offset.</summary>
+    private sealed class ResourceRow(string key, string name) : INotifyPropertyChanged
+    {
+        internal string Key { get; } = key;
+        public string Name { get; } = name;
+        public string CpuTime { get; private set; } = "";
+        public string AverageCpu { get; private set; } = "";
+        public string AverageMemory { get; private set; } = "";
+        public string IoRead { get; private set; } = "";
+        public string IoWritten { get; private set; } = "";
+        public string MinutesListed { get; private set; } = "";
+        public event PropertyChangedEventHandler? PropertyChanged;
+
+        /// <summary>Shows <paramref name="row"/>'s numbers, raising <see cref="PropertyChanged"/> only when a cell changed.</summary>
+        internal ResourceRow Update(ProcessResourceRow row)
+        {
+            var cells = (Duration(row.CpuSeconds), row.AverageCpuPercent.ToString("0.#", CultureInfo.CurrentCulture) + " %", Ui.Bytes(row.AverageMemoryBytes),
+                Ui.Bytes(row.IoRead), Ui.Bytes(row.IoWritten), row.MinutesListed.ToString("N0", CultureInfo.CurrentCulture));
+            if (cells == (CpuTime, AverageCpu, AverageMemory, IoRead, IoWritten, MinutesListed)) return this;
+            (CpuTime, AverageCpu, AverageMemory, IoRead, IoWritten, MinutesListed) = cells;
+            PropertyChanged?.Invoke(this, new(string.Empty));
+            return this;
+        }
+
+        // A row's automation name falls back to ToString().
+        public override string ToString() => Name;
+    }
     private const string Title = "Application resources", LoadingText = "Loading application resources…";
     private const string NotKept = "Application resources are kept for 30 days; earlier minutes are not kept.";
     private static readonly TimeSpan Settle = TimeSpan.FromMilliseconds(250);
@@ -32,6 +61,7 @@ internal sealed class ApplicationResourcesCard : StackPanel
     private readonly Grid shareBar = new() { Height = 14, Margin = new(0, 6, 0, 10), Visibility = Visibility.Collapsed };
     private readonly DataGrid table = new() { AutoGenerateColumns = false, IsReadOnly = true, HeadersVisibility = DataGridHeadersVisibility.Column, MaxHeight = 420,
         CanUserSortColumns = false, SelectionMode = DataGridSelectionMode.Single };
+    private readonly ObservableCollection<ResourceRow> rows = [];
     private readonly TextBlock summary = Ui.Text(LoadingText, 12, "Muted"), retention = Ui.Text("", 12, "Muted"), gapNotice = Ui.Text("", 12, "Warning");
     private readonly TextBlock chartHint = Ui.Text("", 11, "Muted"), chartTitle = Ui.Text("", 13, "Heading", "HeadingFont");
     private readonly TextBlock status = Ui.Text("", 11, "Muted"), storage = Ui.Text("", 11, "Muted");
@@ -70,7 +100,7 @@ internal sealed class ApplicationResourcesCard : StackPanel
         Column("Application", nameof(ResourceRow.Name), 2.4); Column("CPU time", nameof(ResourceRow.CpuTime), 1.1);
         Column("Avg CPU", nameof(ResourceRow.AverageCpu), 0.9); Column("Avg memory while listed", nameof(ResourceRow.AverageMemory), 1.5);
         Column("I/O read", nameof(ResourceRow.IoRead), 1); Column("I/O written", nameof(ResourceRow.IoWritten), 1); Column("Minutes listed", nameof(ResourceRow.MinutesListed), 1);
-        AutomationProperties.SetName(table, "Application resources");
+        AutomationProperties.SetName(table, "Application resources"); table.ItemsSource = rows;
         frame = Ui.Panel(table, new Thickness(0)); frame.Margin = new(0, 6, 0, 8); Children.Add(frame);
         Note(chartHint, ""); Children.Add(chartHint);
         chart.Children.Add(chartTitle); chart.Children.Add(Chart); Children.Add(chart);
@@ -197,7 +227,7 @@ internal sealed class ApplicationResourcesCard : StackPanel
     {
         View = null; SelectedApp = null; pending = reason; summary.Text = reason;
         syncing = true;
-        try { table.ItemsSource = Array.Empty<ResourceRow>(); }
+        try { rows.Clear(); }
         finally { syncing = false; }
         shareBar.Children.Clear(); shareBar.ColumnDefinitions.Clear(); shareBar.Visibility = Visibility.Collapsed;
         Note(retention, ""); Note(gapNotice, ""); storage.Text = ""; frame.Visibility = Visibility.Visible;
@@ -263,11 +293,19 @@ internal sealed class ApplicationResourcesCard : StackPanel
             // Everything else always stays, whatever the search.
             listed.Add(view.EverythingElse);
         }
-        var rows = listed.Select(Row).ToList();
+        // Removing the selected row (a search hid it) does not clear SelectedApp: the row is selected again when it comes back.
         syncing = true;
         try
         {
-            table.ItemsSource = rows;
+            // Each listed application keeps its row and only its numbers change. A name whose casing changed (its old minutes expired)
+            // gets a new row, so the old casing is never shown.
+            var current = rows.ToDictionary(r => r.Key, StringComparer.Ordinal);
+            var target = listed.Select(r => (current.GetValueOrDefault(Key(r)) ?? new ResourceRow(Key(r), r.Name)).Update(r)).ToList();
+            // As on the Processes page: gone rows leave, kept rows move as few as the planner allows, and new rows go in at their place.
+            var keep = target.ToHashSet();
+            for (int i = rows.Count - 1; i >= 0; i--) if (!keep.Contains(rows[i])) rows.RemoveAt(i);
+            foreach (var move in CalmOrderPlanner.Plan([.. rows.Select(r => r.Key)], [.. target.Select(r => r.Key)])) rows.Move(move.From, move.To);
+            for (int i = 0; i < target.Count; i++) if (i >= rows.Count || !ReferenceEquals(rows[i], target[i])) rows.Insert(i, target[i]);
             table.SelectedItem = rows.FirstOrDefault(r => r.Name.Equals(SelectedApp, StringComparison.OrdinalIgnoreCase));
         }
         finally { syncing = false; }
@@ -366,9 +404,8 @@ internal sealed class ApplicationResourcesCard : StackPanel
         _ => ("B/s", null, "I/O read + written per second", "I/O", Theme.GraphKey("diskread")),
     };
 
-    private static ResourceRow Row(ProcessResourceRow row) => new(row.Name, Duration(row.CpuSeconds),
-        row.AverageCpuPercent.ToString("0.#", CultureInfo.CurrentCulture) + " %", Ui.Bytes(row.AverageMemoryBytes), Ui.Bytes(row.IoRead),
-        Ui.Bytes(row.IoWritten), row.MinutesListed.ToString("N0", CultureInfo.CurrentCulture));
+    /// <summary>A row's identity: its image name, ordinal, or "*" for Everything else (no image name can be "*").</summary>
+    private static string Key(ProcessResourceRow row) => row.EverythingElse ? "*" : row.Name;
     private void Column(string title, string binding, double weight)
         => table.Columns.Add(new DataGridTextColumn { Header = title, Binding = new Binding(binding), Width = new DataGridLength(weight, DataGridLengthUnitType.Star) });
     private static void Note(TextBlock note, string text) { note.Text = text; note.Visibility = text.Length == 0 ? Visibility.Collapsed : Visibility.Visible; }
