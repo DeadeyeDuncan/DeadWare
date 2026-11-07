@@ -7,12 +7,15 @@ internal sealed record GpuCounterTake(GpuCounterRead Read,bool Fresh,double? Rea
 
 /// <summary>
 /// Reads GPU counters on their own task once <see cref="GpuPlacementGuard"/> moves them off the poll (spec, Placement and cost), in
-/// <see cref="StorageSensorLoop"/>'s style: one read at a time, timed on the collector's monotonic clock, each a <see cref="Period"/> after the
-/// previous one returned, and none while <c>enabled</c> is false. Nothing else may use the source until <see cref="Stopped"/> completes.
+/// <see cref="StorageSensorLoop"/>'s style: one read at a time, timed on the collector's monotonic clock, and none while <c>enabled</c> is false.
+/// Each read comes a <see cref="Period"/> after the previous one returned, the first a Period after the loop starts. Nothing else may use the
+/// source until <see cref="Stopped"/> completes.
 /// </summary>
 internal sealed class GpuCounterLoop(IGpuCounterSource source,Func<double> monotonic,Func<double> pollingInterval,Func<bool> enabled) : IAsyncDisposable
 {
     private static readonly TimeSpan DisposeBudget=TimeSpan.FromSeconds(5);
+    // The longest single wait, so a shorter polling interval shortens the current wait within this long.
+    private const double WaitStepSeconds=0.5;
     // Never disposed, so a later Start or DisposeAsync cannot throw ObjectDisposedException.
     private readonly CancellationTokenSource cancellation=new();
     private readonly TaskCompletionSource stopped=new(TaskCreationOptions.RunContinuationsAsynchronously),disposed=new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -28,8 +31,9 @@ internal sealed class GpuCounterLoop(IGpuCounterSource source,Func<double> monot
     public Task Stopped=>stopped.Task;
     public void Start() {if(Interlocked.Exchange(ref started,1)==0)_=Task.Run(RunAsync);}
     /// <summary>
-    /// Null before the first completed read and after a disabled pass dropped it. The latest completed read comes back fresh once; later takes
-    /// return it again without credit, for display only, until a newer read replaces it. A read replaced before any take is never returned.
+    /// Null before the first completed read, after a disabled pass dropped it and once the loop has stopped. The latest completed read comes
+    /// back fresh once; later takes return it again without credit, for display only, until a newer read replaces it. A read replaced before
+    /// any take is never returned.
     /// </summary>
     public GpuCounterTake? Take()
     {
@@ -44,33 +48,55 @@ internal sealed class GpuCounterLoop(IGpuCounterSource source,Func<double> monot
     {
         var token=cancellation.Token;
         var closed=false;
+        // The poll that started the loop has just read, so the first loop read also waits a period.
+        var from=monotonic();
         try
         {
-            while(!token.IsCancellationRequested)
+            while(true)
             {
+                await WaitForPeriodAsync(from,token).ConfigureAwait(false);
                 if(enabled())
                 {
                     closed=false;
                     var readStart=monotonic();
                     var read=source.Read(readStart,pollingInterval());
-                    var milliseconds=(monotonic()-readStart)*1000;
-                    lock(gate) {latest=read;untaken=milliseconds;}
+                    from=monotonic();
+                    lock(gate) {latest=read;untaken=(from-readStart)*1000;}
                 }
-                else if(!closed)
+                else
                 {
-                    source.Close();
-                    closed=true;
-                    lock(gate) {latest=null;untaken=null;}
+                    if(!closed)
+                    {
+                        source.Close();
+                        closed=true;
+                        lock(gate) {latest=null;untaken=null;}
+                    }
+                    from=monotonic();
                 }
-                await Task.Delay(TimeSpan.FromSeconds(Period(pollingInterval())),token).ConfigureAwait(false);
             }
         }
         catch(OperationCanceledException) when(token.IsCancellationRequested) {}
         finally
         {
+            lock(gate) {latest=null;untaken=null;}
             // After the last read has returned, never under it.
             try {source.Close();}
             finally {stopped.TrySetResult();}
+        }
+    }
+    /// <summary>
+    /// Returns once <see cref="Period"/> of the current polling interval has passed since <paramref name="from"/>. It waits in steps of at
+    /// most <see cref="WaitStepSeconds"/> and re-reads the interval at each, so a change takes effect within a step; it throws once cancelled.
+    /// </summary>
+    private async Task WaitForPeriodAsync(double from,CancellationToken token)
+    {
+        while(true)
+        {
+            token.ThrowIfCancellationRequested();
+            var left=from+Period(pollingInterval())-monotonic();
+            if(left<=0)return;
+            // Whole milliseconds, rounded up: Task.Delay truncates, and a sub-millisecond wait would return at once and spin.
+            await Task.Delay(TimeSpan.FromMilliseconds(Math.Ceiling(Math.Min(WaitStepSeconds,left)*1000)),token).ConfigureAwait(false);
         }
     }
     /// <summary>
