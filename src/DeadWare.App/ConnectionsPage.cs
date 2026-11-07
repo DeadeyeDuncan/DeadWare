@@ -223,6 +223,7 @@ internal sealed class ConnectionsPage : Grid
             {
                 pending = null; long requested = generation; var token = queryCancellation!.Token; capture.Text = "Reading saved history…";
                 try { var result = await readHistory(query); if (!token.IsCancellationRequested && requested == generation && IsHistory) ApplyHistory(result); }
+                catch (ConnectionHistoryLimitException) { if (!token.IsCancellationRequested && requested == generation && IsHistory) { actionStatus.Text = "This interval holds too many saved rows to show. Choose a shorter interval."; ApplyHistory(Empty(query, "History unavailable; no saved observations shown.")); StopPlayback(); } }
                 catch (Exception error) { if (!token.IsCancellationRequested && requested == generation && IsHistory) { actionStatus.Text = $"History could not be read ({error.GetType().Name})."; ApplyHistory(Empty(query, "History unavailable; no saved observations shown.")); StopPlayback(); } }
             }
         }
