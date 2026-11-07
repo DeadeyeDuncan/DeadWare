@@ -11,6 +11,12 @@ public sealed class ConnectionMap : FrameworkElement
 {
     private MapCamera camera = new(-20, 20, 1, false);
     private IReadOnlyList<ConnectionMapPoint> points = [];
+    /// <summary>The last <see cref="SetData"/> input, regrouped when the highlight changes.</summary>
+    private IReadOnlyList<ConnectionMapPoint> input = [];
+    private HashSet<(double Latitude, double Longitude)> highlighted = [];
+    /// <summary>The last <see cref="SelectPoint"/> key, re-applied by a regroup; a new <see cref="SetData"/> input carries its own selection.</summary>
+    private bool pointSelected;
+    private string? selectedPoint;
     private GeoPoint? origin;
     private string status = "Waiting for connections";
     private bool available, enabled = true, loaded, subscribed, mapOnly;
@@ -64,11 +70,13 @@ public sealed class ConnectionMap : FrameworkElement
         SetResourceReference(PaletteProperty, "Ink");
         SetResourceReference(DownloadProperty, Theme.GraphKey("download"));
         SetResourceReference(UploadProperty, Theme.GraphKey("upload"));
+        SetResourceReference(AccentProperty, "Accent");
     }
 
     private static readonly DependencyProperty PaletteProperty = DependencyProperty.Register("Palette", typeof(Brush), typeof(ConnectionMap), new FrameworkPropertyMetadata(null, FrameworkPropertyMetadataOptions.AffectsRender));
     private static readonly DependencyProperty DownloadProperty = DependencyProperty.Register("Download", typeof(Brush), typeof(ConnectionMap), new FrameworkPropertyMetadata(null, FrameworkPropertyMetadataOptions.AffectsRender));
     private static readonly DependencyProperty UploadProperty = DependencyProperty.Register("Upload", typeof(Brush), typeof(ConnectionMap), new FrameworkPropertyMetadata(null, FrameworkPropertyMetadataOptions.AffectsRender));
+    private static readonly DependencyProperty AccentProperty = DependencyProperty.Register("Accent", typeof(Brush), typeof(ConnectionMap), new FrameworkPropertyMetadata(null, FrameworkPropertyMetadataOptions.AffectsRender));
     public bool Flat { get => camera.Flat; set { if (camera.Flat != value) ChangeCamera(camera with { Flat = value }); } }
     public bool MapOnly { get => mapOnly; set { if (mapOnly != value) { mapOnly = value; cachedCamera = null; routesDirty = true; InvalidateVisual(); } } }
     public bool AnimationEnabled { get => enabled; set { enabled = value; UpdateAnimation(); InvalidateVisual(); } }
@@ -78,8 +86,21 @@ public sealed class ConnectionMap : FrameworkElement
     public IReadOnlyList<ConnectionMapPoint> DisplayedPoints => points;
     public void SelectPoint(string? key)
     {
-        points=Array.AsReadOnly(points.Select(p=>p with {Selected=p.Key==key}).ToArray());
+        pointSelected=true; selectedPoint=key;
+        points=Selecting(points,key);
         routesDirty=true; InvalidateVisual();
+    }
+    private static IReadOnlyList<ConnectionMapPoint> Selecting(IReadOnlyList<ConnectionMapPoint> points,string? key)=>Array.AsReadOnly(points.Select(p=>p with {Selected=p.Key==key}).ToArray());
+    /// <summary>Displayed nodes whose location key is highlighted.</summary>
+    public IReadOnlyList<string> HighlightedKeys { get; private set; } = [];
+    private bool IsHighlighted(ConnectionMapPoint point) => highlighted.Count > 0 && highlighted.Contains(ConnectionProjection.LocationKey(point.Point));
+    /// <summary>Highlights the nodes at these locations (null or empty clears). Regroups only when the location key set changes.</summary>
+    public void Highlight(IReadOnlyCollection<GeoPoint>? locations)
+    {
+        var next=(locations??[]).Where(ConnectionProjection.IsValid).Select(ConnectionProjection.LocationKey).ToHashSet();
+        if(next.SetEquals(highlighted))return;
+        highlighted=next;
+        StepMotion(); Regroup();
     }
     public event Action? ViewChanged;
     public Point? PointPosition(string key)
@@ -105,15 +126,22 @@ public sealed class ConnectionMap : FrameworkElement
     public void SetData(IReadOnlyList<ConnectionMapPoint> points, GeoPoint? origin, bool available, string status)
     {
         StepMotion();
-        var grouped = ConnectionProjection.Group(points);
-        this.points = grouped.Points; OverflowCount = grouped.Overflow;
+        input = points; pointSelected = false; selectedPoint = null;
         var nextOrigin = origin is not null && ConnectionProjection.IsValid(origin) ? origin : null;
         if(this.origin!=nextOrigin){activity.Clear();projectionDirty=true;}
         this.origin = nextOrigin;
         this.available = available; this.status = status.Length > 240 ? status[..240] : status;
-        var keys=this.points.Select(p=>(p.Key,p.Point)).ToHashSet();
+        Regroup();
+    }
+    /// <summary>Groups the stored input under the current highlight, re-applies the stored <see cref="SelectPoint"/> key and redraws.</summary>
+    private void Regroup()
+    {
+        var grouped = ConnectionProjection.Group(input, highlighted.Count > 0 ? highlighted : null);
+        points = pointSelected ? Selecting(grouped.Points, selectedPoint) : grouped.Points; OverflowCount = grouped.Overflow;
+        HighlightedKeys = Array.AsReadOnly(points.Where(IsHighlighted).Select(p => p.Key).ToArray());
+        var keys=points.Select(p=>(p.Key,p.Point)).ToHashSet();
         foreach(var key in activity.Keys.Where(k=>!keys.Contains(k)).ToArray())activity.Remove(key);
-        foreach(var point in this.points)
+        foreach(var point in points)
         {
             var key=(point.Key,point.Point);
             bool receive=available&&point.ReceiveActive&&point.ReceivedBytes>0,send=available&&point.SendActive&&point.SentBytes>0;
@@ -122,7 +150,7 @@ public sealed class ConnectionMap : FrameworkElement
         }
         routesDirty = true;
         UpdateAnimation();
-        AutomationProperties.SetName(this, "Connections map. " + StatusSummary);
+        AutomationProperties.SetName(this, "Connections map. " + StatusSummary + (HighlightedKeys.Count > 0 ? $" · {HighlightedKeys.Count} highlighted" : ""));
         InvalidateVisual();
     }
 
@@ -330,7 +358,7 @@ public sealed class ConnectionMap : FrameworkElement
     {
         if(route.Samples.Length==0||route.Segments.Length==0)return;
         route.Arc??=Polyline(route.Segments,0);
-        bool selected=route.Data.Selected||route.Data.Key==HoveredKey;
+        bool selected=route.Data.Selected||route.Data.Key==HoveredKey||IsHighlighted(route.Data);
         // A silent peer keeps a faint download-colored arc so its location still connects to the origin.
         bool hasDownload=route.Data.ReceivedBytes>0||route.Data.SentBytes==0,hasUpload=route.Data.SentBytes>0,both=hasDownload&&hasUpload;
         if(hasDownload)DrawDirection(dc,route,true,download,both,selected,glow);
@@ -393,7 +421,7 @@ public sealed class ConnectionMap : FrameworkElement
         // Gradients (ocean, limb) need glass or Blackout too: disabled transparency stays flat.
         bool gradients = glow;
         var ink = Theme.Brush("Ink"); var muted = Theme.Brush("Muted"); var hairline = Theme.Brush("Hairline");
-        var download = Theme.Brush(Theme.GraphKey("download")); var upload = Theme.Brush(Theme.GraphKey("upload"));
+        var download = Theme.Brush(Theme.GraphKey("download")); var upload = Theme.Brush(Theme.GraphKey("upload")); var accent = Theme.Brush("Accent");
         // One cache key and four halo brushes per render; the node and particle loops allocate nothing.
         string theme = Theme.CurrentName + "|" + Theme.GlassEnabled + "|" + Flat + "|" + MapOnly;
         if (theme != brushTheme) { brushes.Clear(); brushTheme = theme; }
@@ -453,13 +481,14 @@ public sealed class ConnectionMap : FrameworkElement
             if (!projected.Visible) continue;
             var center = Pixel(projected); if (!bounds.Contains(center)) continue;
             hitPoints.Add((center, route.Data.Key));
-            bool selected = route.Data.Selected || route.Data.Key == HoveredKey;
+            bool highlight = IsHighlighted(route.Data), selected = route.Data.Selected || route.Data.Key == HoveredKey || highlight;
             double level = Math.Max(route.Activity.Download.Level, route.Activity.Upload.Level);
             double radius = (route.Radius + (selected ? 1.5 : 0)) * scale;
             if (subscribed) radius += .25 * scale * level * Math.Sin(phase * 2);
             bool receives = route.Data.ReceivedBytes > 0; var brush = receives ? download : upload; var halo = receives ? downloadHalo : uploadHalo;
             if (halo is not null) dc.DrawEllipse(halo, null, center, radius * 3, radius * 3);
             dc.DrawEllipse(brush, Stroke(ink, (selected ? 1.2 : .6) * scale), center, radius, radius);
+            if (highlight) dc.DrawEllipse(null, Stroke(accent, scale), center, radius + 4 * scale, radius + 4 * scale);
             if (subscribed && level > 0)
             {
                 double pulse = phase / 1.6 - Math.Floor(phase / 1.6);
