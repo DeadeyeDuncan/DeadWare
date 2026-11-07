@@ -455,8 +455,8 @@ internal static class ConnectionsPageUiChecks
         var container = card.Grid.ItemContainerGenerator.ContainerFromItem(selected); Assert.NotNull(container);
         int changes = 0, notified = 0; card.Rows.CollectionChanged += (_, _) => changes++;
         foreach (var row in rows) row.PropertyChanged += (_, _) => notified++;
-        // A view with a new Timestamp updates the same rows in place: row containers, the selection and the scroll offset survive.
-        var second = Many(101, 7); connections.ApplyLive(second); Layout(page, 1000, 700); Pump(); Layout(page, 1000, 700);
+        // A view with a new Timestamp (every RECEIVED cell 0.5 KB higher, same order) updates the same rows in place: row containers, the selection and the scroll offset survive.
+        var second = Many(101, 500); connections.ApplyLive(second); Layout(page, 1000, 700); Pump(); Layout(page, 1000, 700);
         Assert.True(rows.SequenceEqual(card.Rows), "The rows were replaced."); Assert.Equal(0, changes); Assert.Equal(40, notified);
         Assert.Same(selected, card.Grid.SelectedItem); Assert.Same(container, card.Grid.ItemContainerGenerator.ContainerFromItem(selected)); Assert.Equal(offset, grid.VerticalOffset);
         Assert.Equal("20.0.0.6", card.Selected?.Address);
