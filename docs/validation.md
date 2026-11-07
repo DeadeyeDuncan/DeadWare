@@ -45,7 +45,7 @@ Never claimed as verified in this release:
 
 ### Results
 
-`dotnet build DeadWare.slnx -c Release -p:EnableWindowsTargeting=true --nologo` finished with 0 errors and the 14 existing warnings, none in a file this release changed. The Core suite on Linux passed 1,040 tests with 1 skipped and 26 failures, the known Windows-only Core tests that cannot run there. The App tests run only on the Windows CI build on the pull request (#84), which runs both suites on each pushed head; the latest green run at the time of writing is 42356991780 on `5965ba0` (Task 13's head, before this version bump and the final review's fixes). The run on the final head is recorded by a later `docs:` commit.
+`dotnet build DeadWare.slnx -c Release -p:EnableWindowsTargeting=true --nologo` finished with 0 errors and the 14 existing warnings, none in a file this release changed. The Core suite on Linux passed 1,055 tests with 1 skipped and 26 failures, the known Windows-only Core tests that cannot run there. The App tests run only on the Windows CI build on the pull request (#84), which runs both suites on each pushed head; it passed on `6fa4906`, which holds the final review's fixes (run 42363208485: 1,082 Core tests and 461 App tests, none skipped).
 
 ## Processes and history fixes (0.14.1, 2026-11-07)
 
