@@ -101,4 +101,10 @@ public class GpuCounterTests
         var r=R(0);Assert.Empty(r.Adapters);Assert.Single(r.Engines);R(30);Assert.Equal(1,api.AdapterReads);
         api.Adapters=[new(0xA,"NVIDIA GeForce RTX 4070",0)];Assert.Equal(0,R(60).Adapters[0xA].Number);Assert.Equal(2,api.AdapterReads);
         api.Arrays[GpuCounterKind.Engine]=new(0,[E(8,0,10,luid:0xE)]);R(61);Assert.Equal(2,api.AdapterReads);R(120);Assert.Equal(3,api.AdapterReads);}
+    [Fact] public void One_slow_read_in_twenty_keeps_every_poll_and_a_second_moves_the_read(){ var g=new GpuPlacementGuard();
+        for(int i=0;i<19;i++)g.Record(2,false);g.Record(40,false);Assert.False(g.OwnLoop);g.Record(15,false);Assert.False(g.OwnLoop);g.Record(15.01,false);Assert.True(g.OwnLoop);}
+    [Fact] public void The_first_read_after_open_is_not_counted(){ var g=new GpuPlacementGuard();g.Record(500,true);g.Record(500,true);g.Record(500,false);Assert.False(g.OwnLoop);}
+    [Fact] public void A_slow_read_leaves_the_window_after_twenty_newer(){ var g=new GpuPlacementGuard();g.Record(40,false);for(int i=0;i<20;i++)g.Record(1,false);g.Record(40,false);Assert.False(g.OwnLoop);}
+    [Fact] public void The_loop_placement_holds_until_reset(){ var g=new GpuPlacementGuard();g.Record(20,false);g.Record(20,false);for(int i=0;i<100;i++)g.Record(1,false);Assert.True(g.OwnLoop);
+        g.Reset();Assert.False(g.OwnLoop);g.Record(20,false);Assert.False(g.OwnLoop);}
 }
