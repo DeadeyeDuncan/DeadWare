@@ -312,7 +312,7 @@ internal sealed class ApplicationResourcesCard : StackPanel
         try
         {
             // Each listed application keeps its row and only its numbers change. A name whose casing changed (its old minutes expired)
-            // gets a new row, so the old casing is never shown.
+            // gets a new row, so the old casing is never shown. No two rows share a key (see Key).
             var current = rows.ToDictionary(r => r.Key, StringComparer.Ordinal);
             var target = listed.Select(r => (current.GetValueOrDefault(Key(r)) ?? new ResourceRow(Key(r), r.Name)).Update(r)).ToList();
             // As on the Processes page: gone rows leave, kept rows move as few as the planner allows, and new rows go in at their place.
@@ -418,8 +418,10 @@ internal sealed class ApplicationResourcesCard : StackPanel
         _ => ("B/s", null, "I/O read + written per second", "I/O", Theme.GraphKey("diskread")),
     };
 
-    /// <summary>A row's identity: its image name, ordinal, or "*" for Everything else (no image name can be "*").</summary>
-    private static string Key(ProcessResourceRow row) => row.EverythingElse ? "*" : row.Name;
+    /// <summary>A row's identity: its image name, ordinal, or "\0" for Everything else. Keys are unique: stored names never contain control
+    /// characters (every version of the store rejects them), so no app's name is "\0"; and the store keeps one name per <c>upper</c>, its
+    /// display fixed when first saved, and ranks one row per name, so no two apps' names are equal.</summary>
+    private static string Key(ProcessResourceRow row) => row.EverythingElse ? "\0" : row.Name;
     private void Column(string title, string binding, double weight)
         => table.Columns.Add(new DataGridTextColumn { Header = title, Binding = new Binding(binding), Width = new DataGridLength(weight, DataGridLengthUnitType.Star) });
     private static void Note(TextBlock note, string text) { note.Text = text; note.Visibility = text.Length == 0 ? Visibility.Collapsed : Visibility.Visible; }
