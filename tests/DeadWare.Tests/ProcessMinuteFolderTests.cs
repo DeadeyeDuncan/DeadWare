@@ -193,6 +193,10 @@ public class ProcessMinuteFolderTests
         // Both members' GPU values are null: the CPU lists a.exe, since GPU memory is not ranked and zero never qualifies.
         var b=CloseMinute([P("a.exe",cpu:1,pid:1,gpuMem:1_000_000),P("a.exe",pid:2,gpuMem:null)]);
         Assert.Equal(6e7,App(b,"a.exe").GpuMemoryByteSeconds!.Value,1);}
+    [Fact] public void Gpu_memory_past_a_long_sum_still_closes_the_minute(){
+        // Two members at 2^62 bytes overflow a checked long sum, which once failed the history worker; the minute closes with a finite value.
+        var b=CloseGpu(P("a.exe",cpu:1,pid:1,gpuMem:1L<<62),P("a.exe",pid:2,gpuMem:1L<<62));
+        Assert.Equal(Math.Pow(2,63),App(b,"a.exe").GpuMemoryByteSeconds!.Value);}
     [Fact] public void Everything_else_holds_unlisted_unknown_name_and_omitted_gpu(){
         var list=Enumerable.Range(0,11).Select(i=>P($"g{i:00}.exe",pid:i+10,gpu:10+i)).ToList();   // g00 at 10 % is the smallest, so it is unlisted
         list.Add(P("",pid:30,dGpu:0.2));list.Add(P("tools/tool.exe",pid:31,gpu:50,dGpu:0.1));   // the 50 % never goes through GpuUse

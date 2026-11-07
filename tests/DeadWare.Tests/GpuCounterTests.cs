@@ -26,6 +26,10 @@ public class GpuCounterTests
     static GpuRawItem Bad(int n)=>new($"bad_{n}",0,1);
     static DateTimeOffset T(double s)=>Epoch.AddSeconds(s);
     GpuCounterRead R(double s,double interval=1)=>reader.Read(s,T(s),interval);
+    // Reads at 0 s and 1 s, so the second read has a previous collection, and joins PID 8, started well before both.
+    (GpuCounterRead Read,ProcessSample P8) JoinSecondRead(){ R(0);var r=R(1);
+        return (r,GpuProcessJoin.Join([new ProcessSample(8,Epoch.AddSeconds(-60).UtcTicks,"p8.exe",1,0,0,0,0,ProcessGap.None,new ProcessDeltas(0,0,0,0,1))],r).Processes[0]);}
+    const double MaximumBytes=1125899906842624d;   // 2^50
 
     [Theory]
     [InlineData("pid_1234_luid_0x00000000_0x0000D3A2_phys_0_eng_3_engtype_3D",1234,0xD3A2L,0,3,"3D")]
@@ -46,6 +50,25 @@ public class GpuCounterTests
 
     [Fact] public void Items_are_ready_only_with_valid_or_new_data_and_never_skipped(){ api.Arrays[GpuCounterKind.Engine]=new(0,[E(8,0,40),E(8,1,10,cstatus:GpuPdhStatus.CStatusNewData),E(9,0,99,cstatus:0x800007D3)]);
         var r=R(0);Assert.Equal([true,true,false],r.Engines.Select(e=>e.Ready));Assert.Equal(0,r.Skipped);Assert.Equal(3,r.Instances);Assert.True(r.State.Available);}
+    // -1 is what 0xFFFF… reads as under PDH_FMT_LARGE, and 2^62 overflows as byte-seconds: either once stopped all app history.
+    [Theory][InlineData(GpuCounterKind.Dedicated,-1d)][InlineData(GpuCounterKind.Dedicated,4611686018427387904d)][InlineData(GpuCounterKind.Dedicated,double.NaN)][InlineData(GpuCounterKind.Dedicated,double.PositiveInfinity)]
+    [InlineData(GpuCounterKind.Shared,-1d)][InlineData(GpuCounterKind.Shared,4611686018427387904d)][InlineData(GpuCounterKind.Shared,double.NaN)][InlineData(GpuCounterKind.Shared,double.PositiveInfinity)]
+    public void A_negative_huge_or_non_finite_memory_value_is_not_ready(GpuCounterKind kind,double bytes){ api.Arrays[GpuCounterKind.Engine]=new(0,[E(8,0,5)]);
+        api.Arrays[kind]=new(0,[M(8,bytes),M(9,MaximumBytes),M(9,0,phys:1)]);
+        var (r,p)=JoinSecondRead();var items=kind==GpuCounterKind.Dedicated?r.Dedicated:r.Shared;
+        // 2^50 and 0 bytes are the bounds, and both are ready.
+        Assert.Equal([false,true,true],items.Select(m=>m.Ready));Assert.Equal([0L,(long)MaximumBytes,0L],items.Select(m=>m.Bytes));Assert.True(r.State.Available);Assert.Equal(0,r.Skipped);
+        // The join makes that memory unknown, a first sample, with no byte-seconds; GPU % stays known.
+        Assert.Null(kind==GpuCounterKind.Dedicated?p.GpuDedicatedBytes:p.GpuSharedBytes);Assert.Equal(ProcessGap.FirstSample,p.GpuGap);Assert.Equal(5,p.GpuPercent);
+        if(kind==GpuCounterKind.Dedicated)Assert.Null(p.Deltas!.GpuMemoryByteSeconds);}
+    [Fact] public void A_nan_engine_beside_a_ready_engine_is_ignored(){ api.Arrays[GpuCounterKind.Engine]=new(0,[E(8,0,double.NaN),E(8,1,20,type:"Copy")]);
+        var (r,p)=JoinSecondRead();Assert.Equal([false,true],r.Engines.Select(e=>e.Ready));
+        Assert.Equal(20,p.GpuPercent);Assert.Equal("GPU 0 · Copy",p.GpuEngine);Assert.Equal(ProcessGap.None,p.GpuGap);}
+    // A lone NaN once read as a known 0 %, and +∞ as 100 %, a full GPU-second per second.
+    [Theory][InlineData(double.NaN)][InlineData(double.PositiveInfinity)][InlineData(double.NegativeInfinity)]
+    public void A_lone_non_finite_engine_is_unknown_never_a_value(double value){ api.Arrays[GpuCounterKind.Engine]=new(0,[E(8,0,value)]);
+        var (r,p)=JoinSecondRead();var item=Assert.Single(r.Engines);Assert.False(item.Ready);Assert.Equal(0,item.Percent);
+        Assert.Null(p.GpuPercent);Assert.Null(p.GpuEngines);Assert.Equal(ProcessGap.FirstSample,p.GpuGap);Assert.Null(p.Deltas!.GpuSeconds);}
     [Fact] public void The_first_read_after_open_has_no_previous_collection(){ var first=R(10);Assert.True(reader.LastReadOpened);Assert.Null(first.PreviousUtcTime);Assert.Null(first.IntervalSeconds);
         var second=R(11.5);Assert.False(reader.LastReadOpened);Assert.Equal(T(10),second.PreviousUtcTime);Assert.Equal(1.5,second.IntervalSeconds!.Value,6);}
     [Theory][InlineData(4.01)][InlineData(0.0)][InlineData(-1.0)]
