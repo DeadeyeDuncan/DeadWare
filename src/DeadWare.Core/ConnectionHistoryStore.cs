@@ -10,6 +10,8 @@ namespace DeadWare.Core;
 public sealed class ConnectionHistoryStore
 {
     public const long MaximumDatabaseBytes = 268435456;
+    /// <summary>64 MiB of TEMP pages per grouped read, at the temp database's 4,096-byte pages.</summary>
+    public const int MaximumGroupedTempPages = 16384;
     private const long MaximumJournalBytes = 8 * 1024 * 1024;
     private const int ApplicationId = 0x44435748;
     private const int ChunkSize = 256;
@@ -17,22 +19,54 @@ public sealed class ConnectionHistoryStore
     private const int MaximumTransactionCacheBytes = 1536 * 1024;
     private readonly string path;
     private readonly long maximumDatabaseBytes;
+    private readonly int maximumGroupedTempPages;
+    // Measurement only: set by reflection to time a read with the build's default temp_store.
+    internal bool defaultTempStore = false;
     private readonly object gate = new();
     private bool initialized;
     private const string Columns = "minute,pid,generation,name,remote,port,protocol,first_seen,last_seen,received,sent,location,origin,complete";
-    private const string RowOrder = "minute DESC,pid,generation,name,remote,port,protocol,location,origin";
-    private const string Grouped = """
+    // Every read path filters traffic through this one predicate: Grouped (ExportCsv) and both TEMP tables in Read.
+    private const string GroupedWhere = """
+        minute >= max($from,coalesce((SELECT value FROM metadata WHERE key='expiry'),0)) AND minute < $to
+          AND minute > (SELECT value FROM metadata WHERE key='floor')
+          AND ($search='' OR instr(search,$search)>0 OR instr(cast(pid AS TEXT),$search)>0)
+          AND ($country='' OR country=$country)
+        """;
+    private const string DirectionHaving = "($direction=0 OR ($direction=1 AND sat_sum(received)>0) OR ($direction=2 AND sat_sum(sent)>0))";
+    private const string Grouped = $"""
         SELECT minute,pid,generation,name,remote,port,protocol,min(first_seen) first_seen,
           max(last_seen) last_seen,sat_sum(received) received,sat_sum(sent) sent,
           location,origin,min(complete) complete,country,kind
         FROM traffic
-        WHERE minute >= max($from,coalesce((SELECT value FROM metadata WHERE key='expiry'),0)) AND minute < $to
-          AND minute > (SELECT value FROM metadata WHERE key='floor')
-          AND ($search='' OR instr(search,$search)>0 OR instr(cast(pid AS TEXT),$search)>0)
-          AND ($country='' OR country=$country)
+        WHERE {GroupedWhere}
         GROUP BY minute,pid,generation,name,remote,port,protocol,location,origin,country,kind
-        HAVING ($direction=0 OR ($direction=1 AND sat_sum(received)>0) OR ($direction=2 AND sat_sum(sent)>0))
+        HAVING {DirectionHaving}
         """;
+    // The geo dictionary: ids follow BINARY (location, origin) order, so ordering grouped rows by id equals ordering them by location and origin.
+    private const string GeoTable = """
+        CREATE TEMP TABLE geo(id INTEGER PRIMARY KEY,location TEXT NOT NULL,origin TEXT NOT NULL,located INTEGER NOT NULL,UNIQUE(location,origin))
+        """;
+    private const string GeoInsert = $"""
+        INSERT INTO temp.geo(id,location,origin,located)
+        SELECT row_number() OVER (ORDER BY location,origin),location,origin,location<>'null' AND json_extract(location,'$.Point') IS NOT NULL
+        FROM traffic WHERE {GroupedWhere} GROUP BY location,origin
+        """;
+    private const string GroupedTable = """
+        CREATE TEMP TABLE grouped(row_index INTEGER PRIMARY KEY,minute INTEGER NOT NULL,pid INTEGER NOT NULL,generation INTEGER NOT NULL,
+          name TEXT NOT NULL,remote TEXT NOT NULL,port INTEGER NOT NULL,protocol INTEGER NOT NULL,first_seen INTEGER NOT NULL,last_seen INTEGER NOT NULL,
+          received INTEGER NOT NULL,sent INTEGER NOT NULL,geo INTEGER NOT NULL,complete INTEGER NOT NULL,country TEXT NOT NULL,kind INTEGER NOT NULL)
+        """;
+    private const string GroupedInsert = $"""
+        INSERT INTO temp.grouped(row_index,minute,pid,generation,name,remote,port,protocol,first_seen,last_seen,received,sent,geo,complete,country,kind)
+        SELECT row_number() OVER (ORDER BY minute DESC,pid,generation,name,remote,port,protocol,g.id)-1,
+          minute,pid,generation,name,remote,port,protocol,min(first_seen),max(last_seen),sat_sum(received),sat_sum(sent),g.id,min(complete),country,kind
+        FROM traffic JOIN temp.geo g ON g.location=traffic.location AND g.origin=traffic.origin
+        WHERE {GroupedWhere}
+        GROUP BY minute,pid,generation,name,remote,port,protocol,g.id,country,kind
+        HAVING {DirectionHaving}
+        """;
+    // Columns' order over a grouped row g and its geo entry x, as ReadRow expects.
+    private const string GroupedColumns = "g.minute,g.pid,g.generation,g.name,g.remote,g.port,g.protocol,g.first_seen,g.last_seen,g.received,g.sent,x.location,x.origin,g.complete";
     private const string Schema = """
         CREATE TABLE metadata(key TEXT PRIMARY KEY,value INTEGER NOT NULL);
         INSERT INTO metadata VALUES('floor',0),('expiry',0);
@@ -56,10 +90,11 @@ public sealed class ConnectionHistoryStore
         CREATE UNIQUE INDEX coverage_receipt ON coverage(batch,item);
         """;
 
-    public ConnectionHistoryStore(string path, long maximumDatabaseBytes = MaximumDatabaseBytes)
+    public ConnectionHistoryStore(string path, long maximumDatabaseBytes = MaximumDatabaseBytes, int maximumGroupedTempPages = MaximumGroupedTempPages)
     {
         if(maximumDatabaseBytes is <65536 or >MaximumDatabaseBytes) throw new ArgumentOutOfRangeException(nameof(maximumDatabaseBytes));
-        this.path=Path.GetFullPath(path); this.maximumDatabaseBytes=maximumDatabaseBytes;
+        if(maximumGroupedTempPages is <16 or >MaximumGroupedTempPages) throw new ArgumentOutOfRangeException(nameof(maximumGroupedTempPages));
+        this.path=Path.GetFullPath(path); this.maximumDatabaseBytes=maximumDatabaseBytes; this.maximumGroupedTempPages=maximumGroupedTempPages;
     }
     public long StorageBytes => new[] {path,path+"-wal",path+"-shm"}.Where(File.Exists).Sum(file=>new FileInfo(file).Length);
 
@@ -336,37 +371,57 @@ public sealed class ConnectionHistoryStore
         lock(gate)
         {
             EnsureInitialized(); query=Normalize(query);
-            using var db=Open(readOnly:true); using var tx=db.BeginTransaction(deferred:true);
+            using var db=Open(readOnly:true);
+            // temp_store goes first: changing it discards the temp database. Disposing the unpooled connection drops both TEMP tables.
+            if(!defaultTempStore) Execute(db,"PRAGMA temp_store=MEMORY");
+            Execute(db,"PRAGMA temp.max_page_count="+maximumGroupedTempPages.ToString(CultureInfo.InvariantCulture));
+            using var tx=db.BeginTransaction(deferred:true);
             var args=Arguments(query);
-            var rows=new List<ConnectionHistoryRow>();
-            using(var command=Command(db,"WITH filtered AS ("+Grouped+") SELECT "+Columns+" FROM filtered ORDER BY "+RowOrder+" LIMIT $limit OFFSET $offset",tx,args.Concat(new[]{("$limit",(object)query.Limit),("$offset",(object)query.Offset)}).ToArray()))
-            using(var reader=command.ExecuteReader()) while(reader.Read()) rows.Add(ReadRow(reader));
-            long total; ConnectionHistorySummary summary;
-            using(var command=Command(db,"WITH filtered AS ("+Grouped+") SELECT count(*),sat_sum(received),sat_sum(sent),count(DISTINCT nullif(country,'')),count(DISTINCT remote),count(DISTINCT CASE WHEN location='null' OR json_extract(location,'$.Point') IS NULL THEN remote END),count(DISTINCT CASE WHEN kind=1 THEN remote END) FROM filtered",tx,args))
-            using(var reader=command.ExecuteReader()) {reader.Read(); total=reader.GetInt64(0); summary=new(Value(reader,1),Value(reader,2),reader.GetInt64(3),reader.GetInt64(4),reader.GetInt64(5),reader.GetInt64(6));}
-            var markers=new List<ConnectionHistoryMarker>();
-            long markerCount=0;
-            // Rank the same complete saved grouping used by the table, in the same snapshot.
-            // Only the bounded representatives cross the storage/UI boundary.
-            string markerSql=$"""
-                WITH filtered AS ({Grouped}),
-                ranked AS (SELECT *,row_number() OVER (ORDER BY {RowOrder})-1 row_index FROM filtered),
-                groups AS (
-                  SELECT location,origin,sat_sum(received) total_received,sat_sum(sent) total_sent,min(row_index) representative
-                  FROM ranked WHERE location<>'null' AND json_extract(location,'$.Point') IS NOT NULL GROUP BY location,origin),
-                markers AS (
-                  SELECT *,count(*) OVER () marker_count FROM groups
-                  ORDER BY (cast(total_received AS REAL)+cast(total_sent AS REAL)) DESC,location,origin LIMIT 256)
-                SELECT {string.Join(',',Columns.Split(',').Select(c=>"r."+c))},m.total_received,m.total_sent,m.representative,m.marker_count
-                FROM markers m JOIN ranked r ON r.row_index=m.representative
-                ORDER BY (cast(m.total_received AS REAL)+cast(m.total_sent AS REAL)) DESC,m.location,m.origin
-                """;
-            using(var command=Command(db,markerSql,tx,args))
-            using(var reader=command.ExecuteReader()) while(reader.Read())
+            // Group the interval once; the page, summary and markers all read the same TEMP snapshot.
+            Grouping(()=>Execute(db,GeoTable,tx));
+            Grouping(()=>Execute(db,GeoInsert,tx,args));
+            Grouping(()=>Execute(db,GroupedTable,tx));
+            Grouping(()=>Execute(db,GroupedInsert,tx,args));
+            var rows=Grouping(()=>
             {
-                var representative=ReadRow(reader);markerCount=reader.GetInt64(17);
-                markers.Add(new(representative.Location!,representative.Origin,reader.GetInt64(14),reader.GetInt64(15),representative,reader.GetInt64(16)));
-            }
+                var page=new List<ConnectionHistoryRow>();
+                using var command=Command(db,$"SELECT {GroupedColumns} FROM temp.grouped g JOIN temp.geo x ON x.id=g.geo WHERE row_index>=$offset ORDER BY row_index LIMIT $limit",tx,("$offset",query.Offset),("$limit",query.Limit));
+                using var reader=command.ExecuteReader(); while(reader.Read()) page.Add(ReadRow(reader));
+                return page;
+            });
+            var (total,summary)=Grouping(()=>
+            {
+                // Unlocated counts Public remotes without a point only, as Live does; Local and Special remotes are never unlocated.
+                using var command=Command(db,"""
+                    SELECT count(*),sat_sum(received),sat_sum(sent),count(DISTINCT nullif(country,'')),count(DISTINCT remote),
+                      count(DISTINCT CASE WHEN kind=0 AND x.located=0 THEN remote END),count(DISTINCT CASE WHEN kind=1 THEN remote END)
+                    FROM temp.grouped g JOIN temp.geo x ON x.id=g.geo
+                    """,tx);
+                using var reader=command.ExecuteReader(); reader.Read();
+                return (reader.GetInt64(0),new ConnectionHistorySummary(Value(reader,1),Value(reader,2),reader.GetInt64(3),reader.GetInt64(4),reader.GetInt64(5),reader.GetInt64(6)));
+            });
+            // Rank the same complete grouping used by the table; only the bounded representatives cross the storage/UI boundary.
+            var (markers,markerCount)=Grouping(()=>
+            {
+                var found=new List<ConnectionHistoryMarker>(); long count=0;
+                using var command=Command(db,$"""
+                    WITH groups AS (
+                      SELECT geo,sat_sum(received) total_received,sat_sum(sent) total_sent,min(row_index) representative
+                      FROM temp.grouped WHERE geo IN (SELECT id FROM temp.geo WHERE located=1) GROUP BY geo),
+                    markers AS (
+                      SELECT *,count(*) OVER () marker_count FROM groups
+                      ORDER BY (cast(total_received AS REAL)+cast(total_sent AS REAL)) DESC,geo LIMIT 256)
+                    SELECT {GroupedColumns},m.total_received,m.total_sent,m.representative,m.marker_count
+                    FROM markers m JOIN temp.grouped g ON g.row_index=m.representative JOIN temp.geo x ON x.id=g.geo
+                    ORDER BY (cast(m.total_received AS REAL)+cast(m.total_sent AS REAL)) DESC,m.geo
+                    """,tx);
+                using var reader=command.ExecuteReader(); while(reader.Read())
+                {
+                    var representative=ReadRow(reader); count=reader.GetInt64(17);
+                    found.Add(new(representative.Location!,representative.Origin,reader.GetInt64(14),reader.GetInt64(15),representative,reader.GetInt64(16)));
+                }
+                return (found,count);
+            });
             var (coverage,gaps)=ReadCoverage(db,tx,query);
             object? earliest=Scalar(db,"""
                 SELECT min(stamp) FROM (
@@ -383,6 +438,12 @@ public sealed class ConnectionHistoryStore
             else status+="Recorded coverage available.";
             return new(query,rows.AsReadOnly(),total,summary,markers.AsReadOnly(),coverage.AsReadOnly(),gaps.AsReadOnly(),earliest is null or DBNull?null:Stamp(Convert.ToInt64(earliest,CultureInfo.InvariantCulture)),StorageBytes,status,Math.Max(0,markerCount-markers.Count));
         }
+    }
+    /// <summary>Runs a statement over the TEMP tables; SQLITE_FULL there means the interval exceeds the grouped TEMP limit.</summary>
+    private static T Grouping<T>(Func<T> statement)
+    {
+        try {return statement();}
+        catch(SqliteException error) when(error.SqliteErrorCode==13) {throw new ConnectionHistoryLimitException(error);}
     }
     private static long Value(SqliteDataReader reader,int ordinal) => reader.IsDBNull(ordinal)?0:reader.GetInt64(ordinal);
     private static DateTimeOffset Stamp(long ticks) => new(ticks,TimeSpan.Zero);
@@ -509,3 +570,6 @@ public sealed class ConnectionHistoryStore
     {using var command=Command(db,sql,tx);return command.ExecuteScalar();}
     private static long Number(SqliteConnection db,string sql) => Convert.ToInt64(Scalar(db,sql),CultureInfo.InvariantCulture);
 }
+
+/// <summary>A History read whose grouped TEMP tables would exceed their page limit; no partial view is returned.</summary>
+public sealed class ConnectionHistoryLimitException(Exception inner) : IOException("Connection history interval holds too many saved rows to group.", inner);
