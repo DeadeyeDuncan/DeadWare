@@ -149,11 +149,12 @@ public static class ProcessGrouping
 public sealed record ProcessColumnChoice(string Key,string Header,bool Checked,bool Enabled,string Label);
 public static class ProcessTableColumns
 {
-    static readonly string[] PickerOrder=["cpu","memory","io","disk","network","pid","ioread","iowrite","diskread","diskwrite","download","upload"];
+    static readonly string[] PickerOrder=["cpu","memory","io","disk","network","gpu","gpumemory","pid","ioread","iowrite","diskread","diskwrite","download","upload","gpuengine","gpushared"];
     public static string Header(string key)=>key switch
     {
         "name"=>"NAME","pid"=>"PID","cpu"=>"CPU","memory"=>"MEMORY","io"=>"I/O","ioread"=>"I/O READ","iowrite"=>"I/O WRITE",
         "disk"=>"DISK","diskread"=>"DISK READ","diskwrite"=>"DISK WRITE","network"=>"NETWORK","download"=>"↓ DOWNLOAD","upload"=>"↑ UPLOAD",
+        "gpu"=>"GPU","gpuengine"=>"GPU ENGINE","gpumemory"=>"GPU MEMORY","gpushared"=>"SHARED GPU MEMORY",
         _=>key.ToUpperInvariant(),
     };
     /// <summary>Text columns sort ascending on the first header click; the numeric ones start descending.</summary>

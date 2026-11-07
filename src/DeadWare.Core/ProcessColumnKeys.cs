@@ -2,8 +2,8 @@ namespace DeadWare.Core;
 /// <summary>The Processes table columns after NAME, in their fixed order, and the saved subset of them.</summary>
 public static class ProcessColumnKeys
 {
-    public static IReadOnlyList<string> All {get;}=["pid","cpu","memory","io","ioread","iowrite","disk","diskread","diskwrite","network","download","upload"];
-    public static IReadOnlyList<string> Default {get;}=["cpu","memory","io","disk","network"];
+    public static IReadOnlyList<string> All {get;}=["pid","cpu","memory","io","ioread","iowrite","disk","diskread","diskwrite","network","download","upload","gpu","gpuengine","gpumemory","gpushared"];
+    public static IReadOnlyList<string> Default {get;}=["cpu","memory","io","disk","network","gpu","gpumemory"];
     public static IReadOnlyList<string> AdministratorOnly {get;}=["disk","diskread","diskwrite","network","download","upload"];
     public static IReadOnlyList<string> DiskKeys {get;}=["disk","diskread","diskwrite"];
     /// <summary>Null gives the default; null, unknown and duplicate keys are dropped; the rest follow <see cref="All"/>. An empty list is kept.</summary>
