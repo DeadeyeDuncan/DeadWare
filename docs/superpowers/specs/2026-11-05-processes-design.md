@@ -162,7 +162,7 @@ Minor-version milestones:
   - The list aggregates exactly the stored minutes the clicked point averaged, those whose start falls in the slot (`ReadMetric`'s (minute − from) ÷ bucket grouping), with the card's formulas: CPU time and I/O summed, Avg CPU over the slot's covered seconds, and memory as each app's Σ(memory × Δt) ÷ the covered seconds of the minutes it was listed.
   - The heading names the minutes listed, from the first one's start to the last one's end, in local time, with the date on Week and Month (for example "Busiest apps · Nov 3 03:05–03:28").
   - The selection draws as a hairline on both charts. Esc or **Clear** returns to the period ranking.
-  - Keyboard: the CPU and RAM charts become focusable. Left and Right move the selected bucket, Enter lists it.
+  - Keyboard: the CPU and RAM charts become focusable. Left and Right move the selected bucket on both charts, matched by time, and the minute refresh keeps it at that time; Enter lists it.
   - This extends the shared `UsageHistoryChart` with an optional selection and the byte unit, so the other charts are unchanged.
 - **Gaps:** a notice states how many minutes in the period have no process data (monitoring off, DeadWare not running, or a capture gap), plus a storage line for the history file.
 
