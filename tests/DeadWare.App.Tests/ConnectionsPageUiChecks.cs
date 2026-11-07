@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Reflection;
 using System.IO;
 using System.Net;
@@ -5,7 +6,10 @@ using System.Net.Http;
 using System.Runtime.CompilerServices;
 using System.Windows;
 using System.Windows.Automation;
+using System.Windows.Automation.Peers;
+using System.Windows.Automation.Provider;
 using System.Windows.Controls;
+using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
@@ -63,6 +67,8 @@ internal static class ConnectionsPageUiChecks
         CheckStripReads(session, now);
         CheckStripCursor(session, now);
         CheckMinuteReadFailureKeepsTheStrip(session, now);
+        CheckApplicationFilter(session, now);
+        CheckShowHistory(session, now);
         CheckBoundaryDates();
         CheckIntervalWarning(session);
         CheckExportBusy(session,now);
@@ -382,6 +388,110 @@ internal static class ConnectionsPageUiChecks
         Field<Slider>(page, "cursor").Value = 1; Assert.True(IsMinute(reads.Last, 10, 1));
         reads.Answer(destinations: 5); Assert.Contains("5 destinations", summary.Text); Assert.Null(summary.ToolTip); Assert.Same(strip, chart.Strip); Assert.Empty(reads.Replies);
     }
+    /// <summary>chrome.exe and two more applications in Other, over the query's first minute.</summary>
+    private static TrafficStrip ChromeStrip(ConnectionHistoryQuery query)
+    {
+        var end = query.From.AddMinutes(1) < query.To ? query.From.AddMinutes(1) : query.To;
+        return new(query.From, query.To, 60_000, TrafficMeasure.Total, [new("chrome.exe", "CHROME.EXE", 1000, 500)], 300, 100, 2,
+            [new(query.From, end, 1, 60, false, [1000, 300], [500, 100])]);
+    }
+    private static void CheckApplicationFilter(UiSession session, DateTimeOffset now)
+    {
+        var page = new ConnectionsPage(session); var reads = new FakeReads(page);
+        var view = Field<TrafficStripView>(page, "trafficStrip"); var button = Field<Button>(page, "applicationButton"); var mode = Field<ComboBox>(page, "mode");
+        mode.SelectedIndex = 1; Assert.Equal("", reads.Last.Application); Assert.Equal(Visibility.Collapsed, button.Visibility);
+        reads.Answer(strip: ChromeStrip(reads.Last));
+        void ChooseChrome()
+        {
+            // The Other entry is not a button, so chrome.exe's is the only one.
+            Assert.Contains(view.Legend, entry => entry.Text.StartsWith("Other (2 more)") && !entry.IsButton);
+            var chrome = Assert.Single(Elements(view).OfType<Button>());
+            Assert.Equal("chrome.exe: show only this application", AutomationProperties.GetName(chrome));
+            // The peer raises Click at Input priority; Pump runs it.
+            int count = reads.Requested.Count;
+            ((IInvokeProvider)new ButtonAutomationPeer(chrome).GetPattern(PatternInterface.Invoke)).Invoke(); Pump();
+            Assert.Equal(count + 1, reads.Requested.Count); Assert.Equal("CHROME.EXE", reads.Last.Application);
+        }
+        ChooseChrome();
+        Assert.Equal(Visibility.Visible, button.Visibility); Assert.Equal(240, button.MaxWidth);
+        var text = Assert.IsType<TextBlock>(button.Content); Assert.Equal("Application: chrome.exe ✕", text.Text); Assert.Equal(TextTrimming.CharacterEllipsis, text.TextTrimming);
+        Assert.Equal("Clear application filter", AutomationProperties.GetName(button));
+        Assert.Equal("Only chrome.exe is shown. Click to show every application.", button.ToolTip);
+        // The export query carries the filter, and the field is part of the history context.
+        object?[] args = [null]; var returned = (ConnectionHistoryQuery)PageType.GetMethod("BuildQuery", All)!.Invoke(page, args)!; var whole = (ConnectionHistoryQuery)args[0]!;
+        Assert.Equal("CHROME.EXE", whole.Application); Assert.Equal("CHROME.EXE", returned.Application);
+        var same = PageType.GetMethod("SameHistoryContext", All)!;
+        Assert.True((bool)same.Invoke(null, [whole, whole with { }])!); Assert.False((bool)same.Invoke(null, [whole, whole with { Application = "X" }])!);
+        // Clearing the filter reads every application again.
+        reads.Answer(strip: ChromeStrip(reads.Last)); Click(page, "applicationButton");
+        Assert.Equal("", reads.Last.Application); Assert.Equal(Visibility.Collapsed, button.Visibility);
+        reads.Answer(strip: ChromeStrip(reads.Last)); ChooseChrome(); reads.Drain();
+        // Live filters by key too: chrome.exe and Chrome.exe, never other.exe.
+        mode.SelectedIndex = 0; Assert.Equal(Visibility.Visible, button.Visibility);
+        var place = new ConnectionLocation("US", "United States", null, "Fixture", new(40, -90), "Fixture");
+        LocatedConnection Connection(string name, int pid, string address) =>
+            new(new(new ConnectionPeer(new(pid, 1, name), "", 0, address, 443, ConnectionProtocol.Tcp), now, now, 1024, 512, 0, 0), place);
+        var live = new ConnectionLiveView(now, [Connection("chrome.exe", 1, "1.1.1.1"), Connection("Chrome.exe", 2, "2.2.2.2"), Connection("other.exe", 3, "3.3.3.3")], null, true, true, "fixture");
+        page.ApplyLive(live);
+        var summary = Field<TextBlock>(page, "summary"); Assert.StartsWith("Live · 2 destinations", summary.Text);
+        var listed = ((System.Collections.IEnumerable)PageType.GetField("rows", All)!.GetValue(page)!).Cast<object>().Select(row => (string)row.GetType().GetProperty("Application")!.GetValue(row)!).ToArray();
+        Assert.Equal(["chrome.exe / 1", "Chrome.exe / 2"], listed);
+        Click(page, "applicationButton"); Assert.StartsWith("Live · 3 destinations", summary.Text); Assert.Equal(Visibility.Collapsed, button.Visibility);
+    }
+    private static void CheckShowHistory(UiSession session, DateTimeOffset now)
+    {
+        var page = new ConnectionsPage(session); var reads = new FakeReads(page);
+        var mode = Field<ComboBox>(page, "mode"); var range = Field<ComboBox>(page, "range"); var direction = Field<ComboBox>(page, "direction");
+        var search = Field<TextBox>(page, "search"); var country = Field<TextBox>(page, "country"); var from = Field<TextBox>(page, "from"); var to = Field<TextBox>(page, "to");
+        var minute = Field<CheckBox>(page, "minute"); var cursor = Field<Slider>(page, "cursor"); var button = Field<Button>(page, "applicationButton");
+        static string Box(DateTimeOffset time) => time.ToLocalTime().ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture);
+        range.SelectedIndex = 2; search.Text = "x"; country.Text = "US"; direction.SelectedItem = ConnectionDirection.Sent; minute.IsChecked = true;
+        Assert.Empty(reads.Requested);
+        // From Live: History for the whole minutes, every other filter cleared, the application keyed from its bare name.
+        page.ShowHistory(now.AddMinutes(-90).AddSeconds(20), now.AddMinutes(-30), "Chrome.exe");
+        Assert.Equal(1, mode.SelectedIndex); Assert.Single(reads.Requested);
+        Assert.Equal(Box(now.AddMinutes(-89)), from.Text); Assert.Equal(Box(now.AddMinutes(-30)), to.Text);
+        Assert.Equal("", search.Text); Assert.Equal("", country.Text); Assert.Equal(ConnectionDirection.Both, direction.SelectedItem);
+        Assert.False(minute.IsChecked); Assert.Equal(0, cursor.Value); Assert.Equal(2, range.SelectedIndex);
+        var first = reads.Last;
+        Assert.Equal((now.AddMinutes(-89), now.AddMinutes(-30)), (first.From, first.To));
+        Assert.Equal(("", "", ConnectionDirection.Both, "CHROME.EXE"), (first.Search, first.CountryCode, first.Direction, first.Application));
+        Assert.Equal(Visibility.Visible, button.Visibility); Assert.Equal("Application: Chrome.exe ✕", Assert.IsType<TextBlock>(button.Content).Text);
+        // From History a request follows at once; an empty interval opens its minute, and null shows every application.
+        reads.Drain(); int count = reads.Requested.Count;
+        page.ShowHistory(now.AddMinutes(-20), now.AddMinutes(-20), null);
+        Assert.Equal(count + 1, reads.Requested.Count); Assert.Equal(1, mode.SelectedIndex);
+        var second = reads.Last; Assert.Equal((now.AddMinutes(-20), now.AddMinutes(-19), ""), (second.From, second.To, second.Application));
+        Assert.Equal(Visibility.Collapsed, button.Visibility);
+        // An interval wholly before what Connections keeps: one "Not kept" band, and the storage line still names the earliest retained time.
+        var earliest = now.AddDays(-2); var (query, reply) = reads.Replies.Dequeue();
+        var notKept = new TrafficStrip(query.From, query.To, 60_000, TrafficMeasure.Total, [], 0, 0, 0, [], RetainedFrom: query.To);
+        reply.SetResult(new(query, [], 0, new(0, 0, 0, 0, 0, 0), [], [], [], earliest, 4096, "fixture", Strip: notKept)); Pump();
+        var view = Field<TrafficStripView>(page, "trafficStrip"); var chart = view.Chart;
+        Layout(page, 1000, 700); chart.SlotAt(new Point());
+        Assert.Same(notKept, chart.Strip); Assert.True(chart.PlotRect.Width > 100, $"Strip plot width {chart.PlotRect.Width}.");
+        Assert.Equal<Rect?>(chart.PlotRect, chart.NotKept);
+        Assert.StartsWith("Not kept before ", view.NotKeptLine);
+        Assert.Contains("Earliest " + earliest.ToLocalTime().ToString("g"), Field<TextBlock>(page, "storage").Text);
+        // The boxes widen over daylight-saving minutes so that they always hold the interval asked for.
+        var rule = TimeZoneInfo.AdjustmentRule.CreateAdjustmentRule(new DateTime(2026, 1, 1), new DateTime(2026, 12, 31), TimeSpan.FromHours(1),
+            TimeZoneInfo.TransitionTime.CreateFloatingDateRule(new DateTime(1, 1, 1, 1, 0, 0), 3, 5, DayOfWeek.Sunday),
+            TimeZoneInfo.TransitionTime.CreateFloatingDateRule(new DateTime(1, 1, 1, 2, 0, 0), 10, 5, DayOfWeek.Sunday));
+        var zone = TimeZoneInfo.CreateCustomTimeZone("dst-test", TimeSpan.Zero, "dst-test", "dst-test", "dst-test-summer", [rule]);
+        Assert.True(zone.IsAmbiguousTime(new DateTime(2026, 10, 25, 1, 30, 0))); Assert.True(zone.IsInvalidTime(new DateTime(2026, 3, 29, 1, 30, 0)));
+        var parse = PageType.GetMethod("TryParseLocalTime", All)!;
+        DateTimeOffset Parse(string text) { object?[] values = [text, zone, null]; Assert.True((bool)parse.Invoke(null, values)!, text); return (DateTimeOffset)values[2]!; }
+        // Fall back: 00:30 UTC is 01:30 summer time and 01:10 UTC is 01:10 standard time, both ambiguous; the start widens to 00:59 and the end to 02:00.
+        var ambiguousStart = new DateTimeOffset(2026, 10, 25, 0, 30, 0, TimeSpan.Zero); var ambiguousEnd = new DateTimeOffset(2026, 10, 25, 1, 10, 0, TimeSpan.Zero);
+        var fall = ConnectionsPage.LocalBoxes(ambiguousStart, ambiguousEnd, zone);
+        Assert.Equal(("2026-10-25 00:59", "2026-10-25 02:00"), fall);
+        Assert.True(Parse(fall.From) <= ambiguousStart && Parse(fall.To) >= ambiguousEnd);
+        // Spring forward: local 01:00–01:59 does not exist; an end at the change (01:00 UTC) is written as 02:00, the first valid minute after it, never 01:00.
+        var springStart = new DateTimeOffset(2026, 3, 29, 0, 30, 0, TimeSpan.Zero); var invalidEnd = new DateTimeOffset(2026, 3, 29, 1, 0, 0, TimeSpan.Zero);
+        var spring = ConnectionsPage.LocalBoxes(springStart, invalidEnd, zone);
+        Assert.Equal(("2026-03-29 00:30", "2026-03-29 02:00"), spring);
+        Assert.Equal((springStart, invalidEnd), (Parse(spring.From), Parse(spring.To)));
+    }
     private static void Pump()
     { var frame = new DispatcherFrame(); Dispatcher.CurrentDispatcher.BeginInvoke(DispatcherPriority.Background, new Action(() => frame.Continue = false)); Dispatcher.PushFrame(frame); }
     private static void CheckBoundaryDates()
@@ -513,6 +623,29 @@ internal static class ConnectionsPageUiChecks
         typeof(MainWindow).GetMethod("Navigate", All)!.Invoke(dashboard, ["connections"]);
         Assert.Equal(Visibility.Collapsed, ((FrameworkElement)typeof(MainWindow).GetField("liveToolbar", All)!.GetValue(dashboard)!).Visibility);
         typeof(MainWindow).GetMethod("Navigate", All)!.Invoke(dashboard, ["overview"]);
+        // Show in Connections restores a minimized dashboard, shows Connections and opens History there, without a native window.
+        int presented = 0; dashboard.present = _ => presented++;
+        var session = (UiSession)typeof(MainWindow).GetField("session", All)!.GetValue(dashboard)!;
+        var content = (ContentControl)typeof(MainWindow).GetField("content", All)!.GetValue(dashboard)!;
+        var pages = (Dictionary<string, FrameworkElement>)typeof(MainWindow).GetField("pages", All)!.GetValue(dashboard)!;
+        var page = Assert.IsType<ConnectionsPage>(pages["connections"]);
+        var from = new DateTimeOffset(2026, 10, 29, 10, 0, 0, TimeSpan.Zero); var to = from.AddMinutes(15);
+        dashboard.WindowState = WindowState.Minimized;
+        session.RequestConnectionsHistory(from, to, "chrome.exe");
+        Assert.Equal(1, presented); Assert.Equal(WindowState.Normal, dashboard.WindowState); Assert.Same(page, content.Content);
+        Assert.Equal(1, Field<ComboBox>(page, "mode").SelectedIndex);
+        Assert.Equal(from.ToLocalTime().ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture), Field<TextBox>(page, "from").Text);
+        Assert.Equal(to.ToLocalTime().ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture), Field<TextBox>(page, "to").Text);
+        Assert.Equal("CHROME.EXE", Field<string>(page, "applicationFilter")); Assert.Equal(Visibility.Visible, Field<Button>(page, "applicationButton").Visibility);
+        Assert.Equal(IntPtr.Zero, new WindowInteropHelper(dashboard).Handle);
+        // While the lifetime is ending a request does nothing.
+        typeof(MainWindow).GetMethod("Navigate", All)!.Invoke(dashboard, ["overview"]);
+        var lifetime = (ApplicationLifetime)typeof(MainWindow).GetField("lifetime", All)!.GetValue(dashboard)!;
+        lifetime.BeginSessionEnding();
+        session.RequestConnectionsHistory(from, to, "chrome.exe");
+        Assert.Equal(1, presented); Assert.Same(pages["overview"], content.Content);
+        // The later phases reuse this dashboard, and RefreshUpdateNotice returns while the lifetime is ending.
+        typeof(ApplicationLifetime).GetField("<IsEnding>k__BackingField", All)!.SetValue(lifetime, false);
     }
     private static void Call(object target, string name, object? value) => PageType.GetMethod(name, All)!.Invoke(target, value is null ? null : [value]);
     private static void Layout(FrameworkElement page, double width, double height) { page.Measure(new(width, height)); page.Arrange(new(0, 0, width, height)); page.UpdateLayout(); }
