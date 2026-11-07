@@ -3,17 +3,25 @@ using Microsoft.Data.Sqlite;
 
 namespace DeadWare.Core;
 
-public enum ProcessRank { CpuTime, AverageMemory, Io }
+public enum ProcessRank { CpuTime, AverageMemory, Io, Gpu }
 
-/// <summary>One application's totals for a period. <see cref="MemoryByteSeconds"/> is its Σ(memory × Δt) over the minutes it was listed.</summary>
+/// <summary>One application's totals for a period. <see cref="MemoryByteSeconds"/> is its Σ(memory × Δt) over the minutes it was listed.
+/// The GPU members are null when no minute in the period holds GPU data for the application (never 0): <see cref="GpuSeconds"/> is its
+/// GPU-seconds, <see cref="AverageGpuPercent"/> is 100 × those ÷ <see cref="ProcessResourceView.GpuCoveredSeconds"/> (a sum over processes, so it
+/// can exceed 100) and <see cref="AverageGpuMemoryBytes"/> is its GPU memory while listed in minutes with GPU data.</summary>
 public sealed record ProcessResourceRow(string Name, double CpuSeconds, double AverageCpuPercent, double AverageMemoryBytes,
     long IoRead, long IoWritten, long MinutesListed, bool EverythingElse, double MemoryByteSeconds)
 {
-    /// <summary>This row's part of <see cref="ProcessResourceView.RankTotal"/> for the same rank: CPU seconds, Σ(memory × Δt) or I/O read + written.</summary>
+    public double? GpuSeconds { get; init; }
+    public double? AverageGpuPercent { get; init; }
+    public double? AverageGpuMemoryBytes { get; init; }
+
+    /// <summary>This row's part of <see cref="ProcessResourceView.RankTotal"/> for the same rank: CPU seconds, Σ(memory × Δt), I/O read + written or GPU-seconds.</summary>
     public double PartOf(ProcessRank rank) => rank switch
     {
         ProcessRank.CpuTime => CpuSeconds,
         ProcessRank.AverageMemory => MemoryByteSeconds,
+        ProcessRank.Gpu => GpuSeconds ?? 0,
         _ => (double)IoRead + IoWritten,
     };
 }
@@ -22,7 +30,11 @@ public sealed record ProcessResourceRow(string Name, double CpuSeconds, double A
 /// applications (Everything else aside) the period holds, so it exceeds the rows' count when the read's limit cut the list.</summary>
 public sealed record ProcessResourceView(DateTimeOffset From, DateTimeOffset To, IReadOnlyList<ProcessResourceRow> Rows, long ApplicationCount,
     ProcessResourceRow EverythingElse, double RankTotal, long RecordedMinutes, DateTimeOffset? FirstMinute, DateTimeOffset? LastMinuteEnd,
-    DateTimeOffset? EarliestRetained, long StorageBytes);
+    DateTimeOffset? EarliestRetained, long StorageBytes)
+{
+    /// <summary>The GPU-covered seconds of the period's recorded minutes: the divisor of every Avg GPU. 0 when none holds GPU data.</summary>
+    public double GpuCoveredSeconds { get; init; }
+}
 
 /// <summary>Per-application minutes (image name and numbers only, never paths). Synchronous calls belong to one background owner;
 /// never call from the collector or UI thread.</summary>
@@ -215,25 +227,28 @@ public sealed class ProcessHistoryStore(string path, long maximumDatabaseBytes =
         long cutoff = RetentionCutoff(now).ToUnixTimeMilliseconds();
         long fromMs = Math.Max(from.ToUnixTimeMilliseconds(), cutoff), toMs = to.ToUnixTimeMilliseconds();
         (string, object)[] args = [("$machine", machine), ("$from", fromMs), ("$to", toMs)];
-        long recorded = 0; double capacity = 0; long? first = null, last = null;
+        long recorded = 0; double capacity = 0, gpuCovered = 0; long? first = null, last = null;
         using (var command = Command(db, """
-            SELECT COUNT(*),MIN(minute),MAX(minute),TOTAL(processors*covered) FROM minutes
+            SELECT COUNT(*),MIN(minute),MAX(minute),TOTAL(processors*covered),TOTAL(gpu_covered) FROM minutes
             WHERE machine=$machine AND minute>=$from AND minute<$to
             """, transaction, args))
         using (var reader = command.ExecuteReader())
         {
             reader.Read(); recorded = reader.GetInt64(0);
             if (recorded > 0) { first = reader.GetInt64(1); last = reader.GetInt64(2); }
-            capacity = reader.GetDouble(3);
+            capacity = reader.GetDouble(3); gpuCovered = reader.GetDouble(4);
         }
         afterFirstRead?.Invoke();
         string order = rank switch
         {
             ProcessRank.CpuTime => "TOTAL(a.cpu)",
             ProcessRank.AverageMemory => "TOTAL(a.memory_seconds)/TOTAL(m.covered)",
-            _ => "TOTAL(a.io_read)+TOTAL(a.io_write)"
+            ProcessRank.Io => "TOTAL(a.io_read)+TOTAL(a.io_write)",
+            _ => "TOTAL(a.gpu_seconds)"
         };
-        const string Columns = "TOTAL(a.cpu),TOTAL(a.io_read),TOTAL(a.io_write),TOTAL(a.memory_seconds),COUNT(*),TOTAL(m.covered)";
+        // GPU memory is averaged over the covered time of the minutes that hold it, so a minute without GPU data never dilutes it.
+        const string Columns = "TOTAL(a.cpu),TOTAL(a.io_read),TOTAL(a.io_write),TOTAL(a.memory_seconds),COUNT(*),TOTAL(m.covered)," +
+            "SUM(a.gpu_seconds),SUM(a.gpu_memory_seconds),TOTAL(CASE WHEN a.gpu_memory_seconds IS NOT NULL THEN m.gpu_covered END)";
         const string From = """
             FROM app_minutes a JOIN minutes m ON m.machine=a.machine AND m.minute=a.minute JOIN names n ON n.id=a.name_id
             WHERE a.machine=$machine AND a.minute>=$from AND a.minute<$to
@@ -243,27 +258,28 @@ public sealed class ProcessHistoryStore(string path, long maximumDatabaseBytes =
         using (var command = Command(db, $"SELECT n.display,{Columns},COUNT(*) OVER () {From} AND a.everything_else=0 GROUP BY a.name_id ORDER BY {order} DESC,n.display LIMIT $limit",
             transaction, [.. args, ("$limit", limit)]))
         using (var reader = command.ExecuteReader())
-            while (reader.Read()) { rows.Add(Row(reader.GetString(0), reader, 1, capacity, false)); applications = reader.GetInt64(7); }
+            while (reader.Read()) { rows.Add(Row(reader.GetString(0), reader, 1, capacity, gpuCovered, false)); applications = reader.GetInt64(10); }
         ProcessResourceRow other;
         using (var command = Command(db, $"SELECT {Columns} {From} AND a.everything_else=1", transaction, args))
         using (var reader = command.ExecuteReader())
-        { reader.Read(); other = Row(ProcessHistory.EverythingElse, reader, 0, capacity, true); }
+        { reader.Read(); other = Row(ProcessHistory.EverythingElse, reader, 0, capacity, gpuCovered, true); }
         double total;
         using (var command = Command(db, """
-            SELECT TOTAL(cpu),TOTAL(io_read)+TOTAL(io_write),TOTAL(memory_seconds) FROM app_minutes
+            SELECT TOTAL(cpu),TOTAL(io_read)+TOTAL(io_write),TOTAL(memory_seconds),TOTAL(gpu_seconds) FROM app_minutes
             WHERE machine=$machine AND minute>=$from AND minute<$to
             """, transaction, args))
         using (var reader = command.ExecuteReader())
         {
             reader.Read();
-            total = rank switch { ProcessRank.CpuTime => reader.GetDouble(0) / TicksPerSecond, ProcessRank.AverageMemory => reader.GetDouble(2), _ => reader.GetDouble(1) };
+            total = rank switch { ProcessRank.CpuTime => reader.GetDouble(0) / TicksPerSecond, ProcessRank.AverageMemory => reader.GetDouble(2), ProcessRank.Io => reader.GetDouble(1), _ => reader.GetDouble(3) };
         }
         return new(from, to, rows, applications, other, total, recorded, first is { } f ? Stamp(f) : null, last is { } l ? Stamp(l + MinuteMilliseconds) : null,
-            Earliest(db, transaction, machine, cutoff), StorageBytes);
+            Earliest(db, transaction, machine, cutoff), StorageBytes) { GpuCoveredSeconds = gpuCovered };
     }
 
     /// <summary>One application's metric over time, bucketed like <see cref="UsageHistoryStore.ReadMetric"/>. CPU is a percentage of the
-    /// machine's capacity, memory is bytes and I/O is read plus written bytes per second. Minutes the application was not listed are gaps.
+    /// machine's capacity, memory is bytes, I/O is read plus written bytes per second and GPU is a percentage of GPU-covered time. Minutes the
+    /// application was not listed (for GPU, listed without GPU data) are gaps.
     /// Minutes before <see cref="RetentionCutoff"/>(<paramref name="now"/>) are never read; the grid still starts at <paramref name="from"/>.</summary>
     public UsageHistoryView ReadSeries(string machine, string name, ProcessRank metric, DateTimeOffset from, DateTimeOffset to, int maxPoints, DateTimeOffset now)
     {
@@ -284,11 +300,13 @@ public sealed class ProcessHistoryStore(string path, long maximumDatabaseBytes =
             ProcessRank.CpuTime => ($"TOTAL(a.cpu)/{TicksPerSecond.ToString("R", CultureInfo.InvariantCulture)}*100", "TOTAL(m.processors*m.covered)",
                 $"100.0*a.cpu/{TicksPerSecond.ToString("R", CultureInfo.InvariantCulture)}/(m.processors*m.covered)"),
             ProcessRank.AverageMemory => ("TOTAL(a.memory_seconds)", "TOTAL(m.covered)", "a.memory_seconds/m.covered"),
-            _ => ("TOTAL(a.io_read)+TOTAL(a.io_write)", "TOTAL(m.covered)", "(a.io_read*1.0+a.io_write)/m.covered")
+            ProcessRank.Io => ("TOTAL(a.io_read)+TOTAL(a.io_write)", "TOTAL(m.covered)", "(a.io_read*1.0+a.io_write)/m.covered"),
+            _ => ("100.0*TOTAL(a.gpu_seconds)", "TOTAL(m.gpu_covered)", "100.0*a.gpu_seconds/m.gpu_covered")
         };
-        const string From = """
+        string From = $"""
             FROM app_minutes a JOIN minutes m ON m.machine=a.machine AND m.minute=a.minute JOIN names n ON n.id=a.name_id
             WHERE a.machine=$machine AND n.upper=$key AND a.minute>=$since AND a.minute<$to
+            {(metric == ProcessRank.Gpu ? "AND a.gpu_seconds IS NOT NULL AND m.gpu_covered>0" : "")}
             """;
         var buckets = new List<UsageHistoryBucket>();
         using (var command = Command(db, $"""
@@ -314,11 +332,18 @@ public sealed class ProcessHistoryStore(string path, long maximumDatabaseBytes =
         return new(from, to, bucket, buckets, statistics, listed, Earliest(db, transaction, machine, cutoff), StorageBytes);
     }
 
-    private static ProcessResourceRow Row(string name, SqliteDataReader reader, int offset, double capacity, bool everythingElse)
+    private static ProcessResourceRow Row(string name, SqliteDataReader reader, int offset, double capacity, double gpuCovered, bool everythingElse)
     {
         double cpu = reader.GetDouble(offset) / TicksPerSecond, memory = reader.GetDouble(offset + 3), covered = reader.GetDouble(offset + 5);
+        double? gpu = reader.IsDBNull(offset + 6) ? null : reader.GetDouble(offset + 6), gpuMemory = reader.IsDBNull(offset + 7) ? null : reader.GetDouble(offset + 7);
+        double gpuMemoryCovered = reader.GetDouble(offset + 8);
         return new(name, cpu, capacity > 0 ? 100 * cpu / capacity : 0, covered > 0 ? memory / covered : 0,
-            Saturate(reader.GetDouble(offset + 1)), Saturate(reader.GetDouble(offset + 2)), reader.GetInt64(offset + 4), everythingElse, memory);
+            Saturate(reader.GetDouble(offset + 1)), Saturate(reader.GetDouble(offset + 2)), reader.GetInt64(offset + 4), everythingElse, memory)
+        {
+            GpuSeconds = gpu,
+            AverageGpuPercent = gpu is { } seconds && gpuCovered > 0 ? 100 * seconds / gpuCovered : null,
+            AverageGpuMemoryBytes = gpuMemory is { } byteSeconds && gpuMemoryCovered > 0 ? byteSeconds / gpuMemoryCovered : null,
+        };
     }
 
     private static long Saturate(double value) => value >= long.MaxValue ? long.MaxValue : (long)value;
