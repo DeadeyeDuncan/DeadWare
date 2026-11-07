@@ -648,4 +648,32 @@ public sealed class ConnectionHistoryStoreTests(ITestOutputHelper testOutput) : 
         store.Append([A("ärger.exe",1,0),A("ÄRGER.EXE",2,0),A("a_b.exe",4,0),A("aXb.exe",8,0),A("50%.exe",16,0),A("500.exe",32,0)],[],Epoch.AddMinutes(2));
         long R(string app)=>store.Read(Query() with {Application=app}).Summary.ReceivedBytes; Assert.Equal((3L,4L,16L),(R("Ärger.exe"),R("a_b.exe"),R("50%.exe")));
     }
+
+    // Coverage in the minute that holds From (Epoch + 30 s) and traffic in the first whole minute after it.
+    private void UnalignedFixture() => store.Append([A("a.exe",10,10,1)],[new("c0","s",Epoch,Epoch.AddMinutes(1),true)],Epoch.AddDays(3).AddMinutes(2));
+    [Fact] public void Strip_one_minute_slots_start_at_the_first_whole_minute_of_an_unaligned_interval()
+    {
+        UnalignedFixture(); var from=Epoch.AddSeconds(30);
+        var strip=Strip(new(from,Epoch.AddMinutes(10))); Assert.Equal(60_000,strip.BucketMilliseconds);
+        Assert.All(strip.Slots,x=>Assert.True(x.Start>=TrafficStrips.CeilingMinute(from)));
+        Assert.Equal((Epoch.AddMinutes(1),1L),(strip.Slots[0].Start,strip.Slots[0].Minutes));
+    }
+    [Fact] public void Strip_longer_slots_leave_out_coverage_before_the_first_whole_minute_of_an_unaligned_interval()
+    {
+        UnalignedFixture(); var from=Epoch.AddSeconds(30);
+        var strip=Strip(new(from,from.AddDays(3))); Assert.True(strip.BucketMilliseconds>=120_000);
+        var first=strip.Slots[0]; Assert.Equal(Epoch.AddMinutes(1),first.Start);
+        Assert.True(first.Minutes<=TrafficStrips.MinuteStarts(first.Start,first.End));
+        // Only minute 1 (rows without coverage, 60 s); the piece in the minute that holds From is not in the grid.
+        Assert.Equal((1L,60L),(first.Minutes,first.RecordedSeconds));
+    }
+    [Fact] public void Strip_never_ranks_a_zero_measure_key_even_with_free_places()
+    {
+        store.Append([A("a.exe",10,5),A("b.exe",20,6),A("z.exe",0,0)],[],Epoch.AddMinutes(2));
+        var both=Strip(Query()); Assert.Equal(["b.exe","a.exe"],both.Applications.Select(a=>a.Name)); Assert.Equal((0L,0L,0L),(both.OtherReceived,both.OtherSent,both.OtherApplications));
+        store.Append([A("h.exe",10,0)],[],Epoch.AddMinutes(2));
+        // Under Sent the direction filter drops h.exe's rows before the strip, so it neither ranks nor counts as Other.
+        var sent=Strip(Query() with {Direction=ConnectionDirection.Sent}); Assert.Equal(["b.exe","a.exe"],sent.Applications.Select(a=>a.Name)); Assert.Equal((0L,0L,0L),(sent.OtherReceived,sent.OtherSent,sent.OtherApplications));
+        Assert.DoesNotContain(Strip(Query()).Applications,a=>a.Name=="z.exe");
+    }
 }
