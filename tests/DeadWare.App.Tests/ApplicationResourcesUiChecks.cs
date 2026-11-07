@@ -271,7 +271,7 @@ internal static class ApplicationResourcesUiChecks
 
     private static void The_app_chart_shares_the_device_charts_grid(UsageHistoryPage page, ApplicationResourcesCard card)
     {
-        // The selected app's series is read with the CPU chart's point count, so its buckets are the CPU and RAM charts' slots.
+        // The selected app's series is read with the CPU chart's point count, so its buckets are the CPU, RAM and GPU charts' slots.
         var device = Traces(page.Chart("cpu"))[0].View; var app = Traces(card)[0].View;
         Assert.Equal("chrome.exe CPU", Traces(card)[0].Label);
         Assert.Equal((device.From, device.To, device.BucketMilliseconds), (app.From, app.To, app.BucketMilliseconds));
@@ -706,6 +706,10 @@ internal static class ApplicationResourcesUiChecks
         Assert.DoesNotContain(SelectToChart, Texts(card));
         Assert.False(IsShown(Table(card), card));
         Assert.True(IsShown(Button(card, "Clear"), card));
+        // Another Rank by asked for, before its read returns, keeps the shown state: no hint over the hidden table.
+        SetRank(card, ProcessRank.CpuTime);
+        Assert.DoesNotContain(SelectToChart, Texts(card));
+        Assert.False(IsShown(Table(card), card));
         // The same slot listed from the CPU chart shows its table, and keeps it when ranked by GPU, with "—" in the GPU columns: the
         // sentence follows a GPU chart click.
         Activate(page.Chart("cpu"), 1);
@@ -776,6 +780,9 @@ internal static class ApplicationResourcesUiChecks
         Assert.Equal(2, page.Chart("memory").SelectedIndex); Assert.Null(gpu.SelectedIndex);
         Press(page.Chart("cpu"), Key.Escape);
         Assert.Null(card.Slot);
+        // Like the other page checks, it ends on the day ranking by CPU time, with no read left waiting.
+        SetRank(card, ProcessRank.CpuTime);
+        Shows_the_day_ranking(card, ["chrome.exe", "Code.exe", "steam.exe", "explorer.exe", "Everything else"]);
     }
 
     private static void Slot_heading_formats()
