@@ -1,5 +1,113 @@
 # Release validation
 
+## Traffic strip and Destinations table (0.16.0, 2026-11-07)
+
+### CI measurements (as measured, no threshold)
+
+All on `windows-latest` in the pull request's CI build (#85). A measurement records and decides nothing.
+
+- `Connection_history_rates_and_read_timings` (`connection-history.json`), first in [run 42388991212](https://github.com/DeadeyeDuncan/DeadWare/actions/runs/42388991212) (Task 3):
+  - Rates (file growth over 12 simulated hours of per-minute rows, one `Append` a minute): idle 0.054 MiB/h, one pair 0.122 MiB/h, twenty pairs 1.171 MiB/h, twenty pairs with churn 1.398 MiB/h.
+  - Fill (`fill.seconds`): 116.1 s to fill a 256 MiB per-minute file holding 219 hours (262,520 rows, 268,435,456 bytes, evicted). The seconds include the probe reads made during the fill.
+  - The build job took 13m59s. Against the job limit of 20 minutes then in force this left about 6 minutes; at the user's request the limit was later raised from 20 to 30 minutes (`.github/workflows/build.yml`, commit ed349a4) before the later measurements were added.
+  - The eight reads on the full file, with the SQLite heap peak (MEMORY temp store / default temp store):
+
+    | Range | MEMORY | Default |
+    |---|---|---|
+    | 31 days | 1,525 ms (58.7 MB) | 1,314 ms (8.7 MB) |
+    | 7 days | 1,112 ms (45.6 MB) | 984 ms (8.7 MB) |
+    | 1 day | 131 ms (8.4 MB) | 138 ms (8.7 MB) |
+    | 1 minute | 6.2 ms (2.2 MB) | 6.7 ms (2.4 MB) |
+
+    These reads predate the strip and the Destinations steps (below), which `Read` now also runs.
+- `strip30d`, in the same measurement, [run 42398251600](https://github.com/DeadeyeDuncan/DeadWare/actions/runs/42398251600) (Task 7): the 30-day strip over the full file, all applications p50 2,357 ms and p95 2,486 ms; the busiest application p50 498 ms and p95 526 ms.
+- `destinationStepsMs`, in the same measurement, [run 42413605599](https://github.com/DeadeyeDuncan/DeadWare/actions/runs/42413605599) (Task 15; job 22m39s, over the old 20-minute limit and under the current 30-minute one). Each total read now includes the strip and the Destinations steps; the steps' own time is in brackets:
+
+  | Range | MEMORY | Default |
+  |---|---|---|
+  | 31 days | 2,850 ms (steps 1,274 ms) | 2,956 ms (steps 1,390 ms) |
+  | 7 days | 2,053 ms (909 ms) | 2,175 ms (922 ms) |
+  | 1 day | 276 ms (105 ms) | 285 ms (115 ms) |
+  | 1 minute | 7.6 ms (0.7 ms) | 7.6 ms (0.7 ms) |
+
+  `strip30d` in that run: all applications p50 2,847 ms, the busiest application p50 403 ms.
+- `Usage_application_series_timing_for_a_month` (`usage-application-series.json`), [run 42400924261](https://github.com/DeadeyeDuncan/DeadWare/actions/runs/42400924261) (Task 8): 43,200 minutes × 15 applications, a file of 64,188,416 bytes (`fileBytes` counts the main database file only, not its `-wal`); 450 points p50 2,757 ms and p95 2,814 ms; 1,500 points p50 2,748 ms and p95 2,802 ms.
+- Not measured: Export destinations. Its time grows with the number of distinct remote addresses in the scope, since each page of 1,000 destinations runs its own full scans of the grouped rows (one for each 1,000 addresses).
+
+### Linux harness
+
+Measured in a Linux container (.NET 10, SQLite 3.53.4) while the release was designed, as the design records them; Windows times differ.
+
+Retention, driving the real `ConnectionHistoryStore.Append` with the per-minute writer's output simulated, at 1-second polling with real-format DB-IP locations and an origin, for 12–24 simulated hours per load:
+
+| Load | 0.15 (one row per poll) | 0.16 (one row per minute) | 0.16 retention |
+|---|---|---|---|
+| Idle (coverage only) | 2.53 MiB/h; cap in 4.2 days | 0.052 MiB/h; 37 MiB in 30 days | 30 days |
+| 1 steady app–destination pair | 6.15 MiB/h; cap in 41.6 h | 0.120 MiB/h; 86 MiB in 30 days | 30 days |
+| 20 steady pairs | 62.8 MiB/h; cap in 4.1 h | 1.175 MiB/h; cap in 218 h | about 9 days |
+| 20 pairs, 5 % replaced each second | 63.1 MiB/h; cap in 4.1 h | 1.336 MiB/h; cap in 192 h | about 8 days |
+
+At 20 pairs, steady running gives 1,200 traffic rows and 60 coverage rows an hour, about 60 times fewer than 0.15. Rule of thumb: about 0.87 KiB per recorded minute plus about 0.94 KiB per saved row; 30 days fit while the average stays at or below about 5 pairs a minute.
+
+Read timings, measured twice (ranges cover both runs):
+
+| File | Range | 0.15 `Read` | 0.16 build | 0.16 consumers¹ | 0.16 total | SQLite heap peak |
+|---|---|---|---|---|---|---|
+| Per-poll, full: 5 h, 293k rows, 5,679 grouped | 31 d | 1.71 s | 0.81–0.83 s | 0.02 s | 0.85 s | 52 MiB |
+| Per-minute, full: 7.8 days, 262k rows, all grouped | 31 d | 4.34 s | 1.38–1.47 s | 0.94–1.01 s | 2.3–2.5 s | 49 MiB |
+| Per-minute, full | 7 d | not measured | 1.09–1.13 s | 0.78–0.82 s | 1.9–2.0 s | 44 MiB |
+| Per-minute, full | 1 d | not measured | 0.15 s | 0.10 s | 0.25 s | 8 MiB |
+| Either | 1 minute (cursor) | 4–10 ms | < 1 ms | < 1 ms | < 5 ms | < 1 MiB |
+
+¹ Summary, page, a per-app hourly strip, a destinations grouping and markers, as benchmarked there. The Destinations steps were estimated to add about 0.2 s, for about 2.6–2.75 s over 30 days and about 2.1 s over 7 days on Linux. A full per-minute file used 23.8 MiB of TEMP pages, under the 64 MiB limit. On the per-minute benchmark file, the 7-day Unlocated count went from 2,111 to 833 with the Unlocated fix. Over 7 days on both benchmark files the grouped read returned exactly 0.15's pages, summary (with the Unlocated rule applied to both) and markers.
+
+### Findings
+
+- Resolved: the 0.12.2 connections review's finding of "the history summary counting local peers as unlocated" (Connections review fixes (0.12.2), below). History's Unlocated count is now `kind=0 AND located=0`, the Live rule: a public address with no map position. Local and special-purpose addresses are never unlocated.
+- Still open: the monotonic `expiry` watermark from the same review (a forward clock jump hides history until the clock catches up). 0.16.0 does not change it.
+
+### Automated coverage
+
+Core, run locally on Linux and on the Windows CI build:
+
+- `ConnectionMinuteFolderTests`: one row per pair per minute with saturating totals, completeness as the AND of the contributing publications, a minute closing two seconds and one poll after it ends, a late delta becoming a new unit with a new batch id, segment and generation changes, `Tick` closing old and stalled minutes, pressure, units within the append limits (with later units still retired in the same pass), the 60-second clock check, an origin change, the location at freeze or the last known one, frozen units never changing, batch ids, and `Polling_interval_change_mid_minute_keeps_one_row_and_contiguous_coverage`.
+- `TrafficStripTests`: Connections slot lengths (at most 1,500 whole-minute slots), `IsFull` by whole-minute starts, due-until keeping unsaved minutes out of the gaps, rates and null without recorded time, `SlotAt`, the Show in Connections target (whole minutes, clipped to 30 days), slot length text, and the application key.
+- `ConnectionDestinationsTests`: Live grouping by remote address, null rates without capture, case-insensitive app names, counts that follow the summary rules, the first non-null location, the ten busiest apps and ports with exact counts, scopes (special under All only), each scope's own top 1,000, scope text parsing, sort rules, every fixed text, and the count line's culture.
+- `ConnectionHistoryStoreTests`: per-minute rows reading the same as per-poll rows, the grouped read against the three-scan reference, the read writing nothing, the TEMP limit failing with no partial view, `Unlocated_counts_public_peers_without_a_point_only`, the strip (ranking by the direction measure, Other, application keys and names, slots against a reference fold, recorded seconds from coverage, retained-from after expiry and capacity eviction, the minute holding the expiry instant, unaligned intervals, zero-measure keys), `Capacity_shortened_status_matches_the_strip`, the exact application filter everywhere and `Application_filter_folds_non_ascii_case_and_never_pattern_matches`, History destinations against a brute-force grouping, counts equal to the summary's, the latest saved location and every point, search, country, direction and the minute, bounded lists, and the destinations CSV (every destination in scope, port caps and neutralization, `Destinations_csv_over_the_temp_limit_writes_nothing`).
+- `UsageHistoryStoreTests`: the application series on the metric grid, ranked like the Applications read, capture-gap minutes kept out of slot bytes, recorded minutes without traffic as zero slots, and bad arguments.
+- `ConnectionSettingsTests` (`Destination_scope_setting_normalizes_and_round_trips`), `NetworkAddressTests` (labels for every classified range, unparseable text as special) and `ConnectionProjectionTests` (the location key matching map grouping, highlighted locations kept within the 256 cap).
+
+App, on the Windows CI build only:
+
+- `ConnectionServiceTests`: the open minute written once when it closes with Live unchanged, Stop and session-ending stop writing the open minute, pause writing it at the next tick with a new batch on resume, a failed write retried with identical units, pressure freezing open units, `Small_clock_rollback_holds_a_frozen_minute_until_the_clock_passes_it`, and the destinations export writing a new UTF-8 file without a BOM and never overwriting.
+- UI checks inside `BatteryUiTests.Real_battery_page_renders_dark_light_empty_and_multi_year_without_native_windows`:
+  - `TrafficStripUiChecks`: `CheckStackOrderAndColours`, `CheckGapsZerosAndPartials`, `CheckBandsAndSeparators`, `CheckChipAndLegend`, `CheckKeysAndClicks`, `CheckNotKeptAndEmptyTexts`, `CheckHoverDoesNotRebuildGeometry`, `CheckThemeRefresh` (including high contrast).
+  - `ConnectionsPageUiChecks`: `CheckStripReads`, `CheckStripCursor`, `CheckMinuteReadFailureKeepsTheStrip`, `CheckApplicationFilter`, `CheckShowHistory`, `CheckHistoryLimitError`, `CheckDestinationsLive`, `CheckDestinationsHistory`, `CheckDestinationScopeSaved`, `CheckDestinationsInPlace`, `CheckDestinationHighlight`, `CheckScopeChangeClearsTheSelection`, `CheckDestinationsCopy`, `CheckDestinationsExport`, `CheckNotTrimmed`.
+  - `UsageHistoryUiChecks`: `CheckFractionalBucketsConnect`, `CheckStripListsSlot`, `CheckStripSharesTheCursor`, `CheckStripClearPaths`, `CheckStripReadsOnItsOwn`, `CheckShowInConnections`.
+  - `ConnectionMapUiChecks`: `CheckHighlight`.
+- Real-Windows measurements: `Connection_history_rates_and_read_timings` and `Usage_application_series_timing_for_a_month` (above).
+
+### Pending by eye
+
+Never claimed as verified in this release:
+
+- Connections storage: a 7-day History view after a week of per-minute recording shows "Reading saved history…" and then the view.
+- Connections storage: the newest minute appears a few seconds after it ends.
+- The traffic strip is readable in all nine themes and in high contrast, including Mage's and Skyrim's closest pairs.
+- The strip's bottom band agrees with the top row of the Applications table.
+- A large download shows as one tall band.
+- The current minute at the right edge of Today is empty, not hatched, and its hover says "Not saved yet".
+- Show in Connections from the separate Usage history window brings the dashboard forward on Connections, with the slot and the app.
+- On a file whose cap has shortened retention, a 30-day Connections view shows "Not kept before … · Capacity shortened retention".
+- Week and Month line charts connect across fully recorded fractional buckets.
+- The Destinations table: Live with a busy browser, the table stays calm while the pointer rests on it.
+- The Destinations table: History over 30 days, a selected destination's node lights up.
+- The Destinations table: a LAN device appears under Local.
+
+### Results
+
+`dotnet build DeadWare.slnx -c Release -p:EnableWindowsTargeting=true --nologo` finished with 0 errors and the 14 existing warnings, none in a file this release changed. The Core suite on Linux passed 1,228 tests with 1 skipped and 26 failures, the known Windows-only Core tests that cannot run there. The App tests run only on the Windows CI build on the pull request (#85), which runs both suites on each pushed head; it passed on `<FINAL HEAD SHA — controller fills>` (run `<FINAL GREEN RUN ID — controller fills>`: `<CORE COUNT>` Core tests and `<APP COUNT>` App tests, `<SKIPPED>` skipped).
+
 ## Per-app GPU (0.15.0, 2026-11-07)
 
 ### CI measurement (a floor)

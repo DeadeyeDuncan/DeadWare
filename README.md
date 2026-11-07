@@ -19,7 +19,7 @@ DeadWare is a Windows desktop monitor for CPU, GPU, memory, drives and network a
 
 - **Watch your hardware:** live usage and temperature graphs, per-core CPU traces, supported fan/pump readings, drive throughput, storage health and searchable sensors. Choose graph ranges from one minute to six hours.
 - **Find busy apps:** group processes by application and compare CPU, memory, I/O and GPU, with expandable rows and customizable columns. Per-app disk and network rates require administrator access.
-- **See your connections:** explore observed destinations on a globe or 2D map, filter by application and replay locally saved history. Locations are approximate; arcs illustrate connections, not measured routes.
+- **See your connections:** explore observed destinations on a globe or 2D map, filter by application, replay locally saved history, see when each app used the network and list every destination. Locations are approximate; arcs illustrate connections, not measured routes.
 - **Look back:** review device and application usage, battery charge and Cooling Health. Export CSVs, compare cooling against a saved reference, and set your own threshold alerts.
 - **Build your workspace:** detach graphs, use the compact widget, pin windows above other apps and restore their positions. Monitoring continues in the tray when the dashboard closes.
 - **Make it yours:** choose from nine themes, optional window glass and saved graph colors, line styles and glow.
