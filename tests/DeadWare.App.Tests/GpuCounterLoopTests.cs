@@ -119,7 +119,7 @@ public class GpuCounterLoopTests : IAsyncLifetime
     }
     [Fact] public async Task Interval_changes_keep_each_read_fresh_once()   // Review Focus 1
     {
-        double interval=0.5,before=0.5;var (loop,_)=Loop(()=>interval);var fresh=new List<double>();   // before: the interval in effect until the latest change
+        double interval=0.5,before=0.5;var (loop,fake)=Loop(()=>interval);var fresh=new List<double>();   // before: the interval in effect until the latest change
         async Task Poll(int count)
         {
             for(int i=0;i<count;i++)
@@ -132,7 +132,29 @@ public class GpuCounterLoopTests : IAsyncLifetime
                 await Task.Delay(TimeSpan.FromSeconds(interval));
             }
         }
-        await Poll(6);before=interval;interval=2;await Poll(3);before=interval;interval=0.5;await Poll(6);
+        await Poll(6);before=interval;interval=2;await Poll(3);before=interval;interval=0.5;await Poll(8);
         Assert.Equal(fresh.Count,fresh.Distinct().Count());Assert.True(fresh.Count>=5);
+        // The period is back to max(1 s, 0.5 s).
+        var last=fake.CallGaps().Last();Assert.True(last<1.9,$"last gap {last:0.00} s");
+    }
+    [Fact] public async Task The_first_read_waits_one_period_after_start()
+    {
+        // The poll that starts the loop has just read, so an immediate loop read would read more often than every-poll reading.
+        var (loop,fake)=Loop();await Task.Delay(500);Assert.Equal(0,fake.Reads);Assert.Null(loop.Take());
+        await fake.WaitForReads(1);Assert.True(fake.LastReadAt>=0.95,$"first read at {fake.LastReadAt:0.00} s");
+    }
+    [Fact] public async Task A_shorter_interval_takes_effect_during_a_long_wait()
+    {
+        // The first read returns into a 10 s period; 1.5 s later, past Period(0.5) but well inside Period(10), polling drops to 0.5 s.
+        double interval=0.5;var fake=new FakeGpuSource(block:true);Loop(()=>interval,source:fake);
+        await fake.Entered;interval=10;fake.Release();await fake.WaitForReads(1);
+        await Task.Delay(1500);int reads=fake.Reads;var sw=Stopwatch.StartNew();interval=0.5;await fake.WaitForReads(reads+1);
+        Assert.True(sw.Elapsed<TimeSpan.FromSeconds(GpuCounterLoop.Period(0.5)+0.5+0.1),$"next read {sw.Elapsed.TotalSeconds:0.00} s after the switch");
+        Assert.Equal(1,reads);
+    }
+    [Fact] public async Task A_take_after_the_loop_stops_is_null()
+    {
+        var (loop,fake)=Loop();await fake.WaitForReads(1);Assert.NotNull(loop.Take());
+        await loop.DisposeAsync();Assert.True(loop.Stopped.IsCompleted);Assert.Null(loop.Take());
     }
 }
