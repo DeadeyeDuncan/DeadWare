@@ -57,6 +57,10 @@ public sealed record ProcessActivity(ProcessActivityKind Kind,long Sequence,Date
     public ProcessColumnState Gpu{get;init;}=ProcessColumnState.Ready;
     /// <summary>The joined GPU read's interval (<see cref="GpuProcessJoin.IntervalSeconds"/>); null when no read was joined or it adds no GPU time.</summary>
     public double? GpuIntervalSeconds{get;init;}
+    /// <summary>Loop placement only: the joined read is older than two loop periods, so its GPU values are a stale reading.</summary>
+    public bool GpuStale{get;init;}
+    /// <summary>Set only with diagnostic timings, for <see cref="ProcessSummary.Gpu"/>.</summary>
+    public GpuCounterSummary? GpuSummary{get;init;}
     public int NetworkMisses{get;init;}
     public int DiskMisses{get;init;}
     public long UnattributedDiskEvents{get;init;}
@@ -65,10 +69,21 @@ public sealed record ProcessActivity(ProcessActivityKind Kind,long Sequence,Date
     public static ProcessActivity Unavailable(string status)=>Empty(ProcessActivityKind.Unavailable) with{Scan=new(false,status)};
     static ProcessActivity Empty(ProcessActivityKind kind)=>new(kind,0,DateTimeOffset.MinValue,0,0,0,Array.Empty<ProcessSample>(),ProcessOmitted.None,0,null);
 }
+/// <summary>
+/// For diagnostics, the poll's GPU counter read: instances read and skipped, adapters, the read time (null unless a read ran on the poll, or the
+/// loop's read was taken fresh), the column state and the placement. Counts, states and timings only: never a process name or adapter description.
+/// </summary>
+public sealed record GpuCounterSummary(int Instances,int Skipped,int Adapters,double? ReadMilliseconds,ProcessColumnState State,string Placement)
+{
+    public const string EveryPoll="every poll",OwnLoop="own loop";
+}
 /// <summary>Counts and states only, for diagnostics: never a process name or path.</summary>
 public sealed record ProcessSummary(string State,int Processes,int Omitted,ProcessColumnState Scan,ProcessColumnState Disk,ProcessColumnState Network,int NetworkMisses,int DiskMisses,long UnattributedDiskEvents)
 {
-    public static ProcessSummary From(ProcessActivity activity)=>new(activity.Kind.ToString(),activity.Processes.Count,activity.Omitted.Count,activity.Scan,activity.Disk,activity.Network,activity.NetworkMisses,activity.DiskMisses,activity.UnattributedDiskEvents);
+    /// <summary>Null unless the activity is available and carries a summary.</summary>
+    public GpuCounterSummary? Gpu{get;init;}
+    public static ProcessSummary From(ProcessActivity activity)=>new(activity.Kind.ToString(),activity.Processes.Count,activity.Omitted.Count,activity.Scan,activity.Disk,activity.Network,activity.NetworkMisses,activity.DiskMisses,activity.UnattributedDiskEvents)
+        {Gpu=activity.GpuSummary};
 }
 public sealed record TrackedScan(ProcessScan Scan,IReadOnlyList<ProcessSample> Processes,ProcessOmitted Omitted,double? DeltaSeconds,int TotalProcesses,IReadOnlyDictionary<int,ProcessIdentity> Index)
 {
