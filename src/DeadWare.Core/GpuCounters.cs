@@ -224,3 +224,27 @@ public sealed class GpuCounterReader(IGpuCounterApi api)
         adapters=map;
     }
 }
+/// <summary>
+/// Decides where the GPU counter read runs (spec, Placement and cost): it keeps the last <see cref="Window"/> read times, not counting the
+/// first read after the query opens, and moves the read to its own loop once more than one of them exceeds <see cref="ThresholdMilliseconds"/>.
+/// The move holds until <see cref="Reset"/> (Per-process monitoring off). One caller at a time.
+/// </summary>
+public sealed class GpuPlacementGuard
+{
+    public const int Window=20;
+    public const double ThresholdMilliseconds=15;
+    readonly Queue<double> times=new(Window);
+    public bool OwnLoop{get;private set;}
+    public void Record(double milliseconds,bool firstAfterOpen)
+    {
+        if(firstAfterOpen)return;
+        if(times.Count==Window)times.Dequeue();
+        times.Enqueue(milliseconds);
+        if(times.Count(t=>t>ThresholdMilliseconds)>=2)OwnLoop=true;
+    }
+    public void Reset()
+    {
+        times.Clear();
+        OwnLoop=false;
+    }
+}
