@@ -45,7 +45,7 @@ public sealed record GpuCounterInstance(int Pid,long Luid,int Phys,int? Engine,s
 // pdhmsg.h values
 public static class GpuPdhStatus
 {
-    public const uint CStatusValidData=0x00000000,CStatusNewData=0x00000001,CStatusNoInstance=0x800007D1,MoreData=0x800007D2,NoData=0x800007D5,CalcNegativeDenominator=0x800007D6,CalcNegativeValue=0x800007D8,CStatusNoObject=0xC0000BB8,CStatusNoCounter=0xC0000BB9,InvalidData=0xC0000BC6;
+    public const uint CStatusValidData=0x00000000,CStatusNewData=0x00000001,CStatusNoInstance=0x800007D1,MoreData=0x800007D2,NoData=0x800007D5,CalcNegativeDenominator=0x800007D6,CalcNegativeValue=0x800007D8,CStatusNoObject=0xC0000BB8,CStatusNoCounter=0xC0000BB9,CStatusInvalidData=0xC0000BBA,InvalidData=0xC0000BC6;
 }
 /// <summary>Percent for engines, bytes for memory (PDH_FMT_LARGE values as double, exact below 2^53).</summary>
 public readonly record struct GpuRawItem(string Name,uint CStatus,double Value);
@@ -138,7 +138,7 @@ public sealed class GpuCounterReader(IGpuCounterApi api)
             ready[i]=true;
             var status=arrays[i].Status;
             if(status is 0 or GpuPdhStatus.NoData or GpuPdhStatus.CStatusNoInstance)continue;
-            if(status is GpuPdhStatus.InvalidData or GpuPdhStatus.CalcNegativeDenominator or GpuPdhStatus.CalcNegativeValue){ready[i]=false;benign??=status;continue;}
+            if(status is GpuPdhStatus.CStatusInvalidData or GpuPdhStatus.InvalidData or GpuPdhStatus.CalcNegativeDenominator or GpuPdhStatus.CalcNegativeValue){ready[i]=false;benign??=status;continue;}
             return Fail(GpuCounterStatus.Error(status),monotonicSeconds,utcTime);
         }
         if(benign is{} benignStatus)

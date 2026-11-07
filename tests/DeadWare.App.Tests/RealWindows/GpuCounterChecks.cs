@@ -16,7 +16,7 @@ public sealed class GpuCounterChecks
     private const int Reads=240,Listed=10;
     private static readonly GpuCounterKind[] Kinds=[GpuCounterKind.Engine,GpuCounterKind.Dedicated,GpuCounterKind.Shared];
     // Array statuses the reader takes as a success, as no instances, or as not ready for one read.
-    private static readonly uint[] Accepted=[GpuPdhStatus.CStatusValidData,GpuPdhStatus.NoData,GpuPdhStatus.CStatusNoInstance,GpuPdhStatus.InvalidData,GpuPdhStatus.CalcNegativeDenominator,GpuPdhStatus.CalcNegativeValue];
+    private static readonly uint[] Accepted=[GpuPdhStatus.CStatusValidData,GpuPdhStatus.NoData,GpuPdhStatus.CStatusNoInstance,GpuPdhStatus.CStatusInvalidData,GpuPdhStatus.InvalidData,GpuPdhStatus.CalcNegativeDenominator,GpuPdhStatus.CalcNegativeValue];
 
     [ElevatedGitHubFact] public async Task Gpu_counters_open_and_parse()
     {
