@@ -78,7 +78,7 @@ Minor-version milestones:
   - Disk is physical drive transfers. Delayed cache writes are credited to System.
 - **Keyboard and accessibility:**
   - Left and Right collapse and expand, Enter toggles, Delete opens End task…, and Ctrl+F focuses the search box.
-  - Esc clears the search, and F5 re-sorts. From 0.14.1, Ctrl+F, F5 and Esc work whenever the page is shown, also while keyboard focus is in the sidebar or the header.
+  - Esc clears the search, and F5 re-sorts. From 0.14.1, Ctrl+F, F5 and Esc work whenever the page is shown, also while keyboard focus is in the sidebar or the header. A menu, pop-up or other control that uses one of these keys keeps it, so with the **Color theme** menu open, Esc first closes the menu.
   - The grid, search box, buttons and chevrons have automation names, and each row has a spoken summary.
   - Colours come from theme resources only.
 
@@ -162,7 +162,7 @@ Minor-version milestones:
   - The list aggregates exactly the stored minutes the clicked point averaged, those whose start falls in the slot (`ReadMetric`'s (minute − from) ÷ bucket grouping), with the card's formulas: CPU time and I/O summed, Avg CPU over the slot's covered seconds, and memory as each app's Σ(memory × Δt) ÷ the covered seconds of the minutes it was listed.
   - The heading names the minutes listed, from the first one's start to the last one's end, in local time, with the date on Week and Month (for example "Busiest apps · Nov 3 03:05–03:28").
   - The selection draws as a hairline on both charts. Esc or **Clear** returns to the period ranking.
-  - Keyboard: the CPU and RAM charts become focusable. Left and Right move the selected bucket on both charts, matched by time, and the minute refresh keeps it at that time; Enter lists it.
+  - Keyboard: the CPU and RAM charts become focusable. Left and Right move the selected bucket on both charts, matched by time, and the minute refresh keeps it at that time; Enter lists it. Esc, **Clear** and a range or period change also clear a cursor that lists nothing (Esc also when no slot is listed; **Clear** shows only while one is).
   - This extends the shared `UsageHistoryChart` with an optional selection and the byte unit, so the other charts are unchanged.
 - **Gaps:** a notice states how many minutes in the period have no process data (monitoring off, DeadWare not running, or a capture gap), plus a storage line for the history file.
 

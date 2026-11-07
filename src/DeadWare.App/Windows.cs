@@ -82,7 +82,7 @@ public sealed class MainWindow : Window
         KeyDown+=(_,e)=>{if(PageKey(e.OriginalSource,e.Key,Keyboard.Modifiers))e.Handled=true;};
     }
     /// <summary>Ctrl+F, F5 and Esc for the Processes page while it is shown and the key comes from the shell around it (the rail, the header) or the window itself; true when the page acted.
-    /// The window's KeyDown bubbles, so it sees only keys nobody handled: the page's own preview takes these keys first, and chrome controls keep the keys they handle.
+    /// The window's KeyDown bubbles, so it sees only keys nobody handled: inside the page, its preview takes F5 and Esc and its key binding takes Ctrl+F first, and chrome controls keep the keys they handle.
     /// Pop-up content (menus, drop-downs) is outside the shell's visual tree, so it keeps its keys too.</summary>
     internal bool PageKey(object source,Key key,ModifierKeys modifiers)=>
         content.Content is ProcessesPage processes
