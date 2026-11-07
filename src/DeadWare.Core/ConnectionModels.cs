@@ -47,3 +47,14 @@ public sealed record ConnectionHistoryView(ConnectionHistoryQuery Query,
     IReadOnlyList<ConnectionHistoryMarker> Markers, IReadOnlyList<ConnectionHistoryInterval> Coverage,
     IReadOnlyList<ConnectionHistoryGap> Gaps, DateTimeOffset? EarliestRetainedTime,
     long StorageBytes, string Status, long OmittedMarkers = 0, TrafficStrip? Strip = null);
+public enum DestinationScope { All, Internet, Local }
+public sealed record NetworkAddressClass(NetworkAddressKind Kind, string Label);
+public sealed record ConnectionDestinationApp(string Name, long ReceivedBytes, long SentBytes);
+public sealed record ConnectionDestinationPort(int Port, ConnectionProtocol Protocol, long ReceivedBytes, long SentBytes);
+public sealed record ConnectionDestination(string Address, NetworkAddressClass Class, ConnectionLocation? Location,
+    IReadOnlyList<GeoPoint> Points, bool Unlocated, IReadOnlyList<ConnectionDestinationApp> Apps, int AppCount,
+    IReadOnlyList<ConnectionDestinationPort> Ports, int PortCount, long ReceivedBytes, long SentBytes,
+    double? DownloadBytesPerSecond, double? UploadBytesPerSecond, int? Connections, long? Minutes,
+    DateTimeOffset FirstSeen, DateTimeOffset LastSeen, bool? Complete);
+public sealed record ConnectionDestinationCounts(long All, long Internet, long Local, long Special, long Unlocated);
+public sealed record ConnectionDestinationList(IReadOnlyList<ConnectionDestination> Rows, ConnectionDestinationCounts Counts);
