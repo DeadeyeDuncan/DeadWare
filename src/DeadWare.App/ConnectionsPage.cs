@@ -75,7 +75,7 @@ internal sealed class ConnectionsPage : Grid
     private ConnectionHistoryQuery? pending;
     // The strip: the whole-interval query on screen (and when it was applied), one waiting, one in flight and the last that failed.
     private ConnectionHistoryQuery? stripContext, pendingStrip, stripReading, stripFailed;
-    private DateTimeOffset stripNow;
+    private DateTimeOffset stripNow, stripDue;
     // The whole-interval query of the latest request, which a strip reply must match to be applied.
     private ConnectionHistoryQuery? requestedWhole;
     // The latest requested query, and the generation whose read is in flight (−1 for none).
@@ -226,6 +226,7 @@ internal sealed class ConnectionsPage : Grid
             storage.Text = (IsHistory ? historyStorage : "") + service.StorageStatus; database.Text = $"DB-IP Lite · {(service.DatabaseDate is { } date ? $"database {date:yyyy-MM-dd}" : "no location database")} · Download contacts download.db-ip.com · DB-IP.com (CC BY 4.0). {service.LookupStatus}"; live = service.Live; if (!IsHistory) ApplyLive(live);
         }
         else if (!IsHistory) ApplyLive(live);
+        RefreshNotRecordedFilter();
     }
     private void ChangeMode()
     {
@@ -340,9 +341,10 @@ internal sealed class ConnectionsPage : Grid
     private void ApplyStrip(ConnectionHistoryQuery whole, TrafficStrip? strip)
     {
         var current = clock();
-        trafficStrip.Apply(strip, TrafficStrips.DueUntil(whole.To, current, ConnectionService.DefaultFlushInterval + TimeSpan.FromSeconds(session.Settings.PollingIntervalSeconds)), current);
+        var due = TrafficStrips.DueUntil(whole.To, current, ConnectionService.DefaultFlushInterval + TimeSpan.FromSeconds(session.Settings.PollingIntervalSeconds));
+        trafficStrip.Apply(strip, due, current, FilterNotRecorded);
         if (strip is null) { stripContext = null; stripFailed = whole; }
-        else { stripContext = whole; stripNow = current; stripFailed = null; }
+        else { stripContext = whole; stripNow = current; stripDue = due; stripFailed = null; }
         UpdateHairline();
     }
     // While the minute cursor is on, an Accent hairline marks the middle of the cursor minute and the slot holding it is selected.
@@ -364,12 +366,24 @@ internal sealed class ConnectionsPage : Grid
         syncing = true; minute.IsChecked = true; cursor.Value = Math.Clamp(Math.Floor((time - shown.From).TotalMinutes), 0, cursor.Maximum); syncing = false;
         StopPlayback(); ClearSelection(); RequestHistory();
     }
+    /// <summary>The application filter is set to an app in Don't record these apps (by key), so its traffic isn't saved.</summary>
+    private bool FilterNotRecorded => applicationFilter.Length > 0 && session.IsExcluded(applicationName);
     private void UpdateApplicationButton()
     {
-        bool set = applicationFilter.Length > 0;
-        applicationText.Text = set ? $"Application: {applicationName} ✕" : "";
-        applicationButton.ToolTip = set ? $"Only {applicationName} is shown. Click to show every application." : null;
-        applicationButton.Visibility = set ? Visibility.Visible : Visibility.Collapsed;
+        bool set = applicationFilter.Length > 0, excluded = FilterNotRecorded;
+        string text = set ? $"Application: {applicationName}{(excluded ? ProcessCopy.NotRecordedSuffix : "")} ✕" : "";
+        string? tip = set ? $"Only {applicationName} is shown. Click to show every application." + (excluded ? " It is in Don't record these apps, so its traffic isn't saved." : "") : null;
+        if (applicationText.Text != text) applicationText.Text = text;
+        if (!Equals(applicationButton.ToolTip, tip)) applicationButton.ToolTip = tip;
+        var visibility = set ? Visibility.Visible : Visibility.Collapsed;
+        if (applicationButton.Visibility != visibility) applicationButton.Visibility = visibility;
+    }
+    /// <summary>On Changed: the Don't record list may have changed, so the filter button and the shown strip follow it.</summary>
+    private void RefreshNotRecordedFilter()
+    {
+        UpdateApplicationButton();
+        bool excluded = FilterNotRecorded;
+        if (trafficStrip.Chart.Strip is { } shown && trafficStrip.Chart.FilterNotRecorded != excluded) { trafficStrip.Apply(shown, stripDue, stripNow, excluded); UpdateHairline(); }
     }
     private void ClearApplicationFilter() { applicationFilter = applicationName = ""; UpdateApplicationButton(); FiltersChanged(); }
     /// <summary>Opens History for the whole minutes holding [from, to), with every other filter cleared and only the application, when one is given.</summary>
