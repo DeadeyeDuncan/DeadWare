@@ -423,8 +423,10 @@ public sealed class ConnectionService
         {
             // While a clear steps, the writer alternates one data pass with one step; it waits only after a step that yielded early.
             if(!stepping)await Task.WhenAny(tick,available,command).ConfigureAwait(false);
-            else if(yielded)await Task.WhenAny(tick,available,command,Task.Delay(HistoryClear.StepBudget)).ConfigureAwait(false);
-            if(command.IsCompleted)
+            else if(yielded)await Task.WhenAny(tick,available,Task.Delay(HistoryClear.StepBudget)).ConfigureAwait(false);
+            // A command is taken only when no clear steps: Post refuses while one is active, so a command found then was posted before
+            // a startup resume, and it runs after that clear.
+            if(command.IsCompleted&&!stepping)
             {
                 // The command comes before the next queue item. None starts after StopAsync.
                 bool open=await command.ConfigureAwait(false);bool ending=finishing.IsCancellationRequested;
@@ -446,7 +448,7 @@ public sealed class ConnectionService
                 while(pass-->0&&queue.Reader.TryRead(out var item))
                 {
                     await Process(item).ConfigureAwait(false);
-                    if(tick.IsCompleted||command.IsCompleted)break;
+                    if(tick.IsCompleted||(command.IsCompleted&&!stepping))break;
                 }
                 available=queue.Reader.WaitToReadAsync().AsTask();
             }

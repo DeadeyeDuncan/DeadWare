@@ -402,12 +402,15 @@ public sealed class AlertService
                 // While a clear steps, the worker alternates one data pass with one step; it waits only after a step that yielded early.
                 if (!stepping || yielded)
                 {
-                    var waits = new List<Task>(5) { tick, available, command };
+                    var waits = new List<Task>(5) { tick, available };
+                    if (!stepping) waits.Add(command);
                     if (wake is not null) waits.Add(wake);
                     if (stepping) waits.Add(Task.Delay(HistoryClear.StepBudget));
                     await Task.WhenAny(waits).ConfigureAwait(false);
                 }
-                if (command.IsCompleted)
+                // A command is taken only when no clear steps: Post refuses while one is active, so a command found then was posted before
+                // a startup resume, and it runs after that clear.
+                if (command.IsCompleted && !stepping)
                 {
                     // The command comes before the next queue item. None starts after StopAsync.
                     bool commandOpen = await command.ConfigureAwait(false), ending = Volatile.Read(ref stopped);
@@ -428,7 +431,7 @@ public sealed class AlertService
                 if (available.IsCompleted)
                 {
                     if (!await available.ConfigureAwait(false)) break;
-                    for (int i = 0; i < 128 && !command.IsCompleted && queue.Reader.TryRead(out var work); i++)
+                    for (int i = 0; i < 128 && !(command.IsCompleted && !stepping) && queue.Reader.TryRead(out var work); i++)
                         switch (work)
                         {
                             case MinuteWork minute: Apply(evaluator.ObserveMinute(minute.Batch, gpuKey())); break;

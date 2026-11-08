@@ -301,6 +301,53 @@ public class UsageHistoryServiceTests
     }
 
     [Fact]
+    public async Task A_clear_posted_before_the_resume_runs_after_it()
+    {
+        using var fixture = new Fixture();
+        new UsageHistoryStore(fixture.Path).Initialize();
+        SeedApplications(fixture.Path, UsageMetrics.Floor(DateTimeOffset.UtcNow.AddDays(-3)), 10, 3);
+        // The last session left a one-app clear; the user's new all-apps request is posted before the worker reaches the resume.
+        var resumedRequest = HistoryClear.Create("app0.exe", allTime: true, DateTimeOffset.UtcNow);
+        HistoryClearMarker.Write(Marker(fixture.Path), resumedRequest);
+        var request = HistoryClear.Create(null, allTime: true, DateTimeOffset.UtcNow);
+        var service = new UsageHistoryService(fixture.Path, "tablet");
+        var store = Store(service);
+        // The first step waits at a gate, so the resume is in progress; every step notes the clear it ran for.
+        using var gate = new ManualResetEventSlim(false);
+        var stepped = new List<HistoryClear?>();
+        service.ClearStepOverride = budget =>
+        {
+            lock (stepped) stepped.Add(store.PendingClear);
+            gate.Wait(TimeSpan.FromSeconds(30));
+            return store.ClearStep(budget);
+        };
+        service.Clear(request);
+        service.Start();
+        try
+        {
+            await Until(() => { lock (stepped) return stepped.Count > 0; });
+            Assert.Equal(new HistoryClearState(HistoryClearPhase.Clearing, null, null, true, true), service.ClearState);
+            gate.Set();
+            // Done for the resumed clear alone leaves app1 and app2; the new request's rows are gone only once it runs.
+            using (var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(20)))
+                while (!(service.ClearState.Phase == HistoryClearPhase.Done && Count(fixture.Path, "SELECT COUNT(*) FROM application_minutes") == 0))
+                {
+                    try { await Task.Delay(20, deadline.Token); } catch (OperationCanceledException) { break; }
+                }
+            Assert.Equal(0, Count(fixture.Path, "SELECT COUNT(*) FROM application_minutes"));
+            Assert.Equal(HistoryClearPhase.Done, service.ClearState.Phase);
+            lock (stepped)
+            {
+                Assert.Equal(resumedRequest, stepped[0]);
+                Assert.Equal(request, stepped[^1]);
+            }
+            Assert.False(File.Exists(Marker(fixture.Path)));
+            Assert.False(service.Failed);
+        }
+        finally { gate.Set(); await service.StopAsync(); }
+    }
+
+    [Fact]
     public async Task An_unreadable_marker_waits_for_Try_again_and_a_stopped_worker_is_unavailable()
     {
         using var fixture = new Fixture();
