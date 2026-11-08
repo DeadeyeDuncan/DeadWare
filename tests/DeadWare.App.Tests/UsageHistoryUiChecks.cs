@@ -122,6 +122,7 @@ internal static class UsageHistoryUiChecks
             CheckStripSharesTheCursor(session, now);
             CheckStripClearPaths(session, now);
             CheckStripReadsOnItsOwn(session, now);
+            CheckStripClearedTime(session, now);
             CheckHistoryClearRereads(session);
             CheckShowInConnections(session, now);
         }
@@ -431,6 +432,45 @@ internal static class UsageHistoryUiChecks
         Click(applicationsClear);
         Assert.Same(search, FocusManager.GetFocusedElement(scope));
         FocusManager.SetFocusedElement(scope, null);
+    }
+
+    /// <summary>Cleared time on Usage history's strip: the Cleared band and its line, no hatching inside it, and Not saved slots before a one-app clear.</summary>
+    private static void CheckStripClearedTime(UiSession session, DateTimeOffset now)
+    {
+        var (page, chart, _) = Build(session, now);
+        var view = Field<TrafficStripView>(page, "strip");
+        var from = now.AddHours(-1);
+        TrafficStrip Strip(Func<int, bool> zero, int first = 0) => new(from, now, 60_000, TrafficMeasure.Total, [new("chrome.exe", "CHROME.EXE", 1000, 500)], 0, 0, 0,
+            Enumerable.Range(first, 60 - first).Select(k => new TrafficStripSlot(from.AddMinutes(k), from.AddMinutes(k + 1), 1, 60, false, [zero(k) ? 0 : 100L], [zero(k) ? 0 : 50L])).ToArray());
+        Point At(int k) => new(chart.PlotRect.Left + chart.PlotRect.Width * (k + .5) / 60, chart.PlotRect.Top + chart.PlotRect.Height / 2);
+        // An all-apps clear: the band labelled Cleared over [from, RetainedFrom), its line first, and nothing hatched inside it.
+        var retained = from.AddMinutes(10);
+        page.ApplyStrip(Strip(_ => false, 10) with { RetainedFrom = retained, RetainedByClear = true }, now);
+        Layout(page, 1050, 1100); chart.SlotAt(new Point());
+        Assert.Equal("Cleared", chart.BandLabel);
+        Assert.NotNull(chart.NotKept); var band = chart.NotKept!.Value;
+        Assert.Equal(chart.PlotRect.Left, band.Left, 6); Assert.Equal(chart.PlotRect.Left + chart.PlotRect.Width / 6, band.Right, 3);
+        Assert.Equal($"Cleared before {retained.ToLocalTime().ToString("g")}", view.NoteLines[0]);
+        Assert.Single(view.NoteLines);
+        Assert.True(chart.Hatch is null || Enumerable.Range(0, 10).All(k => !chart.Hatch.FillContains(At(k))), "no minute inside the Cleared band is hatched");
+        // A range wholly before the cleared start (RetainedFrom past To) is one Cleared band over the whole plot, with nothing hatched.
+        page.ApplyStrip(Strip(_ => false, 60) with { RetainedFrom = now.AddMinutes(5), RetainedByClear = true }, now);
+        Layout(page, 1050, 1100); chart.SlotAt(new Point());
+        Assert.Equal(chart.PlotRect, chart.NotKept); Assert.Null(chart.Hatch); Assert.Equal("Cleared", chart.BandLabel);
+        // A one-app clear: its line, and a zero-byte slot before it Not saved (hatched, its reason in the chip), one after it No traffic.
+        var oneApp = from.AddMinutes(30); string g = oneApp.ToLocalTime().ToString("g");
+        page.ApplyStrip(Strip(k => k is 20 or 40) with { AppClearedBefore = oneApp }, now);
+        Layout(page, 1050, 1100); chart.SlotAt(new Point());
+        Assert.Null(chart.BandLabel); Assert.Null(chart.NotKept);
+        Assert.Equal([$"Some application history before {g} was cleared."], view.NoteLines);
+        chart.HoverAt(At(20)); Assert.Equal([chart.SlotSpan(20), "No saved traffic", $"Some application history before {g} was cleared"], chart.ChipLines);
+        Assert.True(chart.Hatch!.FillContains(At(20)), "a Not saved slot is hatched");
+        chart.HoverAt(At(40)); Assert.Equal([chart.SlotSpan(40), "No traffic"], chart.ChipLines);
+        Assert.False(chart.Hatch.FillContains(At(40)), "a No traffic slot is not hatched");
+        chart.HoverAt(null);
+        // Both: the Cleared line, then the one-app line.
+        page.ApplyStrip(Strip(_ => false, 10) with { RetainedFrom = retained, RetainedByClear = true, AppClearedBefore = oneApp }, now);
+        Assert.Equal([$"Cleared before {retained.ToLocalTime().ToString("g")}", $"Some application history before {g} was cleared."], view.NoteLines);
     }
 
     private static void CheckStripReadsOnItsOwn(UiSession session, DateTimeOffset now)
