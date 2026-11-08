@@ -878,4 +878,158 @@ public sealed class ConnectionHistoryStoreTests(ITestOutputHelper testOutput) : 
         Assert.True(commits>=1); Assert.Equal(0,Scalar("SELECT value FROM metadata WHERE key='floor'"));
         Assert.Equal(200,Scalar("SELECT count(*) FROM traffic WHERE batch='new'"));
     }
+
+    // Task 8: clearing connections.db.
+    private static readonly DateTimeOffset Before = Epoch.AddMinutes(10);
+    private static void ClearSeam(ConnectionHistoryStore store,string field,object? value) =>
+        typeof(ConnectionHistoryStore).GetField(field,System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Instance)!.SetValue(store,value);
+    // C(store) runs store.ClearStep(TimeSpan.FromMilliseconds(250)) until Finished and returns the step count.
+    private static int C(ConnectionHistoryStore store)
+    {
+        for(int steps=1;;steps++)
+        {
+            if(store.ClearStep(TimeSpan.FromMilliseconds(250)).Finished) return steps;
+            Assert.True(steps<100000);
+        }
+    }
+    private long Meta(string key) => Scalar($"SELECT value FROM metadata WHERE key='{key}'");
+    private long ClearMarkers() => Scalar("SELECT count(*) FROM metadata WHERE substr(key,1,6)='clear-'");
+    private long Wal() => File.Exists(Database+"-wal") ? new FileInfo(Database+"-wal").Length : 0;
+
+    [Fact] public void One_app_clear_hides_at_once_then_deletes_rows_and_receipts(){
+        // Rows before Before: "Chrome.exe" in batches b1 and b2, "CHROME.EXE" in b3, "other.exe" in b3; and a Chrome row at Before (b4).
+        var store=Store();
+        store.Append([Row(1,"b1",name:"Chrome.exe",address:"1.1.1.1"),Row(2,"b2",name:"Chrome.exe",address:"1.1.1.2"),Row(3,"b3",name:"CHROME.EXE",address:"1.1.1.3"),
+            Row(3,"b3",name:"other.exe",address:"2.2.2.2"),Row(10,"b4",name:"chrome.exe",address:"1.1.1.4")],
+            [new("cov","s",Epoch.AddMinutes(5),Epoch.AddMinutes(5).AddSeconds(15),true)],Epoch.AddMinutes(11));
+        Assert.Equal(Epoch.AddMinutes(1),store.Read(Query(11)).EarliestRetainedTime);
+        store.BeginClear(new("CHROME.EXE",Before,Before));
+        Assert.Equal(new PendingConnectionClear("CHROME.EXE",Before),store.PendingClear);
+        // Read (Rows, Summary, Strip), ExportCsv, ExportDestinationsCsv and EarliestRetainedTime omit the Chrome rows before Before and keep other.exe and the row at Before.
+        void Check()
+        {
+            var view=store.Read(Query(11));
+            Assert.Equal(2,view.TotalRows);
+            Assert.Equal(["chrome.exe","other.exe"],view.Rows.Select(r=>r.Process.Name).OrderBy(n=>n,StringComparer.Ordinal));
+            Assert.Equal(20,view.Summary.ReceivedBytes); Assert.Equal(40,view.Summary.SentBytes);
+            Assert.Equal(20,view.Strip!.Applications.Sum(a=>a.Received)+view.Strip.OtherReceived);
+            Assert.Equal(20,view.Strip.Slots.Sum(s=>s.Received.Sum()));
+            Assert.Equal(["1.1.1.4","2.2.2.2"],view.Destinations!.Rows.Select(d=>d.Address).OrderBy(a=>a,StringComparer.Ordinal));
+            Assert.Equal(Epoch.AddMinutes(3),view.EarliestRetainedTime);
+            var csv=Csv(store,Query(11));
+            Assert.Equal(3,Lines(csv).Length); Assert.DoesNotContain("Chrome.exe",csv); Assert.DoesNotContain("CHROME.EXE",csv);
+            Assert.Contains("\"chrome.exe\"",csv); Assert.Contains("\"other.exe\"",csv);
+            var destinations=DestinationsCsv(store,Query(11),DestinationScope.All);
+            Assert.Equal(3,Lines(destinations).Length);
+            foreach(var address in new[]{"1.1.1.1","1.1.1.2","1.1.1.3"}) Assert.DoesNotContain(address,destinations);
+            Assert.Contains("\"2.2.2.2\"",destinations); Assert.Contains("\"1.1.1.4\"",destinations);
+        }
+        Check();
+        // The application filter on the cleared key keeps only the row at Before.
+        Assert.Equal(Epoch.AddMinutes(10),Assert.Single(store.Read(Query(11) with {Application="chrome.exe"}).Rows).Minute);
+        C(store);
+        Check();
+        // SELECT count(*) of traffic and dedup for the Chrome rows before Before: 0; manifests: b3's remains (other.exe keeps its receipt), b1's and b2's are gone; b4 untouched;
+        // coverage count unchanged; PendingClear null; no metadata key starts with 'clear-'; 'cleared-one' == Before ticks.
+        Assert.Equal(0,Scalar($"SELECT count(*) FROM traffic WHERE minute<{Before.UtcTicks} AND name IN ('Chrome.exe','CHROME.EXE')"));
+        Assert.Equal(0,Scalar("SELECT count(*) FROM dedup WHERE kind=0 AND batch IN ('b1','b2')"));
+        Assert.Equal(1,Scalar("SELECT count(*) FROM dedup WHERE kind=0 AND batch='b3'"));
+        Assert.Equal(0,Scalar("SELECT count(*) FROM manifests WHERE batch IN ('b1','b2')"));
+        Assert.Equal(1,Scalar("SELECT count(*) FROM manifests WHERE batch='b3' AND kind=0"));
+        Assert.Equal(1,Scalar("SELECT count(*) FROM traffic WHERE batch='b4'")); Assert.Equal(1,Scalar("SELECT count(*) FROM dedup WHERE batch='b4'")); Assert.Equal(1,Scalar("SELECT count(*) FROM manifests WHERE batch='b4'"));
+        Assert.Equal(1,Scalar("SELECT count(*) FROM coverage")); Assert.Equal(1,Scalar("SELECT count(*) FROM dedup WHERE kind=1"));
+        Assert.Null(store.PendingClear); Assert.Equal(0,ClearMarkers()); Assert.Equal(Before.UtcTicks,Meta("cleared-one"));
+        Assert.Equal(0,Scalar("SELECT count(*) FROM metadata WHERE key='cleared-all'"));
+    }
+    [Fact] public void All_apps_clear_raises_expiry_and_purges_below_it(){
+        var store=Store();
+        store.Append([Row(1,"b1"),Row(2,"b2",name:"other.exe"),Row(10,"b3"),Row(12,"b4")],
+            [new("c1","s",Epoch.AddMinutes(2),Epoch.AddMinutes(2).AddSeconds(15),true),new("c2","s",Epoch.AddMinutes(12),Epoch.AddMinutes(12).AddSeconds(15),true)],Epoch.AddMinutes(13));
+        store.BeginClear(new(null,Before,Before));Assert.Equal(Before.UtcTicks,Meta("expiry"));store.Append([],[],Epoch.AddMinutes(20));Assert.Equal(Before.UtcTicks,Meta("expiry"));
+        // Read over [Epoch, Before) is empty; after C(store): traffic, coverage, dedup and manifests below Before are gone; rows at or after Before stay; 'cleared-all' == Before ticks.
+        var hidden=store.Read(new(Epoch,Before)); Assert.Empty(hidden.Rows); Assert.Empty(hidden.Coverage); Assert.Equal(0,hidden.Summary.ReceivedBytes);
+        Assert.Equal(2,store.Read(Query(20)).TotalRows);
+        C(store);
+        Assert.Equal(0,Scalar($"SELECT count(*) FROM traffic WHERE minute<{Before.UtcTicks}")); Assert.Equal(0,Scalar($"SELECT count(*) FROM coverage WHERE start<{Before.UtcTicks}"));
+        Assert.Equal(0,Scalar($"SELECT count(*) FROM dedup WHERE stamp<{Before.UtcTicks}")); Assert.Equal(0,Scalar("SELECT count(*) FROM manifests WHERE batch IN ('b1','b2','c1')"));
+        Assert.Equal(2,Scalar("SELECT count(*) FROM traffic")); Assert.Equal(1,Scalar("SELECT count(*) FROM coverage")); Assert.Equal(3,Scalar("SELECT count(*) FROM manifests"));
+        Assert.Equal(Before.UtcTicks,Meta("cleared-all")); Assert.Equal(0,ClearMarkers()); Assert.Null(store.PendingClear);
+    }
+    [Fact] public void All_apps_steps_delete_in_bounded_transactions_and_report_progress(){
+        Assert.Null(new HistoryClearProgress(5,null,false).Percent); Assert.Equal(100,new HistoryClearProgress(3,10,true).Percent);
+        Assert.Equal(37,new HistoryClearProgress(379,1000,false).Percent); Assert.Equal(99,new HistoryClearProgress(1000,1000,false).Percent);
+        Assert.Equal(0,new HistoryClearProgress(0,0,false).Percent); Assert.Equal(99,new HistoryClearProgress(long.MaxValue,long.MaxValue,false).Percent);
+        var store=Store(); var commits=new List<int>(); ClearSeam(store,"clearCommitted",(Action<int>)commits.Add);
+        store.Append([..Enumerable.Range(0,1200).Select(i=>Row(i%10,"b"+i/100,generation:i+1))],[new("c","s",Epoch.AddMinutes(1),Epoch.AddMinutes(1).AddSeconds(15),true)],Epoch.AddMinutes(11));
+        store.BeginClear(new(null,Before,Before)); store.BeginClear(new(null,Before,Before.AddMinutes(5)));
+        Assert.Throws<InvalidOperationException>(()=>store.BeginClear(new(null,Before.AddMinutes(1),Before)));
+        Assert.Throws<InvalidOperationException>(()=>store.BeginClear(new("A.EXE",Before,Before)));
+        long t=0; ClearSeam(store,"clearClock",(Func<TimeSpan>)(()=>TimeSpan.FromMilliseconds(t++)));
+        var first=store.ClearStep(TimeSpan.FromMilliseconds(1));
+        Assert.Equal(1201,first.Total); Assert.Equal(512,first.Done); Assert.False(first.Finished); Assert.Equal(42,first.Percent); Assert.Equal([512],commits);
+        // The routine purge's deletes count toward Done.
+        store.Append([],[],Epoch.AddMinutes(12),maintenanceTransactions:1);
+        var second=store.ClearStep(TimeSpan.FromMilliseconds(1)); Assert.Equal(512+64+512,second.Done); Assert.Equal(1201,second.Total);
+        var rest=store.ClearStep(TimeSpan.FromSeconds(30));
+        Assert.True(rest.Finished); Assert.Equal(1201,rest.Done); Assert.Equal(100,rest.Percent); Assert.Equal([512,512,112,1,0],commits);
+        Assert.Equal(0,Scalar("SELECT (SELECT count(*) FROM traffic)+(SELECT count(*) FROM coverage)+(SELECT count(*) FROM dedup)+(SELECT count(*) FROM manifests)"));
+        Assert.Throws<InvalidOperationException>(()=>store.ClearStep(TimeSpan.FromMilliseconds(1)));
+    }
+    [Fact] public void Clear_marker_survives_reopen_and_resumes(){
+        // BeginClear(one app) and one step with a 1 ms budget; PendingClear non-null; a new ConnectionHistoryStore on the file: Initialize passes (user_version 1), PendingClear equals
+        // (AppKey, Before) of the request, and C(new store) finishes; PendingClear is null after the last step and non-null before it.
+        var store=Store();
+        store.Append([..Enumerable.Range(0,2000).Select(i=>Row(i%10,"b"+i/100,generation:i+1,name:i%2==0?"a.exe":"b.exe"))],[],Epoch.AddMinutes(11));
+        Assert.Null(store.PendingClear);
+        store.BeginClear(new("A.EXE",Before,Before));
+        long t=0; ClearSeam(store,"clearClock",(Func<TimeSpan>)(()=>TimeSpan.FromMilliseconds(t++)));
+        Assert.False(store.ClearStep(TimeSpan.FromMilliseconds(1)).Finished); Assert.NotNull(store.PendingClear);
+        Assert.Equal(1,ClearMarkers()); Assert.Equal(Before.UtcTicks,Meta("clear-app:A.EXE"));
+        var reopened=new ConnectionHistoryStore(Database); var secure=new List<long>();
+        ClearSeam(reopened,"clearConnectionOpened",(Action<SqliteConnection>)(db=>{using var command=db.CreateCommand(); command.CommandText="PRAGMA secure_delete"; secure.Add((long)command.ExecuteScalar()!);}));
+        reopened.Initialize(); Assert.Equal(1,Scalar("PRAGMA user_version"));
+        Assert.Equal(new PendingConnectionClear("A.EXE",Before),reopened.PendingClear);
+        Assert.Equal(1000,reopened.Read(Query(11) with {Limit=500}).TotalRows);
+        for(;;)
+        {
+            Assert.NotNull(reopened.PendingClear);
+            if(reopened.ClearStep(TimeSpan.FromMilliseconds(250)).Finished) break;
+        }
+        Assert.Null(reopened.PendingClear); Assert.NotEmpty(secure); Assert.All(secure,value=>Assert.Equal(1,value));
+        Assert.Equal(0,Scalar("SELECT count(*) FROM traffic WHERE name='a.exe'")); Assert.Equal(1000,Scalar("SELECT count(*) FROM traffic WHERE name='b.exe'"));
+        secure.Clear(); reopened.Append([],[],Epoch.AddMinutes(11)); Assert.Equal([0L],secure);
+    }
+    [Fact] public void Clear_steps_stay_inside_the_transaction_and_journal_budgets(){
+        // 20,000 rows alternating "a.exe" and "b.exe" before Before. clearCommitted (seam) never sees more than 512. With no reader, the -wal is ≤ 8 MiB after each step and when read
+        // inside clearCommitted.
+        var store=Store(); var place=Place with {City=new string('c',160),Region=new string('r',160)};
+        store.Append([..Enumerable.Range(0,20000).Select(i=>Row(i/2000,"b"+i/1000,generation:i+1,name:i%2==0?"a.exe":"b.exe") with {Location=place})],[],Epoch.AddMinutes(11));
+        int largest=0, commits=0; long largestWal=0;
+        ClearSeam(store,"clearCommitted",(Action<int>)(rows=>{largest=Math.Max(largest,rows); commits++; largestWal=Math.Max(largestWal,Wal());}));
+        store.BeginClear(new("A.EXE",Before,Before));
+        while(!store.ClearStep(TimeSpan.FromMilliseconds(250)).Finished) Assert.InRange(Wal(),0,8*1024*1024);
+        Assert.InRange(largest,1,512); Assert.InRange(largestWal,0,8*1024*1024); Assert.Equal(0,Scalar("SELECT count(*) FROM traffic WHERE name='a.exe'"));
+        testOutput.WriteLine($"No reader: {commits} clear transactions, largest {largest} rows, largest WAL {largestWal} bytes.");
+        // A pinned reader (a second Pooling=false connection holding a read transaction): the step yields once the -wal passes 4 MiB and the -wal never exceeds 10 MiB; with clearClock
+        // advanced past 60 s of yielding, ClearStep throws IOException, and not before. ClearStep(TimeSpan.FromMilliseconds(1)) commits exactly one transaction.
+        store.BeginClear(new("B.EXE",Before,Before)); largest=0; largestWal=0; commits=0;
+        var now=TimeSpan.Zero; ClearSeam(store,"clearClock",(Func<TimeSpan>)(()=>now));
+        using(var pinned=Connect())
+        using(var tx=pinned.BeginTransaction(deferred:true))
+        {
+            using var command=pinned.CreateCommand(); command.Transaction=tx; command.CommandText="SELECT count(*) FROM traffic"; _=command.ExecuteScalar();
+            // The clock stands still, so only a yield ends this step.
+            Assert.False(store.ClearStep(TimeSpan.FromMilliseconds(250)).Finished);
+            Assert.InRange(Wal(),4*1024*1024+1,10*1024*1024); Assert.InRange(largestWal,0,10*1024*1024); Assert.InRange(largest,1,512);
+            testOutput.WriteLine($"Pinned reader: yielded after {commits} clear transactions at WAL {Wal()} bytes.");
+            int before=commits;
+            now=TimeSpan.FromSeconds(59); Assert.False(store.ClearStep(TimeSpan.FromMilliseconds(250)).Finished); Assert.Equal(before,commits);
+            now=TimeSpan.FromSeconds(61); Assert.Throws<IOException>(()=>store.ClearStep(TimeSpan.FromMilliseconds(250))); Assert.Equal(before,commits);
+            Assert.NotNull(store.PendingClear);
+        }
+        long t=0; ClearSeam(store,"clearClock",(Func<TimeSpan>)(()=>TimeSpan.FromMilliseconds(t++)));
+        commits=0; Assert.False(store.ClearStep(TimeSpan.FromMilliseconds(1)).Finished); Assert.Equal(1,commits);
+        var clock=System.Diagnostics.Stopwatch.StartNew(); ClearSeam(store,"clearClock",(Func<TimeSpan>)(()=>clock.Elapsed));
+        C(store); Assert.Equal(0,Scalar("SELECT count(*) FROM traffic")); Assert.Null(store.PendingClear);
+    }
 }
