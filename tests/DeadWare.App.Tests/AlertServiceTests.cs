@@ -617,6 +617,366 @@ public class AlertServiceTests
         finally { await second.StopAsync(); await usage.StopAsync(); }
     }
 
+    // The alert-log clear (Task 18). Requested is the real clock, so every fixture poll (Start + n) is before it.
+    private static AlertStore AlertStoreOf(AlertService alerts) => (AlertStore)typeof(AlertService).GetField("store", Fields)!.GetValue(alerts)!;
+    private static long Generation(AlertService alerts) => (long)typeof(AlertService).GetField("knownGeneration", Fields)!.GetValue(alerts)!;
+    private static IReadOnlyList<string> IgnoredList(AlertService alerts) => (IReadOnlyList<string>)typeof(AlertService).GetField("ignoredApps", Fields)!.GetValue(alerts)!;
+    private static long Sql(Fixture fixture, string sql) => UsageHistoryServiceTests.Count(fixture.AlertPath, sql);
+    private static long Known(Fixture fixture, string key, string machine = "tablet")
+        => Sql(fixture, $"SELECT COUNT(*) FROM known_apps WHERE machine='{machine}' AND app_key='{key}'");
+    private static long LastSeen(Fixture fixture, string key) => Sql(fixture, $"SELECT COALESCE(MAX(last_seen),0) FROM known_apps WHERE machine='tablet' AND app_key='{key}'");
+    private static long PendingClears(Fixture fixture) => Sql(fixture, "SELECT COUNT(*) FROM pending_clear");
+    private static async Task<AlertEpisode[]> FirstUses(AlertService alerts, string app)
+        => (await Saved(alerts, Start.AddDays(-1), Start.AddDays(1))).Where(e => e.Application == app).ToArray();
+    private static async Task UntilPhase(AlertService alerts, HistoryClearPhase phase)
+        => await Until(() => Task.FromResult(alerts.ClearState.Phase == phase || alerts.Failed));
+    /// <summary>A poll in <paramref name="minute"/> whose known row then shows that minute as last seen: the worker has handled it.</summary>
+    private static async Task Seen(Fixture fixture, AlertService alerts, int minute, string app = "a.exe")
+    {
+        alerts.TryRecordNetworkUse(R(Start.AddMinutes(minute), true, Use(app, firstSeen: Start.AddMinutes(minute))));
+        await Until(() => Task.FromResult(LastSeen(fixture, AppKey.Of(app)) == Start.AddMinutes(minute).ToUnixTimeMilliseconds() || alerts.Failed));
+    }
+    private static void ReadOnly(Fixture fixture, bool on)
+    {
+        foreach (var file in Directory.GetFiles(Path.GetDirectoryName(fixture.AlertPath)!, "alerts.db*"))
+            File.SetAttributes(file, on ? File.GetAttributes(file) | FileAttributes.ReadOnly : File.GetAttributes(file) & ~FileAttributes.ReadOnly);
+    }
+
+    [Fact]
+    public async Task Clearing_an_app_forgets_it_so_its_next_poll_alerts_again_and_keeps_the_dont_alert_list()
+    {
+        AlertRule[] rules = [AlertRules.DefaultFirstNetworkUse(Start)];
+        string[] ignored = ["quiet.exe"];
+        // One app, all time: the known row goes in BeginClear's transaction; a poll between it and the last chunk is kept.
+        using (var fixture = new Fixture())
+        {
+            Store(fixture.AlertPath);
+            var usage = new UsageHistoryService(fixture.UsagePath, "tablet", flushInterval: TimeSpan.FromMilliseconds(30));
+            var alerts = FirstUseService(fixture, usage);
+            alerts.Configure(rules, true, ignored);
+            alerts.Start();
+            try
+            {
+                alerts.TryRecordNetworkUse(R(Start, true, Use("a.exe"), Use("b.exe"), Use("quiet.exe")));
+                await Until(async () => (await Saved(alerts, Start.AddDays(-1), Start.AddDays(1))).Count == 2 || alerts.Failed);
+                Assert.Equal(1, Known(fixture, "A.EXE")); Assert.Equal(1, Known(fixture, "QUIET.EXE"));
+                var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                var store = AlertStoreOf(alerts);
+                alerts.ClearStepOverride = budget => release.Task.IsCompleted ? store.ClearStep("tablet", budget) : new HistoryClearProgress(0, null, false);
+                var requested = DateTimeOffset.UtcNow;
+                alerts.Clear(HistoryClear.Create("A.EXE", true, requested));
+                await Until(() => Task.FromResult(Generation(alerts) == 1 || alerts.Failed));
+                Assert.Equal(HistoryClearPhase.Clearing, alerts.ClearState.Phase); Assert.True(alerts.ClearState.MarkerSaved);
+                Assert.EndsWith(" · Clearing history.", alerts.Status);
+                Assert.Equal(0, Known(fixture, "A.EXE")); Assert.Equal(1, Known(fixture, "B.EXE")); Assert.Equal(1, PendingClears(fixture));
+                Assert.Equal(2, alerts.FirstUse.KnownApps);
+                // The same minute as before: only the generation increment lets detection post a.exe again. FirstSeen is before Requested.
+                alerts.TryRecordNetworkUse(R(Start.AddSeconds(30), true, Use("a.exe"), Use("quiet.exe")));
+                await Until(async () => (await FirstUses(alerts, "a.exe")).Length == 2 || alerts.Failed);
+                Assert.Equal(1, Known(fixture, "A.EXE"));
+                release.SetResult();
+                await UntilPhase(alerts, HistoryClearPhase.Done);
+                Assert.Equal(new HistoryClearState(HistoryClearPhase.Done, 100, null, false, false), alerts.ClearState);
+                var kept = Assert.Single(await FirstUses(alerts, "a.exe"));
+                Assert.Equal(requested.ToUnixTimeMilliseconds(), kept.Start.ToUnixTimeMilliseconds());
+                Assert.Single(await FirstUses(alerts, "b.exe")); Assert.Empty(await FirstUses(alerts, "quiet.exe"));
+                Assert.Equal(1, Known(fixture, "A.EXE")); Assert.Equal(1, Known(fixture, "B.EXE")); Assert.Equal(0, PendingClears(fixture));
+                await Seen(fixture, alerts, 1);
+                Assert.Single(await FirstUses(alerts, "a.exe"));
+                Assert.Equal(ignored, IgnoredList(alerts)); Assert.False(alerts.Failed);
+            }
+            finally { await alerts.StopAsync(); await usage.StopAsync(); }
+        }
+
+        // Older than 7 days changes no known row; all apps, all time empties known_apps under every machine key and keeps the metadata.
+        using (var fixture = new Fixture())
+        {
+            Store(fixture.AlertPath);
+            var other = new AlertStore(fixture.AlertPath); other.Initialize();
+            other.Append("other", [], DateTimeOffset.UtcNow, new FirstUseChanges([new KnownApplication("X.EXE", LongAgo, LongAgo), new KnownApplication("A.EXE", LongAgo, LongAgo)], [],
+                new FirstUseMetadata(LongAgo, LongAgo, LongAgo, LongAgo.AddDays(3))));
+            var usage = new UsageHistoryService(fixture.UsagePath, "tablet", flushInterval: TimeSpan.FromMilliseconds(30));
+            var alerts = FirstUseService(fixture, usage);
+            alerts.Configure(rules, true, ignored);
+            alerts.Start();
+            try
+            {
+                alerts.TryRecordNetworkUse(R(Start, true, Use("a.exe"), Use("b.exe")));
+                await Until(async () => (await Saved(alerts, Start.AddDays(-1), Start.AddDays(1))).Count == 2 || alerts.Failed);
+                var before = AlertStoreOf(alerts).ReadFirstUse("tablet");
+                alerts.Clear(HistoryClear.Create(null, false, DateTimeOffset.UtcNow));
+                await UntilPhase(alerts, HistoryClearPhase.Done);
+                Assert.Equal(4, Sql(fixture, "SELECT COUNT(*) FROM known_apps"));
+                Assert.Equal(2, alerts.FirstUse.KnownApps); Assert.Equal(0, Generation(alerts));
+                Assert.Equal(2, (await Saved(alerts, Start.AddDays(-1), Start.AddDays(1))).Count);
+
+                alerts.Clear(HistoryClear.Create(null, true, DateTimeOffset.UtcNow));
+                await UntilPhase(alerts, HistoryClearPhase.Done);
+                Assert.Equal(0, Sql(fixture, "SELECT COUNT(*) FROM known_apps"));
+                Assert.Empty(await Saved(alerts, Start.AddDays(-1), Start.AddDays(1)));
+                Assert.Equal(0, alerts.FirstUse.KnownApps);
+                var after = AlertStoreOf(alerts).ReadFirstUse("tablet");
+                Assert.Equal((before.SeededUsage, before.SeededConnections, before.LearningStart, before.LearningEnd),
+                    (after.SeededUsage, after.SeededConnections, after.LearningStart, after.LearningEnd));
+                Assert.Equal(LongAgo, after.LearningStart);
+                Assert.Equal(ignored, IgnoredList(alerts)); Assert.False(alerts.Failed);
+            }
+            finally { await alerts.StopAsync(); await usage.StopAsync(); }
+        }
+
+        // BeginClear failing on a read-only file deletes no known row and forgets nothing.
+        using (var fixture = new Fixture())
+        {
+            Store(fixture.AlertPath);
+            var usage = new UsageHistoryService(fixture.UsagePath, "tablet", flushInterval: TimeSpan.FromMilliseconds(30));
+            var alerts = FirstUseService(fixture, usage);
+            alerts.Configure(rules, true, ignored);
+            alerts.Start();
+            try
+            {
+                alerts.TryRecordNetworkUse(R(Start, true, Use("a.exe")));
+                await Until(async () => (await FirstUses(alerts, "a.exe")).Length == 1 || alerts.Failed);
+                ReadOnly(fixture, true);
+                try
+                {
+                    alerts.Clear(HistoryClear.Create("A.EXE", true, DateTimeOffset.UtcNow));
+                    await UntilPhase(alerts, HistoryClearPhase.Failed);
+                    Assert.False(alerts.ClearState.MarkerSaved); Assert.NotNull(alerts.ClearState.Error);
+                    Assert.EndsWith($" · Clearing history failed ({alerts.ClearState.Error}); not cleared.", alerts.Status);
+                    Assert.Equal(1, Known(fixture, "A.EXE")); Assert.Equal(0, PendingClears(fixture));
+                    Assert.Equal(1, alerts.FirstUse.KnownApps); Assert.Equal(0, Generation(alerts));
+                }
+                finally { ReadOnly(fixture, false); }
+                Assert.True(alerts.CanRetryClear);
+                await Seen(fixture, alerts, 1);
+                Assert.Single(await FirstUses(alerts, "a.exe"));
+                Assert.Equal(ignored, IgnoredList(alerts)); Assert.False(alerts.Failed);
+            }
+            finally { await alerts.StopAsync(); await usage.StopAsync(); }
+        }
+
+        // A restart mid-clear deletes only episodes: the known row and episode written after BeginClear stay.
+        using (var fixture = new Fixture())
+        {
+            Store(fixture.AlertPath);
+            var usage = new UsageHistoryService(fixture.UsagePath, "tablet", flushInterval: TimeSpan.FromMilliseconds(30));
+            var first = FirstUseService(fixture, usage);
+            first.Configure(rules, true, ignored);
+            first.Start();
+            AlertEpisode again;
+            try
+            {
+                first.TryRecordNetworkUse(R(Start, true, Use("a.exe")));
+                await Until(async () => (await FirstUses(first, "a.exe")).Length == 1 || first.Failed);
+                first.ClearStepOverride = _ => new HistoryClearProgress(0, null, false);
+                first.Clear(HistoryClear.Create("A.EXE", true, DateTimeOffset.UtcNow));
+                await Until(() => Task.FromResult(Generation(first) == 1 || first.Failed));
+                first.TryRecordNetworkUse(R(Start.AddSeconds(30), true, Use("a.exe")));
+                await Until(async () => (await FirstUses(first, "a.exe")).Length == 2 || first.Failed);
+                again = (await FirstUses(first, "a.exe")).MaxBy(e => e.Start)!;
+                await first.StopAsync();
+                Assert.Equal(1, PendingClears(fixture)); Assert.False(first.Failed);
+            }
+            finally { await first.StopAsync(); }
+            var second = FirstUseService(fixture, usage);
+            second.Configure(rules, true, ignored);
+            second.Start();
+            try
+            {
+                await UntilPhase(second, HistoryClearPhase.Done);
+                Assert.True(second.ClearState.Resumed);
+                Assert.Equal(again.Id, Assert.Single(await FirstUses(second, "a.exe")).Id);
+                Assert.Equal(1, Known(fixture, "A.EXE")); Assert.Equal(1, second.FirstUse.KnownApps); Assert.Equal(0, PendingClears(fixture));
+                await Seen(fixture, second, 1);
+                Assert.Single(await FirstUses(second, "a.exe"));
+                Assert.Equal(ignored, IgnoredList(second)); Assert.False(second.Failed);
+            }
+            finally { await second.StopAsync(); await usage.StopAsync(); }
+        }
+
+        // A step that throws once after a.exe was learned again: Try again finishes and keeps the new row and episode.
+        using (var fixture = new Fixture())
+        {
+            Store(fixture.AlertPath);
+            var usage = new UsageHistoryService(fixture.UsagePath, "tablet", flushInterval: TimeSpan.FromMilliseconds(30));
+            var alerts = FirstUseService(fixture, usage);
+            alerts.Configure(rules, true, ignored);
+            alerts.Start();
+            try
+            {
+                alerts.TryRecordNetworkUse(R(Start, true, Use("a.exe")));
+                await Until(async () => (await FirstUses(alerts, "a.exe")).Length == 1 || alerts.Failed);
+                var learned = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                alerts.ClearStepOverride = _ =>
+                {
+                    if (!learned.Task.IsCompleted) return new HistoryClearProgress(0, null, false);
+                    alerts.ClearStepOverride = null; throw new IOException("Fixture step failure.");
+                };
+                alerts.Clear(HistoryClear.Create("A.EXE", true, DateTimeOffset.UtcNow));
+                await Until(() => Task.FromResult(Generation(alerts) == 1 || alerts.Failed));
+                alerts.TryRecordNetworkUse(R(Start.AddSeconds(30), true, Use("a.exe")));
+                await Until(async () => (await FirstUses(alerts, "a.exe")).Length == 2 || alerts.Failed);
+                var again = (await FirstUses(alerts, "a.exe")).MaxBy(e => e.Start)!;
+                learned.SetResult();
+                await UntilPhase(alerts, HistoryClearPhase.Failed);
+                Assert.Equal(new HistoryClearState(HistoryClearPhase.Failed, null, "IOException", true, false), alerts.ClearState);
+                Assert.True(alerts.CanRetryClear); Assert.False(alerts.Failed);
+                alerts.RetryClear();
+                await UntilPhase(alerts, HistoryClearPhase.Done);
+                Assert.Equal(again.Id, Assert.Single(await FirstUses(alerts, "a.exe")).Id);
+                Assert.Equal(1, Known(fixture, "A.EXE")); Assert.Equal(0, PendingClears(fixture)); Assert.Equal(1, Generation(alerts));
+                await Seen(fixture, alerts, 1);
+                Assert.Single(await FirstUses(alerts, "a.exe"));
+                Assert.Equal(ignored, IgnoredList(alerts)); Assert.False(alerts.Failed); Assert.False(alerts.CanRetryClear);
+            }
+            finally { await alerts.StopAsync(); await usage.StopAsync(); }
+        }
+    }
+
+    [Fact]
+    public async Task Alert_clear_runs_in_steps_and_deletes_an_open_budget_episode_for_good()
+    {
+        AlertRule[] rules = [Rule(AlertKind.ApplicationDaily, "chrome.exe", 1000), AlertRules.DefaultFirstNetworkUse(Start)];
+        string[] ignored = ["quiet.exe"];
+        var minute = typeof(AlertService).GetMethod("OnMinute", Fields)!;
+        void Minute(AlertService alerts, int offset, long bytes)
+            => minute.Invoke(alerts, [new UsageMinuteBatch(Start.AddMinutes(offset), [], [new UsageApplicationMinute("chrome.exe", Start.AddMinutes(offset), bytes, 0, "live")], false, "live")]);
+        async Task<AlertEpisode[]> Budgets(AlertService alerts) => (await Log(alerts)).Episodes.Where(e => e.RuleId == "rule-1").ToArray();
+        // Two later 600-byte minutes, then a new app's poll that follows them through the queue.
+        async Task LaterMinutes(AlertService alerts, int from, string marker)
+        {
+            Minute(alerts, from, 600); Minute(alerts, from + 1, 600);
+            alerts.TryRecordNetworkUse(R(Start.AddMinutes(from + 1), true, Use(marker, firstSeen: Start.AddMinutes(from + 1))));
+            await Until(async () => (await FirstUses(alerts, marker)).Length == 1 || alerts.Failed);
+        }
+        AlertService Service(Fixture fixture, UsageHistoryService usage)
+        {
+            var alerts = new AlertService(fixture.AlertPath, "tablet", usage, () => null, flushInterval: TimeSpan.FromMilliseconds(30), localZone: TimeZoneInfo.Utc,
+                firstUseGroupWindow: TimeSpan.FromMilliseconds(100));
+            alerts.Configure(rules, true, ignored);
+            return alerts;
+        }
+
+        using (var fixture = new Fixture())
+        {
+            Store(fixture.AlertPath);
+            var usage = new UsageHistoryService(fixture.UsagePath, "tablet", flushInterval: TimeSpan.FromMilliseconds(30));
+            var alerts = Service(fixture, usage);
+            alerts.Start();
+            try
+            {
+                alerts.TryRecordNetworkUse(R(Start, true, Use("chrome.exe")));
+                Minute(alerts, 1, 1100);
+                await Until(async () => (await Budgets(alerts)).Any(e => e.End is null) || alerts.Failed);
+                Assert.Equal(1, Known(fixture, "CHROME.EXE"));
+                alerts.Clear(HistoryClear.Create("chrome.exe", true, DateTimeOffset.UtcNow));
+                await UntilPhase(alerts, HistoryClearPhase.Done);
+                Assert.Empty(await Budgets(alerts)); Assert.Empty(await FirstUses(alerts, "chrome.exe"));
+                Assert.Equal(0, Known(fixture, "CHROME.EXE"));
+                await LaterMinutes(alerts, 2, "z.exe");
+                Assert.Empty(await Budgets(alerts));
+                Assert.Equal(ignored, IgnoredList(alerts)); Assert.Equal(rules.Select(r => r.Id), alerts.Rules.Select(r => r.Id));
+                Assert.False(alerts.Failed);
+            }
+            finally { await alerts.StopAsync(); await usage.StopAsync(); }
+        }
+
+        // StopAsync mid-clear returns within 1 s and keeps the marker. An open budget episode (as if a crash lost steps 3 and 6) is
+        // ended and flushed again by the next service, which finishes the clear.
+        using (var fixture = new Fixture())
+        {
+            Store(fixture.AlertPath);
+            var usage = new UsageHistoryService(fixture.UsagePath, "tablet", flushInterval: TimeSpan.FromMilliseconds(30));
+            var first = Service(fixture, usage);
+            first.Start();
+            try
+            {
+                first.TryRecordNetworkUse(R(Start, true, Use("chrome.exe")));
+                await Until(async () => (await FirstUses(first, "chrome.exe")).Length == 1 || first.Failed);
+                first.ClearStepOverride = _ => { Thread.Sleep(100); return new HistoryClearProgress(0, null, false); };
+                first.Clear(HistoryClear.Create("chrome.exe", true, DateTimeOffset.UtcNow));
+                await Until(() => Task.FromResult(Generation(first) == 1 || first.Failed));
+                await Task.Delay(300);
+                Assert.Equal(HistoryClearPhase.Clearing, first.ClearState.Phase);
+                var watch = System.Diagnostics.Stopwatch.StartNew();
+                await first.StopAsync();
+                Assert.True(watch.Elapsed < TimeSpan.FromSeconds(1), $"StopAsync took {watch.Elapsed}.");
+                Assert.Equal(1, PendingClears(fixture)); Assert.False(first.Failed);
+            }
+            finally { await first.StopAsync(); }
+            var file = new AlertStore(fixture.AlertPath); file.Initialize();
+            file.Append("tablet", [new AlertEpisode("open-budget", "rule-1", AlertKind.ApplicationDaily, "chrome.exe ≥ 1.0 KB in a day", Start.AddMinutes(1), null, 1100)], DateTimeOffset.UtcNow);
+            var second = Service(fixture, usage);
+            second.Start();
+            try
+            {
+                await UntilPhase(second, HistoryClearPhase.Done);
+                Assert.True(second.ClearState.Resumed);
+                Assert.Empty(await Budgets(second)); Assert.Empty(await FirstUses(second, "chrome.exe")); Assert.Equal(0, PendingClears(fixture));
+                await LaterMinutes(second, 2, "z.exe");
+                Assert.Empty(await Budgets(second));
+                Assert.Equal(ignored, IgnoredList(second)); Assert.False(second.Failed);
+            }
+            finally { await second.StopAsync(); await usage.StopAsync(); }
+        }
+
+        // A step that throws: Failed with the marker saved, the log keeps working, and Try again finishes.
+        using (var fixture = new Fixture())
+        {
+            Store(fixture.AlertPath);
+            var usage = new UsageHistoryService(fixture.UsagePath, "tablet", flushInterval: TimeSpan.FromMilliseconds(30));
+            var alerts = Service(fixture, usage);
+            alerts.Start();
+            try
+            {
+                alerts.TryRecordNetworkUse(R(Start, true, Use("chrome.exe")));
+                await Until(async () => (await FirstUses(alerts, "chrome.exe")).Length == 1 || alerts.Failed);
+                alerts.ClearStepOverride = _ => { alerts.ClearStepOverride = null; throw new IOException("Fixture step failure."); };
+                alerts.Clear(HistoryClear.Create("chrome.exe", true, DateTimeOffset.UtcNow));
+                await UntilPhase(alerts, HistoryClearPhase.Failed);
+                Assert.Equal(new HistoryClearState(HistoryClearPhase.Failed, null, "IOException", true, false), alerts.ClearState);
+                Assert.EndsWith(" · Clearing history failed (IOException); it resumes when DeadWare next starts.", alerts.Status);
+                Assert.False(alerts.Failed); Assert.Equal(1, PendingClears(fixture));
+                alerts.TryRecordNetworkUse(R(Start.AddMinutes(1), true, Use("later.exe", firstSeen: Start.AddMinutes(1))));
+                await Until(async () => (await FirstUses(alerts, "later.exe")).Length == 1 || alerts.Failed);
+                Assert.False(alerts.Failed);
+                alerts.RetryClear();
+                await UntilPhase(alerts, HistoryClearPhase.Done);
+                Assert.Empty(await FirstUses(alerts, "chrome.exe")); Assert.Single(await FirstUses(alerts, "later.exe")); Assert.Equal(0, PendingClears(fixture));
+            }
+            finally { await alerts.StopAsync(); await usage.StopAsync(); }
+        }
+
+        // A worker stopped on a store failure: the clear is Unavailable with that failure's type and writes nothing.
+        using (var fixture = new Fixture())
+        {
+            Store(fixture.AlertPath);
+            var usage = new UsageHistoryService(fixture.UsagePath, "tablet", flushInterval: TimeSpan.FromMilliseconds(30));
+            var alerts = Service(fixture, usage);
+            alerts.Start();
+            try
+            {
+                await Until(() => Task.FromResult(alerts.FirstUse.Restored || alerts.Failed));
+                ReadOnly(fixture, true);
+                try
+                {
+                    alerts.TryRecordNetworkUse(R(Start, true, Use("chrome.exe")));
+                    await Until(() => Task.FromResult(alerts.Failed));
+                    alerts.Clear(HistoryClear.Create("chrome.exe", true, DateTimeOffset.UtcNow));
+                    Assert.Equal(HistoryClearPhase.Unavailable, alerts.ClearState.Phase);
+                    Assert.NotNull(alerts.ClearState.Error);
+                    Assert.StartsWith($"Alert log unavailable ({alerts.ClearState.Error}).", alerts.Status);
+                    Assert.False(alerts.CanRetryClear);
+                }
+                finally { ReadOnly(fixture, false); }
+                await Task.Delay(200);
+                Assert.Equal(HistoryClearPhase.Unavailable, alerts.ClearState.Phase);
+                Assert.Equal(0, PendingClears(fixture));
+            }
+            finally { await alerts.StopAsync(); await usage.StopAsync(); }
+        }
+    }
+
     private sealed class Fixture : IDisposable
     {
         private readonly string root = Path.Combine(Path.GetTempPath(), "DeadWare-alerts-" + Guid.NewGuid().ToString("N"));
