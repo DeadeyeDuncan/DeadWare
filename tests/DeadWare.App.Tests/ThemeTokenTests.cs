@@ -1,3 +1,4 @@
+using System.IO;
 using System.Windows.Media;
 using DeadWare.App;
 using Xunit;
@@ -71,6 +72,23 @@ public sealed class ThemeTokenTests
         {
             var x=ThemeTokens.CoreTint(a,i,8,false);var y=ThemeTokens.CoreTint(b,i,8,false);
             Assert.True(Math.Abs(x.R-y.R)<8&&Math.Abs(x.G-y.G)<8&&Math.Abs(x.B-y.B)<8,$"i={i} {x} vs {y}");
+        }
+    }
+
+    /// <summary>Windows and blocks whose every brush must be a theme token (a DynamicResource), never a literal colour.</summary>
+    private static readonly string[] TokenOnlySources=["ExcludedAppsBlock.cs"];
+
+    [Fact] public void Token_only_windows_and_blocks_hold_no_literal_colours()
+    {
+        var directory=new DirectoryInfo(AppContext.BaseDirectory);
+        while(directory is not null&&!File.Exists(Path.Combine(directory.FullName,"DeadWare.slnx")))directory=directory.Parent;
+        Assert.NotNull(directory);
+        var literal=new System.Text.RegularExpressions.Regex(@"\b(Brushes|Colors|SystemColors)\.|\bColor\.From|new\s+SolidColorBrush|""#[0-9A-Fa-f]{3,8}""");
+        foreach(string name in TokenOnlySources)
+        {
+            string text=File.ReadAllText(Path.Combine(directory.FullName,"src","DeadWare.App",name));
+            Assert.False(literal.IsMatch(text),$"{name} holds a literal colour: {literal.Match(text).Value}");
+            Assert.True(text.Contains("SetResourceReference",StringComparison.Ordinal)||text.Contains("Ui.Text(",StringComparison.Ordinal),$"{name} sets no theme token.");
         }
     }
 }
