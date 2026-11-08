@@ -342,6 +342,18 @@ public class UsageHistoryStoreTests
         return Convert.ToInt64(command.ExecuteScalar(), CultureInfo.InvariantCulture);
     }
 
+    [Fact]
+    public void Application_names_return_each_name_with_its_first_and_last_minute_for_this_machine_only()
+    {
+        using var fixture = new Fixture(); var store = fixture.Open(); var now = Day.AddHours(1);
+        store.Append("a", [Batch(Day.AddMinutes(1), apps: [("chrome.exe", 1, 1)]), Batch(Day.AddMinutes(5), apps: [("code.exe", 1, 1)]), Batch(Day.AddMinutes(9), apps: [("chrome.exe", 1, 1)])], now);
+        store.Append("b", [Batch(Day.AddMinutes(3), apps: [("steam.exe", 1, 1)])], now);
+        var names = store.ReadApplicationNames("a")!;
+        Assert.Equal([new ApplicationSeen("chrome.exe", Day.AddMinutes(1), Day.AddMinutes(9)), new ApplicationSeen("code.exe", Day.AddMinutes(5), Day.AddMinutes(5))], names);
+        store.BeginClear(new(null, ClearBefore, ClearBefore));
+        Assert.Null(store.ReadApplicationNames("a"));
+    }
+
     private static long Wal(string path) => File.Exists(path + "-wal") ? new FileInfo(path + "-wal").Length : 0;
     private static long BeforeMs => ClearBefore.ToUnixTimeMilliseconds();
     private static string ChromeBefore => $"SELECT count(*) FROM application_minutes WHERE name IN ('Chrome.exe','chrome.exe') AND minute<{BeforeMs}";

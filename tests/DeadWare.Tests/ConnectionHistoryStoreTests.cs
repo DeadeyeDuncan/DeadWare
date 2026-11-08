@@ -498,6 +498,19 @@ public sealed class ConnectionHistoryStoreTests(ITestOutputHelper testOutput) : 
     // The strip and destination tests' shared store, opened on first use.
     private ConnectionHistoryStore shared => opened ??= Store();
     private TrafficStrip Strip(ConnectionHistoryQuery query) => shared.Read(query).Strip!;
+    [Fact] public void Application_names_honour_expiry_and_floor_convert_ticks_and_report_a_clear_in_progress(){
+        var store=Store();
+        var rows=Enumerable.Range(1,60).Select(i=>Row(i,$"s:i:{i}",name:"app.exe")).Append(Row(100,"unit",name:"app.exe")).Append(Row(2,"old",name:"old.exe")).Append(Row(3,"floor",name:"floor.exe")).ToArray();
+        store.Append(rows,[],Epoch.AddMinutes(101));
+        var one=Assert.Single(store.ReadApplicationNames()!,x=>x.Name=="app.exe");
+        Assert.Equal(Epoch.AddMinutes(1),one.First); Assert.Equal(Epoch.AddMinutes(100),one.Last); Assert.Equal(TimeSpan.Zero,one.First.Offset); Assert.Equal(TimeSpan.Zero,one.Last.Offset);
+        Assert.Equal("app.exe",store.ReadApplicationNames()![0].Name);
+        Metadata(Epoch.AddMinutes(3).UtcTicks,Epoch.AddMinutes(2).UtcTicks+1);
+        var reopened=Store(); var names=reopened.ReadApplicationNames()!;
+        Assert.DoesNotContain(names,x=>x.Name is "old.exe" or "floor.exe"); Assert.Equal(Epoch.AddMinutes(4),Assert.Single(names).First);
+        using(var db=Connect()) Sql(db,$"INSERT INTO metadata(key,value) VALUES('clear-all',{Epoch.AddMinutes(50).UtcTicks})");
+        Assert.Null(Store().ReadApplicationNames());
+    }
     private void Metadata(long floor, long expiry) { using var db=Connect(); Sql(db,$"UPDATE metadata SET value={floor} WHERE key='floor'; UPDATE metadata SET value={expiry} WHERE key='expiry'"); }
     private static byte[] SharedBytes(string path)
     {
