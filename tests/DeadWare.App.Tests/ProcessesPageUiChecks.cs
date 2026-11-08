@@ -8,6 +8,7 @@ using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
+using System.Windows.Documents;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
@@ -56,6 +57,7 @@ internal static class ProcessesPageUiChecks
             Gpu_spoken_labels();
             Gpu_columns_show_for_fresh_and_0_13_settings_but_not_a_custom_list();
             Automation_names_and_spoken_summary();
+            Excluded_app_rows_are_marked_not_recorded();
             Changed_without_a_new_reading_does_not_resort();
             New_reading_outside_a_hold_resorts();
             Held_order_appends_new_apps_and_keeps_selection();
@@ -360,6 +362,38 @@ internal static class ProcessesPageUiChecks
         Assert.Equal(chrome.Spoken,AutomationProperties.GetName(Container(p,chrome)));
         Assert.StartsWith("chrome.exe, PID 31, CPU 5 %, ",Row(p,31).Spoken);
         Assert.StartsWith("Code.exe, PID 40, CPU 0.5 %, ",Row(p,"Code.exe").Spoken);
+    }
+
+    /// <summary>An app in Don't record these apps: its app row's Mark is "not recorded", shown Muted after the name and spoken after it; its process rows,
+    /// the name, sorting and search are unchanged.</summary>
+    private static void Excluded_app_rows_are_marked_not_recorded()
+    {
+        var (plain,_)=Page();
+        var (p,session)=Page();
+        session.SetExcludedApps(["CHROME.EXE"]);Refresh(p);
+        var chrome=Row(p,"chrome.exe");
+        Assert.Equal("not recorded",chrome.Mark);Assert.Equal("chrome.exe",chrome.Name);
+        Assert.StartsWith("chrome.exe, not recorded, 3 processes, CPU ",chrome.Spoken);
+        Assert.Equal(AutomationProperties.GetName(Container(p,chrome)),chrome.Spoken);
+        Assert.All(Rows(p).Where(r=>r!=chrome),r=>{Assert.Equal("",r.Mark);Assert.DoesNotContain("not recorded",r.Spoken);});
+        // The name cell shows the mark after the name, in Muted.
+        static Run? MarkRun(DependencyObject container)=>Shown(container).OfType<TextBlock>().SelectMany(t=>t.Inlines.OfType<Run>()).SingleOrDefault(r=>r.Text==" · not recorded");
+        var mark=Assert.IsType<Run>(MarkRun(Container(p,chrome)));
+        Assert.Equal(((SolidColorBrush)Application.Current.Resources["Muted"]).Color,Assert.IsType<SolidColorBrush>(mark.Foreground).Color);
+        Assert.Contains(Shown(Container(p,chrome)).OfType<TextBlock>(),t=>t.Text=="chrome.exe · not recorded");
+        Assert.Null(MarkRun(Container(p,Row(p,"Code.exe"))));
+        // Process rows under the app carry no mark.
+        Expand(p,"chrome.exe");
+        Assert.All(Rows(p).Where(r=>!r.IsApp),r=>{Assert.Equal("",r.Mark);Assert.DoesNotContain("not recorded",r.Spoken);Assert.Null(MarkRun(Container(p,r)));});
+        Assert.StartsWith("chrome.exe, PID 31, CPU 5 %, ",Row(p,31).Spoken);
+        // Sorting by name and search match the bare name.
+        ClickHeader(p,"NAME");ClickHeader(plain,"NAME");Assert.Equal(AppNames(plain),AppNames(p));
+        SetSearch(p,"not recorded");Assert.Empty(Rows(p));
+        SetSearch(p,"chrome");Assert.Equal(["chrome.exe"],AppNames(p));
+        SetSearch(p,"");
+        // Taken off the list, the row loses its mark.
+        session.SetExcludedApps([]);Refresh(p);
+        Assert.Equal("",Row(p,"chrome.exe").Mark);Assert.StartsWith("chrome.exe, 3 processes, ",Row(p,"chrome.exe").Spoken);
     }
 
     private static void Changed_without_a_new_reading_does_not_resort()

@@ -76,6 +76,11 @@ internal static class ConnectionsWidgetUiChecks
                 service.TryRecord(new ConnectionSample(Epoch,0,3,"fixture",[traffic],[],null,false,false,0,0,0,"Stopped capture"));widget.Refresh();Assert.True(map.IsAnimating);
                 session.Settings.ConnectionsAnimation=false;widget.Refresh();Assert.False(map.IsAnimating);
             }
+            // An app in Don't record these apps carries " · not recorded" on its map hover label.
+            session.Settings.ExcludedApps=["Fixture"];widget.Refresh();
+            Assert.Equal("Fixture · not recorded",Assert.Single(map.DisplayedPoints).Label);
+            session.Settings.ExcludedApps=[];widget.Refresh();
+            Assert.Equal("Fixture",Assert.Single(map.DisplayedPoints).Label);
             owner.Close();
             // Exercise the production restore boundary on a real WPF Window, without an HWND.
             foreach(uint dpi in new uint[]{96,144,192})

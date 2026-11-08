@@ -87,6 +87,7 @@ internal static class ConnectionsPageUiChecks
         CheckScopeChangeClearsTheSelection(page);
         CheckDestinationsCopy(session, live);
         CheckDestinationsExport(session, now);
+        CheckDestinationsNotRecordedMark(session, live);
         CheckBoundaryDates();
         CheckIntervalWarning(session);
         CheckExportBusy(session,now);
@@ -957,6 +958,50 @@ internal static class ConnectionsPageUiChecks
         menu.RaiseEvent(new RoutedEventArgs(ContextMenu.ClosedEvent)); Assert.False(card.Hold.MenuOpen);
         // Cleared again, Ctrl+C does nothing.
         card.ClearSelection(); copied = null; CtrlC(); Assert.Null(copied); Assert.Equal("", status.Text); Assert.Equal(0, gridCopies);
+    }
+    /// <summary>An app in Don't record these apps shows live with " · not recorded": the Destinations APPS cell, its tooltip line, the spoken text and Copy row,
+    /// the node list, the detail box and the map label. Search, grouping and History rows use the bare name. The list is cleared again at the end.</summary>
+    private static void CheckDestinationsNotRecordedMark(UiSession session, ConnectionLiveView live)
+    {
+        // The 8.8.8.8 peer is "Browser" (key "BROWSER"), the busiest and only app of its row.
+        session.SetExcludedApps(["Browser"]); Assert.True(session.IsExcluded("BROWSER"));
+        try
+        {
+            var page = new ConnectionsPage(session); page.ApplyLive(live); Layout(page, 1000, 700); var card = Card(page);
+            var row = card.Rows.Single(r => r.Key == "8.8.8.8");
+            Assert.StartsWith("Browser · not recorded", row.Apps); Assert.Equal("Browser · not recorded", row.Apps);
+            Assert.Contains("Browser · not recorded · ↓ ", row.AppsTip); Assert.Equal("Browser · not recorded · ↓ 1.0 KB · ↑ 512.0 B", row.AppsTip);
+            Assert.Contains("Browser, not recorded", row.Spoken);
+            Assert.Equal("8.8.8.8, Internet, Fixture, United States, 1 app: Browser, not recorded, port 443 Tcp, received 1.0 KB, sent 512.0 B, download 128.0 B/s, upload 64.0 B/s, 1 connection, incomplete", row.Spoken);
+            // Copy row copies the shown cell, mark included.
+            string? copied = null; PageType.GetField("SetClipboard", All)!.SetValue(page, (Action<string>)(text => copied = text));
+            Select(card, "8.8.8.8"); System.Windows.Input.ApplicationCommands.Copy.Execute(null, card.Grid);
+            Assert.Contains(" · not recorded", copied); Assert.StartsWith("8.8.8.8\tInternet\tFixture, United States\tBrowser · not recorded\t443 Tcp\t", copied);
+            card.ClearSelection();
+            // The node list label, the detail box and the map's hover label.
+            var map = Field<ConnectionMap>(page, "map"); map.Flat = true; Layout(page, 1000, 700);
+            var list = Field<ListBox>(page, "mappedConnections");
+            Assert.Contains("Browser · not recorded", Assert.Single(list.Items.Cast<object>()).ToString());
+            list.SelectedIndex = 0; Assert.Contains("Browser · not recorded", Field<TextBlock>(page, "nodeText").Text);
+            Assert.EndsWith(" · not recorded", Assert.Single(map.DisplayedPoints).Label);
+            // The expander text ends with the new sentence.
+            var options = Assert.Single(Elements(page).OfType<Expander>(), e => e.Header as string == "Recording, origin and storage");
+            Assert.Contains(Elements((DependencyObject)options.Content).OfType<TextBlock>(), t => t.Text.EndsWith(" Apps in Don't record these apps show live, marked not recorded, and are never saved.", StringComparison.Ordinal));
+            // Search matches the bare name: "Browser" keeps the node and the row, "not recorded" matches nothing.
+            var search = Field<TextBox>(page, "search");
+            search.Text = "Browser"; Assert.Single(list.Items.Cast<object>()); Assert.Contains(card.Rows, r => r.Key == "8.8.8.8");
+            search.Text = "not recorded"; Assert.Empty(list.Items); Assert.Empty(card.Rows);
+            search.Text = "";
+            // History rows carry no mark.
+            card.ShowHistory(ConnectionDestinations.FromLive(live.Connections, true), false, false);
+            var saved = card.Rows.Single(r => r.Key == "8.8.8.8");
+            Assert.Equal("Browser", saved.Apps); Assert.DoesNotContain("not recorded", saved.AppsTip); Assert.DoesNotContain("not recorded", saved.Spoken);
+            // Taken off the list, the same Live view shows the bare name again.
+            page.ApplyLive(live); session.SetExcludedApps([]); page.ApplyLive(live);
+            Assert.Equal("Browser", card.Rows.Single(r => r.Key == "8.8.8.8").Apps);
+            Assert.Equal("Browser", Assert.Single(map.DisplayedPoints).Label);
+        }
+        finally { session.SetExcludedApps([]); }
     }
     /// <summary>Export destinations… exports the whole-interval query with every filter and the card's scope, shares Export CSV's busy state and texts,
     /// and names the TEMP limit.</summary>

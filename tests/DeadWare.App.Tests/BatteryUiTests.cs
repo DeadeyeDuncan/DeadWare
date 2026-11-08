@@ -440,8 +440,11 @@ public class BatteryUiTests
         // dictionary so this offscreen control receives live resource changes.
         var tip = new ToolTip { Content = appSearch.ToolTip, Resources = Application.Current.Resources };
         string originalTheme = session.Settings.Theme;
+        var excludedBefore = session.Settings.ExcludedApps.ToArray();
         try
         {
+            // The network fixture's app is in Don't record these apps, set before the fixture assigns ItemsSource and cleared after the block.
+            session.SetExcludedApps(["Fixture application"]);
             foreach (var (theme, body, header, metric) in ThemeFonts)
             {
                 session.SetTheme(theme);
@@ -480,6 +483,16 @@ public class BatteryUiTests
                     {
                         AssertFont(appSearch.FontFamily, body); AssertFont(apps.FontFamily, body);
                         Assert.Equal(ResourceColor("Ink"), ((SolidColorBrush)appSearch.Foreground).Color);
+                        // The Application cell marks the excluded app; the column still sorts, and the row still holds, the bare name.
+                        var application = Assert.IsAssignableFrom<DataGridTemplateColumn>(apps.Columns[0]);
+                        Assert.Equal("APPLICATION", application.Header); Assert.Equal("Name", application.SortMemberPath);
+                        var appRow = Assert.IsType<DataGridRow>(apps.ItemContainerGenerator.ContainerFromIndex(0));
+                        var cell = Assert.IsType<TextBlock>(application.GetCellContent(appRow));
+                        Assert.Equal("Fixture application · not recorded", new System.Windows.Documents.TextRange(cell.ContentStart, cell.ContentEnd).Text);
+                        var markRun = Assert.Single(cell.Inlines.OfType<System.Windows.Documents.Run>(), r => r.Text == " · not recorded");
+                        Assert.Equal(ResourceColor("Muted"), ((SolidColorBrush)markRun.Foreground).Color);
+                        Assert.Equal("Fixture application", appRow.Item.GetType().GetProperty("Name")!.GetValue(appRow.Item));
+                        Assert.Contains(Descendants(shell).OfType<TextBlock>(), t => t.Text.StartsWith("Per-app totals cover", StringComparison.Ordinal) && t.Text.EndsWith(" Apps marked not recorded are in Settings → Don't record these apps; their traffic isn't saved.", StringComparison.Ordinal));
                     }
                     if (destination is "network" or "sensors")
                     {
@@ -514,6 +527,7 @@ public class BatteryUiTests
         }
         finally
         {
+            session.SetExcludedApps(excludedBefore);
             session.SetTheme(originalTheme); CompleteSettingsSave(session);
             apps.ItemsSource = originalApps; sensors.ItemsSource = originalSensors;
         }

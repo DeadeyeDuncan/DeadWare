@@ -266,7 +266,7 @@ internal static class ApplicationResourcesUiChecks
     private static void The_note_names_gpu(ApplicationResourcesCard card)
     {
         var note = Texts(card).Single(t => t.StartsWith("CPU time, I/O read and I/O written", StringComparison.Ordinal));
-        Assert.Contains("Each minute lists up to 40 of the busiest applications by CPU, memory, I/O and GPU; Everything else holds the rest. Usage after", note);
+        Assert.Contains("Each minute lists up to 40 of the busiest applications by CPU, memory, I/O and GPU; Everything else holds the rest, including apps in Don't record these apps. Usage after", note);
         Assert.Contains("Avg GPU is its busiest GPU engine's share of the time GPU data was recorded; Avg GPU memory while listed averages its dedicated GPU memory over the minutes it was listed with GPU data.", note);
     }
 
