@@ -24,8 +24,9 @@ All on `windows-latest` in the pull request's CI build (#86). A measurement reco
 
 ### Findings
 
-- Accepted, not fixed: the clock-ahead limitation of an all-apps clear. An all-apps clear raises Connections history's monotonic `expiry` to the clear's `Before`, and this is kept. If the clock was ahead at the confirmation and is later set back, Connections history recorded before the clock passes `Before` again is hidden and then purged, and the strip labels that time Cleared; a backwards clock change can hide new Connections history until the clock catches up. As the controller's ruling records it, rows saved behind the one-app cursor or before `Before` reappear only after the marker is removed. The user guide's Connections section states the limitation.
-- Still open: the monotonic `expiry` watermark from the 0.12.2 connections review (Connections review fixes (0.12.2), below): a forward clock jump hides history until the clock catches up. The limitation above is the same mechanism; 0.17.0 does not change it.
+- Accepted, not fixed: the clock-ahead limitation of an all-apps clear. An all-apps clear raises Connections history's monotonic `expiry` to the clear's `Before`, and this is kept. If the clock was ahead at the confirmation and is later set back, Connections history recorded before the clock passes `Before` again is hidden and then purged, and the strip labels that time Cleared; a backwards clock change can hide new Connections history until the clock catches up. The user guide's Connections section states the limitation.
+- Accepted, not fixed: Connections history of an app saved while a one-app clear for it runs, but timed before that clear's `Before`, which a clock set back during the clear can produce, is hidden until the clear finishes and then shows again; the clear does not remove it.
+- Still open: the monotonic `expiry` watermark from the 0.12.2 connections review (Connections review fixes (0.12.2), below): a forward clock jump hides history until the clock catches up. The all-apps clear limitation above is the same mechanism; 0.17.0 does not change it.
 
 ### Automated coverage
 
