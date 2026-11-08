@@ -8,6 +8,9 @@ namespace DeadWare.Core;
 /// <summary>A request to clear history older than <see cref="Before"/>, for one application or for all.</summary>
 public sealed record HistoryClear(string? AppKey, DateTimeOffset Before, DateTimeOffset Requested)
 {
+    /// <summary>One clear step runs delete transactions until this has passed; the boundary rule lasts at most <see cref="BoundaryLimit"/>.</summary>
+    public static readonly TimeSpan StepBudget = TimeSpan.FromMilliseconds(250), BoundaryLimit = TimeSpan.FromSeconds(120);
+
     public static HistoryClear Create(string? application, bool allTime, DateTimeOffset requested)
     {
         var floor = UsageMetrics.Floor(requested);
@@ -19,6 +22,41 @@ public sealed record HistoryClear(string? AppKey, DateTimeOffset Before, DateTim
 
     public bool Covers(string? name, DateTimeOffset minute)
         => minute < Before && (AppKey is null || string.Equals(Core.AppKey.Of(name), AppKey, StringComparison.Ordinal));
+}
+
+/// <summary>Where a service's clear stands.</summary>
+public enum HistoryClearPhase { None, Queued, Clearing, Done, Failed, Unavailable }
+
+/// <summary>The four stores a clear reaches, in the progress block's order.</summary>
+public enum HistoryClearStore { Connections, Usage, ProcessHistory, Alerts }
+
+/// <summary>A service's clear state.</summary>
+/// <param name="Percent">The store's percent while clearing, or null when it shows none.</param>
+/// <param name="Error">The failure's exception type name, or null.</param>
+/// <param name="MarkerSaved">True once the store's durable marker is saved, until the clear is done.</param>
+/// <param name="Resumed">True for a clear resumed from a marker found at startup.</param>
+public sealed record HistoryClearState(HistoryClearPhase Phase, int? Percent, string? Error, bool MarkerSaved, bool Resumed)
+{
+    public static HistoryClearState None { get; } = new(HistoryClearPhase.None, null, null, false, false);
+}
+
+/// <summary>Fixed copy for clears. Status text holds counts and exception type names only.</summary>
+public static class HistoryClearCopy
+{
+    /// <summary>The suffix each service's status gains: while clearing, after a failure with or without the marker, or "" otherwise.</summary>
+    /// <param name="alertLog">The alert log shows no percent.</param>
+    public static string StatusSuffix(HistoryClearState state, bool alertLog)
+    {
+        ArgumentNullException.ThrowIfNull(state);
+        return state.Phase switch
+        {
+            HistoryClearPhase.Clearing when alertLog || state.Percent is null => " · Clearing history.",
+            HistoryClearPhase.Clearing => string.Create(CultureInfo.InvariantCulture, $" · Clearing history ({state.Percent} %)."),
+            HistoryClearPhase.Failed when state.MarkerSaved => $" · Clearing history failed ({state.Error}); it resumes when DeadWare next starts.",
+            HistoryClearPhase.Failed => $" · Clearing history failed ({state.Error}); not cleared.",
+            _ => "",
+        };
+    }
 }
 
 /// <summary>Where one store's clear stands after a step.</summary>
