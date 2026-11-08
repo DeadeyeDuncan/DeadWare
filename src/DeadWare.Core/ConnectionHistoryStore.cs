@@ -27,6 +27,16 @@ public sealed class ConnectionHistoryStore
     internal Action<TimeSpan>? destinationStepsTimed = null;
     private readonly object gate = new();
     private bool initialized;
+    // The clear in progress: a copy of the one metadata row whose key starts with 'clear-', and the clear's in-memory state.
+    private const string MarkerAll = "clear-all", MarkerApp = "clear-app:";
+    private const int ClearChunkSize = 512, ClearRoundSize = 2048;
+    private PendingConnectionClear? pending;
+    private ClearState? clearing;
+    // Seams set by reflection in tests: the step's monotonic clock, rows deleted per clear transaction (after its commit, before
+    // its TRUNCATE checkpoint), and every write connection after its pragmas.
+    private Func<TimeSpan> clearClock = HistoryClearStep.MonotonicClock;
+    private Action<int>? clearCommitted = null;
+    private Action<SqliteConnection>? clearConnectionOpened = null;
     private const string Columns = "minute,pid,generation,name,remote,port,protocol,first_seen,last_seen,received,sent,location,origin,complete";
     // Every read path filters traffic through this one predicate: Grouped (ExportCsv) and both TEMP tables in Read.
     private const string GroupedWhere = """
@@ -35,6 +45,7 @@ public sealed class ConnectionHistoryStore
           AND ($search='' OR instr(search,$search)>0 OR instr(cast(pid AS TEXT),$search)>0)
           AND ($country='' OR country=$country)
           AND ($application='' OR app_key(name)=$application)
+          AND NOT ($clearKey<>'' AND minute<$clearBefore AND app_key(name)=$clearKey)
         """;
     private const string DirectionHaving = "($direction=0 OR ($direction=1 AND sat_sum(received)>0) OR ($direction=2 AND sat_sum(sent)>0))";
     private const string Grouped = $"""
@@ -132,6 +143,7 @@ public sealed class ConnectionHistoryStore
     {
         lock(gate)
         {
+            PendingConnectionClear? marker=null;
             // Inspect existing stores read-only before changing journal mode, schema or configuration.
             if(File.Exists(path))
             {
@@ -142,7 +154,10 @@ public sealed class ConnectionHistoryStore
                 if(version!=1 || Number(inspect,"PRAGMA application_id")!=ApplicationId) throw new InvalidDataException("Unsupported connection history; the file was preserved.");
                 using var expected=new SqliteConnection("Data Source=:memory:"); expected.Open(); Execute(expected,Schema);
                 if(!ReadSchema(inspect).SequenceEqual(ReadSchema(expected))) throw new InvalidDataException("Incompatible connection history objects; the file was preserved.");
+                // A clear marker read here makes every write connection, this one included, use secure_delete.
+                marker=ReadMarker(inspect);
             }
+            pending=marker; clearing=marker is null?null:new(path);
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
             bool create=!File.Exists(path);
             using var db=Open(create:create);
@@ -299,6 +314,7 @@ public sealed class ConnectionHistoryStore
             catch(SqliteException error) when(error.SqliteErrorCode==13)
             {
                 // Rows already hidden by expiry go first; a bucket is evicted only when none is left.
+                // By design this purge runs even when the Append passed maintenanceTransactions: 0.
                 if(Cleanup(db,1)>0) continue;
                 if(!EvictOldestBucket(db,protectedMinute)) throw new IOException("The incoming minute cannot fit in connection history; its earlier committed chunks were preserved.",error);
                 Cleanup(db,int.MaxValue);
@@ -353,6 +369,31 @@ public sealed class ConnectionHistoryStore
         CommitBounded(db,tx); Checkpoint(db); GuardJournal(db); return true;
     }
     private sealed record Receipt(long Id,string Batch,string Item,int Kind);
+    // The coverage rows Cleanup purges: hidden by expiry, or at or below the capacity floor.
+    private const string PurgeableCoverageWhere = """
+        start<max(coalesce((SELECT value FROM metadata WHERE key='expiry'),0),
+            (SELECT value FROM metadata WHERE key='floor')+$minute)
+          AND (finish<=coalesce((SELECT value FROM metadata WHERE key='expiry'),0)
+            OR stamp<=(SELECT value FROM metadata WHERE key='floor'))
+        """;
+    private static List<Receipt> PurgeableCoverage(SqliteConnection db,SqliteTransaction tx,int count)
+    {
+        var receipts=new List<Receipt>();
+        using var select=Command(db,$"SELECT id,batch,item FROM coverage WHERE {PurgeableCoverageWhere} ORDER BY start,id LIMIT $count",tx,("$count",count),("$minute",TimeSpan.TicksPerMinute));
+        using var reader=select.ExecuteReader(); while(reader.Read()) receipts.Add(new(reader.GetInt64(0),reader.GetString(1),reader.GetString(2),1));
+        return receipts;
+    }
+    /// <summary>Deletes the rows, their dedup receipts and each touched batch's manifest left without receipts.</summary>
+    private static void DeleteReceipts(SqliteConnection db,SqliteTransaction tx,IReadOnlyList<Receipt> receipts)
+    {
+        foreach(var receipt in receipts)
+        {
+            Execute(db,receipt.Kind==0?"DELETE FROM traffic WHERE id=$id":"DELETE FROM coverage WHERE id=$id",tx,("$id",receipt.Id));
+            Execute(db,"DELETE FROM dedup WHERE batch=$batch AND kind=$kind AND item=$item",tx,("$batch",receipt.Batch),("$kind",receipt.Kind),("$item",receipt.Item));
+        }
+        foreach(var key in receipts.Select(r=>(r.Batch,r.Kind)).Distinct())
+            Execute(db,"DELETE FROM manifests WHERE batch=$batch AND kind=$kind AND NOT EXISTS(SELECT 1 FROM dedup WHERE batch=$batch AND kind=$kind)",tx,("$batch",key.Batch),("$kind",key.Kind));
+    }
     private int Cleanup(SqliteConnection db,int maxTransactions)
     {
         int count=MaintenanceChunkSize, done=0;
@@ -370,26 +411,9 @@ public sealed class ConnectionHistoryStore
                     ORDER BY minute,id LIMIT $count
                     """,tx,("$count",count),("$minute",TimeSpan.TicksPerMinute)))
                 using(var reader=select.ExecuteReader()) while(reader.Read()) receipts.Add(new(reader.GetInt64(0),reader.GetString(1),reader.GetString(2),0));
-                if(receipts.Count==0)
-                {
-                    using var select=Command(db,"""
-                        SELECT id,batch,item FROM coverage
-                        WHERE start<max(coalesce((SELECT value FROM metadata WHERE key='expiry'),0),
-                            (SELECT value FROM metadata WHERE key='floor')+$minute)
-                          AND (finish<=coalesce((SELECT value FROM metadata WHERE key='expiry'),0)
-                            OR stamp<=(SELECT value FROM metadata WHERE key='floor'))
-                        ORDER BY start,id LIMIT $count
-                        """,tx,("$count",count),("$minute",TimeSpan.TicksPerMinute));
-                    using var reader=select.ExecuteReader(); while(reader.Read()) receipts.Add(new(reader.GetInt64(0),reader.GetString(1),reader.GetString(2),1));
-                }
+                if(receipts.Count==0) receipts=PurgeableCoverage(db,tx,count);
                 if(receipts.Count==0) return done;
-                foreach(var receipt in receipts)
-                {
-                    Execute(db,receipt.Kind==0?"DELETE FROM traffic WHERE id=$id":"DELETE FROM coverage WHERE id=$id",tx,("$id",receipt.Id));
-                    Execute(db,"DELETE FROM dedup WHERE batch=$batch AND kind=$kind AND item=$item",tx,("$batch",receipt.Batch),("$kind",receipt.Kind),("$item",receipt.Item));
-                }
-                foreach(var key in receipts.Select(r=>(r.Batch,r.Kind)).Distinct())
-                    Execute(db,"DELETE FROM manifests WHERE batch=$batch AND kind=$kind AND NOT EXISTS(SELECT 1 FROM dedup WHERE batch=$batch AND kind=$kind)",tx,("$batch",key.Batch),("$kind",key.Kind));
+                DeleteReceipts(db,tx,receipts);
                 CommitBounded(db,tx); done++;
             }
             catch(TransactionBudgetException error)
@@ -400,6 +424,154 @@ public sealed class ConnectionHistoryStore
             maintenanceCommitted?.Invoke(); Checkpoint(db); GuardJournal(db);
         }
         return done;
+    }
+
+    /// <summary>The clear in progress, from the marker's write until the last step removes it, and from Initialize while a marker exists.</summary>
+    public PendingConnectionClear? PendingClear {get {lock(gate) return pending;}}
+    /// <summary>A clear's in-memory state. A resumed clear starts again: the cursor restarts from the first row.</summary>
+    private sealed class ClearState(string path)
+    {
+        public readonly HistoryClearStep Step=new(path);
+        // Halved on the transaction budget, and kept halved for the rest of the clear.
+        public int Size=ClearChunkSize;
+        public long? Total;
+        // One app: rows scanned, the (minute, id) cursor, the current round's matches not yet deleted, and whether the scan reached Before.
+        public long Scanned;
+        public long CursorMinute=long.MinValue, CursorId=long.MinValue;
+        public readonly List<Receipt> Matches=[];
+        public bool Exhausted;
+    }
+    private static PendingConnectionClear? ReadMarker(SqliteConnection db)
+    {
+        using var command=Command(db,"SELECT key,value FROM metadata WHERE substr(key,1,6)='clear-' ORDER BY key");
+        using var reader=command.ExecuteReader();
+        while(reader.Read())
+        {
+            string key=reader.GetString(0); long ticks=reader.GetInt64(1);
+            if(ticks<0||ticks>DateTimeOffset.MaxValue.UtcTicks) continue;
+            if(key==MarkerAll) return new(null,Stamp(ticks));
+            if(key.StartsWith(MarkerApp,StringComparison.Ordinal)&&key.Length>MarkerApp.Length) return new(key[MarkerApp.Length..],Stamp(ticks));
+        }
+        return null;
+    }
+    /// <summary>
+    /// Records a clear in one bounded transaction: the marker, for all apps <c>expiry = max(expiry, Before)</c>, and the cleared
+    /// mark <c>cleared-all</c> or <c>cleared-one</c> raised to <c>Before</c>. An equal pending marker re-commits nothing; a different
+    /// one throws <see cref="InvalidOperationException"/>.
+    /// </summary>
+    public void BeginClear(HistoryClear clear)
+    {
+        ArgumentNullException.ThrowIfNull(clear);
+        if(clear.AppKey is {Length:0}) throw new ArgumentException("A connection history clear names an application key, or none for all apps.",nameof(clear));
+        lock(gate)
+        {
+            EnsureInitialized();
+            var request=new PendingConnectionClear(clear.AppKey,clear.Before.ToUniversalTime());
+            if(pending is not null)
+            {
+                if(pending==request) return;
+                throw new InvalidOperationException("Another connection history clear is in progress.");
+            }
+            long before=request.Before.UtcTicks;
+            using var db=Open();
+            GuardJournal(db);
+            using(var tx=db.BeginTransaction())
+            {
+                // Any other 'clear-' row is unreadable as a marker; at most one remains.
+                Execute(db,"DELETE FROM metadata WHERE substr(key,1,6)='clear-'",tx);
+                Execute(db,"INSERT INTO metadata VALUES($key,$before)",tx,("$key",request.AppKey is null?MarkerAll:MarkerApp+request.AppKey),("$before",before));
+                if(request.AppKey is null) Execute(db,"INSERT INTO metadata VALUES('expiry',$before) ON CONFLICT(key) DO UPDATE SET value=max(value,excluded.value)",tx,("$before",before));
+                Execute(db,"INSERT INTO metadata VALUES($mark,$before) ON CONFLICT(key) DO UPDATE SET value=max(value,excluded.value)",tx,("$mark",request.AppKey is null?"cleared-all":"cleared-one"),("$before",before));
+                CommitBounded(db,tx);
+            }
+            pending=request; clearing=new(path);
+            Checkpoint(db);
+        }
+    }
+    /// <summary>
+    /// Runs the pending clear's delete transactions until <paramref name="budget"/> has passed on the monotonic clock (see
+    /// <see cref="HistoryClearStep.Run"/>). One app: <c>Done</c> counts rows scanned, of a <c>Total</c> of traffic rows before
+    /// <c>Before</c> at the first step. All apps: <c>Done</c> is <c>Total</c> minus the rows still selected, so the routine purge's
+    /// deletes count. The last transaction removes the marker; the cleared mark stays.
+    /// </summary>
+    public HistoryClearProgress ClearStep(TimeSpan budget)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(budget,TimeSpan.Zero);
+        lock(gate)
+        {
+            EnsureInitialized();
+            if(pending is not {} request||clearing is not {} state) throw new InvalidOperationException("No connection history clear is pending.");
+            using var db=Open();
+            long total=state.Total??=ClearRemaining(db,request);
+            bool finished=state.Step.Run(db,budget,clearClock,()=>GuardJournal(db),
+                ()=>request.AppKey is {} key?OneAppTransaction(db,key,request.Before.UtcTicks,state):AllAppsTransaction(db,request.Before.UtcTicks,state),clearCommitted);
+            if(finished) {pending=null; clearing=null;}
+            long done=request.AppKey is not null?state.Scanned:finished?total:Math.Clamp(total-ClearRemaining(db,request),0,total);
+            return new(done,total,finished);
+        }
+    }
+    private static long ClearRemaining(SqliteConnection db,PendingConnectionClear request)
+    {
+        string sql=request.AppKey is not null ? "SELECT count(*) FROM traffic WHERE minute<$before"
+            : $"SELECT (SELECT count(*) FROM traffic WHERE minute<$before)+(SELECT count(*) FROM coverage WHERE {PurgeableCoverageWhere})";
+        using var command=Command(db,sql,null,("$before",request.Before.UtcTicks),("$minute",TimeSpan.TicksPerMinute));
+        return Convert.ToInt64(command.ExecuteScalar(),CultureInfo.InvariantCulture);
+    }
+    /// <summary>One app: a round reads the next 2,048 rows before Before in (minute, id) order through traffic_time; its matches go in transactions of at most the clear's size.</summary>
+    private HistoryClearTransaction OneAppTransaction(SqliteConnection db,string key,long before,ClearState state)
+    {
+        if(state.Matches.Count==0&&!state.Exhausted)
+        {
+            int read=0;
+            using(var select=Command(db,"""
+                SELECT id,minute,batch,item,name FROM traffic INDEXED BY traffic_time
+                WHERE minute>=$minute AND minute<$before AND (minute>$minute OR id>$id)
+                ORDER BY minute,id LIMIT $round
+                """,null,("$minute",state.CursorMinute),("$id",state.CursorId),("$before",before),("$round",ClearRoundSize)))
+            using(var reader=select.ExecuteReader()) while(reader.Read())
+            {
+                read++; state.CursorId=reader.GetInt64(0); state.CursorMinute=reader.GetInt64(1);
+                if(string.Equals(AppKey.Of(reader.GetString(4)),key,StringComparison.Ordinal)) state.Matches.Add(new(state.CursorId,reader.GetString(2),reader.GetString(3),0));
+            }
+            state.Scanned+=read;
+            if(read<ClearRoundSize) state.Exhausted=true;
+            // A round with no match writes nothing.
+            if(state.Matches.Count==0&&!state.Exhausted) return new(false,0,false);
+        }
+        return ClearTransaction(db,state,(_,size)=>state.Matches.Take(size).ToList(),deleted=>state.Matches.RemoveRange(0,deleted));
+    }
+    /// <summary>All apps: traffic rows before Before, then the coverage Cleanup now selects.</summary>
+    private HistoryClearTransaction AllAppsTransaction(SqliteConnection db,long before,ClearState state) => ClearTransaction(db,state,(tx,size)=>
+    {
+        var receipts=new List<Receipt>();
+        using(var select=Command(db,"SELECT id,batch,item FROM traffic WHERE minute<$before ORDER BY minute,id LIMIT $count",tx,("$before",before),("$count",size)))
+        using(var reader=select.ExecuteReader()) while(reader.Read()) receipts.Add(new(reader.GetInt64(0),reader.GetString(1),reader.GetString(2),0));
+        return receipts.Count>0?receipts:PurgeableCoverage(db,tx,size);
+    },null);
+    /// <summary>One clear transaction: deletes the selected receipts, or removes the marker when nothing is left. Halves the size on the budget.</summary>
+    private static HistoryClearTransaction ClearTransaction(SqliteConnection db,ClearState state,Func<SqliteTransaction,int,List<Receipt>> select,Action<int>? deleted)
+    {
+        for(;;)
+        {
+            try
+            {
+                using var tx=db.BeginTransaction();
+                var receipts=select(tx,state.Size);
+                if(receipts.Count==0)
+                {
+                    Execute(db,"DELETE FROM metadata WHERE substr(key,1,6)='clear-'",tx);
+                    CommitBounded(db,tx); return new(true,0,true);
+                }
+                DeleteReceipts(db,tx,receipts);
+                CommitBounded(db,tx); deleted?.Invoke(receipts.Count);
+                return new(true,receipts.Count,false);
+            }
+            catch(TransactionBudgetException error)
+            {
+                if(state.Size==1) throw new IOException("Connection history clear exceeds the bounded transaction budget.",error);
+                state.Size=Math.Max(1,state.Size/2);
+            }
+        }
     }
 
     public ConnectionHistoryView Read(ConnectionHistoryQuery query)
@@ -450,15 +622,20 @@ public sealed class ConnectionHistoryStore
                 return (found,count);
             });
             var (coverage,gaps)=ReadCoverage(db,tx,query);
-            object? earliest=Scalar(db,"""
+            object? earliest;
+            // The traffic branch walks traffic_time in order and stops at the first row the one-app hide predicate keeps.
+            using(var command=Command(db,"""
                 SELECT min(stamp) FROM (
-                  SELECT min(minute) stamp FROM traffic
+                  SELECT (SELECT minute FROM traffic
                     WHERE minute>=coalesce((SELECT value FROM metadata WHERE key='expiry'),0)
                       AND minute>(SELECT value FROM metadata WHERE key='floor')
+                      AND NOT ($clearKey<>'' AND minute<$clearBefore AND app_key(name)=$clearKey)
+                    ORDER BY minute LIMIT 1) stamp
                   UNION ALL SELECT min(max(start,coalesce((SELECT value FROM metadata WHERE key='expiry'),0))) FROM coverage
                     WHERE finish>coalesce((SELECT value FROM metadata WHERE key='expiry'),0)
                       AND stamp>(SELECT value FROM metadata WHERE key='floor'))
-                """,tx);
+                """,tx,ClearArguments()))
+                earliest=command.ExecuteScalar();
             var strip=Grouping(()=>ReadStrip(db,tx,query));
             long started=Stopwatch.GetTimestamp();
             var destinations=Grouping(()=>ReadDestinations(db,tx));
@@ -677,7 +854,9 @@ public sealed class ConnectionHistoryStore
         return query with {From=query.From.ToUniversalTime(),To=query.To.ToUniversalTime(),Search=query.Search.Trim().ToLowerInvariant(),CountryCode=query.CountryCode.Trim().ToUpperInvariant(),Offset=Math.Max(0,query.Offset),Limit=Math.Clamp(query.Limit,1,500),
             Application=application.Length==0?"":ProcessGrouping.Key(application)};
     }
-    private static (string,object)[] Arguments(ConnectionHistoryQuery query) => [("$from",query.From.UtcTicks),("$to",query.To.UtcTicks),("$search",query.Search),("$country",query.CountryCode),("$direction",(int)query.Direction),("$application",query.Application)];
+    private (string,object)[] Arguments(ConnectionHistoryQuery query) => [("$from",query.From.UtcTicks),("$to",query.To.UtcTicks),("$search",query.Search),("$country",query.CountryCode),("$direction",(int)query.Direction),("$application",query.Application),..ClearArguments()];
+    /// <summary>The one-app hide predicate's values from the in-memory marker (callers hold the lock): '' and 0 without a one-app marker.</summary>
+    private (string,object)[] ClearArguments() => pending is {AppKey:{} key} p ? [("$clearKey",key),("$clearBefore",p.Before.UtcTicks)] : [("$clearKey",""),("$clearBefore",0L)];
     private static (List<ConnectionHistoryInterval>,List<ConnectionHistoryGap>) ReadCoverage(SqliteConnection db,SqliteTransaction tx,ConnectionHistoryQuery query)
     {
         // Sweep interval edges in SQL order; memory is proportional to the published merged result, not raw samples.
@@ -813,6 +992,9 @@ public sealed class ConnectionHistoryStore
                 long pageSize=Number(db,"PRAGMA page_size");
                 Execute(db,"PRAGMA max_page_count="+(maximumDatabaseBytes/pageSize).ToString(CultureInfo.InvariantCulture)+"; PRAGMA journal_size_limit=8388608; PRAGMA wal_autocheckpoint=256; PRAGMA synchronous=FULL; PRAGMA cache_size=-256; PRAGMA cache_spill=OFF;");
                 if(Number(db,"PRAGMA cache_spill")!=0) throw new IOException("Connection history requires disabled transaction cache spilling.");
+                // While a clear marker exists, every path that deletes (the clear, the routine purge, eviction) overwrites freed content.
+                if(pending is not null) HistoryClearStep.SecureDelete(db);
+                clearConnectionOpened?.Invoke(db);
             }
             return db;
         }
