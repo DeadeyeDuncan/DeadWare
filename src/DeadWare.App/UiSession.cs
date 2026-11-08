@@ -78,9 +78,10 @@ public sealed class UiSession
         ProcessHistory=new(Path.Combine(Path.GetDirectoryName(settingsPath)!,"process-history.db"),Environment.MachineName);
         ProcessHistory.Configure(Settings.ProcessMonitoring,Settings.UsageRecording);
         Collector.SampleAvailable+=ProcessHistory.TryRecord;
-        Alerts=new(Path.Combine(Path.GetDirectoryName(settingsPath)!,"alerts.db"),Environment.MachineName,Usage,()=>Current is null||SelectedGpuId is null?null:GpuName);
-        Alerts.Configure(Settings.Alerts,Settings.AlertNotifications);
+        Alerts=new(Path.Combine(Path.GetDirectoryName(settingsPath)!,"alerts.db"),Environment.MachineName,Usage,()=>Current is null||SelectedGpuId is null?null:GpuName,connectionNames:()=>Connections!.ReadApplicationNamesAsync());
+        Alerts.Configure(Settings.Alerts,Settings.AlertNotifications,Settings.FirstUseIgnoredApps,Settings.ExcludedApps);
         Collector.SampleAvailable+=Alerts.TryRecordBattery;
+        Collector.SampleAvailable+=Alerts.TryRecordNetworkUse;
         Connections=new(Path.Combine(Path.GetDirectoryName(settingsPath)!,"connections.db"));
         var home=ConnectionAssets.Cities.FirstOrDefault(city=>city.Id==Settings.ConnectionsHomeCityId);
         Settings.ConnectionsHomeCityId=home?.Id;
@@ -234,12 +235,12 @@ public sealed class UiSession
     public void SetUsageRecording(bool enabled) {Settings.UsageRecording=enabled;Usage.Configure(enabled);ProcessHistory?.Configure(Settings.ProcessMonitoring,enabled);Changed?.Invoke();_ = SaveAsync();}
     public void SetAlertRules(IReadOnlyList<AlertRule> rules)
     {
-        Settings.Alerts=AlertRules.Normalize(rules);Alerts.Configure(Settings.Alerts,Settings.AlertNotifications);Changed?.Invoke();_ = SaveAsync();
+        Settings.Alerts=AlertRules.Normalize(rules);Alerts.Configure(Settings.Alerts,Settings.AlertNotifications,Settings.FirstUseIgnoredApps,Settings.ExcludedApps);Changed?.Invoke();_ = SaveAsync();
     }
     public void SetAlertNotifications(bool enabled)
     {
         if(Settings.AlertNotifications==enabled)return;
-        Settings.AlertNotifications=enabled;Alerts.Configure(Settings.Alerts,enabled);Changed?.Invoke();_ = SaveAsync();
+        Settings.AlertNotifications=enabled;Alerts.Configure(Settings.Alerts,enabled,Settings.FirstUseIgnoredApps,Settings.ExcludedApps);Changed?.Invoke();_ = SaveAsync();
     }
     public void SetConnectionsRecording(bool enabled)
     {
@@ -322,7 +323,7 @@ public sealed class UiSession
         Collector.SampleAvailable-=Usage.TryRecord;
         // Null only in shutdown fixtures built without a constructor, like Connections.
         if(ProcessHistory is not null)Collector.SampleAvailable-=ProcessHistory.TryRecord;
-        Collector.SampleAvailable-=Alerts.TryRecordBattery;
+        Collector.SampleAvailable-=Alerts.TryRecordBattery;Collector.SampleAvailable-=Alerts.TryRecordNetworkUse;
         (string Stage,Task Stop)[] drains=[("connections",connections),("cooling",Begin(Cooling.StopAsync)),("graph history",Begin(GraphHistory.StopAsync)),("battery",Begin(Battery.StopAsync)),("usage history",Begin(Usage.StopAsync)),("process history",ProcessHistory is null?Task.CompletedTask:Begin(ProcessHistory.StopAsync)),("alerts",Begin(Alerts.StopAsync))];
         await Task.WhenAny(providerStop,providerExpired).ConfigureAwait(false);
         await Task.WhenAny(Task.WhenAll(drains.Select(d=>d.Stop)),historyExpired).ConfigureAwait(false);

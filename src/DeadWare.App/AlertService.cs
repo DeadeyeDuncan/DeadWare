@@ -1,3 +1,4 @@
+using System.Collections.Frozen;
 using System.IO;
 using System.Threading.Channels;
 using DeadWare.Core;
@@ -15,7 +16,9 @@ public sealed class AlertService
     private abstract record Work;
     private sealed record MinuteWork(UsageMinuteBatch Batch) : Work;
     private sealed record BatteryWork(DateTimeOffset At, BatteryReading Reading) : Work;
-    private sealed record RulesWork(IReadOnlyList<AlertRule> Rules, DateTimeOffset At) : Work;
+    private sealed record RulesWork(IReadOnlyList<AlertRule> Rules, DateTimeOffset At, IReadOnlyList<string> Ignored, IReadOnlyList<string> Excluded) : Work;
+    /// <summary>At most 1,024 apps' first traffic in one poll; empty when it only signals that capture has run.</summary>
+    private sealed record NetworkUseWork(DateTimeOffset At, IReadOnlyList<NetworkUse> Uses) : Work;
     private readonly Channel<Work> queue = Channel.CreateBounded<Work>(new BoundedChannelOptions(512)
         { SingleReader = true, SingleWriter = false, FullMode = BoundedChannelFullMode.Wait });
     private readonly AlertStore store;
@@ -34,16 +37,36 @@ public sealed class AlertService
     private bool failed;
     private IReadOnlyList<AlertRule> rules = [];
     private BatteryReading? lastBattery;
+    private readonly TimeSpan groupWindow;
+    private readonly Func<Task<IReadOnlyList<ApplicationSeen>?>>? connectionNames;
+    private IReadOnlyList<string> ignoredApps = [], excludedApps = [];
+    private FrozenSet<string> excludedKeys = FrozenSet<string>.Empty;
+    private bool firstUseRule, learningStarted;
+    // Incremented on the worker after a clear forgets apps, so detection posts them again within the minute.
+    private long knownGeneration = 0;
+    private FirstUseStatus firstUse = new(false, false, null, null, null);
+    // Detection state, touched only on the collector thread.
+    private readonly HashSet<string> posted = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, string> nameKeys = new(StringComparer.Ordinal);
+    private long postedMinute = long.MinValue, postedGeneration;
+    private bool postedThisMinute;
+    private const int NameKeyCacheSize = 4096;
 
     /// <summary>Raised on the alert worker for each episode that may notify. Subscribers marshal to their own thread.</summary>
     public event Action<AlertEpisode>? EpisodeStarted;
 
+    /// <param name="connectionNames">Reads Connections history's names for the first-use seed; called only after <see cref="Start"/>. Throwing or missing counts as a failed read.</param>
+    /// <param name="firstUseGroupWindow">How long apps first seen after the first one share its balloon group: above 0 and at most 60 s (the default).</param>
     public AlertService(string path, string machineKey, UsageHistoryService usage, Func<string?> gpuKey, TimeProvider? timeProvider = null,
-        TimeSpan? flushInterval = null, TimeZoneInfo? localZone = null)
+        TimeSpan? flushInterval = null, TimeZoneInfo? localZone = null, Func<Task<IReadOnlyList<ApplicationSeen>?>>? connectionNames = null,
+        TimeSpan? firstUseGroupWindow = null)
     {
         store = new(path); machine = machineKey; this.usage = usage; this.gpuKey = gpuKey;
         time = timeProvider ?? TimeProvider.System; interval = flushInterval ?? TimeSpan.FromSeconds(15); zone = localZone ?? TimeZoneInfo.Local;
         if (interval <= TimeSpan.Zero || interval > TimeSpan.FromMinutes(1)) throw new ArgumentOutOfRangeException(nameof(flushInterval));
+        groupWindow = firstUseGroupWindow ?? FirstNetworkUse.GroupWindow;
+        if (groupWindow <= TimeSpan.Zero || groupWindow > FirstNetworkUse.GroupWindow) throw new ArgumentOutOfRangeException(nameof(firstUseGroupWindow));
+        this.connectionNames = connectionNames;
     }
     public long DroppedObservations => Interlocked.Read(ref dropped);
     public int PendingObservations => queue.Reader.Count;
@@ -51,14 +74,24 @@ public sealed class AlertService
     public IReadOnlyList<AlertRule> Rules => Volatile.Read(ref rules);
     public bool NotificationsEnabled => Volatile.Read(ref notifications) == 1;
     public string Status => Volatile.Read(ref status) + (DroppedObservations > 0 ? $" · {DroppedObservations} observations dropped." : "");
+    /// <summary>The first-use tracker's state as the worker last published it; KnownApps is null until the worker has restored it.</summary>
+    public FirstUseStatus FirstUse => Volatile.Read(ref firstUse);
 
-    /// <summary>Installs rules and the notification switch. The evaluator adopts them on its own worker; episodes of changed rules end there.</summary>
-    public void Configure(IReadOnlyList<AlertRule> alertRules, bool notificationsEnabled)
+    /// <summary>Installs rules, the notification switch, the Don't alert list and the Don't record list. The evaluator and the first-use tracker
+    /// adopt them on the worker; episodes of changed rules, and budget episodes of newly excluded apps, end there.</summary>
+    public void Configure(IReadOnlyList<AlertRule> alertRules, bool notificationsEnabled, IReadOnlyList<string>? ignoredApps = null, IReadOnlyList<string>? excludedApps = null)
     {
         var normalized = AlertRules.Normalize(alertRules);
+        // Copies: the settings lists the session passes stay mutable.
+        IReadOnlyList<string> ignored = [.. ignoredApps ?? []], excluded = [.. excludedApps ?? []];
         Volatile.Write(ref rules, normalized);
         Volatile.Write(ref notifications, notificationsEnabled ? 1 : 0);
-        Post(new RulesWork(normalized, time.GetUtcNow()));
+        Volatile.Write(ref this.ignoredApps, ignored);
+        Volatile.Write(ref this.excludedApps, excluded);
+        Volatile.Write(ref excludedKeys, AppExclusions.Keys(excluded));
+        Volatile.Write(ref firstUseRule, normalized.Any(r => r.Kind == AlertKind.FirstNetworkUse));
+        if (FirstUse.LearningStart is not null) Volatile.Write(ref learningStarted, true);
+        Post(new RulesWork(normalized, time.GetUtcNow(), ignored, excluded));
     }
     public void Start()
     {
@@ -79,6 +112,49 @@ public sealed class AlertService
         if (lastBattery is { } last && last.Percentage == battery.Percentage && last.PowerState == battery.PowerState) return;
         lastBattery = battery;
         Post(new BatteryWork(reading.Sample.Timestamp, battery));
+    }
+    /// <summary>
+    /// First network use detection, on the collector thread: no I/O and no locks. Each learnable, non-excluded app with non-loopback traffic is
+    /// posted at most once per UTC minute (and again after a clear forgets apps), at most 1,024 per work; the rest follow in the next poll.
+    /// </summary>
+    public void TryRecordNetworkUse(Reading reading)
+    {
+        if (!Volatile.Read(ref accepting) || !Volatile.Read(ref firstUseRule)) return;
+        if (reading.Connections is not { Available: true } sample) return;
+        long minute = sample.Timestamp.UtcTicks / TimeSpan.TicksPerMinute, generation = Volatile.Read(ref knownGeneration);
+        if (minute != postedMinute || generation != postedGeneration)
+        {
+            posted.Clear(); postedMinute = minute; postedGeneration = generation; postedThisMinute = false;
+        }
+        var excluded = Volatile.Read(ref excludedKeys);
+        List<NetworkUse>? uses = null; Dictionary<string, int>? recorded = null;
+        foreach (var delta in sample.Deltas)
+        {
+            if (FirstNetworkUse.IsLoopback(delta.Peer.RemoteAddress)) continue;
+            string name = delta.Peer.Process.Name ?? "";
+            if (!nameKeys.TryGetValue(name, out var key))
+            {
+                if (nameKeys.Count >= NameKeyCacheSize) nameKeys.Clear();
+                // "" marks a name that can never be learned ("PID n", Unknown application); a real key is never empty.
+                nameKeys[name] = key = FirstNetworkUse.IsLearnable(name) ? AppKey.Of(name) : "";
+            }
+            if (key.Length == 0 || excluded.Contains(key)) continue;
+            if (recorded is not null && recorded.TryGetValue(key, out int index))
+            {
+                if (delta.FirstSeen < uses![index].FirstSeen) uses[index] = uses[index] with { FirstSeen = delta.FirstSeen };
+                continue;
+            }
+            // Keys over the cap stay out of the posted set, so the next poll posts them.
+            if ((uses?.Count ?? 0) >= FirstNetworkUse.MaximumUses || !posted.Add(key)) continue;
+            (uses ??= []).Add(new NetworkUse(UsageMetrics.NormalizeName(name), delta.FirstSeen));
+            (recorded ??= new(StringComparer.Ordinal))[key] = uses.Count - 1;
+        }
+        // Until the worker records a learning start, the first poll of each minute also says that capture has run.
+        if (uses is not null || (!Volatile.Read(ref learningStarted) && !postedThisMinute))
+        {
+            Post(new NetworkUseWork(sample.Timestamp, uses ?? (IReadOnlyList<NetworkUse>)[]));
+            postedThisMinute = true;
+        }
     }
     public Task StopAsync()
     {
@@ -112,19 +188,28 @@ public sealed class AlertService
         if (zone.IsInvalidTime(midnight)) midnight = midnight.AddHours(1);
         return new DateTimeOffset(midnight, zone.GetUtcOffset(midnight));
     }
+    private static AlertRule? FirstRule(IReadOnlyList<AlertRule> list) => list.FirstOrDefault(r => r.Kind == AlertKind.FirstNetworkUse);
     private async Task RunAsync()
     {
         try
         {
             await InitializeAsync().ConfigureAwait(false);
             var evaluator = new AlertEvaluator(zone); var pending = new List<AlertEpisode>(64);
+            var tracker = new FirstUseTracker(zone, groupWindow);
             var startedAt = time.GetUtcNow();
-            pending.AddRange(evaluator.Replace(Volatile.Read(ref rules), startedAt));
+            // Work posted before Start was dropped, so the stored snapshot is what Configure last installed.
+            var startRules = Volatile.Read(ref rules); var startExcluded = Volatile.Read(ref excludedApps);
+            pending.AddRange(evaluator.Replace(startRules, startedAt));
             var open = store.Open(machine);
             evaluator.Restore(open);
             // Open episodes whose rule no longer exists cannot end on their own; close them at startup.
             var adopted = new HashSet<string>(evaluator.OpenEpisodes.Select(e => e.Id), StringComparer.Ordinal);
             pending.AddRange(open.Where(e => !adopted.Contains(e.Id)).Select(e => e with { End = startedAt }));
+            // The Don't record set goes after Replace and Restore (Restore ignores it), so an excluded budget's restored episode ends now; the seed below skips it.
+            pending.AddRange(evaluator.SetExcluded(AppExclusions.Keys(startExcluded), startedAt).Ended);
+            tracker.Restore(store.ReadFirstUse(machine));
+            tracker.Configure(FirstRule(startRules), Volatile.Read(ref ignoredApps), startExcluded);
+            PublishFirstUse();
             try
             {
                 // Per-minute rows let the evaluator skip a minute the usage worker already handed over before this seed was read.
@@ -134,11 +219,49 @@ public sealed class AlertService
                 evaluator.SeedDay(startedAt, rows);
             }
             catch (Exception) { /* Without a seed the day's budget counts from now; usage history reports its own failure. */ }
+            void PublishFirstUse()
+            {
+                var current = tracker.Status;
+                Volatile.Write(ref firstUse, current);
+                if (current.LearningStart is not null) Volatile.Write(ref learningStarted, true);
+            }
             void Flush()
             {
-                if (pending.Count == 0) return;
-                store.Append(machine, pending, time.GetUtcNow()); pending.Clear();
-                Volatile.Write(ref status, SavedStatus);
+                var now = time.GetUtcNow();
+                tracker.Expire(now);
+                bool wrote = false;
+                // An episode and its known row always share an Append; each Append holds at most 1,024 episodes, upserts and deletes.
+                while (true)
+                {
+                    var changes = tracker.HasChanges ? tracker.TakeChanges(FirstNetworkUse.MaximumChanges) : null;
+                    int count = Math.Min(pending.Count, AlertStore.MaximumBatch);
+                    if (count == 0 && changes is null) break;
+                    store.Append(machine, count == pending.Count ? pending : pending.GetRange(0, count), now, changes);
+                    pending.RemoveRange(0, count); wrote = true;
+                }
+                PublishFirstUse();
+                if (wrote) Volatile.Write(ref status, SavedStatus);
+            }
+            void CloseDueGroups()
+            {
+                var now = time.GetUtcNow();
+                // TakeDueGroup closes only the earliest due group, and returns null also when that group emptied, so drain every due one.
+                // Closed groups are dropped here until the balloon is wired to them.
+                while (tracker.GroupDue is { } due && due <= now) _ = tracker.TakeDueGroup(now);
+            }
+            async Task ReseedAsync(IReadOnlyList<string> targets)
+            {
+                if (targets.Count == 0) return;
+                var now = time.GetUtcNow();
+                foreach (var target in targets)
+                {
+                    try
+                    {
+                        var rows = await usage.ReadApplicationMinutesAsync(target, StartOfLocalDay(now), now.AddMinutes(1)).ConfigureAwait(false);
+                        evaluator.SeedDay(now, rows, new HashSet<string>(StringComparer.Ordinal) { AppKey.Of(target) });
+                    }
+                    catch (Exception) { /* A failed read leaves the rule's day total at 0, as at startup; usage history reports its own failure. */ }
+                }
             }
             void Apply(AlertEvaluation evaluation)
             {
@@ -157,7 +280,7 @@ public sealed class AlertService
                 if (tick.IsCompleted)
                 {
                     if (!await tick.ConfigureAwait(false)) break;
-                    Flush(); tick = timer.WaitForNextTickAsync().AsTask();
+                    CloseDueGroups(); Flush(); tick = timer.WaitForNextTickAsync().AsTask();
                 }
                 if (available.IsCompleted)
                 {
@@ -167,8 +290,22 @@ public sealed class AlertService
                         {
                             case MinuteWork minute: Apply(evaluator.ObserveMinute(minute.Batch, gpuKey())); break;
                             case BatteryWork battery: Apply(evaluator.ObserveBattery(battery.At, battery.Reading)); break;
-                            case RulesWork replaced: pending.AddRange(evaluator.Replace(replaced.Rules, replaced.At)); break;
+                            case RulesWork replaced:
+                                pending.AddRange(evaluator.Replace(replaced.Rules, replaced.At));
+                                tracker.Configure(FirstRule(replaced.Rules), replaced.Ignored, replaced.Excluded);
+                                var exclusion = evaluator.SetExcluded(AppExclusions.Keys(replaced.Excluded), replaced.At);
+                                pending.AddRange(exclusion.Ended);
+                                // Only the budgets whose app left the list re-read today's saved minutes; other totals stay.
+                                await ReseedAsync(exclusion.Reseed).ConfigureAwait(false);
+                                break;
+                            case NetworkUseWork use:
+                                // First-use episodes never pass through the evaluator or EpisodeStarted, so the hour floor never applies.
+                                pending.AddRange(tracker.Observe(use.At, use.Uses, time.GetUtcNow()));
+                                // A work of 1,024 new apps, up to 128 works a wake, would exceed one Append's batch without this.
+                                if (pending.Count >= 64) Flush();
+                                break;
                         }
+                    CloseDueGroups(); PublishFirstUse();
                     available = queue.Reader.WaitToReadAsync().AsTask();
                 }
             }
