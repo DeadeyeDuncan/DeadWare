@@ -864,8 +864,7 @@ public sealed class ConnectionHistoryStoreTests(ITestOutputHelper testOutput) : 
         var view=store.Read(Query()); Assert.Empty(view.Rows); Assert.Equal(0,view.Summary.ReceivedBytes); Assert.Empty(view.Markers); Assert.Empty(view.Coverage);
         using(var output=new StringWriter()) {store.ExportCsv(output,Query()); Assert.Single(output.ToString().Split(Environment.NewLine,StringSplitOptions.RemoveEmptyEntries));}
         commits=0; store.Append([],[],Epoch.AddDays(31),maintenanceTransactions:0); Assert.Equal(0,commits); Assert.Equal(1000-128,Hidden());
-        store.Append([],[],Epoch.AddDays(31),64); Assert.Equal(1000-192,Hidden());
-        for(int i=0;i<14&&Hidden()>0;i++) store.Append([],[],Epoch.AddDays(31),64);
+        store.Append([],[],Epoch.AddDays(31),64);
         Assert.Equal(0,Hidden());
         Assert.Throws<ArgumentOutOfRangeException>(()=>store.Append([],[],Epoch.AddDays(31),-1));
     }
