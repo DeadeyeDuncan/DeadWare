@@ -193,8 +193,11 @@ public sealed class ConnectionHistoryStore
     private static long Add(long left,long right) => left>long.MaxValue-right?long.MaxValue:left+right;
     private static long Minute(long ticks) => ticks-ticks%TimeSpan.TicksPerMinute;
 
-    public void Append(IReadOnlyList<ConnectionHistoryRecord> records,IReadOnlyList<ConnectionCoverage> coverage,DateTimeOffset now)
+    private Action? maintenanceCommitted = null;
+    /// <summary>Cleanup runs at most maintenanceTransactions transactions of at most 64 rows each; the final write passes 0.</summary>
+    public void Append(IReadOnlyList<ConnectionHistoryRecord> records,IReadOnlyList<ConnectionCoverage> coverage,DateTimeOffset now,int maintenanceTransactions=int.MaxValue)
     {
+        ArgumentOutOfRangeException.ThrowIfNegative(maintenanceTransactions);
         lock(gate)
         {
             EnsureInitialized();
@@ -230,7 +233,7 @@ public sealed class ConnectionHistoryStore
                 Execute(db,"INSERT INTO metadata VALUES('expiry',$cutoff) ON CONFLICT(key) DO UPDATE SET value=max(value,excluded.value)",expiry,("$cutoff",cutoff));
                 CommitBounded(db,expiry);
             }
-            Checkpoint(db); Cleanup(db);
+            Checkpoint(db); Cleanup(db,maintenanceTransactions);
             // Independent dedup keys let an exact retry finish after a later chunk failed, without duplicating earlier chunks.
             // Coverage is committed only after all traffic chunks succeed, so a failed traffic drain cannot claim coverage.
             for(int offset=0;offset<Math.Max(1,prepared.Length);offset+=ChunkSize)
@@ -295,8 +298,10 @@ public sealed class ConnectionHistoryStore
             }
             catch(SqliteException error) when(error.SqliteErrorCode==13)
             {
+                // Rows already hidden by expiry go first; a bucket is evicted only when none is left.
+                if(Cleanup(db,1)>0) continue;
                 if(!EvictOldestBucket(db,protectedMinute)) throw new IOException("The incoming minute cannot fit in connection history; its earlier committed chunks were preserved.",error);
-                Cleanup(db);
+                Cleanup(db,int.MaxValue);
             }
             catch(TransactionBudgetException error)
             {
@@ -348,10 +353,10 @@ public sealed class ConnectionHistoryStore
         CommitBounded(db,tx); Checkpoint(db); GuardJournal(db); return true;
     }
     private sealed record Receipt(long Id,string Batch,string Item,int Kind);
-    private void Cleanup(SqliteConnection db)
+    private int Cleanup(SqliteConnection db,int maxTransactions)
     {
-        int count=MaintenanceChunkSize;
-        for(;;)
+        int count=MaintenanceChunkSize, done=0;
+        while(done<maxTransactions)
         {
             GuardJournal(db);
             try
@@ -377,7 +382,7 @@ public sealed class ConnectionHistoryStore
                         """,tx,("$count",count),("$minute",TimeSpan.TicksPerMinute));
                     using var reader=select.ExecuteReader(); while(reader.Read()) receipts.Add(new(reader.GetInt64(0),reader.GetString(1),reader.GetString(2),1));
                 }
-                if(receipts.Count==0) return;
+                if(receipts.Count==0) return done;
                 foreach(var receipt in receipts)
                 {
                     Execute(db,receipt.Kind==0?"DELETE FROM traffic WHERE id=$id":"DELETE FROM coverage WHERE id=$id",tx,("$id",receipt.Id));
@@ -385,15 +390,16 @@ public sealed class ConnectionHistoryStore
                 }
                 foreach(var key in receipts.Select(r=>(r.Batch,r.Kind)).Distinct())
                     Execute(db,"DELETE FROM manifests WHERE batch=$batch AND kind=$kind AND NOT EXISTS(SELECT 1 FROM dedup WHERE batch=$batch AND kind=$kind)",tx,("$batch",key.Batch),("$kind",key.Kind));
-                CommitBounded(db,tx);
+                CommitBounded(db,tx); done++;
             }
             catch(TransactionBudgetException error)
             {
                 if(count==1) throw new IOException("Connection history maintenance exceeds the bounded transaction budget.",error);
                 count=Math.Max(1,count/2); continue;
             }
-            Checkpoint(db); GuardJournal(db);
+            maintenanceCommitted?.Invoke(); Checkpoint(db); GuardJournal(db);
         }
+        return done;
     }
 
     public ConnectionHistoryView Read(ConnectionHistoryQuery query)

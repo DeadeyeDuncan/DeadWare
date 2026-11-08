@@ -154,6 +154,35 @@ public sealed class ConnectionMinuteFolder
         waiting.RemoveAll(sent.Contains);
     }
 
+    /// <summary>Removes from every open unit each entry whose AppKey equals appKey (every entry for null); coverage runs stay,
+    /// a unit left with no entry and no run is removed. Returns the entries removed. Frozen units are untouched.</summary>
+    public int Forget(string? appKey)
+    {
+        int removed = 0;
+        foreach (var unit in open.Values.ToArray())
+        {
+            var gone = unit.Entries.Where(e => appKey is null || string.Equals(AppKey.Of(e.Key.Name), appKey, StringComparison.Ordinal)).ToArray();
+            if (gone.Length == 0) continue;
+            foreach (var entry in gone) unit.Entries.Remove(entry.Key);
+            var set = new HashSet<Entry>(gone.Select(e => e.Value), ReferenceEqualityComparer.Instance);
+            unit.Order.RemoveAll(set.Contains);
+            removed += gone.Length;
+            if (unit.Order.Count == 0 && unit.Runs.Count == 0) open.Remove(unit.Key);
+        }
+        Held -= removed;
+        return removed;
+    }
+
+    /// <summary>Removes and returns every waiting unit holding a record in scope.</summary>
+    public IReadOnlyList<ConnectionMinuteUnit> RetireWaiting(Func<ConnectionHistoryRecord, bool> inScope)
+    {
+        ArgumentNullException.ThrowIfNull(inScope);
+        var retired = waiting.Where(u => u.Records.Any(inScope)).ToArray();
+        foreach (var unit in retired) Waiting -= unit.Size;
+        waiting.RemoveAll(u => retired.Contains(u));
+        return Array.AsReadOnly(retired);
+    }
+
     /// <summary>Removes and returns every waiting unit.</summary>
     public IReadOnlyList<ConnectionMinuteUnit> DropWaiting()
     {
