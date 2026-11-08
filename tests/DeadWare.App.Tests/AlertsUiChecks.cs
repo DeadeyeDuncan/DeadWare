@@ -1,7 +1,9 @@
+using System.Globalization;
 using System.IO;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Windows;
+using System.Windows.Automation;
 using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
@@ -89,6 +91,195 @@ internal static class AlertsUiChecks
         CheckEditor(session);
         CheckUsageHandoff(session);
         CheckHistoryClearRereads(session);
+        CheckFirstUse(session);
+    }
+
+    /// <summary>First network use on the Alerts page in the three themes: the nine rule lines, the rule row, the editor, the log rows,
+    /// the Don't alert list and the Not counted note.</summary>
+    private static void CheckFirstUse(UiSession session)
+    {
+        var settings = session.Settings;
+        var saved = (settings.Alerts, settings.FirstUseIgnoredApps, settings.ExcludedApps);
+        var failed = typeof(AlertService).GetField("failed", All)!;
+        var culture = CultureInfo.CurrentCulture;
+        var zone = TimeZoneInfo.Local;
+        var fu = AlertRules.DefaultFirstNetworkUse(new DateTimeOffset(2026, 10, 1, 0, 0, 0, TimeSpan.Zero));
+        var appRule = settings.Alerts.Single(r => r.Kind == AlertKind.ApplicationDaily);
+        DateTimeOffset Local(int day, int hour = 0) { var t = new DateTime(2026, 11, day, hour, 0, 0); return new DateTimeOffset(t, zone.GetUtcOffset(t)); }
+        var now = Local(3, 12);
+        static FirstUseStatus St(DateTimeOffset? start, DateTimeOffset? end, int? known, bool restored = true) => new(restored, restored, start, end, known);
+        var none = new AlertLogView(now.AddDays(-7), now, [], 0, 0);
+        const string notCounted = "Not counted: this app is in Don't record these apps.";
+        string[] Texts(DependencyObject root) => Descendants(root).OfType<TextBlock>().Select(t => t.Text).ToArray();
+        // The direct form: the learning date is the day before the end (Thursday 00:00), in the given zone and culture.
+        var utcEnd = new DateTimeOffset(2026, 11, 5, 0, 0, 0, TimeSpan.Zero);
+        Assert.Equal("Learning quietly through Wednesday 4 November · 12 apps known.", FirstNetworkUse.RuleLine(false, St(utcEnd.AddDays(-3), utcEnd, 12), true, true, false,
+            utcEnd.AddDays(-1), TimeZoneInfo.Utc, CultureInfo.GetCultureInfo("en-GB")));
+        try
+        {
+            CultureInfo.CurrentCulture = CultureInfo.GetCultureInfo("en-GB");
+            foreach (string theme in new[] { "Midnight", "Daylight", "Blackout" })
+            {
+                Assembly.GetType("DeadWare.App.Theme")!.GetMethod("Apply", All)!.Invoke(null, [theme]);
+                AlertsPage NewPage()
+                {
+                    var created = new AlertsPage(session);
+                    typeof(AlertsPage).GetField("clock", All)!.SetValue(created, (Func<DateTimeOffset>)(() => now));
+                    return created;
+                }
+                var start = Local(2, 9); var end = Local(5);
+                var learned = St(start.AddDays(-10), end.AddDays(-10), 12);
+                var states = new (bool Failed, bool Enabled, FirstUseStatus Status, bool Elevated, bool Capture, string Line)[]
+                {
+                    (true, true, learned, true, true, "Paused: the alert log is unavailable."),
+                    (false, true, St(null, null, null, false), true, true, "Starting: reading the known-app list."),
+                    (false, false, St(start, end, 1), true, true, "Switched off: apps are learned without alerts · 1 app known."),
+                    (false, true, St(null, null, 12), false, false, "Waiting for per-app capture, which runs while DeadWare runs as administrator. Learning starts then."),
+                    (false, true, St(null, null, 12), true, false, "Waiting for per-app capture to start. Learning starts then."),
+                    (false, true, St(start, end, 12), true, true, "Learning quietly through Wednesday 4 November · 12 apps known."),
+                    (false, true, learned, true, true, "Watching for new apps · 12 apps known."),
+                    (false, true, learned, false, false, "Not watching: per-app capture needs DeadWare to run as administrator · 12 apps known."),
+                    (false, true, learned, true, false, "Not watching: per-app capture is not running · 12 apps known."),
+                };
+                foreach (var state in states)
+                {
+                    var page = NewPage();
+                    failed.SetValue(session.Alerts, state.Failed);
+                    try { page.Apply(new([state.Enabled ? fu : fu with { Enabled = false }], true, none, "Fixture saved locally.", FirstUse: state.Status, Elevated: state.Elevated, CaptureAvailable: state.Capture)); }
+                    finally { failed.SetValue(session.Alerts, false); }
+                    Layout(page, 1050, 900);
+                    var lines = Texts(page);
+                    Assert.Contains(state.Line, lines);
+                    Assert.Single(lines, l => states.Any(s => s.Line == l));
+                    var buttons = Descendants(page).OfType<Button>().Select(b => b.Content?.ToString()).ToArray();
+                    Assert.Contains("Remove", buttons); Assert.DoesNotContain("Edit", buttons);
+                }
+
+                // The editor: the kind hides Reading, Executable, At or above and For, parses no threshold and refuses a second rule.
+                settings.Alerts = [fu, appRule];
+                {
+                    var page = NewPage(); Layout(page, 900, 600);
+                    var kind = (ComboBox)typeof(AlertsPage).GetField("kind", All)!.GetValue(page)!;
+                    var target = (ComboBox)typeof(AlertsPage).GetField("target", All)!.GetValue(page)!;
+                    var threshold = (TextBox)typeof(AlertsPage).GetField("threshold", All)!.GetValue(page)!;
+                    var application = (TextBox)typeof(AlertsPage).GetField("application", All)!.GetValue(page)!;
+                    var duration = (ComboBox)typeof(AlertsPage).GetField("duration", All)!.GetValue(page)!;
+                    var suggestion = (TextBlock)typeof(AlertsPage).GetField("suggestion", All)!.GetValue(page)!;
+                    var editorError = (TextBlock)typeof(AlertsPage).GetField("editorError", All)!.GetValue(page)!;
+                    var add = (Button)typeof(AlertsPage).GetField("add", All)!.GetValue(page)!;
+                    kind.SelectedIndex = 4; threshold.Text = "";
+                    Assert.Equal("First network use by an app", kind.SelectedItem!.ToString());
+                    Assert.Equal(Visibility.Collapsed, ((FrameworkElement)target.Parent).Visibility);
+                    Assert.Equal(Visibility.Collapsed, ((FrameworkElement)application.Parent).Visibility);
+                    Assert.Equal(Visibility.Collapsed, ((FrameworkElement)((FrameworkElement)threshold.Parent).Parent).Visibility);
+                    Assert.Equal(Visibility.Collapsed, ((FrameworkElement)duration.Parent).Visibility);
+                    Assert.Equal("New apps are learned quietly for 3 calendar days after per-app capture first runs; after that each app's first network use is logged once.", suggestion.Text);
+                    var draft = page.Draft(out string error)!;
+                    Assert.Equal((AlertKind.FirstNetworkUse, "", ""), (draft.Kind, draft.Target, error));
+                    add.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                    Assert.Equal("A first network use rule already exists.", editorError.Text);
+                    Assert.Equal(2, settings.Alerts.Count);
+                    // Not counted, in the editor, while the Executable text is excluded.
+                    var note = (TextBlock)typeof(AlertsPage).GetField("notCounted", All)!.GetValue(page)!;
+                    kind.SelectedIndex = 2; application.Text = "chrome.exe";
+                    Assert.Equal("", note.Text);
+                    settings.ExcludedApps = ["chrome.exe"];
+                    application.Text = "Chrome.exe";
+                    Assert.Equal(notCounted, note.Text); Assert.Equal(Visibility.Visible, note.Visibility);
+                    application.Text = "Steam.exe";
+                    Assert.Equal("", note.Text); Assert.Equal(Visibility.Collapsed, note.Visibility);
+                    settings.ExcludedApps = [];
+                }
+
+                // Not counted under an ApplicationDaily rule whose target is excluded.
+                {
+                    var page = NewPage();
+                    page.Apply(new([appRule], true, none, "Fixture saved locally."));
+                    Layout(page, 1050, 900);
+                    Assert.DoesNotContain(notCounted, Texts(page));
+                    settings.ExcludedApps = ["chrome.exe"];
+                    page.Apply(new([appRule], true, none, "Fixture saved locally."));
+                    Layout(page, 1050, 900);
+                    Assert.Contains(notCounted, Texts(page));
+                    settings.ExcludedApps = [];
+                }
+
+                // Log rows.
+                var chrome = new AlertEpisode("fu-chrome", fu.Id, AlertKind.FirstNetworkUse, FirstNetworkUse.Summary("chrome.exe"), now.AddDays(-29).AddSeconds(37), now.AddDays(-29).AddSeconds(37), 1, false, "chrome.exe");
+                var steam = new AlertEpisode("fu-steam", fu.Id, AlertKind.FirstNetworkUse, FirstNetworkUse.Summary("Steam.exe"), now.AddDays(-31), now.AddDays(-31), 1, true, "Steam.exe");
+                var discord = new AlertEpisode("fu-discord", fu.Id, AlertKind.FirstNetworkUse, FirstNetworkUse.Summary("Discord.exe"), now.AddDays(-2), now.AddDays(-2), 1, true, "Discord.exe");
+                settings.FirstUseIgnoredApps = ["Discord.exe"];
+                {
+                    var page = NewPage();
+                    page.Apply(new([fu], true, new(now.AddDays(-30), now, [chrome, steam, discord], 3, 4096), "Fixture saved locally.", FirstUse: learned, Elevated: true, CaptureAvailable: true, IgnoredApps: settings.FirstUseIgnoredApps));
+                    Layout(page, 1050, 900);
+                    var bitmap = new RenderTargetBitmap(1050, 900, 96, 96, PixelFormats.Pbgra32); bitmap.Render(page);
+                    var rows = (StackPanel)typeof(AlertsPage).GetField("episodes", All)!.GetValue(page)!;
+                    DockPanel Row(AlertEpisode episode) => rows.Children.OfType<DockPanel>().Single(d => Descendants(d).OfType<TextBlock>().Any(t => t.Text == episode.Summary));
+                    string[] Buttons(DockPanel row) => Descendants(row).OfType<Button>().Select(b => b.Content?.ToString() ?? "").ToArray();
+                    var chromeRow = Row(chrome);
+                    Assert.Equal(new[] { "View in Connections", "Don't alert for this app", "Acknowledge" }, Buttons(chromeRow));
+                    Assert.Contains($"{chrome.Start.ToLocalTime():g} · first network use", Texts(chromeRow));
+                    var title = Descendants(chromeRow).OfType<TextBlock>().First(t => t.Text == chrome.Summary);
+                    Assert.Same(page.FindResource("Ink"), title.Foreground);
+                    var dontAlert = Descendants(chromeRow).OfType<Button>().Single(b => b.Content?.ToString() == "Don't alert for this app");
+                    Assert.Equal("Don't alert for chrome.exe", AutomationProperties.GetName(dontAlert));
+                    ConnectionsHistoryRequest? request = null; void Requested(ConnectionsHistoryRequest r) => request = r;
+                    session.ConnectionsHistoryRequested += Requested;
+                    Descendants(chromeRow).OfType<Button>().Single(b => b.Content?.ToString() == "View in Connections").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                    session.ConnectionsHistoryRequested -= Requested;
+                    var minute = new DateTimeOffset(chrome.Start.Ticks - chrome.Start.Ticks % TimeSpan.TicksPerMinute, chrome.Start.Offset);
+                    Assert.Equal(new ConnectionsHistoryRequest(minute.AddMinutes(-5), minute.AddMinutes(10), "chrome.exe"), request);
+                    var steamRow = Row(steam);
+                    Assert.Equal(new[] { "View in Usage history", "Don't alert for this app" }, Buttons(steamRow));
+                    Assert.Contains($"{steam.Start.ToLocalTime():g} · first network use · acknowledged", Texts(steamRow));
+                    var discordRow = Row(discord);
+                    Assert.Equal(new[] { "View in Connections" }, Buttons(discordRow));
+                    Assert.Contains($"{discord.Start.ToLocalTime():g} · first network use · acknowledged · on the Don't alert list", Texts(discordRow));
+                    Assert.DoesNotContain(Texts(rows), t => t.Contains("peak", StringComparison.Ordinal));
+                    // Don't alert for an acknowledged app adds it and leaves the episode alone.
+                    Descendants(steamRow).OfType<Button>().Single(b => b.Content?.ToString() == "Don't alert for this app").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                    Assert.Equal(new[] { "Discord.exe", "Steam.exe" }, settings.FirstUseIgnoredApps);
+                }
+                // With 256 listed, the button stays enabled and a click changes nothing but the action status.
+                settings.FirstUseIgnoredApps = Enumerable.Range(0, 256).Select(i => $"app{i}.exe").ToList();
+                {
+                    var page = NewPage();
+                    page.Apply(new([fu], true, new(now.AddDays(-30), now, [chrome], 1, 4096), "Fixture saved locally.", FirstUse: learned, Elevated: true, CaptureAvailable: true, IgnoredApps: settings.FirstUseIgnoredApps));
+                    Layout(page, 1050, 900);
+                    var button = Descendants(page).OfType<Button>().Single(b => b.Content?.ToString() == "Don't alert for this app");
+                    Assert.True(button.IsEnabled);
+                    button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                    Assert.Equal(256, settings.FirstUseIgnoredApps.Count); Assert.DoesNotContain("chrome.exe", settings.FirstUseIgnoredApps);
+                    var actionStatus = (TextBlock)typeof(AlertsPage).GetField("actionStatus", All)!.GetValue(page)!;
+                    Assert.Equal("The Don't alert list holds 256 apps; remove one first.", actionStatus.Text);
+                }
+                // The Not alerted list shows also with no first-use rule, sorted, each line with Alert again.
+                settings.FirstUseIgnoredApps = ["zoom.exe", "chrome.exe", "Brave.exe"];
+                {
+                    var page = NewPage();
+                    page.Apply(new([], true, none, "Fixture saved locally.", IgnoredApps: settings.FirstUseIgnoredApps));
+                    Layout(page, 1050, 900);
+                    var lines = Texts(page).ToList();
+                    int heading = lines.IndexOf("Not alerted, even when new again:");
+                    Assert.True(heading >= 0);
+                    Assert.Equal(new[] { "Brave.exe", "chrome.exe", "zoom.exe" }, lines.Skip(heading + 1).Where(l => l != "Alert again").Take(3));
+                    var again = Descendants(page).OfType<Button>().Where(b => b.Content?.ToString() == "Alert again").ToArray();
+                    Assert.Equal(new[] { "Alert again for Brave.exe", "Alert again for chrome.exe", "Alert again for zoom.exe" }, again.Select(b => AutomationProperties.GetName(b)));
+                    again[1].RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                    Assert.Equal(new[] { "zoom.exe", "Brave.exe" }, settings.FirstUseIgnoredApps);
+                }
+                settings.FirstUseIgnoredApps = [];
+                settings.Alerts = saved.Alerts;
+            }
+        }
+        finally
+        {
+            CultureInfo.CurrentCulture = culture;
+            failed.SetValue(session.Alerts, false);
+            (settings.Alerts, settings.FirstUseIgnoredApps, settings.ExcludedApps) = saved;
+            Assembly.GetType("DeadWare.App.Theme")!.GetMethod("Apply", All)!.Invoke(null, ["Midnight"]);
+        }
     }
 
     /// <summary>An alert-log clear starting or ending re-reads the loaded page's log; other stores do not, nor does an unloaded page.</summary>

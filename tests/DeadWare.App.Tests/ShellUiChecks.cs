@@ -87,6 +87,10 @@ internal static class ShellUiChecks
         Assert.EndsWith(" While Per-process monitoring is on, it also keeps the busiest apps' CPU, memory, I/O and GPU for 30 days.",usageHelp.Text);
         Assert.Contains("for up to 400 days",usageHelp.Text);
         Assert.Equal("History and alerts",CardOf("Rules you set on the Alerts page"));Assert.Equal("Widget",CardOf("Choose the graphs shown in the widget"));
+        // The alert help names the first network use rule's learning period and keeps its Cooling Health ending.
+        var alertHelp=Descendants(pages["desktop"]).OfType<TextBlock>().Single(b=>b.Text.StartsWith("Rules you set on the Alerts page",StringComparison.Ordinal));
+        Assert.EndsWith("Cooling Health keeps its own notification setting.",alertHelp.Text);
+        Assert.Contains("The first network use rule learns your apps for 3 days",alertHelp.Text);
         Assert.Equal("Pop-outs",CardOf("Positions, sizes and Always on top"));Assert.Equal("Monitoring",CardOf("Includes motherboard"));
         // Per-core CPU usage: a Monitoring checkbox that drives the session setting.
         const string coreName="Show per-core CPU usage on usage graphs";
