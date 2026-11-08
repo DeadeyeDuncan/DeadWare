@@ -140,7 +140,7 @@ public class AlertStoreTests
             using var c = db.CreateCommand(); c.Transaction = tx; c.CommandText = V016Ddl; c.ExecuteNonQuery();
             for (int i = 0; i < closed + open; i++)
             {
-                c.CommandText = $"INSERT INTO episodes VALUES('{M}','x{i}','rule-1',0,'CPU usage',{1_700_000_000_000L + i * 60_000L},{(i < closed ? (1_700_000_000_000L + i * 60_000L + 1000).ToString() : "NULL")},95,0)";
+                c.CommandText = $"INSERT INTO episodes VALUES('{M}','x{i:D6}','rule-1',0,'CPU usage',{1_700_000_000_000L + i * 60_000L},{(i < closed ? (1_700_000_000_000L + i * 60_000L + 1000).ToString() : "NULL")},95,0)";
                 c.ExecuteNonQuery();
             }
             tx.Commit();
@@ -154,18 +154,17 @@ public class AlertStoreTests
         using (var db = Raw(path))
         {
             using (var c0 = db.CreateCommand()) { c0.CommandText = V016Ddl + "PRAGMA synchronous=OFF; PRAGMA max_page_count=" + capBytes / 4096; c0.ExecuteNonQuery(); }
-            using var tx = db.BeginTransaction(); using var c = db.CreateCommand(); c.Transaction = tx;
+            using var c = db.CreateCommand();
             string pad = new('s', 480);
             try
             {
                 while (true)
                 {
-                    c.CommandText = $"INSERT INTO episodes VALUES('{M}','x{n}','rule-1',0,'{pad}',{1_700_000_000_000L + n * 60_000L},{(closed ? (1_700_000_000_000L + n * 60_000L + 1000).ToString() : "NULL")},95,0)";
+                    c.CommandText = $"INSERT INTO episodes VALUES('{M}','x{n:D6}','rule-1',0,'{pad}',{1_700_000_000_000L + n * 60_000L},{(closed ? (1_700_000_000_000L + n * 60_000L + 1000).ToString() : "NULL")},95,0)";
                     c.ExecuteNonQuery(); n++;
                 }
             }
             catch (SqliteException e) when (e.SqliteErrorCode == 13) { }
-            tx.Commit();
         }
         return n;
     }
@@ -189,7 +188,7 @@ public class AlertStoreTests
         Assert.True(n > 100);
         fixture.Open(2 * 1024 * 1024);
         foreach (var table in FirstUseTables) Assert.Equal(1, Count(fixture.Path, $"SELECT COUNT(*) FROM sqlite_master WHERE name='{table}'"));
-        Assert.Equal(0, Count(fixture.Path, "SELECT COUNT(*) FROM episodes WHERE id='x0'"));
+        Assert.Equal(0, Count(fixture.Path, "SELECT COUNT(*) FROM episodes WHERE id='x000000'"));
         Assert.Equal(n - n / 10, Count(fixture.Path, "SELECT COUNT(*) FROM episodes"));
         using var open = new Fixture(); FillV016(open.Path, 2 * 1024 * 1024, closed: false);
         Assert.ThrowsAny<Exception>(() => open.Open(2 * 1024 * 1024));
