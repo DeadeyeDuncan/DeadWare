@@ -99,8 +99,8 @@ public sealed class MainWindow : Window
         var controls=new StackPanel {Margin=new Thickness(8,8,8,12)};networkStatus.Margin=new(0,0,0,10);controls.Children.Add(networkStatus);appSearch.ToolTip="Search application name or PID";System.Windows.Automation.AutomationProperties.SetName(appSearch,"Search applications");
         var searchLabel=Ui.Text("Find application",12,"Muted");searchLabel.Margin=new(0,0,12,0);controls.Children.Add(Ui.Row(searchLabel,appSearch));appSearch.TextChanged+=(_,_)=>RefreshTables();
         controls.Margin=new Thickness(0);var networkStrip=Ui.Panel(controls,new Thickness(14,10,14,10));networkStrip.Margin=new Thickness(6,2,6,10);Grid.SetRow(networkStrip,1);grid.Children.Add(networkStrip);
-        Column(apps,"Application","Name",2);Column(apps,"PID","Pid",.6);Column(apps,"↓ Download","Download",1);Column(apps,"↑ Upload","Upload",1);Column(apps,"Received","Received",1);Column(apps,"Sent","Sent",1);
-        var table=Ui.Panel(apps,new Thickness(0));table.Margin=new Thickness(6,0,6,0);Grid.SetRow(table,2);grid.Children.Add(table);var foot=new StackPanel {Margin=new Thickness(8)};foot.Children.Add(networkEmpty);foot.Children.Add(Ui.Text("Per-app totals cover each current process lifetime in this monitoring session. Exited processes are removed. ETW attribution is approximate and differs from interface totals. No packet payloads are captured.",11,"Muted"));Grid.SetRow(foot,3);grid.Children.Add(foot);return grid;
+        Column(apps,"Application","Name",2,new NotRecordedNameColumn(session));Column(apps,"PID","Pid",.6);Column(apps,"↓ Download","Download",1);Column(apps,"↑ Upload","Upload",1);Column(apps,"Received","Received",1);Column(apps,"Sent","Sent",1);
+        var table=Ui.Panel(apps,new Thickness(0));table.Margin=new Thickness(6,0,6,0);Grid.SetRow(table,2);grid.Children.Add(table);var foot=new StackPanel {Margin=new Thickness(8)};foot.Children.Add(networkEmpty);foot.Children.Add(Ui.Text("Per-app totals cover each current process lifetime in this monitoring session. Exited processes are removed. ETW attribution is approximate and differs from interface totals. No packet payloads are captured. Apps marked not recorded are in Settings → Don't record these apps; their traffic isn't saved.",11,"Muted"));Grid.SetRow(foot,3);grid.Children.Add(foot);return grid;
     }
     private FrameworkElement Sensors()
     {
@@ -251,7 +251,14 @@ public sealed class MainWindow : Window
         if(startupBusy)return;SetStartupBusy(true);startupResult.Text="Waiting for Windows administrator approval…";
         var result=await StartupRegistration.ConfigureAsync(enabled);SetStartupBusy(false);ShowStartupStatus(result.Registration);startupResult.Text=result.Message;
     }
-    private static void Column(DataGrid table,string title,string binding,double weight)=>table.Columns.Add(new DataGridTextColumn {Header=title.ToUpperInvariant(),Binding=new Binding(binding),Width=new DataGridLength(weight,DataGridLengthUnitType.Star)});
+    /// <summary>Adds a star-sized column with an upper-cased header: a text column bound to <paramref name="binding"/>, or <paramref name="column"/> sorted by it.</summary>
+    private static void Column(DataGrid table,string title,string binding,double weight,DataGridColumn? column=null)
+    {
+        if(column is null)column=new DataGridTextColumn {Binding=new Binding(binding)};
+        else column.SortMemberPath=binding;
+        column.Header=title.ToUpperInvariant();column.Width=new DataGridLength(weight,DataGridLengthUnitType.Star);
+        table.Columns.Add(column);
+    }
     public void ShowUpdates()=>Navigate("updates");
     public void ShowAlerts()=>Navigate("alerts");
     private void ShowUsageDay(DateTimeOffset at) {Navigate("usage");if(pages["usage"] is UsageHistoryPage usage)usage.ShowDay(at);}
@@ -358,6 +365,40 @@ public sealed class MainWindow : Window
         }
     }
 }
+/// <summary>The Network page's Application cell: the row's bare Name and, for an app in Don't record these apps, a Muted " · not recorded" after it.
+/// The cell rebuilds its text on <see cref="UiSession.Changed"/> only when the name or the mark changed, so it does not depend on the table being refreshed.</summary>
+internal sealed class NotRecordedNameColumn(UiSession session) : DataGridTemplateColumn
+{
+    protected override FrameworkElement GenerateElement(DataGridCell cell,object dataItem)
+    {
+        var text=new TextBlock {Style=DataGridTextColumn.DefaultElementStyle};
+        (string Name,bool Marked)? shown=null;bool listening=false;
+        void Build()
+        {
+            object? item=text.DataContext??dataItem;
+            string name=item?.GetType().GetProperty("Name")?.GetValue(item) as string??"";
+            bool marked=session.IsExcluded(name);
+            if(shown==(name,marked))return;
+            shown=(name,marked);
+            text.Inlines.Clear();text.Inlines.Add(new System.Windows.Documents.Run(name));
+            if(!marked)return;
+            var mark=new System.Windows.Documents.Run(ProcessCopy.NotRecordedSuffix);mark.SetResourceReference(System.Windows.Documents.TextElement.ForegroundProperty,"Muted");
+            text.Inlines.Add(mark);
+        }
+        void OnChanged()
+        {
+            if(text.Dispatcher.HasShutdownStarted)return;
+            if(!text.Dispatcher.CheckAccess()){text.Dispatcher.InvokeAsync(OnChanged);return;}
+            Build();
+        }
+        text.DataContextChanged+=(_,_)=>Build();
+        text.Loaded+=(_,_)=>{if(!listening){listening=true;session.Changed+=OnChanged;}Build();};
+        text.Unloaded+=(_,_)=>{if(listening){listening=false;session.Changed-=OnChanged;}};
+        Build();
+        return text;
+    }
+}
+
 internal sealed class BatteryHistoryWindow : Window
 {
     public BatteryHistoryWindow(UiSession session)
