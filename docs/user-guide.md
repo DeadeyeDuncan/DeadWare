@@ -11,6 +11,7 @@ Detailed setup, feature controls, data retention and compatibility notes. For a 
 - [Updates and rollback](#updates-and-rollback)
 - [Startup and saved workspace](#startup-and-saved-workspace)
 - [Graph pop-outs](#graph-pop-outs)
+- [Storage](#storage)
 - [Processes](#processes)
 - [Desktop widget](#desktop-widget)
 - [Connections](#connections)
@@ -113,6 +114,10 @@ In **Settings**, enable **Show GPU fan speed on temperature graphs** to add the 
 Enable **Show CPU pump speed on CPU temperature graphs** to add the CPU cooler's pump RPM to the dashboard CPU temperature graph, the CPU temperature pop-out and the widget temperature graph. The joined CPU / GPU temperature pop-out keeps only the GPU fan. DeadWare reads a motherboard or AIO header labeled as a pump (for example `Pump Fan` or `AIO Pump`), otherwise the `CPU Fan` header; unlabeled headers such as `Fan #2` are not used. This needs **Extended sensors** and a single CPU. The option is off by default and separate from the GPU fan option. The pump uses a dotted line in the theme's download color (blue by default) on the left RPM scale; when the widget shows both, the GPU fan and pump share that scale. Change its color and line style with the CPU pump color button on the overview's CPU temperature card.
 
 Enable **Show per-core CPU usage on usage graphs** (Settings, Monitoring) to draw one thin solid line per core under the bold total on the dashboard CPU usage card, the separate CPU usage pop-out and the widget Usage graph. Each line is tinted from the CPU graph colour and has no fill, glow or min/max band; on the 1–6 hour ranges the lines follow the smoothing setting as average lines. Hover a graph to see the eight busiest cores (`Core n · v%`) followed by `+N more`. A line is one LibreHardwareMonitor load sensor (`CPU Core #k`, `P-Core #k`, `E-Core #k`); where the chip exposes threads, each thread is a line, so SMT and hybrid chips show logical processors. Labels are positional (`Core 1…N`) and up to 64 lines are drawn. If LibreHardwareMonitor reports no per-core loads, DeadWare uses Windows per-processor counters instead. Core traces are saved in the six-hour graph history for up to 48 cores, at most once a second (every two seconds above 32 cores); Windows fallback traces are live-only when no single CPU identity is available. The joined CPU / GPU pop-out, Usage history, Alerts and Cooling Health do not use per-core data. The option is off by default; the CPU card subtitle shows `· N cores` while it is on.
+
+## Storage
+
+The Storage drive list sits beside the detail chart on wide windows and above it on narrow windows, while the chart grows with the window. Use the **Volumes** and **Health** tabs below it for mounted-volume space and drive health details.
 
 ## Processes
 
