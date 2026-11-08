@@ -475,6 +475,23 @@ public sealed class UsageHistoryStore
         return rows;
     }
 
+    /// <summary>Every saved application name on a machine with its first and last stored minute, latest first, for the first-use seed;
+    /// null while a clear is in progress.</summary>
+    public IReadOnlyList<ApplicationSeen>? ReadApplicationNames(string machine)
+    {
+        EnsureInitialized(); ValidateMachine(machine);
+        if (ClearPending) return null;
+        using var db = Open(readOnly: true);
+        var names = new List<ApplicationSeen>();
+        using var command = Command(db,
+            "SELECT name,min(minute),max(minute) FROM application_minutes WHERE machine=$machine GROUP BY name ORDER BY max(minute) DESC LIMIT 65536",
+            null, [("$machine", machine)]);
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+            names.Add(new(reader.GetString(0), DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(1)), DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(2))));
+        return names;
+    }
+
     /// <summary>How many recorded minutes of a metric averaged at or above a value, for threshold suggestions.</summary>
     public (long AtOrAbove, long Total) ShareAtOrAbove(string machine, string metric, string? hardwareId, DateTimeOffset from, DateTimeOffset to, double threshold)
     {

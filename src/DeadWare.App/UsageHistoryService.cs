@@ -166,6 +166,20 @@ public sealed class UsageHistoryService
             return [];
         }
     }
+    /// <summary>Every saved application name for the first-use seed, or null when the store cannot be read or a clear is in progress.</summary>
+    public async Task<IReadOnlyList<ApplicationSeen>?> ReadApplicationNamesAsync()
+    {
+        try
+        {
+            await InitializeAsync().ConfigureAwait(false);
+            return await Task.Run(() => store.ReadApplicationNames(machine)).ConfigureAwait(false);
+        }
+        catch (Exception error)
+        {
+            Fail(error);
+            return null;
+        }
+    }
     public async Task<UsageApplicationView> ReadApplicationsAsync(DateTimeOffset from, DateTimeOffset to, int maxNames = UsageHistoryStore.MaximumApplications)
     {
         try

@@ -904,6 +904,29 @@ public sealed class ConnectionHistoryStore
         Slice(query.To.UtcTicks); return(intervals,gaps);
     }
 
+    /// <summary>
+    /// Every saved application name with its first and last stored minute, latest first, for the first-use seed; null while a clear is in progress.
+    /// One full scan: there is no name index. Per-poll rows and per-minute rows hold the same columns, so both are read.
+    /// </summary>
+    public IReadOnlyList<ApplicationSeen>? ReadApplicationNames()
+    {
+        lock(gate)
+        {
+            EnsureInitialized();
+            if(pending is not null) return null;
+            using var db=Open(readOnly:true); using var tx=db.BeginTransaction(deferred:true);
+            var names=new List<ApplicationSeen>();
+            using var command=Command(db,"""
+                SELECT name,min(minute),max(minute) FROM traffic
+                WHERE minute >= coalesce((SELECT value FROM metadata WHERE key='expiry'),0)
+                  AND minute > (SELECT value FROM metadata WHERE key='floor')
+                GROUP BY name ORDER BY max(minute) DESC LIMIT 65536
+                """,tx);
+            using var reader=command.ExecuteReader();
+            while(reader.Read()) names.Add(new(reader.GetString(0),Stamp(reader.GetInt64(1)),Stamp(reader.GetInt64(2))));
+            return names;
+        }
+    }
     public void ExportCsv(TextWriter writer,ConnectionHistoryQuery query)
     {
         ArgumentNullException.ThrowIfNull(writer);

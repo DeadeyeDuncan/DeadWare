@@ -36,6 +36,16 @@ public sealed class ConnectionService
         await InitializeAsync().ConfigureAwait(false);
         return await Task.Run(()=>store!.Read(query)).ConfigureAwait(false);
     }
+    /// <summary>Every saved application name for the first-use seed, or null on any failure or while a clear is in progress.</summary>
+    public async Task<IReadOnlyList<ApplicationSeen>?> ReadApplicationNamesAsync()
+    {
+        try
+        {
+            await InitializeAsync().ConfigureAwait(false);
+            return await Task.Run(()=>store?.ReadApplicationNames()).ConfigureAwait(false);
+        }
+        catch(Exception){return null;}
+    }
     public async Task ExportCsvAsync(string path,ConnectionHistoryQuery query)
     {
         await InitializeAsync().ConfigureAwait(false);
