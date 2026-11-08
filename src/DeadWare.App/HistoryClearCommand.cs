@@ -81,6 +81,18 @@ internal sealed class HistoryClearCommand
         }
     }
 
+    /// <summary>The kept request of a marker that exists but cannot be read. Try again posts it as a resume, and the worker reads the
+    /// marker again instead of running a request.</summary>
+    public static readonly HistoryClear Unread = new(null, DateTimeOffset.MinValue, DateTimeOffset.MinValue);
+
+    /// <summary>A marker found at startup that cannot be read: Failed with the read's exception type, marker saved, Resumed. Try again
+    /// re-reads it (<see cref="Unread"/>).</summary>
+    public void Unreadable(string error)
+    {
+        ArgumentNullException.ThrowIfNull(error);
+        lock (gate) { kept = Unread; state = new(HistoryClearPhase.Failed, null, error, true, true); }
+    }
+
     /// <summary>A marker found at startup: Clearing, marker saved, Resumed.</summary>
     public void Resume(HistoryClear request)
     {
