@@ -16,6 +16,7 @@ public sealed class HistoryClearMeasurementTests
     private const string Machine="measurement",Segment="measurement";
     private const int AppsPerMinute=50,MinutesPerAppend=80,UsageMinuteLimit=120*24*60;
     private const long Megabyte=1<<20;
+    private static readonly TimeSpan MaximumClearTime=TimeSpan.FromMinutes(8);
     // Five spellings of one app: 5 of the 50 rows a minute, the one-app clear's 10 %.
     private static readonly string[] Spellings=["app0.exe","APP0.EXE","App0.exe","aPP0.exe","app0.EXE"];
 
@@ -107,8 +108,10 @@ public sealed class HistoryClearMeasurementTests
         try
         {
             begin(clear);
+            // A clear that stops finishing becomes a recorded result, never a job timeout.
             while(!finished)
             {
+                if(total.Elapsed>MaximumClearTime) {error=$"Not finished after {MaximumClearTime.TotalMinutes:0} minutes";break;}
                 var watch=Stopwatch.StartNew();
                 finished=step(TimeSpan.FromMilliseconds(250)).Finished;
                 stepMs.Add(watch.Elapsed.TotalMilliseconds);

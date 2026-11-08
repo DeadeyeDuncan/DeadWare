@@ -375,13 +375,17 @@ public sealed class UsageHistoryStore
         public bool ScannedThisStep;
     }
 
-    /// <summary>One clear transaction, or a read-only scan once the work runs out. The clear finishes when a scan made in the
-    /// current step leaves nothing to delete; rows can only be written between steps, so that scan saw them all.</summary>
+    /// <summary>One clear transaction, or the finish. When the work runs out, the call scans again (unless a scan already ran in
+    /// this step) and, in the same call, finishes when nothing is left or deletes the first item found. Rows can only be written
+    /// between steps, so a scan made in the current step saw them all; scanning and deciding in one call means a step whose budget
+    /// allows a single call still finishes.</summary>
     private HistoryClearTransaction ClearTransaction(SqliteConnection db, HistoryClear request, long before, UsageClearState state)
     {
+        // Re-reading the names here reconciles the spec's "distinct names read once" with "rows written while they run": names
+        // dropped from the queue in an earlier step are checked again before the marker goes.
+        if (state.Work.Count == 0 && !state.ScannedThisStep) Scan(db, request.AppKey, before, state);
         if (state.Work.Count == 0)
         {
-            if (!state.ScannedThisStep) { Scan(db, request.AppKey, before, state); return new(false, 0, false); }
             var marks = ClearedMarks.With(request);
             marks.Write(clearedPath);
             File.Delete(markerPath);

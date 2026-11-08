@@ -454,6 +454,30 @@ public class UsageHistoryStoreTests
         Assert.True(File.Exists(marker));
     }
 
+    [Fact]
+    public void Usage_clear_finishes_when_each_step_allows_one_call()
+    {
+        using var fixture = new Fixture(); var store = fixture.Open(); FillForClear(store);
+        string marker = System.IO.Path.ChangeExtension(fixture.Path, ".clear.json"), marks = System.IO.Path.ChangeExtension(fixture.Path, ".cleared.json");
+        // A 1 ms budget on a ticking clock and a zero budget each allow exactly one delegate call per step. The step whose call finds
+        // the work gone must scan and finish in that same call.
+        long t = 0; ClearSeam(store, "clearClock", (Func<TimeSpan>)(() => TimeSpan.FromMilliseconds(t++)));
+        foreach (var (clear, budget) in new[] { (new HistoryClear("CHROME.EXE", ClearBefore, ClearBefore), TimeSpan.FromMilliseconds(1)),
+            (new HistoryClear(null, ClearBefore, ClearBefore), TimeSpan.Zero) })
+        {
+            store.BeginClear(clear);
+            int steps = 0; HistoryClearProgress progress;
+            do { progress = store.ClearStep(budget); Assert.InRange(++steps, 1, 100); } while (!progress.Finished);
+            Assert.False(store.ClearPending); Assert.False(File.Exists(marker)); Assert.True(File.Exists(marks));
+            Assert.Equal(0, Count(fixture.Path, clear.AppKey is null ? $"SELECT count(*) FROM application_minutes WHERE minute<{BeforeMs}" : ChromeBefore));
+        }
+        Assert.Equal(new UsageClearedMarks(ClearBefore, ClearBefore), store.ClearedMarks); Assert.Equal(store.ClearedMarks, UsageClearedMarks.Read(marks));
+        // A resumed clear with nothing left finishes in its first one-call step.
+        store.BeginClear(new(null, ClearBefore, ClearBefore.AddMinutes(1)));
+        var resumed = fixture.Open();
+        Assert.True(resumed.ClearPending); Assert.True(resumed.ClearStep(TimeSpan.Zero).Finished); Assert.False(File.Exists(marker));
+    }
+
     private sealed class Fixture : IDisposable
     {
         private readonly string root = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "DeadWare-usage-" + Guid.NewGuid().ToString("N"));
