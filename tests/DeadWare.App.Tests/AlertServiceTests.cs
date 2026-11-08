@@ -1000,6 +1000,24 @@ public class AlertServiceTests
         private readonly string root = Path.Combine(Path.GetTempPath(), "DeadWare-alerts-" + Guid.NewGuid().ToString("N"));
         public string UsagePath => Path.Combine(root, "usage.db");
         public string AlertPath => Path.Combine(root, "alerts.db");
-        public void Dispose() { if (Directory.Exists(root)) Directory.Delete(root, true); }
+        // A read-only attribute left by ReadOnly, or a pooled SQLite handle, makes a plain delete throw on Windows; clear both and retry.
+        public void Dispose()
+        {
+            if (!Directory.Exists(root)) return;
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            for (int attempt = 0; ; attempt++)
+            {
+                try
+                {
+                    foreach (var file in Directory.GetFiles(root)) File.SetAttributes(file, FileAttributes.Normal);
+                    Directory.Delete(root, true); return;
+                }
+                catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+                {
+                    if (attempt >= 10) return;
+                    Thread.Sleep(100);
+                }
+            }
+        }
     }
 }
