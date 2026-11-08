@@ -304,6 +304,161 @@ public class AlertStoreTests
         Assert.Equal(0, Count(fixture.Path, "SELECT COUNT(*) FROM episode_apps"));
     }
 
+    // Task 11: clearing the alert log.
+    private const string OtherPc = "OTHER-PC";
+    // Requested: 40 s into a minute, so an episode 10 s after it starts in the same minute and before an All time Before.
+    private static readonly DateTimeOffset Requested = new(2026, 11, 7, 12, 0, 40, TimeSpan.Zero);
+    private static AlertEpisode Budget(string id, string target, DateTimeOffset start, bool linked = true, bool open = false)
+        => new(id, "rule-budget", AlertKind.ApplicationDaily, $"{target} ≥ 2.0 GB in a day", start, open ? null : start.AddMinutes(30), 3e9, false, linked ? target : null);
+    private static void ClearSeam(AlertStore store, string field, object? value)
+        => typeof(AlertStore).GetField(field, System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!.SetValue(store, value);
+    private static void FinishClear(AlertStore store, string machine = M)
+    { for (int steps = 1; !store.ClearStep(machine, TimeSpan.FromMilliseconds(250)).Finished; steps++) Assert.InRange(steps, 1, 1000); }
+    private static string[] Strings(string path, string sql)
+    {
+        using var db = Raw(path); using var c = db.CreateCommand(); c.CommandText = sql; using var r = c.ExecuteReader();
+        var values = new List<string>(); while (r.Read()) values.Add(r.GetString(0)); return [.. values];
+    }
+    private static string[] Ids(string path) => Strings(path, "SELECT id FROM episodes ORDER BY id");
+    private static string[] Known(string path) => Strings(path, "SELECT machine||'/'||app_key FROM known_apps ORDER BY 1");
+
+    /// <summary>The fixture of Alert_clear_removes_app_episodes_and_keeps_device_episodes.</summary>
+    private static void SeedClear(AlertStore store)
+    {
+        var old = Requested.AddDays(-10);
+        store.Append(M, [
+            Budget("legacy", "chrome.exe", old, linked: false),
+            Budget("budget", "Chrome.EXE", old.AddMinutes(1)),
+            Fu("CHROME.EXE", old.AddMinutes(2), "fu-chrome"),
+            Fu("other.exe", old.AddMinutes(3), "fu-other"),
+            Episode("cpu", old.AddMinutes(4), old.AddMinutes(9)),
+            new("battery", "rule-battery", AlertKind.Battery, "Battery ≤ 20% on battery", old.AddMinutes(5), old.AddMinutes(20), 15),
+            Budget("recent", "chrome.exe", Requested.AddDays(-1)),
+            Budget("open", "chrome.exe", Requested.AddHours(-1), open: true),
+            Fu("CHROME.EXE", Requested.AddSeconds(10), "fu-after"),
+        ], Requested, Ch([], [], new(null, null, UsageMetrics.Floor(old), UsageMetrics.Floor(old).AddDays(7))));
+        store.Append(OtherPc, [Fu("chrome.exe", old.AddMinutes(6), "fu-pc")], Requested, Ch([Kn("OTHER.EXE", UsageMetrics.Floor(old), UsageMetrics.Floor(old))], [], Empty));
+    }
+
+    [Fact]
+    public void Alert_clear_removes_app_episodes_and_keeps_device_episodes()
+    {
+        string[] all = ["battery", "budget", "cpu", "fu-after", "fu-chrome", "fu-other", "fu-pc", "legacy", "open", "recent"];
+        string[] knownAll = [$"{M}/CHROME.EXE", $"{M}/OTHER.EXE", $"{OtherPc}/CHROME.EXE", $"{OtherPc}/OTHER.EXE"];
+        var cases = new (string? App, bool AllTime, string[] Deleted)[]
+        {
+            ("CHROME.EXE", false, ["budget", "fu-chrome", "fu-pc", "legacy"]),
+            ("CHROME.EXE", true, ["budget", "fu-chrome", "fu-pc", "legacy", "recent"]),
+            (null, false, ["budget", "fu-chrome", "fu-other", "fu-pc", "legacy"]),
+            (null, true, ["budget", "fu-chrome", "fu-other", "fu-pc", "legacy", "recent"]),
+        };
+        foreach (var (app, allTime, deleted) in cases)
+        {
+            using var fixture = new Fixture(); var store = fixture.Open(); SeedClear(store);
+            Assert.Equal(all, Ids(fixture.Path)); Assert.Equal(knownAll, Known(fixture.Path));
+            var learning = store.ReadFirstUse(M).LearningStart; Assert.NotNull(learning);
+            Assert.Throws<InvalidOperationException>(() => store.ClearStep(M, TimeSpan.FromMilliseconds(250)));
+            var clear = HistoryClear.Create(app, allTime, Requested);
+            Assert.Null(store.PendingClear);
+            store.BeginClear(M, clear);
+            Assert.Equal(clear, store.PendingClear);
+            Assert.Equal(1, Count(fixture.Path, "SELECT COUNT(*) FROM pending_clear"));
+            // All time deletes the current machine's in-scope known rows in the marker's transaction; Older than 7 days deletes none.
+            string[] knownAfterBegin = !allTime ? knownAll : app is null ? [$"{OtherPc}/CHROME.EXE", $"{OtherPc}/OTHER.EXE"] : [$"{M}/OTHER.EXE", $"{OtherPc}/CHROME.EXE", $"{OtherPc}/OTHER.EXE"];
+            Assert.Equal(knownAfterBegin, Known(fixture.Path));
+            Assert.Equal(all, Ids(fixture.Path));
+            if (app is not null && allTime)
+            {
+                // A row for the cleared key written after the marker's transaction is kept, and an equal request again writes nothing.
+                var used = UsageMetrics.Floor(Requested);
+                store.Append(M, [], Requested, Ch([Kn("CHROME.EXE", used, used)], [], Empty));
+                store.BeginClear(M, clear);
+                Assert.Contains($"{M}/CHROME.EXE", Known(fixture.Path));
+            }
+            else store.BeginClear(M, clear);
+            Assert.Throws<InvalidOperationException>(() => store.BeginClear(M, clear with { AppKey = "OTHER.EXE" }));
+            Assert.Throws<InvalidOperationException>(() => store.BeginClear(M, clear with { Before = clear.Before.AddMinutes(-1) }));
+            FinishClear(store);
+            Assert.Null(store.PendingClear);
+            Assert.Throws<InvalidOperationException>(() => store.ClearStep(M, TimeSpan.FromMilliseconds(250)));
+            Assert.Equal(all.Except(deleted).ToArray(), Ids(fixture.Path));
+            Assert.Equal(0, Count(fixture.Path, "SELECT COUNT(*) FROM episode_apps WHERE NOT EXISTS(SELECT 1 FROM episodes e WHERE e.machine=episode_apps.machine AND e.id=episode_apps.episode)"));
+            string[] knownAfter = !allTime ? knownAll : app is null ? [] : [$"{M}/CHROME.EXE", $"{M}/OTHER.EXE", $"{OtherPc}/OTHER.EXE"];
+            Assert.Equal(knownAfter, Known(fixture.Path));
+            Assert.Equal(learning, store.ReadFirstUse(M).LearningStart);
+            Assert.Equal(0, Count(fixture.Path, "SELECT COUNT(*) FROM pending_clear"));
+            Assert.Equal(1, Count(fixture.Path, "PRAGMA user_version"));
+            Assert.Null(fixture.Open().PendingClear);
+        }
+
+        // A 0.16 file without the new tables gains them in place, then clears its pre-0.17 budget episode.
+        using (var legacy = new Fixture())
+        {
+            V016(legacy.Path, 2, 1);
+            Run(legacy.Path, $"INSERT INTO episodes VALUES('{M}','old-budget','rule-2',2,'Chrome.exe ≥ 1.0 GB in a day',1700000000000,1700000060000,2e9,0)");
+            var store = legacy.Open();
+            store.BeginClear(M, HistoryClear.Create("chrome.exe", allTime: true, Requested));
+            FinishClear(store);
+            Assert.Equal(["x000000", "x000001", "x000002"], Ids(legacy.Path));
+            Assert.Equal(1, Count(legacy.Path, "PRAGMA user_version"));
+        }
+
+        // A pinned reader: a step yields once the -wal passes 4 MiB and fails only after 60 s of yielding; no transaction deletes more than 256 episodes.
+        using var big = new Fixture(); var clearing = big.Open(); var start = Requested.AddDays(-20);
+        string pad = new('z', 470);
+        for (int chunk = 0; chunk < 16; chunk++)
+            clearing.Append(M, [.. Enumerable.Range(chunk * 1000, 1000).Select(i => Budget("d" + i, $"{pad}{i:D6}.exe", start.AddSeconds(i), linked: false))], Requested);
+        Assert.Equal(16_000, Count(big.Path, "SELECT COUNT(*) FROM episodes"));
+        int largest = 0, commits = 0;
+        ClearSeam(clearing, "clearCommitted", (Action<int>)(rows => { largest = Math.Max(largest, rows); commits++; }));
+        var now = TimeSpan.Zero; ClearSeam(clearing, "clearClock", (Func<TimeSpan>)(() => now));
+        clearing.BeginClear(M, HistoryClear.Create(null, allTime: false, Requested));
+        long Wal() => File.Exists(big.Path + "-wal") ? new FileInfo(big.Path + "-wal").Length : 0;
+        using (var pinned = Raw(big.Path))
+        using (var tx = pinned.BeginTransaction(deferred: true))
+        {
+            using var command = pinned.CreateCommand(); command.Transaction = tx; command.CommandText = "SELECT COUNT(*) FROM episodes"; _ = command.ExecuteScalar();
+            // The clock stands still, so only a yield ends this step.
+            Assert.False(clearing.ClearStep(M, TimeSpan.FromMilliseconds(250)).Finished);
+            Assert.InRange(Wal(), 4 * 1024 * 1024 + 1, 8 * 1024 * 1024); Assert.InRange(largest, 1, 256);
+            int before = commits;
+            now = TimeSpan.FromSeconds(59); Assert.False(clearing.ClearStep(M, TimeSpan.FromMilliseconds(250)).Finished); Assert.Equal(before, commits);
+            now = TimeSpan.FromSeconds(61); Assert.Throws<IOException>(() => clearing.ClearStep(M, TimeSpan.FromMilliseconds(250))); Assert.Equal(before, commits);
+            Assert.NotNull(clearing.PendingClear);
+        }
+        var clock = System.Diagnostics.Stopwatch.StartNew(); ClearSeam(clearing, "clearClock", (Func<TimeSpan>)(() => clock.Elapsed));
+        FinishClear(clearing);
+        Assert.InRange(largest, 1, 256);
+        Assert.Equal(0, Count(big.Path, "SELECT COUNT(*) FROM episodes")); Assert.Null(clearing.PendingClear);
+    }
+
+    [Fact]
+    public void Alert_clear_finishes_when_each_step_allows_one_call()
+    {
+        using var fixture = new Fixture(); var store = fixture.Open(); var t = Requested.AddDays(-3); var minute = UsageMetrics.Floor(t);
+        store.Append(M, [.. Enumerable.Range(0, 600).Select(i => Budget("b" + i, $"app{i}.exe", t.AddSeconds(i), linked: i % 2 == 0))], Requested,
+            Ch([.. Enumerable.Range(0, 10).Select(i => Kn($"MINE{i}.EXE", minute, minute))], [], Empty));
+        for (int chunk = 0; chunk < 2; chunk++)
+            store.Append(OtherPc, [], Requested, Ch([.. Enumerable.Range(chunk * 550, 550).Select(i => Kn($"K{i}.EXE", minute, minute))], [], Empty));
+        var commits = new List<int>();
+        var clear = new HistoryClear(null, UsageMetrics.Floor(Requested).AddMinutes(1), Requested);
+        store.BeginClear(M, clear);
+        Assert.Equal(1100, Count(fixture.Path, "SELECT COUNT(*) FROM known_apps"));
+        // A reopened store resumes the same request. A zero budget allows one delegate call a step; the step whose call finds the
+        // work gone removes the marker in that same call.
+        var resumed = fixture.Open(); Assert.Equal(clear, resumed.PendingClear);
+        ClearSeam(resumed, "clearCommitted", (Action<int>)commits.Add);
+        int steps = 0; HistoryClearProgress progress;
+        do { progress = resumed.ClearStep(M, TimeSpan.Zero); Assert.InRange(++steps, 1, 100); Assert.Null(progress.Total); Assert.Null(progress.Percent); } while (!progress.Finished);
+        Assert.Equal([256, 256, 88, 1024, 76, 0], commits);
+        Assert.Equal(1700, progress.Done);
+        Assert.Equal(0, Count(fixture.Path, "SELECT (SELECT COUNT(*) FROM episodes)+(SELECT COUNT(*) FROM episode_apps)+(SELECT COUNT(*) FROM known_apps)"));
+        Assert.Null(resumed.PendingClear); Assert.Equal(0, Count(fixture.Path, "SELECT COUNT(*) FROM pending_clear"));
+        // A request with nothing in scope finishes in its first one-call step.
+        resumed.BeginClear(M, HistoryClear.Create("chrom.exe", allTime: false, Requested));
+        Assert.True(resumed.ClearStep(M, TimeSpan.Zero).Finished); Assert.Null(resumed.PendingClear);
+    }
+
     private sealed class Fixture : IDisposable
     {
         private readonly string root = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "DeadWare-alerts-" + Guid.NewGuid().ToString("N"));
