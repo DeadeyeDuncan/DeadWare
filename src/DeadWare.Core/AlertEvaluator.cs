@@ -106,7 +106,7 @@ public sealed class AlertEvaluator
         foreach (var state in states.Values)
         {
             var rule = state.Rule;
-            if (!rule.Enabled || rule.Kind == AlertKind.Battery) continue;
+            if (!rule.Enabled || rule.Kind is AlertKind.Battery or AlertKind.FirstNetworkUse) continue;
             if (rule.Kind == AlertKind.ApplicationDaily) { ObserveApplication(state, batch, started, ended, notify); continue; }
             if (gap) { state.Above = 0; state.Below = 0; state.AboveSince = null; }
             var row = Row(batch, rule, gpuKey);
@@ -186,7 +186,8 @@ public sealed class AlertEvaluator
 
     private void Start(State state, List<AlertEpisode> started, List<AlertEpisode> notify, DateTimeOffset start, DateTimeOffset now, double peak)
     {
-        var episode = new AlertEpisode(Guid.NewGuid().ToString("N"), state.Rule.Id, state.Rule.Kind, AlertRules.Describe(state.Rule), start, null, peak);
+        var episode = new AlertEpisode(Guid.NewGuid().ToString("N"), state.Rule.Id, state.Rule.Kind, AlertRules.Describe(state.Rule), start, null, peak,
+            Application: state.Rule.Kind == AlertKind.ApplicationDaily ? state.Rule.Target : null);
         state.Open = episode; state.Peak = peak; state.Armed = false; started.Add(episode);
         if (state.LastNotified is null || now - state.LastNotified.Value >= AlertRules.NotificationFloor)
         { state.LastNotified = now; notify.Add(episode); }
