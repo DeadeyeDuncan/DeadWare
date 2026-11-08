@@ -1,3 +1,4 @@
+using System.Collections.Frozen;
 using System.Text;
 
 namespace DeadWare.Core;
@@ -59,6 +60,34 @@ public sealed class ProcessMinuteFolder
 
     private static string NewSegment()=>Guid.NewGuid().ToString("N");
 
+    /// <summary>Keys (<see cref="AppKey.Of"/>) of the apps counted in Everything else instead of listed. Owned by the worker and set before each Observe.</summary>
+    public IReadOnlySet<string> Excluded{get;set;}=FrozenSet<string>.Empty;
+
+    /// <summary>While set, in-scope activity of minutes before <see cref="HistoryClear.Before"/> is treated as excluded (one app) or dropped whole (all apps).</summary>
+    public HistoryClear? Boundary{get;set;}
+
+    /// <summary>The minute being folded, or null when none is open.</summary>
+    public DateTimeOffset? OpenMinute=>minute;
+
+    /// <summary>Moves the app's open-minute totals, GPU-seconds and GPU memory byte-seconds included, into Everything else.</summary>
+    public void Forget(string appKey)
+    {
+        string key=AppKey.Of(appKey);
+        foreach(var pair in apps.Where(p=>AppKey.Of(p.Value.Name)==key).ToArray())
+        {
+            var t=pair.Value;
+            other.Cpu+=t.Cpu;other.Read+=t.Read;other.Write+=t.Write;other.Memory+=t.Memory;other.Gpu+=t.Gpu;other.GpuMemory+=t.GpuMemory;
+            apps.Remove(pair.Key);
+        }
+    }
+
+    /// <summary>Drops the open minute with no batch.</summary>
+    public void Discard()
+    {
+        if(minute is null)return;
+        Close();
+    }
+
     /// <summary>Marks the open minute as discontinuous and starts a new segment for later activities.</summary>
     public void Break()
     {
@@ -92,7 +121,8 @@ public sealed class ProcessMinuteFolder
         interval=activityInterval;
         processorCount=activity.ProcessorCount;
 
-        if(activity.DeltaSeconds is{}seconds&&seconds>0&&double.IsFinite(seconds))Fold(activity,seconds);
+        bool dropped=Boundary is{AppKey:null}all&&current<all.Before;
+        if(!dropped&&activity.DeltaSeconds is{}seconds&&seconds>0&&double.IsFinite(seconds))Fold(activity,seconds);
 
         previousSeconds=activity.MonotonicSeconds;previousTimestamp=activity.Timestamp;previousInterval=activityInterval;
         return closed;
@@ -113,6 +143,7 @@ public sealed class ProcessMinuteFolder
         double gpuInterval=activity.GpuIntervalSeconds is{}g&&g>0&&double.IsFinite(g)?g:0;
         gpuCovered+=gpuInterval;
         var named=gpuInterval>0?new Dictionary<Totals,List<ProcessSample>>():null;
+        var hidden=gpuInterval>0?new Dictionary<string,List<ProcessSample>>(StringComparer.Ordinal):null;
         foreach(var p in activity.Processes)
         {
             if(p is null)continue;
@@ -122,6 +153,17 @@ public sealed class ProcessMinuteFolder
                 target=other;
                 target.Gpu+=p.Deltas?.GpuSeconds??0;
                 target.GpuMemory+=p.Deltas?.GpuMemoryByteSeconds??0;
+            }
+            else if(IsExcluded(name))
+            {
+                // Grouped by key like a listed app; its app-level GPU values join Everything else below.
+                target=other;
+                if(hidden is not null)
+                {
+                    string hiddenKey=AppKey.Of(name);
+                    if(!hidden.TryGetValue(hiddenKey,out var members))hidden[hiddenKey]=members=[];
+                    members.Add(p);
+                }
             }
             else
             {
@@ -145,11 +187,20 @@ public sealed class ProcessMinuteFolder
                 // Summed as double: LINQ's long Sum is checked, and an overflow here would fail the history worker.
                 t.GpuMemory+=members.Sum(m=>(double)(m.GpuDedicatedBytes??0))*gpuInterval;
             }
+        if(hidden is not null)
+            foreach(var members in hidden.Values)
+            {
+                if(ProcessGrouping.GpuUse(members).Percent is{} percent)other.Gpu+=percent/100*gpuInterval;
+                other.GpuMemory+=members.Sum(m=>(double)(m.GpuDedicatedBytes??0))*gpuInterval;
+            }
         var omitted=activity.Omitted.Deltas;
         other.Cpu+=omitted.CpuTime??0;other.Read+=omitted.IoReadBytes??0;other.Write+=omitted.IoWriteBytes??0;
         other.Memory+=omitted.MemoryByteSeconds;
         other.Gpu+=omitted.GpuSeconds??0;other.GpuMemory+=omitted.GpuMemoryByteSeconds??0;
     }
+
+    private bool IsExcluded(string name)
+        =>Excluded.Contains(AppKey.Of(name))||(Boundary is{AppKey:not null}b&&minute is{}open&&b.Covers(name,open));
 
     private static IEnumerable<string> Top(IEnumerable<KeyValuePair<string,Totals>> items,Func<Totals,double> value)
         =>items.Select(i=>(i.Key,Value:value(i.Value))).Where(i=>i.Value>0)
