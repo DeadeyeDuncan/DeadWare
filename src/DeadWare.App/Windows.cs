@@ -43,6 +43,7 @@ public sealed class MainWindow : Window
     private readonly TextBlock startupStatus=Ui.Text("Startup status is checked when this page opens.",12,"Muted"),startupResult=Ui.Text("",12,"Warning");
     private Button startupRepair=null!,startupDisable=null!,startupRefresh=null!,batteryNavigation=null!;
     private string page="overview",gpuSignature="";
+    private ExcludedAppsBlock? excludedApps;
     private bool syncingGpu;
     private bool refreshingSensors;
     private bool syncingStartup,startupBusy,syncingWidgetGraphs;
@@ -180,6 +181,7 @@ public sealed class MainWindow : Window
         history.Children.Add(Ui.Heading("Connections",16));
         history.Children.Add(Ui.Text("Record endpoint history, choose an optional home city, manage the offline location database and export saved traffic from Connections. Local history rolls over after 30 days or 256 MiB.",12,"Muted"));
         history.Children.Add(Ui.Button("Open Connections controls",()=>Navigate("connections")));
+        excludedApps=new ExcludedAppsBlock(session,new AppSuggestions(session,()=>DateTimeOffset.UtcNow)) {Margin=new Thickness(0,20,0,0)};history.Children.Add(excludedApps);
         var popoutLabel=Ui.Text("Graph pop-outs",14);popoutLabel.Margin=new(0,0,0,8);popouts.Children.Add(popoutLabel);
         joinedPopouts.IsChecked=session.Settings.JoinCpuGpuPopouts;
         System.Windows.Automation.AutomationProperties.SetName(joinedPopouts,"Join CPU and GPU graphs in pop-outs");
@@ -271,7 +273,7 @@ public sealed class MainWindow : Window
         foreach(var (key,button) in navigation)button.Tag=key==destination?"active":null;
         page=destination;content.Content=pages[destination];heading.Text=destination switch {"network"=>"Network","storage"=>"Storage","processes"=>"Processes","connections"=>"Connections","cooling"=>"Cooling Health","battery"=>"Battery history","usage"=>"Usage history","alerts"=>"Alerts","updates"=>"Keep DeadWare current","sensors"=>"Hardware sensors","desktop"=>"Settings",_=>"System overview"};
         RefreshUpdateNotice();Refresh();
-        if(destination=="desktop")_ = RefreshStartupAsync();
+        if(destination=="desktop"){_ = RefreshStartupAsync();if(excludedApps is not null)_ = excludedApps.Suggestions.RefreshAsync();}
     }
     private void Refresh()
     {
