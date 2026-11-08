@@ -850,4 +850,33 @@ public sealed class ConnectionHistoryStoreTests(ITestOutputHelper testOutput) : 
         Assert.Throws<ConnectionHistoryLimitException>(()=>store.ExportDestinationsCsv(writer,Query(10),DestinationScope.All));
         Assert.Equal(["Address,Class,CountryCode,Country,Region,City,Latitude,Longitude,Applications,ApplicationNames,Ports,PortList,ReceivedBytes,SentBytes,Minutes,FirstSeenUtc,LastSeenUtc,Complete"],Lines(writer.ToString()));
     }
+
+    private static void Seam(ConnectionHistoryStore store,Action action) =>
+        typeof(ConnectionHistoryStore).GetField("maintenanceCommitted",System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Instance)!.SetValue(store,action);
+    private long Scalar(string sql) { using var db=Connect(); using var command=db.CreateCommand(); command.CommandText=sql; return Convert.ToInt64(command.ExecuteScalar()); }
+    private long Hidden() => Scalar("SELECT count(*) FROM traffic WHERE minute<(SELECT value FROM metadata WHERE key='expiry')");
+
+    [Fact] public void Bounded_maintenance_drains_a_raised_expiry_over_several_appends(){
+        var store=Store(); int commits=0; Seam(store,()=>commits++);
+        store.Append([..Enumerable.Range(0,1000).Select(i=>Row(0,"b"+i/100,generation:i+1))],[],Epoch.AddMinutes(1)); commits=0;
+        store.Append([],[],Epoch.AddDays(31),maintenanceTransactions:2);
+        Assert.Equal(2,commits); Assert.Equal(1000-128,Hidden());
+        var view=store.Read(Query()); Assert.Empty(view.Rows); Assert.Equal(0,view.Summary.ReceivedBytes); Assert.Empty(view.Markers); Assert.Empty(view.Coverage);
+        using(var output=new StringWriter()) {store.ExportCsv(output,Query()); Assert.Single(output.ToString().Split(Environment.NewLine,StringSplitOptions.RemoveEmptyEntries));}
+        commits=0; store.Append([],[],Epoch.AddDays(31),maintenanceTransactions:0); Assert.Equal(0,commits); Assert.Equal(1000-128,Hidden());
+        store.Append([],[],Epoch.AddDays(31),64); Assert.Equal(1000-192,Hidden());
+        for(int i=0;i<14&&Hidden()>0;i++) store.Append([],[],Epoch.AddDays(31),64);
+        Assert.Equal(0,Hidden());
+        Assert.Throws<ArgumentOutOfRangeException>(()=>store.Append([],[],Epoch.AddDays(31),-1));
+    }
+    [Fact] public void Full_file_purges_hidden_rows_before_evicting_a_bucket(){
+        var store=Store(262144); int commits=0; Seam(store,()=>commits++);
+        var old=Enumerable.Range(0,200).Select(i=>Row(0,"old",generation:i+1,name:new string('x',100)) with {Location=null,Origin=null}).ToArray();
+        store.Append(old,[],Epoch.AddMinutes(1));
+        int minute=31*1440-1; var incoming=old.Select(x=>x with {BatchId="new",Delta=x.Delta with {Minute=Epoch.AddMinutes(minute),FirstSeen=Epoch.AddMinutes(minute).AddSeconds(1),LastSeen=Epoch.AddMinutes(minute).AddSeconds(2)}}).ToArray();
+        store.Append([],[],Epoch.AddDays(31),maintenanceTransactions:0); Assert.Equal(0,commits); Assert.Equal(200,Hidden());
+        store.Append(incoming,[],Epoch.AddDays(31),maintenanceTransactions:0);
+        Assert.True(commits>=1); Assert.Equal(0,Scalar("SELECT value FROM metadata WHERE key='floor'"));
+        Assert.Equal(200,Scalar("SELECT count(*) FROM traffic WHERE batch='new'"));
+    }
 }
