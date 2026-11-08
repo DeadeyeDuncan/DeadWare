@@ -151,4 +151,65 @@ public class HistoryClearTests
             if (Directory.Exists(root)) Directory.Delete(root, true);
         }
     }
+
+    // Task 10: the retention wait.
+    private static long Count(string file, string sql)
+    {
+        using var db = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = file, Pooling = false }.ToString());
+        db.Open(); using var command = db.CreateCommand(); command.CommandText = sql;
+        return Convert.ToInt64(command.ExecuteScalar(), System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    [Fact]
+    public void Retention_expiry_waits_while_a_marker_exists()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "DeadWare-retention-wait-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var day = new DateTimeOffset(2026, 1, 2, 0, 0, 0, TimeSpan.Zero);
+            long oldest = day.AddDays(1).ToUnixTimeMilliseconds();
+
+            // Usage history: rows on its oldest day, then an Append 401 days later while a marker exists.
+            string usagePath = Path.Combine(root, "usage", "usage-history.db");
+            var usage = new UsageHistoryStore(usagePath); usage.Initialize();
+            UsageMinuteBatch Batch(DateTimeOffset minute) => new(minute, [new(UsageMetrics.Cpu, null, minute, 10, 10, 10, 60, true, "seg")],
+                [new("a.exe", minute, 100, 10, "seg")], false, "seg");
+            usage.Append("m", [Batch(day), Batch(day.AddMinutes(1))], day.AddDays(1));
+            var later = day.AddDays(401);
+            usage.BeginClear(new("ZZZ.EXE", later, later));
+            usage.Append("m", [Batch(later)], later);
+            Assert.Equal(2, Count(usagePath, $"SELECT COUNT(*) FROM metric_minutes WHERE minute<{oldest}"));
+            Assert.Equal(2, Count(usagePath, $"SELECT COUNT(*) FROM application_minutes WHERE minute<{oldest}"));
+            while (!usage.ClearStep(TimeSpan.FromMilliseconds(250)).Finished) { }
+            Assert.False(usage.ClearPending);
+            usage.Append("m", [Batch(later.AddMinutes(1))], later.AddMinutes(1));
+            Assert.Equal(0, Count(usagePath, $"SELECT COUNT(*) FROM metric_minutes WHERE minute<{oldest}"));
+            Assert.Equal(0, Count(usagePath, $"SELECT COUNT(*) FROM application_minutes WHERE minute<{oldest}"));
+            Assert.Equal(2, Count(usagePath, "SELECT COUNT(*) FROM metric_minutes"));
+
+            // Application resources: its Expire and Append 31 days after its oldest day delete nothing while a marker exists.
+            string processPath = Path.Combine(root, "process", "process-history.db");
+            var process = new ProcessHistoryStore(processPath); process.Initialize();
+            ProcessMinuteBatch Minute(DateTimeOffset minute) => new(minute, 60, 4, true, "seg", [new("a.exe", 1, 0, 0, 0, false)]);
+            process.Append("m", [Minute(day), Minute(day.AddMinutes(1))], day.AddHours(1));
+            var month = day.AddDays(31);
+            process.BeginClear(new("ZZZ.EXE", month, month));
+            process.Expire(month);
+            Assert.Equal(2, Count(processPath, $"SELECT COUNT(*) FROM minutes WHERE minute<{oldest}"));
+            process.Append("m", [Minute(month)], month);
+            Assert.Equal(2, Count(processPath, $"SELECT COUNT(*) FROM minutes WHERE minute<{oldest}"));
+            Assert.Equal(2, Count(processPath, $"SELECT COUNT(*) FROM app_minutes WHERE minute<{oldest}"));
+            // The last step deletes the marker, then expires with the step's now.
+            while (!process.ClearStep(TimeSpan.FromMilliseconds(250), month).Finished) { }
+            Assert.False(process.ClearPending);
+            Assert.Equal(0, Count(processPath, $"SELECT COUNT(*) FROM minutes WHERE minute<{oldest}"));
+            Assert.Equal(0, Count(processPath, $"SELECT COUNT(*) FROM app_minutes WHERE minute<{oldest}"));
+            Assert.Equal(1, Count(processPath, "SELECT COUNT(*) FROM minutes"));
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
 }
