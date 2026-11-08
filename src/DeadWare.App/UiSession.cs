@@ -251,6 +251,20 @@ public sealed class UiSession
         if(Settings.AlertNotifications==enabled)return;
         Settings.AlertNotifications=enabled;Alerts.Configure(Settings.Alerts,enabled,Settings.FirstUseIgnoredApps,Settings.ExcludedApps);Changed?.Invoke();_ = SaveAsync();
     }
+    /// <summary>Adds the app to the first network use Don't alert list (normalized, at most 256), passes it to the alert worker, then saves.</summary>
+    public void IgnoreFirstUse(string name)
+    {
+        Settings.FirstUseIgnoredApps=FirstNetworkUse.NormalizeIgnored([..Settings.FirstUseIgnoredApps,name]);
+        Alerts?.Configure(Settings.Alerts,Settings.AlertNotifications,Settings.FirstUseIgnoredApps,Settings.ExcludedApps);
+        Changed?.Invoke();_ = SaveAsync();
+    }
+    /// <summary>Removes the app key (<see cref="AppKey.Of"/>, ordinal) from the Don't alert list, passes the list to the alert worker, then saves.</summary>
+    public void UnignoreFirstUse(string key)
+    {
+        Settings.FirstUseIgnoredApps=FirstNetworkUse.NormalizeIgnored(Settings.FirstUseIgnoredApps.Where(name=>!string.Equals(AppKey.Of(name),key,StringComparison.Ordinal)));
+        Alerts?.Configure(Settings.Alerts,Settings.AlertNotifications,Settings.FirstUseIgnoredApps,Settings.ExcludedApps);
+        Changed?.Invoke();_ = SaveAsync();
+    }
     /// <summary>The Don't record keys (<see cref="AppKey.Of"/>, ordinal): the cached set, or in a fixture without one, the settings list's keys.</summary>
     public FrozenSet<string> ExcludedKeys=>excludedKeys??AppExclusions.Keys(Settings?.ExcludedApps??[]);
     /// <summary>True when the name's key is on the Don't record list. Never throws.</summary>

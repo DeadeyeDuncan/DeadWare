@@ -175,7 +175,7 @@ public sealed class MainWindow : Window
         System.Windows.Automation.AutomationProperties.SetName(alertNotifications,"Alert notifications");
         alertNotifications.Checked+=(_,_)=>{if(!syncingWidgetGraphs)session.SetAlertNotifications(true);};
         alertNotifications.Unchecked+=(_,_)=>{if(!syncingWidgetGraphs)session.SetAlertNotifications(false);};history.Children.Add(alertNotifications);
-        var alertHelp=Ui.Text("Rules you set on the Alerts page notify from the tray once per episode and are always logged there, whether or not notifications are on. Cooling Health keeps its own notification setting.",12,"Muted");alertHelp.Margin=new(0,0,0,8);history.Children.Add(alertHelp);
+        var alertHelp=Ui.Text("Rules you set on the Alerts page notify from the tray once per episode and are always logged there, whether or not notifications are on. The first network use rule learns your apps for 3 days once per-app capture has run as administrator, then logs each new app; apps seen within a minute share one notification. Cooling Health keeps its own notification setting.",12,"Muted");alertHelp.Margin=new(0,0,0,8);history.Children.Add(alertHelp);
         var alertOpen=Ui.Button("Open Alerts",()=>Navigate("alerts"));alertOpen.Margin=new(0,0,0,20);history.Children.Add(alertOpen);
         history.Children.Add(Ui.Heading("Connections",16));
         history.Children.Add(Ui.Text("Record endpoint history, choose an optional home city, manage the offline location database and export saved traffic from Connections. Local history rolls over after 30 days or 256 MiB.",12,"Muted"));

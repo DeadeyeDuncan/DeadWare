@@ -65,6 +65,22 @@ public static class FirstNetworkUse
         return new DateTimeOffset(local, zone.GetUtcOffset(local)).ToUniversalTime();
     }
 
+    /// <summary>The Alerts page's line under the rule, the first state that holds in the spec's order. The count is never shown before Restore.</summary>
+    public static string RuleLine(bool logFailed, FirstUseStatus status, bool enabled, bool elevated, bool captureAvailable, DateTimeOffset now, TimeZoneInfo zone, CultureInfo culture)
+    {
+        if (logFailed) return "Paused: the alert log is unavailable.";
+        if (!status.Restored || status.KnownApps is not { } count) return "Starting: reading the known-app list.";
+        string known = count == 1 ? "1 app known" : $"{count.ToString("N0", culture)} apps known";
+        if (!enabled) return $"Switched off: apps are learned without alerts · {known}.";
+        if (status.LearningStart is not { } start)
+            return elevated ? "Waiting for per-app capture to start. Learning starts then."
+                : "Waiting for per-app capture, which runs while DeadWare runs as administrator. Learning starts then.";
+        var end = status.LearningEnd ?? LearningEnd(start, zone);
+        if (now < end) return $"Learning quietly through {TimeZoneInfo.ConvertTime(end.AddTicks(-1), zone).ToString("dddd d MMMM", culture)} · {known}.";
+        if (captureAvailable) return $"Watching for new apps · {known}.";
+        return elevated ? $"Not watching: per-app capture is not running · {known}." : $"Not watching: per-app capture needs DeadWare to run as administrator · {known}.";
+    }
+
     public static string BalloonText(FirstUseGroup group, TimeZoneInfo zone, CultureInfo culture)
     {
         string time = TimeZoneInfo.ConvertTime(group.First, zone).ToString("t", culture);
