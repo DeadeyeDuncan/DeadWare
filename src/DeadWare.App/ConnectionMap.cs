@@ -54,6 +54,8 @@ public sealed class ConnectionMap : FrameworkElement
     internal const double HitRadius = 9, WidgetHitRadius = 12;
     /// <summary>Key of the node under the pointer, or null.</summary>
     public string? HoveredKey { get; private set; }
+    /// <summary>A region in map coordinates (the page's overlay toolbar) that hover chips keep clear of; Rect.Empty reserves nothing.</summary>
+    internal Rect ReservedArea { get; set; } = Rect.Empty;
     public event Action<string?>? PointHovered;
     /// <summary>Tests substitute the embedded land rings (an empty list simulates a failed asset).</summary>
     internal IReadOnlyList<IReadOnlyList<GeoPoint>>? LandOverride { get => landOverride; set { landOverride = value; cachedCamera = null; InvalidateVisual(); } }
@@ -532,7 +534,11 @@ public sealed class ConnectionMap : FrameworkElement
                 var data = points.FirstOrDefault(p => p.Key == hoveredKey);
                 var lines = new List<(string Text, Brush Color)> { (data?.Label ?? hoveredKey, ink) };
                 if (data?.Detail is { } detail) lines.Add((detail, muted));
-                ChartFrame.Chip(dc, hit.Center, bounds, lines, Theme.ChartTypeface, VisualTreeHelper.GetDpi(this).PixelsPerDip, false);
+                // A chip near the reserved toolbar area is placed in the plot below it, so the toolbar never covers the name.
+                var plot = bounds;
+                if (!ReservedArea.IsEmpty && hit.Center.X > ReservedArea.Left - 220 && hit.Center.Y < ReservedArea.Bottom + 80 && ReservedArea.Bottom + 8 < bounds.Bottom)
+                    plot = new Rect(bounds.X, ReservedArea.Bottom + 8, bounds.Width, bounds.Bottom - ReservedArea.Bottom - 8);
+                ChartFrame.Chip(dc, hit.Center, plot, lines, Theme.ChartTypeface, VisualTreeHelper.GetDpi(this).PixelsPerDip, false);
             }
             Text(dc, StatusSummary, new(8, ActualHeight - 30), ActualWidth - 16, 28, muted);
         }

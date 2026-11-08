@@ -139,6 +139,39 @@
 </Style>
 <!-- Glass brushes are palette resources; high contrast supplies solid system colors. -->
 <Style x:Key="Card" TargetType="Border"><Setter Property="CornerRadius" Value="14"/><Setter Property="BorderThickness" Value="1"/><Setter Property="Background" Value="{DynamicResource GlassPanel}"/><Setter Property="BorderBrush" Value="{DynamicResource GlassBorder}"/><Setter Property="SnapsToDevicePixels" Value="True"/></Style>
+<Style TargetType="TabControl" BasedOn="{StaticResource BodyControlText}">
+  <Setter Property="Background" Value="Transparent"/><Setter Property="Foreground" Value="{DynamicResource Ink}"/>
+  <Setter Property="BorderBrush" Value="{DynamicResource GlassBorder}"/><Setter Property="BorderThickness" Value="0,1,0,0"/><Setter Property="Padding" Value="0,8,0,0"/>
+  <Setter Property="HorizontalContentAlignment" Value="Stretch"/><Setter Property="VerticalContentAlignment" Value="Stretch"/>
+  <Setter Property="Template"><Setter.Value>
+    <ControlTemplate TargetType="TabControl">
+      <Grid KeyboardNavigation.TabNavigation="Local">
+        <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+        <TabPanel IsItemsHost="True" Margin="0,0,0,6" KeyboardNavigation.TabIndex="1"/>
+        <Border Grid.Row="1" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" Padding="{TemplateBinding Padding}">
+          <ContentPresenter x:Name="PART_SelectedContentHost" ContentSource="SelectedContent" HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}" VerticalAlignment="{TemplateBinding VerticalContentAlignment}"/>
+        </Border>
+      </Grid>
+    </ControlTemplate>
+  </Setter.Value></Setter>
+</Style>
+<Style TargetType="TabItem" BasedOn="{StaticResource BodyControlText}">
+  <Setter Property="Background" Value="Transparent"/><Setter Property="Foreground" Value="{DynamicResource Muted}"/>
+  <Setter Property="BorderBrush" Value="{DynamicResource GlassBorder}"/><Setter Property="BorderThickness" Value="1"/><Setter Property="Padding" Value="11,6"/><Setter Property="Margin" Value="0,0,6,0"/>
+  <Setter Property="Template"><Setter.Value>
+    <ControlTemplate TargetType="TabItem">
+      <Border x:Name="Frame" CornerRadius="9" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" Padding="{TemplateBinding Padding}" SnapsToDevicePixels="True">
+        <ContentPresenter ContentSource="Header" RecognizesAccessKey="True" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+      </Border>
+      <ControlTemplate.Triggers>
+        <Trigger Property="IsSelected" Value="True"><Setter Property="Background" Value="{DynamicResource GlassControl}"/><Setter Property="Foreground" Value="{DynamicResource Ink}"/></Trigger>
+        <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Frame" Property="BorderBrush" Value="{DynamicResource Accent}"/></Trigger>
+        <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="Frame" Property="BorderBrush" Value="{DynamicResource Accent}"/></Trigger>
+        <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.5"/></Trigger>
+      </ControlTemplate.Triggers>
+    </ControlTemplate>
+  </Setter.Value></Setter>
+</Style>
 <Style TargetType="Button" BasedOn="{StaticResource BodyControlText}">
   <Setter Property="Background" Value="{DynamicResource GlassControl}"/><Setter Property="Foreground" Value="{DynamicResource Ink}"/>
   <Setter Property="BorderBrush" Value="{DynamicResource Hairline}"/><Setter Property="BorderThickness" Value="1"/>
