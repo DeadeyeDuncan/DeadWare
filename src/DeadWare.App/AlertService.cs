@@ -54,6 +54,9 @@ public sealed class AlertService
 
     /// <summary>Raised on the alert worker for each episode that may notify. Subscribers marshal to their own thread.</summary>
     public event Action<AlertEpisode>? EpisodeStarted;
+    /// <summary>Raised on the alert worker when a first network use group closes with apps left and notifications are on; at most one a group
+    /// window. A group still open at Quit or sign-out raises nothing. Subscribers marshal to their own thread.</summary>
+    public event Action<FirstUseGroup>? FirstUseGroupClosed;
 
     /// <param name="connectionNames">Reads Connections history's names for the first-use seed; called only after <see cref="Start"/>. Throwing or missing counts as a failed read.</param>
     /// <param name="firstUseGroupWindow">How long apps first seen after the first one share its balloon group: above 0 and at most 60 s (the default).</param>
@@ -208,8 +211,10 @@ public sealed class AlertService
             // The Don't record set goes after Replace and Restore (Restore ignores it), so an excluded budget's restored episode ends now; the seed below skips it.
             pending.AddRange(evaluator.SetExcluded(AppExclusions.Keys(startExcluded), startedAt).Ended);
             tracker.Restore(store.ReadFirstUse(machine));
-            tracker.Configure(FirstRule(startRules), Volatile.Read(ref ignoredApps), startExcluded);
+            var seedRule = FirstRule(startRules);
+            tracker.Configure(seedRule, Volatile.Read(ref ignoredApps), startExcluded);
             PublishFirstUse();
+            await SeedAsync(seedRule).ConfigureAwait(false);
             try
             {
                 // Per-minute rows let the evaluator skip a minute the usage worker already handed over before this seed was read.
@@ -244,10 +249,42 @@ public sealed class AlertService
             }
             void CloseDueGroups()
             {
+                // Once Quit or sign-out has begun, a group still open shows no balloon.
+                if (Volatile.Read(ref stopped)) return;
                 var now = time.GetUtcNow();
                 // TakeDueGroup closes only the earliest due group, and returns null also when that group emptied, so drain every due one.
-                // Closed groups are dropped here until the balloon is wired to them.
-                while (tracker.GroupDue is { } due && due <= now) _ = tracker.TakeDueGroup(now);
+                while (tracker.GroupDue is { } due && due <= now)
+                    if (tracker.TakeDueGroup(now) is { } group && Volatile.Read(ref notifications) == 1)
+                        try { FirstUseGroupClosed?.Invoke(group); } catch { /* A failing notifier never fails the log. */ }
+            }
+            // Seeds each history store whose marker is missing, only while a FirstNetworkUse rule exists. Both reads finish before anything is
+            // merged, and the stop flag is checked before each read and before the first write, so a seed cut short by Quit writes nothing
+            // and runs at the next start. The seed adds known rows and markers only, never episodes; Flush writes them in chunks of 1,024.
+            async Task SeedAsync(AlertRule? rule)
+            {
+                if (rule is null) return;
+                var read = new List<(FirstUseSource Source, IReadOnlyList<ApplicationSeen>? Names)>(2);
+                foreach (var source in (FirstUseSource[])[FirstUseSource.Usage, FirstUseSource.Connections])
+                {
+                    if (!tracker.NeedsSeed(source)) continue;
+                    if (Volatile.Read(ref stopped)) return;
+                    read.Add((source, await ReadNamesAsync(source).ConfigureAwait(false)));
+                }
+                if (read.Count == 0 || Volatile.Read(ref stopped)) return;
+                var now = time.GetUtcNow();
+                // A null result leaves that store's marker unset, so it is read again at the next start.
+                foreach (var (source, names) in read) tracker.Seed(source, names, now);
+                Flush();
+            }
+            async Task<IReadOnlyList<ApplicationSeen>?> ReadNamesAsync(FirstUseSource source)
+            {
+                // Each read runs on its own store's side (its read connection or gate), never here; a throwing or missing delegate counts as null.
+                try
+                {
+                    if (source == FirstUseSource.Usage) return await usage.ReadApplicationNamesAsync().ConfigureAwait(false);
+                    return connectionNames is null ? null : await connectionNames().ConfigureAwait(false);
+                }
+                catch (Exception) { return null; }
             }
             async Task ReseedAsync(IReadOnlyList<string> targets)
             {
@@ -274,13 +311,30 @@ public sealed class AlertService
             Flush();
             using var timer = new PeriodicTimer(interval, time);
             Task<bool> tick = timer.WaitForNextTickAsync().AsTask(), available = queue.Reader.WaitToReadAsync().AsTask();
+            // The third wake-up: while a first-use group is open, the worker wakes at its due time, not at the next flush tick.
+            Task? wake = null; DateTimeOffset? wakeFor = null;
             while (true)
             {
-                await Task.WhenAny(tick, available).ConfigureAwait(false);
+                if (tracker.GroupDue is { } due)
+                {
+                    if (wake is null || wakeFor != due)
+                    {
+                        var delay = due - time.GetUtcNow();
+                        wake = Task.Delay(delay > TimeSpan.Zero ? delay : TimeSpan.Zero, time); wakeFor = due;
+                    }
+                }
+                else { wake = null; wakeFor = null; }
+                await (wake is null ? (Task)Task.WhenAny(tick, available) : Task.WhenAny(tick, available, wake)).ConfigureAwait(false);
                 if (tick.IsCompleted)
                 {
                     if (!await tick.ConfigureAwait(false)) break;
                     CloseDueGroups(); Flush(); tick = timer.WaitForNextTickAsync().AsTask();
+                }
+                if (wake is { IsCompleted: true })
+                {
+                    // A delay that ends a little early leaves the group open; the next pass waits again for what is left.
+                    wake = null; wakeFor = null;
+                    CloseDueGroups();
                 }
                 if (available.IsCompleted)
                 {
@@ -292,11 +346,16 @@ public sealed class AlertService
                             case BatteryWork battery: Apply(evaluator.ObserveBattery(battery.At, battery.Reading)); break;
                             case RulesWork replaced:
                                 pending.AddRange(evaluator.Replace(replaced.Rules, replaced.At));
-                                tracker.Configure(FirstRule(replaced.Rules), replaced.Ignored, replaced.Excluded);
+                                var nextRule = FirstRule(replaced.Rules);
+                                bool ruleAdded = seedRule is null && nextRule is not null;
+                                seedRule = nextRule;
+                                tracker.Configure(nextRule, replaced.Ignored, replaced.Excluded);
                                 var exclusion = evaluator.SetExcluded(AppExclusions.Keys(replaced.Excluded), replaced.At);
                                 pending.AddRange(exclusion.Ended);
                                 // Only the budgets whose app left the list re-read today's saved minutes; other totals stay.
                                 await ReseedAsync(exclusion.Reseed).ConfigureAwait(false);
+                                // The first FirstNetworkUse rule seeds the stores whose marker is missing, after the new Don't record set is in place.
+                                if (ruleAdded) await SeedAsync(nextRule).ConfigureAwait(false);
                                 break;
                             case NetworkUseWork use:
                                 // First-use episodes never pass through the evaluator or EpisodeStarted, so the hour floor never applies.
