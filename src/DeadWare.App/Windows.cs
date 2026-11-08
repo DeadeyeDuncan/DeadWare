@@ -284,7 +284,9 @@ public sealed class MainWindow : Window
         foreach(var (key,button) in navigation)button.Tag=key==destination?"active":null;
         page=destination;content.Content=pages[destination];heading.Text=destination switch {"network"=>"Network","storage"=>"Storage","processes"=>"Processes","connections"=>"Connections","cooling"=>"Cooling Health","battery"=>"Battery history","usage"=>"Usage history","alerts"=>"Alerts","updates"=>"Keep DeadWare current","sensors"=>"Hardware sensors","desktop"=>"Settings",_=>"System overview"};
         RefreshUpdateNotice();Refresh();
-        if(destination=="desktop"){_ = RefreshStartupAsync();if(excludedApps is not null)_ = excludedApps.Suggestions.RefreshAsync();}
+        // A freshly shown Settings page refreshes the app suggestions from the block's own Loaded; only an already-shown block is refreshed
+        // here. Unloaded pages (the offscreen shell preview, the UI checks) must never open a history store.
+        if(destination=="desktop"){_ = RefreshStartupAsync();if(excludedApps is {IsLoaded:true})_ = excludedApps.Suggestions.RefreshAsync();}
     }
     private void Refresh()
     {
