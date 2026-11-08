@@ -176,7 +176,7 @@ internal sealed class ApplicationResourcesCard : StackPanel
     {
         slot = (slotStart, slotEnd); slotFromGpu = ranking == ProcessRank.Gpu;
         // Until the read returns the heading names every minute that starts in the slot.
-        heading.Text = SlotHeading(CeilingMinute(slotStart), CeilingMinute(slotEnd), WithDate); clear.Visibility = Visibility.Visible;
+        heading.Text = SlotHeading(TrafficStrips.CeilingMinute(slotStart), TrafficStrips.CeilingMinute(slotEnd), WithDate); clear.Visibility = Visibility.Visible;
         // A new Rank by switches the selected app's chart at once; the slot does not wait for Rank by to settle.
         rank.SelectedItem = rank.Items.Cast<RankChoice>().First(choice => choice.Rank == ranking);
         rankDelay.Stop(); _ = ReloadAsync();
@@ -198,17 +198,17 @@ internal sealed class ApplicationResourcesCard : StackPanel
         if (listed) ReadWhenSettled();
     }
 
-    /// <summary>Like "Busiest apps · 03:13–03:16" in local time; <paramref name="withDate"/> (Week and Month) adds the date, on the end too
-    /// when the span crosses midnight.</summary>
-    internal static string SlotHeading(DateTimeOffset first, DateTimeOffset lastEnd, bool withDate)
+    /// <summary>Like "Busiest apps · 03:13–03:16": "Busiest apps · " and <see cref="SlotSpan"/>.</summary>
+    internal static string SlotHeading(DateTimeOffset first, DateTimeOffset lastEnd, bool withDate) => "Busiest apps · " + SlotSpan(first, lastEnd, withDate);
+    /// <summary>Like "03:13–03:16" in local time; <paramref name="withDate"/> (Week and Month) adds the date, on the end too when the span
+    /// crosses midnight.</summary>
+    internal static string SlotSpan(DateTimeOffset first, DateTimeOffset lastEnd, bool withDate)
     {
         DateTime start = first.ToLocalTime().DateTime, end = lastEnd.ToLocalTime().DateTime;
         static string Format(DateTime time, bool date) => time.ToString(date ? "MMM d HH:mm" : "HH:mm", CultureInfo.CurrentCulture);
-        return $"Busiest apps · {Format(start, withDate)}–{Format(end, withDate && end.Date != start.Date)}";
+        return $"{Format(start, withDate)}–{Format(end, withDate && end.Date != start.Date)}";
     }
     private bool WithDate => period is { } shown && shown.To - shown.From > TimeSpan.FromDays(1);
-    private static DateTimeOffset CeilingMinute(DateTimeOffset time)
-        => new((time.UtcTicks + TimeSpan.TicksPerMinute - 1) / TimeSpan.TicksPerMinute * TimeSpan.TicksPerMinute, TimeSpan.Zero);
 
     private void RankChanged()
     {
@@ -272,7 +272,7 @@ internal sealed class ApplicationResourcesCard : StackPanel
         // The heading names the minutes listed, from the first one's start to the last one's end.
         if (shownSlot is { } listed)
             heading.Text = view is { FirstMinute: { } first, LastMinuteEnd: { } end } ? SlotHeading(first, end, WithDate)
-                : SlotHeading(CeilingMinute(listed.From), CeilingMinute(listed.To), WithDate);
+                : SlotHeading(TrafficStrips.CeilingMinute(listed.From), TrafficStrips.CeilingMinute(listed.To), WithDate);
         // The chart follows a listed application; one missing from the new period or slot has nothing to show.
         if (SelectedApp is { } app && (view.RecordedMinutes == 0 || (app != ProcessHistory.EverythingElse
             && !view.Rows.Any(r => r.Name.Equals(app, StringComparison.OrdinalIgnoreCase))))) SelectedApp = null;
@@ -321,17 +321,15 @@ internal sealed class ApplicationResourcesCard : StackPanel
     }
 
     /// <summary>Gives the two GPU columns' headers <paramref name="tip"/> (none when null). A header style based on the theme's carries it,
-    /// so those headers keep the theme's padding and captions, and each Header stays its title.</summary>
+    /// so those headers keep the theme's padding and captions, and each Header stays its title. Without a tip the HeaderStyle is cleared,
+    /// never set to null: a locally set null would stop the header taking the theme's implicit style.</summary>
     private void GpuHeaderTips(string? tip)
     {
         if (tip == gpuHeaderTip) return;
         gpuHeaderTip = tip;
-        Style? header = null;
-        if (tip is not null)
-        {
-            header = new Style(typeof(DataGridColumnHeader), TryFindResource(typeof(DataGridColumnHeader)) as Style);
-            header.Setters.Add(new Setter(ToolTipProperty, tip));
-        }
+        if (tip is null) { foreach (var column in gpuColumns) column.ClearValue(DataGridColumn.HeaderStyleProperty); return; }
+        var header = new Style(typeof(DataGridColumnHeader), TryFindResource(typeof(DataGridColumnHeader)) as Style);
+        header.Setters.Add(new Setter(ToolTipProperty, tip));
         foreach (var column in gpuColumns) column.HeaderStyle = header;
     }
 

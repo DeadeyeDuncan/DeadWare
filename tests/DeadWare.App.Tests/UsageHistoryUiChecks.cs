@@ -3,8 +3,11 @@ using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
+using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using System.Windows.Threading;
 using DeadWare.App;
 using DeadWare.Core;
 using Xunit;
@@ -40,12 +43,14 @@ internal static class UsageHistoryUiChecks
         {
             Assembly.GetType("DeadWare.App.Theme")!.GetMethod("Apply", All)!.Invoke(null, [theme]);
             CheckChart(theme, now, output);
+            CheckFractionalBucketsConnect(now);
             CheckByteUnit(now);
             CheckSelection(now);
             foreach (bool empty in new[] { true, false })
             {
                 var page = (FrameworkElement)Activator.CreateInstance(PageType, All, null, [session, true], null)!;
                 PageType.GetMethod("Apply", All)!.Invoke(page, [Data(now, empty)]);
+                PageType.GetMethod("ApplyStrip", All)!.Invoke(page, [StripFor(now, empty), now]);
                 double width = empty ? 620 : 1050;
                 Layout(page, width, 1100);
                 var bitmap = new RenderTargetBitmap((int)width, 1100, 96, 96, PixelFormats.Pbgra32); bitmap.Render(page);
@@ -81,7 +86,7 @@ internal static class UsageHistoryUiChecks
                     Assert.Equal(4, rows.Length);
                     Assert.Contains("Other applications (12 more)", RowName(rows[^1]));
                     Assert.Equal("chrome.exe", RowName(rows[0]));
-                    Assert.Contains("3 recorded minutes had no per-application capture", text);
+                    Assert.Contains("3 recorded minutes had no or incomplete per-application capture; the totals may miss some of their traffic, and the strip leaves them out.", texts);
                     Assert.Contains("15 applications", text);
                     var search = (TextBox)PageType.GetField("search", All)!.GetValue(page)!;
                     search.Text = "steam";
@@ -89,8 +94,14 @@ internal static class UsageHistoryUiChecks
                     Assert.Equal("steam.exe", RowName(Assert.Single(filtered)));
                     Assert.Contains("1 of 15 applications match", Text(page));
                     search.Text = "";
-                    var shareBar = (Grid)PageType.GetField("shareBar", All)!.GetValue(page)!;
-                    Assert.Equal(4, shareBar.Children.Count);
+                    // The strip takes the share bar's place: the period header, the six applications and Other, each with its swatch.
+                    var legend = ((TrafficStripView)PageType.GetField("strip", All)!.GetValue(page)!).Legend;
+                    Assert.Equal(8, legend.Count);
+                    Assert.Equal("Totals for this period", legend[0].Text); Assert.Null(legend[0].Swatch);
+                    string[] names = StripFor(now).Applications.Select(a => a.Name).ToArray();
+                    for (int i = 0; i < 6; i++) { Assert.StartsWith(names[i] + " · ", legend[i + 1].Text); Assert.Same(Theme.StripBrush(i), legend[i + 1].Swatch); }
+                    Assert.StartsWith("Other (9 more) · ", legend[7].Text);
+                    Assert.Equal(((SolidColorBrush)Theme.Brush("Muted")).Color, ((SolidColorBrush)legend[7].Swatch!).Color);
                 }
                 if (output is not null)
                 {
@@ -101,6 +112,18 @@ internal static class UsageHistoryUiChecks
             }
         }
         Assembly.GetType("DeadWare.App.Theme")!.GetMethod("Apply", All)!.Invoke(null, ["Midnight"]);
+        // The strip's reads finish on the UI thread, as they do in the app.
+        var context = SynchronizationContext.Current;
+        SynchronizationContext.SetSynchronizationContext(new DispatcherSynchronizationContext(Dispatcher.CurrentDispatcher));
+        try
+        {
+            CheckStripListsSlot(session, now);
+            CheckStripSharesTheCursor(session, now);
+            CheckStripClearPaths(session, now);
+            CheckStripReadsOnItsOwn(session, now);
+            CheckShowInConnections(session, now);
+        }
+        finally { SynchronizationContext.SetSynchronizationContext(context); }
         ApplicationResourcesUiChecks.Run(app);
     }
 
@@ -162,6 +185,18 @@ internal static class UsageHistoryUiChecks
             using var stream = File.Create(Path.Combine(output, $"usage-chart-{theme}.png"));
             var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap)); encoder.Save(stream);
         }
+    }
+
+    // ReadMetric's Week grid at 1,500 points: 403,200 ms (6.72 min) from now − 7 d (a whole minute). A bucket holds 6 or 7 whole-minute starts,
+    // and a fully recorded 6-start bucket must connect.
+    private static void CheckFractionalBucketsConnect(DateTimeOffset now)
+    {
+        var from = now.AddDays(-7);
+        UsageHistoryBucket B(int k, long minutes) => new(from.AddMilliseconds(403_200L * k), from.AddMilliseconds(403_200L * (k + 1)), 50, 40, 60, minutes, minutes, minutes * 60);
+        Assert.Equal(6, TrafficStrips.MinuteStarts(B(3, 0).Start, B(3, 0).End)); Assert.Equal(7, TrafficStrips.MinuteStarts(B(2, 0).Start, B(2, 0).End));
+        Assert.True(UsageHistoryChart.IsFull(B(3, 6), 403_200)); Assert.True(UsageHistoryChart.CanConnect(B(2, 7), B(3, 6), 403_200));
+        Assert.False(UsageHistoryChart.IsFull(B(3, 5), 403_200)); Assert.False(UsageHistoryChart.CanConnect(B(2, 7), B(3, 5), 403_200));
+        Assert.False(UsageHistoryChart.IsFull(B(2, 6), 403_200)); Assert.True(UsageHistoryChart.IsFull(B(2, 7), 403_200));
     }
 
     private static FrameworkElement ChartWith(DateTimeOffset now, string unit, double? maximum, double value)
@@ -248,6 +283,352 @@ internal static class UsageHistoryUiChecks
         Assert.Equal(1, activated);
         // Each Left and Right reports its index, even at an edge where it stays (Right at 35); SetValue, Enter and clicks report nothing.
         Assert.Equal([3, 2, 1, 0, 0, 35], moved);
+    }
+
+    private const string LoadingSlot = "Loading this slot…", SlotUnavailable = "History unavailable for this slot.", EmptySlot = "No application traffic recorded in this slot.";
+    private static readonly string[] Moments = ["cpu", "memory", "gpu"];
+
+    /// <summary>A month page with Data and StripFor applied and laid out at 1050 × 1100. Its slot reads are queued, never answered.</summary>
+    private static (UsageHistoryPage Page, TrafficStripChart Chart, List<(DateTimeOffset From, DateTimeOffset To)> SlotReads) Build(UiSession session, DateTimeOffset now)
+    {
+        var page = new UsageHistoryPage(session);
+        var slotReads = new List<(DateTimeOffset From, DateTimeOffset To)>();
+        SetField(page, "readSlotApplications", (Func<DateTimeOffset, DateTimeOffset, Task<UsageApplicationView?>>)((from, to) =>
+            { slotReads.Add((from, to)); return new TaskCompletionSource<UsageApplicationView?>().Task; }));
+        page.Apply((UsagePageData)Data(now, false)); page.ApplyStrip(StripFor(now), now);
+        Layout(page, 1050, 1100);
+        return (page, Field<TrafficStripView>(page, "strip").Chart, slotReads);
+    }
+
+    private static void CheckStripListsSlot(UiSession session, DateTimeOffset now)
+    {
+        var (page, chart, slotReads) = Build(session, now);
+        var slots = StripFor(now).Slots; var summary = Field<TextBlock>(page, "applicationSummary"); var gap = Field<TextBlock>(page, "gapNotice");
+        var resources = Field<ApplicationResourcesCard>(page, "resources");
+        void Listed(int index)
+        {
+            var slot = slots[index];
+            Assert.Equal<(DateTimeOffset, DateTimeOffset)?>((slot.Start, slot.End), ApplicationSlot(page));
+            Assert.Equal("Applications · " + ApplicationResourcesCard.SlotSpan(TrafficStrips.CeilingMinute(slot.Start), TrafficStrips.CeilingMinute(slot.End), true),
+                Field<TextBlock>(page, "applicationsHeading").Text);
+            Assert.Equal(Visibility.Visible, Field<Button>(page, "applicationsClear").Visibility);
+            Assert.Equal(LoadingSlot, summary.Text); Assert.Empty(Rows(page));
+            Assert.Equal((slot.Start, slot.End), slotReads[^1]);
+            // One cursor: the CPU, RAM and GPU hairlines mark the slot's time (Data's grid is the strip's), and the strip keeps its selection.
+            foreach (string kind in Moments) Assert.Equal(index, page.Chart(kind).SelectedIndex);
+            Assert.Equal(index, chart.SelectedIndex);
+        }
+        // A click lists the slot; offscreen nothing takes keyboard focus, so any Focus() call would show in the scope.
+        var scope = FocusManager.GetFocusScope(chart); FocusManager.SetFocusedElement(scope, null);
+        ClickSlot(chart, 3);
+        Listed(3); Assert.Single(slotReads);
+        Assert.Null(FocusManager.GetFocusedElement(scope));
+        Assert.Null(resources.Slot);
+        // The slot's read shows its rows, its summary and its gap notice; an empty slot and an unreadable one say so.
+        page.ApplySlotApplications(SlotView(slots[3]));
+        Assert.Equal(["chrome.exe", UsageMetrics.UnknownName, "Other applications (2 more)"], Rows(page).Select(RowName));
+        Assert.StartsWith("4 applications · ", summary.Text);
+        Assert.Equal("1 recorded minutes had no or incomplete per-application capture; the totals may miss some of their traffic, and the strip leaves them out.", gap.Text);
+        Assert.Equal(Visibility.Visible, gap.Visibility);
+        page.ApplySlotApplications(new UsageApplicationView(slots[3].Start, slots[3].End, [], 0, 0, 0, 0, 28, null, 0));
+        Assert.Equal(EmptySlot, summary.Text); Assert.Empty(Rows(page));
+        page.ApplySlotApplications(null);
+        Assert.Equal(SlotUnavailable, summary.Text); Assert.Empty(Rows(page)); Assert.Equal(Visibility.Collapsed, gap.Visibility);
+        // Enter on the selected slot lists it the same way.
+        Click(Field<Button>(page, "applicationsClear"));
+        chart.SelectedIndex = 5; Assert.True(chart.HandleKey(Key.Enter));
+        Listed(5); Assert.Equal(2, slotReads.Count);
+        Assert.Null(FocusManager.GetFocusedElement(scope));
+        // A Moments-chart activation lists the card's slot and leaves the Applications slot; a strip activation leaves the card's.
+        var cpu = page.Chart("cpu"); cpu.SelectedIndex = 7; Assert.True(cpu.HandleKey(Key.Enter));
+        var bucket = (start: slots[7].Start, end: slots[7].End);
+        Assert.Equal<(DateTimeOffset, DateTimeOffset)?>(bucket, resources.Slot); Assert.Equal<(DateTimeOffset, DateTimeOffset)?>((slots[5].Start, slots[5].End), ApplicationSlot(page));
+        ClickSlot(chart, 3);
+        Listed(3); Assert.Equal<(DateTimeOffset, DateTimeOffset)?>(bucket, resources.Slot);
+        // At a window's height the table sits below the fold; activation scrolls it into view, and the refresh never scrolls.
+        Click(Field<Button>(page, "applicationsClear"));
+        var window = new Size(1050, 800); var grid = Field<DataGrid>(page, "applications");
+        page.ScrollToTop(); Layout(page, window.Width, window.Height);
+        Assert.Equal(0, page.VerticalOffset);
+        Assert.True(Top(grid, page) > page.ViewportHeight, "The Applications table starts below the fold.");
+        ClickSlot(chart, 3);
+        WaitFor(() => { Layout(page, window.Width, window.Height); return page.VerticalOffset > 0; });
+        Assert.InRange(Top(grid, page), -0.5, page.ViewportHeight - 1);
+        page.ScrollToTop(); Layout(page, window.Width, window.Height);
+        Assert.Equal(0, page.VerticalOffset);
+        page.Apply((UsagePageData)Data(now, false)); page.ApplyStrip(StripFor(now), now); Pump(); Layout(page, window.Width, window.Height);
+        Assert.Equal(0, page.VerticalOffset);
+        Listed(3);
+    }
+
+    private static void CheckStripSharesTheCursor(UiSession session, DateTimeOffset now)
+    {
+        var (page, chart, slotReads) = Build(session, now);
+        var resources = Field<ApplicationResourcesCard>(page, "resources");
+        // Left on the strip with nothing selected goes to its last slot and moves the Moments charts by time; nothing is listed.
+        Assert.True(chart.HandleKey(Key.Left));
+        Assert.Equal(1499, chart.SelectedIndex);
+        foreach (string kind in Moments) Assert.Equal(1499, page.Chart(kind).SelectedIndex);
+        Assert.Null(ApplicationSlot(page)); Assert.Null(resources.Slot); Assert.Empty(slotReads);
+        // Left on the CPU chart moves the strip.
+        Assert.True(page.Chart("cpu").HandleKey(Key.Left));
+        Assert.Equal(1498, chart.SelectedIndex); Assert.Equal(1498, page.Chart("memory").SelectedIndex);
+        Assert.Null(ApplicationSlot(page)); Assert.Null(resources.Slot); Assert.Empty(slotReads);
+        // A refresh keeps the hairline at its time, also when the strip's slots move.
+        page.Apply((UsagePageData)Data(now, false));
+        Assert.Equal(1498, chart.SelectedIndex);
+        var strip = StripFor(now);
+        page.ApplyStrip(strip with { Slots = [.. strip.Slots.Skip(1)] }, now);
+        Assert.Equal(1497, chart.SelectedIndex);
+        Assert.Equal(1498, page.Chart("cpu").SelectedIndex);
+    }
+
+    private static void CheckStripClearPaths(UiSession session, DateTimeOffset now)
+    {
+        var (page, chart, _) = Build(session, now);
+        var resources = Field<ApplicationResourcesCard>(page, "resources");
+        var search = Field<TextBox>(page, "search"); var applicationsClear = Field<Button>(page, "applicationsClear");
+        void ListBoth()
+        {
+            var cpu = page.Chart("cpu"); cpu.SelectedIndex = 7; Assert.True(cpu.HandleKey(Key.Enter));
+            ClickSlot(chart, 3);
+            Assert.NotNull(resources.Slot); Assert.NotNull(ApplicationSlot(page)); Assert.NotNull(Marked(page));
+        }
+        void Cleared(string path)
+        {
+            Assert.True(ApplicationSlot(page) is null, $"{path} left the Applications slot listed.");
+            Assert.True(resources.Slot is null, $"{path} left the card's slot listed.");
+            Assert.True(Marked(page) is null, $"{path} left the cursor.");
+            Assert.True(chart.SelectedIndex is null, $"{path} left the strip's hairline.");
+            foreach (string kind in Moments) Assert.True(page.Chart(kind).SelectedIndex is null, $"{path} left the {kind} hairline.");
+            Assert.Equal("Applications", Field<TextBlock>(page, "applicationsHeading").Text);
+            Assert.Equal(Visibility.Collapsed, applicationsClear.Visibility);
+            Assert.Equal(4, Rows(page).Count);
+        }
+        ListBoth(); Press(chart, Key.Escape); Cleared("Esc");
+        ListBoth(); Click(applicationsClear); Cleared("The Applications Clear");
+        ListBoth(); Click(Descendants(resources).OfType<Button>().Single(b => Equals(b.Content, "Clear"))); Cleared("The card's Clear");
+        ListBoth();
+        var range = Field<ComboBox>(page, "range"); range.SelectedIndex = 1; Cleared("A range change");
+        ListBoth(); Click(Descendants(page).OfType<Button>().Single(b => System.Windows.Automation.AutomationProperties.GetName(b) == "Earlier period")); Cleared("◀ Earlier");
+        ListBoth(); page.ShowDay(now.AddDays(-2)); Cleared("ShowDay");
+        // The Applications Clear collapses once pressed: holding the focus, it hands it to the search box below it.
+        ListBoth();
+        var scope = FocusManager.GetFocusScope(applicationsClear);
+        FocusManager.SetFocusedElement(scope, applicationsClear);
+        Click(applicationsClear);
+        Assert.Same(search, FocusManager.GetFocusedElement(scope));
+        FocusManager.SetFocusedElement(scope, null);
+    }
+
+    private static void CheckStripReadsOnItsOwn(UiSession session, DateTimeOffset now)
+    {
+        var page = new UsageHistoryPage(session);
+        var reads = new List<(DateTimeOffset From, DateTimeOffset To, int Points, TaskCompletionSource<TrafficStrip?> Reply)>();
+        SetField(page, "readStrip", (Func<DateTimeOffset, DateTimeOffset, int, Task<TrafficStrip?>>)((from, to, points) =>
+            { var reply = new TaskCompletionSource<TrafficStrip?>(); reads.Add((from, to, points, reply)); return reply.Task; }));
+        SetField(page, "showing", (Func<bool>)(() => true));
+        Layout(page, 1050, 1100);
+        var chart = Field<TrafficStripView>(page, "strip").Chart; var cpu = page.Chart("cpu");
+        int points = (int)Math.Clamp(cpu.ActualWidth > 0 ? cpu.ActualWidth : 600, 60, 1500);
+        // The Device charts and the table never wait for the strip.
+        var first = LoadAsync(page);
+        Assert.Single(reads);
+        WaitFor(() => first.IsCompleted);
+        Assert.False(reads[0].Reply.Task.IsCompleted);
+        Assert.Equal((first.Result.From, first.Result.To, points), (reads[0].From, reads[0].To, reads[0].Points));
+        page.Apply(first.Result);
+        Assert.Same(first.Result, Field<UsagePageData>(page, "data"));
+        Assert.Same(first.Result.Metrics[UsageMetrics.Cpu], Assert.Single(Traces(cpu)).View);
+        Assert.Equal("No application traffic recorded in this period.", Field<TextBlock>(page, "applicationSummary").Text);
+        Assert.Null(chart.Strip);
+        // Each load starts its own strip read; of two, only the newer is shown, whichever answers first.
+        var second = LoadAsync(page);
+        Assert.Equal(2, reads.Count);
+        WaitFor(() => second.IsCompleted);
+        TrafficStrip For(int read) => new(reads[read].From, reads[read].To, 60_000, TrafficMeasure.Total, [], 0, 0, 0, []);
+        var newer = For(1); var older = For(0);
+        reads[1].Reply.SetResult(newer); Pump();
+        Assert.Same(newer, chart.Strip);
+        reads[0].Reply.SetResult(older); Pump();
+        Assert.Same(newer, chart.Strip);
+        page.ApplyStrip(null, now);
+        Assert.Null(chart.Strip); Assert.Equal("History unavailable", typeof(TrafficStripChart).GetField("message", All)!.GetValue(chart));
+        // A day ending now: its last minute is not due yet, so it is left unhatched for "Not saved yet".
+        var from = now.AddDays(-1);
+        var day = new TrafficStrip(from, now, 60_000, TrafficMeasure.Total, [], 0, 0, 0,
+            [new TrafficStripSlot(from, from.AddMinutes(1), 1, 60, false, [0], [0])]);
+        page.ApplyStrip(day, now); Layout(page, 1050, 1100); chart.SlotAt(new Point());
+        var plot = chart.PlotRect;
+        Assert.NotNull(chart.Hatch);
+        Assert.Equal(plot.Left + plot.Width * (1439d / 1440), chart.Hatch!.Bounds.Right, 3);
+        Assert.True(chart.Hatch.Bounds.Right < plot.Right);
+        var third = LoadAsync(page);
+        Assert.Equal(3, reads.Count);
+        WaitFor(() => third.IsCompleted);
+        // A range change or Refresh drops the strip read still in flight for the old period.
+        typeof(UsageHistoryPage).GetMethod("RequestRefresh", All)!.Invoke(page, []);
+        reads[2].Reply.SetResult(For(2)); Pump();
+        Assert.Same(day, chart.Strip);
+        var fourth = LoadAsync(page);
+        Assert.Equal(4, reads.Count);
+        WaitFor(() => fourth.IsCompleted);
+        reads[3].Reply.SetResult(null); Pump();
+        Assert.Null(chart.Strip); Assert.Equal("History unavailable", typeof(TrafficStripChart).GetField("message", All)!.GetValue(chart));
+        // A listed slot: an older slot read answering after a newer one is dropped, and a load reads the listed slot again.
+        var slotReads = new List<(DateTimeOffset From, DateTimeOffset To, TaskCompletionSource<UsageApplicationView?> Reply)>();
+        SetField(page, "readSlotApplications", (Func<DateTimeOffset, DateTimeOffset, Task<UsageApplicationView?>>)((from, to) =>
+            { var reply = new TaskCompletionSource<UsageApplicationView?>(); slotReads.Add((from, to, reply)); return reply.Task; }));
+        var slots = StripFor(now).Slots; page.ApplyStrip(StripFor(now), now);
+        void ListSlot(int index) => typeof(UsageHistoryPage).GetMethod("ShowApplicationsSlot", All)!.Invoke(page, [index]);
+        var summary = Field<TextBlock>(page, "applicationSummary");
+        ListSlot(3); ListSlot(5); Assert.Equal(2, slotReads.Count); Assert.Equal((slots[5].Start, slots[5].End), (slotReads[1].From, slotReads[1].To));
+        slotReads[1].Reply.SetResult(SlotView(slots[5])); Pump();
+        Assert.StartsWith("4 applications · ", summary.Text);
+        slotReads[0].Reply.SetResult(new UsageApplicationView(slots[3].Start, slots[3].End, [], 0, 0, 0, 0, 28, null, 0)); Pump();
+        Assert.StartsWith("4 applications · ", summary.Text);
+        var fifth = LoadAsync(page);
+        WaitFor(() => fifth.IsCompleted);
+        Assert.Equal(3, slotReads.Count); Assert.Equal((slots[5].Start, slots[5].End), (slotReads[2].From, slotReads[2].To));
+        slotReads[2].Reply.SetResult(new UsageApplicationView(slots[5].Start, slots[5].End, [], 0, 0, 0, 0, 28, null, 0)); Pump();
+        Assert.Equal(EmptySlot, summary.Text);
+        reads[^1].Reply.SetResult(null); Pump();
+    }
+
+    private static void CheckShowInConnections(UiSession session, DateTimeOffset now)
+    {
+        var (page, chart, _) = Build(session, now);
+        var button = Field<Button>(page, "showInConnections"); var search = Field<TextBox>(page, "search"); var table = Field<DataGrid>(page, "applications");
+        var slots = StripFor(now).Slots;
+        ConnectionsHistoryRequest? request = null;
+        Action<ConnectionsHistoryRequest> capture = r => request = r;
+        void Clock(DateTimeOffset time) => typeof(UsageHistoryPage).GetField("clock", All)!.SetValue(page, (Func<DateTimeOffset>)(() => time));
+        void Select(string name) => table.SelectedItem = Rows(page).Single(r => RowName(r) == name);
+        ConnectionsHistoryRequest Requested() { request = null; Click(button); return request ?? throw new Xunit.Sdk.XunitException("No Connections request."); }
+        session.ConnectionsHistoryRequested += capture;
+        try
+        {
+            Assert.Equal(DataGridSelectionMode.Single, table.SelectionMode);
+            Assert.True(ToolTipService.GetShowOnDisabled(button));
+            // The period gives its whole minutes.
+            Clock(now);
+            var shifted = (UsagePageData)Data(now.AddSeconds(20), false);
+            page.Apply(shifted);
+            Assert.True(button.IsEnabled); Assert.Equal("Opens Connections History for this period.", button.ToolTip);
+            Assert.Equal(new ConnectionsHistoryRequest(TrafficStrips.CeilingMinute(shifted.From), TrafficStrips.CeilingMinute(shifted.To), null), Requested());
+            Assert.Equal(new ConnectionsHistoryRequest(now.AddDays(-30).AddMinutes(1), now.AddMinutes(1), null), Requested());
+            page.Apply((UsagePageData)Data(now, false));
+            // A selected application is carried by its name; the Other row carries none.
+            Select("chrome.exe");
+            Assert.Equal("chrome.exe", Field<string?>(page, "selectedApplication"));
+            Assert.Equal("Opens Connections History for this period. Only the selected application is shown.", button.ToolTip);
+            Assert.Equal(new ConnectionsHistoryRequest(now.AddDays(-30), now, "chrome.exe"), Requested());
+            Select("Other applications (12 more)");
+            Assert.Equal("Opens Connections History for this period.", button.ToolTip);
+            Assert.Null(Requested().Application);
+            // The selection survives a refresh that replaces the rows; a search that hides its row clears it.
+            Select("chrome.exe");
+            page.Apply((UsagePageData)Data(now, false));
+            Assert.Equal("chrome.exe", Field<string?>(page, "selectedApplication")); Assert.Equal("chrome.exe", RowName(table.SelectedItem!));
+            Assert.Equal("chrome.exe", Requested().Application);
+            search.Text = "steam";
+            Assert.Null(Field<string?>(page, "selectedApplication"));
+            search.Text = "";
+            Assert.Null(Field<string?>(page, "selectedApplication")); Assert.Null(table.SelectedItem);
+            Assert.Null(Requested().Application);
+            // A listed slot gives its whole minutes; "Unknown application" carries no application.
+            ClickSlot(chart, 3); page.ApplySlotApplications(SlotView(slots[3]));
+            Assert.Equal("Opens Connections History for the listed slot.", button.ToolTip);
+            Assert.Equal(new ConnectionsHistoryRequest(TrafficStrips.CeilingMinute(slots[3].Start), TrafficStrips.CeilingMinute(slots[3].End), null), Requested());
+            Select(UsageMetrics.UnknownName);
+            Assert.Null(Requested().Application);
+            Select("chrome.exe");
+            Assert.Equal("Opens Connections History for the listed slot. Only the selected application is shown.", button.ToolTip);
+            Assert.Equal("chrome.exe", Requested().Application);
+            Click(Field<Button>(page, "applicationsClear"));
+            Assert.Equal("chrome.exe", Field<string?>(page, "selectedApplication"));
+            // Older than Connections keeps: disabled, with the tooltip saying why.
+            Clock(now.AddDays(40)); page.Apply((UsagePageData)Data(now, false));
+            Assert.False(button.IsEnabled); Assert.Equal("Connections keeps up to 30 days; this period is older.", button.ToolTip);
+            // A day clipped from the 30-day period says so.
+            Clock(now.AddDays(1)); page.Apply((UsagePageData)Data(now, false));
+            Assert.True(button.IsEnabled);
+            Assert.Equal("Opens Connections History for this period. Only the selected application is shown. Connections keeps up to 30 days, so earlier minutes are left out.", button.ToolTip);
+            Assert.Equal(new ConnectionsHistoryRequest(now.AddDays(-29), now, "chrome.exe"), Requested());
+        }
+        finally { session.ConnectionsHistoryRequested -= capture; }
+    }
+
+    // Data's 1,500-slot month grid: the six applications with the most traffic and nine others, the table's fifteen.
+    private static TrafficStrip StripFor(DateTimeOffset now, bool empty = false)
+    {
+        var from = now.AddDays(-30);
+        if (empty) return new(from, now, 1_728_000, TrafficMeasure.Total, [], 0, 0, 0, []);
+        string[] names = ["chrome.exe", "steam.exe", "=cmd.exe", "Code.exe", "Teams.exe", "Spotify.exe"];
+        var applications = names.Select((name, i) => new TrafficStripApplication(name, name.ToUpperInvariant(), 6_000_000_000L >> i, 600_000_000L >> i)).ToArray();
+        var slots = Enumerable.Range(0, 1500).Select(i => new TrafficStripSlot(from.AddMilliseconds(i * 1_728_000L), from.AddMilliseconds((i + 1) * 1_728_000L), 28, 28 * 60, false,
+            Enumerable.Range(0, 7).Select(s => 4_000_000L >> s).ToArray(), Enumerable.Range(0, 7).Select(s => 400_000L >> s).ToArray())).ToArray();
+        return new(from, now, 1_728_000, TrafficMeasure.Total, applications, 300_000_000, 20_000_000, 9, slots);
+    }
+    /// <summary>One listed slot's applications: chrome.exe, "Unknown application" and two others, with one capture-gap minute.</summary>
+    private static UsageApplicationView SlotView(TrafficStripSlot slot) => new(slot.Start, slot.End,
+        [new("chrome.exe", 40_000_000, 4_000_000, 28), new(UsageMetrics.UnknownName, 1_000_000, 500_000, 3)], 2, 300_000, 20_000, 1, 28, null, 0);
+    private static Task<UsagePageData> LoadAsync(UsageHistoryPage page) => (Task<UsagePageData>)typeof(UsageHistoryPage).GetMethod("LoadAsync", All)!.Invoke(page, [])!;
+    private static (DateTimeOffset, DateTimeOffset)? ApplicationSlot(UsageHistoryPage page)
+        => ((DateTimeOffset, DateTimeOffset)?)typeof(UsageHistoryPage).GetField("applicationSlot", All)!.GetValue(page);
+    private static DateTimeOffset? Marked(UsageHistoryPage page) => (DateTimeOffset?)typeof(UsageHistoryPage).GetField("marked", All)!.GetValue(page);
+    private static T Field<T>(UsageHistoryPage page, string name) => (T)typeof(UsageHistoryPage).GetField(name, All)!.GetValue(page)!;
+    private static void SetField(UsageHistoryPage page, string name, object value) => typeof(UsageHistoryPage).GetField(name, All)!.SetValue(page, value);
+    private static List<object> Rows(UsageHistoryPage page)
+        => ((System.Collections.IEnumerable?)Field<DataGrid>(page, "applications").ItemsSource ?? Array.Empty<object>()).Cast<object>().ToList();
+    private static IReadOnlyList<UsageTrace> Traces(UsageHistoryChart chart) => (IReadOnlyList<UsageTrace>)ChartType.GetField("traces", All)!.GetValue(chart)!;
+    /// <summary>Clicks the strip where slot <paramref name="index"/> is drawn, through its own click handling (offscreen pages have no input source).</summary>
+    private static void ClickSlot(TrafficStripChart chart, int index)
+    {
+        var root = Root(chart);
+        Layout(root, root.RenderSize.Width > 0 ? root.RenderSize.Width : 1050, root.RenderSize.Height > 0 ? root.RenderSize.Height : 1100);
+        chart.SlotAt(new Point());
+        var plot = chart.PlotRect; double y = plot.Top + plot.Height / 2;
+        double? x = null;
+        for (double at = plot.Left; at <= plot.Right && x is null; at += 0.05) if (chart.SlotAt(new(at, y)) == index) x = at;
+        Assert.True(x.HasValue, $"No point on the strip selects slot {index}.");
+        chart.HandleClick(new(x.Value, y));
+        Assert.Equal(index, chart.SelectedIndex);
+    }
+    private static FrameworkElement Root(DependencyObject element)
+    {
+        while (VisualTreeHelper.GetParent(element) is { } parent) element = parent;
+        return (FrameworkElement)element;
+    }
+    private static double Top(FrameworkElement element, UsageHistoryPage page) => element.TransformToAncestor(page).Transform(new Point()).Y;
+    private static void Click(ButtonBase button) => button.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+    /// <summary>Presses a key on an element as the keyboard does: the preview first, then the key itself unless it was handled.</summary>
+    private static void Press(UIElement target, Key key)
+    {
+        var preview = new KeyEventArgs(Keyboard.PrimaryDevice, new KeySource(), 0, key) { RoutedEvent = Keyboard.PreviewKeyDownEvent };
+        target.RaiseEvent(preview);
+        if (!preview.Handled) target.RaiseEvent(new KeyEventArgs(Keyboard.PrimaryDevice, new KeySource(), 0, key) { RoutedEvent = Keyboard.KeyDownEvent });
+    }
+    private sealed class KeySource : PresentationSource
+    {
+        public override Visual RootVisual { get => null!; set { } }
+        protected override CompositionTarget GetCompositionTargetCore() => null!;
+        public override bool IsDisposed => false;
+    }
+    private static void Pump()
+    { var frame = new DispatcherFrame(); Dispatcher.CurrentDispatcher.BeginInvoke(DispatcherPriority.Background, new Action(() => frame.Continue = false)); Dispatcher.PushFrame(frame); }
+    /// <summary>Pumps the dispatcher until <paramref name="done"/> holds, for up to 5 s.</summary>
+    private static void WaitFor(Func<bool> done)
+    {
+        if (!done())
+        {
+            var frame = new DispatcherFrame(); var deadline = System.Diagnostics.Stopwatch.StartNew();
+            var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(5) };
+            timer.Tick += (_, _) => { if (done() || deadline.Elapsed >= TimeSpan.FromSeconds(5)) frame.Continue = false; };
+            timer.Start();
+            try { Dispatcher.PushFrame(frame); } finally { timer.Stop(); }
+        }
+        Assert.True(done(), "The Usage history page did not get there within 5 s.");
     }
 
     private static object Data(DateTimeOffset now, bool empty)

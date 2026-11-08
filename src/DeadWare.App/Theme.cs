@@ -51,9 +51,33 @@ internal static class Theme
         }
         return brush;
     }
+    private static readonly Dictionary<(Color,Color,Color,int,bool),SolidColorBrush> stripBrushes=new();
+    /// <summary>A traffic strip series' fill: <see cref="StripColor"/> in the current contrast mode, cached like <see cref="CoreBrush"/>.</summary>
+    public static SolidColorBrush StripBrush(int index)
+    {
+        bool highContrast=SystemParameters.HighContrast;
+        Color Basis(string key)=>highContrast?SystemColors.WindowTextColor:((SolidColorBrush)Brush(key)).Color;
+        var key=(Basis("Graph/download"),Basis("Graph/gpu"),Basis("Graph/cpu"),index,highContrast);
+        if(!stripBrushes.TryGetValue(key,out var brush))
+        {
+            brush=new SolidColorBrush(StripColor(index,highContrast));
+            brush.Freeze();stripBrushes[key]=brush;
+        }
+        return brush;
+    }
+    /// <summary>Series 0–2 are the download, GPU and CPU graph colours (the user's own when set) and 3–5 one CoreTint shade of each.
+    /// In high contrast those keys all hold WindowText, so the six are WindowText's six CoreTint grey levels.</summary>
+    internal static Color StripColor(int index,bool highContrast)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(index);
+        ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(index,TrafficStrips.MaximumApplications);
+        if(highContrast)return ThemeTokens.CoreTint(SystemColors.WindowTextColor,index,TrafficStrips.MaximumApplications,true);
+        var basis=((SolidColorBrush)Brush((index%3) switch {0=>"Graph/download",1=>"Graph/gpu",_=>"Graph/cpu"})).Color;
+        return index<3?basis:ThemeTokens.CoreTint(basis,1,2,false);
+    }
     private static void ApplyGraphColors()
     {
-        coreBrushes.Clear();driveBrushes.Clear();
+        coreBrushes.Clear();driveBrushes.Clear();stripBrushes.Clear();
         foreach(string kind in GraphColorSettings.Kinds)
         {
             string role=kind switch {"gpu" or "gputemp"=>"Gpu","gpufan"=>"Warning","cpupump"=>"Download","memory"=>"Accent","download" or "diskread"=>"Download",_=>"Cpu"};

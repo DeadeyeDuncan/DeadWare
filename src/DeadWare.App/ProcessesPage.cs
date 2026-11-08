@@ -248,7 +248,7 @@ internal sealed class ProcessesPage : UserControl
             var cell=new Style(typeof(DataGridCell),TryFindResource(typeof(DataGridCell)) as Style);
             cell.Setters.Add(new Setter(ToolTipProperty,new Binding($"Cells[{key}].Tip")));
             column=new DataGridTextColumn {Header=ProcessTableColumns.Header(key),Binding=new Binding($"Cells[{key}].Text"),SortMemberPath=key,
-                Width=new DataGridLength(key=="pid"?.7:1,DataGridLengthUnitType.Star),MinWidth=64,CellStyle=cell,ElementStyle=ValueText};
+                Width=new DataGridLength(key=="pid"?.7:1,DataGridLengthUnitType.Star),MinWidth=64,CellStyle=cell,ElementStyle=Ui.ValueText};
         }
         columns[key]=column;
         return column;
@@ -505,16 +505,6 @@ internal sealed class ProcessesPage : UserControl
     }
 
     private static Button Labelled(Button button){AutomationProperties.SetName(button,(string)button.Content);return button;}
-
-    private static readonly Style ValueText=ValueTextStyle();
-    private static Style ValueTextStyle()
-    {
-        var style=new Style(typeof(TextBlock),DataGridTextColumn.DefaultElementStyle);
-        style.Setters.Add(new Setter(TextBlock.TextTrimmingProperty,TextTrimming.CharacterEllipsis));
-        // Tabular numerals keep digits from shifting as values change.
-        style.Setters.Add(new Setter(Typography.NumeralAlignmentProperty,FontNumeralAlignment.Tabular));
-        style.Seal();return style;
-    }
 
     private static T Sealed<T>(string xaml) where T:FrameworkTemplate {var template=(T)XamlReader.Parse(xaml);template.Seal();return template;}
 

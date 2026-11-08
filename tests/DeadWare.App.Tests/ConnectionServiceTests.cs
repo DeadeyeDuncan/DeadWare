@@ -8,13 +8,45 @@ public class ConnectionServiceTests
 {
     private static readonly DateTimeOffset Epoch=new(2026,10,29,12,0,0,TimeSpan.Zero);
     private static readonly ConnectionPeer Peer=new(new(10,1,"fixture"),"192.168.1.2",100,"8.8.8.8",443,ConnectionProtocol.Tcp);
-    private static Reading Reading(long sequence,int seconds,long bytes=10,bool complete=true,DateTimeOffset? coverage=null)
+    private static Reading Reading(long sequence,int seconds,long bytes=10,bool complete=true,DateTimeOffset? coverage=null,string segment="segment")
     {
         var time=Epoch.AddSeconds(seconds);
         var traffic=new ConnectionTraffic(Peer,time,time,bytes,0,bytes,0);
         var delta=new ConnectionDelta(new(time.Year,time.Month,time.Day,time.Hour,time.Minute,0,TimeSpan.Zero),Peer,bytes,0,time,time);
         return new(new(time,seconds,new Dictionary<string,double?>()),[],[],[],"CPU","","","",false)
-        {Connections=new(time,seconds,sequence,"segment",[traffic],bytes>0?[delta]:[],coverage,true,complete,0,0,0,"")};
+        {Connections=new(time,seconds,sequence,segment,[traffic],bytes>0?[delta]:[],coverage,true,complete,0,0,0,"")};
+    }
+    /// <summary>A clock the writer can read while the test moves it, without torn reads.</summary>
+    private sealed class TestClock
+    {
+        private long seconds;
+        public void Set(int value)=>Volatile.Write(ref seconds,value);
+        public DateTimeOffset Read()=>Epoch.AddSeconds(Volatile.Read(ref seconds));
+    }
+    /// <summary>Each append's records and coverage, copied when the writer makes it.</summary>
+    private sealed class Appends
+    {
+        private readonly object sync=new();
+        private readonly List<(IReadOnlyList<ConnectionHistoryRecord> Records,IReadOnlyList<ConnectionCoverage> Coverage)> calls=[];
+        public void Add(IReadOnlyList<ConnectionHistoryRecord> records,IReadOnlyList<ConnectionCoverage> coverage) {lock(sync)calls.Add((records.ToArray(),coverage.ToArray()));}
+        public (IReadOnlyList<ConnectionHistoryRecord> Records,IReadOnlyList<ConnectionCoverage> Coverage)[] All {get {lock(sync)return calls.ToArray();}}
+        public (IReadOnlyList<ConnectionHistoryRecord> Records,IReadOnlyList<ConnectionCoverage> Coverage)[] WithRecords=>All.Where(c=>c.Records.Count>0).ToArray();
+        /// <summary>Waits up to 15 s (or the given timeout) for the nth append that carries records, and returns it.</summary>
+        public async Task<(IReadOnlyList<ConnectionHistoryRecord> Records,IReadOnlyList<ConnectionCoverage> Coverage)> WaitFor(int n,TimeSpan? timeout=null)
+        {
+            var deadline=DateTime.UtcNow+(timeout??TimeSpan.FromSeconds(15));
+            while(WithRecords.Length<n)
+            {
+                if(DateTime.UtcNow>deadline)Assert.Fail($"Expected {n} appends with records before the timeout; saw {WithRecords.Length}.");
+                await Task.Delay(5);
+            }
+            return WithRecords[n-1];
+        }
+    }
+    /// <summary>One-second readings at Epoch + from … to, each covering from the previous second; a reading at + 1 s covers nothing.</summary>
+    private static void RecordSeconds(ConnectionService service,TestClock clock,int from,int to)
+    {
+        for(int s=from;s<=to;s++){clock.Set(s);service.TryRecord(Reading(s,s,coverage:s==1?null:Epoch.AddSeconds(s-1)));}
     }
     private sealed class Resolver(Func<string,ConnectionLocation?> lookup):IConnectionGeolocation {public ConnectionLocation? Lookup(string address)=>lookup(address);}
     private static ConnectionService Service(Action<IReadOnlyList<ConnectionHistoryRecord>,IReadOnlyList<ConnectionCoverage>> append,IConnectionGeolocation? resolver=null,ConnectionServiceOptions? options=null,Func<DateTimeOffset>? clock=null)=>new(resolver??new Resolver(_=>null),clock??(()=>Epoch.AddSeconds(10)),append,options);
@@ -36,9 +68,10 @@ public class ConnectionServiceTests
         clock=Epoch.AddSeconds(3);service.Configure(true,new(5,6));service.TryRecord(Reading(3,4,30,coverage:Epoch.AddSeconds(2)));
         service.TryRecord(Reading(4,5,40,coverage:Epoch.AddSeconds(4)));
         await service.StopAsync();
-        Assert.Equal(new long[]{10,30,40},saved.Select(r=>r.Delta.ReceivedBytes));
+        // The 30 and 40 merge into one generation-2 row of the same minute.
+        Assert.Equal(new long[]{10,70},saved.Select(r=>r.Delta.ReceivedBytes));
         Assert.Equal(new GeoPoint(1,2),saved[0].Origin);Assert.Equal(new GeoPoint(5,6),saved[1].Origin);
-        Assert.NotEqual(saved[0].BatchId,saved[1].BatchId);Assert.False(saved[1].Complete);
+        Assert.NotEqual(saved[0].BatchId,saved[1].BatchId);Assert.Equal(ConnectionMinuteFolder.BatchId("segment",Epoch,2,1),saved[1].BatchId);Assert.False(saved[1].Complete);
         Assert.DoesNotContain(coverage,c=>c.Complete&&c.From<Epoch.AddSeconds(3)&&c.To>Epoch.AddSeconds(3));
     }
     [Fact] public async Task Coverage_splits_at_utc_minutes_without_retiming_event_deltas()
@@ -91,7 +124,7 @@ public class ConnectionServiceTests
     {
         using var entered=new ManualResetEventSlim();using var release=new ManualResetEventSlim();
         var saved=new TaskCompletionSource<ConnectionHistoryRecord>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var service=Service((r,_)=>saved.TrySetResult(r[0]),new Resolver(_=>{entered.Set();release.Wait();return null;}),new(FlushInterval:TimeSpan.FromMilliseconds(30),EnrichmentBudget:TimeSpan.FromMilliseconds(5)));
+        var service=Service((r,_)=>saved.TrySetResult(r[0]),new Resolver(_=>{entered.Set();release.Wait();return null;}),new(FlushInterval:TimeSpan.FromMilliseconds(30),EnrichmentBudget:TimeSpan.FromMilliseconds(5)),()=>Epoch.AddSeconds(100));
         service.Start();service.TryRecord(Reading(1,1));Assert.True(entered.Wait(TimeSpan.FromSeconds(3)));
         try {Assert.Null((await saved.Task.WaitAsync(TimeSpan.FromSeconds(2))).Location);await service.StopAsync();}
         finally {release.Set();}
@@ -101,7 +134,7 @@ public class ConnectionServiceTests
         using var release=new ManualResetEventSlim();var first=new TaskCompletionSource<ConnectionHistoryRecord>(TaskCreationOptions.RunContinuationsAsynchronously);
         var retry=new TaskCompletionSource<ConnectionHistoryRecord>(TaskCreationOptions.RunContinuationsAsynchronously);int attempts=0;
         var place=new ConnectionLocation("GB","United Kingdom",null,"London",new(51,0),"fixture");
-        var service=Service((r,_)=>{if(Interlocked.Increment(ref attempts)==1){first.SetResult(r[0]);throw new System.IO.IOException();}retry.TrySetResult(r[0]);},new Resolver(_=>{release.Wait();return place;}),new(FlushInterval:TimeSpan.FromMilliseconds(80),EnrichmentBudget:TimeSpan.Zero));
+        var service=Service((r,_)=>{if(Interlocked.Increment(ref attempts)==1){first.SetResult(r[0]);throw new System.IO.IOException();}retry.TrySetResult(r[0]);},new Resolver(_=>{release.Wait();return place;}),new(FlushInterval:TimeSpan.FromMilliseconds(80),EnrichmentBudget:TimeSpan.Zero),()=>Epoch.AddSeconds(100));
         service.Start();service.TryRecord(Reading(1,1));var original=await first.Task.WaitAsync(TimeSpan.FromSeconds(3));
         release.Set();await Until(()=>service.Live.Connections[0].Location is not null);
         Assert.Equal(original,await retry.Task.WaitAsync(TimeSpan.FromSeconds(3)));await service.StopAsync();
@@ -133,7 +166,7 @@ public class ConnectionServiceTests
     [Fact] public async Task Local_database_drains_final_data_and_history_reads_do_not_replace_live()
     {
         string directory=System.IO.Path.Combine(System.IO.Path.GetTempPath(),"DeadWare-connections-"+Guid.NewGuid().ToString("N"));
-        string path=System.IO.Path.Combine(directory,"connections.db");var service=new ConnectionService(path);
+        string path=System.IO.Path.Combine(directory,"connections.db");var service=new ConnectionService(path,new Resolver(_=>null),()=>Epoch.AddSeconds(100));
         Assert.False(System.IO.Directory.Exists(directory));
         try
         {
@@ -209,13 +242,15 @@ public class ConnectionServiceTests
     {
         string root=System.IO.Path.Combine(System.IO.Path.GetTempPath(),"DeadWare-connections-"+Guid.NewGuid().ToString("N"));System.IO.Directory.CreateDirectory(root);
         string database=System.IO.Path.Combine(root,"locations.mmdb");await System.IO.File.WriteAllBytesAsync(database,ConnectionMmdbFixture.Create());
-        var service=new ConnectionService(System.IO.Path.Combine(root,"history.db"),new ConnectionGeolocation(database),()=>Epoch.AddSeconds(10),new(FlushInterval:TimeSpan.FromMilliseconds(30)));
+        var clock=new TestClock();clock.Set(10);
+        var service=new ConnectionService(System.IO.Path.Combine(root,"history.db"),new ConnectionGeolocation(database),clock.Read,new(FlushInterval:TimeSpan.FromMilliseconds(30)));
         var query=new ConnectionHistoryQuery(Epoch,Epoch.AddMinutes(1));
         try
         {
-            service.Configure(true,new(1,2));service.Start();service.TryRecord(Reading(1,1,10));
+            service.Configure(true,new(1,2));service.Start();service.TryRecord(Reading(1,1,10));clock.Set(100);
             await UntilAsync(async()=>(await service.ReadViewAsync(query)).Summary.ReceivedBytes==10);
             string replacement=database+".new";await System.IO.File.WriteAllBytesAsync(replacement,ConnectionMmdbFixture.Create(record:ConnectionMmdbFixture.Record(city:"Replacement")));System.IO.File.Move(replacement,database,true);
+            // Minute 0 is saved, so the second reading opens a late unit: the Replacement location and origin (3, 4), written by R4.
             await service.ReloadGeolocationAsync();service.Configure(true,new(3,4));service.TryRecord(Reading(2,2,20));
             await UntilAsync(async()=>(await service.ReadViewAsync(query)).Summary.ReceivedBytes==30);await service.StopAsync();
             var rows=(await service.ReadViewAsync(query)).Rows;
@@ -225,17 +260,25 @@ public class ConnectionServiceTests
         }
         finally {await service.StopAsync();System.IO.Directory.Delete(root,true);}
     }
+    private const System.Reflection.BindingFlags NonPublicInstance=System.Reflection.BindingFlags.Instance|System.Reflection.BindingFlags.NonPublic;
+    /// <summary>An uninitialized UiSession holding the collector, the connection service and fixture history services under root, with a fixture ETW capture.</summary>
+    private static (UiSession Session,EtwNetwork Capture) FixtureSession(string root,Collector collector,ConnectionService service)
+    {
+        var session=(UiSession)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(UiSession));
+        void Set(string name,object value)=>typeof(UiSession).GetField("<"+name+">k__BackingField",NonPublicInstance)!.SetValue(session,value);
+        var capture=new EtwNetwork(_=>new(11,1,"fixture"));typeof(Collector).GetField("etw",NonPublicInstance)!.SetValue(collector,capture);
+        Set("Collector",collector);Set("Connections",service);Set("Cooling",new CoolingHistoryService(System.IO.Path.Combine(root,"cooling.db"),"fixture","setup"));
+        Set("GraphHistory",new GraphHistoryService(System.IO.Path.Combine(root,"graphs.db"),"fixture",new SampleHistory()));Set("Battery",new BatteryHistoryService(System.IO.Path.Combine(root,"battery.db"),"fixture"));Set("Usage",new UsageHistoryService(System.IO.Path.Combine(root,"usage.db"),"fixture"));Set("Alerts",new AlertService(System.IO.Path.Combine(root,"alerts.db"),"fixture",new UsageHistoryService(System.IO.Path.Combine(root,"usage-alerts.db"),"fixture"),()=>null));
+        return (session,capture);
+    }
+    private static Task StopCollector(UiSession session,TimeSpan providers,TimeSpan connections,TimeSpan history)
+        =>(Task)typeof(UiSession).GetMethod("StopCollectorAsync",NonPublicInstance)!.Invoke(session,[providers,connections,history])!;
     [Theory][InlineData(false)][InlineData(true)]
     public async Task Session_normal_quit_keeps_final_subscription_until_the_endpoint_drain_is_persisted(bool failingFinalSubscriber)
     {
         string root=System.IO.Path.Combine(System.IO.Path.GetTempPath(),"DeadWare-connections-"+Guid.NewGuid().ToString("N"));
         var collector=new Collector(new CollectorOptions(HardwareEnabled:false));var service=new ConnectionService(System.IO.Path.Combine(root,"connections.db"));
-        var session=(UiSession)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(UiSession));
-        const System.Reflection.BindingFlags flags=System.Reflection.BindingFlags.Instance|System.Reflection.BindingFlags.NonPublic;
-        void Set(string name,object value)=>typeof(UiSession).GetField("<"+name+">k__BackingField",flags)!.SetValue(session,value);
-        var capture=new EtwNetwork(_=>new(11,1,"fixture"));typeof(Collector).GetField("etw",flags)!.SetValue(collector,capture);
-        Set("Collector",collector);Set("Connections",service);Set("Cooling",new CoolingHistoryService(System.IO.Path.Combine(root,"cooling.db"),"fixture","setup"));
-        Set("GraphHistory",new GraphHistoryService(System.IO.Path.Combine(root,"graphs.db"),"fixture",new SampleHistory()));Set("Battery",new BatteryHistoryService(System.IO.Path.Combine(root,"battery.db"),"fixture"));Set("Usage",new UsageHistoryService(System.IO.Path.Combine(root,"usage.db"),"fixture"));Set("Alerts",new AlertService(System.IO.Path.Combine(root,"alerts.db"),"fixture",new UsageHistoryService(System.IO.Path.Combine(root,"usage-alerts.db"),"fixture"),()=>null));
+        var (session,capture)=FixtureSession(root,collector,service);
         collector.SampleAvailable+=service.TryRecord;collector.FinalConnectionsAvailable+=service.TryRecord;
         if(failingFinalSubscriber)collector.FinalConnectionsAvailable+=_=>throw new InvalidOperationException("late subscriber failure");
         DateTimeOffset now=DateTimeOffset.UtcNow;
@@ -243,7 +286,7 @@ public class ConnectionServiceTests
         {
             service.Start();capture.TakeSnapshot(now,collector.ElapsedSeconds);
             capture.RecordEndpoint(11,now,71,false,System.Net.IPAddress.Parse("8.8.8.8"),443,System.Net.IPAddress.Loopback,123,ConnectionProtocol.Tcp);
-            var stop=(Task)typeof(UiSession).GetMethod("StopCollectorAsync",flags)!.Invoke(session,[TimeSpan.FromSeconds(5),TimeSpan.FromSeconds(5),TimeSpan.FromSeconds(20)])!;
+            var stop=StopCollector(session,TimeSpan.FromSeconds(5),TimeSpan.FromSeconds(5),TimeSpan.FromSeconds(20));
             if(failingFinalSubscriber)await Assert.ThrowsAsync<InvalidOperationException>(()=>stop);else await stop;
             var history=await service.ReadViewAsync(new(now.AddMinutes(-1),now.AddMinutes(1)));Assert.Equal(71,history.Summary.ReceivedBytes);Assert.False(Assert.Single(history.Rows).Complete);
             Assert.True(service.StopAsync().IsCompleted);
@@ -279,10 +322,11 @@ public class ConnectionServiceTests
     }
     [Fact] public async Task Slow_enrichment_cannot_starve_a_due_flush_behind_all_queued_publications()
     {
-        using var release=new ManualResetEventSlim();var flushed=new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var service=Service((r,_)=>{if(r.Count>0)flushed.TrySetResult(r.Count);},new Resolver(_=>{release.Wait();return null;}),new(FlushInterval:TimeSpan.FromMilliseconds(20),EnrichmentBudget:TimeSpan.FromMilliseconds(200)));
+        using var release=new ManualResetEventSlim();var flushed=new TaskCompletionSource<long>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var service=Service((r,_)=>{if(r.Count>0)flushed.TrySetResult(r[0].Delta.ReceivedBytes);},new Resolver(_=>{release.Wait();return null;}),new(FlushInterval:TimeSpan.FromMilliseconds(20),EnrichmentBudget:TimeSpan.FromMilliseconds(200)),()=>Epoch.AddSeconds(100));
         service.Start();for(int i=1;i<=5;i++)service.TryRecord(Reading(i,i));
-        try {Assert.InRange(await flushed.Task.WaitAsync(TimeSpan.FromSeconds(3)),1,4);}
+        // R4 froze the minute at a tick while publications were still queued: fewer than all five 10-byte readings.
+        try {Assert.InRange(await flushed.Task.WaitAsync(TimeSpan.FromSeconds(3)),10,40);}
         finally {await service.StopAsync();release.Set();}
     }
     [Fact] public async Task Capture_loss_counters_stay_visible_in_the_shared_live_status()
@@ -300,6 +344,28 @@ public class ConnectionServiceTests
         Assert.Contains("could not be read",service.LookupStatus);
         service.TryRecord(Reading(1,1));await service.ReloadGeolocationAsync().WaitAsync(TimeSpan.FromSeconds(10));
         Assert.Null(Assert.Single(service.Live.Connections).Location);await service.StopAsync();
+    }
+    [Fact] public async Task Destinations_export_writes_a_new_utf8_file_without_a_bom_and_never_overwrites()
+    {
+        string root=System.IO.Path.Combine(System.IO.Path.GetTempPath(),"DeadWare-connections-"+Guid.NewGuid().ToString("N"));string path=System.IO.Path.Combine(root,"history.db");
+        var store=new ConnectionHistoryStore(path);store.Initialize();
+        store.Append([new("saved","saved",Reading(1,1).Connections!.Deltas[0],null,null,true)],[],Epoch.AddSeconds(70));
+        var service=new ConnectionService(path,new Resolver(_=>null),()=>Epoch.AddSeconds(100));string target=System.IO.Path.Combine(root,"destinations.csv");
+        try
+        {
+            await service.ExportDestinationsCsvAsync(target,new(Epoch,Epoch.AddMinutes(2)),DestinationScope.Internet);
+            byte[] bytes=await System.IO.File.ReadAllBytesAsync(target);
+            Assert.False(bytes.Length>=3&&bytes[0]==0xEF&&bytes[1]==0xBB&&bytes[2]==0xBF,"The export starts with a UTF-8 BOM.");
+            string[] lines=System.Text.Encoding.UTF8.GetString(bytes).Split(['\r','\n'],StringSplitOptions.RemoveEmptyEntries);
+            Assert.Equal("Address,Class,CountryCode,Country,Region,City,Latitude,Longitude,Applications,ApplicationNames,Ports,PortList,ReceivedBytes,SentBytes,Minutes,FirstSeenUtc,LastSeenUtc,Complete",lines[0]);
+            Assert.StartsWith("\"8.8.8.8\",\"Internet\",",Assert.Single(lines.Skip(1)));
+            // The Local scope leaves only the header.
+            string local=System.IO.Path.Combine(root,"local.csv");await service.ExportDestinationsCsvAsync(local,new(Epoch,Epoch.AddMinutes(2)),DestinationScope.Local);
+            Assert.Single((await System.IO.File.ReadAllTextAsync(local)).Split(['\r','\n'],StringSplitOptions.RemoveEmptyEntries));
+            await Assert.ThrowsAsync<System.IO.IOException>(()=>service.ExportDestinationsCsvAsync(target,new(Epoch,Epoch.AddMinutes(2)),DestinationScope.All));
+            Assert.Equal(bytes,await System.IO.File.ReadAllBytesAsync(target));
+        }
+        finally {await service.StopAsync();System.IO.Directory.Delete(root,true);}
     }
     [Fact] public async Task Export_refuses_to_overwrite_an_existing_file_and_preserves_its_bytes()
     {
@@ -339,47 +405,186 @@ public class ConnectionServiceTests
     public async Task Clock_rollback_retires_unflushed_future_records_and_coverage_without_blocking_fresh_storage(long oldBytes,bool stopImmediately)
     {
         string root=System.IO.Path.Combine(System.IO.Path.GetTempPath(),"DeadWare-connections-"+Guid.NewGuid().ToString("N"));int seconds=100;
-        var service=new ConnectionService(System.IO.Path.Combine(root,"history.db"),new Resolver(_=>null),()=>Epoch.AddSeconds(Volatile.Read(ref seconds)),new(QueueCapacity:stopImmediately?120:2,FlushInterval:TimeSpan.FromMinutes(1),EnrichmentBudget:TimeSpan.Zero));
+        var service=new ConnectionService(System.IO.Path.Combine(root,"history.db"),new Resolver(_=>null),()=>Epoch.AddSeconds(Volatile.Read(ref seconds)),new(QueueCapacity:stopImmediately?120:2,FlushInterval:TimeSpan.FromMilliseconds(20),EnrichmentBudget:TimeSpan.Zero));
         var query=new ConnectionHistoryQuery(Epoch,Epoch.AddSeconds(110));
         try
         {
             await service.ReadViewAsync(query);service.Start();service.TryRecord(Reading(1,100,oldBytes,coverage:Epoch.AddSeconds(99)));
-            await Until(()=>service.PendingPublications==0);Volatile.Write(ref seconds,50);
-            service.TryRecord(Reading(2,50,30,false,Epoch.AddSeconds(49)).Connections! with {Segment="new"});
+            await Until(()=>service.PendingPublications==0);Volatile.Write(ref seconds,30);
+            // 68 s past the minute-1 unit's end, beyond the hold: R2 freezes it and the same step retires it.
+            service.TryRecord(Reading(2,30,30,false,Epoch.AddSeconds(29),"new"));
             if(stopImmediately)await service.StopAsync().WaitAsync(TimeSpan.FromSeconds(3));
-            else await UntilAsync(async()=>(await service.ReadViewAsync(query)).Summary.ReceivedBytes==30);
+            else
+            {
+                await Until(()=>service.DroppedObservations==1);Volatile.Write(ref seconds,95);
+                await UntilAsync(async()=>(await service.ReadViewAsync(query)).Summary.ReceivedBytes==30);
+            }
             await service.StopAsync();var history=await service.ReadViewAsync(query);var row=Assert.Single(history.Rows);
-            Assert.Equal(30,row.ReceivedBytes);Assert.Equal(Epoch,row.Minute);Assert.Equal(Epoch.AddSeconds(50),row.FirstSeen);Assert.Equal(row.FirstSeen,row.LastSeen);Assert.False(row.Complete);
+            Assert.Equal(30,row.ReceivedBytes);Assert.Equal(Epoch,row.Minute);Assert.Equal(Epoch.AddSeconds(30),row.FirstSeen);Assert.Equal(row.FirstSeen,row.LastSeen);Assert.False(row.Complete);
             Assert.Contains(history.Gaps,g=>g.From<=Epoch.AddSeconds(99)&&g.To>=Epoch.AddSeconds(100));
-            Assert.DoesNotContain(history.Coverage,c=>c.Complete&&c.From<Epoch.AddSeconds(50)&&c.To>Epoch.AddSeconds(49));
+            Assert.DoesNotContain(history.Coverage,c=>c.Complete&&c.From<Epoch.AddSeconds(30)&&c.To>Epoch.AddSeconds(29));
             Assert.Equal(1,service.DroppedObservations);Assert.Equal(0,service.BufferedDeltas);Assert.Contains("history has gaps",service.StorageStatus);Assert.Contains("saved locally",service.StorageStatus);
         }
         finally {await service.StopAsync();if(System.IO.Directory.Exists(root))System.IO.Directory.Delete(root,true);}
     }
     [Fact] public async Task Clock_rollback_discards_whole_attempted_batch_without_changing_saved_receipts_or_retrying_its_safe_subset()
     {
-        string root=System.IO.Path.Combine(System.IO.Path.GetTempPath(),"DeadWare-connections-"+Guid.NewGuid().ToString("N"));var store=new ConnectionHistoryStore(System.IO.Path.Combine(root,"history.db"));store.Initialize();int seconds=100;
+        string root=System.IO.Path.Combine(System.IO.Path.GetTempPath(),"DeadWare-connections-"+Guid.NewGuid().ToString("N"));var store=new ConnectionHistoryStore(System.IO.Path.Combine(root,"history.db"));store.Initialize();int seconds=160;
         using var release=new ManualResetEventSlim();var attempted=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);ConnectionHistoryRecord[] original=[];ConnectionCoverage[] originalCoverage=[];int calls=0;
         var service=Service((r,c)=>
         {
             store.Append(r,c,Epoch.AddSeconds(Volatile.Read(ref seconds)));
-            if(Interlocked.Increment(ref calls)==1){original=r.ToArray();originalCoverage=c.ToArray();attempted.SetResult();release.Wait();throw new System.IO.IOException("Commit succeeded before acknowledgement failed.");}
+            if(r.Count>0&&Interlocked.Increment(ref calls)==1){original=r.ToArray();originalCoverage=c.ToArray();attempted.SetResult();release.Wait();throw new System.IO.IOException("Commit succeeded before acknowledgement failed.");}
         },options:new(FlushInterval:TimeSpan.FromMilliseconds(100),EnrichmentBudget:TimeSpan.Zero),clock:()=>Epoch.AddSeconds(Volatile.Read(ref seconds)));
         var query=new ConnectionHistoryQuery(Epoch,Epoch.AddSeconds(110));
         try
         {
-            var old=Reading(1,100,10,coverage:Epoch.AddSeconds(99)).Connections!;
-            service.Start();service.TryRecord(old with {Deltas=[old.Deltas[0],Reading(1,50,5).Connections!.Deltas[0]]});await attempted.Task.WaitAsync(TimeSpan.FromSeconds(3));
-            Volatile.Write(ref seconds,50);service.TryRecord(Reading(2,50,30,false).Connections! with {Segment="new"});release.Set();
-            await Until(()=>store.Read(query).Summary.ReceivedBytes==45);await service.StopAsync();
+            // Two minute-1 deltas: Peer at + 100 s and Peer on port 80 at + 70 s. R4 freezes the unit at the first tick.
+            var old=Reading(1,100,10,coverage:Epoch.AddSeconds(99)).Connections!;var other=Reading(1,70,5).Connections!.Deltas[0] with {Peer=Peer with {RemotePort=80}};
+            service.Start();service.TryRecord(old with {Deltas=[old.Deltas[0],other]});await attempted.Task.WaitAsync(TimeSpan.FromSeconds(3));
+            // After the step back the unit is 68 s ahead: the next attempt retires it whole, and R6 writes the new unit.
+            Volatile.Write(ref seconds,30);service.TryRecord(Reading(2,30,30,false,segment:"new"));release.Set();
+            await Until(()=>service.DroppedObservations==2);await service.StopAsync();
+            Assert.Equal(45,store.Read(query).Summary.ReceivedBytes);
             Assert.Equal(2,service.DroppedObservations);Assert.Equal(0,service.BufferedDeltas);
-            Assert.Equal(10,Assert.Single(store.Read(query).Rows,r=>r.Minute==Epoch.AddMinutes(1)).ReceivedBytes);
+            Assert.Equal(new long[]{5,10},store.Read(query).Rows.Where(r=>r.Minute==Epoch.AddMinutes(1)).Select(r=>r.ReceivedBytes).Order());
             // The saved original receipt remains valid: no subset, retimed record or changed
             // completeness/location was retried under its immutable BatchId.
             store.Append(original,originalCoverage,Epoch.AddSeconds(100));Assert.Equal(45,store.Read(query).Summary.ReceivedBytes);
-            Assert.Equal(Epoch.AddSeconds(100),original[0].Delta.LastSeen);Assert.True(original[0].Complete);
-            Assert.Contains(store.Read(query).Gaps,g=>g.From<=Epoch.AddSeconds(50)&&g.To>=Epoch.AddSeconds(51));
+            Assert.Equal(new[]{Epoch.AddSeconds(100),Epoch.AddSeconds(70)},original.Select(r=>r.Delta.LastSeen));Assert.All(original,r=>Assert.True(r.Complete));
+            Assert.Contains(store.Read(query).Gaps,g=>g.From<=Epoch.AddSeconds(30)&&g.To>=Epoch.AddSeconds(31));
         }
         finally {release.Set();await service.StopAsync();System.IO.Directory.Delete(root,true);}
+    }
+    [Fact] public async Task Open_minute_is_written_once_when_it_closes_and_live_is_unchanged()
+    {
+        var clock=new TestClock();var calls=new Appends();var service=Service(calls.Add,clock:clock.Read);service.Start();
+        try
+        {
+            for(int s=1;s<=62;s++)
+            {
+                RecordSeconds(service,clock,s,s);
+                var live=service.Live;Assert.Equal(Epoch.AddSeconds(s),live.Timestamp);Assert.Equal(10,Assert.Single(live.Connections).Traffic.ReceivedBytes);
+            }
+            await Task.Delay(200);Assert.Empty(calls.WithRecords);
+            // CoverageFrom + 62 s closes minute 0 (R1): one summed record and one complete run [+1 s, +60 s).
+            RecordSeconds(service,clock,63,63);var append=await calls.WaitFor(1);var record=Assert.Single(append.Records);
+            Assert.Equal((Epoch,590L,true),(record.Delta.Minute,record.Delta.ReceivedBytes,record.Complete));
+            var run=Assert.Single(append.Coverage,c=>c.From<Epoch.AddMinutes(1));
+            Assert.Equal((Epoch.AddSeconds(1),Epoch.AddMinutes(1),true),(run.From,run.To,run.Complete));
+            Assert.Equal(10,Assert.Single(service.Live.Connections).Traffic.ReceivedBytes);
+        }
+        finally {await service.StopAsync();}
+    }
+    [Fact] public async Task Stop_writes_the_open_minute()
+    {
+        var clock=new TestClock();var calls=new Appends();var service=Service(calls.Add,clock:clock.Read);service.Start();
+        RecordSeconds(service,clock,1,30);await service.StopAsync();
+        var append=Assert.Single(calls.WithRecords);var record=Assert.Single(append.Records);
+        Assert.Equal((Epoch,300L),(record.Delta.Minute,record.Delta.ReceivedBytes));
+        var run=Assert.Single(append.Coverage);Assert.Equal((Epoch.AddSeconds(1),Epoch.AddSeconds(30),true),(run.From,run.To,run.Complete));
+        Assert.Equal(0,service.BufferedDeltas);Assert.Equal(0,service.DroppedObservations);
+    }
+    [Fact] public async Task Session_ending_stop_writes_the_open_minute()
+    {
+        string root=System.IO.Path.Combine(System.IO.Path.GetTempPath(),"DeadWare-connections-"+Guid.NewGuid().ToString("N"));var clock=new TestClock();
+        var collector=new Collector(new CollectorOptions(HardwareEnabled:false));var service=new ConnectionService(System.IO.Path.Combine(root,"connections.db"),new Resolver(_=>null),clock.Read);
+        var (session,capture)=FixtureSession(root,collector,service);
+        try
+        {
+            service.Start();capture.TakeSnapshot(DateTimeOffset.UtcNow,collector.ElapsedSeconds);RecordSeconds(service,clock,1,30);
+            // The session-ending budget: 3 s for providers, the connections stop after 1.5 s at the latest, 3 s for history.
+            var stop=StopCollector(session,TimeSpan.FromSeconds(3),TimeSpan.FromSeconds(1.5),TimeSpan.FromSeconds(3));
+            await stop.WaitAsync(TimeSpan.FromSeconds(10));
+            var row=Assert.Single((await service.ReadViewAsync(new(Epoch,Epoch.AddMinutes(1)))).Rows);Assert.Equal((Epoch,300L),(row.Minute,row.ReceivedBytes));
+        }
+        finally {await collector.DisposeAsync();await service.StopAsync();if(System.IO.Directory.Exists(root))System.IO.Directory.Delete(root,true);}
+    }
+    [Fact] public async Task Pause_writes_the_open_minute_at_the_next_tick_and_resume_uses_a_new_batch()
+    {
+        var clock=new TestClock();var calls=new Appends();var service=Service(calls.Add,options:new(FlushInterval:TimeSpan.FromMilliseconds(20)),clock:clock.Read);service.Start();
+        try
+        {
+            RecordSeconds(service,clock,1,10);await Until(()=>service.PendingPublications==0);
+            service.Configure(false,null);
+            var paused=Assert.Single((await calls.WaitFor(1,TimeSpan.FromSeconds(1))).Records);
+            Assert.Equal((Epoch,100L,ConnectionMinuteFolder.BatchId("segment",Epoch,0,0)),(paused.Delta.Minute,paused.Delta.ReceivedBytes,paused.BatchId));
+            service.Configure(true,null);RecordSeconds(service,clock,11,20);await service.StopAsync();
+            Assert.Equal(2,calls.WithRecords.Length);var resumed=Assert.Single(calls.WithRecords[1].Records);
+            // The same minute again, under a new BatchId in the resumed generation (2).
+            Assert.Equal((Epoch,100L,ConnectionMinuteFolder.BatchId("segment",Epoch,2,1)),(resumed.Delta.Minute,resumed.Delta.ReceivedBytes,resumed.BatchId));
+            Assert.Equal(0,service.BufferedDeltas);
+        }
+        finally {await service.StopAsync();}
+    }
+    [Fact] public async Task Failed_write_retries_identical_units_and_new_data_uses_new_batches()
+    {
+        var clock=new TestClock();var calls=new Appends();int failures=0;
+        var service=Service((r,c)=>{calls.Add(r,c);if(r.Count>0&&Interlocked.Increment(ref failures)==1)throw new System.IO.IOException();},
+            options:new(FlushInterval:TimeSpan.FromMilliseconds(50)),clock:clock.Read);
+        service.Start();
+        try
+        {
+            RecordSeconds(service,clock,1,63);
+            var failed=await calls.WaitFor(1);Assert.Equal((Epoch,590L),(Assert.Single(failed.Records).Delta.Minute,failed.Records[0].Delta.ReceivedBytes));
+            var firstIds=failed.Records.Select(r=>r.BatchId).Concat(failed.Coverage.Select(c=>c.BatchId)).ToHashSet(StringComparer.Ordinal);
+            // A late 7-byte delta for minute 0 after the failure: it opens a new unit, which R1 freezes at once.
+            clock.Set(64);var late=Reading(64,64,7,coverage:Epoch.AddSeconds(63)).Connections!;
+            service.TryRecord(late with {Deltas=[late.Deltas[0] with {Minute=Epoch,FirstSeen=Epoch.AddSeconds(59),LastSeen=Epoch.AddSeconds(59)}]});
+            var retry=await calls.WaitFor(2);
+            Assert.Equal(failed.Records,retry.Records.Where(r=>firstIds.Contains(r.BatchId)));
+            Assert.Equal(failed.Coverage,retry.Coverage.Where(c=>firstIds.Contains(c.BatchId)));
+            await service.StopAsync();
+            var later=calls.WithRecords.Skip(1).SelectMany(c=>c.Records).ToArray();
+            var lateRecord=Assert.Single(later,r=>r.Delta.ReceivedBytes==7);Assert.Equal(Epoch,lateRecord.Delta.Minute);Assert.DoesNotContain(lateRecord.BatchId,firstIds);
+            Assert.All(later.Where(r=>r.Delta.Minute==Epoch.AddMinutes(1)),r=>Assert.DoesNotContain(r.BatchId,firstIds));
+            Assert.Equal(0,service.DroppedObservations);Assert.Equal(0,service.BufferedDeltas);Assert.Contains("saved locally",service.StorageStatus);
+        }
+        finally {await service.StopAsync();}
+    }
+    [Fact] public async Task Pressure_freezes_open_units_at_half_the_delta_budget()
+    {
+        var calls=new Appends();var service=Service(calls.Add,options:new(MaximumBufferedDeltas:8),clock:()=>Epoch.AddSeconds(1));service.Start();
+        try
+        {
+            // Four distinct peers in one reading: Held reaches 4, half the budget, so R5 freezes the open unit with no R1 and no tick.
+            var reading=Reading(1,1).Connections!;var delta=reading.Deltas[0];
+            service.TryRecord(reading with {Deltas=[..Enumerable.Range(0,4).Select(i=>delta with {Peer=Peer with {RemotePort=1000+i}})]});
+            var append=await calls.WaitFor(1,TimeSpan.FromSeconds(5));
+            Assert.Equal(new[]{1000,1001,1002,1003},append.Records.Select(r=>r.Delta.Peer.RemotePort));Assert.Single(append.Records.Select(r=>r.BatchId).Distinct());
+            await Until(()=>service.BufferedDeltas==0);
+        }
+        finally {await service.StopAsync();}
+    }
+    [Theory][InlineData(false)][InlineData(true)]
+    public async Task Small_clock_rollback_holds_a_frozen_minute_until_the_clock_passes_it(bool stopAt95)
+    {
+        var clock=new TestClock();clock.Set(100);var calls=new Appends();
+        var service=Service(calls.Add,options:new(FlushInterval:TimeSpan.FromMilliseconds(20)),clock:clock.Read);service.Start();
+        try
+        {
+            service.TryRecord(Reading(1,100,coverage:Epoch.AddSeconds(99)));await Until(()=>service.PendingPublications==0);
+            // The step back: R2 freezes minute 1, which is 48 s ahead of the clock, so it is held, not retired.
+            clock.Set(50);service.TryRecord(Reading(2,50,segment:"new"));await Until(()=>service.PendingPublications==0);
+            await Task.Delay(200);Assert.Empty(calls.WithRecords);Assert.Equal(0,service.DroppedObservations);
+            // R4 writes minute 0 while minute 1 is still 3 s ahead.
+            clock.Set(95);var minute0=Assert.Single((await calls.WaitFor(1)).Records);
+            Assert.Equal((Epoch,Epoch.AddSeconds(50),"new"),(minute0.Delta.Minute,minute0.Delta.LastSeen,minute0.Segment));
+            if(stopAt95)
+            {
+                await service.StopAsync();Assert.Single(calls.WithRecords);Assert.Equal(1,service.DroppedObservations);
+            }
+            else
+            {
+                await Task.Delay(200);Assert.Single(calls.WithRecords);
+                clock.Set(100);var later=await calls.WaitFor(2);var record=Assert.Single(later.Records);
+                Assert.Equal((ConnectionMinuteFolder.BatchId("segment",Epoch.AddMinutes(1),0,0),Epoch.AddMinutes(1),10L,Epoch.AddSeconds(100),true),
+                    (record.BatchId,record.Delta.Minute,record.Delta.ReceivedBytes,record.Delta.LastSeen,record.Complete));
+                var run=Assert.Single(later.Coverage);Assert.Equal((Epoch.AddSeconds(99),Epoch.AddSeconds(100),true),(run.From,run.To,run.Complete));
+                await service.StopAsync();Assert.Equal(0,service.DroppedObservations);
+            }
+            Assert.Equal(0,service.BufferedDeltas);
+        }
+        finally {await service.StopAsync();}
     }
 }

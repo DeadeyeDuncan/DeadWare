@@ -25,9 +25,10 @@ internal sealed class UsageHistoryChart : FrameworkElement
         System.Windows.Automation.AutomationProperties.SetName(this, string.Join(" and ", series.Select(s => s.Label)) + " history");
         InvalidateVisual();
     }
-    /// <summary>A bucket counts as full when every minute of its slot was recorded; only adjacent full buckets connect.</summary>
+    /// <summary>A bucket counts as full when Minutes ≥ max(1, n − 0.5), with n the whole minutes that start in its slot
+    /// (<see cref="TrafficStrips.MinuteStarts"/>), so a fully recorded bucket on a fractional grid counts; only adjacent full buckets connect.</summary>
     internal static bool IsFull(UsageHistoryBucket bucket, long bucketMilliseconds)
-        => bucket.Minutes >= Math.Max(1, (bucket.End - bucket.Start).TotalMilliseconds / 60_000 - 0.5);
+        => bucket.Minutes >= Math.Max(1, TrafficStrips.MinuteStarts(bucket.Start, bucket.End) - 0.5);
     internal static bool CanConnect(UsageHistoryBucket a, UsageHistoryBucket b, long bucketMilliseconds)
         => IsFull(a, bucketMilliseconds) && IsFull(b, bucketMilliseconds) && b.Start == a.End;
 

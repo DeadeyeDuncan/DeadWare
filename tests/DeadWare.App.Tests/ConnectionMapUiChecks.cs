@@ -1,6 +1,7 @@
 using System.IO;
 using System.Reflection;
 using System.Windows;
+using System.Windows.Automation;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
@@ -73,6 +74,7 @@ internal static class ConnectionMapUiChecks
         CheckStateBordersAndWidgetMarkers();
         CheckActivityFade();
         CheckRefinedGlassLayers();
+        CheckHighlight();
     }
 
     private static void CheckMapOnlyPresentationSwitch()
@@ -379,6 +381,57 @@ internal static class ConnectionMapUiChecks
         map.SetData([],null,true,"");Render(map,new(600,400),"connections-nothing");
         Assert.Contains(Shapes(VisualTreeHelper.GetDrawing(map)!),s=>s.Brush is RadialGradientBrush&&s.Geometry is EllipseGeometry);
         Assert.Equal(0,map.DisplayedPointCount);
+    }
+
+    private static void CheckHighlight()
+    {
+        static IEnumerable<GeometryDrawing> Shapes(Drawing drawing)=>drawing is GeometryDrawing shape?[shape]:drawing is DrawingGroup group?group.Children.SelectMany(Shapes):[];
+        // Equal traffic gives both nodes the same base radius; "near" and "far" round to different location keys.
+        var points=new ConnectionMapPoint[]{new("near",new(20,40),100,0,false),new("far",new(-20,-20),100,0,false)};
+        foreach(string name in new[]{"Daylight","Midnight"})
+        {
+            Theme.Apply(name);
+            var map=new ConnectionMap {Flat=true,AnimationEnabled=false};
+            map.SetData(points,new(0,-60),true,"Ring fixture");map.ResetView();
+            GeometryDrawing[] Draw(string step){Render(map,new(600,300),$"connections-highlight-{name}-{step}");return Shapes(VisualTreeHelper.GetDrawing(map)!).ToArray();}
+            bool At(GeometryDrawing s,string key)=>s.Geometry is EllipseGeometry e&&(e.Center-map.PointPosition(key)!.Value).Length<.1;
+            // The node core: a solid fill with an ink outline (halos have no pen; rings have no fill).
+            GeometryDrawing Node(GeometryDrawing[] shapes,string key)=>Assert.Single(shapes,s=>At(s,key)&&ReferenceEquals(s.Brush,Theme.Brush(Theme.GraphKey("download")))&&ReferenceEquals(s.Pen?.Brush,Theme.Brush("Ink")));
+            GeometryDrawing[] Rings(GeometryDrawing[] shapes,string key)=>shapes.Where(s=>At(s,key)&&s.Brush is null&&ReferenceEquals(s.Pen?.Brush,Theme.Brush("Accent"))).ToArray();
+            int Filaments(GeometryDrawing[] shapes)=>shapes.Count(s=>s.Geometry is StreamGeometry&&ReferenceEquals(s.Pen?.Brush,Theme.Brush("Ink"))&&s.Pen.Thickness==.5);
+            var plain=Draw("plain");
+            double radius=((EllipseGeometry)Node(plain,"near").Geometry).RadiusX;
+            Assert.Equal(.6,Node(plain,"near").Pen.Thickness,6);Assert.Empty(Rings(plain,"near"));Assert.Equal(0,Filaments(plain));
+            Assert.Empty(map.HighlightedKeys);Assert.DoesNotContain("highlighted",AutomationProperties.GetName(map));
+
+            map.Highlight([new GeoPoint(20.0001,40)]);
+            Assert.Equal(new[]{"near"},map.HighlightedKeys);
+            var lit=Draw("lit");
+            var node=Node(lit,"near");var ring=Assert.Single(Rings(lit,"near"));
+            Assert.Equal(radius+1.5,((EllipseGeometry)node.Geometry).RadiusX,6);Assert.Equal(1.2,node.Pen.Thickness,6);
+            Assert.Equal(radius+1.5+4,((EllipseGeometry)ring.Geometry).RadiusX,6);Assert.Equal(1,ring.Pen.Thickness,6);
+            Assert.Equal(1,Filaments(lit));
+            Assert.Equal(radius,((EllipseGeometry)Node(lit,"far").Geometry).RadiusX,6);Assert.Empty(Rings(lit,"far"));
+            Assert.EndsWith(" · 1 highlighted",AutomationProperties.GetName(map));
+            // The same key set does not regroup.
+            var displayed=map.DisplayedPoints;map.Highlight([new GeoPoint(20,40)]);Assert.Same(displayed,map.DisplayedPoints);
+
+            map.Highlight(null);
+            Assert.Empty(map.HighlightedKeys);Assert.DoesNotContain("highlighted",AutomationProperties.GetName(map));
+            var cleared=Draw("cleared");Assert.Empty(Rings(cleared,"near"));Assert.Equal(radius,((EllipseGeometry)Node(cleared,"near").Geometry).RadiusX,6);
+
+            map.Highlight([new GeoPoint(20,40)]);map.SetData(points,new(0,-60),true,"Ring fixture");
+            Assert.Equal(new[]{"near"},map.HighlightedKeys);Assert.EndsWith(" · 1 highlighted",AutomationProperties.GetName(map));
+            Assert.Single(Rings(Draw("kept"),"near"));
+
+            // A regroup keeps the SelectPoint key.
+            map.SelectPoint("far");
+            map.Highlight([new GeoPoint(-20,-20),new GeoPoint(20,40)]);
+            Assert.True(map.DisplayedPoints.Single(p=>p.Key=="far").Selected);Assert.False(map.DisplayedPoints.Single(p=>p.Key=="near").Selected);
+            Assert.Equal(new[]{"far","near"},map.HighlightedKeys.Order());Assert.EndsWith(" · 2 highlighted",AutomationProperties.GetName(map));
+            map.Highlight(null);
+            Assert.True(map.DisplayedPoints.Single(p=>p.Key=="far").Selected);Assert.Empty(map.HighlightedKeys);
+        }
     }
 
     private sealed class OffscreenSource : PresentationSource, IDisposable

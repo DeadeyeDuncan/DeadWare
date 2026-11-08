@@ -25,6 +25,15 @@ public sealed class UsageHistoryStore
     public const int MaximumBatchRows = 4096;
     public const int MaximumApplications = 200;
     private const long MaximumJournalBytes = 8L * 1024 * 1024;
+    // The Applications ranking and its totals, shared by ReadApplications and the traffic strip so both agree name for name.
+    private const string RankedApplicationsSql = """
+        SELECT name,SUM(received),SUM(sent),COUNT(*) FROM application_minutes
+        WHERE machine=$machine AND minute>=$from AND minute<$to GROUP BY name ORDER BY SUM(received)+SUM(sent) DESC,name LIMIT $limit
+        """;
+    private const string ApplicationTotalsSql = """
+        SELECT COUNT(DISTINCT name),COALESCE(SUM(received),0),COALESCE(SUM(sent),0) FROM application_minutes
+        WHERE machine=$machine AND minute>=$from AND minute<$to
+        """;
     private const long MinuteMilliseconds = 60_000, DayMilliseconds = 86_400_000, FutureToleranceMilliseconds = 5 * MinuteMilliseconds;
     private readonly string path;
     private readonly long maximumDatabaseBytes;
@@ -161,7 +170,7 @@ public sealed class UsageHistoryStore
         if (maxPoints is < 1 or > 4000) throw new ArgumentOutOfRangeException(nameof(maxPoints));
         using var db = Open(readOnly: true);
         long fromMs = from.ToUnixTimeMilliseconds(), toMs = to.ToUnixTimeMilliseconds();
-        long bucket = Math.Max(MinuteMilliseconds, (long)Math.Ceiling((toMs - fromMs) / (double)maxPoints));
+        long bucket = Bucket(fromMs, toMs, maxPoints);
         const string Where = "WHERE machine=$machine AND metric=$metric AND hardware=$hardware AND minute>=$from AND minute<$to";
         (string, object)[] args = [("$machine", machine), ("$metric", metric), ("$hardware", hardwareId ?? ""), ("$from", fromMs), ("$to", toMs)];
         var buckets = new List<UsageHistoryBucket>();
@@ -195,23 +204,84 @@ public sealed class UsageHistoryStore
         using var db = Open(readOnly: true);
         (string, object)[] args = [("$machine", machine), ("$from", from.ToUnixTimeMilliseconds()), ("$to", to.ToUnixTimeMilliseconds())];
         var applications = new List<UsageApplicationTotal>();
-        using (var command = Command(db, """
-            SELECT name,SUM(received),SUM(sent),COUNT(*) FROM application_minutes
-            WHERE machine=$machine AND minute>=$from AND minute<$to GROUP BY name ORDER BY SUM(received)+SUM(sent) DESC,name LIMIT $limit
-            """, null, [.. args, ("$limit", maxNames)]))
+        using (var command = Command(db, RankedApplicationsSql, null, [.. args, ("$limit", maxNames)]))
         using (var reader = command.ExecuteReader())
             while (reader.Read()) applications.Add(new(reader.GetString(0), reader.GetInt64(1), reader.GetInt64(2), reader.GetInt64(3)));
         long names, received, sent;
-        using (var command = Command(db, """
-            SELECT COUNT(DISTINCT name),COALESCE(SUM(received),0),COALESCE(SUM(sent),0) FROM application_minutes
-            WHERE machine=$machine AND minute>=$from AND minute<$to
-            """, null, args))
+        using (var command = Command(db, ApplicationTotalsSql, null, args))
         using (var reader = command.ExecuteReader())
         { reader.Read(); names = reader.GetInt64(0); received = reader.GetInt64(1); sent = reader.GetInt64(2); }
         long gaps = Convert.ToInt64(ScalarWith(db, "SELECT COUNT(*) FROM capture_gaps WHERE machine=$machine AND minute>=$from AND minute<$to", args), CultureInfo.InvariantCulture);
         long recorded = Convert.ToInt64(ScalarWith(db, "SELECT COUNT(DISTINCT minute) FROM metric_minutes WHERE machine=$machine AND minute>=$from AND minute<$to", args), CultureInfo.InvariantCulture);
         return new(from, to, applications, names - applications.Count, received - applications.Sum(a => a.Received),
             sent - applications.Sum(a => a.Sent), gaps, recorded, Earliest(db, machine), StorageBytes);
+    }
+
+    /// <summary>The traffic strip's series: the six names with the most traffic plus Other, per slot of <see cref="ReadMetric"/>'s grid.
+    /// Totals include capture-gap minutes' rows, as <see cref="ReadApplications"/> does; slot bytes hold captured minutes only.</summary>
+    public TrafficStrip ReadApplicationSeries(string machine, DateTimeOffset from, DateTimeOffset to, int maxPoints = 1500)
+    {
+        EnsureInitialized(); ValidateMachine(machine); ValidateRange(from, to);
+        if (maxPoints is < 1 or > 4000) throw new ArgumentOutOfRangeException(nameof(maxPoints));
+        using var db = Open(readOnly: true);
+        // One deferred transaction, so every statement reads the same snapshot.
+        using var transaction = db.BeginTransaction(deferred: true);
+        long fromMs = from.ToUnixTimeMilliseconds(), toMs = to.ToUnixTimeMilliseconds(), bucket = Bucket(fromMs, toMs, maxPoints);
+        (string, object)[] args = [("$machine", machine), ("$from", fromMs), ("$to", toMs)];
+        (string, object)[] slotArgs = [.. args, ("$bucket", bucket)];
+        var applications = new List<TrafficStripApplication>();
+        using (var command = Command(db, RankedApplicationsSql, transaction, [.. args, ("$limit", TrafficStrips.MaximumApplications)]))
+        using (var reader = command.ExecuteReader())
+            while (reader.Read()) applications.Add(new(reader.GetString(0), reader.GetString(0), reader.GetInt64(1), reader.GetInt64(2)));
+        long names, received, sent;
+        using (var command = Command(db, ApplicationTotalsSql, transaction, args))
+        using (var reader = command.ExecuteReader())
+        { reader.Read(); names = reader.GetInt64(0); received = reader.GetInt64(1); sent = reader.GetInt64(2); }
+        // Recorded minutes per slot, and how many of them are captured (not in capture_gaps).
+        var minutes = new SortedDictionary<long, (long Recorded, long Captured)>();
+        using (var command = Command(db, """
+            SELECT (recorded.minute-$from)/$bucket,COUNT(*),SUM(gap.minute IS NULL) FROM (
+                SELECT minute FROM metric_minutes WHERE machine=$machine AND minute>=$from AND minute<$to
+                UNION SELECT minute FROM application_minutes WHERE machine=$machine AND minute>=$from AND minute<$to) recorded
+            LEFT JOIN capture_gaps gap ON gap.machine=$machine AND gap.minute=recorded.minute
+            GROUP BY 1
+            """, transaction, slotArgs))
+        using (var reader = command.ExecuteReader())
+            while (reader.Read()) minutes[reader.GetInt64(0)] = (reader.GetInt64(1), reader.GetInt64(2));
+        var index = new Dictionary<string, int>(StringComparer.Ordinal);
+        for (int i = 0; i < applications.Count; i++) index[applications[i].Name] = i;
+        int series = applications.Count + 1;
+        var bytes = new Dictionary<long, (long[] Received, long[] Sent)>();
+        void Add(long slot, string name, long slotReceived, long slotSent)
+        {
+            if (!bytes.TryGetValue(slot, out var values)) bytes[slot] = values = (new long[series], new long[series]);
+            int at = index.TryGetValue(name, out int found) ? found : applications.Count;
+            values.Received[at] += slotReceived; values.Sent[at] += slotSent;
+        }
+        using (var command = Command(db, """
+            SELECT (minute-$from)/$bucket,name,SUM(received),SUM(sent) FROM application_minutes
+            WHERE machine=$machine AND minute>=$from AND minute<$to GROUP BY 1,2
+            """, transaction, slotArgs))
+        using (var reader = command.ExecuteReader())
+            while (reader.Read()) Add(reader.GetInt64(0), reader.GetString(1), reader.GetInt64(2), reader.GetInt64(3));
+        // A capture-gap minute's rows stay in the totals but not in the slot bytes: read those few rows and take them back out.
+        using (var command = Command(db, """
+            SELECT (app.minute-$from)/$bucket,app.name,app.received,app.sent FROM capture_gaps gap
+            JOIN application_minutes app ON app.machine=gap.machine AND app.minute=gap.minute
+            WHERE gap.machine=$machine AND gap.minute>=$from AND gap.minute<$to
+            """, transaction, slotArgs))
+        using (var reader = command.ExecuteReader())
+            while (reader.Read()) Add(reader.GetInt64(0), reader.GetString(1), -reader.GetInt64(2), -reader.GetInt64(3));
+        transaction.Commit();
+        var slots = new List<TrafficStripSlot>(minutes.Count);
+        foreach (var (slot, (recorded, captured)) in minutes)
+        {
+            long start = fromMs + slot * bucket;
+            var values = bytes.TryGetValue(slot, out var found) ? found : (Received: new long[series], Sent: new long[series]);
+            slots.Add(new(Stamp(start), Stamp(Math.Min(start + bucket, toMs)), recorded, 60 * captured, captured < recorded, values.Received, values.Sent));
+        }
+        return new(from, to, bucket, TrafficMeasure.Total, applications, received - applications.Sum(a => a.Received),
+            sent - applications.Sum(a => a.Sent), names - applications.Count, slots);
     }
 
     /// <summary>One application's stored minutes in a range, oldest first, with the segment that first wrote each row.</summary>
@@ -315,6 +385,8 @@ public sealed class UsageHistoryStore
         return value is null or DBNull ? null : Stamp(Convert.ToInt64(value, CultureInfo.InvariantCulture));
     }
 
+    /// <summary>ReadMetric's slot width: at least a minute, and at most maxPoints slots over the range.</summary>
+    private static long Bucket(long fromMs, long toMs, int maxPoints) => Math.Max(MinuteMilliseconds, (long)Math.Ceiling((toMs - fromMs) / (double)maxPoints));
     private static long DayFloor(long milliseconds) => milliseconds - ((milliseconds % DayMilliseconds) + DayMilliseconds) % DayMilliseconds;
     private static DateTimeOffset Stamp(long milliseconds) => DateTimeOffset.FromUnixTimeMilliseconds(milliseconds);
     private static string Csv(object? value)

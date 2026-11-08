@@ -8,6 +8,8 @@ namespace DeadWare.App;
 public sealed class UsageHistoryService
 {
     public const string SavedStatus = "Usage history saved locally · up to 400 days.";
+    /// <summary>How often closed minutes are saved by default; a page's save delay is this plus the polling interval.</summary>
+    public static readonly TimeSpan DefaultFlushInterval = TimeSpan.FromSeconds(15);
     private sealed record Pending(Reading Reading, long Generation, long Drops);
     private readonly Channel<Pending> queue = Channel.CreateBounded<Pending>(new BoundedChannelOptions(120)
         { SingleReader = true, SingleWriter = false, FullMode = BoundedChannelFullMode.Wait });
@@ -25,7 +27,7 @@ public sealed class UsageHistoryService
 
     public UsageHistoryService(string path, string machineKey, TimeProvider? timeProvider = null, TimeSpan? flushInterval = null)
     {
-        store = new(path); machine = machineKey; time = timeProvider ?? TimeProvider.System; interval = flushInterval ?? TimeSpan.FromSeconds(15);
+        store = new(path); machine = machineKey; time = timeProvider ?? TimeProvider.System; interval = flushInterval ?? DefaultFlushInterval;
         if (interval <= TimeSpan.Zero || interval > TimeSpan.FromMinutes(1)) throw new ArgumentOutOfRangeException(nameof(flushInterval));
     }
     public long DroppedSamples => Interlocked.Read(ref dropped);
@@ -175,6 +177,35 @@ public sealed class UsageHistoryService
         {
             Fail(error);
             return new(from, to, [], 0, 0, 0, 0, 0, null, 0);
+        }
+    }
+    /// <summary>The traffic strip's series, or null when the store cannot be read, so a caller can tell a failure from an empty period;
+    /// <see cref="Status"/> then says why.</summary>
+    public async Task<TrafficStrip?> TryReadApplicationSeriesAsync(DateTimeOffset from, DateTimeOffset to, int maxPoints)
+    {
+        try
+        {
+            await InitializeAsync().ConfigureAwait(false);
+            return await Task.Run(() => store.ReadApplicationSeries(machine, from, to, maxPoints)).ConfigureAwait(false);
+        }
+        catch (Exception error) when (error is not ArgumentException)
+        {
+            Fail(error);
+            return null;
+        }
+    }
+    /// <summary>Like <see cref="ReadApplicationsAsync"/>, but null when the store cannot be read; <see cref="Status"/> then says why.</summary>
+    public async Task<UsageApplicationView?> TryReadApplicationsAsync(DateTimeOffset from, DateTimeOffset to)
+    {
+        try
+        {
+            await InitializeAsync().ConfigureAwait(false);
+            return await Task.Run(() => store.ReadApplications(machine, from, to)).ConfigureAwait(false);
+        }
+        catch (Exception error) when (error is not ArgumentException)
+        {
+            Fail(error);
+            return null;
         }
     }
     public async Task<(long AtOrAbove, long Total)> ShareAtOrAboveAsync(string metric, string? hardwareId, DateTimeOffset from, DateTimeOffset to, double threshold)

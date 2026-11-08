@@ -149,17 +149,22 @@ public static class ConnectionProjection
         Flush(); return result.AsReadOnly();
     }
 
-    public static ConnectionMapGroups Group(IEnumerable<ConnectionMapPoint> points)
+    /// <summary>The one rounding rule for map locations: node grouping and highlighting both key by it.</summary>
+    public static (double Latitude, double Longitude) LocationKey(GeoPoint point) => (Math.Round(point.Latitude, 3), Math.Round(Wrap(point.Longitude), 3));
+
+    /// <summary>Groups points by <see cref="LocationKey"/> and keeps 256: selected groups first, then highlighted locations, then by key.</summary>
+    public static ConnectionMapGroups Group(IEnumerable<ConnectionMapPoint> points, IReadOnlySet<(double Latitude, double Longitude)>? highlighted = null)
     {
         static long Add(long a, long b) => a > long.MaxValue - Math.Max(0, b) ? long.MaxValue : a + Math.Max(0, b);
-        var groups = points.Where(p => IsValid(p.Point)).GroupBy(p => (Math.Round(p.Point.Latitude, 3), Math.Round(Wrap(p.Point.Longitude), 3)))
+        var groups = points.Where(p => IsValid(p.Point)).GroupBy(p => LocationKey(p.Point))
             .Select(group =>
             {
                 var first = group.OrderBy(p => p.Key, StringComparer.Ordinal).First();
                 return first with { ReceivedBytes = group.Aggregate(0L, (sum, p) => Add(sum, p.ReceivedBytes)),
                     SentBytes = group.Aggregate(0L, (sum, p) => Add(sum, p.SentBytes)), Selected = group.Any(p => p.Selected),
                     ReceiveActive=group.Any(p=>p.ReceiveActive&&p.ReceivedBytes>0),SendActive=group.Any(p=>p.SendActive&&p.SentBytes>0) };
-            }).OrderByDescending(p => p.Selected).ThenBy(p => p.Key, StringComparer.Ordinal).ToArray();
+            }).OrderByDescending(p => p.Selected).ThenByDescending(p => highlighted?.Contains(LocationKey(p.Point)) == true)
+            .ThenBy(p => p.Key, StringComparer.Ordinal).ToArray();
         return new(Array.AsReadOnly(groups.Take(256).ToArray()), Math.Max(0, groups.Length - 256));
     }
 }

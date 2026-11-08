@@ -4,6 +4,8 @@ using System.Windows;
 using System.Windows.Threading;
 using DeadWare.Core;
 namespace DeadWare.App;
+/// <summary>A Show in Connections request: the interval and the bare application name, or null for every application. It lives only in memory.</summary>
+public sealed record ConnectionsHistoryRequest(DateTimeOffset From, DateTimeOffset To, string? Application);
 public sealed class UiSession
 {
     public Collector Collector {get;}
@@ -34,6 +36,10 @@ public sealed class UiSession
     /// <summary>Raised when a page asks the dashboard to show Usage history for the day containing the given time.</summary>
     public event Action<DateTimeOffset>? UsageDayRequested;
     public void RequestUsageDay(DateTimeOffset at)=>UsageDayRequested?.Invoke(at);
+    /// <summary>Raised when a page asks the dashboard to show Connections History for an interval, and only one application when it names one.</summary>
+    public event Action<ConnectionsHistoryRequest>? ConnectionsHistoryRequested;
+    /// <summary>Asks the dashboard for Connections History over [from, to): at most 30 days and 1 minute, with the bare application name or null for every application.</summary>
+    public void RequestConnectionsHistory(DateTimeOffset from,DateTimeOffset to,string? application)=>ConnectionsHistoryRequested?.Invoke(new(from,to,application));
     public Reading? Current=>Collector.Latest;
     public int HistorySeconds=>Settings.HistorySeconds;
     public string? SelectedGpuId=>Current is null?null:DeviceSelection.Resolve(Settings.SelectedGpuId,Current.Gpus);
@@ -248,6 +254,8 @@ public sealed class UiSession
         Changed?.Invoke();_ = SaveAsync();
     }
     public void SetConnectionsAnimation(bool enabled) {Settings.ConnectionsAnimation=enabled;Changed?.Invoke();_ = SaveAsync();}
+    /// <summary>Saves the Destinations table's scope: "All", "Internet" or "Local"; anything else is "All".</summary>
+    public void SetConnectionsDestinationScope(string scope) {Settings.ConnectionsDestinationScope=ConnectionDestinations.ParseScope(scope).ToString();Changed?.Invoke();_ = SaveAsync();}
     public void SetCoolingOptions(bool recording,bool notifications,int detailedDays,int summaryDays)
     {
         Settings.CoolingRecording=recording;Settings.CoolingNotifications=notifications;

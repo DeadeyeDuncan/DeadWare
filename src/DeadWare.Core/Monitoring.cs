@@ -378,6 +378,7 @@ public sealed class UserSettings
     public bool WidgetConnectionsNorthAmerica {get;set;}
     public string? ConnectionsHomeCityId {get;set;}
     public bool ConnectionsAnimation {get;set;}=true;
+    public string ConnectionsDestinationScope {get;set;}="All";
     public List<string> WidgetGraphs {get;set;}=WidgetGraphSelection.Default.ToList();
     public bool WidgetAlwaysOnTop {get;set;}=true;
     public bool JoinCpuGpuPopouts {get;set;}
@@ -425,6 +426,7 @@ public static class SettingsCodec
             s.GlassLevel=GlassLevels.Normalize(s.GlassLevel);
             s.GraphColors=GraphColorSettings.Normalize(s.GraphColors);
             s.GraphStyles=GraphLineStyles.Normalize(s.GraphStyles);
+            s.ConnectionsDestinationScope=ConnectionDestinations.ParseScope(s.ConnectionsDestinationScope).ToString();
             if(string.IsNullOrWhiteSpace(s.ConnectionsHomeCityId)||s.ConnectionsHomeCityId.Length>80||s.ConnectionsHomeCityId.Any(char.IsControl))s.ConnectionsHomeCityId=null;
             bool invalid=!HistoryRanges.IsSupported(s.HistorySeconds) || s.Windows is null || PollingPolicy.Normalize(s.PollingIntervalSeconds)!=s.PollingIntervalSeconds;
             var widgetGraphs=WidgetGraphSelection.Normalize(s.WidgetGraphs);
