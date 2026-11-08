@@ -303,7 +303,8 @@ public class AlertServiceTests
             await alerts.StopAsync();
             var saved = await Saved(alerts, Start.AddDays(-1), Start.AddDays(1));
             Assert.Equal(1102, saved.Count);
-            Assert.Equal(["a.exe", "b.exe", .. Enumerable.Range(0, 1100).Select(i => $"app{i:D5}.exe")], saved.Select(e => e.Application!).Order(StringComparer.Ordinal));
+            string[] expected = ["a.exe", "b.exe", .. Enumerable.Range(0, 1100).Select(i => $"app{i:D5}.exe")];
+            Assert.Equal(expected.Order(StringComparer.Ordinal), saved.Select(e => e.Application!).Order(StringComparer.Ordinal));
             Assert.All(saved, e => { Assert.Equal(e.Start, e.End); Assert.Equal(rule.Id, e.RuleId); });
             Assert.Equal(Start, saved.Single(e => e.Application == "a.exe").Start);
             Assert.Equal(0, Volatile.Read(ref notified));
