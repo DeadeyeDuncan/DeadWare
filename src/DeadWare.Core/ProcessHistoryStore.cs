@@ -68,6 +68,14 @@ public sealed class ProcessHistoryStore(string path, long maximumDatabaseBytes =
     private Action? afterFirstRead = null;
     // Test seam, set by reflection: runs inside the upgrade transaction just before it commits, so a test can fail it. Always null in the app.
     private Action? beforeUpgradeCommit = null;
+    // The clear: the sidecar marker process-history.clear.json beside the database, in usage-history.db's format.
+    private const long ClearWindowMilliseconds = 6 * 60 * MinuteMilliseconds;
+    private readonly SidecarClear<ProcessClearState> clear = NewClear(Path.GetFullPath(path));
+    // Seams set by reflection in tests: the step's monotonic clock, every write connection after it is configured, and each committed
+    // clear window as (machine, from, to) in Unix milliseconds.
+    private Func<TimeSpan> clearClock = HistoryClearStep.MonotonicClock;
+    private Action<SqliteConnection>? clearConnectionOpened = null;
+    private Action<string, long, long>? clearWindowCommitted = null;
 
     public long StorageBytes => new[] { path, path + "-wal", path + "-shm" }
         .Where(File.Exists).Sum(file => new FileInfo(file).Length);
@@ -80,6 +88,8 @@ public sealed class ProcessHistoryStore(string path, long maximumDatabaseBytes =
     {
         if (maximumDatabaseBytes is < 65536 or > MaximumDatabaseBytes) throw new ArgumentOutOfRangeException(nameof(maximumDatabaseBytes));
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        // The marker is read before the first write connection opens, so that connection already uses secure_delete.
+        clear.ReadAtStartup();
         // An empty file is an interrupted first creation; anything else is inspected read-only before it is touched.
         bool create = !File.Exists(path) || new FileInfo(path).Length == 0;
         long version = create ? 2 : Inspect();
@@ -141,7 +151,8 @@ public sealed class ProcessHistoryStore(string path, long maximumDatabaseBytes =
 
     /// <summary>Writes closed minutes. Rows older than the retention window or more than five minutes ahead of now are ignored.
     /// A minute already stored from another segment (a restart inside that minute) keeps its first rows and is marked incomplete;
-    /// the same segment repeated is ignored, so a retried batch cannot double count. Expired days leave first, as <see cref="Expire(DateTimeOffset)"/> does.</summary>
+    /// the same segment repeated is ignored, so a retried batch cannot double count. Expired days leave first, as <see cref="Expire(DateTimeOffset)"/> does,
+    /// except while a clear marker exists (<see cref="ClearPending"/>): then they wait until the clear ends. Eviction at the cap still runs.</summary>
     public void Append(string machine, IReadOnlyList<ProcessMinuteBatch> batches, DateTimeOffset now)
     {
         EnsureInitialized(); ValidateMachine(machine); ArgumentNullException.ThrowIfNull(batches);
@@ -150,7 +161,8 @@ public sealed class ProcessHistoryStore(string path, long maximumDatabaseBytes =
         long today = DayFloor(now.ToUnixTimeMilliseconds());
         long cutoff = RetentionCutoff(now).ToUnixTimeMilliseconds(), latest = now.ToUnixTimeMilliseconds() + FutureToleranceMilliseconds;
         using var db = Open();
-        ExpireByDay(db, cutoff);
+        // While a clear marker exists, secure_delete would make each day-sized delete too large: expiry waits until the clear ends.
+        if (!ClearPending) ExpireByDay(db, cutoff);
         while (true)
         {
             try
@@ -209,13 +221,179 @@ public sealed class ProcessHistoryStore(string path, long maximumDatabaseBytes =
 
     /// <summary>Deletes every minute before <see cref="RetentionCutoff"/>(<paramref name="now"/>), with its application rows, for every
     /// machine. Each UTC day is its own committed transaction followed by a checkpoint, so a long absence never writes one large journal.
-    /// The history worker calls this at start and when the UTC day changes, so days leave while recording is off too.</summary>
+    /// The history worker calls this at start and when the UTC day changes, so days leave while recording is off too. While a clear marker
+    /// exists it deletes nothing; the clear's last step calls it once the marker is gone.</summary>
     public void Expire(DateTimeOffset now)
     {
         EnsureInitialized();
+        if (ClearPending) return;
         using var db = Open();
         ExpireByDay(db, RetentionCutoff(now).ToUnixTimeMilliseconds());
     }
+
+    /// <summary>A clear is in progress: from the marker's write until the last step deletes it, and from Initialize while a marker
+    /// exists, including one that cannot be read (then <see cref="PendingClear"/> is null).</summary>
+    public bool ClearPending => clear.Pending;
+    /// <summary>The clear in progress, as its marker records it; null without one or while the marker cannot be read.</summary>
+    public HistoryClear? PendingClear => clear.Request;
+    /// <summary>Initialize found a marker with invalid content and deleted it; nothing is cleared for it.</summary>
+    public bool DiscardedInvalidMarker => clear.Discarded;
+
+    /// <summary>
+    /// Records a clear in <c>process-history.clear.json</c> before anything is deleted. A failed write throws and deletes nothing.
+    /// An equal pending request writes nothing; a different one throws <see cref="InvalidOperationException"/>.
+    /// </summary>
+    public void BeginClear(HistoryClear request)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        if (request.AppKey is { Length: 0 }) throw new ArgumentException("A process history clear names an application key, or none for all apps.", nameof(request));
+        EnsureInitialized();
+        clear.Begin(request, "Another process history clear is in progress.");
+    }
+
+    /// <summary>
+    /// Runs the pending clear in 6-hour UTC windows, from each machine's oldest saved minute up to <c>Before</c>: one transaction per
+    /// window and machine, until <paramref name="budget"/> has passed on the monotonic clock (see <see cref="HistoryClearStep.Run"/>).
+    /// One app (found by <c>names.upper</c> = the key) has its rows added into each minute's Everything else row, GPU values included,
+    /// and then deleted; all apps lose whole minutes. <c>Total</c> is windows × machines at the first step and <c>Done</c> the windows
+    /// committed. The last step deletes the marker and then calls <see cref="Expire(DateTimeOffset)"/> with <paramref name="now"/>,
+    /// which is used for nothing else. Throws <see cref="InvalidOperationException"/> when no readable clear is pending.
+    /// </summary>
+    public HistoryClearProgress ClearStep(TimeSpan budget, DateTimeOffset now)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(budget, TimeSpan.Zero);
+        EnsureInitialized();
+        var (request, state) = clear.Current("No process history clear is pending.");
+        bool finished;
+        using (var db = Open())
+        {
+            long before = CeilingMilliseconds(request.Before);
+            state.ScannedThisStep = false;
+            if (state.Total is null) { Scan(db, request.AppKey, before, state, first: true); state.Total = state.Work.Count; }
+            finished = state.Step.Run(db, budget, clearClock, () => GuardJournal(db), () => ClearWindow(db, request, before, state), null);
+        }
+        long total = state.Total.Value;
+        if (finished)
+        {
+            // The marker is gone, so Expire's own connection runs without secure_delete. A failure there leaves the clear done; the
+            // start-up and day-change expiry try again.
+            try { Expire(now); }
+            catch (Exception error) when (error is IOException or SqliteException) { }
+        }
+        return new(finished ? total : Math.Min(state.Done, total), total, finished);
+    }
+
+    private static SidecarClear<ProcessClearState> NewClear(string database)
+        => new(Path.ChangeExtension(database, ".clear.json"), () => new ProcessClearState(database));
+
+    /// <summary>A clear's in-memory state. A resumed clear scans again from the start.</summary>
+    private sealed class ProcessClearState(string database)
+    {
+        public readonly HistoryClearStep Step = new(database);
+        public long? Total;
+        public long Done;
+        // The windows left: (machine, from, to) in Unix milliseconds, each at most 6 hours of one machine and ending at or before Before.
+        public readonly Queue<(string Machine, long From, long To)> Work = new();
+        // One app's names id, found by the last scan; null for all apps or when no name has the key.
+        public long? NameId;
+        public bool ScannedThisStep;
+    }
+
+    /// <summary>One window's transaction, or the finish. When the windows run out, the call scans again (unless a scan already ran in
+    /// this step) and, in the same call, finishes when nothing in scope is left or runs the first window found. Rows can only be written
+    /// between steps, so a scan made in the current step saw them all, and a step whose budget allows a single call still finishes.</summary>
+    private HistoryClearTransaction ClearWindow(SqliteConnection db, HistoryClear request, long before, ProcessClearState state)
+    {
+        if (state.Work.Count == 0 && !state.ScannedThisStep) Scan(db, request.AppKey, before, state, first: false);
+        int rows;
+        if (state.Work.Count == 0)
+        {
+            // After the last window: the app's names row when nothing refers to it, or every orphaned name; then the marker.
+            using (var transaction = db.BeginTransaction())
+            {
+                rows = request.AppKey is null ? DeleteOrphanedNames(db, transaction)
+                    : state.NameId is { } id ? Execute(db, "DELETE FROM names WHERE id=$id AND NOT EXISTS(SELECT 1 FROM app_minutes WHERE name_id=$id)", transaction, ("$id", id))
+                    : 0;
+                transaction.Commit();
+            }
+            clear.Finish();
+            return new(rows > 0, rows, true);
+        }
+        var (machine, from, to) = state.Work.Peek();
+        using (var transaction = db.BeginTransaction())
+        {
+            rows = request.AppKey is null ? DeleteMachineMinutes(db, transaction, machine, to) : FoldIntoEverythingElse(db, transaction, machine, state.NameId!.Value, from, to);
+            transaction.Commit();
+        }
+        state.Work.Dequeue(); state.Done++;
+        clearWindowCommitted?.Invoke(machine, from, to);
+        return new(true, rows, false);
+    }
+
+    /// <summary>
+    /// Fills the windows: for each machine (found by index seeks in both tables), 6-hour UTC windows from its oldest saved minute up to
+    /// <paramref name="before"/>. A one-app rescan starts at the app's oldest row left instead, so a finished app yields no window.
+    /// </summary>
+    private static void Scan(SqliteConnection db, string? appKey, long before, ProcessClearState state, bool first)
+    {
+        state.Work.Clear(); state.ScannedThisStep = true; state.NameId = null;
+        if (appKey is not null)
+        {
+            // No application has the reserved key, and without a names row there is nothing to do.
+            if (appKey == EverythingElseKey || ScalarWith(db, "SELECT id FROM names WHERE upper=$key", null, ("$key", appKey)) is not long id) return;
+            state.NameId = id;
+        }
+        var machines = new SortedSet<string>(StringComparer.Ordinal);
+        foreach (string table in new[] { "minutes", "app_minutes" })
+            for (string machine = ""; ScalarWith(db, $"SELECT machine FROM {table} WHERE machine>$machine ORDER BY machine LIMIT 1", null, ("$machine", machine)) is string next; machine = next)
+                machines.Add(next);
+        foreach (string machine in machines)
+        {
+            object? oldest = state.NameId is { } app && !first
+                ? ScalarWith(db, "SELECT MIN(minute) FROM app_minutes WHERE machine=$machine AND name_id=$id AND minute<$before", null,
+                    ("$machine", machine), ("$id", app), ("$before", before))
+                : ScalarWith(db, "SELECT MIN(minute) FROM (SELECT MIN(minute) AS minute FROM minutes WHERE machine=$machine UNION ALL SELECT MIN(minute) FROM app_minutes WHERE machine=$machine)",
+                    null, ("$machine", machine));
+            if (oldest is not long start || start >= before) continue;
+            for (long from = WindowFloor(start); from < before; from += ClearWindowMilliseconds)
+                state.Work.Enqueue((machine, from, Math.Min(from + ClearWindowMilliseconds, before)));
+        }
+    }
+
+    /// <summary>One app's rows in [from, to) of one machine, added into each minute's Everything else row and then deleted. Each GPU sum is
+    /// null when both values are null, otherwise their sum with null as 0. A minute without an Everything else row gains one holding the
+    /// app's values, under the reserved key's names id.</summary>
+    private static int FoldIntoEverythingElse(SqliteConnection db, SqliteTransaction transaction, string machine, long id, long from, long to)
+    {
+        (string, object)[] args = [("$machine", machine), ("$id", id), ("$from", from), ("$to", to)];
+        const string App = "a.machine=$machine AND a.name_id=$id AND a.minute>=$from AND a.minute<$to";
+        const string NoEverythingElse = "NOT EXISTS(SELECT 1 FROM app_minutes e WHERE e.machine=a.machine AND e.minute=a.minute AND e.everything_else=1)";
+        int rows = Execute(db, $"""
+            UPDATE app_minutes AS e SET cpu=e.cpu+a.cpu, io_read=e.io_read+a.io_read, io_write=e.io_write+a.io_write, memory_seconds=e.memory_seconds+a.memory_seconds,
+                gpu_seconds=CASE WHEN e.gpu_seconds IS NULL AND a.gpu_seconds IS NULL THEN NULL ELSE COALESCE(e.gpu_seconds,0)+COALESCE(a.gpu_seconds,0) END,
+                gpu_memory_seconds=CASE WHEN e.gpu_memory_seconds IS NULL AND a.gpu_memory_seconds IS NULL THEN NULL ELSE COALESCE(e.gpu_memory_seconds,0)+COALESCE(a.gpu_memory_seconds,0) END
+            FROM app_minutes AS a
+            WHERE a.machine=e.machine AND a.minute=e.minute AND e.everything_else=1 AND e.machine=$machine AND e.minute>=$from AND e.minute<$to AND {App}
+            """, transaction, args);
+        if (ScalarWith(db, $"SELECT EXISTS(SELECT 1 FROM app_minutes a WHERE {App} AND {NoEverythingElse})", transaction, args) is 1L)
+        {
+            Execute(db, "INSERT OR IGNORE INTO names(upper,display) VALUES($upper,$display)", transaction, ("$upper", EverythingElseKey), ("$display", ProcessHistory.EverythingElse));
+            object other = ScalarWith(db, "SELECT id FROM names WHERE upper=$upper", transaction, ("$upper", EverythingElseKey))!;
+            rows += Execute(db, $"""
+                INSERT OR IGNORE INTO app_minutes(machine,minute,name_id,cpu,io_read,io_write,memory_seconds,everything_else,gpu_seconds,gpu_memory_seconds)
+                SELECT a.machine,a.minute,$other,a.cpu,a.io_read,a.io_write,a.memory_seconds,1,a.gpu_seconds,a.gpu_memory_seconds FROM app_minutes a
+                WHERE {App} AND {NoEverythingElse}
+                """, transaction, [.. args, ("$other", other)]);
+        }
+        return rows + Execute(db, "DELETE FROM app_minutes WHERE machine=$machine AND name_id=$id AND minute>=$from AND minute<$to", transaction, args);
+    }
+
+    /// <summary>The start of the 6-hour UTC window holding the time.</summary>
+    private static long WindowFloor(long milliseconds) => milliseconds - ((milliseconds % ClearWindowMilliseconds) + ClearWindowMilliseconds) % ClearWindowMilliseconds;
+
+    /// <summary>Unix milliseconds of the first whole millisecond at or after the time, so every stored minute before it compares below.</summary>
+    private static long CeilingMilliseconds(DateTimeOffset time)
+        => (time.UtcTicks - DateTimeOffset.UnixEpoch.UtcTicks + TimeSpan.TicksPerMillisecond - 1) / TimeSpan.TicksPerMillisecond;
 
     /// <summary>Totals per application for the minutes starting in [from, to). Everything else is kept apart from the ranked rows.
     /// Minutes before <see cref="RetentionCutoff"/>(<paramref name="now"/>) are never read, even before they are expired.</summary>
@@ -381,15 +559,16 @@ public sealed class ProcessHistoryStore(string path, long maximumDatabaseBytes =
         using (var command = Command(db, "SELECT DISTINCT machine FROM minutes", transaction))
         using (var reader = command.ExecuteReader())
             while (reader.Read()) machines.Add(reader.GetString(0));
-        foreach (var machine in machines)
-        {
-            Execute(db, "DELETE FROM app_minutes WHERE machine=$machine AND minute<$cutoff", transaction, ("$machine", machine), ("$cutoff", cutoff));
-            Execute(db, "DELETE FROM minutes WHERE machine=$machine AND minute<$cutoff", transaction, ("$machine", machine), ("$cutoff", cutoff));
-        }
+        foreach (var machine in machines) DeleteMachineMinutes(db, transaction, machine, cutoff);
     }
 
+    /// <summary><see cref="DeleteMinutes"/>' two statements for one machine; returns the rows deleted.</summary>
+    private static int DeleteMachineMinutes(SqliteConnection db, SqliteTransaction transaction, string machine, long cutoff)
+        => Execute(db, "DELETE FROM app_minutes WHERE machine=$machine AND minute<$cutoff", transaction, ("$machine", machine), ("$cutoff", cutoff)) +
+           Execute(db, "DELETE FROM minutes WHERE machine=$machine AND minute<$cutoff", transaction, ("$machine", machine), ("$cutoff", cutoff));
+
     /// <summary>Deletes the names no saved minute lists any more. It walks the whole of app_minutes, so it runs once per expiry or eviction.</summary>
-    private static void DeleteOrphanedNames(SqliteConnection db, SqliteTransaction transaction)
+    private static int DeleteOrphanedNames(SqliteConnection db, SqliteTransaction transaction)
         => Execute(db, "DELETE FROM names WHERE id NOT IN(SELECT DISTINCT name_id FROM app_minutes)", transaction);
 
     /// <summary>Deletes every minute before <paramref name="cutoff"/>, oldest UTC day first: one committed transaction per day and a
@@ -456,15 +635,24 @@ public sealed class ProcessHistoryStore(string path, long maximumDatabaseBytes =
 
     private void Configure(SqliteConnection db)
     {
+        GuardJournal(db);
+        long pageSize = Number(db, "PRAGMA page_size");
+        Execute(db, "PRAGMA max_page_count=" + (maximumDatabaseBytes / pageSize).ToString(CultureInfo.InvariantCulture));
+        Execute(db, "PRAGMA journal_size_limit=8388608; PRAGMA wal_autocheckpoint=256; PRAGMA synchronous=FULL;");
+        // While a clear marker exists, every delete on this connection overwrites the freed content.
+        if (ClearPending) HistoryClearStep.SecureDelete(db);
+        clearConnectionOpened?.Invoke(db);
+    }
+
+    /// <summary>The 8 MiB journal bound: a -wal above it after a TRUNCATE checkpoint attempt means a reader holds it.</summary>
+    private void GuardJournal(SqliteConnection db)
+    {
         if (File.Exists(path + "-wal") && new FileInfo(path + "-wal").Length > MaximumJournalBytes)
         {
             Checkpoint(db);
             if (File.Exists(path + "-wal") && new FileInfo(path + "-wal").Length > MaximumJournalBytes)
                 throw new IOException("Process history journal is waiting for a reader; recording has stopped to bound disk use.");
         }
-        long pageSize = Number(db, "PRAGMA page_size");
-        Execute(db, "PRAGMA max_page_count=" + (maximumDatabaseBytes / pageSize).ToString(CultureInfo.InvariantCulture));
-        Execute(db, "PRAGMA journal_size_limit=8388608; PRAGMA wal_autocheckpoint=256; PRAGMA synchronous=FULL;");
     }
 
     private static void Checkpoint(SqliteConnection db)

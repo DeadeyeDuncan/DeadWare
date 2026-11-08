@@ -299,3 +299,79 @@ internal static class SidecarJson
         }
     }
 }
+
+/// <summary>
+/// The in-memory side of a sidecar clear marker (<see cref="HistoryClearMarker"/>), shared by usage-history.db and process-history.db:
+/// the pending request, an unreadable or discarded marker, and the store's per-clear <typeparamref name="TState"/>, all under one lock.
+/// </summary>
+internal sealed class SidecarClear<TState>(string markerPath, Func<TState> newState) where TState : class
+{
+    private readonly object gate = new();
+    private HistoryClear? pending;
+    private bool unreadable, discarded;
+    private TState? state;
+
+    /// <summary>A clear is in progress: from the marker's write until <see cref="Finish"/>, and from <see cref="ReadAtStartup"/> while a
+    /// marker exists, including one that cannot be read.</summary>
+    public bool Pending { get { lock (gate) return pending is not null || unreadable; } }
+    /// <summary>The clear in progress; null without one or while the marker cannot be read.</summary>
+    public HistoryClear? Request { get { lock (gate) return pending; } }
+    /// <summary><see cref="ReadAtStartup"/> found a marker with invalid content and deleted it.</summary>
+    public bool Discarded { get { lock (gate) return discarded; } }
+
+    /// <summary>Deletes a leftover <c>.tmp</c> and reads the marker, before the store's first write connection opens. A valid marker
+    /// becomes the pending request; invalid content is deleted (<see cref="Discarded"/>), and one that cannot even be deleted, or cannot
+    /// be read (IOException or access denied), is kept as unreadable.</summary>
+    public void ReadAtStartup()
+    {
+        try { HistoryClearMarker.DeleteLeftover(markerPath); }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
+        HistoryClear? marker = null; bool isUnreadable = false, isDiscarded = false;
+        try { marker = HistoryClearMarker.Read(markerPath); }
+        catch (InvalidDataException)
+        {
+            try { File.Delete(markerPath); isDiscarded = true; }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException) { isUnreadable = true; }
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { isUnreadable = true; }
+        lock (gate)
+        {
+            pending = marker; unreadable = isUnreadable; discarded = isDiscarded;
+            state = marker is null ? null : newState();
+        }
+    }
+
+    /// <summary>Writes the marker for <paramref name="clear"/>. An equal pending request writes nothing; a different one, or any request
+    /// while an unreadable marker exists, throws <see cref="InvalidOperationException"/> with <paramref name="busyMessage"/>.</summary>
+    public void Begin(HistoryClear clear, string busyMessage)
+    {
+        lock (gate)
+        {
+            if (pending is not null || unreadable)
+            {
+                if (pending == clear) return;
+                throw new InvalidOperationException(busyMessage);
+            }
+            HistoryClearMarker.Write(markerPath, clear);
+            pending = clear; state = newState();
+        }
+    }
+
+    /// <summary>The readable pending request and its state; throws <see cref="InvalidOperationException"/> with
+    /// <paramref name="noneMessage"/> without one (Task 8's ClearStep contract).</summary>
+    public (HistoryClear Request, TState State) Current(string noneMessage)
+    {
+        lock (gate)
+        {
+            if (pending is not { } request || state is not { } current) throw new InvalidOperationException(noneMessage);
+            return (request, current);
+        }
+    }
+
+    /// <summary>Deletes the marker file, then forgets the clear. A failed delete throws and keeps the clear pending.</summary>
+    public void Finish()
+    {
+        File.Delete(markerPath);
+        lock (gate) { pending = null; state = null; unreadable = false; }
+    }
+}

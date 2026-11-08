@@ -40,12 +40,10 @@ public sealed class UsageHistoryStore
     private readonly long maximumDatabaseBytes;
     private bool initialized;
     // The clear: the sidecar marker usage-history.clear.json and the cleared marks usage-history.cleared.json beside the database.
-    private readonly string markerPath, clearedPath;
+    private readonly string clearedPath;
+    private readonly SidecarClear<UsageClearState> clear;
     private readonly object clearGate = new();
-    private HistoryClear? pendingClear;
-    private bool markerUnreadable, discardedInvalidMarker;
     private UsageClearedMarks clearedMarks = UsageClearedMarks.None;
-    private UsageClearState? clearing;
     // Seams set by reflection in tests: the step's monotonic clock, rows deleted per clear transaction (after its commit, before
     // its checkpoint), and every write connection after it is configured.
     private Func<TimeSpan> clearClock = HistoryClearStep.MonotonicClock;
@@ -56,7 +54,8 @@ public sealed class UsageHistoryStore
     {
         if (maximumDatabaseBytes is < 65536 or > MaximumDatabaseBytes) throw new ArgumentOutOfRangeException(nameof(maximumDatabaseBytes));
         this.path = Path.GetFullPath(path); this.maximumDatabaseBytes = maximumDatabaseBytes;
-        markerPath = Path.ChangeExtension(this.path, ".clear.json"); clearedPath = Path.ChangeExtension(this.path, ".cleared.json");
+        clearedPath = Path.ChangeExtension(this.path, ".cleared.json");
+        clear = new(Path.ChangeExtension(this.path, ".clear.json"), () => new UsageClearState(this.path));
     }
 
     public long StorageBytes => new[] { path, path + "-wal", path + "-shm" }
@@ -95,7 +94,8 @@ public sealed class UsageHistoryStore
 
     /// <summary>Writes closed minutes. Rows older than the retention window or more than five minutes ahead of now are ignored.
     /// A minute already recorded from another segment (a restart inside that minute) is merged and marked incomplete; the same
-    /// segment repeated is ignored, so a retried batch cannot double count.</summary>
+    /// segment repeated is ignored, so a retried batch cannot double count. Expired days are deleted first, except while a clear
+    /// marker exists (<see cref="ClearPending"/>): then they wait until the clear ends. Eviction at the cap still runs.</summary>
     public void Append(string machine, IReadOnlyList<UsageMinuteBatch> batches, DateTimeOffset now)
     {
         EnsureInitialized(); ValidateMachine(machine); ArgumentNullException.ThrowIfNull(batches);
@@ -134,7 +134,8 @@ public sealed class UsageHistoryStore
             try
             {
                 using var transaction = db.BeginTransaction();
-                Expire(db, transaction, cutoff);
+                // While a clear marker exists, secure_delete would make this day-sized delete too large: it waits until the clear ends.
+                if (!ClearPending) Expire(db, transaction, cutoff);
                 foreach (var batch in batches)
                 {
                     long minute = batch.Minute.ToUnixTimeMilliseconds();
@@ -308,11 +309,11 @@ public sealed class UsageHistoryStore
 
     /// <summary>A clear is in progress: from the marker's write until the last step deletes it, and from Initialize while a marker
     /// exists, including one that cannot be read (then <see cref="PendingClear"/> is null).</summary>
-    public bool ClearPending { get { lock (clearGate) return pendingClear is not null || markerUnreadable; } }
+    public bool ClearPending => clear.Pending;
     /// <summary>The clear in progress, as its marker records it; null without one or while the marker cannot be read.</summary>
-    public HistoryClear? PendingClear { get { lock (clearGate) return pendingClear; } }
+    public HistoryClear? PendingClear => clear.Request;
     /// <summary>Initialize found a marker with invalid content and deleted it; nothing is cleared for it.</summary>
-    public bool DiscardedInvalidMarker { get { lock (clearGate) return discardedInvalidMarker; } }
+    public bool DiscardedInvalidMarker => clear.Discarded;
     /// <summary>The times of the latest finished clears, read by Initialize and raised by each finished clear.</summary>
     public UsageClearedMarks ClearedMarks { get { lock (clearGate) return clearedMarks; } }
 
@@ -325,16 +326,7 @@ public sealed class UsageHistoryStore
         ArgumentNullException.ThrowIfNull(clear);
         if (clear.AppKey is { Length: 0 }) throw new ArgumentException("A usage history clear names an application key, or none for all apps.", nameof(clear));
         EnsureInitialized();
-        lock (clearGate)
-        {
-            if (pendingClear is not null || markerUnreadable)
-            {
-                if (pendingClear == clear) return;
-                throw new InvalidOperationException("Another usage history clear is in progress.");
-            }
-            HistoryClearMarker.Write(markerPath, clear);
-            pendingClear = clear; clearing = new(path);
-        }
+        this.clear.Begin(clear, "Another usage history clear is in progress.");
     }
 
     /// <summary>
@@ -349,12 +341,7 @@ public sealed class UsageHistoryStore
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(budget, TimeSpan.Zero);
         EnsureInitialized();
-        HistoryClear request; UsageClearState state;
-        lock (clearGate)
-        {
-            if (pendingClear is not { } pending || clearing is not { } current) throw new InvalidOperationException("No usage history clear is pending.");
-            request = pending; state = current;
-        }
+        var (request, state) = clear.Current("No usage history clear is pending.");
         using var db = Open();
         long before = CeilingMilliseconds(request.Before);
         state.ScannedThisStep = false;
@@ -388,8 +375,8 @@ public sealed class UsageHistoryStore
         {
             var marks = ClearedMarks.With(request);
             marks.Write(clearedPath);
-            File.Delete(markerPath);
-            lock (clearGate) { clearedMarks = marks; pendingClear = null; clearing = null; markerUnreadable = false; }
+            lock (clearGate) clearedMarks = marks;
+            clear.Finish();
             return new(false, 0, true);
         }
         var (machine, name, _) = state.Work.Peek();
@@ -454,24 +441,11 @@ public sealed class UsageHistoryStore
     /// <summary>Reads the clear marker and the cleared marks before the first write connection opens, so it already uses secure_delete.</summary>
     private void ReadClearFiles()
     {
-        try { HistoryClearMarker.DeleteLeftover(markerPath); }
-        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
+        // Invalid marker content is deleted and nothing is cleared for it; one that cannot be read, or even deleted, stays as unreadable.
+        clear.ReadAtStartup();
         TryDelete(clearedPath + ".tmp");
-        HistoryClear? marker = null; bool unreadable = false, discarded = false;
-        try { marker = HistoryClearMarker.Read(markerPath); }
-        catch (InvalidDataException)
-        {
-            // Invalid content is deleted and nothing is cleared for it; one that cannot even be deleted stays, as an unreadable marker.
-            try { File.Delete(markerPath); discarded = true; }
-            catch (Exception error) when (error is IOException or UnauthorizedAccessException) { unreadable = true; }
-        }
-        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { unreadable = true; }
         var marks = UsageClearedMarks.Read(clearedPath);
-        lock (clearGate)
-        {
-            pendingClear = marker; markerUnreadable = unreadable; discardedInvalidMarker = discarded; clearedMarks = marks;
-            clearing = marker is null ? null : new(path);
-        }
+        lock (clearGate) clearedMarks = marks;
     }
 
     private static void TryDelete(string file)
