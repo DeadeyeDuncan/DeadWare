@@ -1,3 +1,4 @@
+using System.Collections.Frozen;
 using System.ComponentModel;
 using System.IO;
 using System.Windows;
@@ -33,6 +34,12 @@ public sealed class UiSession
     private readonly Dictionary<string,Window> detached=new();
     private readonly Dictionary<Window,Action> captureWindows=new();
     public event Action? Changed;
+    /// <summary>Raised on the UI thread when a store's clear starts clearing and when it leaves Clearing, so the page it feeds re-reads.</summary>
+    public event Action<HistoryClearStore>? HistoryClearChanged;
+    // The Don't record keys, set from the loaded settings; null in fixtures built without the constructor.
+    private FrozenSet<string>? excludedKeys;
+    // Each store's clear phase as the timer last saw it (indexed by HistoryClearStore); null until the first check.
+    private HistoryClearPhase[]? clearPhases;
     /// <summary>Raised when a page asks the dashboard to show Usage history for the day containing the given time.</summary>
     public event Action<DateTimeOffset>? UsageDayRequested;
     public void RequestUsageDay(DateTimeOffset at)=>UsageDayRequested?.Invoke(at);
@@ -58,6 +65,7 @@ public sealed class UiSession
         }
         catch(Exception e) when(e is IOException or UnauthorizedAccessException) {Settings=new();SettingsStatus="Settings unavailable; using defaults.";diagnostics?.Record("settings_load_failed",error:e);}
         Theme.SetGraphColors(Settings.GraphColors);Theme.GlassLevel=Settings.GlassLevel;
+        excludedKeys=AppExclusions.Keys(Settings.ExcludedApps);
         writer=new(settingsPath);
         layout=new(Settings.RestoreOpenWindows?Settings.OpenWindows:[]);
         diagnostics?.Record("settings_loaded",new {Status=SettingsStatus,Settings.RestoreOpenWindows,OpenWindows=layout.Remembered,Settings.SelectedGpuId,Disk=LayoutDiagnostics.ReadSettingsState(settingsPath)});
@@ -73,10 +81,10 @@ public sealed class UiSession
         Battery.Configure(Settings.BatteryRecording);
         Collector.SampleAvailable+=Battery.TryRecord;
         Usage=new(Path.Combine(Path.GetDirectoryName(settingsPath)!,"usage-history.db"),Environment.MachineName);
-        Usage.Configure(Settings.UsageRecording);
+        Usage.Configure(Settings.UsageRecording);Usage.SetExclusions(excludedKeys);
         Collector.SampleAvailable+=Usage.TryRecord;
         ProcessHistory=new(Path.Combine(Path.GetDirectoryName(settingsPath)!,"process-history.db"),Environment.MachineName);
-        ProcessHistory.Configure(Settings.ProcessMonitoring,Settings.UsageRecording);
+        ProcessHistory.Configure(Settings.ProcessMonitoring,Settings.UsageRecording);ProcessHistory.SetExclusions(excludedKeys);
         Collector.SampleAvailable+=ProcessHistory.TryRecord;
         Alerts=new(Path.Combine(Path.GetDirectoryName(settingsPath)!,"alerts.db"),Environment.MachineName,Usage,()=>Current is null||SelectedGpuId is null?null:GpuName,connectionNames:()=>Connections!.ReadApplicationNamesAsync());
         Alerts.Configure(Settings.Alerts,Settings.AlertNotifications,Settings.FirstUseIgnoredApps,Settings.ExcludedApps);
@@ -85,13 +93,14 @@ public sealed class UiSession
         Connections=new(Path.Combine(Path.GetDirectoryName(settingsPath)!,"connections.db"));
         var home=ConnectionAssets.Cities.FirstOrDefault(city=>city.Id==Settings.ConnectionsHomeCityId);
         Settings.ConnectionsHomeCityId=home?.Id;
-        Connections.Configure(Settings.ConnectionsRecording,home?.Point);
+        Connections.Configure(Settings.ConnectionsRecording,home?.Point);Connections.SetExclusions(excludedKeys);
         Collector.SampleAvailable+=Connections.TryRecord;
         Collector.FinalConnectionsAvailable+=Connections.TryRecord;
         timer.Tick+=(_,_)=>
         {
             if(Settings.SelectedGpuId is null && Current is {Gpus.Count:>0} reading)
             {Settings.SelectedGpuId=DeviceSelection.Resolve(null,reading.Gpus);_ = SaveAsync();}
+            CheckClearStates();
             Changed?.Invoke();
         };
     }
@@ -241,6 +250,76 @@ public sealed class UiSession
     {
         if(Settings.AlertNotifications==enabled)return;
         Settings.AlertNotifications=enabled;Alerts.Configure(Settings.Alerts,enabled,Settings.FirstUseIgnoredApps,Settings.ExcludedApps);Changed?.Invoke();_ = SaveAsync();
+    }
+    /// <summary>The Don't record keys (<see cref="AppKey.Of"/>, ordinal): the cached set, or in a fixture without one, the settings list's keys.</summary>
+    public FrozenSet<string> ExcludedKeys=>excludedKeys??AppExclusions.Keys(Settings?.ExcludedApps??[]);
+    /// <summary>True when the name's key is on the Don't record list. Never throws.</summary>
+    public bool IsExcluded(string? name)=>!string.IsNullOrEmpty(name)&&ExcludedKeys.Contains(AppKey.Of(name));
+    /// <summary>Normalizes the list and, when it changed, passes its keys to the history services and the list to the alert worker, then saves.</summary>
+    public void SetExcludedApps(IEnumerable<string> names)
+    {
+        var next=AppExclusions.Normalize(names);
+        if(Settings.ExcludedApps.SequenceEqual(next,StringComparer.Ordinal))return;
+        Settings.ExcludedApps=next;var keys=excludedKeys=AppExclusions.Keys(next);
+        Connections?.SetExclusions(keys);Usage?.SetExclusions(keys);ProcessHistory?.SetExclusions(keys);
+        Alerts?.Configure(Settings.Alerts,Settings.AlertNotifications,Settings.FirstUseIgnoredApps,Settings.ExcludedApps);
+        Changed?.Invoke();_ = SaveAsync();
+    }
+    /// <summary>Each present store's clear state and whether it offers Try again, in the progress block's order.</summary>
+    private (HistoryClearStore Store,HistoryClearState State,bool CanRetry)[] ClearStates()
+    {
+        var states=new List<(HistoryClearStore,HistoryClearState,bool)>(4);
+        if(Connections is { } connections)states.Add((HistoryClearStore.Connections,connections.ClearState,connections.CanRetryClear));
+        if(Usage is { } usage)states.Add((HistoryClearStore.Usage,usage.ClearState,usage.CanRetryClear));
+        if(ProcessHistory is { } process)states.Add((HistoryClearStore.ProcessHistory,process.ClearState,process.CanRetryClear));
+        if(Alerts is { } alerts)states.Add((HistoryClearStore.Alerts,alerts.ClearState,alerts.CanRetryClear));
+        return states.ToArray();
+    }
+    private static bool Active(HistoryClearState state)=>state.Phase is HistoryClearPhase.Queued or HistoryClearPhase.Clearing||state is {Phase:HistoryClearPhase.Failed,MarkerSaved:true};
+    /// <summary>One clear at a time: true while any store's clear is Queued or Clearing, or Failed with its marker saved.</summary>
+    public bool ClearActive=>ClearStates().Any(s=>Active(s.State));
+    /// <summary>A store is Failed with its marker saved and cannot retry, because its worker has stopped: the clear resumes at the next start.</summary>
+    public bool ClearWaitingForRestart=>ClearStates().Any(s=>s.State is {Phase:HistoryClearPhase.Failed,MarkerSaved:true}&&!s.CanRetry);
+    /// <summary>Posts the request to the four stores. Refused (false) while <see cref="ClearActive"/>.</summary>
+    public bool ClearHistory(HistoryClear request)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        if(ClearActive)return false;
+        // Only the UI posts, so no store becomes active after the check, except one resuming a marker found at startup: that store
+        // already runs a clear, and its own refusal (the throw) leaves it alone.
+        Action<HistoryClear>?[] posts=[Connections is null?null:Connections.Clear,Usage is null?null:Usage.Clear,ProcessHistory is null?null:ProcessHistory.Clear,Alerts is null?null:Alerts.Clear];
+        foreach(var post in posts)
+        {
+            try {post?.Invoke(request);}
+            catch(InvalidOperationException) { }
+        }
+        return true;
+    }
+    /// <summary>Try again for one store: re-posts its kept request while it failed and its worker runs.</summary>
+    public void RetryClear(HistoryClearStore store)
+    {
+        switch(store)
+        {
+            case HistoryClearStore.Connections:Connections?.RetryClear();break;
+            case HistoryClearStore.Usage:Usage?.RetryClear();break;
+            case HistoryClearStore.ProcessHistory:ProcessHistory?.RetryClear();break;
+            case HistoryClearStore.Alerts:Alerts?.RetryClear();break;
+        }
+    }
+    /// <summary>The progress block's lines: Connections history, Usage history, Application resources, Alert log, each store with a clear or a result.</summary>
+    public IReadOnlyList<HistoryClearLine> ClearLines()=>Array.AsReadOnly(ClearStates().Where(s=>s.State.Phase!=HistoryClearPhase.None).Select(s=>new HistoryClearLine(s.Store,s.State,s.CanRetry)).ToArray());
+    /// <summary>Called by the 1-second timer on the UI thread: raises <see cref="HistoryClearChanged"/> for each store whose clear started
+    /// clearing or left Clearing since the last check. A clear that went from Queued to Done or Failed between two checks left Clearing unseen.</summary>
+    internal void CheckClearStates()
+    {
+        var seen=clearPhases??=new HistoryClearPhase[4];
+        foreach(var (store,state,_) in ClearStates())
+        {
+            var previous=seen[(int)store];var phase=state.Phase;seen[(int)store]=phase;
+            bool started=phase==HistoryClearPhase.Clearing&&previous!=HistoryClearPhase.Clearing;
+            bool ended=previous==HistoryClearPhase.Clearing&&phase!=HistoryClearPhase.Clearing||previous==HistoryClearPhase.Queued&&phase is HistoryClearPhase.Done or HistoryClearPhase.Failed;
+            if(started||ended)HistoryClearChanged?.Invoke(store);
+        }
     }
     public void SetConnectionsRecording(bool enabled)
     {

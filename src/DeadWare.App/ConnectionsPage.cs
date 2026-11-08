@@ -186,7 +186,7 @@ internal sealed class ConnectionsPage : Grid
             if (e.Key == System.Windows.Input.Key.Escape) { ClearSelection(); ClearDestinationSelection(); e.Handled = true; }
             else if (e.Key == System.Windows.Input.Key.F5) { destinations.Resort(); e.Handled = true; }
         }; playback.Tick += (_, _) => AdvancePlayback();
-        Loaded += (_, _) => { active = true; session.Changed += RefreshSession; RefreshSession(); ShowStripAgain(); if (IsHistory && !ReadOutstanding()) RequestHistory(); }; Unloaded += (_, _) => { active = false; session.Changed -= RefreshSession; CancelHistory(); pendingStrip = null; StopPlayback(); downloadCancellation?.Cancel(); destinations.ReleaseHolds(); }; IsVisibleChanged += (_, _) => { if (!IsVisible) { CancelHistory(); pendingStrip = null; StopPlayback(); destinations.ReleaseHolds(); } else if (active) { RefreshSession(); ShowStripAgain(); if (IsHistory && !ReadOutstanding()) RequestHistory(); } }; RefreshSession();
+        Loaded += (_, _) => { active = true; session.Changed += RefreshSession; session.HistoryClearChanged += HistoryClearChanged; RefreshSession(); ShowStripAgain(); if (IsHistory && !ReadOutstanding()) RequestHistory(); }; Unloaded += (_, _) => { active = false; session.Changed -= RefreshSession; session.HistoryClearChanged -= HistoryClearChanged; CancelHistory(); pendingStrip = null; StopPlayback(); downloadCancellation?.Cancel(); destinations.ReleaseHolds(); }; IsVisibleChanged += (_, _) => { if (!IsVisible) { CancelHistory(); pendingStrip = null; StopPlayback(); destinations.ReleaseHolds(); } else if (active) { RefreshSession(); ShowStripAgain(); if (IsHistory && !ReadOutstanding()) RequestHistory(); } }; RefreshSession();
     }
     protected override Size MeasureOverride(Size availableSize)
     {
@@ -300,6 +300,8 @@ internal sealed class ConnectionsPage : Grid
     /// Show in Connections from another page requests its read before the page is shown; showing it then reads nothing more.
     /// </summary>
     private bool ReadOutstanding() => minute.IsChecked != true && (pending is not null || readingGeneration == generation) && requestedQuery is { } asked && BuildQuery(out _) == asked;
+    /// <summary>A Connections clear started (its rows are hidden at once) or ended: the shown History view is read again. Live is unaffected.</summary>
+    private void HistoryClearChanged(HistoryClearStore store) { if (store == HistoryClearStore.Connections) ReloadHistory(); }
     /// <summary>Re-reads saved data, the strip included, with the minute cursor on as well as off.</summary>
     internal void ReloadHistory() { stripContext = null; stripFailed = null; if (IsHistory) RequestHistory(); }
     // Showing the page again re-reads a strip that may hold minutes saved since, and retries a failed one.

@@ -40,6 +40,9 @@ public sealed record HistoryClearState(HistoryClearPhase Phase, int? Percent, st
     public static HistoryClearState None { get; } = new(HistoryClearPhase.None, null, null, false, false);
 }
 
+/// <summary>One store's line in the progress block: its state and whether Try again is offered (Failed while its worker runs).</summary>
+public sealed record HistoryClearLine(HistoryClearStore Store, HistoryClearState State, bool CanRetry);
+
 /// <summary>Fixed copy for clears. Status text holds counts and exception type names only.</summary>
 public static class HistoryClearCopy
 {

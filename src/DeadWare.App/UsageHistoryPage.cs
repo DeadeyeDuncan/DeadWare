@@ -167,8 +167,8 @@ internal sealed class UsageHistoryPage : ScrollViewer
         range.SelectionChanged += (_, _) => { offset = 0; resources.ClearSlot(); RequestRefresh(); };
         search.TextChanged += (_, _) => RefreshApplications();
         timer.Tick += (_, _) => _ = RefreshAsync();
-        Loaded += (_, _) => { session.Changed += RefreshCurrent; UpdateVisibility(); };
-        Unloaded += (_, _) => { session.Changed -= RefreshCurrent; timer.Stop(); revision++; };
+        Loaded += (_, _) => { session.Changed += RefreshCurrent; session.HistoryClearChanged += HistoryClearChanged; UpdateVisibility(); };
+        Unloaded += (_, _) => { session.Changed -= RefreshCurrent; session.HistoryClearChanged -= HistoryClearChanged; timer.Stop(); revision++; };
         IsVisibleChanged += (_, _) => UpdateVisibility(); RefreshCurrent(); UpdatePeriod();
     }
     private void Column(string title, string binding, double weight)
@@ -319,23 +319,25 @@ internal sealed class UsageHistoryPage : ScrollViewer
         period.Text = Days == 1 ? $"{from.ToLocalTime():MMM d HH:mm} – {to.ToLocalTime():MMM d HH:mm}" : $"{from.ToLocalTime():MMM d yyyy} – {to.ToLocalTime():MMM d yyyy}";
         later.IsEnabled = offset > 0;
     }
+    /// <summary>A Usage history or Application resources clear started or ended: the strip, the table, a listed slot and the card are read again.</summary>
+    private void HistoryClearChanged(HistoryClearStore store) { if (store is HistoryClearStore.Usage or HistoryClearStore.ProcessHistory) RequestRefresh(); }
     // A strip read still in flight is for the period before this request, so it is dropped when it answers.
     private void RequestRefresh() { revision++; stripRequest++; UpdatePeriod(); _ = RefreshAsync(); }
     private async Task RefreshAsync()
     {
-        if (!IsLoaded || !IsVisible) return;
+        if (!showing()) return;
         if (refreshing) { refreshAgain = true; return; }
         refreshing = true; int requested = revision;
         try
         {
             var result = await LoadAsync();
-            if (requested != revision || !IsLoaded || !IsVisible) { refreshAgain = true; return; }
+            if (requested != revision || !showing()) { refreshAgain = true; return; }
             Apply(result);
         }
         finally
         {
             refreshing = false;
-            if (refreshAgain) { refreshAgain = false; if (IsLoaded && IsVisible) _ = RefreshAsync(); }
+            if (refreshAgain) { refreshAgain = false; if (showing()) _ = RefreshAsync(); }
         }
     }
     private async Task<UsagePageData> LoadAsync()

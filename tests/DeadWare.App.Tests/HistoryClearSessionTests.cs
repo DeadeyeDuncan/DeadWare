@@ -59,15 +59,6 @@ public class HistoryClearSessionTests
             await Task.Delay(5);
         }
     }
-    private static void UntilNow(Func<bool> condition, string what, int seconds = 30)
-    {
-        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(seconds);
-        while (!condition())
-        {
-            if (DateTime.UtcNow > deadline) Assert.Fail("Timed out waiting for " + what + ".");
-            Thread.Sleep(5);
-        }
-    }
     private static HistoryClear AllAppsAllTime() => HistoryClear.Create(null, allTime: true, DateTimeOffset.UtcNow);
 
     [Fact]
@@ -78,7 +69,7 @@ public class HistoryClearSessionTests
             var bare = (UiSession)RuntimeHelpers.GetUninitializedObject(typeof(UiSession));
             SetField(bare, "<Settings>k__BackingField", new UserSettings { ExcludedApps = ["Steam.exe"] });
             Assert.True(bare.IsExcluded("STEAM.EXE")); Assert.False(bare.IsExcluded("chrome.exe")); Assert.False(bare.IsExcluded(null));
-            Assert.Contains(AppKey.Of("steam.exe"), bare.ExcludedKeys);
+            Assert.Contains(AppKey.Of("steam.exe"), (IReadOnlySet<string>)bare.ExcludedKeys);
             // A fixture session without services refuses nothing and has no lines.
             Assert.False(bare.ClearActive); Assert.False(bare.ClearWaitingForRestart); Assert.Empty(bare.ClearLines());
         }
@@ -150,7 +141,7 @@ public class HistoryClearSessionTests
     }
 
     [Fact]
-    public void HistoryClearChanged_rereads_the_open_pages()
+    public async Task HistoryClearChanged_rereads_the_open_pages()
     {
         var fixture = new Fixture();
         var gates = new Dictionary<HistoryClearStore, ManualResetEventSlim>();
@@ -172,24 +163,24 @@ public class HistoryClearSessionTests
             session.CheckClearStates(); Assert.Empty(raised);
             Assert.True(session.ClearHistory(AllAppsAllTime()));
             // Each store's step waits at its gate, so each is Clearing.
-            UntilNow(() => fixture.States.All(s => s.Phase == HistoryClearPhase.Clearing), "every store to start clearing");
+            await Until(() => fixture.States.All(s => s.Phase == HistoryClearPhase.Clearing), "every store to start clearing");
             session.CheckClearStates();
             Assert.Equal(4, raised.Count); Assert.All(raised.Values, count => Assert.Equal(1, count));
             session.CheckClearStates(); Assert.All(raised.Values, count => Assert.Equal(1, count));
             // Connections leaves Clearing first: only it is raised again.
             gates[HistoryClearStore.Connections].Set();
-            UntilNow(() => fixture.Connections.ClearState.Phase == HistoryClearPhase.Done, "the Connections clear to finish");
+            await Until(() => fixture.Connections.ClearState.Phase == HistoryClearPhase.Done, "the Connections clear to finish");
             session.CheckClearStates();
             Assert.Equal(2, raised[HistoryClearStore.Connections]);
             Assert.Equal([1, 1, 1], new[] { HistoryClearStore.Usage, HistoryClearStore.ProcessHistory, HistoryClearStore.Alerts }.Select(s => raised[s]));
             foreach (var gate in gates.Values) gate.Set();
-            UntilNow(() => fixture.States.All(s => s.Phase == HistoryClearPhase.Done), "every clear to finish");
+            await Until(() => fixture.States.All(s => s.Phase == HistoryClearPhase.Done), "every clear to finish");
             session.CheckClearStates();
             Assert.All(raised.Values, count => Assert.Equal(2, count));
             session.CheckClearStates();
             Assert.All(raised.Values, count => Assert.Equal(2, count));
         }
-        finally { foreach (var gate in gates.Values) gate.Set(); fixture.DisposeAsync().AsTask().GetAwaiter().GetResult(); }
+        finally { foreach (var gate in gates.Values) gate.Set(); await fixture.DisposeAsync(); }
     }
 
     /// <summary>The CoolingShutdownTests.StuckSession wiring, with the collector's worker already finished, ProcessHistory set and the trace.</summary>
@@ -231,7 +222,9 @@ public class HistoryClearSessionTests
             Assert.True(watch.Elapsed < TimeSpan.FromSeconds(20), $"Quit took {watch.Elapsed}.");
             Assert.True(fixture.Connections.StopAsync().IsCompleted); Assert.True(fixture.Usage.StopAsync().IsCompleted);
             Assert.True(fixture.ProcessHistory.StopAsync().IsCompleted); Assert.True(fixture.Alerts.StopAsync().IsCompleted);
-            Assert.DoesNotContain("collector_stop_timeout", File.ReadAllText(Path.Combine(fixture.Root, "trace.jsonl")));
+            string trace = Path.Combine(fixture.Root, "trace.jsonl");
+            // Nothing is traced unless a stage misses its deadline.
+            Assert.DoesNotContain("collector_stop_timeout", File.Exists(trace) ? File.ReadAllText(trace) : "");
             // The clears stay unfinished; their markers resume at the next start.
             Assert.True(File.Exists(Path.Combine(fixture.Root, "usage-history.clear.json")));
             Assert.True(File.Exists(Path.Combine(fixture.Root, "process-history.clear.json")));
@@ -255,7 +248,7 @@ public class HistoryClearSessionTests
             Assert.True(fixture.Session.ClearHistory(AllAppsAllTime()));
             await Until(() => fixture.States.All(s => s.Phase == HistoryClearPhase.Clearing && s.MarkerSaved) && connections.PendingClear is not null, "every store to start clearing");
             // The rows are hidden at once but still in the file: nothing has purged them so far.
-            Assert.Equal(0, (await connections.ReadViewAsync(new(first, now.AddMinutes(1)))).Rows.Count);
+            Assert.Empty((await connections.ReadViewAsync(new(first, now.AddMinutes(1)))).Rows);
             Assert.Equal(seeded, Count(path, "SELECT COUNT(*) FROM traffic"));
             Volatile.Write(ref stopping, true);
             var watch = Stopwatch.StartNew();

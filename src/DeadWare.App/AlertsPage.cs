@@ -38,11 +38,16 @@ internal sealed class AlertsPage : ScrollViewer
     private AlertsPageData? data;
     private int revision, suggestionRevision;
     private bool refreshing, refreshAgain, syncing;
+    // The log read and whether the page is showing, replaced by the checks (assigned in the constructor, since a field initializer cannot read this).
+    private Func<bool> showing;
+    private Func<DateTimeOffset, DateTimeOffset, Task<AlertLogView>> readLog;
     private int LogDays => (logRange.SelectedItem as Choice<int>)?.Value ?? 1;
 
     public AlertsPage(UiSession session)
     {
         this.session = session;
+        showing = () => IsLoaded && IsVisible;
+        readLog = (from, to) => session.Alerts.ReadEpisodesAsync(from, to);
         Background = Brushes.Transparent;
         VerticalScrollBarVisibility = ScrollBarVisibility.Auto; HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled;
         var body = new StackPanel { Margin = new(6, 10, 6, 10) }; Content = body;
@@ -83,8 +88,8 @@ internal sealed class AlertsPage : ScrollViewer
         notifications.Unchecked += (_, _) => { if (!syncing) session.SetAlertNotifications(false); };
         logRange.SelectionChanged += (_, _) => RequestRefresh();
         timer.Tick += (_, _) => _ = RefreshAsync();
-        Loaded += (_, _) => { session.Changed += SyncSettings; UpdateVisibility(); };
-        Unloaded += (_, _) => { session.Changed -= SyncSettings; timer.Stop(); revision++; };
+        Loaded += (_, _) => { session.Changed += SyncSettings; session.HistoryClearChanged += HistoryClearChanged; UpdateVisibility(); };
+        Unloaded += (_, _) => { session.Changed -= SyncSettings; session.HistoryClearChanged -= HistoryClearChanged; timer.Stop(); revision++; };
         IsVisibleChanged += (_, _) => UpdateVisibility();
         UpdateEditor(); SyncSettings();
     }
@@ -182,23 +187,25 @@ internal sealed class AlertsPage : ScrollViewer
         if (IsLoaded && IsVisible) { timer.Start(); SyncSettings(); _ = RefreshAsync(); RequestSuggestion(); }
         else { timer.Stop(); revision++; }
     }
+    /// <summary>An alert-log clear started or ended: the log is read again.</summary>
+    private void HistoryClearChanged(HistoryClearStore store) { if (store == HistoryClearStore.Alerts) RequestRefresh(); }
     private void RequestRefresh() { revision++; _ = RefreshAsync(); }
     private async Task RefreshAsync()
     {
-        if (!IsLoaded || !IsVisible) return;
+        if (!showing()) return;
         if (refreshing) { refreshAgain = true; return; }
         refreshing = true; int requested = revision;
         try
         {
             var to = DateTimeOffset.UtcNow; var from = to.AddDays(-LogDays);
-            var log = await session.Alerts.ReadEpisodesAsync(from, to);
-            if (requested != revision || !IsLoaded || !IsVisible) { refreshAgain = true; return; }
+            var log = await readLog(from, to);
+            if (requested != revision || !showing()) { refreshAgain = true; return; }
             Apply(new(session.Settings.Alerts, session.Settings.AlertNotifications, log, session.Alerts.Status));
         }
         finally
         {
             refreshing = false;
-            if (refreshAgain) { refreshAgain = false; if (IsLoaded && IsVisible) _ = RefreshAsync(); }
+            if (refreshAgain) { refreshAgain = false; if (showing()) _ = RefreshAsync(); }
         }
     }
     private void RequestSuggestion()
