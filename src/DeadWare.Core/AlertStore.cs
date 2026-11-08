@@ -38,9 +38,20 @@ public sealed class AlertStore
         """;
     public const string SeedUsageKey = "first_use_seed_usage", SeedConnectionsKey = "first_use_seed_connections",
         LearningStartKey = "first_use_learning_start", LearningEndKey = "first_use_learning_end";
+    /// <summary>At most this many in-scope episodes, with their links, are deleted in one clear transaction.</summary>
+    public const int ClearEpisodeChunk = 256;
+    /// <summary>At most this many other machine keys' known rows are deleted in one clear transaction.</summary>
+    public const int ClearKnownChunk = 1024;
     private readonly string path;
     private readonly long maximumDatabaseBytes;
     private bool initialized;
+    private readonly object clearGate = new();
+    private HistoryClear? pending;
+    private ClearState? clearing;
+    // Test seams, set by reflection; always these defaults in the app.
+    private Func<TimeSpan> clearClock = HistoryClearStep.MonotonicClock;
+    private Action<int>? clearCommitted = null;
+    private Action<SqliteConnection>? clearConnectionOpened = null;
 
     public AlertStore(string path, long maximumDatabaseBytes = MaximumDatabaseBytes)
     {
@@ -73,6 +84,9 @@ public sealed class AlertStore
                 if (attempt > 0 || !EvictOldestClosed(db)) throw new IOException("The alert log is full and could not be upgraded.", error);
             }
         }
+        var marker = ReadMarker(db);
+        lock (clearGate) { pending = marker; clearing = marker is null ? null : new(path); }
+        if (marker is not null) HistoryClearStep.SecureDelete(db);
         using (var transaction = db.BeginTransaction())
         {
             Execute(db, "DELETE FROM episode_apps WHERE NOT EXISTS(SELECT 1 FROM episodes e WHERE e.machine=episode_apps.machine AND e.id=episode_apps.episode)", transaction);
@@ -212,6 +226,144 @@ public sealed class AlertStore
         return changed > 0;
     }
 
+    /// <summary>The clear in progress: from the <c>pending_clear</c> row's write until the last clear transaction deletes it, and from
+    /// <see cref="Initialize"/> while the row exists.</summary>
+    public HistoryClear? PendingClear { get { lock (clearGate) return pending; } }
+
+    /// <summary>A clear's in-memory state. A resumed clear scans again from the start.</summary>
+    private sealed class ClearState(string path)
+    {
+        public readonly HistoryClearStep Step = new(path);
+        public long Done;
+    }
+
+    private static HistoryClear? ReadMarker(SqliteConnection db)
+    {
+        using var command = Command(db, "SELECT app_key,before,requested FROM pending_clear WHERE id=1");
+        using var reader = command.ExecuteReader();
+        if (!reader.Read()) return null;
+        string? key = reader.IsDBNull(0) ? null : reader.GetString(0);
+        long before = reader.GetInt64(1), requested = reader.GetInt64(2);
+        static bool Valid(long ms) => ms >= DateTimeOffset.MinValue.ToUnixTimeMilliseconds() && ms <= DateTimeOffset.MaxValue.ToUnixTimeMilliseconds();
+        // A row no build could have written is no request; BeginClear replaces it.
+        if (key is { Length: 0 } || !Valid(before) || !Valid(requested)) return null;
+        return new(key, DateTimeOffset.FromUnixTimeMilliseconds(before), DateTimeOffset.FromUnixTimeMilliseconds(requested));
+    }
+
+    // The request as pending_clear holds it: the key and whole UTC milliseconds.
+    private static (string? Key, long Before, long Requested) Saved(HistoryClear clear)
+        => (clear.AppKey, clear.Before.ToUnixTimeMilliseconds(), clear.Requested.ToUnixTimeMilliseconds());
+
+    /// <summary>
+    /// Records a clear in one transaction: the <c>pending_clear</c> row and, for All time, the deletion of <paramref name="machine"/>'s
+    /// in-scope <c>known_apps</c> rows (the key's row for one app, every row for all apps). A failure (SQLITE_FULL at the cap, a full disk,
+    /// access denied) throws and writes nothing. An equal pending request commits nothing and deletes no known row; a different one throws
+    /// <see cref="InvalidOperationException"/>.
+    /// </summary>
+    public void BeginClear(string machine, HistoryClear clear)
+    {
+        EnsureInitialized(); ValidateMachine(machine); ArgumentNullException.ThrowIfNull(clear);
+        if (clear.AppKey is { Length: 0 }) throw new ArgumentException("An alert log clear names an application key, or none for all apps.", nameof(clear));
+        lock (clearGate)
+        {
+            if (pending is not null)
+            {
+                if (Saved(pending) == Saved(clear)) return;
+                throw new InvalidOperationException("Another alert log clear is in progress.");
+            }
+            var (key, before, requested) = Saved(clear);
+            object keyValue = (object?)key ?? DBNull.Value;
+            using var db = Open();
+            // The known rows deleted below hold app keys, so this connection overwrites them although the marker is not saved yet.
+            HistoryClearStep.SecureDelete(db);
+            using (var transaction = db.BeginTransaction())
+            {
+                // A row no build could read as a request is replaced.
+                Execute(db, "DELETE FROM pending_clear", transaction);
+                Execute(db, "INSERT INTO pending_clear(id,app_key,before,requested) VALUES(1,$key,$before,$requested)", transaction,
+                    ("$key", keyValue), ("$before", before), ("$requested", requested));
+                if (clear.AllTime)
+                    Execute(db, "DELETE FROM known_apps WHERE machine=$machine AND ($key IS NULL OR app_key=$key)", transaction,
+                        ("$machine", machine), ("$key", keyValue));
+                transaction.Commit();
+            }
+            pending = clear; clearing = new(path);
+            Checkpoint(db);
+        }
+    }
+
+    /// <summary>
+    /// Runs the pending clear's delete transactions until <paramref name="budget"/> has passed on the monotonic clock (see
+    /// <see cref="HistoryClearStep.Run"/>). In scope are closed episodes that start before <see cref="HistoryClear.AlertCutoff"/>, on
+    /// every machine key: first-use episodes found through their <c>episode_apps</c> link, and ApplicationDaily episodes, whose app is the
+    /// text before the last " ≥ " of a summary that ends " in a day" (or their link). Each transaction deletes at most
+    /// <see cref="ClearEpisodeChunk"/> episodes with their links; then, for All time, at most <see cref="ClearKnownChunk"/> in-scope known
+    /// rows of machine keys other than <paramref name="machine"/>. The call that finds nothing left deletes the marker in its transaction.
+    /// <c>Total</c> is null (the alert log shows no percent) and <c>Done</c> counts the rows deleted. Throws
+    /// <see cref="InvalidOperationException"/> when no clear is pending.
+    /// </summary>
+    public HistoryClearProgress ClearStep(string machine, TimeSpan budget)
+    {
+        EnsureInitialized(); ValidateMachine(machine);
+        ArgumentOutOfRangeException.ThrowIfLessThan(budget, TimeSpan.Zero);
+        lock (clearGate)
+        {
+            if (pending is not { } request || clearing is not { } state) throw new InvalidOperationException("No alert log clear is pending.");
+            bool finished;
+            using (var db = Open())
+                finished = state.Step.Run(db, budget, clearClock, () => GuardJournal(db), () => ClearTransaction(db, machine, request, state), clearCommitted);
+            if (finished) { pending = null; clearing = null; }
+            return new(state.Done, null, finished);
+        }
+    }
+
+    // A first-use or ApplicationDaily episode whose link names the app (any app for all apps).
+    private const string LinkedTo = "e.kind IN(2,4) AND EXISTS(SELECT 1 FROM episode_apps a WHERE a.machine=e.machine AND a.episode=e.id AND ($key IS NULL OR app_key(a.name)=$key))";
+    // An ApplicationDaily episode whose summary names the app; daily_app is DailyApp, so the match is AppKey.Of's.
+    private const string NamedIn = "e.kind=2 AND ($key IS NULL AND daily_app(e.summary) IS NOT NULL OR daily_app(e.summary)=$key)";
+    private const string InScope = "SELECT e.machine,e.id FROM episodes e WHERE e.finish IS NOT NULL AND e.start<$cutoff AND (" + LinkedTo + " OR " + NamedIn + ") ORDER BY e.machine,e.id LIMIT $limit";
+
+    /// <summary>One clear transaction. It scans and decides in the same call, so a step that allows one call still finishes.</summary>
+    private HistoryClearTransaction ClearTransaction(SqliteConnection db, string machine, HistoryClear request, ClearState state)
+    {
+        object key = (object?)request.AppKey ?? DBNull.Value;
+        using var transaction = db.BeginTransaction();
+        var episodes = new List<(string Machine, string Id)>();
+        using (var select = Command(db, InScope, transaction, ("$key", key), ("$cutoff", request.AlertCutoff.ToUnixTimeMilliseconds()), ("$limit", ClearEpisodeChunk)))
+        using (var reader = select.ExecuteReader())
+            while (reader.Read()) episodes.Add((reader.GetString(0), reader.GetString(1)));
+        int rows = episodes.Count;
+        foreach (var (owner, id) in episodes)
+        {
+            Execute(db, "DELETE FROM episode_apps WHERE machine=$machine AND episode=$id", transaction, ("$machine", owner), ("$id", id));
+            Execute(db, "DELETE FROM episodes WHERE machine=$machine AND id=$id", transaction, ("$machine", owner), ("$id", id));
+        }
+        // Then, for All time, other machine keys' known rows. The current machine's went with the marker's transaction, and a row
+        // written there since (a cleared app used again) is kept.
+        if (rows == 0 && request.AllTime)
+            rows = Execute(db, "DELETE FROM known_apps WHERE (machine,app_key) IN(SELECT machine,app_key FROM known_apps " +
+                "WHERE machine<>$machine AND ($key IS NULL OR app_key=$key) ORDER BY machine,app_key LIMIT $limit)", transaction, ("$machine", machine), ("$key", key), ("$limit", ClearKnownChunk));
+        if (rows == 0)
+        {
+            Execute(db, "DELETE FROM pending_clear", transaction);
+            transaction.Commit();
+            return new(true, 0, true);
+        }
+        transaction.Commit();
+        state.Done += rows;
+        return new(true, rows, false);
+    }
+
+    /// <summary>The app key of an ApplicationDaily summary: <see cref="AppKey.Of"/> of the text before the last " ≥ " of a summary that
+    /// ends " in a day" (<see cref="AlertRules.Describe"/>); null for any other summary.</summary>
+    internal static string? DailyApp(string? summary)
+    {
+        const string Suffix = " in a day", Separator = " ≥ ";
+        if (summary is null || !summary.EndsWith(Suffix, StringComparison.Ordinal)) return null;
+        int at = summary.LastIndexOf(Separator, StringComparison.Ordinal);
+        return at <= 0 ? null : AppKey.Of(summary[..at]);
+    }
+
     private static AlertEpisode ReadEpisode(SqliteDataReader reader) => new(reader.GetString(0), reader.GetString(1), (AlertKind)reader.GetInt32(2),
         reader.GetString(3), DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(4)),
         reader.IsDBNull(5) ? null : DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(5)), reader.GetDouble(6), reader.GetInt64(7) == 1,
@@ -280,12 +432,27 @@ public sealed class AlertStore
         {
             db.Open();
             db.CreateFunction<string, string>("app_key", AppKey.Of, isDeterministic: true);
-            if (!readOnly && configure) Configure(db);
+            db.CreateFunction<string?, string?>("daily_app", DailyApp, isDeterministic: true);
+            if (!readOnly && configure)
+            {
+                Configure(db);
+                // While a clear marker exists, every write connection overwrites what it deletes.
+                if (PendingClear is not null) HistoryClearStep.SecureDelete(db);
+                clearConnectionOpened?.Invoke(db);
+            }
             return db;
         }
         catch { db.Dispose(); throw; }
     }
     private void Configure(SqliteConnection db)
+    {
+        GuardJournal(db);
+        long pageSize = Convert.ToInt64(Scalar(db, "PRAGMA page_size"), CultureInfo.InvariantCulture);
+        Execute(db, "PRAGMA max_page_count=" + (maximumDatabaseBytes / pageSize).ToString(CultureInfo.InvariantCulture));
+        Execute(db, "PRAGMA journal_size_limit=8388608; PRAGMA wal_autocheckpoint=256; PRAGMA synchronous=FULL;");
+    }
+    /// <summary>The 8 MiB journal bound: a <c>-wal</c> still over it after a TRUNCATE checkpoint stops the write.</summary>
+    private void GuardJournal(SqliteConnection db)
     {
         if (File.Exists(path + "-wal") && new FileInfo(path + "-wal").Length > MaximumJournalBytes)
         {
@@ -293,9 +460,6 @@ public sealed class AlertStore
             if (File.Exists(path + "-wal") && new FileInfo(path + "-wal").Length > MaximumJournalBytes)
                 throw new IOException("The alert log journal is waiting for a reader; recording has stopped to bound disk use.");
         }
-        long pageSize = Convert.ToInt64(Scalar(db, "PRAGMA page_size"), CultureInfo.InvariantCulture);
-        Execute(db, "PRAGMA max_page_count=" + (maximumDatabaseBytes / pageSize).ToString(CultureInfo.InvariantCulture));
-        Execute(db, "PRAGMA journal_size_limit=8388608; PRAGMA wal_autocheckpoint=256; PRAGMA synchronous=FULL;");
     }
     private static void Checkpoint(SqliteConnection db)
     {
