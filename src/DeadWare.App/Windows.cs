@@ -46,6 +46,7 @@ public sealed class MainWindow : Window
     private readonly TextBlock startupStatus=Ui.Text("Startup status is checked when this page opens.",12,"Muted"),startupResult=Ui.Text("",12,"Warning");
     private Button startupRepair=null!,startupDisable=null!,startupRefresh=null!,batteryNavigation=null!;
     private string page="overview",gpuSignature="";
+    private ExcludedAppsBlock? excludedApps;
     private bool syncingGpu;
     private bool refreshingSensors;
     private bool syncingStartup,startupBusy,syncingWidgetGraphs;
@@ -101,8 +102,8 @@ public sealed class MainWindow : Window
         var controls=new StackPanel {Margin=new Thickness(8,8,8,12)};networkStatus.Margin=new(0,0,0,10);controls.Children.Add(networkStatus);appSearch.ToolTip="Search application name or PID";System.Windows.Automation.AutomationProperties.SetName(appSearch,"Search applications");
         var searchLabel=Ui.Text("Find application",12,"Muted");searchLabel.Margin=new(0,0,12,0);controls.Children.Add(Ui.Row(searchLabel,appSearch));appSearch.TextChanged+=(_,_)=>RefreshTables();
         controls.Margin=new Thickness(0);var networkStrip=Ui.Panel(controls,new Thickness(14,10,14,10));networkStrip.Margin=new Thickness(6,2,6,10);Grid.SetRow(networkStrip,1);grid.Children.Add(networkStrip);
-        Column(apps,"Application","Name",2);Column(apps,"PID","Pid",.6);Column(apps,"↓ Download","Download",1);Column(apps,"↑ Upload","Upload",1);Column(apps,"Received","Received",1);Column(apps,"Sent","Sent",1);
-        var table=Ui.Panel(apps,new Thickness(0));table.Margin=new Thickness(6,0,6,0);Grid.SetRow(table,2);grid.Children.Add(table);var foot=new StackPanel {Margin=new Thickness(8)};foot.Children.Add(networkEmpty);foot.Children.Add(Ui.Text("Per-app totals cover each current process lifetime in this monitoring session. Exited processes are removed. ETW attribution is approximate and differs from interface totals. No packet payloads are captured.",11,"Muted"));Grid.SetRow(foot,3);grid.Children.Add(foot);return grid;
+        Column(apps,"Application","Name",2,new NotRecordedNameColumn(session));Column(apps,"PID","Pid",.6);Column(apps,"↓ Download","Download",1);Column(apps,"↑ Upload","Upload",1);Column(apps,"Received","Received",1);Column(apps,"Sent","Sent",1);
+        var table=Ui.Panel(apps,new Thickness(0));table.Margin=new Thickness(6,0,6,0);Grid.SetRow(table,2);grid.Children.Add(table);var foot=new StackPanel {Margin=new Thickness(8)};foot.Children.Add(networkEmpty);foot.Children.Add(Ui.Text("Per-app totals cover each current process lifetime in this monitoring session. Exited processes are removed. ETW attribution is approximate and differs from interface totals. No packet payloads are captured. Apps marked not recorded are in Settings → Don't record these apps; their traffic isn't saved.",11,"Muted"));Grid.SetRow(foot,3);grid.Children.Add(foot);return grid;
     }
     private FrameworkElement Sensors()
     {
@@ -189,11 +190,16 @@ public sealed class MainWindow : Window
         System.Windows.Automation.AutomationProperties.SetName(alertNotifications,"Alert notifications");
         alertNotifications.Checked+=(_,_)=>{if(!syncingWidgetGraphs)session.SetAlertNotifications(true);};
         alertNotifications.Unchecked+=(_,_)=>{if(!syncingWidgetGraphs)session.SetAlertNotifications(false);};history.Children.Add(alertNotifications);
-        var alertHelp=Ui.Text("Rules you set on the Alerts page notify from the tray once per episode and are always logged there, whether or not notifications are on. Cooling Health keeps its own notification setting.",12,"Muted");alertHelp.Margin=new(0,0,0,8);history.Children.Add(alertHelp);
+        var alertHelp=Ui.Text("Rules you set on the Alerts page notify from the tray once per episode and are always logged there, whether or not notifications are on. The first network use rule learns your apps for 3 days once per-app capture has run as administrator, then logs each new app; apps seen within a minute share one notification. Cooling Health keeps its own notification setting.",12,"Muted");alertHelp.Margin=new(0,0,0,8);history.Children.Add(alertHelp);
         var alertOpen=Ui.Button("Open Alerts",()=>Navigate("alerts"));alertOpen.Margin=new(0,0,0,20);history.Children.Add(alertOpen);
         history.Children.Add(Ui.Heading("Connections",16));
         history.Children.Add(Ui.Text("Record endpoint history, choose an optional home city, manage the offline location database and export saved traffic from Connections. Local history rolls over after 30 days or 256 MiB.",12,"Muted"));
         history.Children.Add(Ui.Button("Open Connections controls",()=>Navigate("connections")));
+        excludedApps=new ExcludedAppsBlock(session,new AppSuggestions(session,()=>DateTimeOffset.UtcNow)) {Margin=new Thickness(0,20,0,0)};history.Children.Add(excludedApps);
+        var clearHeading=Ui.Heading(HistoryClearCopy.SettingsHeading,16);clearHeading.Margin=new(0,20,0,0);history.Children.Add(clearHeading);
+        var clearHelp=Ui.Text(HistoryClearCopy.SettingsHelp,12,"Muted");clearHelp.Margin=new(0,0,0,8);history.Children.Add(clearHelp);
+        history.Children.Add(ClearHistoryEntry.Create(session,()=>this));
+        history.Children.Add(new HistoryClearProgressView(session,closeButton:false) {Margin=new Thickness(0,10,0,0)});
         var popoutLabel=Ui.Text("Graph pop-outs",14);popoutLabel.Margin=new(0,0,0,8);popouts.Children.Add(popoutLabel);
         joinedPopouts.IsChecked=session.Settings.JoinCpuGpuPopouts;
         System.Windows.Automation.AutomationProperties.SetName(joinedPopouts,"Join CPU and GPU graphs in pop-outs");
@@ -259,7 +265,14 @@ public sealed class MainWindow : Window
         if(startupBusy)return;SetStartupBusy(true);startupResult.Text="Waiting for Windows administrator approval…";
         var result=await StartupRegistration.ConfigureAsync(enabled);SetStartupBusy(false);ShowStartupStatus(result.Registration);startupResult.Text=result.Message;
     }
-    private static void Column(DataGrid table,string title,string binding,double weight)=>table.Columns.Add(new DataGridTextColumn {Header=title.ToUpperInvariant(),Binding=new Binding(binding),Width=new DataGridLength(weight,DataGridLengthUnitType.Star)});
+    /// <summary>Adds a star-sized column with an upper-cased header: a text column bound to <paramref name="binding"/>, or <paramref name="column"/> sorted by it.</summary>
+    private static void Column(DataGrid table,string title,string binding,double weight,DataGridColumn? column=null)
+    {
+        if(column is null)column=new DataGridTextColumn {Binding=new Binding(binding)};
+        else{column.SortMemberPath=binding;column.ClipboardContentBinding=new Binding(binding);}
+        column.Header=title.ToUpperInvariant();column.Width=new DataGridLength(weight,DataGridLengthUnitType.Star);
+        table.Columns.Add(column);
+    }
     public void ShowUpdates()=>Navigate("updates");
     public void ShowAlerts()=>Navigate("alerts");
     private void ShowUsageDay(DateTimeOffset at) {Navigate("usage");if(pages["usage"] is UsageHistoryPage usage)usage.ShowDay(at);}
@@ -285,7 +298,9 @@ public sealed class MainWindow : Window
         foreach(var (key,button) in navigation)button.Tag=key==destination?"active":null;
         page=destination;content.Content=pages[destination];heading.Text=destination switch {"network"=>"Network","storage"=>"Storage","processes"=>"Processes","connections"=>"Connections","cooling"=>"Cooling Health","battery"=>"Battery history","usage"=>"Usage history","alerts"=>"Alerts","updates"=>"Keep DeadWare current","sensors"=>"Hardware sensors","desktop"=>"Settings",_=>"System overview"};
         RefreshUpdateNotice();Refresh();
-        if(destination=="desktop")_ = RefreshStartupAsync();
+        // A freshly shown Settings page refreshes the app suggestions from the block's own Loaded; only an already-shown block is refreshed
+        // here. Unloaded pages (the offscreen shell preview, the UI checks) must never open a history store.
+        if(destination=="desktop"){_ = RefreshStartupAsync();if(excludedApps is {IsLoaded:true})_ = excludedApps.Suggestions.RefreshAsync();}
     }
     private void Refresh()
     {
@@ -334,7 +349,7 @@ public sealed class MainWindow : Window
         if(page=="network")
         {
             var rows=r.Processes.Where(p=>p.Name.Contains(appSearch.Text,StringComparison.OrdinalIgnoreCase)||p.Pid.ToString().Contains(appSearch.Text)).OrderByDescending(p=>(p.DownloadBytesPerSecond??0)+(p.UploadBytesPerSecond??0))
-                .Select(p=>new {p.Name,p.Pid,Download=Ui.Bytes(session.Stale?null:p.DownloadBytesPerSecond,true),Upload=Ui.Bytes(session.Stale?null:p.UploadBytesPerSecond,true),Received=Ui.Bytes(p.ReceivedBytes),Sent=Ui.Bytes(p.SentBytes)}).ToArray();
+                .Select(p=>new {p.Name,p.Pid,Download=Ui.Rate(session.Stale?null:p.DownloadBytesPerSecond),Upload=Ui.Rate(session.Stale?null:p.UploadBytesPerSecond),Received=Ui.Bytes(p.ReceivedBytes),Sent=Ui.Bytes(p.SentBytes)}).ToArray();
             apps.ItemsSource=rows;networkEmpty.Text=rows.Length==0?(r.Processes.Count==0?"No attributed traffic yet. Check the accounting status above.":"No applications match your search."):$"{rows.Length} applications";
         }
         if(page=="sensors")
@@ -368,6 +383,40 @@ public sealed class MainWindow : Window
         }
     }
 }
+/// <summary>The Network page's Application cell: the row's bare Name and, for an app in Don't record these apps, a Muted " · not recorded" after it.
+/// The cell rebuilds its text on <see cref="UiSession.Changed"/> only when the name or the mark changed, so it does not depend on the table being refreshed.</summary>
+internal sealed class NotRecordedNameColumn(UiSession session) : DataGridTemplateColumn
+{
+    protected override FrameworkElement GenerateElement(DataGridCell cell,object dataItem)
+    {
+        var text=new TextBlock {Style=DataGridTextColumn.DefaultElementStyle};
+        (string Name,bool Marked)? shown=null;bool listening=false;
+        void Build()
+        {
+            object? item=text.DataContext??dataItem;
+            string name=item?.GetType().GetProperty("Name")?.GetValue(item) as string??"";
+            bool marked=session.IsExcluded(name);
+            if(shown==(name,marked))return;
+            shown=(name,marked);
+            text.Inlines.Clear();text.Inlines.Add(new System.Windows.Documents.Run(name));
+            if(!marked)return;
+            var mark=new System.Windows.Documents.Run(ProcessCopy.NotRecordedSuffix);mark.SetResourceReference(System.Windows.Documents.TextElement.ForegroundProperty,"Muted");
+            text.Inlines.Add(mark);
+        }
+        void OnChanged()
+        {
+            if(text.Dispatcher.HasShutdownStarted)return;
+            if(!text.Dispatcher.CheckAccess()){text.Dispatcher.InvokeAsync(OnChanged);return;}
+            Build();
+        }
+        text.DataContextChanged+=(_,_)=>Build();
+        text.Loaded+=(_,_)=>{if(!listening){listening=true;session.Changed+=OnChanged;}Build();};
+        text.Unloaded+=(_,_)=>{if(listening){listening=false;session.Changed-=OnChanged;}};
+        Build();
+        return text;
+    }
+}
+
 internal sealed class BatteryHistoryWindow : Window
 {
     public BatteryHistoryWindow(UiSession session)

@@ -35,14 +35,27 @@ public sealed class UsageHistoryStore
         WHERE machine=$machine AND minute>=$from AND minute<$to
         """;
     private const long MinuteMilliseconds = 60_000, DayMilliseconds = 86_400_000, FutureToleranceMilliseconds = 5 * MinuteMilliseconds;
+    private const int OneAppClearRows = 512, AllAppsClearRows = 4096;
     private readonly string path;
     private readonly long maximumDatabaseBytes;
     private bool initialized;
+    // The clear: the sidecar marker usage-history.clear.json and the cleared marks usage-history.cleared.json beside the database.
+    private readonly string clearedPath;
+    private readonly SidecarClear<UsageClearState> clear;
+    private readonly object clearGate = new();
+    private UsageClearedMarks clearedMarks = UsageClearedMarks.None;
+    // Seams set by reflection in tests: the step's monotonic clock, rows deleted per clear transaction (after its commit, before
+    // its checkpoint), and every write connection after it is configured.
+    private Func<TimeSpan> clearClock = HistoryClearStep.MonotonicClock;
+    private Action<int>? clearCommitted = null;
+    private Action<SqliteConnection>? clearConnectionOpened = null;
 
     public UsageHistoryStore(string path, long maximumDatabaseBytes = MaximumDatabaseBytes)
     {
         if (maximumDatabaseBytes is < 65536 or > MaximumDatabaseBytes) throw new ArgumentOutOfRangeException(nameof(maximumDatabaseBytes));
         this.path = Path.GetFullPath(path); this.maximumDatabaseBytes = maximumDatabaseBytes;
+        clearedPath = Path.ChangeExtension(this.path, ".cleared.json");
+        clear = new(Path.ChangeExtension(this.path, ".clear.json"), () => new UsageClearState(this.path));
     }
 
     public long StorageBytes => new[] { path, path + "-wal", path + "-shm" }
@@ -51,6 +64,7 @@ public sealed class UsageHistoryStore
     public void Initialize()
     {
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        ReadClearFiles();
         using var db = Open(create: true, configure: false);
         long version = Convert.ToInt64(Scalar(db, "PRAGMA user_version"), CultureInfo.InvariantCulture);
         if (version is not (0 or 1)) throw new InvalidDataException("Usage history belongs to a newer DeadWare version.");
@@ -80,7 +94,8 @@ public sealed class UsageHistoryStore
 
     /// <summary>Writes closed minutes. Rows older than the retention window or more than five minutes ahead of now are ignored.
     /// A minute already recorded from another segment (a restart inside that minute) is merged and marked incomplete; the same
-    /// segment repeated is ignored, so a retried batch cannot double count.</summary>
+    /// segment repeated is ignored, so a retried batch cannot double count. Expired days are deleted first, except while a clear
+    /// marker exists (<see cref="ClearPending"/>): then they wait until the clear ends. Eviction at the cap still runs.</summary>
     public void Append(string machine, IReadOnlyList<UsageMinuteBatch> batches, DateTimeOffset now)
     {
         EnsureInitialized(); ValidateMachine(machine); ArgumentNullException.ThrowIfNull(batches);
@@ -119,7 +134,8 @@ public sealed class UsageHistoryStore
             try
             {
                 using var transaction = db.BeginTransaction();
-                Expire(db, transaction, cutoff);
+                // While a clear marker exists, secure_delete would make this day-sized delete too large: it waits until the clear ends.
+                if (!ClearPending) Expire(db, transaction, cutoff);
                 foreach (var batch in batches)
                 {
                     long minute = batch.Minute.ToUnixTimeMilliseconds();
@@ -218,7 +234,8 @@ public sealed class UsageHistoryStore
     }
 
     /// <summary>The traffic strip's series: the six names with the most traffic plus Other, per slot of <see cref="ReadMetric"/>'s grid.
-    /// Totals include capture-gap minutes' rows, as <see cref="ReadApplications"/> does; slot bytes hold captured minutes only.</summary>
+    /// Totals include capture-gap minutes' rows, as <see cref="ReadApplications"/> does; slot bytes hold captured minutes only.
+    /// No minute before the latest all-apps clear's <c>Before</c> counts in any slot; the totals stay the Applications table's.</summary>
     public TrafficStrip ReadApplicationSeries(string machine, DateTimeOffset from, DateTimeOffset to, int maxPoints = 1500)
     {
         EnsureInitialized(); ValidateMachine(machine); ValidateRange(from, to);
@@ -227,8 +244,13 @@ public sealed class UsageHistoryStore
         // One deferred transaction, so every statement reads the same snapshot.
         using var transaction = db.BeginTransaction(deferred: true);
         long fromMs = from.ToUnixTimeMilliseconds(), toMs = to.ToUnixTimeMilliseconds(), bucket = Bucket(fromMs, toMs, maxPoints);
+        // Cleared time: slots start counting at the first whole minute at or after the all-apps clear's Before.
+        var marks = ClearedMarks;
+        long cleared = marks.AllAppsBefore is { } allApps ? TrafficStrips.CeilingMinute(allApps).ToUnixTimeMilliseconds() : long.MinValue;
+        DateTimeOffset? retainedFrom = cleared > fromMs ? Stamp(cleared) : null;
+        DateTimeOffset? appClearedBefore = marks.OneAppBefore is { } oneApp && oneApp > from && (retainedFrom is null || oneApp > retainedFrom) ? oneApp : null;
         (string, object)[] args = [("$machine", machine), ("$from", fromMs), ("$to", toMs)];
-        (string, object)[] slotArgs = [.. args, ("$bucket", bucket)];
+        (string, object)[] slotArgs = [.. args, ("$bucket", bucket), ("$slotFrom", Math.Max(fromMs, cleared))];
         var applications = new List<TrafficStripApplication>();
         using (var command = Command(db, RankedApplicationsSql, transaction, [.. args, ("$limit", TrafficStrips.MaximumApplications)]))
         using (var reader = command.ExecuteReader())
@@ -241,8 +263,8 @@ public sealed class UsageHistoryStore
         var minutes = new SortedDictionary<long, (long Recorded, long Captured)>();
         using (var command = Command(db, """
             SELECT (recorded.minute-$from)/$bucket,COUNT(*),SUM(gap.minute IS NULL) FROM (
-                SELECT minute FROM metric_minutes WHERE machine=$machine AND minute>=$from AND minute<$to
-                UNION SELECT minute FROM application_minutes WHERE machine=$machine AND minute>=$from AND minute<$to) recorded
+                SELECT minute FROM metric_minutes WHERE machine=$machine AND minute>=$slotFrom AND minute<$to
+                UNION SELECT minute FROM application_minutes WHERE machine=$machine AND minute>=$slotFrom AND minute<$to) recorded
             LEFT JOIN capture_gaps gap ON gap.machine=$machine AND gap.minute=recorded.minute
             GROUP BY 1
             """, transaction, slotArgs))
@@ -260,7 +282,7 @@ public sealed class UsageHistoryStore
         }
         using (var command = Command(db, """
             SELECT (minute-$from)/$bucket,name,SUM(received),SUM(sent) FROM application_minutes
-            WHERE machine=$machine AND minute>=$from AND minute<$to GROUP BY 1,2
+            WHERE machine=$machine AND minute>=$slotFrom AND minute<$to GROUP BY 1,2
             """, transaction, slotArgs))
         using (var reader = command.ExecuteReader())
             while (reader.Read()) Add(reader.GetInt64(0), reader.GetString(1), reader.GetInt64(2), reader.GetInt64(3));
@@ -268,7 +290,7 @@ public sealed class UsageHistoryStore
         using (var command = Command(db, """
             SELECT (app.minute-$from)/$bucket,app.name,app.received,app.sent FROM capture_gaps gap
             JOIN application_minutes app ON app.machine=gap.machine AND app.minute=gap.minute
-            WHERE gap.machine=$machine AND gap.minute>=$from AND gap.minute<$to
+            WHERE gap.machine=$machine AND gap.minute>=$slotFrom AND gap.minute<$to
             """, transaction, slotArgs))
         using (var reader = command.ExecuteReader())
             while (reader.Read()) Add(reader.GetInt64(0), reader.GetString(1), -reader.GetInt64(2), -reader.GetInt64(3));
@@ -281,8 +303,160 @@ public sealed class UsageHistoryStore
             slots.Add(new(Stamp(start), Stamp(Math.Min(start + bucket, toMs)), recorded, 60 * captured, captured < recorded, values.Received, values.Sent));
         }
         return new(from, to, bucket, TrafficMeasure.Total, applications, received - applications.Sum(a => a.Received),
-            sent - applications.Sum(a => a.Sent), names - applications.Count, slots);
+            sent - applications.Sum(a => a.Sent), names - applications.Count, slots, retainedFrom, CapacityShortened: false,
+            RetainedByClear: retainedFrom is not null, AppClearedBefore: appClearedBefore);
     }
+
+    /// <summary>A clear is in progress: from the marker's write until the last step deletes it, and from Initialize while a marker
+    /// exists, including one that cannot be read (then <see cref="PendingClear"/> is null).</summary>
+    public bool ClearPending => clear.Pending;
+    /// <summary>The clear in progress, as its marker records it; null without one or while the marker cannot be read.</summary>
+    public HistoryClear? PendingClear => clear.Request;
+    /// <summary>Initialize found a marker with invalid content and deleted it; nothing is cleared for it.</summary>
+    public bool DiscardedInvalidMarker => clear.Discarded;
+    /// <summary>The times of the latest finished clears, read by Initialize and raised by each finished clear.</summary>
+    public UsageClearedMarks ClearedMarks { get { lock (clearGate) return clearedMarks; } }
+
+    /// <summary>
+    /// Records a clear in <c>usage-history.clear.json</c> before anything is deleted. A failed write throws and deletes nothing.
+    /// An equal pending request writes nothing; a different one throws <see cref="InvalidOperationException"/>.
+    /// </summary>
+    public void BeginClear(HistoryClear clear)
+    {
+        ArgumentNullException.ThrowIfNull(clear);
+        if (clear.AppKey is { Length: 0 }) throw new ArgumentException("A usage history clear names an application key, or none for all apps.", nameof(clear));
+        EnsureInitialized();
+        this.clear.Begin(clear, "Another usage history clear is in progress.");
+    }
+
+    /// <summary>
+    /// Runs the pending clear's delete transactions until <paramref name="budget"/> has passed on the monotonic clock (see
+    /// <see cref="HistoryClearStep.Run"/>): one app, per machine and matching stored name, at most 512 rows a transaction; all apps,
+    /// per machine, at most 4,096 rows a transaction through <c>application_minutes_time</c>. <c>metric_minutes</c> and
+    /// <c>capture_gaps</c> are never touched. <c>Total</c> is the scope's rows at the first step and <c>Done</c> the rows deleted.
+    /// The last step writes the cleared marks and then deletes the marker. Throws <see cref="InvalidOperationException"/> when no
+    /// readable clear is pending.
+    /// </summary>
+    public HistoryClearProgress ClearStep(TimeSpan budget)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(budget, TimeSpan.Zero);
+        EnsureInitialized();
+        var (request, state) = clear.Current("No usage history clear is pending.");
+        using var db = Open();
+        long before = CeilingMilliseconds(request.Before);
+        state.ScannedThisStep = false;
+        if (state.Total is null) { Scan(db, request.AppKey, before, state); state.Total = state.Work.Sum(item => item.Rows); }
+        long total = state.Total.Value;
+        bool finished = state.Step.Run(db, budget, clearClock, () => GuardJournal(db), () => ClearTransaction(db, request, before, state), clearCommitted);
+        return new(finished ? total : Math.Min(state.Deleted, total), total, finished);
+    }
+
+    /// <summary>A clear's in-memory state. A resumed clear scans again from the start.</summary>
+    private sealed class UsageClearState(string path)
+    {
+        public readonly HistoryClearStep Step = new(path);
+        public long? Total;
+        public long Deleted;
+        // What is left: (machine, name) for one app, (machine, null) for all apps, each with its rows before Before when scanned.
+        public readonly Queue<(string Machine, string? Name, long Rows)> Work = new();
+        public bool ScannedThisStep;
+    }
+
+    /// <summary>One clear transaction, or the finish. When the work runs out, the call scans again (unless a scan already ran in
+    /// this step) and, in the same call, finishes when nothing is left or deletes the first item found. Rows can only be written
+    /// between steps, so a scan made in the current step saw them all; scanning and deciding in one call means a step whose budget
+    /// allows a single call still finishes.</summary>
+    private HistoryClearTransaction ClearTransaction(SqliteConnection db, HistoryClear request, long before, UsageClearState state)
+    {
+        // Re-reading the names here reconciles the spec's "distinct names read once" with "rows written while they run": names
+        // dropped from the queue in an earlier step are checked again before the marker goes.
+        if (state.Work.Count == 0 && !state.ScannedThisStep) Scan(db, request.AppKey, before, state);
+        if (state.Work.Count == 0)
+        {
+            var marks = ClearedMarks.With(request);
+            marks.Write(clearedPath);
+            lock (clearGate) clearedMarks = marks;
+            clear.Finish();
+            return new(false, 0, true);
+        }
+        var (machine, name, _) = state.Work.Peek();
+        int limit = name is null ? AllAppsClearRows : OneAppClearRows;
+        int deleted;
+        using (var transaction = db.BeginTransaction())
+        {
+            deleted = name is null
+                ? Execute(db, """
+                    DELETE FROM application_minutes WHERE (machine,name,minute) IN (
+                        SELECT machine,name,minute FROM application_minutes INDEXED BY application_minutes_time
+                        WHERE machine=$machine AND minute<$before ORDER BY minute LIMIT $limit)
+                    """, transaction, ("$machine", machine), ("$before", before), ("$limit", limit))
+                : Execute(db, """
+                    DELETE FROM application_minutes WHERE machine=$machine AND name=$name AND minute IN (
+                        SELECT minute FROM application_minutes WHERE machine=$machine AND name=$name AND minute<$before ORDER BY minute LIMIT $limit)
+                    """, transaction, ("$machine", machine), ("$name", name), ("$before", before), ("$limit", limit));
+            transaction.Commit();
+        }
+        if (deleted < limit) state.Work.Dequeue();
+        state.Deleted += deleted;
+        return new(deleted > 0, deleted, false);
+    }
+
+    /// <summary>
+    /// Fills the work queue with what the scope still holds before <c>Before</c>: for one app, each machine's distinct stored names
+    /// read once and matched with <see cref="AppKey.Of"/>; for all apps, each machine.
+    /// </summary>
+    private static void Scan(SqliteConnection db, string? appKey, long before, UsageClearState state)
+    {
+        state.Work.Clear(); state.ScannedThisStep = true;
+        // Machines by index seeks, without walking every row.
+        for (string machine = ""; ;)
+        {
+            object? next = ScalarWith(db, "SELECT machine FROM application_minutes WHERE machine>$machine ORDER BY machine LIMIT 1", [("$machine", machine)]);
+            if (next is not string found) break;
+            machine = found;
+            if (appKey is null)
+            {
+                long rows = Convert.ToInt64(ScalarWith(db, "SELECT count(*) FROM application_minutes WHERE machine=$machine AND minute<$before",
+                    [("$machine", machine), ("$before", before)]), CultureInfo.InvariantCulture);
+                if (rows > 0) state.Work.Enqueue((machine, null, rows));
+                continue;
+            }
+            var names = new List<string>();
+            using (var command = Command(db, "SELECT DISTINCT name FROM application_minutes WHERE machine=$machine", null, ("$machine", machine)))
+            using (var reader = command.ExecuteReader())
+                while (reader.Read())
+                {
+                    string name = reader.GetString(0);
+                    if (string.Equals(AppKey.Of(name), appKey, StringComparison.Ordinal)) names.Add(name);
+                }
+            foreach (var name in names)
+            {
+                long rows = Convert.ToInt64(ScalarWith(db, "SELECT count(*) FROM application_minutes WHERE machine=$machine AND name=$name AND minute<$before",
+                    [("$machine", machine), ("$name", name), ("$before", before)]), CultureInfo.InvariantCulture);
+                if (rows > 0) state.Work.Enqueue((machine, name, rows));
+            }
+        }
+    }
+
+    /// <summary>Reads the clear marker and the cleared marks before the first write connection opens, so it already uses secure_delete.</summary>
+    private void ReadClearFiles()
+    {
+        // Invalid marker content is deleted and nothing is cleared for it; one that cannot be read, or even deleted, stays as unreadable.
+        clear.ReadAtStartup();
+        TryDelete(clearedPath + ".tmp");
+        var marks = UsageClearedMarks.Read(clearedPath);
+        lock (clearGate) clearedMarks = marks;
+    }
+
+    private static void TryDelete(string file)
+    {
+        try { File.Delete(file); }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
+    }
+
+    /// <summary>Unix milliseconds of the first whole millisecond at or after the time, so every stored minute before it compares below.</summary>
+    private static long CeilingMilliseconds(DateTimeOffset time)
+        => (time.UtcTicks - DateTimeOffset.UnixEpoch.UtcTicks + TimeSpan.TicksPerMillisecond - 1) / TimeSpan.TicksPerMillisecond;
 
     /// <summary>One application's stored minutes in a range, oldest first, with the segment that first wrote each row.</summary>
     public IReadOnlyList<UsageApplicationMinute> ReadApplicationMinutes(string machine, string name, DateTimeOffset from, DateTimeOffset to)
@@ -299,6 +473,23 @@ public sealed class UsageHistoryStore
         while (reader.Read())
             rows.Add(new(reader.GetString(0), DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(1)), reader.GetInt64(2), reader.GetInt64(3), reader.GetString(4)));
         return rows;
+    }
+
+    /// <summary>Every saved application name on a machine with its first and last stored minute, latest first, for the first-use seed;
+    /// null while a clear is in progress.</summary>
+    public IReadOnlyList<ApplicationSeen>? ReadApplicationNames(string machine)
+    {
+        EnsureInitialized(); ValidateMachine(machine);
+        if (ClearPending) return null;
+        using var db = Open(readOnly: true);
+        var names = new List<ApplicationSeen>();
+        using var command = Command(db,
+            "SELECT name,min(minute),max(minute) FROM application_minutes WHERE machine=$machine GROUP BY name ORDER BY max(minute) DESC LIMIT 65536",
+            null, [("$machine", machine)]);
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+            names.Add(new(reader.GetString(0), DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(1)), DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(2))));
+        return names;
     }
 
     /// <summary>How many recorded minutes of a metric averaged at or above a value, for threshold suggestions.</summary>
@@ -427,15 +618,23 @@ public sealed class UsageHistoryStore
     }
     private void Configure(SqliteConnection db)
     {
+        GuardJournal(db);
+        long pageSize = Convert.ToInt64(Scalar(db, "PRAGMA page_size"), CultureInfo.InvariantCulture);
+        Execute(db, "PRAGMA max_page_count=" + (maximumDatabaseBytes / pageSize).ToString(CultureInfo.InvariantCulture));
+        Execute(db, "PRAGMA journal_size_limit=8388608; PRAGMA wal_autocheckpoint=256; PRAGMA synchronous=FULL;");
+        // While a clear marker exists, every delete on this connection overwrites the freed content.
+        if (ClearPending) HistoryClearStep.SecureDelete(db);
+        clearConnectionOpened?.Invoke(db);
+    }
+    /// <summary>The 8 MiB journal bound: a -wal above it after a TRUNCATE checkpoint attempt means a reader holds it.</summary>
+    private void GuardJournal(SqliteConnection db)
+    {
         if (File.Exists(path + "-wal") && new FileInfo(path + "-wal").Length > MaximumJournalBytes)
         {
             Checkpoint(db);
             if (File.Exists(path + "-wal") && new FileInfo(path + "-wal").Length > MaximumJournalBytes)
                 throw new IOException("Usage history journal is waiting for a reader; recording has stopped to bound disk use.");
         }
-        long pageSize = Convert.ToInt64(Scalar(db, "PRAGMA page_size"), CultureInfo.InvariantCulture);
-        Execute(db, "PRAGMA max_page_count=" + (maximumDatabaseBytes / pageSize).ToString(CultureInfo.InvariantCulture));
-        Execute(db, "PRAGMA journal_size_limit=8388608; PRAGMA wal_autocheckpoint=256; PRAGMA synchronous=FULL;");
     }
     private static void Checkpoint(SqliteConnection db)
     {

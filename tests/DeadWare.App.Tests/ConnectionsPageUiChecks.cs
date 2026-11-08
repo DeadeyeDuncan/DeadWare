@@ -29,6 +29,14 @@ internal static class ConnectionsPageUiChecks
         SynchronizationContext.SetSynchronizationContext(new DispatcherSynchronizationContext(Dispatcher.CurrentDispatcher));
         try { RunCore(app); } finally { SynchronizationContext.SetSynchronizationContext(previous); }
     }
+    /// <summary>The Recording, origin and storage expander holds Clear history….</summary>
+    private static void CheckClearHistoryEntry(FrameworkElement page)
+    {
+        var expander = Assert.Single(Elements(page).OfType<Expander>(), e => e.Header as string == "Recording, origin and storage");
+        var options = Assert.IsType<StackPanel>(expander.Content);
+        var button = Assert.Single(options.Children.OfType<Button>(), b => b.Content as string == "Clear history…");
+        Assert.True(ToolTipService.GetShowOnDisabled(button)); Assert.True(button.IsEnabled);
+    }
     private static void RunCore(Application app)
     {
         var session = (UiSession)RuntimeHelpers.GetUninitializedObject(typeof(UiSession));
@@ -42,6 +50,7 @@ internal static class ConnectionsPageUiChecks
         Call(page, "ApplyLive", live);
         Layout(page, 671, 440);
         CheckCards(page);
+        CheckClearHistoryEntry(page);
         Assert.Equal("Destinations", AutomationProperties.GetName(Assert.Single(Elements(page).OfType<DataGrid>())));
         string text = Text(page);
         Assert.Contains("Live", text);
@@ -65,9 +74,11 @@ internal static class ConnectionsPageUiChecks
         CheckHistoryQueries(session,now);
         CheckHistoryLimitError(session);
         CheckStripReads(session, now);
+        CheckHistoryClearRereads(session);
         CheckStripCursor(session, now);
         CheckMinuteReadFailureKeepsTheStrip(session, now);
         CheckApplicationFilter(session, now);
+        CheckStripNotRecordedAndClearedTime(session, now);
         CheckShowHistory(session, now);
         CheckDestinationsLive(page, live);
         CheckDestinationsHistory(session, now);
@@ -77,6 +88,7 @@ internal static class ConnectionsPageUiChecks
         CheckScopeChangeClearsTheSelection(page);
         CheckDestinationsCopy(session, live);
         CheckDestinationsExport(session, now);
+        CheckDestinationsNotRecordedMark(session, live);
         CheckBoundaryDates();
         CheckIntervalWarning(session);
         CheckExportBusy(session,now);
@@ -711,6 +723,27 @@ internal static class ConnectionsPageUiChecks
         reads.Answer(); Assert.Equal(count + 3, reads.Requested.Count); Assert.True(IsWhole(reads.Last, 3)); reads.Answer(); Assert.NotNull(chart.Strip); Assert.Empty(reads.Replies);
         page.RaiseEvent(new RoutedEventArgs(FrameworkElement.UnloadedEvent));
     }
+    /// <summary>Raises the session's HistoryClearChanged backing delegate, as its timer does when a clear starts or ends.</summary>
+    private static void RaiseHistoryClear(UiSession session, HistoryClearStore store)
+        => ((Action<HistoryClearStore>?)typeof(UiSession).GetField("HistoryClearChanged", All)!.GetValue(session))?.Invoke(store);
+    private static void CheckHistoryClearRereads(UiSession session)
+    {
+        var page = new ConnectionsPage(session); var reads = new FakeReads(page);
+        Field<ComboBox>(page, "mode").SelectedIndex = 1; reads.Drain();
+        page.RaiseEvent(new RoutedEventArgs(FrameworkElement.LoadedEvent)); reads.Drain();
+        var whole = reads.Last; int count = reads.Requested.Count;
+        // A Usage clear is not Connections history's: no read.
+        RaiseHistoryClear(session, HistoryClearStore.Usage); RaiseHistoryClear(session, HistoryClearStore.Alerts); Pump();
+        Assert.Equal(count, reads.Requested.Count);
+        // A Connections clear starting or ending repeats the shown whole-interval read.
+        RaiseHistoryClear(session, HistoryClearStore.Connections);
+        Assert.Equal(count + 1, reads.Requested.Count); Assert.Equal((whole.From, whole.To), (reads.Last.From, reads.Last.To)); reads.Drain();
+        Assert.Equal(count + 1, reads.Requested.Count);
+        // Unloaded, the page no longer listens.
+        page.RaiseEvent(new RoutedEventArgs(FrameworkElement.UnloadedEvent)); count = reads.Requested.Count;
+        RaiseHistoryClear(session, HistoryClearStore.Connections); Pump();
+        Assert.Equal(count, reads.Requested.Count);
+    }
     private static void CheckStripCursor(UiSession session, DateTimeOffset now)
     {
         var page = new ConnectionsPage(session); var reads = new FakeReads(page);
@@ -821,6 +854,114 @@ internal static class ConnectionsPageUiChecks
         Assert.Equal(["chrome.exe / 1", "Chrome.exe / 2"], listed);
         Click(page, "applicationButton"); Assert.StartsWith("Live · 3 destinations", summary.Text); Assert.Equal(Visibility.Collapsed, button.Visibility);
     }
+    /// <summary>chrome.exe and Other over the query's five minutes: bytes in minutes 0 and 2, recorded zero-byte minutes 1, 3 and 4.</summary>
+    private static TrafficStrip NotRecordedStrip(ConnectionHistoryQuery query, bool other = true)
+    {
+        long[] Bytes(int k, long value) => k is 0 or 2 ? [value, other ? value / 2 : 0] : [0, 0];
+        var slots = Enumerable.Range(0, 5).Select(k => new TrafficStripSlot(query.From.AddMinutes(k), query.From.AddMinutes(k + 1), 1, 60, false, Bytes(k, 1000), Bytes(k, 500))).ToArray();
+        return new(query.From, query.To, 60_000, TrafficMeasure.Total, [new("chrome.exe", "CHROME.EXE", 2000, 1000)], other ? 1000 : 0, other ? 500 : 0, other ? 2 : 0, slots);
+    }
+    private static void CheckStripNotRecordedAndClearedTime(UiSession session, DateTimeOffset now)
+    {
+        const string NotRecordedReason = "Not recorded: in Don't record these apps", NotRecordedLine = "Not recorded: this app is in Don't record these apps.";
+        session.SetExcludedApps(["chrome.exe"]);
+        try
+        {
+            var page = new ConnectionsPage(session); var reads = new FakeReads(page); page.clock = () => Local(11, 0);
+            var view = Field<TrafficStripView>(page, "trafficStrip"); var chart = view.Chart;
+            Field<ComboBox>(page, "mode").SelectedIndex = 1; reads.Drain();
+            page.RaiseEvent(new RoutedEventArgs(FrameworkElement.LoadedEvent)); reads.Drain();
+            Field<TextBox>(page, "from").Text = "2026-10-29 10:00"; Field<TextBox>(page, "to").Text = "2026-10-29 10:05";
+            Call(page, "RequestHistory", null); Assert.True(IsWhole(reads.Last, 5)); reads.Answer(strip: NotRecordedStrip(reads.Last));
+            // Unfiltered, chrome.exe's zero-byte minutes are No traffic.
+            Layout(page, 1000, 700); chart.SlotAt(new Point());
+            Point Centre(int k) => new(chart.PlotRect.Left + chart.PlotRect.Width * (k + .5) / 5, chart.PlotRect.Top + chart.PlotRect.Height / 2);
+            chart.HoverAt(Centre(1)); Assert.Equal([chart.SlotSpan(1), "No traffic"], chart.ChipLines); chart.HoverAt(null);
+            Assert.DoesNotContain(NotRecordedLine, view.NoteLines);
+            // The legend click on chrome.exe filters to it; the button found by its automation name reads "· not recorded".
+            var chrome = Assert.Single(Elements(view).OfType<Button>(), b => AutomationProperties.GetName(b) == "chrome.exe: show only this application");
+            ((IInvokeProvider)new ButtonAutomationPeer(chrome).GetPattern(PatternInterface.Invoke)).Invoke(); Pump();
+            Assert.Equal("CHROME.EXE", reads.Last.Application);
+            reads.Answer(strip: NotRecordedStrip(reads.Last, other: false));
+            Layout(page, 1000, 700); chart.SlotAt(new Point());
+            var button = Assert.Single(Elements(page).OfType<Button>(), b => AutomationProperties.GetName(b) == "Clear application filter");
+            Assert.Equal("Application: chrome.exe · not recorded ✕", Assert.IsType<TextBlock>(button.Content).Text);
+            Assert.Equal("Only chrome.exe is shown. Click to show every application. It is in Don't record these apps, so its traffic isn't saved.", button.ToolTip);
+            Assert.EndsWith(" It is in Don't record these apps, so its traffic isn't saved.", (string)button.ToolTip);
+            Assert.Contains(NotRecordedLine, view.NoteLines);
+            Assert.Equal([NotRecordedLine], view.NoteLines);
+            // Recorded zero-byte minutes are Not saved: hatched, hover targets with the reason, and "—" in the legend with that tooltip.
+            Assert.NotNull(chart.Hatch);
+            foreach (int k in new[] { 1, 3, 4 }) Assert.True(chart.Hatch!.FillContains(Centre(k)), $"minute {k} is hatched");
+            foreach (int k in new[] { 0, 2 })
+            {
+                Assert.False(chart.Hatch!.FillContains(Centre(k)), $"minute {k} keeps its band");
+                Assert.Contains(chart.Bands, b => b.Geometry.FillContains(new Point(Centre(k).X, chart.PlotRect.Bottom - 1)));
+            }
+            chart.HoverAt(Centre(1));
+            Assert.Equal(1, chart.HoverIndex);
+            Assert.Equal([chart.SlotSpan(1), "No saved traffic", NotRecordedReason], chart.ChipLines);
+            var values = view.Legend.Skip(1).ToArray(); Assert.NotEmpty(values);
+            Assert.All(values, entry => { Assert.EndsWith(" · —", entry.Text); Assert.Equal(NotRecordedReason, entry.Tip); });
+            chart.HoverAt(Centre(2)); Assert.Equal(2, chart.ChipLines.Count); Assert.DoesNotContain("No saved traffic", chart.ChipLines);
+            Assert.DoesNotContain(view.Legend.Skip(1), entry => entry.Text.EndsWith(" · —"));
+            chart.HoverAt(null);
+            // Taken off the list, Changed puts the plain button, line and No traffic back.
+            session.SetExcludedApps([]); Pump();
+            Assert.Equal("Application: chrome.exe ✕", Assert.IsType<TextBlock>(button.Content).Text);
+            Assert.Equal("Only chrome.exe is shown. Click to show every application.", button.ToolTip);
+            Assert.Empty(view.NoteLines);
+            Layout(page, 1000, 700); chart.HoverAt(Centre(1)); Assert.Equal([chart.SlotSpan(1), "No traffic"], chart.ChipLines); chart.HoverAt(null);
+            session.SetExcludedApps(["chrome.exe"]); Pump();
+            Assert.Equal("Application: chrome.exe · not recorded ✕", Assert.IsType<TextBlock>(button.Content).Text); Assert.Equal([NotRecordedLine], view.NoteLines);
+            // The Not saved minute is a keyboard target: Right from no selection reaches minute 0, then minute 1, and the legend shows "—".
+            Layout(page, 1000, 700);
+            Assert.True(chart.HandleKey(System.Windows.Input.Key.Right)); Assert.Equal(0, chart.SelectedIndex); reads.Drain();
+            Assert.True(chart.HandleKey(System.Windows.Input.Key.Right)); Assert.Equal(1, chart.SelectedIndex);
+            Assert.All(view.Legend.Skip(1), entry => { Assert.EndsWith(" · —", entry.Text); Assert.Equal(NotRecordedReason, entry.Tip); });
+            reads.Drain();
+            page.RaiseEvent(new RoutedEventArgs(FrameworkElement.UnloadedEvent));
+
+            // Cleared time on the Connections strip.
+            var query = new ConnectionHistoryQuery(Local(10, 0), Local(10, 30));
+            TrafficStrip Strip(Func<int, bool> zero, int first = 0) => new(query.From, query.To, 60_000, TrafficMeasure.Total, [new("chrome.exe", "CHROME.EXE", 1000, 500)], 0, 0, 0,
+                Enumerable.Range(first, 30 - first).Select(k => new TrafficStripSlot(query.From.AddMinutes(k), query.From.AddMinutes(k + 1), 1, 60, false, [zero(k) ? 0 : 100L, 0], [zero(k) ? 0 : 50L, 0])).ToArray());
+            var strip = new TrafficStripView(session, TrafficStripPage.Connections);
+            Point At(int k) => new(strip.Chart.PlotRect.Left + strip.Chart.PlotRect.Width * (k + .5) / 30, strip.Chart.PlotRect.Top + strip.Chart.PlotRect.Height / 2);
+            var retained = Local(10, 10);
+            strip.Apply(Strip(_ => false, 10) with { RetainedFrom = retained }, query.To, Local(11, 0));
+            Assert.Equal("Not kept", strip.Chart.BandLabel); Assert.Equal($"Not kept before {retained.ToLocalTime().ToString("g")}", strip.NoteLines[0]);
+            strip.Apply(Strip(_ => false, 10) with { RetainedFrom = retained, RetainedByClear = true }, query.To, Local(11, 0));
+            Layout(strip, 900, 300); strip.Chart.SlotAt(new Point());
+            Assert.Equal("Cleared", strip.Chart.BandLabel); Assert.NotNull(strip.Chart.NotKept);
+            Assert.Equal($"Cleared before {retained.ToLocalTime().ToString("g")}", strip.NoteLines[0]); Assert.Equal(strip.NotKeptLine, strip.NoteLines[0]);
+            Assert.Single(strip.NoteLines);
+            Assert.True(strip.Chart.Hatch is null || !strip.Chart.Hatch.FillContains(At(5)), "no cleared minute is hatched");
+            // AppClearedBefore with the filter: its line, and Not saved slots before it with both reasons.
+            var oneApp = Local(10, 20); string g = oneApp.ToLocalTime().ToString("g");
+            string clearedReason = $"Some application history before {g} was cleared", clearedLine = $"Some application history before {g} was cleared.";
+            strip.Apply(Strip(k => k is 5 or 25) with { AppClearedBefore = oneApp }, query.To, Local(11, 0), filterNotRecorded: true);
+            Layout(strip, 900, 300); strip.Chart.SlotAt(new Point());
+            Assert.Equal([clearedLine, NotRecordedLine], strip.NoteLines);
+            strip.Chart.HoverAt(At(5)); Assert.Equal([strip.Chart.SlotSpan(5), "No saved traffic", clearedReason, NotRecordedReason], strip.Chart.ChipLines);
+            strip.Chart.HoverAt(At(25)); Assert.Equal([strip.Chart.SlotSpan(25), "No saved traffic", NotRecordedReason], strip.Chart.ChipLines);
+            strip.Chart.HoverAt(null);
+            // With AppClearedBefore and no filter, a zero-byte slot before it is Not saved, not No traffic; one after it is No traffic.
+            strip.Apply(Strip(k => k is 5 or 25) with { AppClearedBefore = oneApp }, query.To, Local(11, 0));
+            Layout(strip, 900, 300); strip.Chart.SlotAt(new Point());
+            Assert.Equal([clearedLine], strip.NoteLines);
+            strip.Chart.HoverAt(At(5)); Assert.Equal([strip.Chart.SlotSpan(5), "No saved traffic", clearedReason], strip.Chart.ChipLines);
+            Assert.True(strip.Chart.Hatch!.FillContains(At(5)), "a Not saved slot is hatched");
+            Assert.All(strip.Legend.Skip(1), entry => { Assert.EndsWith(" · —", entry.Text); Assert.Equal(clearedReason, entry.Tip); });
+            strip.Chart.HoverAt(At(25)); Assert.Equal([strip.Chart.SlotSpan(25), "No traffic"], strip.Chart.ChipLines);
+            Assert.False(strip.Chart.Hatch.FillContains(At(25)), "a No traffic slot is not hatched");
+            strip.Chart.HoverAt(null);
+            // Both: the Cleared line first, then the one-app line.
+            strip.Apply(Strip(_ => false, 10) with { RetainedFrom = retained, RetainedByClear = true, AppClearedBefore = oneApp }, query.To, Local(11, 0), filterNotRecorded: true);
+            Assert.Equal([$"Cleared before {retained.ToLocalTime().ToString("g")}", clearedLine, NotRecordedLine], strip.NoteLines);
+        }
+        finally { session.SetExcludedApps([]); }
+    }
     private static void CheckShowHistory(UiSession session, DateTimeOffset now)
     {
         var page = new ConnectionsPage(session); var reads = new FakeReads(page);
@@ -926,6 +1067,50 @@ internal static class ConnectionsPageUiChecks
         menu.RaiseEvent(new RoutedEventArgs(ContextMenu.ClosedEvent)); Assert.False(card.Hold.MenuOpen);
         // Cleared again, Ctrl+C does nothing.
         card.ClearSelection(); copied = null; CtrlC(); Assert.Null(copied); Assert.Equal("", status.Text); Assert.Equal(0, gridCopies);
+    }
+    /// <summary>An app in Don't record these apps shows live with " · not recorded": the Destinations APPS cell, its tooltip line, the spoken text and Copy row,
+    /// the node list, the detail box and the map label. Search, grouping and History rows use the bare name. The list is cleared again at the end.</summary>
+    private static void CheckDestinationsNotRecordedMark(UiSession session, ConnectionLiveView live)
+    {
+        // The 8.8.8.8 peer is "Browser" (key "BROWSER"), the busiest and only app of its row.
+        session.SetExcludedApps(["Browser"]); Assert.True(session.IsExcluded("BROWSER"));
+        try
+        {
+            var page = new ConnectionsPage(session); page.ApplyLive(live); Layout(page, 1000, 700); var card = Card(page);
+            var row = card.Rows.Single(r => r.Key == "8.8.8.8");
+            Assert.StartsWith("Browser · not recorded", row.Apps); Assert.Equal("Browser · not recorded", row.Apps);
+            Assert.Contains("Browser · not recorded · ↓ ", row.AppsTip); Assert.Equal("Browser · not recorded · ↓ 1.0 KB · ↑ 512.0 B", row.AppsTip);
+            Assert.Contains("Browser, not recorded", row.Spoken);
+            Assert.Equal("8.8.8.8, Internet, Fixture, United States, 1 app: Browser, not recorded, port 443 Tcp, received 1.0 KB, sent 512.0 B, download 128.0 B/s, upload 64.0 B/s, 1 connection, incomplete", row.Spoken);
+            // Copy row copies the shown cell, mark included.
+            string? copied = null; PageType.GetField("SetClipboard", All)!.SetValue(page, (Action<string>)(text => copied = text));
+            Select(card, "8.8.8.8"); System.Windows.Input.ApplicationCommands.Copy.Execute(null, card.Grid);
+            Assert.Contains(" · not recorded", copied); Assert.StartsWith("8.8.8.8\tInternet\tFixture, United States\tBrowser · not recorded\t443 Tcp\t", copied);
+            card.ClearSelection();
+            // The node list label, the detail box and the map's hover label.
+            var map = Field<ConnectionMap>(page, "map"); map.Flat = true; Layout(page, 1000, 700);
+            var list = Field<ListBox>(page, "mappedConnections");
+            Assert.Contains("Browser · not recorded", Assert.Single(list.Items.Cast<object>()).ToString());
+            list.SelectedIndex = 0; Assert.Contains("Browser · not recorded", Field<TextBlock>(page, "nodeText").Text);
+            Assert.EndsWith(" · not recorded", Assert.Single(map.DisplayedPoints).Label);
+            // The expander text ends with the new sentence.
+            var options = Assert.Single(Elements(page).OfType<Expander>(), e => e.Header as string == "Recording, origin and storage");
+            Assert.Contains(Elements((DependencyObject)options.Content).OfType<TextBlock>(), t => t.Text.EndsWith(" Apps in Don't record these apps show live, marked not recorded, and are never saved.", StringComparison.Ordinal));
+            // Search matches the bare name: "Browser" keeps the node and the row, "not recorded" matches nothing.
+            var search = Field<TextBox>(page, "search");
+            search.Text = "Browser"; Assert.Single(list.Items.Cast<object>()); Assert.Contains(card.Rows, r => r.Key == "8.8.8.8");
+            search.Text = "not recorded"; Assert.Empty(list.Items); Assert.Empty(card.Rows);
+            search.Text = "";
+            // History rows carry no mark.
+            card.ShowHistory(ConnectionDestinations.FromLive(live.Connections, true), false, false);
+            var saved = card.Rows.Single(r => r.Key == "8.8.8.8");
+            Assert.Equal("Browser", saved.Apps); Assert.DoesNotContain("not recorded", saved.AppsTip); Assert.DoesNotContain("not recorded", saved.Spoken);
+            // Taken off the list, the same Live view shows the bare name again.
+            page.ApplyLive(live); session.SetExcludedApps([]); page.ApplyLive(live);
+            Assert.Equal("Browser", card.Rows.Single(r => r.Key == "8.8.8.8").Apps);
+            Assert.Equal("Browser", Assert.Single(map.DisplayedPoints).Label);
+        }
+        finally { session.SetExcludedApps([]); }
     }
     /// <summary>Export destinations… exports the whole-interval query with every filter and the card's scope, shares Export CSV's busy state and texts,
     /// and names the TEMP limit.</summary>

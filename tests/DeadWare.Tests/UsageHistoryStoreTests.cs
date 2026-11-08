@@ -311,6 +311,185 @@ public class UsageHistoryStoreTests
         Assert.Throws<InvalidOperationException>(() => new UsageHistoryStore(fixture.Path).ReadApplicationSeries("m", Day, Day.AddDays(1)));
     }
 
+    // Task 9: clearing usage-history.db.
+    private static readonly DateTimeOffset ClearBefore = Day.AddMinutes(600);
+    private static void ClearSeam(UsageHistoryStore store, string field, object? value)
+        => typeof(UsageHistoryStore).GetField(field, System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!.SetValue(store, value);
+
+    /// <summary>Machines "A" and "B", 64 apps a minute for 660 minutes from Day: "Chrome.exe" on A and "chrome.exe" on B among 63 others,
+    /// a CPU metric row a minute and a capture gap every tenth minute.</summary>
+    private static void FillForClear(UsageHistoryStore store)
+    {
+        foreach (var machine in new[] { "A", "B" })
+            for (int start = 0; start < 660; start += 50)
+            {
+                var batches = new List<UsageMinuteBatch>();
+                for (int m = start; m < start + 50 && m < 660; m++)
+                {
+                    var apps = new (string, long, long)[64];
+                    apps[0] = (machine == "A" ? "Chrome.exe" : "chrome.exe", 100, 10);
+                    for (int a = 1; a < 64; a++) apps[a] = ($"app{a}.exe", a, 1);
+                    batches.Add(Batch(Day.AddMinutes(m), gap: m % 10 == 0, apps: apps));
+                }
+                store.Append(machine, batches, Day.AddDays(1));
+            }
+    }
+
+    private static long Count(string path, string sql)
+    {
+        using var db = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = path, Pooling = false, Mode = SqliteOpenMode.ReadOnly }.ToString());
+        db.Open(); using var command = db.CreateCommand(); command.CommandText = sql;
+        return Convert.ToInt64(command.ExecuteScalar(), CultureInfo.InvariantCulture);
+    }
+
+    [Fact]
+    public void Application_names_return_each_name_with_its_first_and_last_minute_for_this_machine_only()
+    {
+        using var fixture = new Fixture(); var store = fixture.Open(); var now = Day.AddHours(1);
+        store.Append("a", [Batch(Day.AddMinutes(1), apps: [("chrome.exe", 1, 1)]), Batch(Day.AddMinutes(5), apps: [("code.exe", 1, 1)]), Batch(Day.AddMinutes(9), apps: [("chrome.exe", 1, 1)])], now);
+        store.Append("b", [Batch(Day.AddMinutes(3), apps: [("steam.exe", 1, 1)])], now);
+        var names = store.ReadApplicationNames("a")!;
+        Assert.Equal([new ApplicationSeen("chrome.exe", Day.AddMinutes(1), Day.AddMinutes(9)), new ApplicationSeen("code.exe", Day.AddMinutes(5), Day.AddMinutes(5))], names);
+        store.BeginClear(new(null, ClearBefore, ClearBefore));
+        Assert.Null(store.ReadApplicationNames("a"));
+    }
+
+    private static long Wal(string path) => File.Exists(path + "-wal") ? new FileInfo(path + "-wal").Length : 0;
+    private static long BeforeMs => ClearBefore.ToUnixTimeMilliseconds();
+    private static string ChromeBefore => $"SELECT count(*) FROM application_minutes WHERE name IN ('Chrome.exe','chrome.exe') AND minute<{BeforeMs}";
+
+    [Fact]
+    public void Usage_one_app_clear_removes_every_spelling_on_every_machine()
+    {
+        using var fixture = new Fixture(); var store = fixture.Open(); FillForClear(store);
+        long metrics = Count(fixture.Path, "SELECT count(*) FROM metric_minutes"), gaps = Count(fixture.Path, "SELECT count(*) FROM capture_gaps");
+        long others = Count(fixture.Path, "SELECT count(*) FROM application_minutes WHERE name NOT IN ('Chrome.exe','chrome.exe')");
+        int largest = 0, commits = 0; long largestWal = 0;
+        ClearSeam(store, "clearCommitted", (Action<int>)(rows => { largest = Math.Max(largest, rows); commits++; largestWal = Math.Max(largestWal, Wal(fixture.Path)); }));
+        store.BeginClear(new("CHROME.EXE", ClearBefore, ClearBefore));
+        HistoryClearProgress progress;
+        do progress = store.ClearStep(TimeSpan.FromMilliseconds(250)); while (!progress.Finished);
+        Assert.Equal(1200, progress.Total); Assert.Equal(1200, progress.Done); Assert.Equal(100, progress.Percent);
+        Assert.Equal(0, Count(fixture.Path, ChromeBefore));
+        Assert.Equal(60, Count(fixture.Path, $"SELECT count(*) FROM application_minutes WHERE machine='A' AND name='Chrome.exe' AND minute>={BeforeMs}"));
+        Assert.Equal(60, Count(fixture.Path, $"SELECT count(*) FROM application_minutes WHERE machine='B' AND name='chrome.exe' AND minute>={BeforeMs}"));
+        Assert.Equal(others, Count(fixture.Path, "SELECT count(*) FROM application_minutes WHERE name NOT IN ('Chrome.exe','chrome.exe')"));
+        Assert.Equal(metrics, Count(fixture.Path, "SELECT count(*) FROM metric_minutes")); Assert.Equal(gaps, Count(fixture.Path, "SELECT count(*) FROM capture_gaps"));
+        Assert.InRange(largest, 1, 512); Assert.True(commits >= 4); Assert.InRange(largestWal, 1, 8 * 1024 * 1024);
+        Assert.False(store.ClearPending); Assert.Null(store.PendingClear);
+        Assert.Throws<InvalidOperationException>(() => store.ClearStep(TimeSpan.FromMilliseconds(250)));
+    }
+
+    [Fact]
+    public void Usage_all_apps_clear_keeps_device_minutes()
+    {
+        using var fixture = new Fixture(); var store = fixture.Open(); FillForClear(store);
+        long metrics = Count(fixture.Path, "SELECT count(*) FROM metric_minutes"), gaps = Count(fixture.Path, "SELECT count(*) FROM capture_gaps");
+        long kept = Count(fixture.Path, $"SELECT count(*) FROM application_minutes WHERE minute>={BeforeMs}");
+        int largest = 0, commits = 0; long largestWal = 0;
+        ClearSeam(store, "clearCommitted", (Action<int>)(rows => { largest = Math.Max(largest, rows); commits++; largestWal = Math.Max(largestWal, Wal(fixture.Path)); }));
+        store.BeginClear(new(null, ClearBefore, ClearBefore));
+        HistoryClearProgress progress;
+        do progress = store.ClearStep(TimeSpan.FromMilliseconds(250)); while (!progress.Finished);
+        Assert.Equal(2 * 600 * 64, progress.Total); Assert.Equal(progress.Total, progress.Done);
+        Assert.Equal(0, Count(fixture.Path, $"SELECT count(*) FROM application_minutes WHERE minute<{BeforeMs}"));
+        Assert.Equal(kept, Count(fixture.Path, "SELECT count(*) FROM application_minutes"));
+        Assert.Equal(metrics, Count(fixture.Path, "SELECT count(*) FROM metric_minutes")); Assert.Equal(gaps, Count(fixture.Path, "SELECT count(*) FROM capture_gaps"));
+        Assert.Equal(4096, largest); Assert.True(commits >= 2 * 10); Assert.InRange(largestWal, 1, 8 * 1024 * 1024);
+        Assert.Equal(new UsageClearedMarks(ClearBefore, null), store.ClearedMarks);
+    }
+
+    [Fact]
+    public void Usage_clear_marker_is_atomic_and_resumes()
+    {
+        using var fixture = new Fixture(); var store = fixture.Open(); FillForClear(store);
+        string marker = System.IO.Path.ChangeExtension(fixture.Path, ".clear.json"), marks = System.IO.Path.ChangeExtension(fixture.Path, ".cleared.json");
+        Assert.False(store.ClearPending); Assert.False(File.Exists(marker));
+        var request = new HistoryClear("CHROME.EXE", ClearBefore, ClearBefore.AddDays(7).AddSeconds(5));
+        store.BeginClear(request);
+        Assert.True(store.ClearPending); Assert.Equal(request, store.PendingClear); Assert.False(File.Exists(marker + ".tmp"));
+        using (var json = System.Text.Json.JsonDocument.Parse(File.ReadAllText(marker)))
+        {
+            var root = json.RootElement;
+            Assert.Equal(1, root.GetProperty("Version").GetInt32()); Assert.Equal("CHROME.EXE", root.GetProperty("AppKey").GetString());
+            Assert.Equal(request.Before, root.GetProperty("Before").GetDateTimeOffset()); Assert.Equal(request.Requested, root.GetProperty("Requested").GetDateTimeOffset());
+            Assert.EndsWith("Z", root.GetProperty("Before").GetString());
+        }
+        Assert.Equal(request, HistoryClearMarker.Read(marker));
+        // An equal request is a no-op; a different one is refused while this one is pending.
+        store.BeginClear(request);
+        Assert.Throws<InvalidOperationException>(() => store.BeginClear(new(null, ClearBefore, ClearBefore)));
+        // A leftover .tmp is deleted by a new instance's Initialize, which picks up the marker.
+        File.WriteAllText(marker + ".tmp", "partial");
+        var reopened = fixture.Open();
+        Assert.False(File.Exists(marker + ".tmp")); Assert.True(reopened.ClearPending); Assert.Equal(request, reopened.PendingClear); Assert.False(reopened.DiscardedInvalidMarker);
+        // One step (1 ms on a ticking clock: exactly one transaction), then another instance resumes and finishes.
+        long t = 0; ClearSeam(reopened, "clearClock", (Func<TimeSpan>)(() => TimeSpan.FromMilliseconds(t++)));
+        Assert.False(reopened.ClearStep(TimeSpan.FromMilliseconds(1)).Finished); Assert.True(reopened.ClearPending);
+        Assert.Equal(1200 - 512, Count(fixture.Path, ChromeBefore));
+        var resumed = new UsageHistoryStore(fixture.Path); var secure = new List<long>();
+        ClearSeam(resumed, "clearConnectionOpened", (Action<SqliteConnection>)(db => { using var command = db.CreateCommand(); command.CommandText = "PRAGMA secure_delete"; secure.Add((long)command.ExecuteScalar()!); }));
+        resumed.Initialize();
+        Assert.True(resumed.ClearPending); Assert.Equal(request, resumed.PendingClear);
+        while (true)
+        {
+            Assert.True(resumed.ClearPending); Assert.True(File.Exists(marker));
+            if (resumed.ClearStep(TimeSpan.FromMilliseconds(250)).Finished) break;
+        }
+        Assert.False(resumed.ClearPending); Assert.Null(resumed.PendingClear); Assert.False(File.Exists(marker)); Assert.False(File.Exists(marks + ".tmp"));
+        Assert.Equal(0, Count(fixture.Path, ChromeBefore));
+        Assert.Equal(new UsageClearedMarks(null, ClearBefore), resumed.ClearedMarks); Assert.Equal(resumed.ClearedMarks, UsageClearedMarks.Read(marks));
+        Assert.NotEmpty(secure); Assert.All(secure, value => Assert.Equal(1, value));
+        secure.Clear(); resumed.Append("A", [Batch(Day.AddMinutes(700))], Day.AddDays(1)); Assert.Equal([0L], secure);
+        // Invalid content: Initialize deletes the marker and reports it; nothing is pending and no row is deleted.
+        long rows = Count(fixture.Path, "SELECT count(*) FROM application_minutes");
+        const string Times = "\"Before\":\"2026-11-02T10:00:00Z\",\"Requested\":\"2026-11-02T10:00:00Z\"";
+        foreach (var bad in new[] { "{", "[]", "{\"Version\":2,\"AppKey\":null," + Times + "}", "{\"Version\":1,\"AppKey\":\"\"," + Times + "}",
+            "{\"Version\":1,\"AppKey\":null,\"Before\":\"yesterday\",\"Requested\":\"2026-11-02T10:00:00Z\"}", "{\"Version\":1,\"AppKey\":null}" })
+        {
+            File.WriteAllText(marker, bad);
+            Assert.Throws<InvalidDataException>(() => HistoryClearMarker.Read(marker));
+            var invalid = fixture.Open();
+            Assert.True(invalid.DiscardedInvalidMarker); Assert.False(invalid.ClearPending); Assert.Null(invalid.PendingClear); Assert.False(File.Exists(marker));
+            Assert.Throws<InvalidOperationException>(() => invalid.ClearStep(TimeSpan.FromMilliseconds(250)));
+        }
+        Assert.Equal(rows, Count(fixture.Path, "SELECT count(*) FROM application_minutes"));
+        Assert.Null(HistoryClearMarker.Read(marker));
+        // A marker that cannot be read is kept: the clear stays pending without a request, and Initialize still passes.
+        HistoryClearMarker.Write(marker, request);
+        using (new FileStream(marker, FileMode.Open, FileAccess.Read, FileShare.None))
+        {
+            Assert.ThrowsAny<IOException>(() => HistoryClearMarker.Read(marker));
+            var locked = fixture.Open();
+            Assert.True(locked.ClearPending); Assert.Null(locked.PendingClear); Assert.False(locked.DiscardedInvalidMarker);
+        }
+        Assert.True(File.Exists(marker));
+    }
+
+    [Fact]
+    public void Usage_clear_finishes_when_each_step_allows_one_call()
+    {
+        using var fixture = new Fixture(); var store = fixture.Open(); FillForClear(store);
+        string marker = System.IO.Path.ChangeExtension(fixture.Path, ".clear.json"), marks = System.IO.Path.ChangeExtension(fixture.Path, ".cleared.json");
+        // A 1 ms budget on a ticking clock and a zero budget each allow exactly one delegate call per step. The step whose call finds
+        // the work gone must scan and finish in that same call.
+        long t = 0; ClearSeam(store, "clearClock", (Func<TimeSpan>)(() => TimeSpan.FromMilliseconds(t++)));
+        foreach (var (clear, budget) in new[] { (new HistoryClear("CHROME.EXE", ClearBefore, ClearBefore), TimeSpan.FromMilliseconds(1)),
+            (new HistoryClear(null, ClearBefore, ClearBefore), TimeSpan.Zero) })
+        {
+            store.BeginClear(clear);
+            int steps = 0; HistoryClearProgress progress;
+            do { progress = store.ClearStep(budget); Assert.InRange(++steps, 1, 100); } while (!progress.Finished);
+            Assert.False(store.ClearPending); Assert.False(File.Exists(marker)); Assert.True(File.Exists(marks));
+            Assert.Equal(0, Count(fixture.Path, clear.AppKey is null ? $"SELECT count(*) FROM application_minutes WHERE minute<{BeforeMs}" : ChromeBefore));
+        }
+        Assert.Equal(new UsageClearedMarks(ClearBefore, ClearBefore), store.ClearedMarks); Assert.Equal(store.ClearedMarks, UsageClearedMarks.Read(marks));
+        // A resumed clear with nothing left finishes in its first one-call step.
+        store.BeginClear(new(null, ClearBefore, ClearBefore.AddMinutes(1)));
+        var resumed = fixture.Open();
+        Assert.True(resumed.ClearPending); Assert.True(resumed.ClearStep(TimeSpan.Zero).Finished); Assert.False(File.Exists(marker));
+    }
+
     private sealed class Fixture : IDisposable
     {
         private readonly string root = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "DeadWare-usage-" + Guid.NewGuid().ToString("N"));

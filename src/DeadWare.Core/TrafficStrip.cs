@@ -10,9 +10,12 @@ public sealed record TrafficStripApplication(string Name, string Key, long Recei
 public sealed record TrafficStripSlot(DateTimeOffset Start, DateTimeOffset End, long Minutes, long RecordedSeconds, bool Incomplete,
     IReadOnlyList<long> Received, IReadOnlyList<long> Sent);
 
+/// <param name="RetainedByClear">The retained start (<see cref="RetainedFrom"/>) is an all-apps clear's: drawn as Cleared, not Not kept.</param>
+/// <param name="AppClearedBefore">The latest one-app clear's <c>Before</c>, when it is after the origin and after <see cref="RetainedFrom"/>.</param>
 public sealed record TrafficStrip(DateTimeOffset From, DateTimeOffset To, long BucketMilliseconds, TrafficMeasure Measure,
     IReadOnlyList<TrafficStripApplication> Applications, long OtherReceived, long OtherSent, long OtherApplications,
-    IReadOnlyList<TrafficStripSlot> Slots, DateTimeOffset? RetainedFrom = null, bool CapacityShortened = false);
+    IReadOnlyList<TrafficStripSlot> Slots, DateTimeOffset? RetainedFrom = null, bool CapacityShortened = false,
+    bool RetainedByClear = false, DateTimeOffset? AppClearedBefore = null);
 
 public static class TrafficStrips
 {

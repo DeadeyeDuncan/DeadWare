@@ -213,6 +213,54 @@ public class ProcessHistoryServiceTests
         await Task.WhenAll(Saved(bare), Saved(session));
     }
 
+    [Fact]
+    public async Task Process_clear_moves_the_open_minute_into_Everything_else()
+    {
+        // One app, All time, mid-minute: what minute 0 folded for chrome.exe before the clear is saved in its Everything else row.
+        using var fixture = new Fixture(); var service = new ProcessHistoryService(fixture.Path, "tablet");
+        service.Configure(true, true); service.Start();
+        try
+        {
+            for (int i = 0; i < 30; i++) service.TryRecord(GpuReading(i));
+            await Drained(service);
+            service.Clear(HistoryClear.Create("chrome.exe", allTime: true, DateTimeOffset.UtcNow));
+            await UsageHistoryServiceTests.Until(() => service.ClearState.Phase == HistoryClearPhase.Done);
+            // Closes minute 0.
+            service.TryRecord(GpuReading(60));
+        }
+        finally { await service.StopAsync(); }
+        Assert.False(service.Failed);
+        // Readings 1-29 each add 0.1 s of CPU, 500 + 50 I/O bytes, 1,000 memory byte-seconds, 0.4 GPU-seconds and 300 GPU memory byte-seconds.
+        var (cpu, read, write, memory, gpu, gpuMemory) = EverythingElse(fixture, Start);
+        Assert.Equal((29_000_000L, 14_500L, 1_450L), (cpu, read, write));
+        Assert.Equal(29_000, memory, 6);
+        Assert.Equal(11.6, gpu!.Value, 6);
+        Assert.Equal(8_700, gpuMemory!.Value, 6);
+        Assert.Equal(0, UsageHistoryServiceTests.Count(fixture.Path, "SELECT COUNT(*) FROM app_minutes WHERE everything_else=0"));
+        Assert.Equal(0, UsageHistoryServiceTests.Count(fixture.Path, "SELECT COUNT(*) FROM names WHERE upper='CHROME.EXE' AND id IN (SELECT name_id FROM app_minutes)"));
+
+        // All apps, All time: the open minute is discarded, and no minute before Before is saved during the boundary window.
+        using var all = new Fixture();
+        var store = new ProcessHistoryStore(all.Path); store.Initialize();
+        store.Append("tablet", [Minute(Start.AddMinutes(-5))], DateTimeOffset.UtcNow);
+        var everything = new ProcessHistoryService(all.Path, "tablet");
+        everything.Configure(true, true); everything.Start();
+        try
+        {
+            for (int i = 0; i < 30; i++) everything.TryRecord(GpuReading(i));
+            await Drained(everything);
+            everything.Clear(HistoryClear.Create(null, allTime: true, DateTimeOffset.UtcNow));
+            await UsageHistoryServiceTests.Until(() => everything.ClearState.Phase == HistoryClearPhase.Done);
+            // Closes minutes 0 and 1 and opens minute 2, all before Before.
+            for (int i = 30; i < 150; i++) everything.TryRecord(GpuReading(i));
+        }
+        finally { await everything.StopAsync(); }
+        Assert.False(everything.Failed);
+        Assert.Equal(0, everything.DroppedSamples);
+        Assert.Empty(Minutes(all));
+        Assert.Equal(0, UsageHistoryServiceTests.Count(all.Path, "SELECT COUNT(*) FROM app_minutes"));
+    }
+
     private const BindingFlags All = BindingFlags.Instance | BindingFlags.NonPublic;
 
     /// <summary>A session wired only for the two recording switches, like the UI-check fixtures. Never starts hardware or a window.</summary>
@@ -267,6 +315,42 @@ public class ProcessHistoryServiceTests
         var chrome = new ProcessSample(10, 1, "chrome.exe", 1, 10, 1000, 0, 0, ProcessGap.None,
             delta is null ? null : new ProcessDeltas(1_000_000, 0, 0, 1000, 1));
         var activity = new ProcessActivity(ProcessActivityKind.Available, second + 1, stamp, second, 1, 8, [chrome], ProcessOmitted.None, 1, delta);
+        return new Reading(new Snapshot(stamp, second, new Dictionary<string, double?> { ["cpu/usage"] = 40 }), [], [], [], "CPU", "", "", "", false)
+            { ProcessActivity = activity };
+    }
+
+    /// <summary>Waits until the worker has taken every queued activity, so a command posted next follows them.</summary>
+    private static async Task Drained(ProcessHistoryService service)
+    {
+        var queue = typeof(ProcessHistoryService).GetField("queue", All)!.GetValue(service)!;
+        var reader = queue.GetType().GetProperty("Reader")!.GetValue(queue)!;
+        var count = reader.GetType().GetProperty("Count")!;
+        await UsageHistoryServiceTests.Until(() => (int)count.GetValue(reader)! == 0);
+    }
+
+    /// <summary>A minute's saved Everything else row, read directly.</summary>
+    private static (long Cpu, long Read, long Write, double Memory, double? Gpu, double? GpuMemory) EverythingElse(Fixture fixture, DateTimeOffset minute)
+    {
+        using var db = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = fixture.Path, Mode = SqliteOpenMode.ReadOnly, Pooling = false }.ToString());
+        db.Open(); using var command = db.CreateCommand();
+        command.CommandText = $"SELECT cpu,io_read,io_write,memory_seconds,gpu_seconds,gpu_memory_seconds FROM app_minutes WHERE everything_else=1 AND minute={minute.ToUnixTimeMilliseconds()}";
+        using var reader = command.ExecuteReader();
+        Assert.True(reader.Read());
+        var row = (reader.GetInt64(0), reader.GetInt64(1), reader.GetInt64(2), reader.GetDouble(3),
+            reader.IsDBNull(4) ? (double?)null : reader.GetDouble(4), reader.IsDBNull(5) ? (double?)null : reader.GetDouble(5));
+        Assert.False(reader.Read());
+        return row;
+    }
+
+    /// <summary>Like <see cref="Reading"/>, with chrome.exe also busy on one GPU engine at 40 % holding 300 bytes of dedicated memory, and 500/50 I/O bytes.</summary>
+    private static Reading GpuReading(int second)
+    {
+        var stamp = Start.AddSeconds(second); double? delta = second == 0 ? null : 1;
+        var chrome = new ProcessSample(10, 1, "chrome.exe", 1, 10, 1000, 0, 0, ProcessGap.None,
+            delta is null ? null : new ProcessDeltas(1_000_000, 500, 50, 1000, 1))
+            { GpuEngines = [new GpuEngineUse(0xA, 0, 0, "3D", "GPU 0 · 3D", null, 40)], GpuPercent = 40, GpuDedicatedBytes = 300 };
+        var activity = new ProcessActivity(ProcessActivityKind.Available, second + 1, stamp, second, 1, 8, [chrome], ProcessOmitted.None, 1, delta)
+            { GpuIntervalSeconds = 1 };
         return new Reading(new Snapshot(stamp, second, new Dictionary<string, double?> { ["cpu/usage"] = 40 }), [], [], [], "CPU", "", "", "", false)
             { ProcessActivity = activity };
     }

@@ -379,6 +379,7 @@ public sealed class UserSettings
     public string? ConnectionsHomeCityId {get;set;}
     public bool ConnectionsAnimation {get;set;}=true;
     public string ConnectionsDestinationScope {get;set;}="All";
+    public List<string> ExcludedApps {get;set;}=new();
     public List<string> WidgetGraphs {get;set;}=WidgetGraphSelection.Default.ToList();
     public bool WidgetAlwaysOnTop {get;set;}=true;
     public string NetworkRateUnit {get;set;}=NetworkRateUnits.Bytes;
@@ -390,7 +391,9 @@ public sealed class UserSettings
     public double PollingIntervalSeconds {get;set;}=1;
     public bool BatteryRecording {get;set;}=true;
     public bool UsageRecording {get;set;}=true;
-    public List<AlertRule> Alerts {get;set;}=new();
+    public List<AlertRule> Alerts {get;set;}=new(){AlertRules.DefaultFirstNetworkUse(DateTimeOffset.UtcNow)};
+    public bool FirstUseRuleAdded {get;set;}=true;
+    public List<string> FirstUseIgnoredApps {get;set;}=new();
     public bool AlertNotifications {get;set;}=true;
     public bool RestoreOpenWindows {get;set;}=true;
     public bool StartInTray {get;set;}
@@ -452,6 +455,13 @@ public static class SettingsCodec
             if(legacyColumns&&s.ProcessColumns.ToHashSet(StringComparer.Ordinal).SetEquals(ProcessColumnKeys.PreviousDefault))s.ProcessColumns=[..ProcessColumnKeys.Default];
             s.ProcessColumnsVersion=ProcessColumnKeys.CurrentVersion;
             s.Alerts=AlertRules.Normalize(s.Alerts);
+            // The first network use rule is added once; a user who removes it keeps it removed.
+            bool firstUseKnown=document.RootElement.TryGetProperty(nameof(UserSettings.FirstUseRuleAdded),out _)&&s.FirstUseRuleAdded;
+            if(!firstUseKnown&&s.Alerts.Count<AlertRules.MaximumRules&&!s.Alerts.Any(a=>a.Kind==AlertKind.FirstNetworkUse))
+                s.Alerts.Add(AlertRules.DefaultFirstNetworkUse(DateTimeOffset.UtcNow));
+            s.FirstUseRuleAdded=true;
+            s.FirstUseIgnoredApps=FirstNetworkUse.NormalizeIgnored(s.FirstUseIgnoredApps);
+            s.ExcludedApps=AppExclusions.Normalize(s.ExcludedApps);
             s.Windows=s.Windows.Where(p=>p.Value is not null).Take(16).ToDictionary(p=>p.Key,p=>p.Value);
             bool legacyPlacement=!document.RootElement.TryGetProperty(nameof(UserSettings.WindowPlacementFormat),out _)||s.WindowPlacementFormat!=WindowCoordinates.Format;
             bool resetPlacement=legacyPlacement&&s.Windows.Count>0;

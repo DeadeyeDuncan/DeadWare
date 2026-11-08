@@ -12,8 +12,9 @@ using DeadWare.Core;
 
 namespace DeadWare.App;
 
-/// <summary>What a row's cells depend on besides its destination: the mode, the Live view's capture state and whether a location database is installed.</summary>
-internal sealed record DestinationRowContext(bool History, bool Available, bool Complete, bool HasLocationDatabase);
+/// <summary>What a row's cells depend on besides its destination: the mode, the Live view's capture state, whether a location database is installed and,
+/// in Live, which apps are in Don't record these apps (<see cref="UiSession.IsExcluded"/>; null marks none, as History rows pass).</summary>
+internal sealed record DestinationRowContext(bool History, bool Available, bool Complete, bool HasLocationDatabase, Func<string, bool>? IsExcluded = null);
 
 /// <summary>One Destinations table row, kept per address. Every "—" has a tooltip naming its reason.</summary>
 internal sealed class DestinationRow : INotifyPropertyChanged
@@ -109,8 +110,11 @@ internal sealed class DestinationRow : INotifyPropertyChanged
                 }
                 break;
         }
-        string apps = d.Apps.Count == 0 ? "" : d.Apps[0].Name + More(d.AppCount);
-        string? appsTip = d.Apps.Count == 0 ? null : Lines(d.Apps.Select(a => Line(a.Name, a.ReceivedBytes, a.SentBytes)), d.AppCount - d.Apps.Count);
+        // An app in Don't record these apps carries the " · not recorded" suffix after its name, in Live only; grouping, sorting and search keep the bare name.
+        bool Excluded(string name) => !c.History && c.IsExcluded is { } excluded && excluded(name);
+        bool busiestExcluded = d.Apps.Count > 0 && Excluded(d.Apps[0].Name);
+        string apps = d.Apps.Count == 0 ? "" : d.Apps[0].Name + (busiestExcluded ? ProcessCopy.NotRecordedSuffix : "") + More(d.AppCount);
+        string? appsTip = d.Apps.Count == 0 ? null : Lines(d.Apps.Select(a => Line(Excluded(a.Name) ? a.Name + ProcessCopy.NotRecordedSuffix : a.Name, a.ReceivedBytes, a.SentBytes)), d.AppCount - d.Apps.Count);
         string ports = d.Ports.Count == 0 ? "" : Port(d.Ports[0]) + More(d.PortCount);
         string? portsTip = d.Ports.Count == 0 ? null : Lines(d.Ports.Select(p => Line(Port(p), p.ReceivedBytes, p.SentBytes)), d.PortCount - d.Ports.Count);
         string download = c.History ? "" : Ui.Rate(d.DownloadBytesPerSecond), upload = c.History ? "" : Ui.Rate(d.UploadBytesPerSecond);
@@ -122,7 +126,7 @@ internal sealed class DestinationRow : INotifyPropertyChanged
         string lastSeen = c.History ? d.LastSeen.ToLocalTime().ToString("g", CultureInfo.CurrentCulture) : "";
         // "{address}, {class}, {location}, {n} app(s): {busiest} and n more, port {busiest} and n more, received {x}, sent {y}", then the mode's own parts.
         var spoken = new List<string> { d.Address, d.Class.Label, location == Dash ? $"location unknown, {locationTip!.TrimEnd('.')}" : location };
-        spoken.Add(d.Apps.Count == 0 ? "no apps" : $"{Count(d.AppCount, "app", "apps")}: {d.Apps[0].Name}{SpokenMore(d.AppCount)}");
+        spoken.Add(d.Apps.Count == 0 ? "no apps" : $"{Count(d.AppCount, "app", "apps")}: {d.Apps[0].Name}{(busiestExcluded ? ", " + ProcessCopy.NotRecorded : "")}{SpokenMore(d.AppCount)}");
         spoken.Add(d.Ports.Count == 0 ? "no ports" : $"port {Port(d.Ports[0])}{SpokenMore(d.PortCount)}");
         spoken.Add($"received {received}"); spoken.Add($"sent {sent}");
         if (c.History)
@@ -188,7 +192,7 @@ internal sealed class DestinationsCard : Border
     // Shows the last data again, ordered as asked (a scope change re-sorts).
     private Action<Order>? reshow;
     // The last Live view shown with what else its rows depend on; an equal one changes nothing. Null outside Live.
-    private (ConnectionLiveView View, bool FiltersSet, bool HasLocationDatabase)? lastLive;
+    private (ConnectionLiveView View, bool FiltersSet, bool HasLocationDatabase, string Marked)? lastLive;
     // A mode change or a new History context scrolls the grid to its top when its rows are next shown.
     private bool topPending;
     private static readonly Stopwatch Monotonic = Stopwatch.StartNew();
@@ -354,16 +358,19 @@ internal sealed class DestinationsCard : Border
     }
 
     /// <summary>Groups the page's filtered live connections, one row per remote address. A view equal to the last one (record equality) changes nothing;
-    /// one with a new Timestamp is new data; one with the same Timestamp and other values updates values only. <paramref name="resort"/>: the filters changed, so the rows re-sort at once.</summary>
-    internal void ShowLive(ConnectionLiveView view, IReadOnlyList<LocatedConnection> filtered, bool filtersSet, bool hasLocationDatabase, bool resort = false)
+    /// one with a new Timestamp is new data; one with the same Timestamp and other values updates values only. <paramref name="resort"/>: the filters changed, so the rows re-sort at once.
+    /// <paramref name="isExcluded"/>: <see cref="UiSession.IsExcluded"/>, which marks apps in Don't record these apps; a change in which shown apps it marks updates values only.</summary>
+    internal void ShowLive(ConnectionLiveView view, IReadOnlyList<LocatedConnection> filtered, bool filtersSet, bool hasLocationDatabase, bool resort = false, Func<string, bool>? isExcluded = null)
     {
         bool modeChanged = SetMode(false);
-        (ConnectionLiveView, bool, bool) shown = (view, filtersSet, hasLocationDatabase);
+        // The marked apps join the comparison, so taking an app on or off the list re-shows an otherwise equal view.
+        string marked = isExcluded is null ? "" : string.Join("\n", filtered.Select(c => c.Traffic.Peer.Process.Name).Distinct(StringComparer.Ordinal).Where(isExcluded).Order(StringComparer.Ordinal));
+        (ConnectionLiveView, bool, bool, string) shown = (view, filtersSet, hasLocationDatabase, marked);
         if (!resort && !modeChanged && lastLive is { } last && last.Equals(shown)) return;
         bool newData = lastLive is not { } previous || previous.View.Timestamp != view.Timestamp;
         lastLive = shown;
         var list = ConnectionDestinations.FromLive(filtered, view.Available);
-        var context = new DestinationRowContext(false, view.Available, view.Complete, hasLocationDatabase);
+        var context = new DestinationRowContext(false, view.Available, view.Complete, hasLocationDatabase, isExcluded);
         List = list;
         reshow = order => Present(list, context, scope => DestinationCopy.LiveEmpty(view.Available, view.Connections.Count > 0, filtersSet, scope), order);
         reshow(resort || modeChanged ? Order.Resort : newData ? Order.NewData : Order.Values);

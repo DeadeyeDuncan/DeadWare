@@ -317,4 +317,21 @@ public sealed class ConnectionMinuteFolderTests : IDisposable
     {
         Assert.Throws<ArgumentOutOfRangeException>(() => F(0));
     }
+
+    [Fact] public void Forget_removes_one_app_or_every_entry_and_keeps_coverage(){ var f=F();
+        Merge(f,Pub(10,9,[D(9.5,name:"Chrome.exe"),D(9.6,name:"other.exe",remote:"9.9.9.9")]));Merge(f,Pub(11,10,[D(10.5,name:"CHROME.EXE",localPort:200)]));int held=f.Held;
+        var frozen=F();Merge(frozen,Pub(30,29,[D(29.5,name:"chrome.exe")]));Merge(frozen,Pub(63,62,[]));var before=Units(frozen)[0];Assert.Equal(0,frozen.Forget("CHROME.EXE"));Assert.Same(before,Units(frozen)[0]);
+        Assert.Equal(2,f.Forget("CHROME.EXE"));Assert.Equal(held-2,f.Held);   // "Chrome.exe" and "CHROME.EXE" are two entries of one key
+        f.FreezeAll();var u=Assert.Single(Units(f));Assert.Equal(["other.exe"],u.Records.Select(r=>r.Delta.Peer.Process.Name));
+        Assert.Equal((M0.AddSeconds(9),M0.AddSeconds(11)),(u.Coverage[0].From,u.Coverage[^1].To));
+        var all=F();Merge(all,Pub(10,null,[D(9.5)]));Assert.Equal(1,all.Forget(null));Assert.Equal(0,all.Held);all.FreezeAll();Assert.Empty(Units(all));}   // the unit had no run: removed
+
+    [Fact] public void RetireWaiting_removes_and_returns_waiting_units_in_scope_and_lowers_Waiting()
+    {
+        var f=F(); Merge(f,Pub(30,29,[D(29.5,name:"chrome.exe")])); Merge(f,Pub(40,39,[D(39.5,name:"other.exe",remote:"9.9.9.9")],segment:"t"),generation:1);
+        f.FreezeAll(); int waitingBefore=f.Waiting; Assert.True(waitingBefore>=4);
+        var retired=f.RetireWaiting(r=>r.Delta.Peer.Process.Name=="chrome.exe");
+        var unit=Assert.Single(retired); Assert.Equal("s",unit.Segment); Assert.Equal(waitingBefore-unit.Size,f.Waiting);
+        Assert.Equal("t",Assert.Single(Units(f)).Segment);
+    }
 }

@@ -160,6 +160,8 @@ internal sealed class UsageHistoryPage : ScrollViewer
         settings.Children.Add(recordingStatus); storage.Margin = new(0, 8, 0, 8); settings.Children.Add(storage);
         settings.Children.Add(Ui.Text("One row per minute for CPU, GPU, RAM and network, plus per-application bytes, kept for up to 400 days or 256 MiB, whichever comes first. The six-hour live graphs are separate and unchanged. Recording begins with this version while DeadWare runs; sleep and stopped monitoring leave gaps. While Per-process monitoring is on, it also keeps the busiest apps' CPU, memory, I/O and GPU for 30 days (up to 192 MiB).", 12, "Muted"));
         var local = Ui.Text("History stays in this Windows profile in usage-history.db and process-history.db and is never uploaded. Application names and byte totals describe what runs on this computer, so treat exports as private. Back up the databases only while DeadWare is fully quit.", 11, "Muted"); local.Margin = new(0, 8, 0, 0); settings.Children.Add(local);
+        var notSaved = Ui.Text(HistoryClearCopy.UsageHistoryLine, 11, "Muted"); notSaved.Margin = new(0, 8, 0, 0); settings.Children.Add(notSaved);
+        var clearEntry = ClearHistoryEntry.Create(session, () => Window.GetWindow(this)); clearEntry.Margin = new(0, 8, 0, 0); settings.Children.Add(clearEntry);
         body.Children.Add(Card(settings)); body.Children.Add(actionStatus);
 
         recording.IsChecked = session.Settings.UsageRecording;
@@ -167,8 +169,8 @@ internal sealed class UsageHistoryPage : ScrollViewer
         range.SelectionChanged += (_, _) => { offset = 0; resources.ClearSlot(); RequestRefresh(); };
         search.TextChanged += (_, _) => RefreshApplications();
         timer.Tick += (_, _) => _ = RefreshAsync();
-        Loaded += (_, _) => { session.Changed += RefreshCurrent; UpdateVisibility(); };
-        Unloaded += (_, _) => { session.Changed -= RefreshCurrent; timer.Stop(); revision++; };
+        Loaded += (_, _) => { session.Changed += RefreshCurrent; session.HistoryClearChanged += HistoryClearChanged; UpdateVisibility(); };
+        Unloaded += (_, _) => { session.Changed -= RefreshCurrent; session.HistoryClearChanged -= HistoryClearChanged; timer.Stop(); revision++; };
         IsVisibleChanged += (_, _) => UpdateVisibility(); RefreshCurrent(); UpdatePeriod();
     }
     private void Column(string title, string binding, double weight)
@@ -319,23 +321,25 @@ internal sealed class UsageHistoryPage : ScrollViewer
         period.Text = Days == 1 ? $"{from.ToLocalTime():MMM d HH:mm} – {to.ToLocalTime():MMM d HH:mm}" : $"{from.ToLocalTime():MMM d yyyy} – {to.ToLocalTime():MMM d yyyy}";
         later.IsEnabled = offset > 0;
     }
+    /// <summary>A Usage history or Application resources clear started or ended: the strip, the table, a listed slot and the card are read again.</summary>
+    private void HistoryClearChanged(HistoryClearStore store) { if (store is HistoryClearStore.Usage or HistoryClearStore.ProcessHistory) RequestRefresh(); }
     // A strip read still in flight is for the period before this request, so it is dropped when it answers.
     private void RequestRefresh() { revision++; stripRequest++; UpdatePeriod(); _ = RefreshAsync(); }
     private async Task RefreshAsync()
     {
-        if (!IsLoaded || !IsVisible) return;
+        if (!showing()) return;
         if (refreshing) { refreshAgain = true; return; }
         refreshing = true; int requested = revision;
         try
         {
             var result = await LoadAsync();
-            if (requested != revision || !IsLoaded || !IsVisible) { refreshAgain = true; return; }
+            if (requested != revision || !showing()) { refreshAgain = true; return; }
             Apply(result);
         }
         finally
         {
             refreshing = false;
-            if (refreshAgain) { refreshAgain = false; if (IsLoaded && IsVisible) _ = RefreshAsync(); }
+            if (refreshAgain) { refreshAgain = false; if (showing()) _ = RefreshAsync(); }
         }
     }
     private async Task<UsagePageData> LoadAsync()

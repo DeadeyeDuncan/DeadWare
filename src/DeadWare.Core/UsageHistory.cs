@@ -1,3 +1,5 @@
+using System.Collections.Frozen;
+
 namespace DeadWare.Core;
 
 /// <summary>One recorded minute of a device metric. Values summarize the finite samples observed in that minute.</summary>
@@ -58,6 +60,20 @@ public sealed class UsageMinuteFolder
     private string segment = NewSegment(), minuteSegment = "";
 
     private static string NewSegment() => Guid.NewGuid().ToString("N");
+
+    /// <summary>Keys (<see cref="AppKey.Of"/>) of the apps whose bytes are not folded. Owned by the worker and set before each Observe.</summary>
+    public IReadOnlySet<string> Excluded { get; set; } = FrozenSet<string>.Empty;
+
+    /// <summary>While set, bytes the clear covers for the open minute are dropped. Baselines still move.</summary>
+    public HistoryClear? Boundary { get; set; }
+
+    /// <summary>Removes the open minute's bytes for the app (every app for null). Baselines are unchanged.</summary>
+    public void Forget(string? appKey)
+    {
+        if (appKey is null) { applications.Clear(); return; }
+        string key = AppKey.Of(appKey);
+        foreach (var name in applications.Keys.Where(n => AppKey.Of(n) == key).ToArray()) applications.Remove(name);
+    }
 
     /// <summary>Marks the open minute as discontinuous and starts a new segment for later samples.</summary>
     public void Break()
@@ -156,6 +172,7 @@ public sealed class UsageMinuteFolder
             else continue; // The first publication only establishes baselines; its bytes predate this folder.
             if (deltaReceived == 0 && deltaSent == 0) continue;
             string name = UsageMetrics.NormalizeName(process.Name);
+            if (Excluded.Contains(AppKey.Of(name)) || (Boundary is { } boundary && minute is { } open && boundary.Covers(name, open))) continue;
             var total = applications.TryGetValue(name, out var existing) ? existing : (0L, 0L);
             applications[name] = (total.Item1 + deltaReceived, total.Item2 + deltaSent);
         }

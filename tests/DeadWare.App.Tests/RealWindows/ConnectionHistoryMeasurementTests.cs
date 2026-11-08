@@ -23,6 +23,8 @@ public sealed class ConnectionHistoryMeasurementTests
     private static readonly GeoPoint Origin=new(41.88,-87.63);
     private static readonly FieldInfo DefaultTempStore=typeof(ConnectionHistoryStore).GetField("defaultTempStore",BindingFlags.Instance|BindingFlags.NonPublic)
         ??throw new MissingFieldException(nameof(ConnectionHistoryStore),"defaultTempStore");
+    private static readonly FieldInfo StorePath=typeof(ConnectionHistoryStore).GetField("path",BindingFlags.Instance|BindingFlags.NonPublic)
+        ??throw new MissingFieldException(nameof(ConnectionHistoryStore),"path");
     private static readonly FieldInfo DestinationStepsTimed=typeof(ConnectionHistoryStore).GetField("destinationStepsTimed",BindingFlags.Instance|BindingFlags.NonPublic)
         ??throw new MissingFieldException(nameof(ConnectionHistoryStore),"destinationStepsTimed");
 
@@ -39,7 +41,10 @@ public sealed class ConnectionHistoryMeasurementTests
                 twentyPairsChurn=Rate(Path.Combine(root,"twenty-pairs-churn"),new Load(Pairs,true)),
             };
             string file=Path.Combine(root,"fill","connections.db");
-            var (store,fill,end)=Fill(file);
+            var store=Open(file);
+            var filled=FillToCap(store,FlooredNow()-TimeSpan.FromDays(10),i=>$"app{i}.exe");
+            var fill=new{seconds=filled.Seconds,hours=filled.Hours,trafficRows=filled.TrafficRows,fileBytes=filled.FileBytes,evicted=filled.Evicted};
+            var end=filled.End;
             var reads=Reads(store,end);
             var strip30d=StripReads(store,end);
             MeasurementRecorder.Write("connection-history",new{rates,fill,reads,strip30d});
@@ -66,14 +71,14 @@ public sealed class ConnectionHistoryMeasurementTests
     }
 
     /// <summary>
-    /// Writes 20 steady pairs, one Append per simulated hour, until the file is within 4 MiB of its cap and the oldest minutes
-    /// have been evicted, or for 240 hours. Returns the filled store, the fill's values and the last simulated minute's end.
+    /// Writes 20 steady pairs from <paramref name="start"/>, one Append per simulated hour, until the file is within 4 MiB of its
+    /// cap and the oldest minutes have been evicted, or for 240 hours. Pair i's process name is <paramref name="name"/>(i).
+    /// <paramref name="store"/> must be initialized.
     /// </summary>
-    private static (ConnectionHistoryStore Store,object Values,DateTimeOffset End) Fill(string file)
+    internal static ConnectionFill FillToCap(ConnectionHistoryStore store,DateTimeOffset start,Func<int,string> name)
     {
-        var store=Open(file);
-        var load=new Load(Pairs,false);
-        var start=FlooredNow()-TimeSpan.FromDays(10);
+        string file=(string)StorePath.GetValue(store)!;
+        var load=new Load(Pairs,false,name);
         var clock=Stopwatch.StartNew();
         int hours=0;
         while(hours<FillHourLimit)
@@ -97,7 +102,7 @@ public sealed class ConnectionHistoryMeasurementTests
             count.CommandText="SELECT count(*) FROM traffic";
             trafficRows=Convert.ToInt64(count.ExecuteScalar(),CultureInfo.InvariantCulture);
         }
-        return (store,new{seconds,hours,trafficRows,fileBytes=new FileInfo(file).Length,evicted},last);
+        return new(seconds,hours,trafficRows,new FileInfo(file).Length,evicted,last);
     }
 
     /// <summary>
@@ -187,7 +192,7 @@ public sealed class ConnectionHistoryMeasurementTests
     /// pair per minute under that minute's BatchId. With churn, every simulated second replaces one pair with probability 0.05;
     /// the replaced pair and its replacement each save a row for that minute.
     /// </summary>
-    private sealed class Load(int pairs,bool churn)
+    private sealed class Load(int pairs,bool churn,Func<int,string>? name=null)
     {
         private readonly string segment=Guid.NewGuid().ToString("N");
         private readonly Random random=new(20);
@@ -226,7 +231,7 @@ public sealed class ConnectionHistoryMeasurementTests
         private ConnectionHistoryRecord Record(string batch,DateTimeOffset minute,Pair pair,double firstSecond,double lastSecond)
         {
             double share=(lastSecond-firstSecond)/(LastSecond-FirstSecond);
-            var peer=new ConnectionPeer(new ProcessIdentity(pair.Pid,1,$"app{pair.Pid-100}.exe"),"10.0.0.2",50000,Address(pair.Address),443,ConnectionProtocol.Tcp);
+            var peer=new ConnectionPeer(new ProcessIdentity(pair.Pid,1,(name??(i=>$"app{i}.exe"))(pair.Pid-100)),"10.0.0.2",50000,Address(pair.Address),443,ConnectionProtocol.Tcp);
             var delta=new ConnectionDelta(minute,peer,(long)Math.Round(ReceivedPerMinute*share),(long)Math.Round(SentPerMinute*share),minute.AddSeconds(firstSecond),minute.AddSeconds(lastSecond));
             return new(batch,segment,delta,Location(pair.Address),Origin,true);
         }
@@ -241,3 +246,6 @@ public sealed class ConnectionHistoryMeasurementTests
     private static ConnectionLocation Location(int index)=>new("US","United States","Illinois",string.Create(CultureInfo.InvariantCulture,$"City {index}"),
         new(Math.Round(25+index*7.3%24,4),Math.Round(-124+index*13.7%57,4)),"DB-IP City Lite");
 }
+
+/// <summary>A <see cref="ConnectionHistoryMeasurementTests.FillToCap"/> result: seconds taken, hours written, traffic rows, main-file bytes, whether the cap evicted old minutes, and the last simulated minute's end.</summary>
+internal sealed record ConnectionFill(double Seconds,long Hours,long TrafficRows,long FileBytes,bool Evicted,DateTimeOffset End);

@@ -5,6 +5,10 @@ using System.Threading.Channels;
 using DeadWare.Core;
 namespace DeadWare.App;
 
+/// <summary>One Append of the writer: the store's, or a test's wrapper around it. <paramref name="maintenanceTransactions"/> bounds routine cleanup.</summary>
+internal delegate void ConnectionAppend(IReadOnlyList<ConnectionHistoryRecord> records,IReadOnlyList<ConnectionCoverage> coverage,DateTimeOffset now,int maintenanceTransactions);
+/// <summary>A write attempt's result: Saved is false exactly when an Append it called threw (FailureType is then its type name). Held units do not make it false.</summary>
+internal sealed record ConnectionFlushResult(bool Saved,string? FailureType);
 internal sealed record ConnectionServiceOptions(int QueueCapacity=120,int MaximumBufferedDeltas=32768,int MaximumLocations=8192,TimeSpan? FlushInterval=null,TimeSpan? EnrichmentBudget=null);
 
 /// <summary>Shared immutable live publication, independent bounded enrichment and durable writer.</summary>
@@ -19,15 +23,23 @@ public sealed class ConnectionService
         :this(path,new ConnectionGeolocation(databasePath??Path.Combine(Path.GetDirectoryName(Path.GetFullPath(path))!,"dbip-city-lite.mmdb")),()=>DateTimeOffset.UtcNow)
     {DatabasePath=databasePath??Path.Combine(Path.GetDirectoryName(Path.GetFullPath(path))!,"dbip-city-lite.mmdb");}
     internal ConnectionService(string path,IConnectionGeolocation resolver,Func<DateTimeOffset> clock,ConnectionServiceOptions? options=null)
+        :this(path,resolver,clock,static append=>append,options) { }
+    /// <summary>A real store at <paramref name="maximumDatabaseBytes"/> whose write attempts go through <c>wrapAppend(store.Append)</c> (tests).</summary>
+    internal ConnectionService(string path,IConnectionGeolocation resolver,Func<DateTimeOffset> clock,Func<ConnectionAppend,ConnectionAppend> wrapAppend,ConnectionServiceOptions? options=null,long maximumDatabaseBytes=ConnectionHistoryStore.MaximumDatabaseBytes)
         :this(resolver,clock,(_,_)=>{},options)
     {
-        store=new(path);append=(records,coverage,now)=>store.Append(records,coverage,now);
+        ArgumentNullException.ThrowIfNull(wrapAppend);
+        store=new(path,maximumDatabaseBytes);append=wrapAppend(store.Append);
     }
+    /// <summary>The bound on routine cleanup transactions for every Append except the final write's (0).</summary>
+    internal const int MaintenanceTransactions=64;
+    /// <summary>A test seam: receives each Append's maintenance bound, InitializeAsync's included.</summary>
+    internal Action<int>? maintenanceObserved;
     private Task InitializeAsync()
     {
         lock(gate)return initialization??=store is null?Task.CompletedTask:Task.Run(()=>
         {
-            store.Initialize();store.Append([],[],clock());
+            store.Initialize();maintenanceObserved?.Invoke(MaintenanceTransactions);store.Append([],[],clock(),MaintenanceTransactions);
             lock(gate)storageStatus="Connection history saved locally · rolling 30 days.";
         });
     }
@@ -35,6 +47,16 @@ public sealed class ConnectionService
     {
         await InitializeAsync().ConfigureAwait(false);
         return await Task.Run(()=>store!.Read(query)).ConfigureAwait(false);
+    }
+    /// <summary>Every saved application name for the first-use seed, or null on any failure or while a clear is in progress.</summary>
+    public async Task<IReadOnlyList<ApplicationSeen>?> ReadApplicationNamesAsync()
+    {
+        try
+        {
+            await InitializeAsync().ConfigureAwait(false);
+            return await Task.Run(()=>store?.ReadApplicationNames()).ConfigureAwait(false);
+        }
+        catch(Exception){return null;}
     }
     public async Task ExportCsvAsync(string path,ConnectionHistoryQuery query)
     {
@@ -73,7 +95,7 @@ public sealed class ConnectionService
     private readonly Queue<string> locationOrder=new();
     private readonly IConnectionGeolocation resolver;
     private readonly Func<DateTimeOffset> clock;
-    private readonly Action<IReadOnlyList<ConnectionHistoryRecord>,IReadOnlyList<ConnectionCoverage>,DateTimeOffset> append;
+    private readonly ConnectionAppend append;
     private readonly ConnectionServiceOptions options;
     private readonly CancellationTokenSource finishing=new();
     private Task? writer,lookupWorker,stop,reload;
@@ -86,11 +108,14 @@ public sealed class ConnectionService
     private string storageStatus="Connection history starts with monitoring.",lookupStatus="Location lookup has not started.";
     private DateTimeOffset? databaseDate;
     private ConnectionLiveView live=new(default,[],null,false,false,"Waiting for endpoint capture.");
+    private IReadOnlySet<string> exclusions=System.Collections.Frozen.FrozenSet<string>.Empty;
+    private readonly HistoryClearCommand clears=new();
+    private string? initializationFailure;
 
     internal ConnectionService(IConnectionGeolocation resolver,Func<DateTimeOffset> clock,
         Action<IReadOnlyList<ConnectionHistoryRecord>,IReadOnlyList<ConnectionCoverage>> append,ConnectionServiceOptions? options=null)
     {
-        this.resolver=resolver;this.clock=clock;this.append=(records,coverage,_)=>append(records,coverage);this.options=options??new();
+        this.resolver=resolver;this.clock=clock;this.append=(records,coverage,_,_)=>append(records,coverage);this.options=options??new();
         if(this.options.QueueCapacity is <=0 or >120||this.options.MaximumBufferedDeltas is <=0 or >32768||this.options.MaximumLocations is <=0 or >8192||
             this.options.FlushInterval is {TotalMilliseconds:<=0}||this.options.EnrichmentBudget is {TotalMilliseconds:<0})throw new ArgumentOutOfRangeException(nameof(options));
         queue=Channel.CreateBounded<Pending>(new BoundedChannelOptions(this.options.QueueCapacity){SingleReader=true,FullMode=BoundedChannelFullMode.Wait});
@@ -111,7 +136,20 @@ public sealed class ConnectionService
     public long DroppedObservations {get {lock(gate)return dropped;}}
     public int PendingPublications=>queue.Reader.Count;
     public int BufferedDeltas {get {lock(gate)return buffered;}}
-    public string StorageStatus {get {lock(gate)return (recording?storageStatus:"Recording paused. Saved history is retained. "+storageStatus)+(dropped>0?$" · {dropped:N0} observations dropped; history has gaps.":"");}}
+    public string StorageStatus {get {lock(gate)return (recording?storageStatus:"Recording paused. Saved history is retained. "+storageStatus)+(dropped>0?$" · {dropped:N0} observations dropped; history has gaps.":"")+HistoryClearCopy.StatusSuffix(clears.State,false);}}
+    /// <summary>This store's clear. The internal setter is a test seam; the app never calls it.</summary>
+    public HistoryClearState ClearState {get=>clears.State;internal set=>clears.State=value;}
+    /// <summary>Puts the request in the writer's command channel (capacity 1) and sets Queued. Refused while a clear is active.</summary>
+    public void Clear(HistoryClear request)=>clears.Post(request);
+    /// <summary>Re-posts the kept request while Failed and the writer runs: the full order without a saved marker, otherwise a resume
+    /// that repeats nothing already done (BeginClear re-commits nothing, no Forget, the boundary only while Before is ahead).</summary>
+    public void RetryClear()=>clears.Retry(WriterRunning);
+    public bool CanRetryClear=>clears.CanRetry(WriterRunning);
+    /// <summary>A test seam that replaces the store's step.</summary>
+    internal Func<TimeSpan,HistoryClearProgress>? ClearStepOverride {get=>clears.StepOverride;set=>clears.StepOverride=value;}
+    /// <summary>The store's clear marker: set from BeginClear, or from Initialize while a marker exists, until the last step.</summary>
+    internal PendingConnectionClear? PendingClear=>store?.PendingClear;
+    private bool WriterRunning {get {lock(gate)return !stopped&&writer is {IsCompleted:false};}}
     public string LookupStatus {get {lock(gate)return lookupStatus;}}
     public DateTimeOffset? DatabaseDate {get {lock(gate)return databaseDate;}}
     public void Configure(bool recording,GeoPoint? origin)
@@ -122,6 +160,13 @@ public sealed class ConnectionService
             if(this.recording!=recording){generation++;if(recording)resumed=clock().ToUniversalTime();}
             this.recording=recording;this.origin=origin;live=live with {Origin=origin};
         }
+    }
+    /// <summary>The Don't record keys (<see cref="AppKey.Of"/>, ordinal). Read by the writer once per publication at merge time only:
+    /// the live view, lookups, coverage and anything already merged or frozen are unaffected.</summary>
+    public void SetExclusions(IReadOnlySet<string> keys)
+    {
+        ArgumentNullException.ThrowIfNull(keys);
+        Volatile.Write(ref exclusions,keys);
     }
     public void Start()
     {
@@ -244,7 +289,7 @@ public sealed class ConnectionService
     private async Task WriteLoopAsync()
     {
         try {await InitializeAsync().ConfigureAwait(false);}
-        catch(Exception error) {lock(gate)storageStatus=$"Connection history unavailable ({error.GetType().Name}). Live capture continues.";}
+        catch(Exception error) {lock(gate){storageStatus=$"Connection history unavailable ({error.GetType().Name}). Live capture continues.";initializationFailure=error.GetType().Name;}}
         ConnectionMinuteFolder folder;
         lock(gate)folder=new(locations.TryGetValue,Math.Max(1,options.MaximumBufferedDeltas/2));
         // Every folder call runs under the gate, because the lookup worker changes the location cache under it.
@@ -257,9 +302,11 @@ public sealed class ConnectionService
             buffered+=folder.Held+folder.Waiting-before;
             return result;
         }
-        // One write attempt. Units are immutable once frozen, so a retry resends exactly the same payload under the same BatchId.
-        void Write(bool final=false,bool maintenance=false)
+        // One write attempt (drain: until nothing sendable is left). Units are immutable once frozen, so a retry resends exactly the
+        // same payload under the same BatchId. The final write never purges.
+        ConnectionFlushResult Write(bool final=false,bool maintenance=false,bool drain=false)
         {
+            int bound=final?0:MaintenanceTransactions;
             while(true)
             {
                 var now=clock();
@@ -270,12 +317,13 @@ public sealed class ConnectionService
                     foreach(var unit in sendable.Retired)DropLocked(Math.Max(1,unit.Observations));
                 }
                 // A maintenance tick still appends with nothing to send, so expiry and Cleanup run.
-                if(sendable.Send.Count==0&&!maintenance)return;
+                if(sendable.Send.Count==0&&!maintenance)return new(true,null);
                 maintenance=false;
                 var records=sendable.Send.SelectMany(u=>u.Records).ToArray();var coverage=sendable.Send.SelectMany(u=>u.Coverage).ToArray();
                 try
                 {
-                    append(Array.AsReadOnly(records),Array.AsReadOnly(coverage),now);
+                    maintenanceObserved?.Invoke(bound);
+                    append(Array.AsReadOnly(records),Array.AsReadOnly(coverage),now,bound);
                     lock(gate){storageStatus="Connection history saved locally · rolling 30 days.";Fold(()=>{folder.Sent(sendable.Send);return 0;});}
                 }
                 catch(Exception error)
@@ -290,23 +338,69 @@ public sealed class ConnectionService
                             DropLocked(Math.Max(1,unsent.Sum(u=>u.Observations)));
                         }
                     }
-                    return;
+                    return new(false,error.GetType().Name);
                 }
-                if(!final||sendable.Send.Count==0)return;
+                if(!(final||drain)||sendable.Send.Count==0)return new(true,null);
             }
+        }
+        // The boundary rule of an All time clear, beside the exclusion set: in-scope deltas before Before are skipped until a
+        // minute at or after Before is merged or BoundaryLimit has passed since the command. Writer-only state.
+        HistoryClear? boundary=null;long boundarySince=0;bool stepping=false;
+        void InstallBoundary(HistoryClear clear){boundary=clear;boundarySince=Stopwatch.GetTimestamp();}
+        // The clear command, in the spec's writer order. A resume (Try again with the marker saved) repeats nothing already done.
+        void RunClear(HistoryClearCommand.Command command)
+        {
+            var clear=command.Clear;
+            string? unavailable;lock(gate)unavailable=initializationFailure;
+            if(store is null)unavailable??=nameof(InvalidOperationException);
+            if(unavailable is not null){clears.Unavailable(unavailable);return;}
+            clears.Clearing(null);
+            try {store!.BeginClear(clear);}
+            catch(Exception error){clears.Fail(error.GetType().Name,command.Resume&&store!.PendingClear is not null);return;}
+            clears.MarkerSaved();
+            if(!command.Resume&&clear.AllTime)
+            {
+                lock(gate)Fold(()=>folder.Forget(clear.AppKey));
+                InstallBoundary(clear);
+            }
+            else if(command.Resume&&clear.Before>clock())InstallBoundary(clear);
+            var flush=Write(drain:true);
+            if(!flush.Saved){clears.Fail(flush.FailureType??nameof(IOException),true);return;}
+            // Held units holding an in-scope record are retired whole: sent after the delete, they would add their rows back.
+            lock(gate)
+            {
+                var retired=Fold(()=>folder.RetireWaiting(r=>clear.Covers(r.Delta.Peer.Process.Name,r.Delta.Minute)));
+                foreach(var unit in retired)DropLocked(Math.Max(1,unit.Observations));
+            }
+            stepping=true;
+        }
+        // One step. ClearStep throws without a pending clear, so a marker already gone is Done.
+        void Step()
+        {
+            if(ClearStepOverride is null&&store?.PendingClear is null){clears.Done();stepping=false;return;}
+            if(clears.Step(budget=>store!.ClearStep(budget)))stepping=false;
         }
         async Task Process(Pending item)
         {
             await EnrichAsync(item.Sample).ConfigureAwait(false);
             bool complete=item.Complete&&item.Sample.Available;
             var accepted=new List<ConnectionDelta>();
+            var excluded=Volatile.Read(ref exclusions);
+            if(boundary is not null&&Stopwatch.GetElapsedTime(boundarySince)>=HistoryClear.BoundaryLimit)boundary=null;
+            var rule=boundary;
             foreach(var delta in item.Sample.Deltas)
             {
                 // Never shift skewed/paused observations into a fabricated publication-time minute.
                 if((item.Since.HasValue&&delta.FirstSeen<item.Since)||delta.FirstSeen<item.Sample.Timestamp.AddSeconds(-60)||delta.LastSeen>item.Sample.Timestamp.AddSeconds(2))
                 {lock(gate)DropLocked(1);complete=false;continue;}
+                // Don't record: skipped, not dropped; complete and coverage stand, and it still leaves buffered below with the publication's count.
+                if(excluded.Count>0&&excluded.Contains(AppKey.Of(delta.Peer.Process.Name)))continue;
+                // A clear's boundary rule: skipped the same way.
+                if(rule is not null&&rule.Covers(delta.Peer.Process.Name,delta.Minute))continue;
                 accepted.Add(delta);
             }
+            // The rule ends once a minute at or after Before is merged (a delta's, or a coverage piece's).
+            if(rule is not null&&(accepted.Any(d=>d.Minute>=rule.Before)||item.Sample.CoverageFrom is not null&&item.Sample.Timestamp>rule.Before))boundary=null;
             int frozen;
             lock(gate)
             {
@@ -316,10 +410,29 @@ public sealed class ConnectionService
             if(frozen>0)Write();
         }
         using var timer=new PeriodicTimer(options.FlushInterval??DefaultFlushInterval);
-        Task<bool> tick=timer.WaitForNextTickAsync().AsTask(),available=queue.Reader.WaitToReadAsync().AsTask();
+        Task<bool> tick=timer.WaitForNextTickAsync().AsTask(),available=queue.Reader.WaitToReadAsync().AsTask(),command=clears.Reader.WaitToReadAsync().AsTask();
+        // A marker found at startup: only the steps run, and the boundary again while Before is still ahead.
+        if(initializationFailure is null&&store?.PendingClear is {} pending)
+        {
+            var resumed=Resumed(pending,clock());clears.Resume(resumed);
+            if(resumed.Before>clock())InstallBoundary(resumed);
+            stepping=true;
+        }
+        bool yielded=false;
         while(true)
         {
-            await Task.WhenAny(tick,available).ConfigureAwait(false);
+            // While a clear steps, the writer alternates one data pass with one step; it waits only after a step that yielded early.
+            if(!stepping)await Task.WhenAny(tick,available,command).ConfigureAwait(false);
+            else if(yielded)await Task.WhenAny(tick,available,Task.Delay(HistoryClear.StepBudget)).ConfigureAwait(false);
+            // A command is taken only when no clear steps: Post refuses while one is active, so a command found then was posted before
+            // a startup resume, and it runs after that clear.
+            if(command.IsCompleted&&!stepping)
+            {
+                // The command comes before the next queue item. None starts after StopAsync.
+                bool open=await command.ConfigureAwait(false);bool ending=finishing.IsCancellationRequested;
+                if(open&&!ending&&clears.Reader.TryRead(out var request))RunClear(request);
+                command=open&&!ending?clears.Reader.WaitToReadAsync().AsTask():new TaskCompletionSource<bool>().Task;
+            }
             if(tick.IsCompleted)
             {
                 if(!await tick.ConfigureAwait(false))break;
@@ -330,18 +443,30 @@ public sealed class ConnectionService
             if(available.IsCompleted)
             {
                 if(!await available.ConfigureAwait(false))break;
-                while(queue.Reader.TryRead(out var item))
+                // While stepping, one pass takes only what was queued when it began.
+                int pass=stepping?Math.Max(1,queue.Reader.Count):int.MaxValue;
+                while(pass-->0&&queue.Reader.TryRead(out var item))
                 {
                     await Process(item).ConfigureAwait(false);
-                    if(tick.IsCompleted)break;
+                    if(tick.IsCompleted||(command.IsCompleted&&!stepping))break;
                 }
                 available=queue.Reader.WaitToReadAsync().AsTask();
+            }
+            yielded=false;
+            if(stepping&&!finishing.IsCancellationRequested)
+            {
+                long started=Stopwatch.GetTimestamp();Step();
+                yielded=stepping&&Stopwatch.GetElapsedTime(started)<HistoryClear.StepBudget/2;
             }
         }
         // R6: the queue is complete and drained, so every open unit is final.
         lock(gate)Fold(folder.FreezeAll);
         Write(final:true);
     }
+    /// <summary>A marker read at startup as a request. The marker keeps only AppKey and Before; Requested is chosen so that AllTime
+    /// holds exactly when Before is still ahead of now (the only case a resume installs the boundary).</summary>
+    private static HistoryClear Resumed(PendingConnectionClear pending,DateTimeOffset now)
+        =>new(pending.AppKey,pending.Before,pending.Before>now?pending.Before.AddMinutes(-1):pending.Before);
     public Task StopAsync()
     {
         lock(gate)

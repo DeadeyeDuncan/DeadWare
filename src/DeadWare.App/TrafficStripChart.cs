@@ -19,13 +19,16 @@ internal sealed class TrafficStripChart : FrameworkElement
 {
     private const double LeftMargin = 12, RightMargin = 8, TopMargin = 10, BottomMargin = 24;
     private const double FullOpacity = 0.85, PartialOpacity = 0.45, NotKeptOpacity = 0.35;
-    private enum SlotState { NoCapture, NoTraffic, Full, Partial }
+    private enum SlotState { NoCapture, NotSaved, NoTraffic, Full, Partial }
+    internal const string NoSavedTraffic = "No saved traffic", NotRecordedReason = "Not recorded: in Don't record these apps";
 
     private readonly TrafficStripPage page;
     private TrafficStrip? strip;
     private DateTimeOffset dueUntil, now;
     private string? message, emptyText;
     private SlotState[] states = [];
+    // Per slot: a Not saved slot's reason lines, otherwise null.
+    private string[]?[] reasons = [];
     // Per slot: each drawn series' rate (B/s), and the stacked total; null when the slot has no recorded time.
     private double[][]? rates;
     private int seriesCount, version;
@@ -38,26 +41,41 @@ internal sealed class TrafficStripChart : FrameworkElement
     }
 
     internal TrafficStrip? Strip => strip;
+    /// <summary>The label of the band over [origin, RetainedFrom): "Cleared" when an all-apps clear set the retained start, otherwise
+    /// "Not kept"; null when there is no band.</summary>
+    internal string? BandLabel { get; private set; }
+    /// <summary>The shown strip is filtered to an application in Don't record these apps, so its recorded zero-byte slots are Not saved.</summary>
+    internal bool FilterNotRecorded { get; private set; }
 
-    /// <summary>Shows a strip. Due until is clamped to the strip's end; now places the begun not-yet minutes.</summary>
-    internal void SetData(TrafficStrip data, DateTimeOffset due, DateTimeOffset current)
+    /// <summary>Shows a strip. Due until is clamped to the strip's end; now places the begun not-yet minutes. With
+    /// <paramref name="filterNotRecorded"/> the strip is filtered to an application in Don't record these apps.</summary>
+    internal void SetData(TrafficStrip data, DateTimeOffset due, DateTimeOffset current, bool filterNotRecorded = false)
     {
-        strip = data; dueUntil = due < data.To ? due : data.To; now = current; message = null;
+        strip = data; dueUntil = due < data.To ? due : data.To; now = current; message = null; FilterNotRecorded = filterNotRecorded;
         int apps = data.Applications.Count;
         seriesCount = apps + (TrafficStrips.Bytes(data.OtherReceived, data.OtherSent, data.Measure) > 0 ? 1 : 0);
         states = new SlotState[data.Slots.Count];
+        reasons = new string[data.Slots.Count][];
         rates = new double[data.Slots.Count][];
+        string? clearedReason = data.AppClearedBefore is { } cleared ? $"Some application history before {cleared.ToLocalTime().ToString("g")} was cleared" : null;
         for (int i = 0; i < data.Slots.Count; i++)
         {
             var slot = data.Slots[i];
             long total = SlotTotal(slot, apps, data.Measure);
+            bool beforeClear = data.AppClearedBefore is { } before && slot.Start < before;
             states[i] = page == TrafficStripPage.UsageHistory && slot.RecordedSeconds == 0 ? SlotState.NoCapture
+                : slot.RecordedSeconds > 0 && total == 0 && (beforeClear || filterNotRecorded) ? SlotState.NotSaved
                 : slot.RecordedSeconds > 0 && total == 0 ? SlotState.NoTraffic
                 : TrafficStrips.IsFull(slot) ? SlotState.Full : SlotState.Partial;
+            if (states[i] == SlotState.NotSaved)
+                reasons[i] = beforeClear && filterNotRecorded ? [clearedReason!, NotRecordedReason] : beforeClear ? [clearedReason!] : [NotRecordedReason];
             rates[i] = Enumerable.Range(0, seriesCount).Select(s => TrafficStrips.Rate(slot, s, data.Measure) ?? 0).ToArray();
         }
-        emptyText = page == TrafficStripPage.Connections
-            ? data.Slots.Count == 0 && !(data.RetainedFrom is { } retained && retained >= data.To) ? "No saved history in this interval" : null
+        // On both pages the band covers [origin, RetainedFrom); a RetainedFrom past To (a range wholly before it) fills the plot.
+        bool wholly = data.RetainedFrom is { } retained && retained >= data.To;
+        BandLabel = data.RetainedFrom is { } start && start > TrafficStrips.CeilingMinute(data.From) ? data.RetainedByClear ? "Cleared" : "Not kept" : null;
+        emptyText = wholly ? null
+            : page == TrafficStripPage.Connections ? data.Slots.Count == 0 ? "No saved history in this interval" : null
             : data.Slots.Count == 0 ? "No history in this range yet"
             : data.Slots.All(s => s.RecordedSeconds == 0) ? "No per-application capture in this range" : null;
         Changed();
@@ -66,9 +84,12 @@ internal sealed class TrafficStripChart : FrameworkElement
     /// <summary>Clears the data and draws the text the way "No history in this range yet" is drawn.</summary>
     internal void SetText(string text)
     {
-        strip = null; message = text; emptyText = null; states = []; rates = null; seriesCount = 0;
+        strip = null; message = text; emptyText = null; states = []; reasons = []; rates = null; seriesCount = 0; BandLabel = null; FilterNotRecorded = false;
         Changed();
     }
+
+    /// <summary>A Not saved slot's reason lines (the chip's lines after "No saved traffic"); null for any other slot.</summary>
+    internal IReadOnlyList<string>? NotSavedReasons(int index) => index >= 0 && index < reasons.Length ? reasons[index] : null;
 
     private void Changed()
     {
@@ -240,11 +261,13 @@ internal sealed class TrafficStripChart : FrameworkElement
         if (anyBaseline) Baseline = baseline;
 
         var origin = TrafficStrips.CeilingMinute(data.From);
-        DateTimeOffset? retained = page == TrafficStripPage.Connections ? data.RetainedFrom : null;
+        // The retained start is RetainedFrom on both pages; Usage history sets it only after an all-apps clear.
+        DateTimeOffset? retained = data.RetainedFrom;
         if (retained is { } kept && kept > origin)
             NotKept = kept >= data.To ? plot : new Rect(new Point(X(origin), plot.Top), new Point(X(kept), plot.Bottom));
 
-        // Hatching: the due whole minutes from the retained start that no drawn slot holds. A Usage slot without capture is hatched too.
+        // Hatching: the due whole minutes from the retained start that no drawn slot holds. A Usage slot without capture and a Not saved
+        // slot are hatched too.
         var hatchStart = retained is { } r && r > origin ? TrafficStrips.CeilingMinute(r) : origin;
         var hatchEnd = FloorMinute(dueUntil);
         var hatch = new StreamGeometry(); bool anyHatch = false;
@@ -263,7 +286,7 @@ internal sealed class TrafficStripChart : FrameworkElement
             var cursor = hatchStart;
             for (int i = 0; i < slots.Count; i++)
             {
-                if (states[i] == SlotState.NoCapture) continue;
+                if (states[i] is SlotState.NoCapture or SlotState.NotSaved) continue;
                 DateTimeOffset first = TrafficStrips.CeilingMinute(slots[i].Start), end = TrafficStrips.CeilingMinute(slots[i].End);
                 if (end <= first) continue;
                 Add(cursor, first);
@@ -308,6 +331,7 @@ internal sealed class TrafficStripChart : FrameworkElement
         var data = strip!; var slot = data.Slots[index];
         var lines = new List<string> { Span(slot.Start, slot.End) };
         if (states[index] == SlotState.NoCapture) { lines.Add("No per-application capture"); return [.. lines]; }
+        if (states[index] == SlotState.NotSaved) { lines.Add(NoSavedTraffic); lines.AddRange(reasons[index]!); return [.. lines]; }
         if (states[index] == SlotState.NoTraffic) lines.Add("No traffic");
         else if (slot.RecordedSeconds > 0)
         {
@@ -410,7 +434,7 @@ internal sealed class TrafficStripChart : FrameworkElement
         {
             var band = hairlineBrush.Clone(); band.Opacity = NotKeptOpacity; band.Freeze();
             dc.DrawRectangle(band, null, notKept);
-            if (notKept.Width >= 60) Label(dc, "Not kept", notKept.Left + 8, notKept.Top + notKept.Height / 2 - 7);
+            if (notKept.Width >= 60 && BandLabel is { } label) Label(dc, label, notKept.Left + 8, notKept.Top + notKept.Height / 2 - 7);
         }
         if (Hatch is { } hatch) dc.DrawGeometry(HatchBrush(hairlineBrush), null, hatch);
         ChartFrame.Grid(dc, plot, new[] { 0d, .5, 1 }.Select(f => (Y(maximum * f), Ui.Rate(maximum * f))).ToArray(), [], typeface, pixelsPerDip, false, null, nowLabel: null);
@@ -474,12 +498,13 @@ internal sealed class TrafficStripChart : FrameworkElement
     private FormattedText Formatted(string text) => ChartFrame.Text(text, Theme.ChartTypeface, VisualTreeHelper.GetDpi(this).PixelsPerDip, Theme.Brush("Muted"));
 }
 
-/// <summary>The strip's caption, chart, legend and not-kept line. While loaded it follows theme, graph-colour and high-contrast changes.</summary>
+/// <summary>The strip's caption, chart, legend and the lines under it. While loaded it follows theme, graph-colour and high-contrast changes.</summary>
 internal sealed class TrafficStripView : StackPanel
 {
     private readonly UiSession session;
     private readonly TrafficStripPage page;
-    private readonly TextBlock caption, notKept;
+    private readonly TextBlock caption, notKept, notes;
+    private IReadOnlyList<string> noteLines = [];
     private readonly WrapPanel legend;
     private readonly List<(string Text, string? Tip, Brush? Swatch, bool IsButton)> entries = [];
     // The series behind each legend entry's swatch (−1 for none), so a theme change re-reads the brushes in place,
@@ -494,7 +519,8 @@ internal sealed class TrafficStripView : StackPanel
         Chart = new TrafficStripChart(page);
         legend = new WrapPanel { Margin = new(0, 6, 0, 0) };
         notKept = Ui.Text("", 11, "Muted"); notKept.Margin = new(0, 2, 0, 0); notKept.Visibility = Visibility.Collapsed;
-        Children.Add(caption); Children.Add(Chart); Children.Add(legend); Children.Add(notKept);
+        notes = Ui.Text("", 11, "Muted"); notes.Margin = new(0, 2, 0, 0); notes.Visibility = Visibility.Collapsed;
+        Children.Add(caption); Children.Add(Chart); Children.Add(legend); Children.Add(notKept); Children.Add(notes);
         Chart.ShownSlotChanged += UpdateLegend;
         Loaded += (_, _) => Subscribe();
         Unloaded += (_, _) => Unsubscribe();
@@ -503,20 +529,31 @@ internal sealed class TrafficStripView : StackPanel
     internal TrafficStripChart Chart { get; }
     internal IReadOnlyList<(string Text, string? Tip, Brush? Swatch, bool IsButton)> Legend => entries;
     internal string Caption => caption.Text;
+    /// <summary>The retained-start line: "Not kept before {g}" (with " · Capacity shortened retention"), or "Cleared before {g}" after an
+    /// all-apps clear; "" without a retained start.</summary>
     internal string NotKeptLine => notKept.Text;
+    /// <summary>Every line under the legend, in order: <see cref="NotKeptLine"/> when set, the one-app clear's line, then the
+    /// not-recorded filter's line.</summary>
+    internal IReadOnlyList<string> NoteLines => noteLines;
     /// <summary>Raised with the application's key and name when its legend button is clicked (Connections only).</summary>
     internal event Action<string, string>? ApplicationChosen;
 
-    /// <summary>Shows a strip; null shows "History unavailable".</summary>
-    internal void Apply(TrafficStrip? strip, DateTimeOffset dueUntil, DateTimeOffset now)
+    /// <summary>Shows a strip; null shows "History unavailable". With <paramref name="filterNotRecorded"/> the strip is filtered to an
+    /// application in Don't record these apps: its recorded zero-byte slots are Not saved and a line under the legend says why.</summary>
+    internal void Apply(TrafficStrip? strip, DateTimeOffset dueUntil, DateTimeOffset now, bool filterNotRecorded = false)
     {
         if (strip is null) { ShowText("History unavailable"); return; }
-        Chart.SetData(strip, dueUntil, now);
+        Chart.SetData(strip, dueUntil, now, filterNotRecorded);
         caption.Text = $"Traffic by application · {TrafficStrips.SlotLengthText(strip.BucketMilliseconds)} slots"
             + strip.Measure switch { TrafficMeasure.Received => " · received", TrafficMeasure.Sent => " · sent", _ => "" };
-        notKept.Text = strip.RetainedFrom is { } retained
-            ? $"Not kept before {retained.ToLocalTime().ToString("g")}" + (strip.CapacityShortened ? " · Capacity shortened retention" : "") : "";
-        notKept.Visibility = notKept.Text.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
+        string retainedLine = strip.RetainedFrom is { } retained
+            ? (strip.RetainedByClear ? "Cleared before " : "Not kept before ") + retained.ToLocalTime().ToString("g")
+                + (strip.CapacityShortened ? " · Capacity shortened retention" : "")
+            : "";
+        var further = new List<string>();
+        if (strip.AppClearedBefore is { } cleared) further.Add($"Some application history before {cleared.ToLocalTime().ToString("g")} was cleared.");
+        if (filterNotRecorded) further.Add("Not recorded: this app is in Don't record these apps.");
+        SetNotes(retainedLine, further);
         RebuildLegend();
     }
 
@@ -524,8 +561,21 @@ internal sealed class TrafficStripView : StackPanel
     {
         Chart.SetText(text);
         caption.Text = "Traffic by application";
-        notKept.Text = ""; notKept.Visibility = Visibility.Collapsed;
+        SetNotes("", []);
         RebuildLegend();
+    }
+
+    /// <summary>Sets the lines under the legend; a line's text and visibility change only when it differs.</summary>
+    private void SetNotes(string retainedLine, IReadOnlyList<string> further)
+    {
+        if (notKept.Text != retainedLine) notKept.Text = retainedLine;
+        var visibility = retainedLine.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
+        if (notKept.Visibility != visibility) notKept.Visibility = visibility;
+        string joined = string.Join("\n", further);
+        if (notes.Text != joined) notes.Text = joined;
+        visibility = further.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+        if (notes.Visibility != visibility) notes.Visibility = visibility;
+        noteLines = retainedLine.Length > 0 ? [retainedLine, .. further] : [.. further];
     }
 
     private void Subscribe()
@@ -614,6 +664,12 @@ internal sealed class TrafficStripView : StackPanel
                 long bytes = TrafficStrips.Bytes(received, sent, measure);
                 text = $"{name} · {Ui.Bytes(bytes)} · {(bytes / denominator * 100).ToString("0.#", CultureInfo.CurrentCulture)}%";
                 tip = $"{name} · ↓ {Ui.Bytes(received)} · ↑ {Ui.Bytes(sent)}";
+            }
+            else if (Chart.NotSavedReasons(shown!.Value) is { } why)
+            {
+                // A Not saved slot: no value, with the chip's reason line as the tooltip.
+                text = $"{name} · —";
+                tip = string.Join("\n", why);
             }
             else if (slot.RecordedSeconds == 0)
             {

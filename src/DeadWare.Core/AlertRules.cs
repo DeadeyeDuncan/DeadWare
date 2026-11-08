@@ -2,14 +2,14 @@ using System.Globalization;
 
 namespace DeadWare.Core;
 
-public enum AlertKind { Metric, NetworkRate, ApplicationDaily, Battery }
+public enum AlertKind { Metric, NetworkRate, ApplicationDaily, Battery, FirstNetworkUse }
 
 /// <summary>A user-set threshold. Target is a usage metric id, "download"/"upload", an executable name, or empty for battery.</summary>
 public sealed record AlertRule(string Id, AlertKind Kind, string Target, double Threshold, int Minutes, bool Enabled, DateTimeOffset Created);
 
 /// <summary>One crossing of a rule's threshold. End stays null while the episode is open.</summary>
 public sealed record AlertEpisode(string Id, string RuleId, AlertKind Kind, string Summary, DateTimeOffset Start, DateTimeOffset? End,
-    double Peak, bool Acknowledged = false);
+    double Peak, bool Acknowledged = false, string? Application = null);
 
 public static class AlertRules
 {
@@ -47,6 +47,9 @@ public static class AlertRules
                 if (target == UsageMetrics.UnknownName) return null;
                 threshold = Math.Clamp(Math.Round(rule.Threshold), 1, 1e15); minutes = 1;
                 break;
+            case AlertKind.FirstNetworkUse:
+                target = ""; threshold = 1; minutes = 1;
+                break;
             default:
                 target = ""; threshold = Math.Clamp(Math.Round(rule.Threshold), 1, 99); minutes = 1;
                 break;
@@ -58,15 +61,19 @@ public static class AlertRules
     /// <summary>Drops invalid rules and later duplicates of an id, keeping at most <see cref="MaximumRules"/>.</summary>
     public static List<AlertRule> Normalize(IEnumerable<AlertRule?>? rules)
     {
-        var result = new List<AlertRule>(); var seen = new HashSet<string>(StringComparer.Ordinal);
+        var result = new List<AlertRule>(); var seen = new HashSet<string>(StringComparer.Ordinal); bool firstUse = false;
         foreach (var candidate in rules ?? [])
         {
-            if (Normalize(candidate) is not { } rule || !seen.Add(rule.Id)) continue;
+            if (Normalize(candidate) is not { } rule || (rule.Kind == AlertKind.FirstNetworkUse && firstUse) || !seen.Add(rule.Id)) continue;
+            firstUse |= rule.Kind == AlertKind.FirstNetworkUse;
             result.Add(rule);
             if (result.Count == MaximumRules) break;
         }
         return result;
     }
+
+    /// <summary>The rule added once for new and upgrading users: it has nothing to edit.</summary>
+    public static AlertRule DefaultFirstNetworkUse(DateTimeOffset created) => new(FirstNetworkUse.RuleId, AlertKind.FirstNetworkUse, "", 1, 1, true, created);
 
     /// <summary>The value a metric must fall below before the rule re-arms: 3°C, 5 percentage points or 10% of a byte figure.</summary>
     public static double Hysteresis(AlertRule rule) => rule.Kind switch
@@ -85,6 +92,7 @@ public static class AlertRules
         },
         AlertKind.NetworkRate => target == UsageMetrics.Upload ? "Upload" : "Download",
         AlertKind.ApplicationDaily => target,
+        AlertKind.FirstNetworkUse => "First network use",
         _ => "Battery",
     };
 
@@ -110,6 +118,7 @@ public static class AlertRules
     {
         AlertKind.ApplicationDaily => $"{rule.Target} ≥ {FormatThreshold(rule)} in a day",
         AlertKind.Battery => $"Battery ≤ {FormatThreshold(rule)} on battery",
+        AlertKind.FirstNetworkUse => "An app uses the network for the first time",
         _ => $"{TargetName(rule.Kind, rule.Target)} ≥ {FormatThreshold(rule)} for {rule.Minutes} minute{(rule.Minutes == 1 ? "" : "s")}",
     };
 

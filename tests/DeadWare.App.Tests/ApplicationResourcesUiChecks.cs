@@ -71,6 +71,7 @@ internal static class ApplicationResourcesUiChecks
             Layout(page);
             var card = Assert.Single(Descendants(page).OfType<ApplicationResourcesCard>());
             Card_sits_between_applications_and_keep_a_longer_record(page);
+            UsageHistoryUiChecks.CheckClearHistoryEntry(page);
             Before_the_first_read_the_card_says_it_is_loading(card);
             Load(page); WaitFor(() => card.View is not null && !card.Loading);
             Table_has_the_nine_columns_and_everything_else_last(card);
@@ -265,7 +266,7 @@ internal static class ApplicationResourcesUiChecks
     private static void The_note_names_gpu(ApplicationResourcesCard card)
     {
         var note = Texts(card).Single(t => t.StartsWith("CPU time, I/O read and I/O written", StringComparison.Ordinal));
-        Assert.Contains("Each minute lists up to 40 of the busiest applications by CPU, memory, I/O and GPU; Everything else holds the rest. Usage after", note);
+        Assert.Contains("Each minute lists up to 40 of the busiest applications by CPU, memory, I/O and GPU; Everything else holds the rest, including apps in Don't record these apps. Usage after", note);
         Assert.Contains("Avg GPU is its busiest GPU engine's share of the time GPU data was recorded; Avg GPU memory while listed averages its dedicated GPU memory over the minutes it was listed with GPU data.", note);
     }
 
