@@ -96,6 +96,7 @@ public sealed class ConnectionService
     private string storageStatus="Connection history starts with monitoring.",lookupStatus="Location lookup has not started.";
     private DateTimeOffset? databaseDate;
     private ConnectionLiveView live=new(default,[],null,false,false,"Waiting for endpoint capture.");
+    private IReadOnlySet<string> exclusions=System.Collections.Frozen.FrozenSet<string>.Empty;
 
     internal ConnectionService(IConnectionGeolocation resolver,Func<DateTimeOffset> clock,
         Action<IReadOnlyList<ConnectionHistoryRecord>,IReadOnlyList<ConnectionCoverage>> append,ConnectionServiceOptions? options=null)
@@ -132,6 +133,13 @@ public sealed class ConnectionService
             if(this.recording!=recording){generation++;if(recording)resumed=clock().ToUniversalTime();}
             this.recording=recording;this.origin=origin;live=live with {Origin=origin};
         }
+    }
+    /// <summary>The Don't record keys (<see cref="AppKey.Of"/>, ordinal). Read by the writer once per publication at merge time only:
+    /// the live view, lookups, coverage and anything already merged or frozen are unaffected.</summary>
+    public void SetExclusions(IReadOnlySet<string> keys)
+    {
+        ArgumentNullException.ThrowIfNull(keys);
+        Volatile.Write(ref exclusions,keys);
     }
     public void Start()
     {
@@ -310,11 +318,14 @@ public sealed class ConnectionService
             await EnrichAsync(item.Sample).ConfigureAwait(false);
             bool complete=item.Complete&&item.Sample.Available;
             var accepted=new List<ConnectionDelta>();
+            var excluded=Volatile.Read(ref exclusions);
             foreach(var delta in item.Sample.Deltas)
             {
                 // Never shift skewed/paused observations into a fabricated publication-time minute.
                 if((item.Since.HasValue&&delta.FirstSeen<item.Since)||delta.FirstSeen<item.Sample.Timestamp.AddSeconds(-60)||delta.LastSeen>item.Sample.Timestamp.AddSeconds(2))
                 {lock(gate)DropLocked(1);complete=false;continue;}
+                // Don't record: skipped, not dropped; complete and coverage stand, and it still leaves buffered below with the publication's count.
+                if(excluded.Count>0&&excluded.Contains(AppKey.Of(delta.Peer.Process.Name)))continue;
                 accepted.Add(delta);
             }
             int frozen;
