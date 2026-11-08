@@ -1,4 +1,5 @@
 using System.Collections.Frozen;
+using System.Diagnostics;
 using System.IO;
 using System.Threading.Channels;
 using DeadWare.Core;
@@ -45,6 +46,9 @@ public sealed class AlertService
     // Incremented on the worker after a clear forgets apps, so detection posts them again within the minute.
     private long knownGeneration = 0;
     private FirstUseStatus firstUse = new(false, false, null, null, null);
+    private readonly HistoryClearCommand clears = new();
+    // The exception type that stopped the worker, or null while it has not stopped on a failure.
+    private string? stoppedBy;
     // Detection state, touched only on the collector thread.
     private readonly HashSet<string> posted = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> nameKeys = new(StringComparer.Ordinal);
@@ -76,9 +80,28 @@ public sealed class AlertService
     public bool Failed => Volatile.Read(ref failed);
     public IReadOnlyList<AlertRule> Rules => Volatile.Read(ref rules);
     public bool NotificationsEnabled => Volatile.Read(ref notifications) == 1;
-    public string Status => Volatile.Read(ref status) + (DroppedObservations > 0 ? $" · {DroppedObservations} observations dropped." : "");
+    public string Status => Volatile.Read(ref status) + (DroppedObservations > 0 ? $" · {DroppedObservations} observations dropped." : "") +
+        HistoryClearCopy.StatusSuffix(clears.State, true);
     /// <summary>The first-use tracker's state as the worker last published it; KnownApps is null until the worker has restored it.</summary>
     public FirstUseStatus FirstUse => Volatile.Read(ref firstUse);
+
+    /// <summary>This store's clear. The internal setter is a test seam; the app never calls it.</summary>
+    public HistoryClearState ClearState { get => clears.State; internal set => clears.State = value; }
+    /// <summary>Puts the request in the worker's command channel (capacity 1) and sets Queued; the worker runs it between data items.
+    /// Refused while a clear is active. After the worker stopped on a failure the request is Unavailable with that failure's type, and
+    /// nothing is written for it.</summary>
+    public void Clear(HistoryClear request)
+    {
+        clears.Post(request);
+        if (Volatile.Read(ref stoppedBy) is { } failure) clears.Unavailable(failure);
+    }
+    /// <summary>Re-posts the kept request while Failed and the worker runs: the full first step without a saved marker, otherwise a resume
+    /// (EndScope for All time, Flush, then the steps) that forgets no key again.</summary>
+    public void RetryClear() => clears.Retry(WorkerRunning);
+    public bool CanRetryClear => clears.CanRetry(WorkerRunning);
+    /// <summary>A test seam that replaces the store's step.</summary>
+    internal Func<TimeSpan, HistoryClearProgress>? ClearStepOverride { get => clears.StepOverride; set => clears.StepOverride = value; }
+    private bool WorkerRunning { get { lock (lifecycle) return !stopped && Volatile.Read(ref stoppedBy) is null && worker is { IsCompleted: false }; } }
 
     /// <summary>Installs rules, the notification switch, the Don't alert list and the Don't record list. The evaluator and the first-use tracker
     /// adopt them on the worker; episodes of changed rules, and budget episodes of newly excluded apps, end there.</summary>
@@ -184,6 +207,16 @@ public sealed class AlertService
         Volatile.Write(ref status, $"Alert log unavailable ({error.GetType().Name}). Saved episodes were not deleted. Live monitoring continues; resolve storage access and restart to retry.");
         Volatile.Write(ref failed, true);
     }
+    /// <summary>The worker stopped on <paramref name="error"/>: a clear it was running fails (its marker, when saved, resumes at the next
+    /// start), and a queued one is Unavailable.</summary>
+    private void Stopped(Exception error)
+    {
+        string type = error.GetType().Name;
+        Volatile.Write(ref stoppedBy, type);
+        var state = clears.State;
+        if (state.Phase == HistoryClearPhase.Clearing || state is { Phase: HistoryClearPhase.Queued, MarkerSaved: true }) clears.Fail(type, store.PendingClear is not null);
+        else if (state.Phase == HistoryClearPhase.Queued) clears.Unavailable(type);
+    }
     private DateTimeOffset StartOfLocalDay(DateTimeOffset at)
     {
         var local = TimeZoneInfo.ConvertTime(at, zone);
@@ -224,6 +257,7 @@ public sealed class AlertService
                 evaluator.SeedDay(startedAt, rows);
             }
             catch (Exception) { /* Without a seed the day's budget counts from now; usage history reports its own failure. */ }
+            bool stepping = false;
             void PublishFirstUse()
             {
                 var current = tracker.Status;
@@ -308,9 +342,50 @@ public sealed class AlertService
                         try { EpisodeStarted?.Invoke(episode); } catch { /* A failing notifier never fails the log. */ }
                 if (pending.Count >= 64) Flush();
             }
+            // The clear's first step, in the spec's order with no other work in between: Flush (the work pending before the request),
+            // the marker with this machine's in-scope known rows, then for All time EndScope, Forget and the generation increment, and
+            // Flush again. A marker failure clears nothing and leaves the tracker unchanged; a Flush failure is the worker's own failure.
+            void RunClear(HistoryClearCommand.Command command)
+            {
+                var clear = command.Clear;
+                clears.Clearing(null);
+                if (command.Resume) { ResumeClear(clear); return; }
+                Flush();
+                try { store.BeginClear(machine, clear); }
+                catch (Exception error) { clears.Fail(error.GetType().Name, markerSaved: false); return; }
+                clears.MarkerSaved();
+                if (clear.AllTime)
+                {
+                    pending.AddRange(evaluator.EndScope(clear.AppKey, clear.Requested, resetDay: true));
+                    tracker.Forget(clear.AppKey, clear.Requested);
+                    // Detection posts a running app again at its next poll, even within the minute.
+                    Interlocked.Increment(ref knownGeneration);
+                }
+                Flush();
+                stepping = true;
+            }
+            // A marker found at startup, or Try again after it was saved: EndScope (All time) and Flush again, because a crash can lose
+            // them, then the steps. The known rows went with the marker's transaction, so Forget and the increment are not repeated.
+            void ResumeClear(HistoryClear clear)
+            {
+                if (clear.AllTime) pending.AddRange(evaluator.EndScope(clear.AppKey, clear.Requested, resetDay: true));
+                Flush();
+                stepping = true;
+            }
+            // One step. ClearStep throws when no clear is pending, so a marker already gone is Done; a step's exception is Failed with
+            // the marker saved and never reaches the worker's catch.
+            void Step()
+            {
+                if (clears.StepOverride is null && store.PendingClear is null) { clears.Done(); stepping = false; return; }
+                if (clears.Step(budget => store.ClearStep(machine, budget))) stepping = false;
+            }
+            // Resume after Restore and the seeds.
+            if (store.PendingClear is { } marker) { clears.Resume(marker); ResumeClear(marker); }
             Flush();
             using var timer = new PeriodicTimer(interval, time);
-            Task<bool> tick = timer.WaitForNextTickAsync().AsTask(), available = queue.Reader.WaitToReadAsync().AsTask();
+            Task<bool> tick = timer.WaitForNextTickAsync().AsTask(), available = queue.Reader.WaitToReadAsync().AsTask(),
+                command = clears.Reader.WaitToReadAsync().AsTask();
+            bool yielded = false;
             // The third wake-up: while a first-use group is open, the worker wakes at its due time, not at the next flush tick.
             Task? wake = null; DateTimeOffset? wakeFor = null;
             while (true)
@@ -324,7 +399,21 @@ public sealed class AlertService
                     }
                 }
                 else { wake = null; wakeFor = null; }
-                await (wake is null ? (Task)Task.WhenAny(tick, available) : Task.WhenAny(tick, available, wake)).ConfigureAwait(false);
+                // While a clear steps, the worker alternates one data pass with one step; it waits only after a step that yielded early.
+                if (!stepping || yielded)
+                {
+                    var waits = new List<Task>(5) { tick, available, command };
+                    if (wake is not null) waits.Add(wake);
+                    if (stepping) waits.Add(Task.Delay(HistoryClear.StepBudget));
+                    await Task.WhenAny(waits).ConfigureAwait(false);
+                }
+                if (command.IsCompleted)
+                {
+                    // The command comes before the next queue item. None starts after StopAsync.
+                    bool commandOpen = await command.ConfigureAwait(false), ending = Volatile.Read(ref stopped);
+                    if (commandOpen && !ending && clears.Reader.TryRead(out var request)) RunClear(request);
+                    command = commandOpen && !ending ? clears.Reader.WaitToReadAsync().AsTask() : new TaskCompletionSource<bool>().Task;
+                }
                 if (tick.IsCompleted)
                 {
                     if (!await tick.ConfigureAwait(false)) break;
@@ -339,7 +428,7 @@ public sealed class AlertService
                 if (available.IsCompleted)
                 {
                     if (!await available.ConfigureAwait(false)) break;
-                    for (int i = 0; i < 128 && queue.Reader.TryRead(out var work); i++)
+                    for (int i = 0; i < 128 && !command.IsCompleted && queue.Reader.TryRead(out var work); i++)
                         switch (work)
                         {
                             case MinuteWork minute: Apply(evaluator.ObserveMinute(minute.Batch, gpuKey())); break;
@@ -367,11 +456,19 @@ public sealed class AlertService
                     CloseDueGroups(); PublishFirstUse();
                     available = queue.Reader.WaitToReadAsync().AsTask();
                 }
+                yielded = false;
+                // A step never starts after StopAsync.
+                if (stepping && !Volatile.Read(ref stopped))
+                {
+                    long started = Stopwatch.GetTimestamp(); Step();
+                    yielded = stepping && Stopwatch.GetElapsedTime(started) < HistoryClear.StepBudget / 2;
+                }
             }
             Flush();
         }
         catch (Exception error)
         {
+            Stopped(error);
             Fail(error); Volatile.Write(ref accepting, false); queue.Writer.TryComplete();
             while (queue.Reader.TryRead(out _)) Interlocked.Increment(ref dropped);
         }
