@@ -209,4 +209,55 @@ public class AlertEvaluatorTests
         Assert.DoesNotContain(minute.Started.Concat(battery.Started), e => e.Kind == AlertKind.FirstNetworkUse);
         Assert.Equal("chrome.exe", Assert.Single(minute.Started).Application);
     }
+
+    [Fact]
+    public void Excluded_budget_stops_ends_its_episode_and_reseeds_only_itself()
+    {
+        var day = new DateTimeOffset(2026, 11, 2, 10, 0, 0, TimeSpan.Zero);
+        var evaluator = Evaluator(Rule(AlertKind.ApplicationDaily, "chrome.exe", 1000, 1, "b"), Rule(AlertKind.ApplicationDaily, "steam.exe", 1000, 1, "o"));
+        evaluator.SeedDay(day, [new UsageApplicationMinute("steam.exe", day.AddMinutes(-30), 400, 0, "seg")]);
+        Assert.Single(evaluator.ObserveMinute(Batch(day, apps: [("chrome.exe", 1500)]), null).Started);
+        var t = day.AddMinutes(5);
+        var change = evaluator.SetExcluded(AppExclusions.Keys(["CHROME.EXE"]), t);
+        Assert.Equal(t, Assert.Single(change.Ended).End); Assert.Empty(change.Reseed);
+        Assert.Empty(evaluator.OpenEpisodes);
+        Assert.Empty(evaluator.ObserveMinute(Batch(day.AddMinutes(1), apps: [("chrome.exe", 5000)]), null).Started);
+        var rows = new[] { new UsageApplicationMinute("chrome.exe", day.AddMinutes(-20), 700, 0, "seg"), new UsageApplicationMinute("steam.exe", day.AddMinutes(-20), 9000, 0, "seg") };
+        evaluator.SeedDay(day, rows);
+        Assert.Empty(evaluator.ObserveMinute(Batch(day.AddMinutes(2), apps: [("chrome.exe", 1)]), null).Started);
+        // Re-include: only chrome.exe is reseeded; steam.exe keeps its 400.
+        var t2 = day.AddMinutes(10);
+        Assert.Equal(["chrome.exe"], evaluator.SetExcluded(AppExclusions.Keys([]), t2).Reseed);
+        evaluator.SeedDay(day, rows, AppExclusions.Keys(["CHROME.EXE"]));
+        // FiredToday is kept: chrome.exe does not fire again today even past the threshold.
+        Assert.Empty(evaluator.ObserveMinute(Batch(day.AddMinutes(3), apps: [("chrome.exe", 800)]), null).Started);
+        // steam.exe still holds 400, so 700 more fires it; a seed to 9,000 would have fired it already.
+        Assert.Single(evaluator.ObserveMinute(Batch(day.AddMinutes(4), apps: [("steam.exe", 700)]), null).Started);
+
+        // A failed re-seed read (no rows) leaves the total at 0.
+        var failed = Evaluator(Rule(AlertKind.ApplicationDaily, "chrome.exe", 1000, 1, "b"));
+        failed.SeedDay(day, [new UsageApplicationMinute("chrome.exe", day.AddMinutes(-20), 900, 0, "seg")]);
+        failed.SetExcluded(AppExclusions.Keys(["chrome.exe"]), day.AddMinutes(1));
+        failed.SetExcluded(AppExclusions.Keys([]), day.AddMinutes(2));
+        failed.SeedDay(day, [], AppExclusions.Keys(["chrome.exe"]));
+        Assert.Empty(failed.ObserveMinute(Batch(day.AddMinutes(3), apps: [("chrome.exe", 900)]), null).Started);
+        Assert.Single(failed.ObserveMinute(Batch(day.AddMinutes(4), apps: [("chrome.exe", 100)]), null).Started);
+    }
+
+    [Fact]
+    public void EndScope_detaches_open_budget_episodes()
+    {
+        var day = new DateTimeOffset(2026, 11, 2, 10, 0, 0, TimeSpan.Zero);
+        var evaluator = Evaluator(Rule(AlertKind.ApplicationDaily, "chrome.exe", 1000, 1, "b"), Rule(AlertKind.ApplicationDaily, "steam.exe", 1000, 1, "o"));
+        var opened = Assert.Single(evaluator.ObserveMinute(Batch(day, apps: [("chrome.exe", 1500), ("steam.exe", 200)]), null).Started);
+        var at = day.AddMinutes(3);
+        Assert.Empty(evaluator.EndScope("STEAM.EXE", at, true));
+        Assert.Single(evaluator.OpenEpisodes);
+        var ended = Assert.Single(evaluator.EndScope("CHROME.EXE", at, true));
+        Assert.Equal(opened.Id, ended.Id); Assert.Equal(at, ended.End);
+        Assert.Empty(evaluator.OpenEpisodes);
+        Assert.Empty(evaluator.ObserveMinute(Batch(day.AddMinutes(4), apps: [("chrome.exe", 10)]), null).Ended);
+        // FiredToday is kept: more bytes do not fire the budget again today.
+        Assert.Empty(evaluator.ObserveMinute(Batch(day.AddMinutes(5), apps: [("chrome.exe", 5000)]), null).Started);
+    }
 }

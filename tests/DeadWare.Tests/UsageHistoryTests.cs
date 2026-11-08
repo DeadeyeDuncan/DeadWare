@@ -270,4 +270,33 @@ public class UsageHistoryTests
         var local = new DateTimeOffset(2026, 11, 2, 7, 5, 59, 999, TimeSpan.FromHours(-5));
         Assert.Equal(new DateTimeOffset(2026, 11, 2, 12, 5, 0, TimeSpan.Zero), UsageMetrics.Floor(local));
     }
+
+    private static void P(UsageMinuteFolder folder, double seconds, long bytes)
+        => folder.Observe(Sample(seconds), [new ProcessTraffic(10, 1, "chrome.exe", null, null, bytes, 0)], true, GpuId);
+
+    [Fact]
+    public void Usage_folder_skips_an_excluded_app_and_keeps_its_baseline()
+    {
+        var f = new UsageMinuteFolder(); var key = AppExclusions.Keys(["chrome.exe"]);
+        P(f, 1, 100); f.Excluded = key; P(f, 2, 200); P(f, 3, 300); f.Excluded = System.Collections.Frozen.FrozenSet<string>.Empty; P(f, 4, 400); P(f, 5, 500);
+        Assert.Equal(200, Assert.Single(f.Flush()!.Applications).Received);
+
+        // Added mid-minute: bytes folded before Excluded is set are in the closed batch, none after.
+        var mid = new UsageMinuteFolder();
+        P(mid, 1, 100); P(mid, 2, 200); mid.Excluded = key; P(mid, 3, 300); P(mid, 4, 400);
+        Assert.Equal(100, Assert.Single(mid.Flush()!.Applications).Received);
+
+        // Forget empties the open minute's bytes for the key; the next publication counts only its own delta.
+        var forget = new UsageMinuteFolder();
+        P(forget, 1, 100); P(forget, 2, 200); forget.Forget("CHROME.EXE"); P(forget, 3, 250);
+        Assert.Equal(50, Assert.Single(forget.Flush()!.Applications).Received);
+        var all = new UsageMinuteFolder();
+        P(all, 1, 100); P(all, 2, 200); all.Forget(null);
+        Assert.Empty(all.Flush()!.Applications);
+
+        // Boundary: the open minute's bytes are dropped, baselines still move.
+        var bounded = new UsageMinuteFolder();
+        P(bounded, 1, 100); bounded.Boundary = new HistoryClear(null, Start.AddMinutes(1), Start); P(bounded, 2, 200); P(bounded, 3, 300);
+        Assert.Empty(bounded.Flush()!.Applications);
+    }
 }
