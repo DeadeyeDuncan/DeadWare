@@ -222,16 +222,16 @@ public class AlertEvaluatorTests
         Assert.Equal(t, Assert.Single(change.Ended).End); Assert.Empty(change.Reseed);
         Assert.Empty(evaluator.OpenEpisodes);
         Assert.Empty(evaluator.ObserveMinute(Batch(day.AddMinutes(1), apps: [("chrome.exe", 5000)]), null).Started);
-        var rows = new[] { new UsageApplicationMinute("chrome.exe", day.AddMinutes(-20), 700, 0, "seg"), new UsageApplicationMinute("steam.exe", day.AddMinutes(-20), 9000, 0, "seg") };
+        var rows = new[] { new UsageApplicationMinute("chrome.exe", day.AddMinutes(-20), 700, 0, "seg"), new UsageApplicationMinute("steam.exe", day.AddMinutes(-20), 400, 0, "seg") };
         evaluator.SeedDay(day, rows);
         Assert.Empty(evaluator.ObserveMinute(Batch(day.AddMinutes(2), apps: [("chrome.exe", 1)]), null).Started);
         // Re-include: only chrome.exe is reseeded; steam.exe keeps its 400.
         var t2 = day.AddMinutes(10);
         Assert.Equal(["chrome.exe"], evaluator.SetExcluded(AppExclusions.Keys([]), t2).Reseed);
-        evaluator.SeedDay(day, rows, AppExclusions.Keys(["CHROME.EXE"]));
+        evaluator.SeedDay(day, [rows[0], new UsageApplicationMinute("steam.exe", day.AddMinutes(-10), 900, 0, "seg")], AppExclusions.Keys(["CHROME.EXE"]));
         // FiredToday is kept: chrome.exe does not fire again today even past the threshold.
         Assert.Empty(evaluator.ObserveMinute(Batch(day.AddMinutes(3), apps: [("chrome.exe", 800)]), null).Started);
-        // steam.exe still holds 400, so 700 more fires it; a seed to 9,000 would have fired it already.
+        // steam.exe still holds 400, so 700 more fires it.
         Assert.Single(evaluator.ObserveMinute(Batch(day.AddMinutes(4), apps: [("steam.exe", 700)]), null).Started);
 
         // A failed re-seed read (no rows) leaves the total at 0.
