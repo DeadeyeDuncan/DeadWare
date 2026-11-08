@@ -441,7 +441,7 @@ internal static class UsageHistoryUiChecks
         var view = Field<TrafficStripView>(page, "strip");
         var from = now.AddHours(-1);
         TrafficStrip Strip(Func<int, bool> zero, int first = 0) => new(from, now, 60_000, TrafficMeasure.Total, [new("chrome.exe", "CHROME.EXE", 1000, 500)], 0, 0, 0,
-            Enumerable.Range(first, 60 - first).Select(k => new TrafficStripSlot(from.AddMinutes(k), from.AddMinutes(k + 1), 1, 60, false, [zero(k) ? 0 : 100L], [zero(k) ? 0 : 50L])).ToArray());
+            Enumerable.Range(first, 60 - first).Select(k => new TrafficStripSlot(from.AddMinutes(k), from.AddMinutes(k + 1), 1, 60, false, [zero(k) ? 0 : 100L, 0], [zero(k) ? 0 : 50L, 0])).ToArray());
         Point At(int k) => new(chart.PlotRect.Left + chart.PlotRect.Width * (k + .5) / 60, chart.PlotRect.Top + chart.PlotRect.Height / 2);
         // An all-apps clear: the band labelled Cleared over [from, RetainedFrom), its line first, and nothing hatched inside it.
         var retained = from.AddMinutes(10);

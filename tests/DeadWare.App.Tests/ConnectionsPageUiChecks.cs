@@ -857,7 +857,7 @@ internal static class ConnectionsPageUiChecks
     /// <summary>chrome.exe and Other over the query's five minutes: bytes in minutes 0 and 2, recorded zero-byte minutes 1, 3 and 4.</summary>
     private static TrafficStrip NotRecordedStrip(ConnectionHistoryQuery query, bool other = true)
     {
-        long[] Bytes(int k, long value) => k is 0 or 2 ? (other ? [value, value / 2] : [value]) : (other ? [0, 0] : [0]);
+        long[] Bytes(int k, long value) => k is 0 or 2 ? [value, other ? value / 2 : 0] : [0, 0];
         var slots = Enumerable.Range(0, 5).Select(k => new TrafficStripSlot(query.From.AddMinutes(k), query.From.AddMinutes(k + 1), 1, 60, false, Bytes(k, 1000), Bytes(k, 500))).ToArray();
         return new(query.From, query.To, 60_000, TrafficMeasure.Total, [new("chrome.exe", "CHROME.EXE", 2000, 1000)], other ? 1000 : 0, other ? 500 : 0, other ? 2 : 0, slots);
     }
@@ -925,7 +925,7 @@ internal static class ConnectionsPageUiChecks
             // Cleared time on the Connections strip.
             var query = new ConnectionHistoryQuery(Local(10, 0), Local(10, 30));
             TrafficStrip Strip(Func<int, bool> zero, int first = 0) => new(query.From, query.To, 60_000, TrafficMeasure.Total, [new("chrome.exe", "CHROME.EXE", 1000, 500)], 0, 0, 0,
-                Enumerable.Range(first, 30 - first).Select(k => new TrafficStripSlot(query.From.AddMinutes(k), query.From.AddMinutes(k + 1), 1, 60, false, [zero(k) ? 0 : 100L], [zero(k) ? 0 : 50L])).ToArray());
+                Enumerable.Range(first, 30 - first).Select(k => new TrafficStripSlot(query.From.AddMinutes(k), query.From.AddMinutes(k + 1), 1, 60, false, [zero(k) ? 0 : 100L, 0], [zero(k) ? 0 : 50L, 0])).ToArray());
             var strip = new TrafficStripView(session, TrafficStripPage.Connections);
             Point At(int k) => new(strip.Chart.PlotRect.Left + strip.Chart.PlotRect.Width * (k + .5) / 30, strip.Chart.PlotRect.Top + strip.Chart.PlotRect.Height / 2);
             var retained = Local(10, 10);
