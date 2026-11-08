@@ -202,6 +202,7 @@ internal sealed class UsageHistoryChart : FrameworkElement
     {
         "%" => TenthsBelowTenPercent && Math.Abs(value) < 10 ? $"{value:0.#}%" : $"{value:0}%",
         "°C" => $"{value:0}°C",
+        Ui.NetworkRateLabel => Ui.Rate(value),
         "B/s" => Ui.Bytes(value, true),
         "B" => Ui.Bytes(value),
         _ => $"{value:0.#} {unit}",

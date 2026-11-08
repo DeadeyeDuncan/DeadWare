@@ -312,7 +312,7 @@ internal sealed class TrafficStripChart : FrameworkElement
         else if (slot.RecordedSeconds > 0)
         {
             long total = SlotTotal(slot, data.Applications.Count, data.Measure);
-            lines.Add($"{Ui.Bytes(total)} · {Ui.Bytes((double)total / slot.RecordedSeconds, true)} average");
+            lines.Add($"{Ui.Bytes(total)} · {Ui.Rate((double)total / slot.RecordedSeconds)} average");
         }
         if (!TrafficStrips.IsFull(slot))
         {
@@ -413,7 +413,7 @@ internal sealed class TrafficStripChart : FrameworkElement
             if (notKept.Width >= 60) Label(dc, "Not kept", notKept.Left + 8, notKept.Top + notKept.Height / 2 - 7);
         }
         if (Hatch is { } hatch) dc.DrawGeometry(HatchBrush(hairlineBrush), null, hatch);
-        ChartFrame.Grid(dc, plot, new[] { 0d, .5, 1 }.Select(f => (Y(maximum * f), Ui.Bytes(maximum * f, true))).ToArray(), [], typeface, pixelsPerDip, false, null, nowLabel: null);
+        ChartFrame.Grid(dc, plot, new[] { 0d, .5, 1 }.Select(f => (Y(maximum * f), Ui.Rate(maximum * f))).ToArray(), [], typeface, pixelsPerDip, false, null, nowLabel: null);
         foreach (var (series, full, geometry) in Bands)
         {
             var fill = (series < data.Applications.Count ? Theme.StripBrush(series) : Theme.Brush("Muted")).Clone();

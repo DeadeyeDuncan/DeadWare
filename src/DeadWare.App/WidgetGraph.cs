@@ -69,11 +69,11 @@ internal sealed class WidgetGraph : Border
         if(kind=="network")
         {
             title.Text="Network";title.ToolTip=$"Network download ({GraphStroke.Pattern(session.Settings,"download")}) and upload ({GraphStroke.Pattern(session.Settings,"upload",true)}), in bytes per second";
-            primary.Text="↓ "+Ui.Bytes(session.Stale?null:session.Value("network/download"),true);primary.ToolTip="Download rate";
-            secondary.Text="↑ "+Ui.Bytes(session.Stale?null:session.Value("network/upload"),true);secondary.ToolTip="Upload rate";
+            primary.Text="↓ "+Ui.Rate(session.Stale?null:session.Value("network/download"));primary.ToolTip="Download rate";
+            secondary.Text="↑ "+Ui.Rate(session.Stale?null:session.Value("network/upload"));secondary.ToolTip="Upload rate";
             double? localDown=session.Stale?null:session.Value("network/download/local");
             local.Visibility=localDown is null?Visibility.Collapsed:Visibility.Visible;
-            if(localDown is not null)local.Text=$"· local ↓ {Ui.Bytes(localDown,true)} ↑ {Ui.Bytes(session.Value("network/upload/local"),true)}";
+            if(localDown is not null)local.Text=$"· local ↓ {Ui.Rate(localDown)} ↑ {Ui.Rate(session.Value("network/upload/local"))}";
         }
         else if(kind=="disk")
         {

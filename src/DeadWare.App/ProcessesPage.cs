@@ -482,6 +482,7 @@ internal sealed class ProcessesPage : UserControl
         "memory"=>Ui.Bytes(value),
         // A known zero reads "0 B", not Ui.Bytes's "0.0 B".
         "gpumemory" or "gpushared"=>value==0?"0 B":Ui.Bytes(value),
+        "network" or "download" or "upload"=>Ui.Rate(value),
         _=>Ui.Bytes(value,true),
     };
 

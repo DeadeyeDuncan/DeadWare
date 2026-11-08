@@ -381,6 +381,8 @@ public sealed class UserSettings
     public string ConnectionsDestinationScope {get;set;}="All";
     public List<string> WidgetGraphs {get;set;}=WidgetGraphSelection.Default.ToList();
     public bool WidgetAlwaysOnTop {get;set;}=true;
+    public string NetworkRateUnit {get;set;}=NetworkRateUnits.Bytes;
+    public bool ExcludeVirtualAdapters {get;set;}
     public bool JoinCpuGpuPopouts {get;set;}
     public bool ShowGpuFanSpeed {get;set;}
     public bool ShowCpuPumpSpeed {get;set;}
@@ -424,6 +426,7 @@ public static class SettingsCodec
             if(s is null) return new(new(),"Settings were empty; defaults restored.");
             if(s.Theme is not ("Midnight" or "Ember" or "Glacier" or "Amethyst" or "Neon" or "Blackout" or "Skyrim" or "Mage" or "Daylight")) s.Theme="Midnight";
             s.GlassLevel=GlassLevels.Normalize(s.GlassLevel);
+            s.NetworkRateUnit=NetworkRateUnits.Normalize(s.NetworkRateUnit);
             s.GraphColors=GraphColorSettings.Normalize(s.GraphColors);
             s.GraphStyles=GraphLineStyles.Normalize(s.GraphStyles);
             s.ConnectionsDestinationScope=ConnectionDestinations.ParseScope(s.ConnectionsDestinationScope).ToString();

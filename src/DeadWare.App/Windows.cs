@@ -36,6 +36,9 @@ public sealed class MainWindow : Window
     private readonly CheckBox cpuCoreUsage=new() {Content="Show per-core CPU usage on usage graphs",Margin=new Thickness(0,12,0,8)};
     private readonly CheckBox processMonitoring=new() {Content="Per-process monitoring",Margin=new Thickness(0,14,0,8)};
     private readonly ComboBox glass=new() {MinWidth=160};
+    private sealed record NetworkUnitChoice(string Key,string Label);
+    private readonly ComboBox networkUnit=new() {ItemsSource=NetworkRateUnits.All.Select(u=>new NetworkUnitChoice(u,NetworkRateUnits.Label(u))).ToArray(),DisplayMemberPath="Label",SelectedValuePath="Key",MinWidth=200};
+    private readonly CheckBox excludeVirtualAdapters=new() {Content="Exclude virtual adapters from network totals",Margin=new Thickness(0,0,0,8)};
     private readonly CheckBox graphSmoothing=new() {Content="Smooth long-range graphs (1, 3 and 6 hours)",Margin=new Thickness(0,0,0,8)};
     private readonly CheckBox usageRecording=new() {Content="Record usage history on this device",Margin=new Thickness(0,8,0,8)};
     private readonly CheckBox alertNotifications=new() {Content="Show tray notifications for alerts",Margin=new Thickness(0,8,0,8)};
@@ -119,6 +122,17 @@ public sealed class MainWindow : Window
         var pollingLabel=Ui.Text("Data polling interval",14);pollingLabel.Margin=new(0,0,12,0);
         var pollingRow=Ui.Row(pollingLabel,polling);pollingRow.Margin=new(0,0,0,8);monitoring.Children.Add(pollingRow);
         var pollingHelp=Ui.Text("Applies without restarting after the current wait or reading finishes. Faster polling uses more resources; slow hardware may take longer than the selected interval. At 5 or 10 seconds, Cooling Health records history but does not gather enough samples for reference comparisons.",12,"Muted");pollingHelp.Margin=new(0,0,0,20);monitoring.Children.Add(pollingHelp);
+        networkUnit.SelectedValue=session.Settings.NetworkRateUnit;
+        System.Windows.Automation.AutomationProperties.SetName(networkUnit,"Network rate unit");
+        networkUnit.SelectionChanged+=(_,_)=>{if(!syncingWidgetGraphs&&networkUnit.SelectedValue is string unit)session.SetNetworkRateUnit(unit);};
+        var networkUnitLabel=Ui.Text("Network rate unit",14);networkUnitLabel.Margin=new(0,0,12,0);
+        var networkUnitRow=Ui.Row(networkUnitLabel,networkUnit);networkUnitRow.Margin=new(0,0,0,8);monitoring.Children.Add(networkUnitRow);
+        var networkUnitHelp=Ui.Text("Bytes per second (MB/s) is the default and matches Task Manager and file copies. Bits per second (Mbps) matches ISP plans and download meters such as Steam's: 1 MB/s is 8 Mbps. Applies immediately to every network rate shown (graphs, Processes, Connections, Usage history); saved history and alert thresholds stay in bytes.",12,"Muted");networkUnitHelp.Margin=new(0,0,0,12);monitoring.Children.Add(networkUnitHelp);
+        excludeVirtualAdapters.IsChecked=session.Settings.ExcludeVirtualAdapters;
+        System.Windows.Automation.AutomationProperties.SetName(excludeVirtualAdapters,"Exclude virtual adapters from network totals");
+        excludeVirtualAdapters.Checked+=(_,_)=>{if(!syncingWidgetGraphs)session.SetExcludeVirtualAdapters(true);};
+        excludeVirtualAdapters.Unchecked+=(_,_)=>{if(!syncingWidgetGraphs)session.SetExcludeVirtualAdapters(false);};monitoring.Children.Add(excludeVirtualAdapters);
+        var virtualHelp=Ui.Text("Off (default) sums every active adapter, so Hyper-V, WSL, Docker and VPN adapters can count the same traffic twice. On leaves out adapters Windows reports as tunnels or PPP links and those named Hyper-V, vEthernet, WSL, VPN, Virtual, TAP, Wintun, WireGuard, Tailscale, ZeroTier, Docker, VMware or VirtualBox. Applies from the next poll to the network graphs and history; per-application traffic is unchanged.",12,"Muted");virtualHelp.Margin=new(0,0,0,20);monitoring.Children.Add(virtualHelp);
         glass.ItemsSource=GlassLevels.All;glass.SelectedItem=session.Settings.GlassLevel;
         System.Windows.Automation.AutomationProperties.SetName(glass,"Window glass");
         glass.SelectionChanged+=(_,_)=>{if(!syncingWidgetGraphs&&glass.SelectedItem is string level)session.SetGlassLevel(level);};
@@ -294,6 +308,8 @@ public sealed class MainWindow : Window
             usageRecording.IsChecked=session.Settings.UsageRecording;
             alertNotifications.IsChecked=session.Settings.AlertNotifications;
             glass.SelectedItem=session.Settings.GlassLevel;
+            networkUnit.SelectedValue=session.Settings.NetworkRateUnit;
+            excludeVirtualAdapters.IsChecked=session.Settings.ExcludeVirtualAdapters;
         }
         finally {syncingWidgetGraphs=false;}
         var r=session.Current;bool noBattery=r?.Battery.PowerState==BatteryPowerState.NoBattery;
