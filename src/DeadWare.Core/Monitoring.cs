@@ -379,6 +379,7 @@ public sealed class UserSettings
     public string? ConnectionsHomeCityId {get;set;}
     public bool ConnectionsAnimation {get;set;}=true;
     public string ConnectionsDestinationScope {get;set;}="All";
+    public List<string> ExcludedApps {get;set;}=new();
     public List<string> WidgetGraphs {get;set;}=WidgetGraphSelection.Default.ToList();
     public bool WidgetAlwaysOnTop {get;set;}=true;
     public bool JoinCpuGpuPopouts {get;set;}
@@ -449,6 +450,7 @@ public static class SettingsCodec
             if(legacyColumns&&s.ProcessColumns.ToHashSet(StringComparer.Ordinal).SetEquals(ProcessColumnKeys.PreviousDefault))s.ProcessColumns=[..ProcessColumnKeys.Default];
             s.ProcessColumnsVersion=ProcessColumnKeys.CurrentVersion;
             s.Alerts=AlertRules.Normalize(s.Alerts);
+            s.ExcludedApps=AppExclusions.Normalize(s.ExcludedApps);
             s.Windows=s.Windows.Where(p=>p.Value is not null).Take(16).ToDictionary(p=>p.Key,p=>p.Value);
             bool legacyPlacement=!document.RootElement.TryGetProperty(nameof(UserSettings.WindowPlacementFormat),out _)||s.WindowPlacementFormat!=WindowCoordinates.Format;
             bool resetPlacement=legacyPlacement&&s.Windows.Count>0;

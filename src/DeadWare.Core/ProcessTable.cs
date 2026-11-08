@@ -74,7 +74,7 @@ public sealed record ProcessAppRow(string Key,string Name,IReadOnlyList<ProcessS
 }
 public static class ProcessGrouping
 {
-    public static string Key(string name)=>UsageMetrics.NormalizeName(name).ToUpperInvariant();
+    public static string Key(string name)=>AppKey.Of(name);
     public static IReadOnlyList<ProcessAppRow> Group(IReadOnlyList<ProcessSample> processes)
     {
         var order=new List<string>();

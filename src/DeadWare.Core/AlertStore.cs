@@ -169,6 +169,7 @@ public sealed class AlertStore
         try
         {
             db.Open();
+            db.CreateFunction<string, string>("app_key", AppKey.Of, isDeterministic: true);
             if (!readOnly && configure) Configure(db);
             return db;
         }
