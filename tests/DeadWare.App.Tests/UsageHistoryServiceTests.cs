@@ -130,9 +130,24 @@ public class UsageHistoryServiceTests
         SeedApplications(fixture.Path, UsageMetrics.Floor(DateTimeOffset.UtcNow.AddDays(-3)), 2000, 100);
         Assert.Equal(200_000, Count(fixture.Path, "SELECT COUNT(*) FROM application_minutes"));
         var service = new UsageHistoryService(fixture.Path, "tablet");
+        var store = Store(service);
         var committed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        // Each committed delete waits 40 ms, so the clear (49 transactions) outlasts several steps.
-        typeof(UsageHistoryStore).GetField("clearCommitted", All)!.SetValue(Store(service), (Action<int>)(_ => { committed.TrySetResult(); Thread.Sleep(40); }));
+        Task? stopping = null; bool stopNow = false; int steps = 0, stepsAfterStop = 0; var sinceStop = new Stopwatch();
+        // Counts every step and those that start once StopAsync was requested (the spec: a step never starts after StopAsync).
+        service.ClearStepOverride = budget =>
+        {
+            steps++;
+            if (Volatile.Read(ref stopping) is not null) stepsAfterStop++;
+            return store.ClearStep(budget);
+        };
+        // Each committed delete waits 40 ms, so the clear (49 transactions) outlasts several steps. Once asked, the next commit requests
+        // StopAsync from inside the step, so a step is always in progress when the stop arrives.
+        typeof(UsageHistoryStore).GetField("clearCommitted", All)!.SetValue(store, (Action<int>)(_ =>
+        {
+            committed.TrySetResult();
+            if (Volatile.Read(ref stopNow) && stopping is null) { sinceStop.Start(); Volatile.Write(ref stopping, service.StopAsync()); }
+            Thread.Sleep(40);
+        }));
         service.Start();
         using var publishing = new CancellationTokenSource();
         var publisher = Task.Run(async () =>
@@ -145,9 +160,14 @@ public class UsageHistoryServiceTests
         await Task.Delay(500);
         publishing.Cancel(); await publisher;
         Assert.Equal(HistoryClearPhase.Clearing, service.ClearState.Phase);
-        var stopping = Stopwatch.StartNew();
-        await service.StopAsync();
-        Assert.True(stopping.Elapsed < TimeSpan.FromSeconds(1), $"StopAsync took {stopping.Elapsed}.");
+        Volatile.Write(ref stopNow, true);
+        await Until(() => Volatile.Read(ref stopping) is not null);
+        await stopping!;
+        sinceStop.Stop();
+        // Quit waits only for the step in progress (250 ms plus one transaction) and the final save; no further step starts.
+        Assert.True(steps > 0);
+        Assert.Equal(0, stepsAfterStop);
+        Assert.True(sinceStop.Elapsed < TimeSpan.FromSeconds(5), $"StopAsync took {sinceStop.Elapsed}.");
         Assert.Equal(0, service.DroppedSamples);
         Assert.False(service.Failed);
         Assert.True(File.Exists(Marker(fixture.Path)));
