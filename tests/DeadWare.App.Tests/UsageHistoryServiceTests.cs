@@ -126,13 +126,14 @@ public class UsageHistoryServiceTests
     {
         using var fixture = new Fixture();
         new UsageHistoryStore(fixture.Path).Initialize();
-        // 2,000 minutes × 100 apps.
-        SeedApplications(fixture.Path, UsageMetrics.Floor(DateTimeOffset.UtcNow.AddDays(-3)), 2000, 100);
-        Assert.Equal(200_000, Count(fixture.Path, "SELECT COUNT(*) FROM application_minutes"));
+        // 440 minutes × 100 apps: eleven all-apps delete transactions of at most 4,096 rows. The first service stops after the fourth, so
+        // the resumed one runs seven: few enough for a slow CI disk (about 0.7 s a transaction there), and the resume means the same.
+        SeedApplications(fixture.Path, UsageMetrics.Floor(DateTimeOffset.UtcNow.AddDays(-3)), 440, 100);
+        Assert.Equal(44_000, Count(fixture.Path, "SELECT COUNT(*) FROM application_minutes"));
         var service = new UsageHistoryService(fixture.Path, "tablet");
         var store = Store(service);
         var committed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        Task? stopping = null; bool stopNow = false; int steps = 0, stepsAfterStop = 0; var sinceStop = new Stopwatch();
+        Task? stopping = null; int commits = 0, steps = 0, stepsAfterStop = 0; var sinceStop = new Stopwatch();
         // Counts every step and those that start once StopAsync was requested (the spec: a step never starts after StopAsync).
         service.ClearStepOverride = budget =>
         {
@@ -140,14 +141,17 @@ public class UsageHistoryServiceTests
             if (Volatile.Read(ref stopping) is not null) stepsAfterStop++;
             return store.ClearStep(budget);
         };
-        // Each committed delete waits 40 ms, so the clear (49 transactions) outlasts several steps. Once asked, the next commit requests
-        // StopAsync from inside the step, so a step is always in progress when the stop arrives.
+        // Each committed delete waits 40 ms while publications keep arriving. The fourth commit requests StopAsync from inside its step, so a
+        // step is always in progress when the stop arrives; from then on the step's clock reads past its budget, so that step ends after
+        // this transaction and seven remain for the resumed service whatever the disk's speed.
         typeof(UsageHistoryStore).GetField("clearCommitted", All)!.SetValue(store, (Action<int>)(_ =>
         {
             committed.TrySetResult();
-            if (Volatile.Read(ref stopNow) && stopping is null) { sinceStop.Start(); Volatile.Write(ref stopping, service.StopAsync()); }
+            if (++commits == 4) { sinceStop.Start(); Volatile.Write(ref stopping, service.StopAsync()); }
             Thread.Sleep(40);
         }));
+        typeof(UsageHistoryStore).GetField("clearClock", All)!.SetValue(store, (Func<TimeSpan>)(() =>
+            HistoryClearStep.MonotonicClock() + (Volatile.Read(ref stopping) is null ? TimeSpan.Zero : TimeSpan.FromHours(1))));
         service.Start();
         using var publishing = new CancellationTokenSource();
         var publisher = Task.Run(async () =>
@@ -157,26 +161,27 @@ public class UsageHistoryServiceTests
         var request = HistoryClear.Create(null, allTime: true, DateTimeOffset.UtcNow);
         service.Clear(request);
         await committed.Task.WaitAsync(TimeSpan.FromSeconds(30));
-        await Task.Delay(500);
-        publishing.Cancel(); await publisher;
+        await Until(() => Volatile.Read(ref stopping) is not null, 120);
         Assert.Equal(HistoryClearPhase.Clearing, service.ClearState.Phase);
-        Volatile.Write(ref stopNow, true);
-        await Until(() => Volatile.Read(ref stopping) is not null);
         await stopping!;
         sinceStop.Stop();
+        publishing.Cancel(); await publisher;
         // Quit waits only for the step in progress (250 ms plus one transaction) and the final save; no further step starts.
         Assert.True(steps > 0);
+        Assert.Equal(4, commits);
         Assert.Equal(0, stepsAfterStop);
         Assert.True(sinceStop.Elapsed < TimeSpan.FromSeconds(5), $"StopAsync took {sinceStop.Elapsed}.");
         Assert.Equal(0, service.DroppedSamples);
         Assert.False(service.Failed);
         Assert.True(File.Exists(Marker(fixture.Path)));
-        Assert.True(Count(fixture.Path, $"SELECT COUNT(*) FROM application_minutes WHERE minute<{request.Before.ToUnixTimeMilliseconds()}") > 0);
+        // Exactly four transactions ran: the step in progress at the stop ended after its transaction.
+        Assert.Equal(44_000 - 4 * 4096, Count(fixture.Path, $"SELECT COUNT(*) FROM application_minutes WHERE minute<{request.Before.ToUnixTimeMilliseconds()}"));
 
         var resumed = new UsageHistoryService(fixture.Path, "tablet");
         resumed.Start();
         try
         {
+            // Seven transactions: about 5 s on the CI runner; 60 s leaves room for its slowest disk.
             await Until(() => resumed.ClearState.Phase == HistoryClearPhase.Done, 60);
             Assert.True(resumed.ClearState.Resumed);
         }
