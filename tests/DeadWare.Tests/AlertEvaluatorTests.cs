@@ -199,4 +199,14 @@ public class AlertEvaluatorTests
         Assert.Single(evaluator.ObserveBattery(T0.AddMinutes(7), Reading(25)).Ended);
         Assert.Empty(Minute(evaluator, 8, 99).Started);
     }
+
+    [Fact]
+    public void First_network_use_rules_are_never_evaluated_by_minutes_or_battery_and_budget_episodes_carry_their_application()
+    {
+        var evaluator = Evaluator(AlertRules.DefaultFirstNetworkUse(T0), Rule(AlertKind.ApplicationDaily, "chrome.exe", 100, 1, "budget"));
+        var minute = evaluator.ObserveMinute(Batch(T0, 10, apps: ("chrome.exe", 200)), Gpu);
+        var battery = evaluator.ObserveBattery(T0, new BatteryReading(5, BatteryPowerState.OnBattery, false));
+        Assert.DoesNotContain(minute.Started.Concat(battery.Started), e => e.Kind == AlertKind.FirstNetworkUse);
+        Assert.Equal("chrome.exe", Assert.Single(minute.Started).Application);
+    }
 }
