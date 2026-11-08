@@ -1,4 +1,6 @@
 using System.Diagnostics;
+using System.Globalization;
+using System.Text.Json;
 using Microsoft.Data.Sqlite;
 
 namespace DeadWare.Core;
@@ -155,5 +157,145 @@ public sealed class HistoryClearStep
         command.CommandText = "PRAGMA secure_delete";
         if (Convert.ToInt64(command.ExecuteScalar(), System.Globalization.CultureInfo.InvariantCulture) != 1)
             throw new IOException("History storage could not turn on secure deletion.");
+    }
+}
+
+/// <summary>
+/// The sidecar clear marker of usage-history.db and process-history.db:
+/// <c>{"Version":1,"AppKey":&lt;string or null&gt;,"Before":&lt;ISO 8601 UTC&gt;,"Requested":&lt;ISO 8601 UTC&gt;}</c>.
+/// </summary>
+public static class HistoryClearMarker
+{
+    /// <summary>Writes the marker to <c>path + ".tmp"</c>, flushes it to disk and moves it over <paramref name="path"/>. On failure the <c>.tmp</c> is removed and the error passes through.</summary>
+    public static void Write(string path, HistoryClear clear)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(path); ArgumentNullException.ThrowIfNull(clear);
+        if (clear.AppKey is { Length: 0 }) throw new ArgumentException("A history clear names an application key, or none for all apps.", nameof(clear));
+        SidecarJson.Write(path, writer =>
+        {
+            writer.WriteNumber("Version", 1);
+            if (clear.AppKey is null) writer.WriteNull("AppKey"); else writer.WriteString("AppKey", clear.AppKey);
+            writer.WriteString("Before", SidecarJson.Stamp(clear.Before));
+            writer.WriteString("Requested", SidecarJson.Stamp(clear.Requested));
+        });
+    }
+
+    /// <summary>
+    /// The marker's request, or null when the file is absent. Bad JSON, another <c>Version</c> or an invalid field throws
+    /// <see cref="InvalidDataException"/>; an <see cref="IOException"/> (or access denied) passes through.
+    /// </summary>
+    public static HistoryClear? Read(string path)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(path);
+        byte[] bytes;
+        try { bytes = File.ReadAllBytes(path); }
+        catch (Exception error) when (error is FileNotFoundException or DirectoryNotFoundException) { return null; }
+        try
+        {
+            using var json = JsonDocument.Parse(bytes);
+            var root = json.RootElement;
+            if (!SidecarJson.IsVersion1(root))
+                throw new InvalidDataException("The history clear marker has an unknown version.");
+            if (!root.TryGetProperty("AppKey", out var key) || key.ValueKind is not (JsonValueKind.Null or JsonValueKind.String) ||
+                key.ValueKind == JsonValueKind.String && key.GetString() is not { Length: > 0 })
+                throw new InvalidDataException("The history clear marker has an invalid application key.");
+            if (!root.TryGetProperty("Before", out var before) || SidecarJson.Time(before) is not { } beforeTime ||
+                !root.TryGetProperty("Requested", out var requested) || SidecarJson.Time(requested) is not { } requestedTime)
+                throw new InvalidDataException("The history clear marker has an invalid time.");
+            return new(key.ValueKind == JsonValueKind.Null ? null : key.GetString(), beforeTime, requestedTime);
+        }
+        catch (JsonException error) { throw new InvalidDataException("The history clear marker is not valid JSON.", error); }
+    }
+
+    /// <summary>Deletes a leftover <c>path + ".tmp"</c> from an interrupted write.</summary>
+    public static void DeleteLeftover(string path)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(path);
+        File.Delete(path + ".tmp");
+    }
+}
+
+/// <summary>
+/// usage-history.db's cleared marks, kept after a clear for the traffic strip (times only):
+/// <c>{"Version":1,"AllAppsBefore":&lt;ISO 8601 UTC or null&gt;,"OneAppBefore":&lt;ISO 8601 UTC or null&gt;}</c>, each the latest <c>Before</c> of that kind.
+/// </summary>
+public sealed record UsageClearedMarks(DateTimeOffset? AllAppsBefore, DateTimeOffset? OneAppBefore)
+{
+    public static UsageClearedMarks None { get; } = new(null, null);
+
+    /// <summary>The marks in <paramref name="path"/>; a missing, invalid or unreadable file reads as <see cref="None"/>.</summary>
+    public static UsageClearedMarks Read(string path)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(path);
+        try
+        {
+            using var json = JsonDocument.Parse(File.ReadAllBytes(path));
+            var root = json.RootElement;
+            if (!SidecarJson.IsVersion1(root) || !root.TryGetProperty("AllAppsBefore", out var all) || !root.TryGetProperty("OneAppBefore", out var one))
+                return None;
+            DateTimeOffset? allTime = null, oneTime = null;
+            if (all.ValueKind != JsonValueKind.Null && (allTime = SidecarJson.Time(all)) is null) return None;
+            if (one.ValueKind != JsonValueKind.Null && (oneTime = SidecarJson.Time(one)) is null) return None;
+            return new(allTime, oneTime);
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or JsonException) { return None; }
+    }
+
+    /// <summary>The marks with <paramref name="clear"/>'s <c>Before</c> taken into its kind: the larger of the old and the new.</summary>
+    public UsageClearedMarks With(HistoryClear clear)
+    {
+        ArgumentNullException.ThrowIfNull(clear);
+        var before = clear.Before.ToUniversalTime();
+        static DateTimeOffset Max(DateTimeOffset? old, DateTimeOffset value) => old is { } kept && kept > value ? kept : value;
+        return clear.AppKey is null ? this with { AllAppsBefore = Max(AllAppsBefore, before) } : this with { OneAppBefore = Max(OneAppBefore, before) };
+    }
+
+    /// <summary>Writes the marks as the clear marker is written: <c>.tmp</c>, <c>Flush(true)</c>, then a move over <paramref name="path"/>.</summary>
+    public void Write(string path)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(path);
+        SidecarJson.Write(path, writer =>
+        {
+            writer.WriteNumber("Version", 1);
+            if (AllAppsBefore is { } all) writer.WriteString("AllAppsBefore", SidecarJson.Stamp(all)); else writer.WriteNull("AllAppsBefore");
+            if (OneAppBefore is { } one) writer.WriteString("OneAppBefore", SidecarJson.Stamp(one)); else writer.WriteNull("OneAppBefore");
+        });
+    }
+}
+
+/// <summary>The sidecar files' shared JSON handling: version 1, UTC ISO 8601 times and the durable write.</summary>
+internal static class SidecarJson
+{
+    public static bool IsVersion1(JsonElement root)
+        => root.ValueKind == JsonValueKind.Object && root.TryGetProperty("Version", out var version) && version.ValueKind == JsonValueKind.Number &&
+           version.TryGetInt32(out int number) && number == 1;
+
+    public static string Stamp(DateTimeOffset time) => time.UtcDateTime.ToString("O", CultureInfo.InvariantCulture);
+
+    /// <summary>An ISO 8601 time as UTC, or null for anything else.</summary>
+    public static DateTimeOffset? Time(JsonElement element)
+        => element.ValueKind == JsonValueKind.String && element.TryGetDateTimeOffset(out var time) ? time.ToUniversalTime() : null;
+
+    /// <summary>Writes one JSON object to <c>path + ".tmp"</c>, flushes it to disk and moves it over <paramref name="path"/>.</summary>
+    public static void Write(string path, Action<Utf8JsonWriter> properties)
+    {
+        string temporary = path + ".tmp";
+        try
+        {
+            using (var stream = new FileStream(temporary, FileMode.Create, FileAccess.Write, FileShare.None))
+            {
+                using (var writer = new Utf8JsonWriter(stream))
+                {
+                    writer.WriteStartObject(); properties(writer); writer.WriteEndObject();
+                }
+                stream.Flush(true);
+            }
+            File.Move(temporary, path, overwrite: true);
+        }
+        catch
+        {
+            try { File.Delete(temporary); } catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
+            throw;
+        }
     }
 }

@@ -685,10 +685,17 @@ public sealed class ConnectionHistoryStore
             otherReceived=Add(otherReceived,total.Received); otherSent=Add(otherSent,total.Sent);
             if(total.Received>0||total.Sent>0) otherApplications++;
         }
-        // 4. Retained start, from floor and expiry only.
-        long floor,expiry;
-        using(var command=Command(db,"SELECT (SELECT value FROM metadata WHERE key='floor'),coalesce((SELECT value FROM metadata WHERE key='expiry'),0)",tx))
-        using(var reader=command.ExecuteReader()) {reader.Read(); floor=reader.GetInt64(0); expiry=reader.GetInt64(1);}
+        // 4. Retained start, from floor and expiry only; the cleared marks, read in the same transaction, say whether it is a clear's.
+        long floor,expiry; long? clearedAll,clearedOne;
+        using(var command=Command(db,"""
+            SELECT (SELECT value FROM metadata WHERE key='floor'),coalesce((SELECT value FROM metadata WHERE key='expiry'),0),
+              (SELECT value FROM metadata WHERE key='cleared-all'),(SELECT value FROM metadata WHERE key='cleared-one')
+            """,tx))
+        using(var reader=command.ExecuteReader())
+        {
+            reader.Read(); floor=reader.GetInt64(0); expiry=reader.GetInt64(1);
+            clearedAll=reader.IsDBNull(2)?null:reader.GetInt64(2); clearedOne=reader.IsDBNull(3)?null:reader.GetInt64(3);
+        }
         long expiryMinute=TrafficStrips.CeilingMinute(Stamp(expiry)).UtcTicks;
         long retained=Math.Max(expiryMinute,floor+TimeSpan.TicksPerMinute);
         var slots=new Dictionary<long,StripSlot>();
@@ -735,7 +742,11 @@ public sealed class ConnectionHistoryStore
         // 7. and 8.
         DateTimeOffset? retainedFrom=retained>origin.UtcTicks?Stamp(retained):null;
         bool capacityShortened=floor>0&&floor+TimeSpan.TicksPerMinute>expiryMinute;
-        return new(query.From,query.To,bucket/TimeSpan.TicksPerMillisecond,measure,applications.AsReadOnly(),otherReceived,otherSent,otherApplications,listed.AsReadOnly(),retainedFrom,capacityShortened);
+        // The retained start is the clear's while the all-apps mark is the expiry itself; once the 30-day expiry passes it, it is Not kept again.
+        bool retainedByClear=retainedFrom is not null&&!capacityShortened&&clearedAll==expiry;
+        DateTimeOffset? appClearedBefore=clearedOne is {} one&&one>origin.UtcTicks&&one<=DateTimeOffset.MaxValue.UtcTicks&&(retainedFrom is null||one>retained)?Stamp(one):null;
+        return new(query.From,query.To,bucket/TimeSpan.TicksPerMillisecond,measure,applications.AsReadOnly(),otherReceived,otherSent,otherApplications,listed.AsReadOnly(),retainedFrom,capacityShortened,
+            retainedByClear,appClearedBefore);
     }
     private sealed record DestinationTotals(string Remote,int Kind,long Received,long Sent,long FirstSeen,long LastSeen,long Minutes,bool Complete,int Apps,int Ports,bool Unlocated);
     private sealed record DestinationLists(Dictionary<string,List<ConnectionDestinationApp>> Apps,Dictionary<string,List<ConnectionDestinationPort>> Ports,Dictionary<string,List<ConnectionLocation>> Locations);
