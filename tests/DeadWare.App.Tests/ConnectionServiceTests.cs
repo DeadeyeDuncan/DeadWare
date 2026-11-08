@@ -690,4 +690,196 @@ public class ConnectionServiceTests
         }
         finally {await service.StopAsync();}
     }
+    /// <summary>Appends through the real store of a wrapAppend service, keeping each call's payload, maintenance bound and whether the store's clear was pending.</summary>
+    private sealed class ClearAppends
+    {
+        private readonly object sync=new();
+        private readonly List<(ConnectionHistoryRecord[] Records,ConnectionCoverage[] Coverage,int Maintenance,bool Pending)> calls=[];
+        /// <summary>Asked on each call that carries records; true throws IOException before the store sees it.</summary>
+        public Func<bool> Fail=()=>false;
+        public Func<bool> Pending=()=>false;
+        public ConnectionAppend Wrap(ConnectionAppend inner)=>(records,coverage,now,maintenance)=>
+        {
+            lock(sync)calls.Add((records.ToArray(),coverage.ToArray(),maintenance,Pending()));
+            if(records.Count>0&&Fail())throw new System.IO.IOException();
+            inner(records,coverage,now,maintenance);
+        };
+        public (ConnectionHistoryRecord[] Records,ConnectionCoverage[] Coverage,int Maintenance,bool Pending)[] All {get {lock(sync)return calls.ToArray();}}
+        public (ConnectionHistoryRecord[] Records,ConnectionCoverage[] Coverage,int Maintenance,bool Pending)[] WithRecords=>All.Where(c=>c.Records.Length>0).ToArray();
+        public async Task WaitFor(int n)
+        {
+            var deadline=DateTime.UtcNow+TimeSpan.FromSeconds(15);
+            while(WithRecords.Length<n)
+            {
+                if(DateTime.UtcNow>deadline)Assert.Fail($"Expected {n} appends with records before the timeout; saw {WithRecords.Length}.");
+                await Task.Delay(5);
+            }
+        }
+    }
+    private static (ConnectionService Service,string Root) ClearService(ClearAppends appends,TestClock clock,ConnectionServiceOptions? options=null)
+    {
+        string root=System.IO.Path.Combine(System.IO.Path.GetTempPath(),"DeadWare-clear-"+Guid.NewGuid().ToString("N"));System.IO.Directory.CreateDirectory(root);
+        var service=new ConnectionService(System.IO.Path.Combine(root,"connections.db"),new Resolver(_=>null),clock.Read,appends.Wrap,options??new(FlushInterval:TimeSpan.FromMinutes(10)));
+        appends.Pending=()=>service.PendingClear is not null;
+        return (service,root);
+    }
+    private static async Task UntilClear(ConnectionService service,HistoryClearPhase phase)
+    {
+        var deadline=DateTime.UtcNow+TimeSpan.FromSeconds(15);
+        while(service.ClearState.Phase!=phase)
+        {
+            if(DateTime.UtcNow>deadline)Assert.Fail($"Expected the clear to reach {phase}; it is {service.ClearState}.");
+            await Task.Delay(5);
+        }
+    }
+    private static async Task Dispose(ConnectionService service,string root)
+    {
+        await service.StopAsync();Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+        if(System.IO.Directory.Exists(root))System.IO.Directory.Delete(root,true);
+    }
+    private static long Count(string file,string sql)
+    {
+        using var db=new Microsoft.Data.Sqlite.SqliteConnection(new Microsoft.Data.Sqlite.SqliteConnectionStringBuilder{DataSource=file,Pooling=false}.ToString());
+        db.Open();using var command=db.CreateCommand();command.CommandText=sql;return Convert.ToInt64(command.ExecuteScalar());
+    }
+    [Fact] public async Task Clear_retires_held_in_scope_units_whole()
+    {
+        var clock=new TestClock();clock.Set(100);var appends=new ClearAppends();var observed=new ConcurrentQueue<int>();
+        var (service,root)=ClearService(appends,clock,new(FlushInterval:TimeSpan.FromMilliseconds(20)));
+        service.maintenanceObserved=observed.Enqueue;
+        long droppedAtFirstStep=-1;
+        service.ClearStepOverride=_=>{Interlocked.CompareExchange(ref droppedAtFirstStep,service.DroppedObservations,-1);return new(1,1,true);};
+        service.Start();
+        try
+        {
+            // Minute 1: a.exe in "segment"; then the clock steps back to + 50 s and b.exe arrives in "other" (R2 freezes the a.exe unit 48 s ahead).
+            service.TryRecord(Apps(100,"a.exe"));await Until(()=>service.PendingPublications==0);
+            clock.Set(50);service.TryRecord(Apps(101,"b.exe") with {Segment="other"});await Until(()=>service.PendingPublications==0);
+            // R2 freezes the b.exe-only unit 49 s ahead. Both are held by the clock check.
+            service.TryRecord(Apps(50) with {Sequence=200,Segment="new"});await Until(()=>service.PendingPublications==0);
+            await Task.Delay(200);Assert.Empty(appends.WithRecords);Assert.Equal(0,service.DroppedObservations);
+            var clear=HistoryClear.Create("A.EXE",allTime:true,Epoch.AddSeconds(100));Assert.Equal(Epoch.AddMinutes(2),clear.Before);
+            service.Clear(clear);await UntilClear(service,HistoryClearPhase.Done);
+            // The a.exe unit (one observation) was retired whole before the first step.
+            Assert.Equal(1,Interlocked.Read(ref droppedAtFirstStep));Assert.Equal(1,service.DroppedObservations);
+            // The clock passes the b.exe unit: a tick sends it unchanged.
+            clock.Set(101);
+            await UntilAsync(()=>Task.FromResult(appends.WithRecords.Any(c=>c.Records.Any(r=>r.Delta.Peer.Process.Name=="b.exe"))));
+            var b=Assert.Single(appends.WithRecords.SelectMany(c=>c.Records),r=>r.Delta.Peer.Process.Name=="b.exe");
+            Assert.Equal((ConnectionMinuteFolder.BatchId("other",Epoch.AddMinutes(1),0,1),Epoch.AddMinutes(1),10L,Epoch.AddSeconds(101)),(b.BatchId,b.Delta.Minute,b.Delta.ReceivedBytes,b.Delta.LastSeen));
+            // An open c.exe unit for the final write.
+            service.TryRecord(Apps(101,"c.exe") with {Sequence=300,Segment="new"});await Until(()=>service.PendingPublications==0);
+            await service.StopAsync();
+            var calls=appends.All;int last=Array.FindIndex(calls,c=>c.Records.Any(r=>r.Delta.Peer.Process.Name=="c.exe"));
+            Assert.True(last>=0);
+            Assert.All(calls[last..],c=>Assert.Equal(0,c.Maintenance));Assert.All(calls[..last],c=>Assert.Equal(64,c.Maintenance));
+            Assert.Equal(64,observed.First());Assert.Equal(0,observed.Last());
+            Assert.DoesNotContain(calls.SelectMany(c=>c.Records),r=>r.Delta.Peer.Process.Name=="a.exe");
+            Assert.Equal(1,service.DroppedObservations);Assert.Equal(0,service.BufferedDeltas);
+        }
+        finally {await Dispose(service,root);}
+    }
+    [Fact] public async Task Connection_clear_flushes_first_and_drops_the_rest_of_the_minute()
+    {
+        var query=new ConnectionHistoryQuery(Epoch,Epoch.AddMinutes(3));
+        // All time, one app: the frozen minute 0 (its R1 write failed) is appended after the marker and before the delete;
+        // a.exe's open minute 1 is forgotten and the rest of it dropped; minute 2 (at Before) is saved.
+        {
+            var clock=new TestClock();var appends=new ClearAppends();int failures=0;var observed=new ConcurrentQueue<int>();
+            appends.Fail=()=>Interlocked.Increment(ref failures)==1;
+            var (service,root)=ClearService(appends,clock);service.maintenanceObserved=observed.Enqueue;service.Start();
+            try
+            {
+                RecordApps(service,clock,1,63,"a.exe","b.exe");await appends.WaitFor(1);await Until(()=>service.PendingPublications==0);
+                var clear=HistoryClear.Create("a.exe",allTime:true,Epoch.AddSeconds(63));Assert.Equal(Epoch.AddMinutes(2),clear.Before);
+                service.Clear(clear);await UntilClear(service,HistoryClearPhase.Done);
+                var flushed=appends.WithRecords[1];
+                Assert.True(flushed.Pending);Assert.Contains(flushed.Records,r=>r.Delta.Peer.Process.Name=="a.exe"&&r.Delta.Minute==Epoch);
+                Assert.Null(service.PendingClear);Assert.False(service.ClearState.Resumed);
+                RecordApps(service,clock,64,125,"a.exe","b.exe");await service.StopAsync();
+                var appended=appends.All.SelectMany(c=>c.Records).ToArray();
+                Assert.DoesNotContain(appended,r=>r.Delta.Peer.Process.Name=="a.exe"&&r.Delta.Minute==Epoch.AddMinutes(1));
+                Assert.Equal(60L,Assert.Single(appended,r=>r.Delta.Peer.Process.Name=="a.exe"&&r.Delta.Minute==Epoch.AddMinutes(2)).Delta.ReceivedBytes);
+                var rows=(await service.ReadViewAsync(query)).Rows;
+                Assert.Equal([(Epoch.AddMinutes(2),60L)],rows.Where(r=>r.Process.Name=="a.exe").Select(r=>(r.Minute,r.ReceivedBytes)));
+                Assert.Equal([(Epoch,590L),(Epoch.AddMinutes(1),600L),(Epoch.AddMinutes(2),60L)],rows.Where(r=>r.Process.Name=="b.exe").Select(r=>(r.Minute,r.ReceivedBytes)).OrderBy(r=>r.Minute));
+                // InitializeAsync and the write attempts pass 64; the final write (minute 2) passes 0.
+                var calls=appends.All;int final=Array.FindIndex(calls,c=>c.Records.Any(r=>r.Delta.Minute==Epoch.AddMinutes(2)));
+                Assert.True(final>=0);
+                Assert.All(calls[..final],c=>Assert.Equal(64,c.Maintenance));Assert.All(calls[final..],c=>Assert.Equal(0,c.Maintenance));
+                Assert.Equal(64,observed.First());Assert.Equal(0,observed.Last());
+                Assert.Equal(0,service.DroppedObservations);Assert.Equal(0,service.BufferedDeltas);
+            }
+            finally {await Dispose(service,root);}
+        }
+        // Older than 7 days: the open units are left alone.
+        {
+            var clock=new TestClock();var appends=new ClearAppends();var (service,root)=ClearService(appends,clock);service.Start();
+            try
+            {
+                RecordApps(service,clock,1,30,"a.exe");await Until(()=>service.PendingPublications==0&&service.BufferedDeltas==2);
+                service.Clear(HistoryClear.Create("a.exe",allTime:false,Epoch.AddSeconds(30)));await UntilClear(service,HistoryClearPhase.Done);
+                Assert.Equal(2,service.BufferedDeltas);Assert.Empty(appends.WithRecords);
+                await service.StopAsync();
+                var record=Assert.Single(appends.All.SelectMany(c=>c.Records));Assert.Equal(("a.exe",300L),(record.Delta.Peer.Process.Name,record.Delta.ReceivedBytes));
+            }
+            finally {await Dispose(service,root);}
+        }
+        // The clear's write throws: Failed with the marker saved; Try again resumes without repeating Forget.
+        {
+            var clock=new TestClock();var appends=new ClearAppends();int failing=1;appends.Fail=()=>Volatile.Read(ref failing)==1;
+            var (service,root)=ClearService(appends,clock);service.Start();
+            try
+            {
+                RecordApps(service,clock,1,63,"a.exe","b.exe");await appends.WaitFor(1);await Until(()=>service.PendingPublications==0);
+                service.Clear(HistoryClear.Create("A.EXE",allTime:true,Epoch.AddSeconds(63)));await UntilClear(service,HistoryClearPhase.Failed);
+                var state=service.ClearState;
+                Assert.Equal(("IOException",true),(state.Error,state.MarkerSaved));Assert.NotNull(service.PendingClear);Assert.True(service.CanRetryClear);
+                Assert.EndsWith(" · Clearing history failed (IOException); it resumes when DeadWare next starts.",service.StorageStatus);
+                // a.exe at Before and after, merged after the first run.
+                RecordApps(service,clock,120,121,"a.exe","b.exe");await Until(()=>service.PendingPublications==0);
+                Volatile.Write(ref failing,0);service.RetryClear();await UntilClear(service,HistoryClearPhase.Done);
+                Assert.Null(service.PendingClear);Assert.False(service.CanRetryClear);
+                await service.StopAsync();
+                Assert.Equal(20L,Assert.Single(appends.All.SelectMany(c=>c.Records),r=>r.Delta.Peer.Process.Name=="a.exe"&&r.Delta.Minute==Epoch.AddMinutes(2)).Delta.ReceivedBytes);
+                var rows=(await service.ReadViewAsync(query)).Rows;
+                Assert.Equal([(Epoch.AddMinutes(2),20L)],rows.Where(r=>r.Process.Name=="a.exe").Select(r=>(r.Minute,r.ReceivedBytes)));
+                Assert.Contains(rows,r=>r.Process.Name=="b.exe"&&r.Minute==Epoch);
+            }
+            finally {await Dispose(service,root);}
+        }
+        // A marker that cannot be saved (the metadata table padded to the 65,536-byte cap after InitializeAsync) clears nothing.
+        {
+            string root=System.IO.Path.Combine(System.IO.Path.GetTempPath(),"DeadWare-clear-"+Guid.NewGuid().ToString("N"));System.IO.Directory.CreateDirectory(root);
+            string file=System.IO.Path.Combine(root,"connections.db");
+            ConnectionHistoryRecord Row(string name)=>new("b-"+name,"segment",new(Epoch,Peer with {Process=new(30,1,name)},10,0,Epoch.AddSeconds(1),Epoch.AddSeconds(2)),null,null,true);
+            var seed=new ConnectionHistoryStore(file,65_536);seed.Initialize();seed.Append([Row("a.exe"),Row("b.exe")],[],Epoch.AddMinutes(3));
+            var clock=new TestClock();clock.Set(180);
+            var service=new ConnectionService(file,new Resolver(_=>null),clock.Read,append=>append,new(FlushInterval:TimeSpan.FromMinutes(10)),65_536);
+            try
+            {
+                Assert.Equal(2,(await service.ReadViewAsync(query)).Rows.Count);
+                using(var db=new Microsoft.Data.Sqlite.SqliteConnection(new Microsoft.Data.Sqlite.SqliteConnectionStringBuilder{DataSource=file,Pooling=false}.ToString()))
+                {
+                    db.Open();using var command=db.CreateCommand();
+                    command.CommandText="PRAGMA page_size";long pageSize=(long)command.ExecuteScalar()!;
+                    command.CommandText=$"PRAGMA max_page_count={65_536/pageSize}";command.ExecuteNonQuery();
+                    int pad=0;
+                    try {for(;;pad++){command.CommandText=$"INSERT INTO metadata VALUES('pad-{pad:D5}',0)";command.ExecuteNonQuery();}}
+                    catch(Microsoft.Data.Sqlite.SqliteException error) when(error.SqliteErrorCode==13) { }
+                    Assert.True(pad>0);
+                }
+                long traffic=Count(file,"SELECT count(*) FROM traffic");Assert.Equal(2,traffic);
+                service.Start();service.Clear(HistoryClear.Create("A.EXE",allTime:true,Epoch.AddSeconds(180)));
+                await UntilClear(service,HistoryClearPhase.Failed);
+                var state=service.ClearState;
+                Assert.Equal(("SqliteException",false),(state.Error,state.MarkerSaved));
+                Assert.Null(service.PendingClear);Assert.True(service.CanRetryClear);
+                Assert.EndsWith(" · Clearing history failed (SqliteException); not cleared.",service.StorageStatus);
+                Assert.Equal(traffic,Count(file,"SELECT count(*) FROM traffic"));
+                Assert.Equal(0,Count(file,"SELECT count(*) FROM metadata WHERE substr(key,1,6)='clear-'"));
+            }
+            finally {await Dispose(service,root);}
+        }
+    }
 }
