@@ -22,7 +22,8 @@ public sealed record HistoryClear(string? AppKey, DateTimeOffset Before, DateTim
 /// <summary>Where one store's clear stands after a step.</summary>
 /// <param name="Done">Work done so far, in the store's own unit.</param>
 /// <param name="Total">The work taken at the first step, or null when the store shows no percent.</param>
-/// <param name="Finished">True once the last transaction removed the store's marker.</param>
+/// <param name="Finished">True once the store's marker is removed: by the last transaction (connections.db, alerts.db), or by deleting
+/// the sidecar file right after the last delete commits (usage-history.db, process-history.db).</param>
 public sealed record HistoryClearProgress(long Done, long? Total, bool Finished)
 {
     /// <summary>Null without a total; 100 when finished; otherwise ⌊100 × Done ÷ Total⌋ held between 0 and 99 (0 for a zero total).</summary>
@@ -45,7 +46,8 @@ public sealed record PendingConnectionClear(string? AppKey, DateTimeOffset Befor
 /// <summary>The outcome of one call of a store's per-transaction delegate, as <see cref="HistoryClearStep.Run"/> reads it.</summary>
 /// <param name="Committed">True when the call committed a delete transaction (the marker's removal included); false for a read-only call.</param>
 /// <param name="Rows">Rows the committed transaction deleted, passed to the store's <c>clearCommitted</c> seam.</param>
-/// <param name="Finished">True when the call found nothing left and its transaction removed the marker.</param>
+/// <param name="Finished">True when the call found nothing left and removed the marker. It may arrive with <see cref="Committed"/> false:
+/// a sidecar store finishes by deleting its marker file, without a transaction.</param>
 public readonly record struct HistoryClearTransaction(bool Committed, int Rows, bool Finished);
 
 /// <summary>
@@ -61,7 +63,8 @@ public readonly record struct HistoryClearTransaction(bool Committed, int Rows, 
 /// <item><description><c>guardJournal</c>: the store's existing 8 MiB journal guard, run before each transaction;</description></item>
 /// <item><description><c>transaction</c>: one delete transaction in the store's own SQL and transaction-size rule (its chunk
 /// size and any halving under its budget), returning a <see cref="HistoryClearTransaction"/>; a call may also do a read-only
-/// round and commit nothing. The call that finds nothing left removes the marker in its transaction and reports Finished;</description></item>
+/// round and commit nothing. The call that finds nothing left removes the marker and reports Finished: in its transaction for a
+/// marker kept in the database, or by deleting the sidecar file (Finished with Committed false);</description></item>
 /// <item><description><c>committed</c>: the store's <c>clearCommitted</c> seam, invoked with the deleted row count after each
 /// commit and before its TRUNCATE checkpoint, so a reader of the <c>-wal</c> there sees the transaction's frames.</description></item>
 /// </list>
@@ -89,10 +92,11 @@ public sealed class HistoryClearStep
     /// always at least one call of <paramref name="transaction"/> unless the step yields. Before each call it runs
     /// <paramref name="guardJournal"/>, then the yield check: when the <c>-wal</c> is over <see cref="YieldJournalBytes"/> after a
     /// TRUNCATE checkpoint, the step returns early without failing; once it has yielded for <see cref="YieldLimit"/> without a
-    /// committed transaction, it throws <see cref="IOException"/>. Every committed transaction is followed by
+    /// committed transaction, it throws <see cref="IOException"/> and starts a new yield window for a later call. Every committed transaction is followed by
     /// <paramref name="committed"/> and then <c>PRAGMA wal_checkpoint(TRUNCATE)</c>.
     /// </summary>
-    /// <returns>True when the clear finished (the delegate reported Finished); false when the budget passed or the step yielded.</returns>
+    /// <returns>True when the clear finished (the delegate reported Finished, with or without a committed transaction); false when the
+    /// budget passed or the step yielded.</returns>
     public bool Run(SqliteConnection db, TimeSpan budget, Func<TimeSpan> clock, Action guardJournal, Func<HistoryClearTransaction> transaction, Action<int>? committed)
     {
         ArgumentNullException.ThrowIfNull(db); ArgumentNullException.ThrowIfNull(clock); ArgumentNullException.ThrowIfNull(guardJournal); ArgumentNullException.ThrowIfNull(transaction);
@@ -123,7 +127,11 @@ public sealed class HistoryClearStep
         var now = clock();
         yieldingSince ??= now;
         if (now - yieldingSince.Value >= YieldLimit)
+        {
+            // A later Try again on this instance starts a new yield window instead of failing at its first check.
+            yieldingSince = null;
             throw new IOException("A history clear waited 60 seconds for a reader to release the journal.");
+        }
         return true;
     }
 

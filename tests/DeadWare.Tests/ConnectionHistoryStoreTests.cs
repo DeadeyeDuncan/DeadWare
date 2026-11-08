@@ -1026,6 +1026,10 @@ public sealed class ConnectionHistoryStoreTests(ITestOutputHelper testOutput) : 
             now=TimeSpan.FromSeconds(59); Assert.False(store.ClearStep(TimeSpan.FromMilliseconds(250)).Finished); Assert.Equal(before,commits);
             now=TimeSpan.FromSeconds(61); Assert.Throws<IOException>(()=>store.ClearStep(TimeSpan.FromMilliseconds(250))); Assert.Equal(before,commits);
             Assert.NotNull(store.PendingClear);
+            // Try again on the same instance starts a new 60 s yield window instead of failing at its first yield check.
+            Assert.False(store.ClearStep(TimeSpan.FromMilliseconds(250)).Finished); Assert.Equal(before,commits);
+            now=TimeSpan.FromSeconds(120); Assert.False(store.ClearStep(TimeSpan.FromMilliseconds(250)).Finished);
+            now=TimeSpan.FromSeconds(121); Assert.Throws<IOException>(()=>store.ClearStep(TimeSpan.FromMilliseconds(250))); Assert.Equal(before,commits);
         }
         long t=0; ClearSeam(store,"clearClock",(Func<TimeSpan>)(()=>TimeSpan.FromMilliseconds(t++)));
         commits=0; Assert.False(store.ClearStep(TimeSpan.FromMilliseconds(1)).Finished); Assert.Equal(1,commits);
