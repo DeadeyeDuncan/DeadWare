@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.IO;
+using System.Reflection;
 using DeadWare.Core;
 using Xunit;
 
@@ -23,9 +24,24 @@ public sealed class HistoryClearMeasurementTests
         string root=Path.Combine(Path.GetTempPath(),$"deadware-history-clear-{Guid.NewGuid():N}");
         try
         {
-            var connections=FillConnections(Path.Combine(root,"connections","connections.db"));
-            var usage=FillUsage(Path.Combine(root,"usage","usage-history.db"));
-            MeasurementRecorder.Write("history-clear",new{fills=new{connections,usage}});
+            string connectionsFile=Path.Combine(root,"connections","connections.db"),usageFile=Path.Combine(root,"usage","usage-history.db");
+            var connectionStore=new ConnectionHistoryStore(connectionsFile);
+            var connections=FillConnections(connectionStore);
+            var clears=new List<ClearTiming>
+            {
+                TimeClear(connectionStore,"connections","oneApp",connectionsFile,HistoryClear.Create("app0.exe",allTime:true,DateTimeOffset.UtcNow),connectionStore.BeginClear,connectionStore.ClearStep),
+                TimeClear(connectionStore,"connections","allApps",connectionsFile,HistoryClear.Create(null,allTime:true,DateTimeOffset.UtcNow),connectionStore.BeginClear,connectionStore.ClearStep),
+            };
+            var usageStore=new UsageHistoryStore(usageFile);
+            var usage=FillUsage(usageStore,usageFile);
+            clears.Add(TimeClear(usageStore,"usage","oneApp",usageFile,HistoryClear.Create("app0.exe",allTime:true,DateTimeOffset.UtcNow),usageStore.BeginClear,usageStore.ClearStep));
+            clears.Add(TimeClear(usageStore,"usage","allApps",usageFile,HistoryClear.Create(null,allTime:true,DateTimeOffset.UtcNow),usageStore.BeginClear,usageStore.ClearStep));
+            MeasurementRecorder.Write("history-clear",new{fills=new{connections,usage},clears});
+            foreach(var clear in clears)
+            {
+                Assert.True(clear.largestWalBytes<=8*Megabyte,$"{clear.store} {clear.scope} clear: WAL reached {clear.largestWalBytes} bytes with no reader.");
+                Assert.True(clear.finished,$"{clear.store} {clear.scope} clear did not finish: {clear.error}");
+            }
         }
         finally
         {
@@ -35,9 +51,8 @@ public sealed class HistoryClearMeasurementTests
     }
 
     /// <summary>The 0.16.0 fill with pairs 0 and 1 sharing app0.exe, so 2 of the 20 pairs belong to one application.</summary>
-    private static object FillConnections(string file)
+    private static object FillConnections(ConnectionHistoryStore store)
     {
-        var store=new ConnectionHistoryStore(file);
         store.Initialize();
         long ticks=DateTimeOffset.UtcNow.UtcTicks;
         var start=new DateTimeOffset(ticks-ticks%TimeSpan.TicksPerMinute,TimeSpan.Zero)-TimeSpan.FromDays(10);
@@ -49,9 +64,8 @@ public sealed class HistoryClearMeasurementTests
     /// One CPU row and 50 application rows a minute, 80 minutes (4,080 rows) per Append, until the main file is within 4 MiB of
     /// its cap or the current minute is reached.
     /// </summary>
-    private static object FillUsage(string file)
+    private static object FillUsage(UsageHistoryStore store,string file)
     {
-        var store=new UsageHistoryStore(file);
         store.Initialize();
         long ticks=DateTimeOffset.UtcNow.UtcTicks;
         var floor=new DateTimeOffset(ticks-ticks%TimeSpan.TicksPerMinute,TimeSpan.Zero);
@@ -77,4 +91,33 @@ public sealed class HistoryClearMeasurementTests
         bool evicted=store.EarliestRetained(Machine)>start;
         return new{seconds,minutes,applicationRows=minutes*AppsPerMinute,fileBytes=new FileInfo(file).Length,evicted};
     }
+
+    /// <summary>
+    /// Times one clear with no reader: BeginClear, then 250 ms steps until Finished, each step timed. The largest -wal is read in
+    /// the store's clearCommitted seam (set by reflection), after each clear transaction commits and before its TRUNCATE checkpoint.
+    /// </summary>
+    private static ClearTiming TimeClear(object store,string name,string scope,string file,HistoryClear clear,Action<HistoryClear> begin,Func<TimeSpan,HistoryClearProgress> step)
+    {
+        long largestWal=0;
+        store.GetType().GetField("clearCommitted",BindingFlags.NonPublic|BindingFlags.Instance)!
+            .SetValue(store,(Action<int>)(_=>largestWal=Math.Max(largestWal,File.Exists(file+"-wal")?new FileInfo(file+"-wal").Length:0)));
+        var stepMs=new List<double>();
+        var total=Stopwatch.StartNew();
+        bool finished=false; string? error=null;
+        try
+        {
+            begin(clear);
+            while(!finished)
+            {
+                var watch=Stopwatch.StartNew();
+                finished=step(TimeSpan.FromMilliseconds(250)).Finished;
+                stepMs.Add(watch.Elapsed.TotalMilliseconds);
+            }
+        }
+        catch(Exception e) when(e is IOException or InvalidOperationException or InvalidDataException or Microsoft.Data.Sqlite.SqliteException) {error=e.GetType().Name;}
+        double p95=stepMs.Count==0?0:ProcessMeasurementTests.Percentile(stepMs.Order().ToArray(),0.95);
+        return new(name,scope,Math.Round(total.Elapsed.TotalMilliseconds,1),stepMs.Count,p95,largestWal,finished,error);
+    }
+
+    private sealed record ClearTiming(string store,string scope,double totalMs,int steps,double p95StepMs,long largestWalBytes,bool finished,string? error);
 }
