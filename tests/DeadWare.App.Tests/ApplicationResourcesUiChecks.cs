@@ -19,8 +19,9 @@ namespace DeadWare.App.Tests;
 
 /// <summary>Usage history's Application resources card, run at the end of <see cref="UsageHistoryUiChecks"/> (phase "usage history").
 /// The card reads a real process-history.db, filled with fixture minutes, through a <see cref="ProcessHistoryService"/>. Pages here are
-/// never Loaded, so after a range or earlier/later change <see cref="Load"/> runs the page's own load, as its refresh would. For click a
-/// moment the page's Device charts read a usage-history.db whose CPU and RAM minutes cover the fixture day's process minutes and ten
+/// normally never Loaded (the tab-lifecycle regression uses a Window), so after a range or earlier/later change <see cref="Load"/> runs
+/// the page's own load, as its refresh would. For click a moment the Device charts read a usage-history.db whose CPU and RAM minutes
+/// cover the fixture day's process minutes and ten
 /// minutes after them without process data.</summary>
 internal static class ApplicationResourcesUiChecks
 {
@@ -69,8 +70,9 @@ internal static class ApplicationResourcesUiChecks
             var service = Service(folder, minute);
             var page = new UsageHistoryPage(Session(service, folder, DeviceHistory(folder, minute)));
             Layout(page);
-            var card = Assert.Single(Descendants(page).OfType<ApplicationResourcesCard>());
-            Card_sits_between_applications_and_keep_a_longer_record(page);
+            var card = (ApplicationResourcesCard)page.ResourcesTab.Content;
+            page.Tabs.SelectedItem = page.ResourcesTab; Layout(page);
+            Cards_keep_controls_device_tabs_and_settings_in_order(page);
             UsageHistoryUiChecks.CheckClearHistoryEntry(page);
             Before_the_first_read_the_card_says_it_is_loading(card);
             Load(page); WaitFor(() => card.View is not null && !card.Loading);
@@ -125,6 +127,7 @@ internal static class ApplicationResourcesUiChecks
             Rank_by_gpu_over_version_1_minutes_shows_dashes_and_no_share_bar(folder);
             A_gpu_slot_with_gpu_data_lists_apps_by_gpu_and_everything_else(folder);
             Status_line_follows_the_recording_switches_without_a_read(folder);
+            Tab_switch_resumes_debounced_rank_slot_and_series_reads(service, folder);
         }
         finally
         {
@@ -135,8 +138,52 @@ internal static class ApplicationResourcesUiChecks
         }
     }
 
-    private static void Card_sits_between_applications_and_keep_a_longer_record(UsageHistoryPage page)
-        => Assert.Equal(["Device", "Applications", "Application resources", "Keep a longer record"], CardHeadings(page));
+    private static void Cards_keep_controls_device_tabs_and_settings_in_order(UsageHistoryPage page)
+    {
+        var cards = ((StackPanel)page.Content).Children.OfType<Border>().ToList();
+        Assert.Equal(4, cards.Count);
+        Assert.Contains(page.Tabs, Descendants(cards[2]));
+        Assert.Contains("Device", Texts(cards[1])); Assert.Contains("Keep a longer record", Texts(cards[3]));
+        Assert.Equal("Applications", page.ApplicationsTab.Header); Assert.Equal("Application resources", page.ResourcesTab.Header);
+    }
+
+    private static void Tab_switch_resumes_debounced_rank_slot_and_series_reads(ProcessHistoryService service, string folder)
+    {
+        var page = new UsageHistoryPage(Session(service, folder));
+        var card = (ApplicationResourcesCard)page.ResourcesTab.Content;
+        page.Tabs.SelectedItem = page.ResourcesTab;
+        var window = new Window { Content = page, Width = 1050, Height = 800, ShowInTaskbar = false, WindowStyle = WindowStyle.None };
+        void SwitchAwayAndBack()
+        {
+            Assert.True(card.IsLoaded);
+            page.Tabs.SelectedItem = page.ApplicationsTab; page.UpdateLayout();
+            WaitFor(() => !card.IsLoaded);
+            page.Tabs.SelectedItem = page.ResourcesTab; page.UpdateLayout();
+            WaitFor(() => card.IsLoaded);
+        }
+        try
+        {
+            window.Show(); WaitFor(() => card.IsLoaded && card.View is not null && !card.Loading);
+            Select(card, "chrome.exe"); SetRank(card, ProcessRank.AverageMemory);
+            Assert.True(Timer(card, "rankDelay").IsEnabled); Assert.True(Timer(card, "seriesDelay").IsEnabled);
+            SwitchAwayAndBack();
+            WaitFor(() => !card.Loading && Traces(card).Count == 1);
+            Assert.Equal(ProcessRank.AverageMemory, card.Rank); Assert.Equal("chrome.exe", card.SelectedApp);
+            Assert.Equal("B", ChartUnit(card));
+            var slot = (card.View!.To.AddMinutes(-40), card.View.To.AddMinutes(-39));
+            card.ShowSlot(slot.Item1, slot.Item2, ProcessRank.AverageMemory); WaitFor(() => !card.Loading);
+            SetRank(card, ProcessRank.Io); SwitchAwayAndBack(); WaitFor(() => !card.Loading);
+            Assert.Equal<(DateTimeOffset, DateTimeOffset)?>(slot, card.Slot); Assert.Equal(ProcessRank.Io, card.Rank);
+            Assert.Equal("chrome.exe", card.SelectedApp);
+            card.ClearSlot(); Assert.True(Timer(card, "rankDelay").IsEnabled);
+            SwitchAwayAndBack(); WaitFor(() => !card.Loading && card.View!.To - card.View.From == TimeSpan.FromDays(1));
+            Assert.Null(card.Slot); Assert.Equal("chrome.exe", card.SelectedApp);
+            Select(card, "Code.exe"); Assert.True(Timer(card, "seriesDelay").IsEnabled);
+            SwitchAwayAndBack(); WaitFor(() => Traces(card).Count == 1 && Traces(card)[0].Label.StartsWith("Code.exe", StringComparison.Ordinal));
+            Assert.Equal("Code.exe", card.SelectedApp);
+        }
+        finally { window.Close(); }
+    }
 
     private static void Before_the_first_read_the_card_says_it_is_loading(ApplicationResourcesCard card)
     {
@@ -419,7 +466,7 @@ internal static class ApplicationResourcesUiChecks
         foreach (string kind in new[] { "cputemp", "gputemp", "network" }) Assert.False(page.Chart(kind).Selectable);
         Assert.InRange(Traces(page.Chart("cpu"))[0].View.Buckets.Count, 20, DayMinutes + 10);
         // The Device card's hint names all three.
-        Assert.Contains(Texts(page), t => t.EndsWith(" Click a CPU, RAM or GPU point, or press Enter on it, to list its busiest apps under Application resources.",
+        Assert.Contains(Texts(page), t => t.EndsWith(" Click a CPU, RAM or GPU point, or press Enter on it, to list that moment's apps.",
             StringComparison.Ordinal));
     }
 
@@ -476,14 +523,16 @@ internal static class ApplicationResourcesUiChecks
 
     private static void Clicking_a_point_brings_the_card_into_view(UsageHistoryPage page, ApplicationResourcesCard card)
     {
-        // At a window's height the card sits below the Device and Applications cards, so a click scrolls it into view.
+        // At a window's height the lower card sits below Device; activation realizes Resources and scrolls the card into view.
         var window = new Size(1050, 800);
         page.ScrollToTop(); Layout(page, window);
-        var frame = (FrameworkElement)VisualTreeHelper.GetParent(card);
+        var frame = (FrameworkElement)typeof(UsageHistoryPage).GetField("resourcesCard", All)!.GetValue(page)!;
+        page.Tabs.SelectedItem = page.ApplicationsTab; Layout(page, window);
         Assert.Equal(0, page.VerticalOffset);
         Assert.True(Top(frame, page) > page.ViewportHeight, "The Application resources card starts below the fold.");
         var bucket = Bucket(page.Chart("cpu"), 1);
         Activate(page.Chart("cpu"), 1);
+        Assert.Same(page.ResourcesTab, page.Tabs.SelectedItem);
         WaitFor(() => { Layout(page, window); return page.VerticalOffset > 0; });
         Assert.InRange(Top(frame, page), -0.5, page.ViewportHeight - 1);
         WaitFor(() => !card.Loading && card.View is { } shown && shown.From == bucket.Start);
@@ -1068,7 +1117,7 @@ internal static class ApplicationResourcesUiChecks
         service.Configure(session.Settings.ProcessMonitoring, session.Settings.UsageRecording);
         // Laid out first, so the page's template puts its cards and the switch in the visual tree; it is still never Loaded, so nothing reads.
         var page = new UsageHistoryPage(session); Layout(page);
-        var card = Assert.Single(Descendants(page).OfType<ApplicationResourcesCard>());
+        var card = (ApplicationResourcesCard)page.ResourcesTab.Content;
         // The status line shows at once and follows each switch while the page is shown, not only when the card next reads.
         Assert.Equal(service.Status, Status(card)); Assert.DoesNotContain(Paused, Status(card));
         var toggle = Descendants(page).OfType<CheckBox>().Single(c => AutomationProperties.GetName(c) == "Record usage history");
@@ -1338,8 +1387,6 @@ internal static class ApplicationResourcesUiChecks
             if (at is UIElement { Visibility: not Visibility.Visible }) return false;
         return true;
     }
-    private static List<string> CardHeadings(UsageHistoryPage page)
-        => ((StackPanel)page.Content).Children.OfType<Border>().Select(card => Descendants(card).OfType<TextBlock>().First().Text).ToList();
     private static List<string> Texts(DependencyObject root) => Descendants(root).OfType<TextBlock>().Select(t => t.Text).ToList();
     private static IEnumerable<DependencyObject> Descendants(DependencyObject root)
     {
