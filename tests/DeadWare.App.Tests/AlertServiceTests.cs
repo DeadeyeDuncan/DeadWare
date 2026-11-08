@@ -668,6 +668,8 @@ public class AlertServiceTests
                 var requested = DateTimeOffset.UtcNow;
                 alerts.Clear(HistoryClear.Create("A.EXE", true, requested));
                 await Until(() => Task.FromResult(Generation(alerts) == 1 || alerts.Failed));
+                // The generation moves before the Flush that publishes FirstUse, so the count is awaited on its own.
+                await Until(() => Task.FromResult(alerts.FirstUse.KnownApps == 2 || alerts.Failed));
                 Assert.Equal(HistoryClearPhase.Clearing, alerts.ClearState.Phase); Assert.True(alerts.ClearState.MarkerSaved);
                 Assert.EndsWith(" · Clearing history.", alerts.Status);
                 Assert.Equal(0, Known(fixture, "A.EXE")); Assert.Equal(1, Known(fixture, "B.EXE")); Assert.Equal(1, PendingClears(fixture));
@@ -883,7 +885,7 @@ public class AlertServiceTests
             finally { await alerts.StopAsync(); await usage.StopAsync(); }
         }
 
-        // StopAsync mid-clear returns within 1 s and keeps the marker. An open budget episode (as if a crash lost steps 3 and 6) is
+        // StopAsync mid-clear starts no further step, returns promptly and keeps the marker. An open budget episode (as if a crash lost steps 3 and 6) is
         // ended and flushed again by the next service, which finishes the clear.
         using (var fixture = new Fixture())
         {
@@ -895,14 +897,28 @@ public class AlertServiceTests
             {
                 first.TryRecordNetworkUse(R(Start, true, Use("chrome.exe")));
                 await Until(async () => (await FirstUses(first, "chrome.exe")).Length == 1 || first.Failed);
-                first.ClearStepOverride = _ => { Thread.Sleep(100); return new HistoryClearProgress(0, null, false); };
+                // Once armed, the next step requests StopAsync from inside itself, so the stop arrives while a step is in progress; any
+                // later step is counted.
+                Task? stopping = null; bool armed = false; int stepsAfterStop = 0;
+                var watch = new System.Diagnostics.Stopwatch();
+                first.ClearStepOverride = _ =>
+                {
+                    if (Volatile.Read(ref stopping) is not null) Interlocked.Increment(ref stepsAfterStop);
+                    else if (Volatile.Read(ref armed)) { watch.Start(); Volatile.Write(ref stopping, first.StopAsync()); }
+                    Thread.Sleep(100); return new HistoryClearProgress(0, null, false);
+                };
                 first.Clear(HistoryClear.Create("chrome.exe", true, DateTimeOffset.UtcNow));
                 await Until(() => Task.FromResult(Generation(first) == 1 || first.Failed));
                 await Task.Delay(300);
                 Assert.Equal(HistoryClearPhase.Clearing, first.ClearState.Phase);
-                var watch = System.Diagnostics.Stopwatch.StartNew();
-                await first.StopAsync();
-                Assert.True(watch.Elapsed < TimeSpan.FromSeconds(1), $"StopAsync took {watch.Elapsed}.");
+                Volatile.Write(ref armed, true);
+                await Until(() => Task.FromResult(Volatile.Read(ref stopping) is not null || first.Failed));
+                await stopping!;
+                watch.Stop();
+                // The guarantee is no step after stop; the time (the step in progress plus the final synchronous=FULL flush) varies with
+                // the CI disk, and 1 s failed there at 2.31 s, so the bound is loose.
+                Assert.Equal(0, Volatile.Read(ref stepsAfterStop));
+                Assert.True(watch.Elapsed < TimeSpan.FromSeconds(5), $"StopAsync took {watch.Elapsed}.");
                 Assert.Equal(1, PendingClears(fixture)); Assert.False(first.Failed);
             }
             finally { await first.StopAsync(); }
