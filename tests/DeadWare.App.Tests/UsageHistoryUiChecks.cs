@@ -121,6 +121,7 @@ internal static class UsageHistoryUiChecks
             CheckStripSharesTheCursor(session, now);
             CheckStripClearPaths(session, now);
             CheckStripReadsOnItsOwn(session, now);
+            CheckHistoryClearRereads(session);
             CheckShowInConnections(session, now);
         }
         finally { SynchronizationContext.SetSynchronizationContext(context); }
@@ -466,8 +467,10 @@ internal static class UsageHistoryUiChecks
         var third = LoadAsync(page);
         Assert.Equal(3, reads.Count);
         WaitFor(() => third.IsCompleted);
-        // A range change or Refresh drops the strip read still in flight for the old period.
+        // A range change or Refresh drops the strip read still in flight for the old period. (Hidden here, so the refresh reads nothing.)
+        SetField(page, "showing", (Func<bool>)(() => false));
         typeof(UsageHistoryPage).GetMethod("RequestRefresh", All)!.Invoke(page, []);
+        SetField(page, "showing", (Func<bool>)(() => true));
         reads[2].Reply.SetResult(For(2)); Pump();
         Assert.Same(day, chart.Strip);
         var fourth = LoadAsync(page);
@@ -493,6 +496,29 @@ internal static class UsageHistoryUiChecks
         slotReads[2].Reply.SetResult(new UsageApplicationView(slots[5].Start, slots[5].End, [], 0, 0, 0, 0, 28, null, 0)); Pump();
         Assert.Equal(EmptySlot, summary.Text);
         reads[^1].Reply.SetResult(null); Pump();
+    }
+
+    /// <summary>A Usage history or Application resources clear starting or ending refreshes the loaded page; others do not, nor does an unloaded page.</summary>
+    private static void CheckHistoryClearRereads(UiSession session)
+    {
+        var page = new UsageHistoryPage(session);
+        int reads = 0;
+        SetField(page, "readStrip", (Func<DateTimeOffset, DateTimeOffset, int, Task<TrafficStrip?>>)((_, _, _) => { reads++; return Task.FromResult<TrafficStrip?>(null); }));
+        SetField(page, "showing", (Func<bool>)(() => true));
+        Layout(page, 1050, 1100);
+        page.RaiseEvent(new RoutedEventArgs(FrameworkElement.LoadedEvent));
+        bool Idle() => !(bool)typeof(UsageHistoryPage).GetField("refreshing", All)!.GetValue(page)!;
+        void Raise(HistoryClearStore store) => ((Action<HistoryClearStore>?)typeof(UiSession).GetField("HistoryClearChanged", All)!.GetValue(session))?.Invoke(store);
+        WaitFor(Idle); int count = reads;
+        Raise(HistoryClearStore.Usage);
+        WaitFor(() => reads == count + 1 && Idle()); Assert.Equal(count + 1, reads);
+        Raise(HistoryClearStore.ProcessHistory);
+        WaitFor(() => reads == count + 2 && Idle()); Assert.Equal(count + 2, reads);
+        Raise(HistoryClearStore.Connections); Raise(HistoryClearStore.Alerts); Pump();
+        Assert.Equal(count + 2, reads);
+        page.RaiseEvent(new RoutedEventArgs(FrameworkElement.UnloadedEvent));
+        Raise(HistoryClearStore.Usage); Raise(HistoryClearStore.ProcessHistory); Pump();
+        Assert.Equal(count + 2, reads);
     }
 
     private static void CheckShowInConnections(UiSession session, DateTimeOffset now)

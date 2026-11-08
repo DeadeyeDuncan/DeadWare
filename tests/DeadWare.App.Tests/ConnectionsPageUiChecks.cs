@@ -65,6 +65,7 @@ internal static class ConnectionsPageUiChecks
         CheckHistoryQueries(session,now);
         CheckHistoryLimitError(session);
         CheckStripReads(session, now);
+        CheckHistoryClearRereads(session);
         CheckStripCursor(session, now);
         CheckMinuteReadFailureKeepsTheStrip(session, now);
         CheckApplicationFilter(session, now);
@@ -710,6 +711,27 @@ internal static class ConnectionsPageUiChecks
         page.ReloadHistory(); Assert.Equal(count + 2, reads.Requested.Count); Assert.Equal(TimeSpan.FromMinutes(1), reads.Last.To - reads.Last.From);
         reads.Answer(); Assert.Equal(count + 3, reads.Requested.Count); Assert.True(IsWhole(reads.Last, 3)); reads.Answer(); Assert.NotNull(chart.Strip); Assert.Empty(reads.Replies);
         page.RaiseEvent(new RoutedEventArgs(FrameworkElement.UnloadedEvent));
+    }
+    /// <summary>Raises the session's HistoryClearChanged backing delegate, as its timer does when a clear starts or ends.</summary>
+    private static void RaiseHistoryClear(UiSession session, HistoryClearStore store)
+        => ((Action<HistoryClearStore>?)typeof(UiSession).GetField("HistoryClearChanged", All)!.GetValue(session))?.Invoke(store);
+    private static void CheckHistoryClearRereads(UiSession session)
+    {
+        var page = new ConnectionsPage(session); var reads = new FakeReads(page);
+        Field<ComboBox>(page, "mode").SelectedIndex = 1; reads.Drain();
+        page.RaiseEvent(new RoutedEventArgs(FrameworkElement.LoadedEvent)); reads.Drain();
+        var whole = reads.Last; int count = reads.Requested.Count;
+        // A Usage clear is not Connections history's: no read.
+        RaiseHistoryClear(session, HistoryClearStore.Usage); RaiseHistoryClear(session, HistoryClearStore.Alerts); Pump();
+        Assert.Equal(count, reads.Requested.Count);
+        // A Connections clear starting or ending repeats the shown whole-interval read.
+        RaiseHistoryClear(session, HistoryClearStore.Connections);
+        Assert.Equal(count + 1, reads.Requested.Count); Assert.Equal((whole.From, whole.To), (reads.Last.From, reads.Last.To)); reads.Drain();
+        Assert.Equal(count + 1, reads.Requested.Count);
+        // Unloaded, the page no longer listens.
+        page.RaiseEvent(new RoutedEventArgs(FrameworkElement.UnloadedEvent)); count = reads.Requested.Count;
+        RaiseHistoryClear(session, HistoryClearStore.Connections); Pump();
+        Assert.Equal(count, reads.Requested.Count);
     }
     private static void CheckStripCursor(UiSession session, DateTimeOffset now)
     {

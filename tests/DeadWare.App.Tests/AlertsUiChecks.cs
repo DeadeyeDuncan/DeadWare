@@ -88,6 +88,22 @@ internal static class AlertsUiChecks
         Assembly.GetType("DeadWare.App.Theme")!.GetMethod("Apply", All)!.Invoke(null, ["Midnight"]);
         CheckEditor(session);
         CheckUsageHandoff(session);
+        CheckHistoryClearRereads(session);
+    }
+
+    /// <summary>An alert-log clear starting or ending re-reads the loaded page's log; other stores do not, nor does an unloaded page.</summary>
+    private static void CheckHistoryClearRereads(UiSession session)
+    {
+        var page = new AlertsPage(session);
+        int reads = 0;
+        typeof(AlertsPage).GetField("readLog", All)!.SetValue(page, (Func<DateTimeOffset, DateTimeOffset, Task<AlertLogView>>)((from, to) => { reads++; return Task.FromResult(new AlertLogView(from, to, [], 0, 0)); }));
+        typeof(AlertsPage).GetField("showing", All)!.SetValue(page, (Func<bool>)(() => true));
+        void Raise(HistoryClearStore store) => ((Action<HistoryClearStore>?)typeof(UiSession).GetField("HistoryClearChanged", All)!.GetValue(session))?.Invoke(store);
+        page.RaiseEvent(new RoutedEventArgs(FrameworkElement.LoadedEvent)); int count = reads;
+        Raise(HistoryClearStore.Alerts); Assert.Equal(count + 1, reads);
+        Raise(HistoryClearStore.Connections); Raise(HistoryClearStore.Usage); Raise(HistoryClearStore.ProcessHistory); Assert.Equal(count + 1, reads);
+        page.RaiseEvent(new RoutedEventArgs(FrameworkElement.UnloadedEvent));
+        Raise(HistoryClearStore.Alerts); Assert.Equal(count + 1, reads);
     }
 
     private static void CheckEditor(UiSession session)
