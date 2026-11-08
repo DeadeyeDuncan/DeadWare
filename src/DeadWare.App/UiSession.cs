@@ -288,9 +288,12 @@ public sealed class UiSession
         // Only the UI posts, so no store becomes active after the check, except one resuming a marker found at startup: that store
         // already runs a clear, and its own refusal (the throw) leaves it alone.
         Action<HistoryClear>?[] posts=[Connections is null?null:Connections.Clear,Usage is null?null:Usage.Clear,ProcessHistory is null?null:ProcessHistory.Clear,Alerts is null?null:Alerts.Clear];
-        foreach(var post in posts)
+        // The timer compares against Queued from here on, so a clear that finishes before the next tick still raises HistoryClearChanged.
+        var seen=clearPhases??=new HistoryClearPhase[4];
+        for(int store=0;store<posts.Length;store++)
         {
-            try {post?.Invoke(request);}
+            if(posts[store] is not { } post)continue;
+            try {post(request);seen[store]=HistoryClearPhase.Queued;}
             catch(InvalidOperationException) { }
         }
         return true;
@@ -305,6 +308,9 @@ public sealed class UiSession
             case HistoryClearStore.ProcessHistory:ProcessHistory?.RetryClear();break;
             case HistoryClearStore.Alerts:Alerts?.RetryClear();break;
         }
+        // A re-posted store left Failed at once (Queued, or further already); the timer then compares against Queued, as after ClearHistory.
+        var state=ClearStates().Where(s=>s.Store==store).Select(s=>s.State).FirstOrDefault();
+        if(state is not null&&state.Phase!=HistoryClearPhase.Failed)(clearPhases??=new HistoryClearPhase[4])[(int)store]=HistoryClearPhase.Queued;
     }
     /// <summary>The progress block's lines: Connections history, Usage history, Application resources, Alert log, each store with a clear or a result.</summary>
     public IReadOnlyList<HistoryClearLine> ClearLines()=>Array.AsReadOnly(ClearStates().Where(s=>s.State.Phase!=HistoryClearPhase.None).Select(s=>new HistoryClearLine(s.Store,s.State,s.CanRetry)).ToArray());

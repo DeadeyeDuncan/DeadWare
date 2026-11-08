@@ -50,12 +50,12 @@ public class HistoryClearSessionTests
         }
     }
 
-    private static async Task Until(Func<bool> condition, string what, int seconds = 30)
+    private static async Task Until(Func<bool> condition, string what, int seconds = 30, Func<string>? state = null)
     {
         var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(seconds);
         while (!condition())
         {
-            if (DateTime.UtcNow > deadline) Assert.Fail("Timed out waiting for " + what + ".");
+            if (DateTime.UtcNow > deadline) Assert.Fail("Timed out waiting for " + what + "." + (state is null ? "" : " " + state()));
             await Task.Delay(5);
         }
     }
@@ -181,6 +181,37 @@ public class HistoryClearSessionTests
             Assert.All(raised.Values, count => Assert.Equal(2, count));
         }
         finally { foreach (var gate in gates.Values) gate.Set(); await fixture.DisposeAsync(); }
+        // Fast clears with the stores' real steps, which no tick sees Queued or Clearing: the timer compares against the request's Queued,
+        // so each still raises once per store (None → Done for the first, Done → Done for the next).
+        await using (var fast = new Fixture())
+        {
+            var session = fast.Session; fast.Start();
+            var raised = new Dictionary<HistoryClearStore, int>();
+            session.HistoryClearChanged += store => raised[store] = raised.GetValueOrDefault(store) + 1;
+            session.CheckClearStates(); Assert.Empty(raised);
+            for (int round = 1; round <= 2; round++)
+            {
+                Assert.True(session.ClearHistory(HistoryClear.Create("chrom.exe", allTime: true, DateTimeOffset.UtcNow)));
+                await Until(() => fast.States.All(s => s.Phase == HistoryClearPhase.Done), "the fast clear to finish", state: () => string.Join(", ", fast.States));
+                session.CheckClearStates();
+                Assert.Equal(4, raised.Count); Assert.All(raised.Values, count => Assert.Equal(round, count));
+                session.CheckClearStates();
+                Assert.All(raised.Values, count => Assert.Equal(round, count));
+            }
+            // A Usage step fails (Queued → Failed to the timer: raised once); Try again finishes between ticks (Failed → Done: raised once).
+            fast.Usage.ClearStepOverride = _ => { fast.Usage.ClearStepOverride = null; throw new IOException("fixture step failure"); };
+            Assert.True(session.ClearHistory(HistoryClear.Create("chrom.exe", allTime: true, DateTimeOffset.UtcNow)));
+            await Until(() => fast.Usage.ClearState.Phase == HistoryClearPhase.Failed && fast.States.Count(s => s.Phase == HistoryClearPhase.Done) == 3, "the Usage step to fail", state: () => string.Join(", ", fast.States));
+            session.CheckClearStates();
+            Assert.All(raised.Values, count => Assert.Equal(3, count));
+            session.RetryClear(HistoryClearStore.Usage);
+            await Until(() => fast.Usage.ClearState.Phase == HistoryClearPhase.Done, "Try again to finish", state: () => fast.Usage.ClearState.ToString());
+            session.CheckClearStates();
+            Assert.Equal(4, raised[HistoryClearStore.Usage]);
+            Assert.Equal([3, 3, 3], new[] { HistoryClearStore.Connections, HistoryClearStore.ProcessHistory, HistoryClearStore.Alerts }.Select(s => raised[s]));
+            session.CheckClearStates();
+            Assert.Equal(4, raised[HistoryClearStore.Usage]);
+        }
     }
 
     /// <summary>The CoolingShutdownTests.StuckSession wiring, with the collector's worker already finished, ProcessHistory set and the trace.</summary>
