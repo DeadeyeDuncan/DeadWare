@@ -222,9 +222,10 @@ public class AlertServiceTests
         };
     private static ConnectionDelta[] Apps(int from, int count, DateTimeOffset firstSeen)
         => Enumerable.Range(from, count).Select(i => Use($"app{i:D5}.exe", firstSeen: firstSeen)).ToArray();
-    private static AlertService FirstUseService(Fixture fixture, UsageHistoryService usage)
-        => new(fixture.AlertPath, "tablet", usage, () => null, flushInterval: TimeSpan.FromMilliseconds(30), localZone: TimeZoneInfo.Utc,
-            firstUseGroupWindow: TimeSpan.FromMilliseconds(100));
+    private static AlertService FirstUseService(Fixture fixture, UsageHistoryService usage, TimeSpan? window = null, TimeSpan? flush = null,
+        Func<Task<IReadOnlyList<ApplicationSeen>?>>? connectionNames = null)
+        => new(fixture.AlertPath, "tablet", usage, () => null, flushInterval: flush ?? TimeSpan.FromMilliseconds(30), localZone: TimeZoneInfo.Utc,
+            connectionNames: connectionNames, firstUseGroupWindow: window ?? TimeSpan.FromMilliseconds(100));
     private static async Task<IReadOnlyList<AlertEpisode>> Saved(AlertService alerts, DateTimeOffset from, DateTimeOffset to)
         => (await alerts.ReadEpisodesAsync(from, to, 5000)).Episodes.Where(e => e.Kind == AlertKind.FirstNetworkUse).ToArray();
     /// <summary>Takes every queued work from a service whose worker is not running; returns the uses of each NetworkUseWork in order.</summary>
@@ -380,6 +381,240 @@ public class AlertServiceTests
             Assert.False(alerts.Failed);
         }
         finally { await alerts.StopAsync(); await usage.StopAsync(); }
+    }
+
+    [Fact]
+    public async Task A_new_app_after_learning_is_logged_closed_and_one_balloon_groups_apps_within_the_window()
+    {
+        using var fixture = new Fixture(); Store(fixture.AlertPath);
+        var usage = new UsageHistoryService(fixture.UsagePath, "tablet", flushInterval: TimeSpan.FromMilliseconds(30));
+        var alerts = FirstUseService(fixture, usage);
+        alerts.Configure([AlertRules.DefaultFirstNetworkUse(Start)], true);
+        var groups = new List<FirstUseGroup>(); int notified = 0;
+        alerts.FirstUseGroupClosed += group => { lock (groups) groups.Add(group); };
+        alerts.EpisodeStarted += _ => Interlocked.Increment(ref notified);
+        int Groups() { lock (groups) return groups.Count; }
+        alerts.Start();
+        try
+        {
+            alerts.TryRecordNetworkUse(R(Start.AddSeconds(5), true, Use("a.exe", firstSeen: Start.AddSeconds(3)), Use("b.exe", firstSeen: Start.AddSeconds(1))));
+            await Until(async () => Groups() > 0 && (await Saved(alerts, Start.AddDays(-1), Start.AddDays(1))).Count == 2 || alerts.Failed);
+            await Task.Delay(300);
+            await alerts.StopAsync();
+            FirstUseGroup group;
+            lock (groups) group = Assert.Single(groups);
+            Assert.Equal(2, group.Count); Assert.Equal(["a.exe", "b.exe"], group.Names); Assert.Equal(Start.AddSeconds(1), group.First);
+            var saved = await Saved(alerts, Start.AddDays(-1), Start.AddDays(1));
+            Assert.Equal(["a.exe", "b.exe"], saved.Select(e => e.Application!).Order(StringComparer.Ordinal));
+            Assert.All(saved, e => { Assert.Equal(e.Start, e.End); Assert.Equal(0, e.Peak); });
+            var store = new AlertStore(fixture.AlertPath); store.Initialize();
+            Assert.Equal([AppKey.Of("a.exe"), AppKey.Of("b.exe")], store.ReadFirstUse("tablet").Known.Select(k => k.Key).Order(StringComparer.Ordinal));
+            Assert.Equal(0, Volatile.Read(ref notified));
+            Assert.False(alerts.Failed);
+        }
+        finally { await alerts.StopAsync(); await usage.StopAsync(); }
+    }
+
+    [Fact]
+    public async Task First_use_groups_skip_the_hour_floor_and_muted_notifications_still_log()
+    {
+        using var fixture = new Fixture(); Store(fixture.AlertPath);
+        var usage = new UsageHistoryService(fixture.UsagePath, "tablet", flushInterval: TimeSpan.FromMilliseconds(30));
+        // The flush tick is a minute away, so only the group's own wake-up can close a group within the test.
+        var alerts = FirstUseService(fixture, usage, flush: TimeSpan.FromMinutes(1));
+        AlertRule[] rules = [AlertRules.DefaultFirstNetworkUse(Start)];
+        alerts.Configure(rules, true);
+        var groups = new List<FirstUseGroup>();
+        alerts.FirstUseGroupClosed += group => { lock (groups) groups.Add(group); };
+        int Groups() { lock (groups) return groups.Count; }
+        alerts.Start();
+        try
+        {
+            alerts.TryRecordNetworkUse(R(Start, true, Use("a.exe")));
+            await Until(() => Task.FromResult(Groups() == 1));
+            await Task.Delay(1000);
+            alerts.TryRecordNetworkUse(R(Start.AddSeconds(1), true, Use("b.exe", firstSeen: Start.AddSeconds(1))));
+            await Until(() => Task.FromResult(Groups() == 2));
+            lock (groups) Assert.Equal(["a.exe", "b.exe"], groups.Select(g => Assert.Single(g.Names)));
+            alerts.Configure(rules, false);
+            alerts.TryRecordNetworkUse(R(Start.AddSeconds(2), true, Use("c.exe", firstSeen: Start.AddSeconds(2))));
+            await Task.Delay(1000);
+            alerts.TryRecordNetworkUse(R(Start.AddSeconds(3), true, Use("d.exe", firstSeen: Start.AddSeconds(3))));
+            await Task.Delay(500);
+            await alerts.StopAsync();
+            Assert.Equal(2, Groups());
+            Assert.Equal(["a.exe", "b.exe", "c.exe", "d.exe"], (await Saved(alerts, Start.AddDays(-1), Start.AddDays(1))).Select(e => e.Application!).Order(StringComparer.Ordinal));
+            Assert.False(alerts.Failed);
+        }
+        finally { await alerts.StopAsync(); await usage.StopAsync(); }
+    }
+
+    [Fact]
+    public async Task Seeding_reads_each_store_once_retries_a_failed_store_and_skips_a_store_with_a_clear_in_progress()
+    {
+        var seenAt = Start.AddMinutes(-5);
+        // An alerts.db with learning dates in the past but no seed marker.
+        void Unseeded(string path)
+        {
+            var store = new AlertStore(path); store.Initialize();
+            store.Append("tablet", [], DateTimeOffset.UtcNow, new FirstUseChanges([], [], new FirstUseMetadata(null, null, LongAgo, LongAgo.AddDays(3))));
+        }
+        void Usage(UsageHistoryService usage, string name, DateTimeOffset minute)
+            => UsageStore(usage).Append("tablet", [new UsageMinuteBatch(minute, [], [new UsageApplicationMinute(name, minute, 400, 200, "earlier")], false, "earlier")], DateTimeOffset.UtcNow);
+        FirstUseState Read(Fixture fixture) { var store = new AlertStore(fixture.AlertPath); store.Initialize(); return store.ReadFirstUse("tablet"); }
+        string[] Keys(FirstUseState state) => [.. state.Known.Select(k => k.Key).Order(StringComparer.Ordinal)];
+        Func<Task<IReadOnlyList<ApplicationSeen>?>> Names(Action called, params ApplicationSeen[] names)
+            => () => { called(); return Task.FromResult<IReadOnlyList<ApplicationSeen>?>(names); };
+
+        // Both stores are read once; their names are known with no episode and both markers are set.
+        using (var fixture = new Fixture())
+        {
+            Unseeded(fixture.AlertPath);
+            var usage = new UsageHistoryService(fixture.UsagePath, "tablet", flushInterval: TimeSpan.FromMilliseconds(30));
+            Usage(usage, "seen.exe", seenAt);
+            int calls = 0;
+            var alerts = FirstUseService(fixture, usage, connectionNames: Names(() => Interlocked.Increment(ref calls),
+                new("conn.exe", LongAgo, LongAgo.AddMinutes(5)), new("Seen.EXE", LongAgo, LongAgo)));
+            alerts.Configure([AlertRules.DefaultFirstNetworkUse(Start)], true);
+            alerts.Start();
+            try
+            {
+                await Until(() => Task.FromResult(alerts.FirstUse.Seeded || alerts.Failed));
+                await alerts.StopAsync();
+                var state = Read(fixture);
+                Assert.NotNull(state.SeededUsage); Assert.NotNull(state.SeededConnections);
+                Assert.Equal([AppKey.Of("conn.exe"), AppKey.Of("seen.exe")], Keys(state));
+                var seen = state.Known.Single(k => k.Key == AppKey.Of("seen.exe"));
+                Assert.Equal(LongAgo, seen.First); Assert.Equal(seenAt, seen.Last);
+                Assert.Empty(await Saved(alerts, Start.AddDays(-30), Start.AddDays(1)));
+                Assert.Equal(1, calls); Assert.False(alerts.Failed);
+            }
+            finally { await alerts.StopAsync(); await usage.StopAsync(); }
+        }
+
+        // A throwing connection delegate leaves its marker unset and the next start reads it; after both markers no store is read again.
+        using (var fixture = new Fixture())
+        {
+            Unseeded(fixture.AlertPath);
+            var usage = new UsageHistoryService(fixture.UsagePath, "tablet", flushInterval: TimeSpan.FromMilliseconds(30));
+            Usage(usage, "seen.exe", seenAt);
+            AlertRule[] rules = [AlertRules.DefaultFirstNetworkUse(Start)];
+            int throwing = 0;
+            var first = FirstUseService(fixture, usage, connectionNames: () => { Interlocked.Increment(ref throwing); throw new InvalidOperationException("no connections"); });
+            first.Configure(rules, true); first.Start();
+            try { await Until(() => Task.FromResult(first.FirstUse.KnownApps == 1 || first.Failed)); }
+            finally { await first.StopAsync(); }
+            var state = Read(fixture);
+            Assert.NotNull(state.SeededUsage); Assert.Null(state.SeededConnections); Assert.Equal(1, throwing);
+            Assert.Equal([AppKey.Of("seen.exe")], Keys(state));
+
+            // A name saved after the usage marker is never seeded: Usage history is not read again.
+            Usage(usage, "late.exe", seenAt.AddMinutes(1));
+            int calls = 0;
+            var second = FirstUseService(fixture, usage, connectionNames: Names(() => Interlocked.Increment(ref calls), new ApplicationSeen("conn.exe", LongAgo, LongAgo)));
+            second.Configure(rules, true); second.Start();
+            try { await Until(() => Task.FromResult(second.FirstUse.Seeded || second.Failed)); }
+            finally { await second.StopAsync(); }
+            state = Read(fixture);
+            Assert.NotNull(state.SeededConnections); Assert.Equal(1, calls);
+            Assert.Equal([AppKey.Of("conn.exe"), AppKey.Of("seen.exe")], Keys(state));
+
+            int again = 0;
+            var third = FirstUseService(fixture, usage, connectionNames: Names(() => Interlocked.Increment(ref again)));
+            third.Configure(rules, true); third.Start();
+            try
+            {
+                // The worker reaches its loop only after startup's seed: a seeded app stays quiet and a new one alerts.
+                third.TryRecordNetworkUse(R(Start, true, Use("seen.exe"), Use("fresh.exe")));
+                await Until(async () => (await Saved(third, Start.AddDays(-1), Start.AddDays(1))).Count == 1 || third.Failed);
+                await third.StopAsync();
+                Assert.Equal("fresh.exe", Assert.Single(await Saved(third, Start.AddDays(-1), Start.AddDays(1))).Application);
+                Assert.Equal(0, again); Assert.False(third.Failed);
+            }
+            finally { await third.StopAsync(); await usage.StopAsync(); }
+        }
+
+        // With a usage clear in progress, the usage read returns null and only Connections history's marker is set.
+        using (var fixture = new Fixture())
+        {
+            Unseeded(fixture.AlertPath);
+            var usage = new UsageHistoryService(fixture.UsagePath, "tablet", flushInterval: TimeSpan.FromMilliseconds(30));
+            Usage(usage, "seen.exe", seenAt);
+            UsageStore(usage).BeginClear(HistoryClear.Create(null, true, DateTimeOffset.UtcNow));
+            Assert.True(File.Exists(Path.ChangeExtension(fixture.UsagePath, ".clear.json")));
+            var alerts = FirstUseService(fixture, usage, connectionNames: Names(() => { }, new ApplicationSeen("conn.exe", LongAgo, LongAgo)));
+            alerts.Configure([AlertRules.DefaultFirstNetworkUse(Start)], true); alerts.Start();
+            try { await Until(() => Task.FromResult(alerts.FirstUse.KnownApps == 1 || alerts.Failed)); }
+            finally { await alerts.StopAsync(); await usage.StopAsync(); }
+            var state = Read(fixture);
+            Assert.Null(state.SeededUsage); Assert.NotNull(state.SeededConnections);
+            Assert.Equal([AppKey.Of("conn.exe")], Keys(state));
+        }
+
+        // StopAsync while the connection read is pending: nothing is written, not even the usage names already read.
+        using (var fixture = new Fixture())
+        {
+            Unseeded(fixture.AlertPath);
+            var usage = new UsageHistoryService(fixture.UsagePath, "tablet", flushInterval: TimeSpan.FromMilliseconds(30));
+            Usage(usage, "seen.exe", seenAt);
+            var called = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var names = new TaskCompletionSource<IReadOnlyList<ApplicationSeen>?>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var alerts = FirstUseService(fixture, usage, connectionNames: () => { called.TrySetResult(); return names.Task; });
+            alerts.Configure([AlertRules.DefaultFirstNetworkUse(Start)], true); alerts.Start();
+            try
+            {
+                await called.Task.WaitAsync(Timeout);
+                var stopping = alerts.StopAsync();
+                names.SetResult([new("conn.exe", LongAgo, LongAgo)]);
+                await stopping.WaitAsync(Timeout);
+                var state = Read(fixture);
+                Assert.Null(state.SeededUsage); Assert.Null(state.SeededConnections); Assert.Empty(state.Known);
+                Assert.False(alerts.Failed);
+            }
+            finally { await alerts.StopAsync(); await usage.StopAsync(); }
+        }
+    }
+
+    [Fact]
+    public async Task Restart_keeps_known_apps_and_learning_dates_and_a_group_open_at_quit_shows_no_balloon()
+    {
+        using var fixture = new Fixture(); Store(fixture.AlertPath);
+        var usage = new UsageHistoryService(fixture.UsagePath, "tablet", flushInterval: TimeSpan.FromMilliseconds(30));
+        AlertRule[] rules = [AlertRules.DefaultFirstNetworkUse(Start)];
+        int closed = 0;
+        var first = FirstUseService(fixture, usage, window: TimeSpan.FromSeconds(60));
+        first.Configure(rules, true);
+        first.FirstUseGroupClosed += _ => Interlocked.Increment(ref closed);
+        first.Start();
+        FirstUseStatus before;
+        try
+        {
+            first.TryRecordNetworkUse(R(Start, true, Use("a.exe")));
+            await Until(async () => (await Saved(first, Start.AddDays(-1), Start.AddDays(1))).Count == 1 || first.Failed);
+            before = first.FirstUse;
+            await first.StopAsync();
+            Assert.Equal(0, Volatile.Read(ref closed)); Assert.False(first.Failed);
+        }
+        finally { await first.StopAsync(); }
+
+        var second = FirstUseService(fixture, usage);
+        second.Configure(rules, true);
+        second.FirstUseGroupClosed += _ => Interlocked.Increment(ref closed);
+        second.Start();
+        try
+        {
+            await Until(() => Task.FromResult(second.FirstUse.Restored || second.Failed));
+            Assert.Equal(1, second.FirstUse.KnownApps);
+            Assert.Equal(before.LearningStart, second.FirstUse.LearningStart); Assert.Equal(LongAgo, second.FirstUse.LearningStart);
+            Assert.Equal(before.LearningEnd, second.FirstUse.LearningEnd);
+            second.TryRecordNetworkUse(R(Start.AddMinutes(1), true, Use("a.exe", firstSeen: Start.AddMinutes(1)), Use("b.exe", firstSeen: Start.AddMinutes(1))));
+            await Until(async () => (await Saved(second, Start.AddDays(-1), Start.AddDays(1))).Count == 2 || second.Failed);
+            await Until(() => Task.FromResult(Volatile.Read(ref closed) == 1));
+            await second.StopAsync();
+            Assert.Equal(["a.exe", "b.exe"], (await Saved(second, Start.AddDays(-1), Start.AddDays(1))).Select(e => e.Application!).Order(StringComparer.Ordinal));
+            Assert.Equal(1, Volatile.Read(ref closed)); Assert.False(second.Failed);
+        }
+        finally { await second.StopAsync(); await usage.StopAsync(); }
     }
 
     private sealed class Fixture : IDisposable
