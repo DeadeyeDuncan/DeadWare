@@ -182,6 +182,10 @@ public sealed class MainWindow : Window
         history.Children.Add(Ui.Text("Record endpoint history, choose an optional home city, manage the offline location database and export saved traffic from Connections. Local history rolls over after 30 days or 256 MiB.",12,"Muted"));
         history.Children.Add(Ui.Button("Open Connections controls",()=>Navigate("connections")));
         excludedApps=new ExcludedAppsBlock(session,new AppSuggestions(session,()=>DateTimeOffset.UtcNow)) {Margin=new Thickness(0,20,0,0)};history.Children.Add(excludedApps);
+        var clearHeading=Ui.Heading(HistoryClearCopy.SettingsHeading,16);clearHeading.Margin=new(0,20,0,0);history.Children.Add(clearHeading);
+        var clearHelp=Ui.Text(HistoryClearCopy.SettingsHelp,12,"Muted");clearHelp.Margin=new(0,0,0,8);history.Children.Add(clearHelp);
+        history.Children.Add(ClearHistoryEntry.Create(session,()=>this));
+        history.Children.Add(new HistoryClearProgressView(session,closeButton:false) {Margin=new Thickness(0,10,0,0)});
         var popoutLabel=Ui.Text("Graph pop-outs",14);popoutLabel.Margin=new(0,0,0,8);popouts.Children.Add(popoutLabel);
         joinedPopouts.IsChecked=session.Settings.JoinCpuGpuPopouts;
         System.Windows.Automation.AutomationProperties.SetName(joinedPopouts,"Join CPU and GPU graphs in pop-outs");

@@ -158,7 +158,7 @@ internal static class HistoryClearUiChecks
         Assert.Equal(HistoryClearPhase.Queued, session.Usage.ClearState.Phase);
         Assert.Equal(HistoryClearPhase.Queued, session.Alerts.ClearState.Phase);
         Assert.Equal(Visibility.Visible, window.Progress.Visibility);
-        Assert.Equal(Visibility.Collapsed, window.ClearButton.Visibility);
+        Assert.Equal(new Control[] { window.Progress.Close! }, Focusable((DependencyObject)window.Content).ToArray());
         Assert.Equal("Clearing history…", window.Progress.Header.Text);
         Assert.Equal(["Usage history · waiting", "Alert log · waiting"], window.Progress.Lines.Select(t => t.Text));
         var close = Assert.IsType<Button>(window.Progress.Close);
@@ -282,7 +282,8 @@ internal static class HistoryClearUiChecks
         if (root is UIElement { Visibility: not Visibility.Visible }) yield break;
         if (root is Control control)
         {
-            if (control.Focusable && control.IsTabStop) yield return control;
+            // An editable ComboBox is reached through its own text box, so the box itself is no tab stop.
+            if (control.Focusable && (control.IsTabStop || control is ComboBox { IsEditable: true })) yield return control;
             yield break;
         }
         foreach (var child in LogicalTreeHelper.GetChildren(root).OfType<DependencyObject>())

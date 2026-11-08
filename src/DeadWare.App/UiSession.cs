@@ -47,6 +47,8 @@ public sealed class UiSession
     public event Action<ConnectionsHistoryRequest>? ConnectionsHistoryRequested;
     /// <summary>Asks the dashboard for Connections History over [from, to): at most 30 days and 1 minute, with the bare application name or null for every application.</summary>
     public void RequestConnectionsHistory(DateTimeOffset from,DateTimeOffset to,string? application)=>ConnectionsHistoryRequested?.Invoke(new(from,to,application));
+    /// <summary>True once Quit or sign-out began (the layout's shutdown); an unconfirmed clear then sends nothing.</summary>
+    internal bool Ending=>layout?.Ending??false;
     public Reading? Current=>Collector.Latest;
     public int HistorySeconds=>Settings.HistorySeconds;
     public string? SelectedGpuId=>Current is null?null:DeviceSelection.Resolve(Settings.SelectedGpuId,Current.Gpus);

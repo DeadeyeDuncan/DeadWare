@@ -60,6 +60,111 @@ public static class HistoryClearCopy
             _ => "",
         };
     }
+
+    // Settings → History and alerts.
+    public const string SettingsHeading = "Clear history";
+    public const string SettingsHelp = "Removes saved history for one app or all apps, older than 7 days or from all time, from Connections history, Usage history, Application resources and the alert log together. Device-wide history stays.";
+    public const string EntryButton = "Clear history…";
+    public const string InProgressTip = "A clear is in progress.";
+    public const string WaitingTip = "A clear is waiting to finish; it resumes when DeadWare next starts.";
+
+    // Usage history → Keep a longer record, before its Clear history… button.
+    public const string UsageHistoryLine = "Apps in Don't record these apps are not saved here; the Device charts still include their traffic.";
+
+    // The Clear history window.
+    public const string WindowTitle = "Clear history";
+    public const string WindowHeading = "Clear saved history";
+    public const string AppsGroup = "Apps", OneApp = "One app", AllApps = "All apps";
+    public const string RangeGroup = "Range", OlderThan7Days = "Older than 7 days", AllTime = "All time";
+    public const string AppBoxName = "App to clear";
+    public const string InvalidApp = "Enter an app's executable name, such as chrome.exe.";
+    public const string WindowHelp = "Clears the chosen apps' saved records from Connections history, Usage history's per-app totals, Application resources and the alert log's application budget and first-use alerts. Clearing one app moves its Application resources numbers into Everything else; clearing all apps removes those minutes.";
+    public const string WindowKept = "Kept: device-wide history (CPU, GPU, memory, temperatures, network totals, battery and Cooling Health), other alerts in the log, your alert rules, and the Don't record and Don't alert lists.";
+    public const string WindowNotCleared = "Not cleared: CSV files you exported, and Windows notification history, which can keep alert balloons that name apps. DeadWare can't reach them; delete them yourself.";
+    public const string WindowFreedSpace = "Freed space is reused for new history; the files don't shrink.";
+    public const string WindowKeepsRecording = "Clearing doesn't stop recording; add the app to Don't record these apps for that.";
+    public const string ClearButton = "Clear history", CancelButton = "Cancel", CloseButton = "Close", TryAgainButton = "Try again";
+
+    // The progress block.
+    public const string ClearingHeader = "Clearing history…", ResumingHeader = "Finishing a clear that was interrupted…",
+        ClearedHeader = "History cleared.", PartlyClearedHeader = "History partly cleared.";
+    public const string ClearedSummary = "Freed space is reused for new history; the files don't shrink. Exported CSV files and Windows notification history are not cleared.";
+
+    /// <summary>The disabled Clear history… button's tooltip: waiting for the next start, or in progress.</summary>
+    public static string DisabledTip(bool waiting) => waiting ? WaitingTip : InProgressTip;
+
+    /// <summary>The confirmation for <paramref name="clear"/>; <paramref name="appName"/> is the saved spelling for one app (ignored for
+    /// all apps), and <c>&lt;before&gt;</c> is <c>Before</c> in <paramref name="zone"/>, format "g".</summary>
+    public static string Confirmation(HistoryClear clear, string? appName, TimeZoneInfo zone, CultureInfo culture)
+    {
+        ArgumentNullException.ThrowIfNull(clear); ArgumentNullException.ThrowIfNull(zone); ArgumentNullException.ThrowIfNull(culture);
+        string before = TimeZoneInfo.ConvertTime(clear.Before, zone).ToString("g", culture);
+        return (clear.AppKey is null, clear.AllTime) switch
+        {
+            (false, true) => $"Clear all saved history for {appName}? This can't be undone.",
+            (false, false) => $"Clear {appName}'s saved history from before {before}? This can't be undone.",
+            (true, true) => "Clear every app's saved history? Device-wide history is kept. This can't be undone.",
+            (true, false) => $"Clear every app's saved history from before {before}? Device-wide history is kept. This can't be undone.",
+        };
+    }
+
+    /// <summary>The store's name in the progress block.</summary>
+    public static string StoreName(HistoryClearStore store) => store switch
+    {
+        HistoryClearStore.Connections => "Connections history",
+        HistoryClearStore.Usage => "Usage history",
+        HistoryClearStore.ProcessHistory => "Application resources",
+        HistoryClearStore.Alerts => "Alert log",
+        _ => throw new ArgumentOutOfRangeException(nameof(store)),
+    };
+
+    /// <summary>One progress line: <c>&lt;store&gt; · waiting</c>, <c>· clearing (&lt;n&gt; %)</c> (held at 99 until done; <c>· clearing</c>
+    /// for the alert log or before the first percent), <c>· done</c>, the two failed forms, or <c>· unavailable (&lt;Type&gt;); not cleared</c>.</summary>
+    public static string Line(HistoryClearLine line)
+    {
+        ArgumentNullException.ThrowIfNull(line);
+        var state = line.State;
+        string text = state.Phase switch
+        {
+            HistoryClearPhase.Clearing when line.Store == HistoryClearStore.Alerts || state.Percent is null => "clearing",
+            HistoryClearPhase.Clearing => string.Create(CultureInfo.InvariantCulture, $"clearing ({Math.Clamp(state.Percent!.Value, 0, 99)} %)"),
+            HistoryClearPhase.Done => "done",
+            HistoryClearPhase.Failed when state.MarkerSaved => $"failed ({state.Error}); it resumes when DeadWare next starts",
+            HistoryClearPhase.Failed => $"failed ({state.Error}); not cleared",
+            HistoryClearPhase.Unavailable => $"unavailable ({state.Error}); not cleared",
+            _ => "waiting",
+        };
+        return $"{StoreName(line.Store)} · {text}";
+    }
+
+    private static bool Running(HistoryClearLine line) => line.State.Phase is HistoryClearPhase.None or HistoryClearPhase.Queued or HistoryClearPhase.Clearing;
+    private static bool NotCleared(HistoryClearLine line)
+        => line.State is { Phase: HistoryClearPhase.Failed, MarkerSaved: false } or { Phase: HistoryClearPhase.Unavailable };
+
+    /// <summary>The progress header: clearing (or finishing an interrupted clear) while any line runs, then cleared or partly cleared;
+    /// "" without lines.</summary>
+    public static string Header(IReadOnlyList<HistoryClearLine> lines)
+    {
+        ArgumentNullException.ThrowIfNull(lines);
+        if (lines.Count == 0) return "";
+        if (lines.Any(Running)) return lines.Any(line => line.State.Resumed) ? ResumingHeader : ClearingHeader;
+        return lines.All(line => line.State.Phase == HistoryClearPhase.Done) ? ClearedHeader : PartlyClearedHeader;
+    }
+
+    /// <summary>The sentences after the header once every line has finished: the freed-space line after a full clear, or
+    /// <c>&lt;n&gt; of 4 finished.</c> (of the number of lines for a resumed clear) and the two optional sentences; "" while a line runs.</summary>
+    public static string Summary(IReadOnlyList<HistoryClearLine> lines)
+    {
+        ArgumentNullException.ThrowIfNull(lines);
+        if (lines.Count == 0 || lines.Any(Running)) return "";
+        if (lines.All(line => line.State.Phase == HistoryClearPhase.Done)) return ClearedSummary;
+        int finished = lines.Count(line => line.State.Phase == HistoryClearPhase.Done);
+        int total = lines.Any(line => line.State.Resumed) ? lines.Count : 4;
+        string text = string.Create(CultureInfo.InvariantCulture, $"{finished} of {total} finished.");
+        if (lines.Any(line => line.State is { Phase: HistoryClearPhase.Failed, MarkerSaved: true })) text += " Failed histories resume when DeadWare next starts.";
+        if (lines.Any(NotCleared)) text += " Histories marked not cleared need Clear history again.";
+        return text;
+    }
 }
 
 /// <summary>Where one store's clear stands after a step.</summary>

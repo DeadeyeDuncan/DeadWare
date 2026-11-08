@@ -160,6 +160,8 @@ internal sealed class UsageHistoryPage : ScrollViewer
         settings.Children.Add(recordingStatus); storage.Margin = new(0, 8, 0, 8); settings.Children.Add(storage);
         settings.Children.Add(Ui.Text("One row per minute for CPU, GPU, RAM and network, plus per-application bytes, kept for up to 400 days or 256 MiB, whichever comes first. The six-hour live graphs are separate and unchanged. Recording begins with this version while DeadWare runs; sleep and stopped monitoring leave gaps. While Per-process monitoring is on, it also keeps the busiest apps' CPU, memory, I/O and GPU for 30 days (up to 192 MiB).", 12, "Muted"));
         var local = Ui.Text("History stays in this Windows profile in usage-history.db and process-history.db and is never uploaded. Application names and byte totals describe what runs on this computer, so treat exports as private. Back up the databases only while DeadWare is fully quit.", 11, "Muted"); local.Margin = new(0, 8, 0, 0); settings.Children.Add(local);
+        var notSaved = Ui.Text(HistoryClearCopy.UsageHistoryLine, 11, "Muted"); notSaved.Margin = new(0, 8, 0, 0); settings.Children.Add(notSaved);
+        var clearEntry = ClearHistoryEntry.Create(session, () => Window.GetWindow(this)); clearEntry.Margin = new(0, 8, 0, 0); settings.Children.Add(clearEntry);
         body.Children.Add(Card(settings)); body.Children.Add(actionStatus);
 
         recording.IsChecked = session.Settings.UsageRecording;
