@@ -199,4 +199,79 @@ public class AlertEvaluatorTests
         Assert.Single(evaluator.ObserveBattery(T0.AddMinutes(7), Reading(25)).Ended);
         Assert.Empty(Minute(evaluator, 8, 99).Started);
     }
+
+    [Fact]
+    public void First_network_use_rules_are_never_evaluated_by_minutes_or_battery_and_budget_episodes_carry_their_application()
+    {
+        var evaluator = Evaluator(AlertRules.DefaultFirstNetworkUse(T0), Rule(AlertKind.ApplicationDaily, "chrome.exe", 100, 1, "budget"));
+        var minute = evaluator.ObserveMinute(Batch(T0, 10, apps: ("chrome.exe", 200)), Gpu);
+        var battery = evaluator.ObserveBattery(T0, new BatteryReading(5, BatteryPowerState.OnBattery, false));
+        Assert.DoesNotContain(minute.Started.Concat(battery.Started), e => e.Kind == AlertKind.FirstNetworkUse);
+        Assert.Equal("chrome.exe", Assert.Single(minute.Started).Application);
+    }
+
+    [Fact]
+    public void Excluded_budget_stops_ends_its_episode_and_reseeds_only_itself()
+    {
+        var day = new DateTimeOffset(2026, 11, 2, 10, 0, 0, TimeSpan.Zero);
+        var chrome = AppExclusions.Keys(["CHROME.EXE"]); var none = AppExclusions.Keys([]);
+        var evaluator = Evaluator(Rule(AlertKind.ApplicationDaily, "chrome.exe", 1000, 1, "b"), Rule(AlertKind.ApplicationDaily, "steam.exe", 1000, 1, "o"));
+        evaluator.SeedDay(day, [new UsageApplicationMinute("steam.exe", day.AddMinutes(-30), 400, 0, "seg")]);
+        Assert.Single(evaluator.ObserveMinute(Batch(day, apps: [("chrome.exe", 1500)]), null).Started);
+        var t = day.AddMinutes(5);
+        var change = evaluator.SetExcluded(chrome, t);
+        Assert.Equal(t, Assert.Single(change.Ended).End); Assert.Empty(change.Reseed);
+        Assert.Empty(evaluator.OpenEpisodes);
+        Assert.Empty(evaluator.ObserveMinute(Batch(day.AddMinutes(1), apps: [("chrome.exe", 5000)]), null).Started);
+        // Re-include: only chrome.exe is named for a re-seed; the targeted seed's rows hold 900 for steam.exe.
+        Assert.Equal(["chrome.exe"], evaluator.SetExcluded(none, day.AddMinutes(10)).Reseed);
+        evaluator.SeedDay(day, [new UsageApplicationMinute("chrome.exe", day.AddMinutes(-20), 700, 0, "seg"),
+            new UsageApplicationMinute("steam.exe", day.AddMinutes(-10), 900, 0, "seg")], chrome);
+        // Wrong: steam re-seeded from the rows (900 + 300 fires). Right: it keeps 400 (700 does not).
+        Assert.Empty(evaluator.ObserveMinute(Batch(day.AddMinutes(3), apps: [("steam.exe", 300)]), null).Started);
+        // Wrong: FiredToday cleared (chrome fires again).
+        Assert.Empty(evaluator.ObserveMinute(Batch(day.AddMinutes(4), apps: [("chrome.exe", 5000)]), null).Started);
+
+        // Chrome's re-seed restores 700 (never fired today, so FiredToday cannot mask it): 400 more reaches 1,100.
+        var restored = Evaluator(Rule(AlertKind.ApplicationDaily, "chrome.exe", 1000, 1, "b"));
+        restored.SeedDay(day, []);
+        restored.SetExcluded(chrome, day.AddMinutes(1));
+        Assert.Equal(["chrome.exe"], restored.SetExcluded(none, day.AddMinutes(2)).Reseed);
+        restored.SeedDay(day, [new UsageApplicationMinute("chrome.exe", day.AddMinutes(-20), 700, 0, "seg")], chrome);
+        Assert.Equal(1100, Assert.Single(restored.ObserveMinute(Batch(day.AddMinutes(3), apps: [("chrome.exe", 400)]), null).Started).Peak);
+
+        // SeedDay(rows) skips an excluded rule: if it seeded 700, a later re-include without a re-seed would fire at 700 + 400.
+        var skipped = Evaluator(Rule(AlertKind.ApplicationDaily, "chrome.exe", 1000, 1, "b"));
+        skipped.SeedDay(day, []);
+        skipped.SetExcluded(chrome, day.AddMinutes(1));
+        skipped.SeedDay(day, [new UsageApplicationMinute("chrome.exe", day.AddMinutes(-20), 700, 0, "seg")]);
+        skipped.SetExcluded(none, day.AddMinutes(2));
+        Assert.Empty(skipped.ObserveMinute(Batch(day.AddMinutes(3), apps: [("chrome.exe", 400)]), null).Started);
+
+        // A failed re-seed read (no rows) leaves the total at 0.
+        var failed = Evaluator(Rule(AlertKind.ApplicationDaily, "chrome.exe", 1000, 1, "b"));
+        failed.SeedDay(day, [new UsageApplicationMinute("chrome.exe", day.AddMinutes(-20), 900, 0, "seg")]);
+        failed.SetExcluded(chrome, day.AddMinutes(1));
+        failed.SetExcluded(none, day.AddMinutes(2));
+        failed.SeedDay(day, [], chrome);
+        Assert.Empty(failed.ObserveMinute(Batch(day.AddMinutes(3), apps: [("chrome.exe", 900)]), null).Started);
+        Assert.Single(failed.ObserveMinute(Batch(day.AddMinutes(4), apps: [("chrome.exe", 100)]), null).Started);
+    }
+
+    [Fact]
+    public void EndScope_detaches_open_budget_episodes()
+    {
+        var day = new DateTimeOffset(2026, 11, 2, 10, 0, 0, TimeSpan.Zero);
+        var evaluator = Evaluator(Rule(AlertKind.ApplicationDaily, "chrome.exe", 1000, 1, "b"), Rule(AlertKind.ApplicationDaily, "steam.exe", 1000, 1, "o"));
+        var opened = Assert.Single(evaluator.ObserveMinute(Batch(day, apps: [("chrome.exe", 1500), ("steam.exe", 200)]), null).Started);
+        var at = day.AddMinutes(3);
+        Assert.Empty(evaluator.EndScope("STEAM.EXE", at, true));
+        Assert.Single(evaluator.OpenEpisodes);
+        var ended = Assert.Single(evaluator.EndScope("CHROME.EXE", at, true));
+        Assert.Equal(opened.Id, ended.Id); Assert.Equal(at, ended.End);
+        Assert.Empty(evaluator.OpenEpisodes);
+        Assert.Empty(evaluator.ObserveMinute(Batch(day.AddMinutes(4), apps: [("chrome.exe", 10)]), null).Ended);
+        // FiredToday is kept: more bytes do not fire the budget again today.
+        Assert.Empty(evaluator.ObserveMinute(Batch(day.AddMinutes(5), apps: [("chrome.exe", 5000)]), null).Started);
+    }
 }

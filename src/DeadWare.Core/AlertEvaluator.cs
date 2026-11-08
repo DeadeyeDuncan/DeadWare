@@ -6,6 +6,9 @@ public sealed record AlertEvaluation(IReadOnlyList<AlertEpisode> Started, IReadO
     public static AlertEvaluation Empty { get; } = new([], [], []);
 }
 
+/// <summary>What <see cref="AlertEvaluator.SetExcluded"/> changed: the budget episodes it ended, and the targets of the rules that left the list and need today's total re-read.</summary>
+public sealed record AlertExclusionChange(IReadOnlyList<AlertEpisode> Ended, IReadOnlyList<string> Reseed);
+
 /// <summary>Pure rule evaluation over closed usage minutes and battery readings. No timers, threads or storage; one owner.</summary>
 public sealed class AlertEvaluator
 {
@@ -27,6 +30,7 @@ public sealed class AlertEvaluator
 
     private readonly TimeZoneInfo zone;
     private readonly Dictionary<string, State> states = new(StringComparer.Ordinal);
+    private IReadOnlySet<string> excluded = System.Collections.Frozen.FrozenSet<string>.Empty;
     private DateTimeOffset? lastMinute;
 
     public AlertEvaluator(TimeZoneInfo? localZone = null) { zone = localZone ?? TimeZoneInfo.Local; }
@@ -50,6 +54,44 @@ public sealed class AlertEvaluator
         return ended;
     }
 
+    private bool IsExcluded(State state) => excluded.Contains(AppKey.Of(state.Rule.Target));
+
+    /// <summary>Installs the "Don't record" keys. A budget whose app is newly excluded ends its open episode at <paramref name="now"/> and its day total becomes 0;
+    /// the targets of budgets whose app left the list are returned to be re-seeded. FiredToday is never cleared.</summary>
+    public AlertExclusionChange SetExcluded(IReadOnlySet<string> keys, DateTimeOffset now)
+    {
+        ArgumentNullException.ThrowIfNull(keys);
+        var ended = new List<AlertEpisode>(); var reseed = new List<string>();
+        var previous = excluded; excluded = keys;
+        foreach (var state in states.Values)
+        {
+            if (state.Rule.Kind != AlertKind.ApplicationDaily) continue;
+            string key = AppKey.Of(state.Rule.Target);
+            bool was = previous.Contains(key), isNow = keys.Contains(key);
+            if (isNow && !was)
+            {
+                if (state.Open is { } open) { ended.Add(open with { End = now }); state.Open = null; }
+                state.DayBytes = 0; state.Seeded = new();
+            }
+            else if (was && !isNow) reseed.Add(state.Rule.Target);
+        }
+        return new(ended, reseed);
+    }
+
+    /// <summary>Ends and forgets each open budget episode in scope (every one for null) at <paramref name="at"/>. <paramref name="resetDay"/> also zeroes those rules' day totals. FiredToday is kept.</summary>
+    public IReadOnlyList<AlertEpisode> EndScope(string? appKey, DateTimeOffset at, bool resetDay)
+    {
+        var ended = new List<AlertEpisode>();
+        string? key = appKey is null ? null : AppKey.Of(appKey);
+        foreach (var state in states.Values)
+        {
+            if (state.Rule.Kind != AlertKind.ApplicationDaily || (key is not null && AppKey.Of(state.Rule.Target) != key)) continue;
+            if (state.Open is { } open) { ended.Add(open with { End = at }); state.Open = null; }
+            if (resetDay) { state.DayBytes = 0; state.Seeded = new(); }
+        }
+        return ended;
+    }
+
     /// <summary>Re-adopts episodes that were still open when the app last stopped, so the hour floor and the open state survive a restart.</summary>
     public void Restore(IReadOnlyList<AlertEpisode> open)
     {
@@ -67,7 +109,7 @@ public sealed class AlertEvaluator
         var date = LocalDay(day);
         foreach (var state in states.Values)
         {
-            if (state.Rule.Kind != AlertKind.ApplicationDaily) continue;
+            if (state.Rule.Kind != AlertKind.ApplicationDaily || IsExcluded(state)) continue;
             if (state.Day is { } current && current != date) continue;
             state.Day = date;
             state.DayBytes = bytesByName.FirstOrDefault(p => p.Key.Equals(state.Rule.Target, StringComparison.OrdinalIgnoreCase)).Value;
@@ -78,13 +120,23 @@ public sealed class AlertEvaluator
     /// <summary>Seeds today's application totals from stored minute rows. A later closed minute whose row was already stored by the same
     /// segment is skipped, so the seed and the live stream never count one minute twice; a row from another segment (a restart inside the
     /// minute) still adds.</summary>
-    public void SeedDay(DateTimeOffset day, IReadOnlyList<UsageApplicationMinute> rows)
+    public void SeedDay(DateTimeOffset day, IReadOnlyList<UsageApplicationMinute> rows) => SeedRows(day, rows, null);
+
+    /// <summary>The rows overload for the rules whose key is in <paramref name="only"/>; other rules' totals are untouched.</summary>
+    public void SeedDay(DateTimeOffset day, IReadOnlyList<UsageApplicationMinute> rows, IReadOnlySet<string> only)
+    {
+        ArgumentNullException.ThrowIfNull(only);
+        SeedRows(day, rows, only);
+    }
+
+    private void SeedRows(DateTimeOffset day, IReadOnlyList<UsageApplicationMinute> rows, IReadOnlySet<string>? only)
     {
         ArgumentNullException.ThrowIfNull(rows);
         var date = LocalDay(day);
         foreach (var state in states.Values)
         {
-            if (state.Rule.Kind != AlertKind.ApplicationDaily) continue;
+            if (state.Rule.Kind != AlertKind.ApplicationDaily || IsExcluded(state)) continue;
+            if (only is not null && !only.Contains(AppKey.Of(state.Rule.Target))) continue;
             if (state.Day is { } current && current != date) continue;
             state.Day = date; state.DayBytes = 0; state.Seeded = new();
             foreach (var row in rows)
@@ -106,7 +158,7 @@ public sealed class AlertEvaluator
         foreach (var state in states.Values)
         {
             var rule = state.Rule;
-            if (!rule.Enabled || rule.Kind == AlertKind.Battery) continue;
+            if (!rule.Enabled || rule.Kind is AlertKind.Battery or AlertKind.FirstNetworkUse) continue;
             if (rule.Kind == AlertKind.ApplicationDaily) { ObserveApplication(state, batch, started, ended, notify); continue; }
             if (gap) { state.Above = 0; state.Below = 0; state.AboveSince = null; }
             var row = Row(batch, rule, gpuKey);
@@ -164,6 +216,7 @@ public sealed class AlertEvaluator
 
     private void ObserveApplication(State state, UsageMinuteBatch batch, List<AlertEpisode> started, List<AlertEpisode> ended, List<AlertEpisode> notify)
     {
+        if (IsExcluded(state)) return;
         var day = LocalDay(batch.Minute);
         if (state.Day != day)
         {
@@ -186,7 +239,8 @@ public sealed class AlertEvaluator
 
     private void Start(State state, List<AlertEpisode> started, List<AlertEpisode> notify, DateTimeOffset start, DateTimeOffset now, double peak)
     {
-        var episode = new AlertEpisode(Guid.NewGuid().ToString("N"), state.Rule.Id, state.Rule.Kind, AlertRules.Describe(state.Rule), start, null, peak);
+        var episode = new AlertEpisode(Guid.NewGuid().ToString("N"), state.Rule.Id, state.Rule.Kind, AlertRules.Describe(state.Rule), start, null, peak,
+            Application: state.Rule.Kind == AlertKind.ApplicationDaily ? state.Rule.Target : null);
         state.Open = episode; state.Peak = peak; state.Armed = false; started.Add(episode);
         if (state.LastNotified is null || now - state.LastNotified.Value >= AlertRules.NotificationFloor)
         { state.LastNotified = now; notify.Add(episode); }

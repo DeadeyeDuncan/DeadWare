@@ -65,6 +65,7 @@ internal static class UsageHistoryUiChecks
                 Assert.EndsWith("for 30 days (up to 192 MiB).", description);
                 Assert.EndsWith(ProcessHistorySentence, description);
                 Assert.Contains(PrivacyLine, texts);
+                CheckClearHistoryEntry(page);
                 var selector = (ComboBox)PageType.GetField("range", All)!.GetValue(page)!;
                 Assert.Equal(3, selector.Items.Count);
                 var table = (DataGrid)PageType.GetField("applications", All)!.GetValue(page)!;
@@ -121,6 +122,8 @@ internal static class UsageHistoryUiChecks
             CheckStripSharesTheCursor(session, now);
             CheckStripClearPaths(session, now);
             CheckStripReadsOnItsOwn(session, now);
+            CheckStripClearedTime(session, now);
+            CheckHistoryClearRereads(session);
             CheckShowInConnections(session, now);
         }
         finally { SynchronizationContext.SetSynchronizationContext(context); }
@@ -285,6 +288,16 @@ internal static class UsageHistoryUiChecks
         Assert.Equal([3, 2, 1, 0, 0, 35], moved);
     }
 
+    /// <summary>Keep a longer record ends with the Don't record line and then the Clear history… button.</summary>
+    internal static void CheckClearHistoryEntry(FrameworkElement page)
+    {
+        var keep = Descendants(page).OfType<StackPanel>().Single(panel => panel.Children.Count > 0 && panel.Children[0] is TextBlock { Text: "Keep a longer record" });
+        var children = keep.Children.Cast<UIElement>().ToList();
+        Assert.Equal("Clear history…", Assert.IsType<Button>(children[^1]).Content);
+        Assert.Equal("Apps in Don't record these apps are not saved here; the Device charts still include their traffic.", Assert.IsType<TextBlock>(children[^2]).Text);
+        Assert.True(ToolTipService.GetShowOnDisabled(children[^1]));
+    }
+
     private const string LoadingSlot = "Loading this slot…", SlotUnavailable = "History unavailable for this slot.", EmptySlot = "No application traffic recorded in this slot.";
     private static readonly string[] Moments = ["cpu", "memory", "gpu"];
 
@@ -421,6 +434,45 @@ internal static class UsageHistoryUiChecks
         FocusManager.SetFocusedElement(scope, null);
     }
 
+    /// <summary>Cleared time on Usage history's strip: the Cleared band and its line, no hatching inside it, and Not saved slots before a one-app clear.</summary>
+    private static void CheckStripClearedTime(UiSession session, DateTimeOffset now)
+    {
+        var (page, chart, _) = Build(session, now);
+        var view = Field<TrafficStripView>(page, "strip");
+        var from = now.AddHours(-1);
+        TrafficStrip Strip(Func<int, bool> zero, int first = 0) => new(from, now, 60_000, TrafficMeasure.Total, [new("chrome.exe", "CHROME.EXE", 1000, 500)], 0, 0, 0,
+            Enumerable.Range(first, 60 - first).Select(k => new TrafficStripSlot(from.AddMinutes(k), from.AddMinutes(k + 1), 1, 60, false, [zero(k) ? 0 : 100L, 0], [zero(k) ? 0 : 50L, 0])).ToArray());
+        Point At(int k) => new(chart.PlotRect.Left + chart.PlotRect.Width * (k + .5) / 60, chart.PlotRect.Top + chart.PlotRect.Height / 2);
+        // An all-apps clear: the band labelled Cleared over [from, RetainedFrom), its line first, and nothing hatched inside it.
+        var retained = from.AddMinutes(10);
+        page.ApplyStrip(Strip(_ => false, 10) with { RetainedFrom = retained, RetainedByClear = true }, now);
+        Layout(page, 1050, 1100); chart.SlotAt(new Point());
+        Assert.Equal("Cleared", chart.BandLabel);
+        Assert.NotNull(chart.NotKept); var band = chart.NotKept!.Value;
+        Assert.Equal(chart.PlotRect.Left, band.Left, 6); Assert.Equal(chart.PlotRect.Left + chart.PlotRect.Width / 6, band.Right, 3);
+        Assert.Equal($"Cleared before {retained.ToLocalTime().ToString("g")}", view.NoteLines[0]);
+        Assert.Single(view.NoteLines);
+        Assert.True(chart.Hatch is null || Enumerable.Range(0, 10).All(k => !chart.Hatch.FillContains(At(k))), "no minute inside the Cleared band is hatched");
+        // A range wholly before the cleared start (RetainedFrom past To) is one Cleared band over the whole plot, with nothing hatched.
+        page.ApplyStrip(Strip(_ => false, 60) with { RetainedFrom = now.AddMinutes(5), RetainedByClear = true }, now);
+        Layout(page, 1050, 1100); chart.SlotAt(new Point());
+        Assert.Equal(chart.PlotRect, chart.NotKept); Assert.Null(chart.Hatch); Assert.Equal("Cleared", chart.BandLabel);
+        // A one-app clear: its line, and a zero-byte slot before it Not saved (hatched, its reason in the chip), one after it No traffic.
+        var oneApp = from.AddMinutes(30); string g = oneApp.ToLocalTime().ToString("g");
+        page.ApplyStrip(Strip(k => k is 20 or 40) with { AppClearedBefore = oneApp }, now);
+        Layout(page, 1050, 1100); chart.SlotAt(new Point());
+        Assert.Null(chart.BandLabel); Assert.Null(chart.NotKept);
+        Assert.Equal([$"Some application history before {g} was cleared."], view.NoteLines);
+        chart.HoverAt(At(20)); Assert.Equal([chart.SlotSpan(20), "No saved traffic", $"Some application history before {g} was cleared"], chart.ChipLines);
+        Assert.True(chart.Hatch!.FillContains(At(20)), "a Not saved slot is hatched");
+        chart.HoverAt(At(40)); Assert.Equal([chart.SlotSpan(40), "No traffic"], chart.ChipLines);
+        Assert.False(chart.Hatch.FillContains(At(40)), "a No traffic slot is not hatched");
+        chart.HoverAt(null);
+        // Both: the Cleared line, then the one-app line.
+        page.ApplyStrip(Strip(_ => false, 10) with { RetainedFrom = retained, RetainedByClear = true, AppClearedBefore = oneApp }, now);
+        Assert.Equal([$"Cleared before {retained.ToLocalTime().ToString("g")}", $"Some application history before {g} was cleared."], view.NoteLines);
+    }
+
     private static void CheckStripReadsOnItsOwn(UiSession session, DateTimeOffset now)
     {
         var page = new UsageHistoryPage(session);
@@ -466,8 +518,10 @@ internal static class UsageHistoryUiChecks
         var third = LoadAsync(page);
         Assert.Equal(3, reads.Count);
         WaitFor(() => third.IsCompleted);
-        // A range change or Refresh drops the strip read still in flight for the old period.
+        // A range change or Refresh drops the strip read still in flight for the old period. (Hidden here, so the refresh reads nothing.)
+        SetField(page, "showing", (Func<bool>)(() => false));
         typeof(UsageHistoryPage).GetMethod("RequestRefresh", All)!.Invoke(page, []);
+        SetField(page, "showing", (Func<bool>)(() => true));
         reads[2].Reply.SetResult(For(2)); Pump();
         Assert.Same(day, chart.Strip);
         var fourth = LoadAsync(page);
@@ -493,6 +547,29 @@ internal static class UsageHistoryUiChecks
         slotReads[2].Reply.SetResult(new UsageApplicationView(slots[5].Start, slots[5].End, [], 0, 0, 0, 0, 28, null, 0)); Pump();
         Assert.Equal(EmptySlot, summary.Text);
         reads[^1].Reply.SetResult(null); Pump();
+    }
+
+    /// <summary>A Usage history or Application resources clear starting or ending refreshes the loaded page; others do not, nor does an unloaded page.</summary>
+    private static void CheckHistoryClearRereads(UiSession session)
+    {
+        var page = new UsageHistoryPage(session);
+        int reads = 0;
+        SetField(page, "readStrip", (Func<DateTimeOffset, DateTimeOffset, int, Task<TrafficStrip?>>)((_, _, _) => { reads++; return Task.FromResult<TrafficStrip?>(null); }));
+        SetField(page, "showing", (Func<bool>)(() => true));
+        Layout(page, 1050, 1100);
+        page.RaiseEvent(new RoutedEventArgs(FrameworkElement.LoadedEvent));
+        bool Idle() => !(bool)typeof(UsageHistoryPage).GetField("refreshing", All)!.GetValue(page)!;
+        void Raise(HistoryClearStore store) => ((Action<HistoryClearStore>?)typeof(UiSession).GetField("HistoryClearChanged", All)!.GetValue(session))?.Invoke(store);
+        WaitFor(Idle); int count = reads;
+        Raise(HistoryClearStore.Usage);
+        WaitFor(() => reads == count + 1 && Idle()); Assert.Equal(count + 1, reads);
+        Raise(HistoryClearStore.ProcessHistory);
+        WaitFor(() => reads == count + 2 && Idle()); Assert.Equal(count + 2, reads);
+        Raise(HistoryClearStore.Connections); Raise(HistoryClearStore.Alerts); Pump();
+        Assert.Equal(count + 2, reads);
+        page.RaiseEvent(new RoutedEventArgs(FrameworkElement.UnloadedEvent));
+        Raise(HistoryClearStore.Usage); Raise(HistoryClearStore.ProcessHistory); Pump();
+        Assert.Equal(count + 2, reads);
     }
 
     private static void CheckShowInConnections(UiSession session, DateTimeOffset now)

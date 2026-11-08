@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.IO;
 using System.Text.Json;
 using System.Threading.Channels;
@@ -52,6 +53,16 @@ public partial class App : Application
                     var rule=session.Settings.Alerts.FirstOrDefault(r=>r.Id==episode.RuleId);
                     string peak=rule is null?episode.Peak.ToString("0.#"):AlertRules.FormatValue(rule,episode.Peak);
                     tray?.ShowAlert("DeadWare alert",$"{episode.Summary}. Observed {peak} at {episode.Start.ToLocalTime():t}. Open Alerts to review.",ShowAlerts);
+                });
+            };
+            // At most one grouped balloon a minute for apps that used the network for the first time; first-use episodes never reach EpisodeStarted.
+            session.Alerts.FirstUseGroupClosed+=group=>
+            {
+                if(lifetime.IsEnding||Dispatcher.HasShutdownStarted)return;
+                Dispatcher.BeginInvoke(()=>
+                {
+                    if(lifetime.IsEnding||!session.Settings.AlertNotifications)return;
+                    tray?.ShowAlert("DeadWare alert",FirstNetworkUse.BalloonText(group,TimeZoneInfo.Local,CultureInfo.CurrentCulture),ShowAlerts);
                 });
             };
             session.Updates.UpdateAvailable+=release=>

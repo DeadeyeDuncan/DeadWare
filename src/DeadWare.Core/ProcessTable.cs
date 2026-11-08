@@ -6,6 +6,9 @@ public static class ProcessCopy
     public const string Stale="stale reading";
     public const string NetworkNotMatched="traffic not matched to this process";
     public const string DiskNotMatched="disk activity not matched to this process";
+    /// <summary>The mark of an app in Don't record these apps on live pages: <see cref="NotRecordedSuffix"/> after its name, ", not recorded" in spoken text.</summary>
+    public const string NotRecorded="not recorded";
+    public const string NotRecordedSuffix=" · "+NotRecorded;
     /// <summary>What turning on Per-process monitoring costs; <paramref name="history"/> adds what it saves while usage history is recorded (0.14.0).</summary>
     public static string ScanSentence(bool elevated,bool diskColumns,bool scanLoop,bool history=false)=>
         "Turning it on adds one Windows process scan per poll"+(scanLoop?" (at most one a second)":"")+(elevated&&diskColumns?", one GPU counter read per poll and a disk trace":" and one GPU counter read per poll")+"."+
@@ -27,6 +30,7 @@ public static class ProcessCopy
             "I/O counts all file, pipe and device transfers, including cached reads, and is not disk activity.",
         };
         if(diskColumns)lines.Add("Disk is physical drive transfers. Delayed cache writes are credited to System.");
+        lines.Add("Apps marked not recorded are in Don't record these apps; Application resources counts them under Everything else.");
         lines.Add("GPU is the app's busiest GPU engine, as in Task Manager; GPU memory is dedicated video memory.");
         return lines;
     }
@@ -74,7 +78,7 @@ public sealed record ProcessAppRow(string Key,string Name,IReadOnlyList<ProcessS
 }
 public static class ProcessGrouping
 {
-    public static string Key(string name)=>UsageMetrics.NormalizeName(name).ToUpperInvariant();
+    public static string Key(string name)=>AppKey.Of(name);
     public static IReadOnlyList<ProcessAppRow> Group(IReadOnlyList<ProcessSample> processes)
     {
         var order=new List<string>();

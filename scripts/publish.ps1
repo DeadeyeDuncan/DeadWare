@@ -1,7 +1,9 @@
 [CmdletBinding()]
 param(
     [ValidatePattern('^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$')][string]$Version = '0.9.1',
-    [string]$Dotnet = 'dotnet'
+    [string]$Dotnet = 'dotnet',
+    # An xUnit filter for the test step, such as "FullyQualifiedName!~MeasurementTests"; empty runs every test.
+    [string]$TestFilter = ''
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -16,7 +18,9 @@ $stage = Join-Path $artifacts "package-$buildId/DeadWare"
 
 Push-Location $repo
 try {
-    & $Dotnet test 'DeadWare.slnx' -c Release --nologo
+    $testArgs = @('test', 'DeadWare.slnx', '-c', 'Release', '--nologo')
+    if ($TestFilter) { $testArgs += @('--filter', $TestFilter) }
+    & $Dotnet @testArgs
     if ($LASTEXITCODE -ne 0) { throw 'Tests failed. No package produced.' }
     & $Dotnet publish 'src/DeadWare.App/DeadWare.App.csproj' -c Release -r win-x64 --self-contained true -p:PublishTrimmed=false -p:PublishSingleFile=false "-p:Version=$Version" -p:DebugType=None -o $stage --nologo
     if ($LASTEXITCODE -ne 0) { throw 'Publish failed. No package produced.' }

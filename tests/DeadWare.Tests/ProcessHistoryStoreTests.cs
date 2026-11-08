@@ -790,4 +790,122 @@ public class ProcessHistoryStoreTests
         Assert.Null(error.InnerException);   // the integrity_check branch, not the open's error 11/26 catch
         Assert.Equal(before, File.ReadAllBytes(fixture.DbPath));
     }
+
+    // Task 10: Application resources clears.
+    private static readonly System.Reflection.BindingFlags Private = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+
+    private static HistoryClearProgress FinishClear(ProcessHistoryStore store, DateTimeOffset now)
+    {
+        for (int step = 0; step < 1000; step++)
+        {
+            var progress = store.ClearStep(TimeSpan.FromMilliseconds(250), now);
+            if (progress.Finished) return progress;
+        }
+        throw new Xunit.Sdk.XunitException("The clear did not finish.");
+    }
+
+    /// <summary><paramref name="count"/> minutes from <see cref="Day"/> on <paramref name="machine"/>: chrome.exe, code.exe, Everything else and
+    /// <paramref name="extra"/> with GPU values, except every 72nd minute (ten of 720), saved without GPU data.</summary>
+    private static void Minutes(ProcessHistoryStore store, string machine, int count = 720, params string[] extra)
+    {
+        var batches = Enumerable.Range(0, count).Select(i =>
+        {
+            bool gpu = i % 72 != 0;
+            ProcessAppMinute Value(ProcessAppMinute app, double seconds, double memory) => gpu ? app with { GpuSeconds = seconds, GpuMemoryByteSeconds = memory } : app;
+            var apps = new List<ProcessAppMinute>
+            {
+                Value(App("chrome.exe", 100 + i, 10, 5, 1e6 + i), 2, 3e9),
+                Value(App("code.exe", 50, 3, 2, 5e5), 1.5, 1e9),
+                Value(Else(7, 1, 1, 2e5), 1, 5e8),
+            };
+            apps.AddRange(extra.Select(name => Value(App(name, 9, 1, 1, 1e5), 0.5, 1e8)));
+            var batch = Batch(Day.AddMinutes(i), apps: [.. apps]);
+            return gpu ? batch with { GpuCoveredSeconds = 58 } : batch;
+        }).ToList();
+        store.Append(machine, batches, Day.AddDays(1));
+    }
+
+    [Fact]
+    public void Process_one_app_clear_moves_numbers_into_Everything_else()
+    {
+        using var fixture = new Fixture(); var store = fixture.Open();
+        Minutes(store, "m");
+        long Ms(int minute) => Day.AddMinutes(minute).ToUnixTimeMilliseconds();
+        // Minute 100 saved without an Everything else row.
+        fixture.Execute($"DELETE FROM app_minutes WHERE minute={Ms(100)} AND everything_else=1");
+        var before = Enum.GetValues<ProcessRank>().ToDictionary(rank => rank, rank => store.ReadApplications("m", Day, Day.AddHours(12), rank, Day.AddDays(1)));
+        (double Cpu, double Read, double Write, double Memory, double Gpu, double GpuMemory) Sums(string where) => fixture.Query(
+            $"SELECT TOTAL(cpu),TOTAL(io_read),TOTAL(io_write),TOTAL(memory_seconds),TOTAL(gpu_seconds),TOTAL(gpu_memory_seconds) FROM app_minutes a JOIN names n ON n.id=a.name_id WHERE {where}",
+            r => { r.Read(); return (r.GetDouble(0), r.GetDouble(1), r.GetDouble(2), r.GetDouble(3), r.GetDouble(4), r.GetDouble(5)); });
+        var chrome = Sums("n.upper='CHROME.EXE'"); var other = Sums("a.everything_else=1");
+        var chromeAt100 = Sums($"n.upper='CHROME.EXE' AND a.minute={Ms(100)}");
+        (double, long, long) Covered() => fixture.Query("SELECT TOTAL(gpu_covered),COUNT(gpu_covered),COUNT(*) FROM minutes", r => { r.Read(); return (r.GetDouble(0), r.GetInt64(1), r.GetInt64(2)); });
+        var covered = Covered();
+        var secure = new List<(bool Pending, long Value)>();
+        typeof(ProcessHistoryStore).GetField("clearConnectionOpened", Private)!.SetValue(store, (Action<SqliteConnection>)(db =>
+        {
+            using var command = db.CreateCommand(); command.CommandText = "PRAGMA secure_delete"; secure.Add((store.ClearPending, Convert.ToInt64(command.ExecuteScalar())));
+        }));
+
+        store.BeginClear(new("CHROME.EXE", Day.AddHours(12), Day.AddHours(12)));
+        Assert.True(store.ClearPending); Assert.Equal("CHROME.EXE", store.PendingClear!.AppKey); Assert.False(store.DiscardedInvalidMarker);
+        Assert.Equal(store.PendingClear, HistoryClearMarker.Read(Path.ChangeExtension(fixture.DbPath, ".clear.json")));
+        var done = FinishClear(store, Day.AddDays(1));
+        Assert.Equal((2L, (long?)2, (int?)100), (done.Done, done.Total, done.Percent));   // two 6-hour windows on one machine
+        Assert.False(store.ClearPending); Assert.Null(store.PendingClear); Assert.False(File.Exists(Path.ChangeExtension(fixture.DbPath, ".clear.json")));
+        Assert.Throws<InvalidOperationException>(() => store.ClearStep(TimeSpan.Zero, Day.AddDays(1)));
+        // secure_delete is on for every write connection while the marker exists; the expiry after the last step opens one without it.
+        Assert.Contains(secure, item => item.Pending); Assert.All(secure, item => Assert.Equal(item.Pending ? 1L : 0L, item.Value));
+        Assert.Equal((false, 0L), secure[^1]);
+
+        foreach (var rank in Enum.GetValues<ProcessRank>())
+        {
+            var after = store.ReadApplications("m", Day, Day.AddHours(12), rank, Day.AddDays(1));
+            Assert.Equal(before[rank].RankTotal, after.RankTotal, 6);
+            Assert.DoesNotContain(after.Rows, row => row.Name == "chrome.exe");
+        }
+        var grown = Sums("a.everything_else=1");
+        Assert.Equal(other.Cpu + chrome.Cpu, grown.Cpu); Assert.Equal(other.Read + chrome.Read, grown.Read); Assert.Equal(other.Write + chrome.Write, grown.Write);
+        Assert.Equal(other.Memory + chrome.Memory, grown.Memory, 3); Assert.Equal(other.Gpu + chrome.Gpu, grown.Gpu, 6);
+        Assert.Equal(other.GpuMemory + chrome.GpuMemory, grown.GpuMemory, 0);
+        Assert.Equal(0, fixture.Count("SELECT COUNT(*) FROM app_minutes a JOIN names n ON n.id=a.name_id WHERE n.upper='CHROME.EXE'"));
+        Assert.Equal(0, fixture.Count("SELECT COUNT(*) FROM names WHERE upper='CHROME.EXE'"));
+        // The minute saved without an Everything else row gains one holding chrome's values.
+        Assert.Equal(chromeAt100, Sums($"a.everything_else=1 AND a.minute={Ms(100)}"));
+        // A minute whose GPU values were null stays null; gpu_covered is unchanged.
+        Assert.Equal(1, fixture.Count($"SELECT COUNT(*) FROM app_minutes WHERE minute={Ms(72)} AND everything_else=1 AND gpu_seconds IS NULL AND gpu_memory_seconds IS NULL"));
+        Assert.Equal(covered, Covered());
+        Assert.Equal(720, fixture.Count("SELECT COUNT(*) FROM app_minutes WHERE everything_else=1"));
+        Assert.Equal(2, fixture.Count("PRAGMA user_version"));
+    }
+
+    [Fact]
+    public void Process_all_apps_clear_deletes_whole_minutes_in_six_hour_windows()
+    {
+        using var fixture = new Fixture(); var store = fixture.Open();
+        Minutes(store, "m", 690, "gone.exe"); Minutes(store, "n", 690, "gone.exe");
+        // Later minutes, at and after Before, hold only kept names.
+        store.Append("m", [.. Enumerable.Range(690, 60).Select(i => G(Day.AddMinutes(i), 60, [Gpu("chrome.exe", 1, 1e9), Else(1) with { GpuSeconds = 1, GpuMemoryByteSeconds = 1 }]))], Day.AddDays(1));
+        store.Append("n", [.. Enumerable.Range(690, 60).Select(i => Batch(Day.AddMinutes(i), apps: [App("code.exe", 1), Else(1)]))], Day.AddDays(1));
+        var windows = new List<(string Machine, long From, long To)>();
+        typeof(ProcessHistoryStore).GetField("clearWindowCommitted", Private)!.SetValue(store, (Action<string, long, long>)((machine, from, to) => windows.Add((machine, from, to))));
+        var clearBefore = Day.AddMinutes(690);   // 11:30 UTC
+        long before = clearBefore.ToUnixTimeMilliseconds();
+
+        store.BeginClear(new(null, clearBefore, clearBefore));
+        var done = FinishClear(store, Day.AddDays(1));
+        Assert.Equal((4L, (long?)4), (done.Done, done.Total));   // [00:00, 06:00) and [06:00, 11:30) on each of two machines
+
+        Assert.Equal(0, fixture.Count($"SELECT COUNT(*) FROM minutes WHERE minute<{before}"));
+        Assert.Equal(0, fixture.Count($"SELECT COUNT(*) FROM app_minutes WHERE minute<{before}"));
+        Assert.Equal(120, fixture.Count($"SELECT COUNT(*) FROM minutes WHERE minute>={before}"));
+        Assert.Equal(240, fixture.Count($"SELECT COUNT(*) FROM app_minutes WHERE minute>={before}"));
+        Assert.Equal(60, fixture.Count("SELECT COUNT(gpu_seconds) FROM app_minutes WHERE everything_else=1"));
+        Assert.Equal(0, fixture.Count("SELECT COUNT(*) FROM names WHERE upper='GONE.EXE'"));
+        Assert.Equal(3, fixture.Count("SELECT COUNT(*) FROM names"));   // chrome.exe, code.exe and Everything else
+        Assert.Equal(4, windows.Count);
+        Assert.All(windows, window => { Assert.True(window.To - window.From <= 360 * 60_000L, $"{window}"); Assert.True(window.To <= before); });
+        Assert.Equal(["m", "n"], windows.Select(window => window.Machine).Distinct().Order());
+        Assert.False(store.ClearPending);
+    }
 }

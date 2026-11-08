@@ -66,7 +66,7 @@ public class ProcessTableTests
         Assert.Equal([2,5,1,3,4],ByPid(false));Assert.Equal([1,2,5,3,4],ByPid(true));
         Assert.Null(ProcessGrouping.EngineText(rows[3].Members[0]));Assert.Equal("",ProcessGrouping.EngineText(rows[2].Members[0]));Assert.Equal("GPU 1 · 3D",ProcessGrouping.EngineText(rows[0].Members[0]));}
     [Fact] public void Only_name_and_gpu_engine_sort_ascending_first(){ Assert.True(ProcessTableColumns.AscendingFirst("gpuengine"));Assert.True(ProcessTableColumns.AscendingFirst("name"));Assert.False(ProcessTableColumns.AscendingFirst("gpu"));}
-    [Fact] public void The_footer_ends_with_the_gpu_line(){ Assert.Equal("GPU is the app's busiest GPU engine, as in Task Manager; GPU memory is dedicated video memory.",ProcessCopy.Footer(true)[^1]);Assert.Equal(5,ProcessCopy.Footer(true).Count);}
+    [Fact] public void The_footer_ends_with_the_gpu_line(){ Assert.Equal("GPU is the app's busiest GPU engine, as in Task Manager; GPU memory is dedicated video memory.",ProcessCopy.Footer(true)[^1]);Assert.Equal(6,ProcessCopy.Footer(true).Count);}
     [Theory][InlineData("pid",7)][InlineData("cpu",1.5)][InlineData("memory",4096)][InlineData("io",30)][InlineData("ioread",10)][InlineData("iowrite",20)]
     [InlineData("disk",700)][InlineData("diskread",300)][InlineData("diskwrite",400)][InlineData("network",11000)][InlineData("download",5000)][InlineData("upload",6000)]
     [InlineData("gpu",12.5)][InlineData("gpumemory",8192)][InlineData("gpushared",1024)]
@@ -76,5 +76,5 @@ public class ProcessTableTests
     public void A_sum_column_is_unknown_when_either_half_is(string key)=>Assert.Null(ProcessGrouping.Value(Full() with{IoWritePerSecond=key=="io"?null:20,DiskReadPerSecond=key=="disk"?null:300,UploadPerSecond=key=="network"?null:6000},key));
     [Theory][InlineData(false,true,"Disk and network need administrator")][InlineData(false,false,"Network needs administrator")][InlineData(true,true,null)]
     public void Banner_follows_elevation_and_build(bool elevated,bool disk,string? expected)=>Assert.Equal(expected,ProcessCopy.Banner(elevated,disk));
-    [Fact] public void Footer_omits_disk_without_the_disk_build(){ Assert.Equal(4,ProcessCopy.Footer(false).Count);Assert.Equal(5,ProcessCopy.Footer(true).Count);}
+    [Fact] public void Footer_omits_disk_without_the_disk_build(){ Assert.Equal(5,ProcessCopy.Footer(false).Count);Assert.Equal(6,ProcessCopy.Footer(true).Count);}
 }

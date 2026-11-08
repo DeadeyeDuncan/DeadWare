@@ -226,4 +226,64 @@ public class ProcessMinuteFolderTests
         var ties=CloseGpu(Enumerable.Range(0,11).Reverse().Select(i=>P($"k{i:00}.exe",pid:i+1,gpu:5)).ToArray());
         Assert.DoesNotContain(ties.Applications,a=>a.Name=="k10.exe");Assert.Contains(ties.Applications,a=>a.Name=="k09.exe");
         Assert.Equal(10,ties.Applications.Count(a=>!a.EverythingElse));}
+
+    static IReadOnlyList<ProcessSample> ExMix()=>[
+        P("ex.exe",cpu:900,mem:9_000_000,read:900,write:90,pid:1,gpu:40,gpuMem:300),
+        P("ex.exe",cpu:100,mem:1_000_000,read:100,write:10,pid:2,gpu:30,gpuType:"Copy",gpuMem:200),
+        P("a.exe",cpu:50,mem:5,read:5,pid:3,gpu:10,gpuMem:7),
+        P("",cpu:3,mem:3,read:3,pid:4,gpu:5,gpuMem:2,dGpu:0.05,dGpuMem:2)];
+    static (long Cpu,long Io,double Mem,double Gpu,double GpuMem) Sum(ProcessMinuteBatch b)
+        =>(b.Applications.Sum(a=>a.CpuTime),b.Applications.Sum(a=>a.IoRead+a.IoWrite),b.Applications.Sum(a=>a.MemoryByteSeconds),
+           b.Applications.Sum(a=>a.GpuSeconds??0),b.Applications.Sum(a=>a.GpuMemoryByteSeconds??0));
+
+    [Fact] public void Process_folder_counts_an_excluded_app_in_Everything_else()
+    {
+        var plain=CloseMinute(ExMix());
+        var f=new ProcessMinuteFolder{Excluded=AppExclusions.Keys(["EX.EXE"])};
+        for(int t=0;t<60;t++)f.Observe(A(t,ExMix(),gpuInterval:1));
+        var b=Assert.IsType<ProcessMinuteBatch>(f.Observe(A(60,P("z.exe"))));
+        Assert.DoesNotContain(b.Applications,a=>a.Name=="ex.exe");
+        var ex=App(plain,"ex.exe");var el=App(b,ProcessHistory.EverythingElse);var plainElse=App(plain,ProcessHistory.EverythingElse);
+        Assert.Equal(plainElse.CpuTime+ex.CpuTime,el.CpuTime);
+        Assert.Equal(plainElse.IoRead+ex.IoRead,el.IoRead);Assert.Equal(plainElse.IoWrite+ex.IoWrite,el.IoWrite);
+        Assert.Equal(plainElse.MemoryByteSeconds+ex.MemoryByteSeconds,el.MemoryByteSeconds,3);
+        // The busiest engine of the members' summed use (40 %), not 0.7: 0.4 x 60 s.
+        Assert.Equal(24,ex.GpuSeconds!.Value,6);
+        Assert.Equal(plainElse.GpuSeconds!.Value+24,el.GpuSeconds!.Value,6);
+        Assert.Equal(plainElse.GpuMemoryByteSeconds!.Value+ex.GpuMemoryByteSeconds!.Value,el.GpuMemoryByteSeconds!.Value,3);
+        var (c1,i1,m1,g1,gm1)=Sum(plain);var (c2,i2,m2,g2,gm2)=Sum(b);
+        Assert.Equal(c1,c2);Assert.Equal(i1,i2);Assert.Equal(m1,m2,3);Assert.Equal(g1,g2,6);Assert.Equal(gm1,gm2,3);
+        // Never a listed row, even when it is the busiest by every measure.
+        var only=new ProcessMinuteFolder{Excluded=AppExclusions.Keys(["ex.exe"])};
+        only.Observe(A(0,[ExMix()[0],ExMix()[1]],gpuInterval:1));
+        Assert.Equal([ProcessHistory.EverythingElse],Assert.IsType<ProcessMinuteBatch>(only.Observe(A(60,P("z.exe")))).Applications.Select(a=>a.Name));
+    }
+
+    [Fact] public void Process_folder_forgets_discards_and_honors_the_boundary()
+    {
+        var f=new ProcessMinuteFolder();
+        Assert.Null(f.OpenMinute);
+        f.Observe(A(0,[ExMix()[0],ExMix()[2]],gpuInterval:1));
+        Assert.Equal(T0,f.OpenMinute);
+        f.Forget("EX.EXE");
+        var b=Assert.IsType<ProcessMinuteBatch>(f.Observe(A(60,P("z.exe"))));
+        Assert.DoesNotContain(b.Applications,a=>a.Name=="ex.exe");
+        Assert.Equal(950,b.Applications.Sum(a=>a.CpuTime));
+        Assert.Equal(0.4+0.1,b.Applications.Sum(a=>a.GpuSeconds??0),6);
+        Assert.Equal(T0.AddMinutes(1),f.OpenMinute);
+        f.Discard();Assert.Null(f.OpenMinute);Assert.Null(f.Flush());
+        // One app's boundary treats it as excluded for minutes before Before; other apps and later minutes record normally.
+        var one=new ProcessMinuteFolder{Boundary=new HistoryClear("EX.EXE",T0.AddMinutes(1),T0)};
+        one.Observe(A(0,[ExMix()[0],ExMix()[2]],gpuInterval:1));
+        var ob=Assert.IsType<ProcessMinuteBatch>(one.Observe(A(60,[ExMix()[0],ExMix()[2]],gpuInterval:1)));
+        Assert.DoesNotContain(ob.Applications,a=>a.Name=="ex.exe");
+        Assert.Contains(ob.Applications,a=>a.Name=="a.exe");
+        var next=Assert.IsType<ProcessMinuteBatch>(one.Observe(A(120,P("z.exe"))));
+        Assert.Contains(next.Applications,a=>a.Name=="ex.exe");
+        // The all-apps boundary drops the activity whole, adding no covered seconds.
+        var all=new ProcessMinuteFolder{Boundary=new HistoryClear(null,T0.AddMinutes(1),T0)};
+        all.Observe(A(0,[ExMix()[0]],gpuInterval:1));
+        Assert.Null(all.Observe(A(60,[ExMix()[0]],gpuInterval:1)));
+        Assert.Contains(Assert.IsType<ProcessMinuteBatch>(all.Observe(A(120,P("z.exe")))).Applications,a=>a.Name=="ex.exe");
+    }
 }

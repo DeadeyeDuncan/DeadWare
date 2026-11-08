@@ -2,8 +2,11 @@ using System.Reflection;
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
+using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Shapes;
+using System.Windows.Threading;
 using DeadWare.App;
 using DeadWare.Core;
 using Xunit;
@@ -87,6 +90,10 @@ internal static class ShellUiChecks
         Assert.EndsWith(" While Per-process monitoring is on, it also keeps the busiest apps' CPU, memory, I/O and GPU for 30 days.",usageHelp.Text);
         Assert.Contains("for up to 400 days",usageHelp.Text);
         Assert.Equal("History and alerts",CardOf("Rules you set on the Alerts page"));Assert.Equal("Widget",CardOf("Choose the graphs shown in the widget"));
+        // The alert help names the first network use rule's learning period and keeps its Cooling Health ending.
+        var alertHelp=Descendants(pages["desktop"]).OfType<TextBlock>().Single(b=>b.Text.StartsWith("Rules you set on the Alerts page",StringComparison.Ordinal));
+        Assert.EndsWith("Cooling Health keeps its own notification setting.",alertHelp.Text);
+        Assert.Contains("The first network use rule learns your apps for 3 days",alertHelp.Text);
         Assert.Equal("Pop-outs",CardOf("Positions, sizes and Always on top"));Assert.Equal("Monitoring",CardOf("Includes motherboard"));
         // Per-core CPU usage: a Monitoring checkbox that drives the session setting.
         const string coreName="Show per-core CPU usage on usage graphs";
@@ -147,7 +154,174 @@ internal static class ShellUiChecks
             }
             finally{latestField.SetValue(collector,previous);session.Settings.ShowCpuCoreUsage=switchBefore;}
         }
+        CheckExcludedApps(cards,session);
+        CheckClearHistory(cards,session);
         Navigate("overview");
+    }
+
+    /// <summary>Settings → History and alerts → Clear history: heading, help, the Clear history… button disabled with each tooltip during a
+    /// fake clear, and the progress block shown whenever a store has a clear or a result, until a new clear starts.</summary>
+    private static void CheckClearHistory(Border[] cards,UiSession session)
+    {
+        var historyCard=cards.Single(c=>Descendants(c).OfType<TextBlock>().First().Text=="History and alerts");
+        var history=Assert.IsType<StackPanel>(Assert.Single(Descendants(historyCard).OfType<ExcludedAppsBlock>()).Parent);
+        var children=history.Children.Cast<UIElement>().ToList();
+        var heading=children.OfType<TextBlock>().Single(t=>t.Text=="Clear history");
+        Assert.Equal(16,heading.FontSize);
+        int at=children.IndexOf(heading);
+        Assert.True(at>children.FindIndex(c=>c is ExcludedAppsBlock));
+        Assert.Equal("Removes saved history for one app or all apps, older than 7 days or from all time, from Connections history, Usage history, Application resources and the alert log together. Device-wide history stays.",Assert.IsType<TextBlock>(children[at+1]).Text);
+        var button=Assert.IsType<Button>(children[at+2]);
+        Assert.Equal("Clear history…",button.Content);
+        var progress=Assert.IsType<HistoryClearProgressView>(children[at+3]);
+        Assert.Null(progress.Close);
+        Assert.True(button.IsEnabled);Assert.Null(button.ToolTip);Assert.Equal(Visibility.Collapsed,progress.Visibility);
+        Assert.True(ToolTipService.GetShowOnDisabled(button));
+        void Changed()=>((Action?)typeof(UiSession).GetField("Changed",All)!.GetValue(session))?.Invoke();
+        try
+        {
+            session.Usage.ClearState=new(HistoryClearPhase.Clearing,10,null,true,false);Changed();
+            Assert.False(button.IsEnabled);Assert.Equal("A clear is in progress.",button.ToolTip);
+            Assert.Equal(Visibility.Visible,progress.Visibility);
+            Assert.Equal(["Usage history · clearing (10 %)"],progress.Lines.Select(t=>t.Text));
+            // The worker never started, so the store cannot retry: the clear waits for the next start.
+            session.Usage.ClearState=new(HistoryClearPhase.Failed,null,"IOException",true,false);Changed();
+            Assert.False(session.Usage.CanRetryClear);
+            Assert.False(button.IsEnabled);Assert.Equal("A clear is waiting to finish; it resumes when DeadWare next starts.",button.ToolTip);
+            // Failed without its marker does not hold the next clear back (B8).
+            session.Usage.ClearState=new(HistoryClearPhase.Failed,null,"IOException",false,false);Changed();
+            Assert.True(button.IsEnabled);Assert.Null(button.ToolTip);
+            Assert.Equal(Visibility.Visible,progress.Visibility);
+            Assert.Equal("History partly cleared.",progress.Header.Text);
+            // The result stays until a new clear starts.
+            session.Usage.ClearState=new(HistoryClearPhase.Done,100,null,false,false);Changed();Changed();
+            Assert.Equal(Visibility.Visible,progress.Visibility);Assert.Equal("History cleared.",progress.Header.Text);
+            session.Usage.ClearState=new(HistoryClearPhase.Queued,null,null,false,false);Changed();
+            Assert.Equal("Clearing history…",progress.Header.Text);Assert.Equal(["Usage history · waiting"],progress.Lines.Select(t=>t.Text));
+        }
+        finally{session.Usage.ClearState=HistoryClearState.None;Changed();}
+        Assert.True(button.IsEnabled);Assert.Equal(Visibility.Collapsed,progress.Visibility);
+    }
+
+    /// <summary>Settings → History and alerts → Don't record these apps: copy, suggestions, adding, the three errors, the note and Remove with its focus.</summary>
+    private static void CheckExcludedApps(Border[] cards,UiSession session)
+    {
+        const string Help="These apps still show on live pages, marked \"not recorded\", but none of their history is saved: no Connections history, no per-app totals in Usage history and no alerts for them. In Application resources their CPU, memory, I/O and GPU count under Everything else, so device totals stay true. Application traffic budgets for them stop counting. History saved before you add an app is kept until you clear it. Processes that Windows saves as \"PID n\" can't be matched.";
+        const string Kept="Saved history for this app is kept. Use Clear history… to remove it.";
+        var historyCard=cards.Single(c=>Descendants(c).OfType<TextBlock>().First().Text=="History and alerts");
+        var block=Assert.Single(Descendants(historyCard).OfType<ExcludedAppsBlock>());
+        // The block follows the Connections block in the same card.
+        var history=Assert.IsType<StackPanel>(block.Parent);
+        var connectionsOpen=history.Children.OfType<Button>().Single(b=>b.Content as string=="Open Connections controls");
+        Assert.Equal(history.Children.IndexOf(connectionsOpen)+1,history.Children.IndexOf(block));
+        var collector=session.Collector;var latestField=collector.GetType().GetField("latest",All)!;var previous=latestField.GetValue(collector);
+        var listBefore=session.Settings.ExcludedApps.ToList();
+        Assert.Empty(listBefore);
+        void Click(Button button)=>button.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+        Button[] Removes()=>block.List.Children.OfType<FrameworkElement>().SelectMany(LogicalButtons).ToArray();
+        Button Remove(string name)=>Removes().Single(b=>AutomationProperties.GetName(b)==$"Remove {name} from Don't record these apps");
+        try
+        {
+            latestField.SetValue(collector,new Reading(new(DateTimeOffset.UtcNow,0,new Dictionary<string,double?>()),[],[],[new ProcessTraffic(42,1,"fixture.exe",null,null,0,0)],"CPU","","","",false));
+            // Showing Settings above already read the histories, so this refresh within the minute reads nothing new; clearing the
+            // last read time makes it read again, and its completion offers the suggestions.
+            Wait(block.Suggestions.RefreshAsync());
+            typeof(AppSuggestions).GetField("lastRead",All)!.SetValue(block.Suggestions,null);
+            Wait(block.Suggestions.RefreshAsync());
+            // Exact strings.
+            var heading=Assert.IsType<TextBlock>(block.Children[0]);
+            Assert.Equal("Don't record these apps",heading.Text);Assert.Equal(16,heading.FontSize);
+            Assert.Equal(Help,Assert.IsType<TextBlock>(block.Children[1]).Text);
+            Assert.Equal("Add",block.Add.Content);
+            Assert.True(block.Box.IsEditable);Assert.Equal("App to stop recording",AutomationProperties.GetName(block.Box));
+            Assert.Equal("No apps are excluded.",Assert.IsType<TextBlock>(Assert.Single(block.List.Children)).Text);
+            Assert.Equal(Visibility.Collapsed,block.Error.Visibility);Assert.Equal(Visibility.Collapsed,block.Note.Visibility);
+            // Tab order: the box, then Add.
+            var addRow=Assert.IsAssignableFrom<Panel>(block.Box.Parent);Assert.Same(addRow,block.Add.Parent);
+            Assert.True(addRow.Children.IndexOf(block.Box)<addRow.Children.IndexOf(block.Add));
+            // Adding from a suggestion: the finished refresh offers the current reading's app, and so does opening the drop-down (raised
+            // directly; offscreen a popup would need a native window).
+            Assert.Contains("fixture.exe",block.Box.Items.Cast<string>());
+            typeof(ComboBox).GetMethod("OnDropDownOpened",All)!.Invoke(block.Box,[EventArgs.Empty]);
+            Assert.Contains("fixture.exe",block.Box.Items.Cast<string>());
+            block.Box.SelectedItem="fixture.exe";Assert.Equal("fixture.exe",block.Box.Text);
+            Click(block.Add);
+            Assert.Equal(["fixture.exe"],session.Settings.ExcludedApps);
+            Assert.Equal("",block.Box.Text);
+            Assert.Equal(Visibility.Visible,block.Note.Visibility);Assert.Equal(Kept,block.Note.Text);
+            Assert.Equal(Visibility.Collapsed,block.Error.Visibility);
+            // Suggestions leave listed apps out; the shared source can include them.
+            Assert.DoesNotContain("fixture.exe",block.Box.Items.Cast<string>());
+            Assert.DoesNotContain("fixture.exe",block.Suggestions.Names(includeListed:false));
+            Assert.Contains("fixture.exe",block.Suggestions.Names(includeListed:true));
+            // Typing and Enter adds too.
+            block.Box.Text="Steam.exe";Press(block.Box,Key.Enter);
+            Assert.Equal(["fixture.exe","Steam.exe"],session.Settings.ExcludedApps);
+            Assert.Equal("",block.Box.Text);Assert.Equal(Visibility.Visible,block.Note.Visibility);
+            // The three errors (Warning), each hiding the note and changing nothing.
+            block.Box.Text="C:\\x.exe";Click(block.Add);
+            Assert.Equal(Visibility.Visible,block.Error.Visibility);Assert.Equal("Enter an app's executable name, such as chrome.exe.",block.Error.Text);
+            Assert.Equal(Visibility.Collapsed,block.Note.Visibility);
+            Assert.Equal(["fixture.exe","Steam.exe"],session.Settings.ExcludedApps);
+            block.Box.Text="STEAM.EXE";Click(block.Add);
+            Assert.Equal("That app is already in the list.",block.Error.Text);
+            Assert.Equal(["fixture.exe","Steam.exe"],session.Settings.ExcludedApps);
+            session.SetExcludedApps(Enumerable.Range(0,64).Select(i=>$"app{i}.exe"));
+            Assert.Equal(64,Removes().Length);
+            block.Box.Text="new.exe";Click(block.Add);
+            Assert.Equal("At most 64 apps can be listed.",block.Error.Text);
+            Assert.Equal(64,session.Settings.ExcludedApps.Count);Assert.DoesNotContain("new.exe",session.Settings.ExcludedApps);
+            session.SetExcludedApps(["fixture.exe"]);
+            block.Box.Text="Steam.exe";Press(block.Box,Key.Enter);
+            Assert.Equal(Visibility.Collapsed,block.Error.Visibility);Assert.Equal(Visibility.Visible,block.Note.Visibility);
+            // The list: sorted, one Remove each, the first naming fixture.exe.
+            Assert.Equal(["Remove fixture.exe from Don't record these apps","Remove Steam.exe from Don't record these apps"],Removes().Select(AutomationProperties.GetName));
+            Assert.All(Removes(),b=>Assert.Equal("Remove",b.Content));
+            // Remove: focus moves to the next row's Remove, then to the box once the list empties (logical focus; offscreen nothing takes keyboard focus).
+            var scope=FocusManager.GetFocusScope(block);
+            FocusManager.SetFocusedElement(scope,Remove("fixture.exe"));
+            Click(Remove("fixture.exe"));
+            Assert.Equal(["Steam.exe"],session.Settings.ExcludedApps);
+            Assert.Same(Remove("Steam.exe"),FocusManager.GetFocusedElement(scope));
+            Assert.Equal(Visibility.Collapsed,block.Note.Visibility);
+            Click(Remove("Steam.exe"));
+            Assert.Empty(session.Settings.ExcludedApps);
+            Assert.Same(block.Box,FocusManager.GetFocusedElement(scope));
+            Assert.Equal("No apps are excluded.",Assert.IsType<TextBlock>(Assert.Single(block.List.Children)).Text);
+            Assert.Contains("fixture.exe",block.Box.Items.Cast<string>());
+        }
+        finally{latestField.SetValue(collector,previous);session.SetExcludedApps(listBefore);}
+    }
+
+    private static IEnumerable<Button> LogicalButtons(FrameworkElement root)
+    {
+        if(root is Button button){yield return button;yield break;}
+        foreach(var child in LogicalTreeHelper.GetChildren(root).OfType<FrameworkElement>())
+            foreach(var found in LogicalButtons(child))yield return found;
+    }
+    /// <summary>Presses a key on an element as the keyboard does: the preview first, then the key itself unless it was handled.</summary>
+    private static void Press(UIElement target,Key key)
+    {
+        var preview=new KeyEventArgs(Keyboard.PrimaryDevice,new KeySource(),0,key){RoutedEvent=Keyboard.PreviewKeyDownEvent};
+        target.RaiseEvent(preview);
+        if(!preview.Handled)target.RaiseEvent(new KeyEventArgs(Keyboard.PrimaryDevice,new KeySource(),0,key){RoutedEvent=Keyboard.KeyDownEvent});
+    }
+    /// <summary>The input source a key event must name; it is never added to the sources, and offscreen nothing reads it.</summary>
+    private sealed class KeySource : PresentationSource
+    {
+        public override Visual RootVisual {get=>null!;set{}}
+        protected override CompositionTarget GetCompositionTargetCore()=>null!;
+        public override bool IsDisposed=>false;
+    }
+    /// <summary>Runs the dispatcher until the task finishes (at most 10 s), then once more so its UI-thread continuations have run.</summary>
+    private static void Wait(Task task)
+    {
+        var frame=new DispatcherFrame();var deadline=DateTime.UtcNow.AddSeconds(10);var timer=new DispatcherTimer{Interval=TimeSpan.FromMilliseconds(5)};
+        timer.Tick+=(_,_)=>{if(task.IsCompleted||DateTime.UtcNow>=deadline)frame.Continue=false;};timer.Start();
+        try{Dispatcher.PushFrame(frame);}finally{timer.Stop();}
+        Assert.True(task.IsCompleted,"The suggestions' history reads did not finish within 10 s.");
+        task.GetAwaiter().GetResult();
+        var settle=new DispatcherFrame();Dispatcher.CurrentDispatcher.BeginInvoke(DispatcherPriority.Background,new Action(()=>settle.Continue=false));Dispatcher.PushFrame(settle);
     }
 
     private static IEnumerable<DependencyObject> Descendants(DependencyObject root)

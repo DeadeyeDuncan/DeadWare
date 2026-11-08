@@ -23,7 +23,7 @@ internal sealed record ProcessCell(string Text,string? Tip);
 internal sealed class ProcessRowView(string id,string? parentId) : INotifyPropertyChanged
 {
     private bool expandable,expanded;
-    private string name="",spoken="";
+    private string name="",mark="",spoken="";
     private IReadOnlyDictionary<string,ProcessCell> cells=new Dictionary<string,ProcessCell>();
     /// <summary>"app:" and the app key for an app row; "process:" with the PID and generation for a process row.</summary>
     public string Id {get;}=id;
@@ -34,6 +34,8 @@ internal sealed class ProcessRowView(string id,string? parentId) : INotifyProper
     public bool Expandable=>expandable;
     public bool Expanded=>expanded;
     public string Name=>name;
+    /// <summary>"not recorded" for an app row whose app is in Don't record these apps, shown Muted after the name; "" otherwise, and always for a process row.</summary>
+    public string Mark=>mark;
     /// <summary>The chevron's automation name.</summary>
     public string ChevronName=>(expanded?"Collapse ":"Expand ")+name;
     /// <summary>One display string and one tooltip per column key, shown or not.</summary>
@@ -44,10 +46,11 @@ internal sealed class ProcessRowView(string id,string? parentId) : INotifyProper
     internal IReadOnlyList<(int Pid,long Generation)> Members {get;set;}=[];
     public event PropertyChangedEventHandler? PropertyChanged;
 
-    internal void Update(string name,bool expandable,bool expanded,IReadOnlyDictionary<string,ProcessCell> cells,string spoken)
+    internal void Update(string name,bool expandable,bool expanded,IReadOnlyDictionary<string,ProcessCell> cells,string spoken,string mark="")
     {
         bool chevron=false;
         if(this.name!=name){this.name=name;Raise(nameof(Name));chevron=true;}
+        if(this.mark!=mark){this.mark=mark;Raise(nameof(Mark));}
         if(this.expandable!=expandable){this.expandable=expandable;Raise(nameof(Expandable));}
         if(this.expanded!=expanded){this.expanded=expanded;Raise(nameof(Expanded));chevron=true;}
         if(chevron)Raise(nameof(ChevronName));
@@ -380,7 +383,9 @@ internal sealed class ProcessesPage : UserControl
             string pid=expandable?"":Pid(app.Members[0]);
             var cells=Cells(activity,key=>ProcessGrouping.Value(app,key),key=>Gap(app,key),pid,ProcessGrouping.EngineText(app),app.GpuBusiest,stale);
             var view=View(id,null);
-            view.Update(app.Name,expandable,open,cells,Spoken(app.Name,expandable?$"{app.Members.Count} processes":"PID "+pid,visible,cells));
+            // An app in Don't record these apps is marked by key; its name, sorting and search stay bare.
+            string mark=session.IsExcluded(app.Name)?ProcessCopy.NotRecorded:"";
+            view.Update(app.Name,expandable,open,cells,Spoken(app.Name,expandable?$"{app.Members.Count} processes":"PID "+pid,visible,cells,mark),mark);
             view.Members=[..app.Members.Select(m=>(m.Pid,m.Generation))];
             shown.Add(view);
             if(!open)continue;
@@ -492,9 +497,12 @@ internal sealed class ProcessesPage : UserControl
         ["gpu"]="GPU",["gpuengine"]="GPU engine",["gpumemory"]="GPU memory",["gpushared"]="shared GPU memory",
     };
     /// <summary>Like "chrome.exe, 3 processes, CPU 9 %, memory 512.0 MB": the shown columns in order, an unknown value with its reason; an empty cell (a known zero's GPU engine) is left out.</summary>
-    private static string Spoken(string name,string lead,IReadOnlyList<string> visible,IReadOnlyDictionary<string,ProcessCell> cells)
+    private static string Spoken(string name,string lead,IReadOnlyList<string> visible,IReadOnlyDictionary<string,ProcessCell> cells,string mark="")
     {
-        var parts=new List<string> {name,lead};
+        // A marked app reads "<name>, not recorded, <lead>, …".
+        var parts=new List<string> {name};
+        if(mark.Length>0)parts.Add(mark);
+        parts.Add(lead);
         foreach(string key in visible.Where(k=>k!="pid"))
         {
             var cell=cells[key];
@@ -528,11 +536,12 @@ internal sealed class ProcessesPage : UserControl
                 </ControlTemplate>
               </ToggleButton.Template>
             </ToggleButton>
-            <TextBlock Text="{Binding Name}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
+            <TextBlock TextTrimming="CharacterEllipsis" VerticalAlignment="Center"><Run Text="{Binding Name, Mode=OneWay}"/><Run x:Name="Mark" Foreground="{DynamicResource Muted}"/></TextBlock>
           </DockPanel>
           <DataTemplate.Triggers>
             <DataTrigger Binding="{Binding Expandable}" Value="False"><Setter TargetName="Chevron" Property="Visibility" Value="Hidden"/></DataTrigger>
             <DataTrigger Binding="{Binding IsApp}" Value="False"><Setter TargetName="Line" Property="Margin" Value="22,0,0,0"/></DataTrigger>
+            <DataTrigger Binding="{Binding Mark}" Value="not recorded"><Setter TargetName="Mark" Property="Text" Value=" · not recorded"/></DataTrigger>
           </DataTemplate.Triggers>
         </DataTemplate>
         """);
