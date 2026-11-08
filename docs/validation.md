@@ -1,5 +1,87 @@
 # Release validation
 
+## First network use alerts and history controls (0.17.0, 2026-11-08)
+
+### CI measurements (as measured, no threshold)
+
+All on `windows-latest` in the pull request's CI build (#86). A measurement records and decides nothing.
+
+- **The CI split.** The plan expected these measurements in the `build` job against its limit. The first attempt, [run 42433498618](https://github.com/DeadeyeDuncan/DeadWare/actions/runs/42433498618), ran them there and was cancelled at the build job's 30-minute limit (the limit raised from 20 to 30 minutes during 0.16.0). At the user's decision (2026-11-08), CI was split at 4edf3a4: the `build` job keeps its 30-minute limit and leaves out the `*MeasurementTests` classes (`publish.ps1 -TestFilter 'FullyQualifiedName!~MeasurementTests'`), and a new `measure` job runs them. [run 42445752018](https://github.com/DeadeyeDuncan/DeadWare/actions/runs/42445752018) was cancelled at the measure job's first limit of 45 minutes (the fills take about 20 minutes, the four clears about 13, plus the other real-Windows measurements), and the limit was raised to 90 minutes at 71422a4. Since the split the build job has taken 6m26s–10m49s and the measure job 28m22s–39m55s.
+- `History_clear_timing_on_large_files` (`history-clear.json`), the fills (Task 2):
+  - First attempt, [run 42433498618](https://github.com/DeadeyeDuncan/DeadWare/actions/runs/42433498618) (one job, cancelled at 30 minutes): `fills.connections` 106.9 s, `fills.usage` 1,202.6 s.
+  - Passed in [run 42436018424](https://github.com/DeadeyeDuncan/DeadWare/actions/runs/42436018424) (split CI; build 6m26s, measure 28m22s): `fills.connections` 132.8 s (219 hours, 262,520 traffic rows, 256 MiB, evicted); `fills.usage` 961 s (54,960 minutes, 2,748,000 application rows, 252 MiB, not evicted: the fill stopped at the current minute).
+- `History_clear_timing_on_large_files`, the four clears (Task 9), [run 42453983964](https://github.com/DeadeyeDuncan/DeadWare/actions/runs/42453983964), measure job 35m43s (fills there: connections 132.8 s, usage 1,065.8 s):
+
+  | Clear | Total | Steps | p95 step | Largest WAL |
+  |---|---|---|---|---|
+  | Connections, one app | 30,614 ms | 90 | 397.7 ms | 1,009,432 B |
+  | Connections, all apps | 48,194.9 ms | 165 | 329.8 ms | 749,872 B |
+  | Usage history, one app | 132,742.5 ms | 332 | 503.0 ms | 1,042,392 B |
+  | Usage history, all apps | 158,311.1 ms | 508 | 506.5 ms | 1,137,152 B |
+
+  Every clear finished, and the WAL never exceeded 8 MiB. An earlier run, [run 42445752018](https://github.com/DeadeyeDuncan/DeadWare/actions/runs/42445752018), measured a p95 step of 1,093 ms for Usage history one app; both are recorded as measured (CI disk variance).
+- `First_network_use_sees_this_process_send_one_udp_datagram` (`first-network-use.json`, Task 14), on the elevated runner in the build job of [run 42459416979](https://github.com/DeadeyeDuncan/DeadWare/actions/runs/42459416979): `{"capture":"available","seconds":2.4}`. The datagram produced a first network use episode for the test host within 2.4 s.
+
+### Findings
+
+- Accepted, not fixed: the clock-ahead limitation of an all-apps clear. An all-apps clear raises Connections history's monotonic `expiry` to the clear's `Before`, and this is kept. If the clock was ahead at the confirmation and is later set back, Connections history recorded before the clock passes `Before` again is hidden and then purged, and the strip labels that time Cleared; a backwards clock change can hide new Connections history until the clock catches up. As the controller's ruling records it, rows saved behind the one-app cursor or before `Before` reappear only after the marker is removed. The user guide's Connections section states the limitation.
+- Still open: the monotonic `expiry` watermark from the 0.12.2 connections review (Connections review fixes (0.12.2), below): a forward clock jump hides history until the clock catches up. The limitation above is the same mechanism; 0.17.0 does not change it.
+
+### Automated coverage
+
+Core, run locally and on the Windows CI build:
+
+- `AppKeyTests`: case, spelling and surrogate folding, the Don't record list's normalization, invalid and duplicate names and the 64-app cap, and the settings round trip.
+- `HistoryClearTests`: clear boundaries, the strips' marks for time a clear removed, retention expiry waiting while a marker exists, `Clear_marker_that_cannot_be_saved_clears_nothing`, `Cleared_names_leave_no_bytes_in_any_store_file`, `One_app_clear_matches_non_ascii_case_in_every_store`, and an app with no saved history finishing at once.
+- `FirstNetworkUseTests`: upper-case keys with "PID n" and "Unknown application" never learnable, loopback, the learning end at the local midnight that begins the third day, balloon text (one app, up to three, then a count, within 250 characters), and the summary and limits.
+- `FirstUseTrackerTests`: quiet learning then one alert per app, seeding by key that never alerts or evicts and a failed store staying unseeded, learning from the first available capture through switching off, removal and re-adding, a switched-off rule learning quietly and no rule learning nothing, excluded, PID and unknown names, Don't alert names learned without an episode, 60-second groups, forgetting one key or every key, the full list forgetting the app seen least recently, forgetting after 400 days, and bounded change batches.
+- Alerts: `AlertRuleTests` (one first network use rule with no target, added once; the Don't alert list normalized), `AlertEvaluatorTests` (first network use never evaluated by minutes or battery, budgets of excluded apps stopping and reseeding only themselves, `EndScope`), `AlertStoreTests` (the first-use tables added to a version 1 file without a version change, at the cap, closed first-use episodes saved with their link and known row in one transaction, known-row upserts, retention and eviction of links and of known rows unseen for 400 days with the orphan sweep, invalid rows rejected before any write, 8,000 known and alerted apps of 256 CJK characters under 8 MiB and 32 MiB, the alert clear keeping device episodes and finishing one call per step).
+- Folders: `UsageHistoryTests` (the usage folder skipping an excluded app), `ProcessMinuteFolderTests` (an excluded app counted in Everything else; forget, discard and the boundary), `ConnectionMinuteFolderTests` (forgetting one app or every entry while keeping coverage; retiring waiting units in scope).
+- Stores: `ConnectionHistoryStoreTests` (application names under expiry and floor, bounded maintenance of a raised expiry, hidden rows purged before eviction, the one-app clear hiding at once and then deleting, the all-apps clear raising expiry, bounded steps inside the transaction and journal budgets, the marker resuming after reopen), `UsageHistoryStoreTests` (application names, the one-app clear across spellings and machines, the all-apps clear keeping device minutes, the atomic marker that resumes, one call per step), `ProcessHistoryStoreTests` (the one-app clear moving numbers into Everything else, the all-apps clear deleting whole minutes in six-hour windows), `ProcessTableTests` (the footer's not recorded line).
+
+App, on the Windows CI build (the UI checks run locally too):
+
+- `AlertServiceTests`: network use posted from the collector thread once per app per minute, 1,024 new apps saved in bounded batches, an excluded budget reseeding when the app is removed, a new app after learning logged closed with one balloon per window, first-use groups skipping the hour floor and muted notifications still logging, seeding each store once (retrying a failed store, skipping one with a clear in progress), restart keeping known apps and learning dates, clearing an app so its next poll alerts again while the Don't alert list stays, and the alert clear running in steps.
+- `ConnectionServiceTests`, `UsageHistoryServiceTests`, `ProcessHistoryServiceTests`: excluded apps shown live and never saved, a mid-minute exclusion keeping what was merged, retried batches keeping their payload, the clears flushing first and dropping the rest of the minute, `Usage_clear_interleaves_with_recording_and_resumes_after_quit`, clears while recording is paused, Try again after a failed step, an unreadable marker and a stopped worker, and the open minute moving into Everything else.
+- `HistoryClearSessionTests`: a second request refused and a stopped worker reported unavailable, open pages reread on `HistoryClearChanged`, and `Quit_during_a_clear_meets_the_history_deadline`.
+- `ThemeTokenTests.Token_only_windows_and_blocks_hold_no_literal_colours`.
+- UI checks inside `BatteryUiTests.Real_battery_page_renders_dark_light_empty_and_multi_year_without_native_windows`:
+  - `HistoryClearUiChecks`: `CheckChoices`, `CheckConfirmation`, `CheckSubmit`, `CheckProgress`, `CheckKeyboard`, `CheckTheme`.
+  - `ShellUiChecks`: `CheckClearHistory`, `CheckExcludedApps`.
+  - `AlertsUiChecks`: `CheckFirstUse`, `CheckHistoryClearRereads`.
+  - `ConnectionsPageUiChecks`: `CheckClearHistoryEntry`, `CheckHistoryClearRereads`, `CheckStripNotRecordedAndClearedTime`, `CheckDestinationsNotRecordedMark`.
+  - `UsageHistoryUiChecks`: `CheckClearHistoryEntry`, `CheckStripClearedTime`, `CheckHistoryClearRereads`.
+  - `ProcessesPageUiChecks`: `Excluded_app_rows_are_marked_not_recorded`.
+- Real-Windows measurements: `History_clear_timing_on_large_files` (measure job) and `First_network_use_sees_this_process_send_one_udp_datagram` (elevated, build job), above.
+
+### Changed existing tests
+
+- `AlertStoreTests` retention test: batches of 300 (user-approved 2026-11-07).
+- `AlertRuleTests.Settings_keep_rules_and_the_notification_switch_and_default_to_none_and_on`: the default first network use rule is present.
+- `ProcessTableTests`: the line count 5 → 6 and the line indexes 4/5 → 5/6 (the new footer line); `ApplicationResourcesUiChecks.The_note_names_gpu`: the note string.
+- `UsageHistoryServiceTests.Usage_clear_interleaves_with_recording_and_resumes_after_quit`: the fixture shrank from 200,000 to 44,000 rows and became structural (no step after `StopAsync`, exact commit counts) after three CI-timing failures. The design's test list names 200,000 rows.
+- `UsageHistoryUiChecks.CheckStripReadsOnItsOwn`: adjusted because the refresh now reads the shown range (meaning unchanged).
+- `ThemeTokenTests` gained a source scan of `ExcludedAppsBlock.cs` and `ClearHistoryWindow.cs`.
+- `Clear_marker_that_cannot_be_saved_clears_nothing` blocks the marker with a directory at its `.tmp` path, which works on every platform.
+- The Quit session test calls `StopCollectorAsync` by reflection with Quit's deadlines.
+
+### Pending by eye
+
+Never claimed as verified in this release:
+
+- First network use alerts: the balloon's appearance and click-through, on a real first use.
+- First network use alerts: one balloon for three apps started within a minute.
+- First network use alerts: a real three-day learning run on an administrator install.
+- First network use alerts: the rule line for a standard user, and the Alerts page rule line through its states on a real machine.
+- Don't record these apps and Clear history…: all apps, all time on the user's full `connections.db` and `usage-history.db`: the time until done, dashboard responsiveness, and Quit and sign-out during the clear, followed by the resume.
+- Don't record these apps and Clear history…: Esc and Close in the modal Clear history window, in its choices and progress views.
+- Don't record these apps and Clear history…: an excluded app with a day of traffic is absent from Connections History, from Usage history's Applications and from the Application resources rows, while device totals still match.
+- Don't record these apps and Clear history…: the Cleared band and Not saved slots on both strips on real data, and the excluded application filter, in a light, a dark and a high-contrast theme.
+
+### Results
+
+`dotnet build DeadWare.slnx -c Release --nologo` on Windows finished with 0 errors. The Core suite ran on Windows this release, not on Linux: it passed 1,319 tests with 1 skipped (1,258 at the branch point), with no baseline failures on Windows; the App suite passed 485 tests with 14 skipped locally (the GitHub-only checks), and 494 on the Windows CI build including the real-Windows checks. The latest fully green Windows CI run when this was written is [run 42448833141](https://github.com/DeadeyeDuncan/DeadWare/actions/runs/42448833141) on head 71422a4; later runs on the branch ([run 42451324588](https://github.com/DeadeyeDuncan/DeadWare/actions/runs/42451324588), [run 42453983964](https://github.com/DeadeyeDuncan/DeadWare/actions/runs/42453983964) and [run 42456452871](https://github.com/DeadeyeDuncan/DeadWare/actions/runs/42456452871), whose measure job above passed) did not pass every job while their fixes landed, and [run 42459416979](https://github.com/DeadeyeDuncan/DeadWare/actions/runs/42459416979) on cb1fc3a was in progress. The controller updates this line to the final green run and its head SHA before merging.
+
 ## Traffic strip and Destinations table (0.16.0, 2026-11-07)
 
 ### CI measurements (as measured, no threshold)
