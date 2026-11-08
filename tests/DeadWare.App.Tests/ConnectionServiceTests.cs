@@ -662,11 +662,11 @@ public class ConnectionServiceTests
             Assert.Equal(failed.Records,retry.Records.Where(r=>ids.Contains(r.BatchId)));
             Assert.Equal(failed.Coverage,retry.Coverage.Where(c=>ids.Contains(c.BatchId)));
             Assert.Contains(retry.Records,r=>ids.Contains(r.BatchId)&&r.Delta.Peer.Process.Name=="b.exe");
-            // Minute 1: b.exe keeps the + 61 … + 63 s merged before the change; its + 64 s delta is not saved.
+            // Minute 1: b.exe keeps the + 60 … + 63 s merged before the change; its + 64 s delta is not saved.
             RecordApps(service,clock,64,64,"a.exe","b.exe");await service.StopAsync();
             var minute1=calls.All.Skip(1).SelectMany(c=>c.Records).Where(r=>r.Delta.Minute==Epoch.AddMinutes(1)).ToArray();
-            Assert.Equal(30L,Assert.Single(minute1,r=>r.Delta.Peer.Process.Name=="b.exe").Delta.ReceivedBytes);
-            Assert.Equal(40L,Assert.Single(minute1,r=>r.Delta.Peer.Process.Name=="a.exe").Delta.ReceivedBytes);
+            Assert.Equal(40L,Assert.Single(minute1,r=>r.Delta.Peer.Process.Name=="b.exe").Delta.ReceivedBytes);
+            Assert.Equal(50L,Assert.Single(minute1,r=>r.Delta.Peer.Process.Name=="a.exe").Delta.ReceivedBytes);
             Assert.Equal(0,service.DroppedObservations);Assert.Equal(0,service.BufferedDeltas);
         }
         finally {changed.Set();await service.StopAsync();}
