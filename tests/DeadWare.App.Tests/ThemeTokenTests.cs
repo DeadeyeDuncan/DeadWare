@@ -76,14 +76,15 @@ public sealed class ThemeTokenTests
     }
 
     /// <summary>Windows and blocks whose every brush must be a theme token (a DynamicResource), never a literal colour.</summary>
-    private static readonly string[] TokenOnlySources=["ExcludedAppsBlock.cs"];
+    private static readonly string[] TokenOnlySources=["ExcludedAppsBlock.cs","ClearHistoryWindow.cs"];
 
     [Fact] public void Token_only_windows_and_blocks_hold_no_literal_colours()
     {
         var directory=new DirectoryInfo(AppContext.BaseDirectory);
         while(directory is not null&&!File.Exists(Path.Combine(directory.FullName,"DeadWare.slnx")))directory=directory.Parent;
         Assert.NotNull(directory);
-        var literal=new System.Text.RegularExpressions.Regex(@"\b(Brushes|Colors|SystemColors)\.|\bColor\.From|new\s+SolidColorBrush|""#[0-9A-Fa-f]{3,8}""");
+        // Literal colours, gradient brushes, converted colours, and any brush assigned directly instead of through SetResourceReference.
+        var literal=new System.Text.RegularExpressions.Regex(@"\b(Brushes|Colors|SystemColors)\.|\bColor\.From|new\s+(SolidColorBrush|LinearGradientBrush|RadialGradientBrush)|\bColorConverter\b|""#[0-9A-Fa-f]{3,8}""|\b(Background|Foreground|BorderBrush|Fill|Stroke)\s*=(?!=)");
         foreach(string name in TokenOnlySources)
         {
             string text=File.ReadAllText(Path.Combine(directory.FullName,"src","DeadWare.App",name));

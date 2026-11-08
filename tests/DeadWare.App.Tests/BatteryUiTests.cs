@@ -87,6 +87,8 @@ public class BatteryUiTests
                 UsageHistoryUiChecks.Run(app);
                 Phase("alerts");
                 AlertsUiChecks.Run(app);
+                Phase("history clear");
+                HistoryClearUiChecks.Run(app);
                 Phase("cpu core styles");
                 CpuCoreStyleUiChecks.Run();
                 CpuCoreStyleUiChecks.RunWindow();

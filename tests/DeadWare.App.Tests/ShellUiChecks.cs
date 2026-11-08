@@ -155,7 +155,52 @@ internal static class ShellUiChecks
             finally{latestField.SetValue(collector,previous);session.Settings.ShowCpuCoreUsage=switchBefore;}
         }
         CheckExcludedApps(cards,session);
+        CheckClearHistory(cards,session);
         Navigate("overview");
+    }
+
+    /// <summary>Settings → History and alerts → Clear history: heading, help, the Clear history… button disabled with each tooltip during a
+    /// fake clear, and the progress block shown whenever a store has a clear or a result, until a new clear starts.</summary>
+    private static void CheckClearHistory(Border[] cards,UiSession session)
+    {
+        var historyCard=cards.Single(c=>Descendants(c).OfType<TextBlock>().First().Text=="History and alerts");
+        var history=Assert.IsType<StackPanel>(Assert.Single(Descendants(historyCard).OfType<ExcludedAppsBlock>()).Parent);
+        var children=history.Children.Cast<UIElement>().ToList();
+        var heading=children.OfType<TextBlock>().Single(t=>t.Text=="Clear history");
+        Assert.Equal(16,heading.FontSize);
+        int at=children.IndexOf(heading);
+        Assert.True(at>children.FindIndex(c=>c is ExcludedAppsBlock));
+        Assert.Equal("Removes saved history for one app or all apps, older than 7 days or from all time, from Connections history, Usage history, Application resources and the alert log together. Device-wide history stays.",Assert.IsType<TextBlock>(children[at+1]).Text);
+        var button=Assert.IsType<Button>(children[at+2]);
+        Assert.Equal("Clear history…",button.Content);
+        var progress=Assert.IsType<HistoryClearProgressView>(children[at+3]);
+        Assert.Null(progress.Close);
+        Assert.True(button.IsEnabled);Assert.Null(button.ToolTip);Assert.Equal(Visibility.Collapsed,progress.Visibility);
+        Assert.True(ToolTipService.GetShowOnDisabled(button));
+        void Changed()=>((Action?)typeof(UiSession).GetField("Changed",All)!.GetValue(session))?.Invoke();
+        try
+        {
+            session.Usage.ClearState=new(HistoryClearPhase.Clearing,10,null,true,false);Changed();
+            Assert.False(button.IsEnabled);Assert.Equal("A clear is in progress.",button.ToolTip);
+            Assert.Equal(Visibility.Visible,progress.Visibility);
+            Assert.Equal(["Usage history · clearing (10 %)"],progress.Lines.Select(t=>t.Text));
+            // The worker never started, so the store cannot retry: the clear waits for the next start.
+            session.Usage.ClearState=new(HistoryClearPhase.Failed,null,"IOException",true,false);Changed();
+            Assert.False(session.Usage.CanRetryClear);
+            Assert.False(button.IsEnabled);Assert.Equal("A clear is waiting to finish; it resumes when DeadWare next starts.",button.ToolTip);
+            // Failed without its marker does not hold the next clear back (B8).
+            session.Usage.ClearState=new(HistoryClearPhase.Failed,null,"IOException",false,false);Changed();
+            Assert.True(button.IsEnabled);Assert.Null(button.ToolTip);
+            Assert.Equal(Visibility.Visible,progress.Visibility);
+            Assert.Equal("History partly cleared.",progress.Header.Text);
+            // The result stays until a new clear starts.
+            session.Usage.ClearState=new(HistoryClearPhase.Done,100,null,false,false);Changed();Changed();
+            Assert.Equal(Visibility.Visible,progress.Visibility);Assert.Equal("History cleared.",progress.Header.Text);
+            session.Usage.ClearState=new(HistoryClearPhase.Queued,null,null,false,false);Changed();
+            Assert.Equal("Clearing history…",progress.Header.Text);Assert.Equal(["Usage history · waiting"],progress.Lines.Select(t=>t.Text));
+        }
+        finally{session.Usage.ClearState=HistoryClearState.None;Changed();}
+        Assert.True(button.IsEnabled);Assert.Equal(Visibility.Collapsed,progress.Visibility);
     }
 
     /// <summary>Settings → History and alerts → Don't record these apps: copy, suggestions, adding, the three errors, the note and Remove with its focus.</summary>

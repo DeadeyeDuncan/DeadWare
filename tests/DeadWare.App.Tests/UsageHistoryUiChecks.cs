@@ -65,6 +65,7 @@ internal static class UsageHistoryUiChecks
                 Assert.EndsWith("for 30 days (up to 192 MiB).", description);
                 Assert.EndsWith(ProcessHistorySentence, description);
                 Assert.Contains(PrivacyLine, texts);
+                CheckClearHistoryEntry(page);
                 var selector = (ComboBox)PageType.GetField("range", All)!.GetValue(page)!;
                 Assert.Equal(3, selector.Items.Count);
                 var table = (DataGrid)PageType.GetField("applications", All)!.GetValue(page)!;
@@ -284,6 +285,16 @@ internal static class UsageHistoryUiChecks
         Assert.Equal(1, activated);
         // Each Left and Right reports its index, even at an edge where it stays (Right at 35); SetValue, Enter and clicks report nothing.
         Assert.Equal([3, 2, 1, 0, 0, 35], moved);
+    }
+
+    /// <summary>Keep a longer record ends with the Don't record line and then the Clear history… button.</summary>
+    internal static void CheckClearHistoryEntry(FrameworkElement page)
+    {
+        var keep = Descendants(page).OfType<StackPanel>().Single(panel => panel.Children.Count > 0 && panel.Children[0] is TextBlock { Text: "Keep a longer record" });
+        var children = keep.Children.Cast<UIElement>().ToList();
+        Assert.Equal("Clear history…", Assert.IsType<Button>(children[^1]).Content);
+        Assert.Equal("Apps in Don't record these apps are not saved here; the Device charts still include their traffic.", Assert.IsType<TextBlock>(children[^2]).Text);
+        Assert.True(ToolTipService.GetShowOnDisabled(children[^1]));
     }
 
     private const string LoadingSlot = "Loading this slot…", SlotUnavailable = "History unavailable for this slot.", EmptySlot = "No application traffic recorded in this slot.";

@@ -29,6 +29,14 @@ internal static class ConnectionsPageUiChecks
         SynchronizationContext.SetSynchronizationContext(new DispatcherSynchronizationContext(Dispatcher.CurrentDispatcher));
         try { RunCore(app); } finally { SynchronizationContext.SetSynchronizationContext(previous); }
     }
+    /// <summary>The Recording, origin and storage expander holds Clear history….</summary>
+    private static void CheckClearHistoryEntry(FrameworkElement page)
+    {
+        var expander = Assert.Single(Elements(page).OfType<Expander>(), e => e.Header as string == "Recording, origin and storage");
+        var options = Assert.IsType<StackPanel>(expander.Content);
+        var button = Assert.Single(options.Children.OfType<Button>(), b => b.Content as string == "Clear history…");
+        Assert.True(ToolTipService.GetShowOnDisabled(button)); Assert.True(button.IsEnabled);
+    }
     private static void RunCore(Application app)
     {
         var session = (UiSession)RuntimeHelpers.GetUninitializedObject(typeof(UiSession));
@@ -42,6 +50,7 @@ internal static class ConnectionsPageUiChecks
         Call(page, "ApplyLive", live);
         Layout(page, 671, 440);
         CheckCards(page);
+        CheckClearHistoryEntry(page);
         Assert.Equal("Destinations", AutomationProperties.GetName(Assert.Single(Elements(page).OfType<DataGrid>())));
         string text = Text(page);
         Assert.Contains("Live", text);
