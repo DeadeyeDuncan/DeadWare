@@ -587,4 +587,107 @@ public class ConnectionServiceTests
         }
         finally {await service.StopAsync();}
     }
+    /// <summary>One sample at Epoch + seconds with a 10-byte delta per named app, covering from the previous second (nothing at + 1 s).</summary>
+    private static ConnectionSample Apps(int seconds,params string[] names)
+    {
+        var time=Epoch.AddSeconds(seconds);var minute=new DateTimeOffset(time.Year,time.Month,time.Day,time.Hour,time.Minute,0,TimeSpan.Zero);
+        var peers=names.Select((name,i)=>Peer with {Process=new(20+i,1,name)}).ToArray();
+        return new(time,seconds,seconds,"segment",[..peers.Select(p=>new ConnectionTraffic(p,time,time,10,0,10,0))],
+            [..peers.Select(p=>new ConnectionDelta(minute,p,10,0,time,time))],seconds==1?null:Epoch.AddSeconds(seconds-1),true,true,0,0,0,"");
+    }
+    private static void RecordApps(ConnectionService service,TestClock clock,int from,int to,params string[] names)
+    {
+        for(int s=from;s<=to;s++){clock.Set(s);service.TryRecord(Apps(s,names));}
+    }
+    [Fact] public async Task Excluded_deltas_leave_buffered_balanced()
+    {
+        var clock=new TestClock();var calls=new Appends();var service=Service(calls.Add,clock:clock.Read);
+        service.SetExclusions(AppExclusions.Keys(["A.EXE"]));service.Start();
+        try
+        {
+            // Minute 0 closes by capture at + 63 s (R1); minute 1 is written by the final write.
+            RecordApps(service,clock,1,63,"a.exe","b.exe");await calls.WaitFor(1);await service.StopAsync();
+            var records=calls.All.SelectMany(c=>c.Records).ToArray();var coverage=calls.All.SelectMany(c=>c.Coverage).ToArray();
+            Assert.DoesNotContain(records,r=>AppKey.Of(r.Delta.Peer.Process.Name)=="A.EXE");
+            Assert.Equal(0,service.DroppedObservations);
+            var b=Assert.Single(records,r=>r.Delta.Minute==Epoch);
+            Assert.Equal(("b.exe",590L,true),(b.Delta.Peer.Process.Name,b.Delta.ReceivedBytes,b.Complete));
+            Assert.NotEmpty(coverage);Assert.All(coverage,c=>Assert.True(c.Complete));
+            Assert.Equal(0,service.BufferedDeltas);
+        }
+        finally {await service.StopAsync();}
+    }
+    [Fact] public async Task Excluded_app_shows_live_and_is_never_appended()
+    {
+        var clock=new TestClock();var calls=new Appends();var service=Service(calls.Add,clock:clock.Read);
+        var control=Service((_,_)=>{},clock:clock.Read);
+        service.SetExclusions(AppExclusions.Keys(["a.exe"]));service.Start();control.Start();
+        try
+        {
+            for(int s=1;s<=30;s++)
+            {
+                clock.Set(s);service.TryRecord(Apps(s,"a.exe","b.exe"));control.TryRecord(Apps(s,"a.exe","b.exe"));
+                var live=service.Live;
+                Assert.Contains(live.Connections,c=>c.Traffic.Peer.Process.Name=="a.exe");
+                Assert.Equal(control.Live.Connections.Select(c=>c.Traffic),live.Connections.Select(c=>c.Traffic));
+                Assert.Equal(control.Live.Complete,live.Complete);Assert.True(live.Complete);
+            }
+            await service.StopAsync();await control.StopAsync();
+            var records=calls.All.SelectMany(c=>c.Records).ToArray();
+            Assert.DoesNotContain(records,r=>r.Delta.Peer.Process.Name=="a.exe");
+            Assert.Equal(("b.exe",300L),(Assert.Single(records).Delta.Peer.Process.Name,records[0].Delta.ReceivedBytes));
+            Assert.Equal(control.DroppedObservations,service.DroppedObservations);Assert.Equal(0,service.DroppedObservations);
+            Assert.Equal(control.Live.Complete,service.Live.Complete);
+        }
+        finally {await service.StopAsync();await control.StopAsync();}
+    }
+    [Fact] public async Task Retried_batch_keeps_its_payload_when_the_list_changes()
+    {
+        var clock=new TestClock();var calls=new Appends();int failures=0;using var changed=new ManualResetEventSlim();
+        var service=Service((r,c)=>
+            {
+                calls.Add(r,c);
+                // The R1 write fails only after the list has changed, so the retry follows the change.
+                if(r.Count>0&&Interlocked.Increment(ref failures)==1){changed.Wait(TimeSpan.FromSeconds(10));throw new System.IO.IOException();}
+            },options:new(FlushInterval:TimeSpan.FromMilliseconds(50)),clock:clock.Read);
+        service.Start();
+        try
+        {
+            RecordApps(service,clock,1,63,"a.exe","b.exe");
+            var failed=await calls.WaitFor(1);
+            Assert.Contains(failed.Records,r=>r.Delta.Peer.Process.Name=="b.exe");
+            service.SetExclusions(AppExclusions.Keys(["B.EXE"]));changed.Set();
+            var ids=failed.Records.Select(r=>r.BatchId).Concat(failed.Coverage.Select(c=>c.BatchId)).ToHashSet(StringComparer.Ordinal);
+            var retry=await calls.WaitFor(2);
+            Assert.Equal(failed.Records,retry.Records.Where(r=>ids.Contains(r.BatchId)));
+            Assert.Equal(failed.Coverage,retry.Coverage.Where(c=>ids.Contains(c.BatchId)));
+            Assert.Contains(retry.Records,r=>ids.Contains(r.BatchId)&&r.Delta.Peer.Process.Name=="b.exe");
+            // Minute 1: b.exe keeps the + 61 … + 63 s merged before the change; its + 64 s delta is not saved.
+            RecordApps(service,clock,64,64,"a.exe","b.exe");await service.StopAsync();
+            var minute1=calls.All.Skip(1).SelectMany(c=>c.Records).Where(r=>r.Delta.Minute==Epoch.AddMinutes(1)).ToArray();
+            Assert.Equal(30L,Assert.Single(minute1,r=>r.Delta.Peer.Process.Name=="b.exe").Delta.ReceivedBytes);
+            Assert.Equal(40L,Assert.Single(minute1,r=>r.Delta.Peer.Process.Name=="a.exe").Delta.ReceivedBytes);
+            Assert.Equal(0,service.DroppedObservations);Assert.Equal(0,service.BufferedDeltas);
+        }
+        finally {changed.Set();await service.StopAsync();}
+    }
+    [Fact] public async Task Excluding_an_app_mid_minute_keeps_what_was_merged_before()
+    {
+        var clock=new TestClock();var calls=new Appends();var service=Service(calls.Add,clock:clock.Read);service.Start();
+        try
+        {
+            RecordApps(service,clock,1,30,"a.exe");
+            // Every publication merged: one entry and one coverage run held, nothing queued or in flight (+ 30 s would add 1).
+            await Until(()=>service.PendingPublications==0&&service.BufferedDeltas==2);
+            service.SetExclusions(AppExclusions.Keys(["A.EXE"]));
+            RecordApps(service,clock,31,62,"a.exe");await service.StopAsync();
+            var records=calls.All.SelectMany(c=>c.Records).ToArray();
+            var minute0=Assert.Single(records,r=>r.Delta.Minute==Epoch);
+            Assert.Equal(("a.exe",300L,Epoch.AddSeconds(30)),(minute0.Delta.Peer.Process.Name,minute0.Delta.ReceivedBytes,minute0.Delta.LastSeen));
+            Assert.DoesNotContain(records,r=>r.Delta.Minute==Epoch.AddMinutes(1));
+            Assert.Contains(calls.All.SelectMany(c=>c.Coverage),c=>c.From>=Epoch.AddMinutes(1));
+            Assert.Equal(0,service.DroppedObservations);Assert.Equal(0,service.BufferedDeltas);
+        }
+        finally {await service.StopAsync();}
+    }
 }
