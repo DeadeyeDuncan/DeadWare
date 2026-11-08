@@ -630,11 +630,13 @@ public class AlertServiceTests
         => (await Saved(alerts, Start.AddDays(-1), Start.AddDays(1))).Where(e => e.Application == app).ToArray();
     private static async Task UntilPhase(AlertService alerts, HistoryClearPhase phase)
         => await Until(() => Task.FromResult(alerts.ClearState.Phase == phase || alerts.Failed));
-    /// <summary>A poll in <paramref name="minute"/> whose known row then shows that minute as last seen: the worker has handled it.</summary>
+    /// <summary>A poll <paramref name="minute"/> minutes after the next one, whose known row then shows that minute as last seen: the worker
+    /// has handled it. It is after Requested, because an episode clamped to Requested saves its known row at that minute.</summary>
     private static async Task Seen(Fixture fixture, AlertService alerts, int minute, string app = "a.exe")
     {
-        alerts.TryRecordNetworkUse(R(Start.AddMinutes(minute), true, Use(app, firstSeen: Start.AddMinutes(minute))));
-        await Until(() => Task.FromResult(LastSeen(fixture, AppKey.Of(app)) == Start.AddMinutes(minute).ToUnixTimeMilliseconds() || alerts.Failed));
+        var at = UsageMetrics.Floor(DateTimeOffset.UtcNow).AddMinutes(1 + minute);
+        alerts.TryRecordNetworkUse(R(at, true, Use(app, firstSeen: at)));
+        await Until(() => Task.FromResult(LastSeen(fixture, AppKey.Of(app)) == at.ToUnixTimeMilliseconds() || alerts.Failed));
     }
     private static void ReadOnly(Fixture fixture, bool on)
     {
