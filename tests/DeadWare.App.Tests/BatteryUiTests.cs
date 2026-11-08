@@ -486,6 +486,8 @@ public class BatteryUiTests
                         // The Application cell marks the excluded app; the column still sorts, and the row still holds, the bare name.
                         var application = Assert.IsAssignableFrom<DataGridTemplateColumn>(apps.Columns[0]);
                         Assert.Equal("APPLICATION", application.Header); Assert.Equal("Name", application.SortMemberPath);
+                        // Ctrl+C copies the bare name too.
+                        Assert.Equal("Name", Assert.IsType<System.Windows.Data.Binding>(application.ClipboardContentBinding).Path.Path);
                         var appRow = Assert.IsType<DataGridRow>(apps.ItemContainerGenerator.ContainerFromIndex(0));
                         var cell = Assert.IsType<TextBlock>(application.GetCellContent(appRow));
                         Assert.Equal("Fixture application · not recorded", new System.Windows.Documents.TextRange(cell.ContentStart, cell.ContentEnd).Text);

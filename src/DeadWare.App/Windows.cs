@@ -255,7 +255,7 @@ public sealed class MainWindow : Window
     private static void Column(DataGrid table,string title,string binding,double weight,DataGridColumn? column=null)
     {
         if(column is null)column=new DataGridTextColumn {Binding=new Binding(binding)};
-        else column.SortMemberPath=binding;
+        else{column.SortMemberPath=binding;column.ClipboardContentBinding=new Binding(binding);}
         column.Header=title.ToUpperInvariant();column.Width=new DataGridLength(weight,DataGridLengthUnitType.Star);
         table.Columns.Add(column);
     }
