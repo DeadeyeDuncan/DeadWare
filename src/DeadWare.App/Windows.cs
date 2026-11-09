@@ -105,13 +105,17 @@ public sealed class MainWindow : Window
     private FrameworkElement Overview()=>new OverviewPage(session,memory);
     private FrameworkElement Network()
     {
-        var grid=new Grid();grid.RowDefinitions.Add(new(){Height=new GridLength(.9,GridUnitType.Star),MinHeight=220,MaxHeight=265});grid.RowDefinitions.Add(new(){Height=GridLength.Auto});grid.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star),MinHeight=72});grid.RowDefinitions.Add(new(){Height=GridLength.Auto});
+        var grid=new Grid();grid.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star),MinHeight=300});grid.RowDefinitions.Add(new(){Height=GridLength.Auto});grid.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star),MinHeight=160});grid.RowDefinitions.Add(new(){Height=GridLength.Auto});
         grid.Children.Add(new ChartCard(session,"network"));
-        var controls=new StackPanel {Margin=new Thickness(8,8,8,12)};networkStatus.Margin=new(0,0,0,10);controls.Children.Add(networkStatus);appSearch.ToolTip="Search application name or PID";System.Windows.Automation.AutomationProperties.SetName(appSearch,"Search applications");
-        var searchLabel=Ui.Text("Find application",12,"Muted");searchLabel.Margin=new(0,0,12,0);controls.Children.Add(Ui.Row(searchLabel,appSearch));appSearch.TextChanged+=(_,_)=>RefreshTables();
-        controls.Margin=new Thickness(0);var networkStrip=Ui.Panel(controls,new Thickness(14,10,14,10));networkStrip.Margin=new Thickness(6,2,6,10);Grid.SetRow(networkStrip,1);grid.Children.Add(networkStrip);
+        var controls=new StackPanel();networkStatus.Margin=new(0,0,0,10);controls.Children.Add(networkStatus);appSearch.ToolTip="Search application name or PID";System.Windows.Automation.AutomationProperties.SetName(appSearch,"Search applications");
+        var searchLabel=Ui.Text("Find application",12,"Muted");searchLabel.Margin=new(0,0,12,0);var search=new WrapPanel();search.Children.Add(searchLabel);search.Children.Add(appSearch);networkEmpty.Margin=new(16,0,0,0);networkEmpty.VerticalAlignment=VerticalAlignment.Center;search.Children.Add(networkEmpty);controls.Children.Add(search);appSearch.TextChanged+=(_,_)=>RefreshTables();
+        var controlsCard=Ui.Panel(controls,new Thickness(14,10,14,10));controlsCard.Margin=new Thickness(6,2,6,10);Grid.SetRow(controlsCard,1);grid.Children.Add(controlsCard);
         Column(apps,"Application","Name",2,new NotRecordedNameColumn(session));Column(apps,"PID","Pid",.6);Column(apps,"↓ Download","Download",1);Column(apps,"↑ Upload","Upload",1);Column(apps,"Received","Received",1);Column(apps,"Sent","Sent",1);
-        var table=Ui.Panel(apps,new Thickness(0));table.Margin=new Thickness(6,0,6,0);Grid.SetRow(table,2);grid.Children.Add(table);var foot=new StackPanel {Margin=new Thickness(8)};foot.Children.Add(networkEmpty);foot.Children.Add(Ui.Text("Per-app totals cover each current process lifetime in this monitoring session. Exited processes are removed. ETW attribution is approximate and differs from interface totals. No packet payloads are captured. Apps marked not recorded are in Settings → Don't record these apps; their traffic isn't saved.",11,"Muted"));Grid.SetRow(foot,3);grid.Children.Add(foot);return grid;
+        var table=Ui.Panel(apps,new Thickness(0));table.Margin=new Thickness(6,0,6,0);Grid.SetRow(table,2);grid.Children.Add(table);
+        var about=new Expander {Header="About these totals",IsExpanded=false,Content=Ui.Text("Per-app totals cover each current process lifetime in this monitoring session. Exited processes are removed. ETW attribution is approximate and differs from interface totals. No packet payloads are captured. Apps marked not recorded are in Settings → Don't record these apps; their traffic isn't saved.",11,"Muted")};
+        var aboutCard=Ui.Panel(about,new Thickness(14,6,14,6));aboutCard.Margin=new Thickness(6,10,6,6);Grid.SetRow(aboutCard,3);grid.Children.Add(aboutCard);
+        var scroller=new FillingScroller(grid,width=>{var size=new Size(width,double.PositiveInfinity);controlsCard.Measure(size);aboutCard.Measure(size);return controlsCard.DesiredSize.Height+aboutCard.DesiredSize.Height+300+160;});
+        controlsCard.SizeChanged+=(_,_)=>scroller.InvalidateMeasure();aboutCard.SizeChanged+=(_,_)=>scroller.InvalidateMeasure();scroller.ForwardWheelFrom(apps);return scroller;
     }
     private FrameworkElement Sensors()
     {
