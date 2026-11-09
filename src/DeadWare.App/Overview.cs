@@ -15,10 +15,12 @@ internal sealed class OverviewPage : ScrollViewer
     private readonly UiSession session;
     private readonly UniformGrid cards=new() {Columns=2,Rows=4,Height=MinimumGridHeight};
     private readonly TextBlock memory,note;
+    private readonly Border footerCard;
     private readonly List<ChartCard> driveCards=[];
     private string[] driveIds=[];
     /// <summary>Two columns: the row count that holds <paramref name="count"/> cards.</summary>
-    internal static int Rows(int count)=>Math.Max(1,(count+1)/2);
+    internal static int Rows(int count)=>Rows(count,2);
+    internal static int Rows(int count,int columns)=>Math.Max(1,(count+columns-1)/columns);
     public OverviewPage(UiSession session,TextBlock memory)
     {
         this.session=session;this.memory=memory;
@@ -28,15 +30,25 @@ internal sealed class OverviewPage : ScrollViewer
         foreach(string kind in new[]{"cpu","gpu","cputemp","gputemp","memory","network","storage"})
             cards.Children.Add(new ChartCard(session,kind,true,true));
         stack.Children.Add(cards);
-        memory.Margin=new(9,10,9,4);stack.Children.Add(memory);
+        memory.Margin=new(0);
         note=Ui.Text("— indicates an unavailable reading.",11,"Muted");
-        note.Margin=new(9,3,9,12);stack.Children.Add(note);Content=stack;
+        note.Margin=new(0,3,0,0);
+        var footer=new StackPanel();footer.Children.Add(memory);footer.Children.Add(note);
+        footerCard=Ui.Panel(footer,new(12,6,12,6));footerCard.Margin=new(9,8,9,12);stack.Children.Add(footerCard);Content=stack;
         // Charts take the star row of each card, so growing the grid into spare viewport height enlarges
         // the plots; the floor (270 px per card row, the old 3-row 810 px) makes short windows scroll instead of crushing the plots.
         ScrollChanged+=(_,e)=>{if(e.ViewportHeightChange!=0||e.ExtentHeightChange!=0)Fit();};
+        SizeChanged+=(_,_)=>UpdateColumns(ActualWidth);
+        footerCard.SizeChanged+=(_,_)=>Fit();
         Loaded+=(_,_)=>{session.Changed+=OnChanged;SyncDrives();};
         Unloaded+=(_,_)=>session.Changed-=OnChanged;
         SyncDrives();
+    }
+    private void UpdateColumns(double width)
+    {
+        int columns=width<900?1:width<1500?2:3;
+        if(cards.Columns==columns)return;
+        cards.Columns=columns;Fit();
     }
     private void OnChanged()
     {
@@ -47,9 +59,9 @@ internal sealed class OverviewPage : ScrollViewer
     /// <summary>Sizes the grid to its rows, growing into spare viewport height.</summary>
     private void Fit()
     {
-        int rows=Rows(cards.Children.Count);
+        int rows=Rows(cards.Children.Count,cards.Columns);
         if(cards.Rows!=rows)cards.Rows=rows;
-        double footer=memory.ActualHeight+memory.Margin.Top+memory.Margin.Bottom+note.ActualHeight+note.Margin.Top+note.Margin.Bottom;
+        double footer=footerCard.ActualHeight+footerCard.Margin.Top+footerCard.Margin.Bottom;
         double height=Math.Max(rows*RowHeight,Math.Floor(ViewportHeight-footer));
         if(Math.Abs(cards.Height-height)>=1)cards.Height=height;
     }
@@ -59,10 +71,13 @@ internal sealed class OverviewPage : ScrollViewer
         var drives=(session.Current?.Storage.Drives??[]).OrderBy(d=>d.Index).ToList();
         var ids=drives.Select(d=>d.Id).ToArray();
         if(ids.SequenceEqual(driveIds,StringComparer.Ordinal))return;
+        // Ids are trimmed serials and can repeat; keep one queue per id and hand each kept card out once, so a duplicate id gets its own card.
+        var previous=new Dictionary<string,Queue<ChartCard>>(StringComparer.Ordinal);
+        foreach(var (id,card) in driveIds.Zip(driveCards)){if(!previous.TryGetValue(id,out var queue))previous[id]=queue=new();queue.Enqueue(card);}
         driveIds=ids;
         foreach(var card in driveCards)cards.Children.Remove(card);
         driveCards.Clear();
-        foreach(var drive in drives){var card=new ChartCard(session,"storage",true,true,drive.Id);driveCards.Add(card);cards.Children.Add(card);}
+        foreach(var drive in drives){var card=previous.TryGetValue(drive.Id,out var kept)&&kept.Count>0?kept.Dequeue():new ChartCard(session,"storage",true,true,drive.Id);driveCards.Add(card);cards.Children.Add(card);}
         Fit();
     }
 }

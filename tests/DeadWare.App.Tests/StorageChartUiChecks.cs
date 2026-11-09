@@ -6,6 +6,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Media;
+using System.Windows.Threading;
 using DeadWare.App;
 using DeadWare.Core;
 using Xunit;
@@ -28,7 +29,12 @@ internal static class StorageChartUiChecks
         {
             CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
             Overview_has_seven_cards_in_four_rows();
+            Overview_breakpoints_use_page_width_with_and_without_scrollbars();
+            Overview_refits_when_only_the_viewport_height_changes();
+            Overview_footer_owns_spacing_and_refits_when_memory_wraps();
             Overview_adds_a_card_per_drive_and_follows_the_drive_set();
+            Overview_populated_cards_stay_readable_at_breakpoints();
+            Overview_reflow_preserves_cards_and_popout_destinations();
             Overview_drive_card_is_titled_with_the_model_and_pops_out_that_drive();
             Overview_card_stats_sit_beside_value();
             Storage_card_draws_read_and_write_and_per_drive_lines();
@@ -50,11 +56,82 @@ internal static class StorageChartUiChecks
             cards.Select(c => (string?)c.GetType().GetField("driveId", Fields)!.GetValue(c)).ToArray());
     }
 
-    private static OverviewPage Page(UiSession session)
+    private static OverviewPage Page(UiSession session, double width = 900, double height = 1100, TextBlock? memory = null)
     {
-        var page = new OverviewPage(session, new TextBlock());
-        page.Measure(new Size(900, 1100)); page.Arrange(new Rect(0, 0, 900, 1100)); page.UpdateLayout();
+        var page = new OverviewPage(session, memory ?? Ui.Text("Memory history", 11, "Muted"));
+        Layout(page, width, height);
         return page;
+    }
+
+    private static void Pump()
+    { var frame = new DispatcherFrame(); Dispatcher.CurrentDispatcher.BeginInvoke(DispatcherPriority.Background, new Action(() => frame.Continue = false)); Dispatcher.PushFrame(frame); }
+
+    private static void Layout(OverviewPage page, double width, double height)
+    {
+        page.Measure(new Size(width, height)); page.Arrange(new Rect(0, 0, width, height));
+        for (int i = 0; i < 3; i++) { page.UpdateLayout(); Pump(); }
+        page.UpdateLayout();
+    }
+
+    private static Border Footer(OverviewPage page) => Assert.IsType<Border>(Assert.IsType<StackPanel>(page.Content).Children[1]);
+    private static ChartCard[] CardElements(OverviewPage page) => Cards(page).Grid.Children.OfType<ChartCard>().ToArray();
+
+    private static void AssertFit(OverviewPage page, int columns, int rows, bool scrolls)
+    {
+        var grid = Cards(page).Grid; var footer = Footer(page);
+        Assert.Equal(columns, grid.Columns); Assert.Equal(rows, grid.Rows);
+        Assert.Equal(Math.Max(rows * 270, Math.Floor(page.ViewportHeight - footer.ActualHeight - footer.Margin.Top - footer.Margin.Bottom)), grid.Height);
+        Assert.Equal(scrolls ? Visibility.Visible : Visibility.Collapsed, page.ComputedVerticalScrollBarVisibility);
+        Assert.Equal(scrolls, page.ScrollableHeight > 0);
+        var before = (grid.Columns, grid.Rows, grid.Height, page.ViewportHeight, page.ExtentHeight, page.ComputedVerticalScrollBarVisibility);
+        for (int i = 0; i < 2; i++)
+        {
+            page.UpdateLayout(); Pump(); page.UpdateLayout();
+            Assert.Equal(before, (grid.Columns, grid.Rows, grid.Height, page.ViewportHeight, page.ExtentHeight, page.ComputedVerticalScrollBarVisibility));
+        }
+    }
+
+    private static void Overview_breakpoints_use_page_width_with_and_without_scrollbars()
+    {
+        foreach (var (width, columns, rows) in new[] { (899, 1, 7), (900, 2, 4), (1499, 2, 4), (1500, 3, 3) })
+        {
+            var page = Page(Session([]), width, 700);
+            // Using ViewportWidth instead would move the 900/1500 cases below their breakpoints when the scrollbar appears.
+            Assert.Equal(width, page.ActualWidth); Assert.True(page.ViewportWidth < page.ActualWidth);
+            AssertFit(page, columns, rows, true);
+            Layout(page, width, 2600); AssertFit(page, columns, rows, false);
+            Layout(page, width, 1100); AssertFit(page, columns, rows, width != 1500);
+        }
+    }
+
+    private static void Overview_refits_when_only_the_viewport_height_changes()
+    {
+        var page = Page(Session([]), 1500); var before = CardElements(page);
+        AssertFit(page, 3, 3, false);
+        Layout(page, 1500, 700); AssertFit(page, 3, 3, true);
+        Layout(page, 1500, 1100); AssertFit(page, 3, 3, false);
+        Assert.Equal(before, CardElements(page));
+    }
+
+    private static void Overview_footer_owns_spacing_and_refits_when_memory_wraps()
+    {
+        var memory = Ui.Text("Memory history", 11, "Muted"); var page = Page(Session([]), 1500, 1100, memory);
+        Layout(page, 899, 1100); Layout(page, 1500, 1100);
+        var stack = Assert.IsType<StackPanel>(page.Content); Assert.Equal(2, stack.Children.Count);
+        Assert.Same(Cards(page).Grid, stack.Children[0]); var footer = Footer(page);
+        Assert.Equal(new Thickness(9, 8, 9, 12), footer.Margin); Assert.Equal(new Thickness(12, 6, 12, 6), footer.Padding);
+        var lines = Assert.IsType<StackPanel>(footer.Child); Assert.Equal(2, lines.Children.Count); Assert.Same(memory, lines.Children[0]);
+        Assert.Equal(new Thickness(0), memory.Margin);
+        var note = Assert.IsType<TextBlock>(lines.Children[1]); Assert.Equal("— indicates an unavailable reading.", note.Text);
+        Assert.Equal(new Thickness(0, 3, 0, 0), note.Margin); Assert.Equal(11, note.FontSize);
+        AssertFit(page, 3, 3, false);
+        double gridHeight = Cards(page).Grid.Height, footerHeight = footer.ActualHeight, memoryHeight = memory.ActualHeight;
+        memory.Text = string.Join(" ", Enumerable.Repeat("Memory history uses 128 MB.", 12));
+        page.UpdateLayout(); Pump(); page.UpdateLayout(); Pump(); page.UpdateLayout();
+        Assert.True(memory.ActualHeight > memoryHeight, "The shell's memory text must wrap inside the footer.");
+        Assert.True(Cards(page).Grid.Height < gridHeight);
+        Assert.InRange(Math.Abs((gridHeight - Cards(page).Grid.Height) - (footer.ActualHeight - footerHeight)), 0, 1);
+        AssertFit(page, 3, 3, false);
     }
 
     private static void Overview_has_seven_cards_in_four_rows()
@@ -67,27 +144,30 @@ internal static class StorageChartUiChecks
 
     private static void Overview_adds_a_card_per_drive_and_follows_the_drive_set()
     {
-        // Drives follow the seven fixed cards by disk index, removable ones included; the grid grows a row for the ninth card.
-        var session = Session([Nvme, Usb, Hdd]);
-        var page = Page(session);
-        var (grid, kinds, drives) = Cards(page);
-        Assert.Equal(5, grid.Rows); Assert.Equal(5 * OverviewPage.RowHeight, grid.Height);
-        Assert.Equal(FixedKinds.Concat(["storage", "storage", "storage"]), kinds);
-        Assert.Equal([null, null, null, null, null, null, null, "HDD1", "NVME1", "Stick#2"], drives);
-        // Unplugging the stick drops its card; the same set again rebuilds nothing.
-        FrameworkElement[] CardElements() => Descendants(page).OfType<FrameworkElement>().Where(c => c.GetType().Name == "ChartCard").ToArray();
-        SetDrives(session, [Hdd, Nvme]);
-        typeof(OverviewPage).GetMethod("SyncDrives", Fields)!.Invoke(page, []);
-        (grid, kinds, drives) = Cards(page);
-        Assert.Equal(5, grid.Rows); Assert.Equal(9, kinds.Length);
-        Assert.Equal([null, null, null, null, null, null, null, "HDD1", "NVME1"], drives);
-        var before = CardElements();
-        typeof(OverviewPage).GetMethod("SyncDrives", Fields)!.Invoke(page, []);
-        Assert.Equal(before, CardElements());
-        SetDrives(session, []);
-        typeof(OverviewPage).GetMethod("SyncDrives", Fields)!.Invoke(page, []);
-        (grid, kinds, _) = Cards(page);
-        Assert.Equal(4, grid.Rows); Assert.Equal(FixedKinds, kinds);
+        foreach (var (width, height, columns, rows) in new[] { (900, 1100, 2, new[] { 5, 5, 4 }), (1500, 1000, 3, new[] { 4, 3, 3 }), (899, 2500, 1, new[] { 10, 9, 7 }) })
+        {
+            var session = Session([Nvme, Usb, Hdd]); var page = Page(session, width, height); var original = CardElements(page);
+            var (grid, kinds, drives) = Cards(page);
+            Assert.Equal(FixedKinds.Concat(["storage", "storage", "storage"]), kinds);
+            Assert.Equal<string?>([null, null, null, null, null, null, null, "HDD1", "NVME1", "Stick#2"], drives.AsEnumerable());
+            AssertFit(page, columns, rows[0], true);
+            // Mutations cross the scroll threshold without resizing, and retained drive cards keep their history/state.
+            SetDrives(session, [Nvme, Hdd]); typeof(OverviewPage).GetMethod("SyncDrives", Fields)!.Invoke(page, []);
+            Layout(page, width, height); (grid, kinds, drives) = Cards(page);
+            Assert.Equal(FixedKinds.Concat(["storage", "storage"]), kinds);
+            Assert.Equal<string?>([null, null, null, null, null, null, null, "HDD1", "NVME1"], drives.AsEnumerable());
+            Assert.Equal(original.Take(9), CardElements(page)); AssertFit(page, columns, rows[1], width == 900);
+            // Duplicate ids (trimmed serials can repeat): [S] → [S,S] gives the second entry its own card; [S,S] → [S] keeps the first.
+            var twin = Nvme with { Index = 9 }; SetDrives(session, [Nvme, Hdd, twin]); typeof(OverviewPage).GetMethod("SyncDrives", Fields)!.Invoke(page, []);
+            Layout(page, width, height); var withTwin = CardElements(page); Assert.Equal(10, withTwin.Length); Assert.Equal(original.Take(9), withTwin.Take(9)); Assert.NotSame(withTwin[8], withTwin[9]);
+            SetDrives(session, [Nvme, Hdd]); typeof(OverviewPage).GetMethod("SyncDrives", Fields)!.Invoke(page, []); Layout(page, width, height);
+            Assert.Equal(original.Take(9), CardElements(page));
+            var before = CardElements(page); typeof(OverviewPage).GetMethod("SyncDrives", Fields)!.Invoke(page, []);
+            Layout(page, width, height); Assert.Equal(before, CardElements(page)); AssertFit(page, columns, rows[1], width == 900);
+            SetDrives(session, []); typeof(OverviewPage).GetMethod("SyncDrives", Fields)!.Invoke(page, []);
+            Layout(page, width, height); Assert.Equal(FixedKinds, Cards(page).Kinds);
+            Assert.Equal(original.Take(7), CardElements(page)); AssertFit(page, columns, rows[2], width == 900);
+        }
         Assert.Equal(1, OverviewPage.Rows(1)); Assert.Equal(4, OverviewPage.Rows(8)); Assert.Equal(5, OverviewPage.Rows(9));
     }
 
@@ -113,6 +193,85 @@ internal static class StorageChartUiChecks
         var total = new ChartCard(session, "storage", true, true);
         Assert.Contains(Descendants(total), d => d.GetType().Name == "GraphColorPicker");
         Assert.Contains(Descendants(total).OfType<Button>(), b => (b.ToolTip as string) == "Pop out " + Ui.Title("storage"));
+    }
+
+    private static void Overview_populated_cards_stay_readable_at_breakpoints()
+    {
+        var longDrive = Nvme with { Model = string.Join(" ", Enumerable.Repeat("Very long NVMe drive model", 6)) };
+        foreach (int width in new[] { 899, 900, 1499, 1500 })
+        {
+            var page = Page(Session([longDrive]), width);
+            foreach (var card in CardElements(page))
+            {
+                typeof(ChartCard).GetMethod("UpdateReadings", Fields)!.Invoke(card, []);
+                string kind = (string)typeof(ChartCard).GetField("kind", Fields)!.GetValue(card)!;
+                typeof(ChartCard).GetMethod("UpdateStatistics", Fields)!.Invoke(card, [kind is "network" or "storage" ? new Summary(100_000, 5_000_000, 1_500_000) : new Summary(12, 87, 49)]);
+            }
+            Layout(page, width, 1100);
+            foreach (var card in CardElements(page))
+            {
+                T Field<T>(string name) => (T)typeof(ChartCard).GetField(name, Fields)!.GetValue(card)!;
+                string kind = Field<string>("kind");
+                void Inside(FrameworkElement element)
+                {
+                    var bounds = new Rect(element.TranslatePoint(new Point(), card), new Size(element.ActualWidth, element.ActualHeight));
+                    Assert.True(bounds.Width > 0 && bounds.Height > 0 && bounds.Left >= -.5 && bounds.Top >= -.5 && bounds.Right <= card.ActualWidth + .5 && bounds.Bottom <= card.ActualHeight + .5,
+                        $"{width} {kind} {element.GetType().Name} {bounds} outside card {card.ActualWidth}x{card.ActualHeight}");
+                }
+                foreach (var control in Descendants(card).OfType<FrameworkElement>().Where(e => e is Button || e.GetType().Name == "GraphColorPicker")) Inside(control);
+                var title = Field<TextBlock>("title"); Inside(title);
+                Assert.Equal(TextTrimming.CharacterEllipsis, title.TextTrimming); Assert.Equal(title.Text, title.ToolTip);
+                if (Field<string?>("driveId") is not null)
+                {
+                    Assert.Equal(longDrive.Model, title.Text);
+                    var fullTitle = new TextBlock { Text = title.Text, FontFamily = title.FontFamily, FontSize = title.FontSize, FontWeight = title.FontWeight };
+                    fullTitle.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity)); Assert.True(fullTitle.DesiredSize.Width > title.ActualWidth);
+                }
+                var stats = Field<TextBlock[]>("overviewStats"); Assert.All(stats, s => { Assert.NotEqual("—", s.Text); Inside(s); });
+                Inside((FrameworkElement)((FrameworkElement)stats[0].Parent).Parent);
+                var chart = Field<HistoryChart>("chart"); Inside(chart);
+                Assert.True(chart.ActualHeight > 0 && chart.ActualHeight >= .4 * card.ActualHeight, $"{width} {kind} chart {chart.ActualHeight} / card {card.ActualHeight}");
+                // The seeded values, not just the unit: an unavailable reading still prints "left RPM".
+                if (kind == "cputemp") { var pump = Field<TextBlock>("pump"); Assert.Equal(Visibility.Visible, pump.Visibility); Assert.Contains("2400", pump.Text); Inside(pump); }
+                if (kind == "gputemp") { var fan = Field<TextBlock>("fan"); Assert.Equal(Visibility.Visible, fan.Visibility); Assert.Contains("1500", fan.Text); Inside(fan); }
+                // Primary reading and subtitle: present, inside the card, and not shrunk below legibility by the reading's Viewbox.
+                var subtitle = Field<TextBlock>("subtitle"); Inside(subtitle);
+                if (kind == "network")
+                {
+                    // The network card replaces the single reading with two Viewbox-scaled rate readings; each must stay legible.
+                    foreach (var box in Descendants(card).OfType<Viewbox>()) { Inside(box); var reading = (FrameworkElement)box.Child; var rendered = reading.TransformToAncestor(card).TransformBounds(new Rect(0, 0, reading.ActualWidth, reading.ActualHeight)); Assert.True(rendered.Height >= 18, $"{width} network rate reading rendered {rendered.Height} DIP tall"); }
+                }
+                else
+                {
+                    var value = Field<TextBlock>("value"); Assert.NotEqual("—", value.Text); Inside(value);
+                    var scaled = value.TransformToAncestor(card).TransformBounds(new Rect(0, 0, value.ActualWidth, value.ActualHeight));
+                    Assert.True(scaled.Height >= 18, $"{width} {kind} reading rendered {scaled.Height} DIP tall");
+                    // Stacked boxes may share an edge; only a real overlap fails.
+                    Assert.True(scaled.Bottom <= subtitle.TranslatePoint(new Point(), card).Y + .5, $"{width} {kind} reading {scaled.Bottom} overlaps subtitle at {subtitle.TranslatePoint(new Point(), card).Y}");
+                }
+            }
+        }
+    }
+
+    private static void Overview_reflow_preserves_cards_and_popout_destinations()
+    {
+        var session = Session([Hdd, Nvme]); var page = Page(session, 1500); var original = CardElements(page);
+        AssertFit(page, 3, 3, false);
+        Layout(page, 899, 1100); AssertFit(page, 1, 9, true); Assert.Equal(original, CardElements(page));
+        Layout(page, 1500, 1100); AssertFit(page, 3, 3, false); Assert.Equal(original, CardElements(page));
+        typeof(UiSession).GetField("captureWindows", Fields)!.SetValue(session, new Dictionary<Window, Action>());
+        Window? shown = null; session.ShowWindow = w => shown = w;
+        foreach (var (index, tooltip, title, drive) in new[] { (6, "Pop out " + Ui.Title("storage"), "DeadWare · " + Ui.Title("storage"), (string?)null), (8, "Pop out this drive", "Disk · " + Nvme.Model, Nvme.Id) })
+        {
+            shown = null;
+            Descendants(original[index]).OfType<Button>().Single(b => b.ToolTip as string == tooltip).RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+            try
+            {
+                var window = Assert.IsType<GraphWindow>(shown); Assert.Equal(title, window.Title);
+                Assert.Equal(drive, Assert.IsType<CompactGraph>(window.Content).DriveId);
+            }
+            finally { shown?.Close(); }
+        }
     }
 
     private static void Overview_card_stats_sit_beside_value()
@@ -262,7 +421,13 @@ internal static class StorageChartUiChecks
         var epoch = new DateTimeOffset(2026, 11, 3, 12, 0, 0, TimeSpan.Zero);
         for (int second = -60; second <= 0; second++)
         {
-            var values = new Dictionary<string, double?>();
+            var values = new Dictionary<string, double?>
+            {
+                ["cpu/usage"] = 42, ["cpu/temperature"] = 64, ["cpu/pump"] = 2400,
+                ["gpu/usage"] = 57, ["gpu/temperature"] = 68, ["gpu/fan"] = 1500,
+                ["memory/usage"] = 48, ["memory/used"] = 8_000_000_000, ["memory/total"] = 16_000_000_000,
+                ["network/download"] = 5_100_000, ["network/upload"] = 1_000_000
+            };
             if (drives.Count > 0)
             {
                 values["storage/total/read"] = 5_100_000; values["storage/total/write"] = 1_000_000;
@@ -275,10 +440,10 @@ internal static class StorageChartUiChecks
         }
         var collector = (Collector)RuntimeHelpers.GetUninitializedObject(typeof(Collector));
         Set(collector, "clock", new Stopwatch()); Set(collector, "<History>k__BackingField", history);
-        Set(collector, "latest", new Reading(history.Read()[^1], [], [], [], "Fixture CPU", "", "", "", false) { Storage = new(drives, [], "") });
+        Set(collector, "latest", new Reading(history.Read()[^1], [new("gpu", "Fixture GPU")], [], [], "Fixture CPU", "", "", "", false) { Storage = new(drives, [], "") });
         var session = (UiSession)RuntimeHelpers.GetUninitializedObject(typeof(UiSession));
         Set(session, "<Collector>k__BackingField", collector);
-        Set(session, "<Settings>k__BackingField", new UserSettings { HistorySeconds = 60 });
+        Set(session, "<Settings>k__BackingField", new UserSettings { HistorySeconds = 60, SelectedGpuId = "gpu", ShowGpuFanSpeed = true, ShowCpuPumpSpeed = true });
         return session;
     }
 

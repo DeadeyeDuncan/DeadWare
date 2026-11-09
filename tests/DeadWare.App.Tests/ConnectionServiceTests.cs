@@ -107,7 +107,7 @@ public class ConnectionServiceTests
     }
     private static async Task Until(Func<bool> predicate)
     {
-        using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(3));
+        using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(15));// an upper bound for a slow runner, not a timing property
         while(!predicate())await Task.Delay(5,timeout.Token);
     }
     [Fact] public async Task First_observation_uses_location_available_before_first_flush()
@@ -441,7 +441,7 @@ public class ConnectionServiceTests
         {
             // Two minute-1 deltas: Peer at + 100 s and Peer on port 80 at + 70 s. R4 freezes the unit at the first tick.
             var old=Reading(1,100,10,coverage:Epoch.AddSeconds(99)).Connections!;var other=Reading(1,70,5).Connections!.Deltas[0] with {Peer=Peer with {RemotePort=80}};
-            service.Start();service.TryRecord(old with {Deltas=[old.Deltas[0],other]});await attempted.Task.WaitAsync(TimeSpan.FromSeconds(3));
+            service.Start();service.TryRecord(old with {Deltas=[old.Deltas[0],other]});await attempted.Task.WaitAsync(TimeSpan.FromSeconds(15));// a loaded CI runner needs more than 3 s to start the writer
             // After the step back the unit is 68 s ahead: the next attempt retires it whole, and R6 writes the new unit.
             Volatile.Write(ref seconds,30);service.TryRecord(Reading(2,30,30,false,segment:"new"));release.Set();
             await Until(()=>service.DroppedObservations==2);await service.StopAsync();
