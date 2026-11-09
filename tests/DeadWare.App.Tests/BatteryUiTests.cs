@@ -267,15 +267,23 @@ public class BatteryUiTests
                 Assert.Single(overviewCards, card => (string)card.GetType().GetField("kind", All)!.GetValue(card)! == "memory");
                 var settingsRoot = ((ScrollViewer)pages["desktop"]).Content;
                 var settings = Assert.IsType<StackPanel>(settingsRoot is Border surfaceCard ? surfaceCard.Child : settingsRoot);
-                var widgetChoices = Descendants(settings).OfType<CheckBox>().Where(box => box.Tag is string kind && new[] { "cpu", "cputemp", "memory", "network" }.Contains(kind)).ToArray();
+                var settingsTabs=Assert.IsType<TabControl>(typeof(MainWindow).GetProperty("SettingsTabs",All)?.GetValue(dashboard));
+                StackPanel SelectSettings(string header)
+                {
+                    var tab=Assert.Single(settingsTabs.Items.OfType<TabItem>(),item=>item.Header?.ToString()==header);settingsTabs.SelectedItem=tab;
+                    settings.Measure(new Size(900,900));settings.Arrange(new Rect(0,0,900,900));settings.UpdateLayout();return Assert.IsType<StackPanel>(tab.Content);
+                }
+                var widgetSettings=SelectSettings("Widget");
+                var widgetChoices = Descendants(widgetSettings).OfType<CheckBox>().Where(box => box.Tag is string kind && new[] { "cpu", "cputemp", "memory", "network" }.Contains(kind)).ToArray();
                 Assert.Equal(4, widgetChoices.Length);
                 Assert.All(widgetChoices, choice => Assert.True(choice.IsChecked));
-                var widgetPin = Assert.Single(Descendants(settings).OfType<CheckBox>(), box => box.Content?.ToString() == "Widget always on top");
+                var widgetPin = Assert.Single(Descendants(widgetSettings).OfType<CheckBox>(), box => box.Content?.ToString() == "Widget always on top");
                 Assert.True(widgetPin.IsChecked);
-                Assert.DoesNotContain(Descendants(settings).OfType<Button>(), button => button.Content?.ToString()?.StartsWith("↗") == true);
-                var joinedPopouts = Assert.Single(Descendants(settings).OfType<CheckBox>(), box => box.Content?.ToString() == "Join CPU and GPU graphs in pop-outs");
+                foreach(var tab in settingsTabs.Items.OfType<TabItem>())
+                    Assert.DoesNotContain(Descendants(SelectSettings((string)tab.Header)).OfType<Button>(),button=>button.Content?.ToString()?.StartsWith("↗")==true);
+                var joinedPopouts = Assert.Single(Descendants(SelectSettings("Pop-outs")).OfType<CheckBox>(), box => box.Content?.ToString() == "Join CPU and GPU graphs in pop-outs");
                 Assert.False(joinedPopouts.IsChecked);
-                var polling = Assert.Single(Descendants(settings).OfType<ComboBox>(),
+                var polling = Assert.Single(Descendants(SelectSettings("Monitoring")).OfType<ComboBox>(),
                     combo => System.Windows.Automation.AutomationProperties.GetName(combo) == "Data polling interval");
                 Assert.Equal(new[] { "0.5 seconds", "1 second (default)", "2 seconds", "5 seconds", "10 seconds" }, polling.Items.Cast<object>().Select(item => item.ToString()));
                 Assert.Equal(1d, polling.SelectedValue);
@@ -283,14 +291,15 @@ public class BatteryUiTests
                 var uiTimer = new System.Windows.Threading.DispatcherTimer();
                 Set(session, "timer", uiTimer);
                 Set(session, "writer", new SettingsSnapshotWriter(pollingSettingsPath));
-                ConnectionsWidgetUiChecks.CheckSettings(session, settings, pollingSettingsPath);
-                VerifyGpuFanSpeed(session, collector, assembly, settings, pollingSettingsPath);
-                VerifyCpuPumpSpeed(session, collector, assembly, settings, pollingSettingsPath);
-                VerifyGraphSmoothing(session, settings, pollingSettingsPath);
-                VerifyUsageRecording(session, settings, pollingSettingsPath);
-                VerifyAlertNotifications(session, settings, pollingSettingsPath);
+                ConnectionsWidgetUiChecks.CheckSettings(session, settingsTabs, pollingSettingsPath);
+                VerifyGpuFanSpeed(session, collector, assembly, SelectSettings("Appearance"), pollingSettingsPath);
+                VerifyCpuPumpSpeed(session, collector, assembly, SelectSettings("Appearance"), pollingSettingsPath);
+                VerifyGraphSmoothing(session, SelectSettings("Appearance"), pollingSettingsPath);
+                VerifyUsageRecording(session, SelectSettings("History and alerts"), pollingSettingsPath);
+                VerifyAlertNotifications(session, SelectSettings("History and alerts"), pollingSettingsPath);
                 VerifyRangeDropdown(session, dashboard, assembly, pollingSettingsPath);
                 VerifyThemeMenu(session, sidebar, pollingSettingsPath);
+                SelectSettings("Monitoring");
                 foreach (double seconds in new double[] { 10, .5, 1 })
                 {
                     polling.SelectedValue = seconds;
@@ -312,9 +321,11 @@ public class BatteryUiTests
                 Set(collector, "latest", current with { Sample = current.Sample with { MonotonicSeconds = -14, PollingIntervalSeconds = 10 } });
                 Assert.True(session.Stale);
                 Set(collector, "latest", current);
+                SelectSettings("Pop-outs");
                 joinedPopouts.IsChecked = true; CompleteSettingsSave(session);
                 Assert.True(SettingsCodec.Read(File.ReadAllText(pollingSettingsPath)).Settings.JoinCpuGpuPopouts);
                 session.SetJoinedPopouts(false); Assert.False(joinedPopouts.IsChecked);
+                SelectSettings("Widget");
                 session.SetWidgetGraph("network", false);
                 Assert.False(widgetChoices.Single(choice => (string)choice.Tag == "network").IsChecked);
                 session.SetWidgetGraph("network", true);
@@ -346,7 +357,7 @@ public class BatteryUiTests
                 RefreshDashboard(); AssertBatteryVisibility(Visibility.Collapsed);
                 Assert.Same(pages["overview"], ((ContentControl)typeof(MainWindow).GetField("content", All)!.GetValue(dashboard)!).Content);
                 // Suppress the startup-status query while rendering the real Settings page.
-                Set(dashboard, "startupBusy", true); Navigate("desktop");
+                Set(dashboard, "startupBusy", true); Navigate("desktop");SelectSettings("Monitoring");
                 string? dashboardOutput = Environment.GetEnvironmentVariable("DEADWARE_UI_OUTPUT");
                 if (dashboardOutput is not null)
                 {
