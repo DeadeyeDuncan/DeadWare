@@ -5,17 +5,23 @@ using DeadWare.Core;
 
 namespace DeadWare.App;
 
-/// <summary>One row per drive above the selected drive's detail card: its own read / write chart, volumes and SMART summary.</summary>
+/// <summary>A growing drive chart with responsive drive selectors and lower Volumes / Health tabs.</summary>
 internal sealed class StoragePage : UserControl
 {
     private readonly UiSession session;
-    private readonly StackPanel detailBody=new();
+    private readonly Grid body=new(),detailLayout=new(),chartColumn=new(),drivePanel=new();
+    private readonly Border lowerCard;
+    private readonly TextBlock chartPlaceholder=Ui.Text("Select a drive.",12,"Muted");
+    private bool drivesBeside;
     private ChartCard? chart;
     private string? chartDriveId;
     internal StackPanel Rows {get;}=new();
     internal Grid Volumes {get;}=new() {Margin=new Thickness(0,10,0,0)};
     internal StackPanel Smart {get;}=new() {Margin=new Thickness(0,12,0,0)};
     internal Border Detail {get;}
+    internal TabControl Tabs {get;}=new();
+    internal TabItem VolumesTab {get;}=new() {Header="Volumes"};
+    internal TabItem HealthTab {get;}=new() {Header="Health"};
     internal TextBlock Status {get;}=Ui.Text("",11,"Muted");
     internal string? SelectedDriveId {get;private set;}
     /// <summary>Shows a drive's pop-out; tests replace it to inspect the window instead of opening it.</summary>
@@ -24,18 +30,65 @@ internal sealed class StoragePage : UserControl
     public StoragePage(UiSession session)
     {
         this.session=session;
-        var body=new StackPanel {Margin=new Thickness(6,0,6,6)};
+        Margin=new(6,0,6,6);
+        foreach(var height in new[]{GridLength.Auto,GridLength.Auto,new GridLength(1,GridUnitType.Star),GridLength.Auto})body.RowDefinitions.Add(new() {Height=height});
+        body.RowDefinitions[2].MinHeight=370;
         Status.TextWrapping=TextWrapping.Wrap;Status.Margin=new Thickness(4,0,4,10);body.Children.Add(Status);
-        body.Children.Add(Rows);
+        drivePanel.RowDefinitions.Add(new() {Height=GridLength.Auto});drivePanel.RowDefinitions.Add(new() {Height=GridLength.Auto});
+        drivePanel.Children.Add(Ui.Caption("Drives"));
+        var driveScroll=new ScrollViewer {Content=Rows,VerticalScrollBarVisibility=ScrollBarVisibility.Auto,HorizontalScrollBarVisibility=ScrollBarVisibility.Disabled};
+        // A wheel the drive list cannot use scrolls the page instead; a ScrollViewer otherwise swallows it even with nothing to scroll.
+        driveScroll.PreviewMouseWheel+=(_,e)=>
+        {
+            if(e.Handled||e.Delta==0)return;
+            bool canScroll=e.Delta<0?driveScroll.VerticalOffset+.01<driveScroll.ScrollableHeight:driveScroll.VerticalOffset>.01;
+            if(canScroll||Content is not ScrollViewer page)return;
+            e.Handled=true;page.RaiseEvent(new System.Windows.Input.MouseWheelEventArgs(e.MouseDevice,e.Timestamp,e.Delta) {RoutedEvent=MouseWheelEvent});
+        };
+        Grid.SetRow(driveScroll,1);drivePanel.Children.Add(driveScroll);Grid.SetRow(drivePanel,1);body.Children.Add(drivePanel);
         var header=new DockPanel {Margin=new Thickness(0,0,0,4)};
         var open=Ui.Button("Open in window ↗",PopOut);DockPanel.SetDock(open,Dock.Right);header.Children.Add(open);
         header.Children.Add(Ui.Heading("Drive detail",14));
-        var detail=new StackPanel();detail.Children.Add(header);detail.Children.Add(detailBody);detail.Children.Add(Volumes);detail.Children.Add(Smart);
-        Detail=Ui.Panel(detail,new Thickness(16,12,16,14));Detail.Margin=new Thickness(0,10,0,0);body.Children.Add(Detail);
+        chartColumn.RowDefinitions.Add(new() {Height=GridLength.Auto});chartColumn.RowDefinitions.Add(new() {Height=new(1,GridUnitType.Star)});
+        chartColumn.Children.Add(header);Grid.SetRow(chartPlaceholder,1);chartColumn.Children.Add(chartPlaceholder);
+        detailLayout.RowDefinitions.Add(new() {Height=new(1,GridUnitType.Star)});
+        detailLayout.ColumnDefinitions.Add(new() {Width=new(1,GridUnitType.Star)});detailLayout.ColumnDefinitions.Add(new() {Width=new(0)});detailLayout.Children.Add(chartColumn);
+        Detail=Ui.Panel(detailLayout,new Thickness(16,12,16,14));Detail.Margin=new Thickness(0,10,0,0);Detail.MinHeight=360;Grid.SetRow(Detail,2);body.Children.Add(Detail);
+        VolumesTab.Content=Volumes;HealthTab.Content=Smart;Tabs.Items.Add(VolumesTab);Tabs.Items.Add(HealthTab);Tabs.SelectedItem=VolumesTab;
+        lowerCard=Ui.Panel(Tabs,new Thickness(16,12,16,14));lowerCard.Margin=new(0,10,0,0);Grid.SetRow(lowerCard,3);body.Children.Add(lowerCard);
         Content=new ScrollViewer {Content=body,VerticalScrollBarVisibility=ScrollBarVisibility.Auto,HorizontalScrollBarVisibility=ScrollBarVisibility.Disabled};
+        Status.SizeChanged+=(_,_)=>InvalidateMeasure();drivePanel.SizeChanged+=(_,_)=>{if(!drivesBeside)InvalidateMeasure();};lowerCard.SizeChanged+=(_,_)=>InvalidateMeasure();
+        Tabs.SelectionChanged+=(_,e)=>{if(e.OriginalSource!=Tabs)return;InvalidateMeasure();};
+        SizeChanged+=(_,e)=>UpdateDrivePanelPlacement(e.NewSize.Width);
         Loaded+=(_,_)=>{session.Changed+=OnChanged;Refresh();};
         Unloaded+=(_,_)=>session.Changed-=OnChanged;
         Refresh();
+    }
+
+    protected override Size MeasureOverride(Size availableSize)
+    {
+        double width=double.IsFinite(availableSize.Width)?Math.Max(1,availableSize.Width-SystemParameters.VerticalScrollBarWidth):1000;
+        var measure=new Size(width,double.PositiveInfinity);
+        Status.Measure(measure);lowerCard.Measure(measure);
+        if(!drivesBeside)drivePanel.Measure(measure);
+        double minimum=Status.DesiredSize.Height+(drivesBeside?0:drivePanel.DesiredSize.Height)+lowerCard.DesiredSize.Height+370;
+        body.Height=Math.Max(minimum,double.IsFinite(availableSize.Height)?availableSize.Height:minimum);
+        return base.MeasureOverride(availableSize);
+    }
+
+    private void UpdateDrivePanelPlacement(double pageWidth)
+    {
+        bool beside=pageWidth>=1100;
+        if(drivesBeside==beside)return;
+        ((Panel)drivePanel.Parent).Children.Remove(drivePanel);
+        drivePanel.ClearValue(Grid.RowProperty);drivePanel.ClearValue(Grid.ColumnProperty);
+        drivePanel.RowDefinitions[1].Height=beside?new(1,GridUnitType.Star):GridLength.Auto;
+        drivePanel.Margin=beside?new(8,0,0,0):new(0);
+        detailLayout.ColumnDefinitions[1].Width=new(beside?280:0);
+        if(beside){Grid.SetColumn(drivePanel,1);detailLayout.Children.Add(drivePanel);}
+        else {Grid.SetRow(drivePanel,1);body.Children.Insert(body.Children.IndexOf(Detail),drivePanel);}
+        foreach(var row in rows.Values)ApplyRowDensity(row,beside);
+        drivesBeside=beside;InvalidateMeasure();
     }
 
     private void OnChanged()
@@ -72,6 +125,7 @@ internal sealed class StoragePage : UserControl
             UpdateRow(parts,drive,storage.Health.FirstOrDefault(h=>h.DriveId==drive.Id));
         }
         RefreshDetail();
+        InvalidateMeasure();
     }
 
     /// <summary>The reading's storage status, else the per-drive sensor notes, else the storage part of the hardware status.</summary>
@@ -92,9 +146,15 @@ internal sealed class StoragePage : UserControl
         var health=Ui.Text("",12,"Muted");lines.Children.Add(health);
         var bar=new ProgressBar {Minimum=0,Maximum=1,Height=6,Margin=new Thickness(0,6,0,3)};lines.Children.Add(bar);
         var free=Ui.Text("",11,"Muted");lines.Children.Add(free);
-        var button=new Button {Content=lines,HorizontalContentAlignment=HorizontalAlignment.Stretch,Padding=new Thickness(12,8,12,8),Margin=new Thickness(0,0,0,6)};
+        var button=new Button {Content=lines,HorizontalContentAlignment=HorizontalAlignment.Stretch};
         button.Click+=(_,_)=>{SelectedDriveId=id;Refresh();};
-        return new(button,title,health,bar,free);
+        var row=new RowParts(button,title,health,bar,free);ApplyRowDensity(row,drivesBeside);return row;
+    }
+
+    private static void ApplyRowDensity(RowParts row,bool compact)
+    {
+        row.Button.Padding=compact?new(10,6,10,6):new(12,8,12,8);
+        row.Button.Margin=new(0,0,0,compact?4:6);
     }
 
     private void UpdateRow(RowParts row,StorageDrive drive,StorageHealth? health)
@@ -123,13 +183,15 @@ internal sealed class StoragePage : UserControl
     private void RefreshDetail()
     {
         var drive=Selected;var health=Storage.Health.FirstOrDefault(h=>h.DriveId==SelectedDriveId);
+        chartPlaceholder.Visibility=drive is null?Visibility.Visible:Visibility.Collapsed;
         if(chartDriveId!=SelectedDriveId||chart is null&&drive is not null)
         {
-            detailBody.Children.Clear();chart=null;chartDriveId=SelectedDriveId;
-            if(drive is not null){chart=new ChartCard(session,"storage",false,false,drive.Id) {Height=260};detailBody.Children.Add(chart);}
+            if(chart is not null)chartColumn.Children.Remove(chart);
+            chart=null;chartDriveId=SelectedDriveId;
+            if(drive is not null){chart=new ChartCard(session,"storage",false,false,drive.Id);Grid.SetRow(chart,1);chartColumn.Children.Add(chart);}
         }
         Volumes.Children.Clear();Volumes.ColumnDefinitions.Clear();Volumes.RowDefinitions.Clear();Smart.Children.Clear();
-        if(drive is null){Smart.Children.Add(Ui.Text("Select a drive.",12,"Muted"));return;}
+        if(drive is null)return;
         for(int c=0;c<4;c++)Volumes.ColumnDefinitions.Add(new() {Width=new GridLength(c==1?2:1,GridUnitType.Star)});
         void Cell(UIElement element,int row,int column){Grid.SetRow(element,row);Grid.SetColumn(element,column);Volumes.Children.Add(element);}
         Volumes.RowDefinitions.Add(new() {Height=GridLength.Auto});
@@ -149,7 +211,7 @@ internal sealed class StoragePage : UserControl
         Smart.Children.Add(Ui.Text($"Power-on hours · {Hours(health?.PowerOnHours)}",12));
         Smart.Children.Add(Ui.Text($"Highest temperature · {Ui.Number(health?.MaxTemperature,"°C")}",12));
         Smart.Children.Add(Ui.Text($"Remaining life · {Life(health?.LifePercent)}",12));
-        if(!string.IsNullOrEmpty(health?.Unavailable))Smart.Children.Add(Ui.Text(health.Unavailable,11,"Muted"));
+        if(!string.IsNullOrEmpty(health?.Unavailable)&&!Status.Text.Contains(health.Unavailable))Smart.Children.Add(Ui.Text(health.Unavailable,11,"Muted"));
         if(drive.IdentityNote.Length>0)Smart.Children.Add(Ui.Text($"Identity · {drive.IdentityNote} · live only, not kept in history",11,"Muted"));
     }
 
