@@ -119,10 +119,11 @@ public sealed class MainWindow : Window
     }
     private FrameworkElement Sensors()
     {
-        var grid=new Grid();grid.RowDefinitions.Add(new(){Height=GridLength.Auto});grid.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});grid.RowDefinitions.Add(new(){Height=GridLength.Auto});
-        var label=Ui.Text("Find sensor or hardware",12,"Muted");label.Margin=new(0,0,12,0);var search=Ui.Row(label,sensorSearch);var sensorStrip=Ui.Panel(search,new Thickness(14,10,14,10));sensorStrip.Margin=new(6,2,6,12);grid.Children.Add(sensorStrip);sensorSearch.ToolTip="Search sensors and device names";System.Windows.Automation.AutomationProperties.SetName(sensorSearch,"Search sensors");sensorSearch.TextChanged+=(_,_)=>RefreshTables();
+        var grid=new Grid();grid.RowDefinitions.Add(new(){Height=GridLength.Auto});grid.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});
+        // The count and statistics line shares the search card: beside the search when there is room, wrapped under it when narrow.
+        var label=Ui.Text("Find sensor or hardware",12,"Muted");label.Margin=new(0,0,12,0);var search=new WrapPanel();search.Children.Add(label);search.Children.Add(sensorSearch);sensorCount.Margin=new(16,0,0,0);sensorCount.VerticalAlignment=VerticalAlignment.Center;search.Children.Add(sensorCount);var sensorStrip=Ui.Panel(search,new Thickness(14,10,14,10));sensorStrip.Margin=new(6,2,6,12);grid.Children.Add(sensorStrip);sensorSearch.ToolTip="Search sensors and device names";System.Windows.Automation.AutomationProperties.SetName(sensorSearch,"Search sensors");sensorSearch.TextChanged+=(_,_)=>RefreshTables();
         Column(sensors,"Hardware / sensor","Name",3);Column(sensors,"Current","Current",1);Column(sensors,"Min","Minimum",1);Column(sensors,"Average","Average",1);Column(sensors,"Max","Maximum",1);
-        var table=Ui.Panel(sensors,new Thickness(0));table.Margin=new Thickness(6,0,6,0);Grid.SetRow(table,1);grid.Children.Add(table);Grid.SetRow(sensorCount,2);sensorCount.Margin=new(8,12,8,0);grid.Children.Add(sensorCount);return grid;
+        var table=Ui.Panel(sensors,new Thickness(0));table.Margin=new Thickness(6,0,6,6);Grid.SetRow(table,1);grid.Children.Add(table);return grid;
     }
     private FrameworkElement Desktop()
     {
