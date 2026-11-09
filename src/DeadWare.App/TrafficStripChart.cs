@@ -522,7 +522,7 @@ internal sealed class TrafficStripView : StackPanel
         notes = Ui.Text("", 11, "Muted"); notes.Margin = new(0, 2, 0, 0); notes.Visibility = Visibility.Collapsed;
         Children.Add(caption); Children.Add(Chart); Children.Add(legend); Children.Add(notKept); Children.Add(notes);
         Chart.ShownSlotChanged += UpdateLegend;
-        Loaded += (_, _) => Subscribe();
+        Loaded += (_, _) => { Subscribe(); RefreshSwatches(); };
         Unloaded += (_, _) => Unsubscribe();
     }
 

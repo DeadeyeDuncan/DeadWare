@@ -39,7 +39,10 @@ internal sealed class ConnectionsPage : Grid
     private readonly UiSession session;
     private readonly Grid body=new();
     private readonly ScrollViewer viewport=new() {VerticalScrollBarVisibility=ScrollBarVisibility.Auto,HorizontalScrollBarVisibility=ScrollBarVisibility.Disabled};
-    private readonly StackPanel layoutHeader,layoutFooter,layoutSettings;
+    private readonly StackPanel layoutHeader,layoutSettings;
+    private readonly Grid mapLayout=new(),mapHost=new(),nodePanel=new();
+    private readonly Border mapToolbar;
+    private bool nodesBesideMap;
     private readonly Func<ConnectionHistoryQuery, Task<ConnectionHistoryView>> readHistory;
     private readonly Func<string,ConnectionHistoryQuery,Task> exportHistory;
     /// <summary>Writes the destinations of the whole-interval query in a scope to a new file; the service's, or a failure without one.</summary>
@@ -64,10 +67,12 @@ internal sealed class ConnectionsPage : Grid
     private readonly Button play, download, cancel, export, applicationButton;
     private readonly TextBlock applicationText = new() { TextTrimming = TextTrimming.CharacterEllipsis, TextWrapping = TextWrapping.NoWrap };
     private readonly ProgressBar progress = new() { Minimum = 0, Maximum = 100, Width = 80, Height = 6, Visibility = Visibility.Collapsed };
-    private readonly StackPanel historical = new();
+    private readonly WrapPanel historical = new();
     private readonly DispatcherTimer playback = new() { Interval = TimeSpan.FromSeconds(1) };
     private readonly TrafficStripView trafficStrip;
-    private readonly Border trafficCard;
+    private readonly Border lowerCard;
+    private readonly TabControl tabs=new();
+    private readonly TabItem trafficTab=new() {Header="Traffic",Visibility=Visibility.Collapsed},destinationsTab=new() {Header="Destinations"};
     private readonly DestinationsCard destinations;
     /// <summary>Whether a location database is installed, for the Destinations table's unlocated reason.</summary>
     internal Func<bool> hasLocationDatabase;
@@ -117,34 +122,37 @@ internal sealed class ConnectionsPage : Grid
         exportDestinations = (path, query, scope) => session.Connections is { } service ? service.ExportDestinationsCsvAsync(path, query, scope) : Task.FromException(new InvalidOperationException(ExportUnavailable));
         hasLocationDatabase = () => session.Connections?.DatabaseDate is not null;
         Background = System.Windows.Media.Brushes.Transparent; ClipToBounds = true;
-        // Rows: header, map card, traffic strip, node list, footer, Destinations card, settings.
-        foreach (var height in new[] { GridLength.Auto, new GridLength(1, GridUnitType.Star), GridLength.Auto, GridLength.Auto, GridLength.Auto, GridLength.Auto, GridLength.Auto }) body.RowDefinitions.Add(new() { Height = height });
-        body.RowDefinitions[1].MinHeight = 300;
+        // Rows: header card, map card with side nodes, narrow node panel, tabbed lower card, settings.
+        foreach (var height in new[] { GridLength.Auto, new GridLength(1, GridUnitType.Star), GridLength.Auto, GridLength.Auto, GridLength.Auto }) body.RowDefinitions.Add(new() { Height = height });
+        body.RowDefinitions[1].MinHeight = 420;
         var controls = new StackPanel { Margin = new(0, 6, 0, 3) }; var top = new WrapPanel();
         mode.ItemsSource = new[] { "Live", "History" }; mode.SelectedIndex = 0; Named(mode, "Connections view"); range.ItemsSource = new[] { "Today", "7 days", "30 days" }; range.SelectedIndex = 0; Named(range, "Connections time range");
-        top.Children.Add(mode); top.Children.Add(range); top.Children.Add(Button("Globe / 2D", () => map.Flat = !map.Flat)); top.Children.Add(Button("+", () => map.ZoomBy(1.25))); top.Children.Add(Button("−", () => map.ZoomBy(.8))); top.Children.Add(Button("Reset", map.ResetView));
-        animation.IsChecked = session.Settings.ConnectionsAnimation; top.Children.Add(animation); controls.Children.Add(top);
-        var dates = new WrapPanel(); dates.Children.Add(Label("From local", from, "History from local time")); dates.Children.Add(Label("To (exclusive)", to, "History to exclusive local time")); dates.Children.Add(Button("Apply interval", () => FiltersChanged())); historical.Children.Add(dates);
-        var timeline = new WrapPanel(); timeline.Children.Add(minute); Named(cursor, "History minute cursor"); timeline.Children.Add(cursor); timeline.Children.Add(cursorTime); play = Button("Play", TogglePlayback); timeline.Children.Add(play); historical.Children.Add(timeline); controls.Children.Add(historical);
+        top.Children.Add(mode); top.Children.Add(range); top.Children.Add(historical); controls.Children.Add(top);
+        historical.Children.Add(Label("From local", from, "History from local time")); historical.Children.Add(Label("To (exclusive)", to, "History to exclusive local time")); historical.Children.Add(Button("Apply interval", () => FiltersChanged()));
+        historical.Children.Add(minute); Named(cursor, "History minute cursor"); historical.Children.Add(cursor); historical.Children.Add(cursorTime); play = Button("Play", TogglePlayback); historical.Children.Add(play);
         var filters = new WrapPanel(); Named(search, "Search application or IP"); search.ToolTip = "Application name, PID or remote IP"; filters.Children.Add(Label("Application / IP", search, "Search application or IP")); country.ToolTip = "ISO country code; blank for all"; Named(country, "Country code"); filters.Children.Add(Label("Country code", country, "Country code"));
         direction.ItemsSource = Enum.GetValues<ConnectionDirection>(); direction.SelectedIndex = 0; Named(direction, "Traffic direction"); filters.Children.Add(Label("Direction", direction, "Traffic direction"));
         applicationButton = Button("", ClearApplicationFilter); applicationButton.Content = applicationText; applicationButton.MaxWidth = 240; applicationButton.Visibility = Visibility.Collapsed; Named(applicationButton, "Clear application filter"); filters.Children.Add(applicationButton);
-        filters.Children.Add(Button("Filter", () => FiltersChanged())); controls.Children.Add(filters);
+        filters.Children.Add(Button("Filter", () => FiltersChanged())); controls.Children.Add(filters); controls.Children.Add(summary); controls.Children.Add(capture);
         // Refined glass: the controls sit in a card strip above the map card; the detail box is a card too.
         var strip = Ui.Panel(controls, new Thickness(12, 6, 12, 6)); strip.Margin = new(0, 4, 0, 8);
-        var header=layoutHeader=new StackPanel();header.Children.Add(strip);header.Children.Add(summary);header.Children.Add(capture);body.Children.Add(header);
-        var mapHost = new Grid(); mapHost.Children.Add(map); mapHost.Children.Add(mapOverlay);
-        var mapCard = Ui.Panel(mapHost, new Thickness(6)); mapCard.Margin = new(0, 2, 0, 2); Grid.SetRow(mapCard, 1); body.Children.Add(mapCard);
+        var header=layoutHeader=new StackPanel();header.Children.Add(strip);body.Children.Add(header);
+        mapHost.Children.Add(map); mapHost.Children.Add(mapOverlay);
+        var toolbar=new WrapPanel(); toolbar.Children.Add(Button("Globe / 2D", () => map.Flat = !map.Flat)); toolbar.Children.Add(Button("+", () => map.ZoomBy(1.25))); toolbar.Children.Add(Button("−", () => map.ZoomBy(.8))); toolbar.Children.Add(Button("Reset", map.ResetView));
+        animation.IsChecked=session.Settings.ConnectionsAnimation; toolbar.Children.Add(animation);
+        mapToolbar=Ui.Panel(toolbar,new Thickness(4)); mapToolbar.HorizontalAlignment=HorizontalAlignment.Right; mapToolbar.VerticalAlignment=VerticalAlignment.Top; mapToolbar.Margin=new(8); mapHost.Children.Add(mapToolbar);
+        mapLayout.ColumnDefinitions.Add(new() {Width=new(1,GridUnitType.Star)}); mapLayout.ColumnDefinitions.Add(new() {Width=new(0)}); mapLayout.Children.Add(mapHost);
+        var mapCard = Ui.Panel(mapLayout, new Thickness(6)); mapCard.Margin = new(0, 2, 0, 2); Grid.SetRow(mapCard, 1); body.Children.Add(mapCard);
         trafficStrip = new TrafficStripView(session, TrafficStripPage.Connections); trafficStrip.Chart.Selectable = true;
         trafficStrip.Chart.SlotActivated += (_, time) => ActivateStripAt(time);
         trafficStrip.Chart.SelectionMoved += index => { if (trafficStrip.Chart.Strip is { } shown) ActivateStripAt(shown.Slots[index].Start); };
         trafficStrip.ApplicationChosen += (key, name) => { applicationFilter = key; applicationName = name; UpdateApplicationButton(); FiltersChanged(); };
-        trafficCard = Ui.Panel(trafficStrip, new Thickness(12, 8, 12, 8)); trafficCard.Margin = new(0, 6, 0, 4); trafficCard.Visibility = Visibility.Collapsed; Grid.SetRow(trafficCard, 2); body.Children.Add(trafficCard);
         nodeDetails.SetResourceReference(StyleProperty, "Card"); nodeDetails.CornerRadius = new(10);
         nodeText.TextWrapping = TextWrapping.Wrap;
         var detailsLayout = new StackPanel(); var detailHeader = new DockPanel(); var close = Button("Close", ClearSelection); DockPanel.SetDock(close, Dock.Right); detailHeader.Children.Add(close); detailHeader.Children.Add(Ui.Text("Connection details", 13)); detailsLayout.Children.Add(detailHeader);
         detailsLayout.Children.Add(new ScrollViewer { Content = nodeText, MaxHeight = 175, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled }); nodeDetails.Child = detailsLayout; mapOverlay.Children.Add(nodeDetails); Named(nodeDetails, "Selected map connection details");
-        var listLayout = new StackPanel(); listLayout.Children.Add(mappedStatus); listLayout.Children.Add(mappedConnections); Grid.SetRow(listLayout, 3); body.Children.Add(listLayout);
+        nodePanel.RowDefinitions.Add(new() {Height=GridLength.Auto}); nodePanel.RowDefinitions.Add(new() {Height=GridLength.Auto}); nodePanel.RowDefinitions.Add(new() {Height=GridLength.Auto});
+        nodePanel.Children.Add(mappedStatus); Grid.SetRow(mappedConnections,1); nodePanel.Children.Add(mappedConnections); Grid.SetRow(nodePanel,2); body.Children.Add(nodePanel);
         Named(mappedConnections, "Connections drawn on map");
         mappedConnections.ItemsSource=mappedRows;
         mappedConnections.SetResourceReference(Control.BackgroundProperty,"GlassControl");
@@ -163,16 +171,21 @@ internal sealed class ConnectionsPage : Grid
         foreach(var property in new[]{ListBoxItem.IsSelectedProperty,UIElement.IsMouseOverProperty,UIElement.IsKeyboardFocusWithinProperty})
         {var trigger=new Trigger {Property=property,Value=true};trigger.Setters.Add(new Setter(Control.BackgroundProperty,new DynamicResourceExtension("GlassControl")));itemStyle.Triggers.Add(trigger);}
         mappedConnections.ItemContainerStyle = itemStyle;
-        var foot = layoutFooter = new StackPanel(); export = Button("Export CSV…", () => _ = ExportAsync()); export.HorizontalAlignment = HorizontalAlignment.Left; foot.Children.Add(export); foot.Children.Add(selection); Grid.SetRow(foot, 4); body.Children.Add(foot);
-        destinations = new DestinationsCard(session); Grid.SetRow(destinations, 5); body.Children.Add(destinations);
+        var foot = new StackPanel(); export = Button("Export CSV…", () => _ = ExportAsync()); export.HorizontalAlignment = HorizontalAlignment.Left; foot.Children.Add(export); foot.Children.Add(selection); Grid.SetRow(foot,2); nodePanel.Children.Add(foot);
+        destinations = new DestinationsCard(session); destinations.HostInTab();
+        trafficTab.Content=trafficStrip; destinationsTab.Content=destinations; tabs.Items.Add(trafficTab); tabs.Items.Add(destinationsTab); tabs.SelectedItem=destinationsTab;
+        lowerCard=Ui.Panel(tabs,new Thickness(12,8,12,8)); lowerCard.Margin=new(0,6,0,4); Grid.SetRow(lowerCard,3); body.Children.Add(lowerCard);
         destinations.clockSeconds = () => stopwatch.Elapsed.TotalSeconds; destinations.SelectionChanged += OnDestinationSelectionChanged;
         destinations.CopyRequested += CopyDestination; destinations.Export.Click += (_, _) => _ = ExportDestinationsAsync();
-        var settings = layoutSettings = new StackPanel(); var databaseActions = new WrapPanel(); download = Button("Download / update locations", () => _ = UpdateDatabaseAsync()); cancel = Button("Cancel download", () => downloadCancellation?.Cancel()); cancel.IsEnabled = false; databaseActions.Children.Add(download); databaseActions.Children.Add(cancel); databaseActions.Children.Add(progress); settings.Children.Add(databaseActions); settings.Children.Add(database);
-        var options = new StackPanel(); var choices = new WrapPanel(); recording.IsChecked = session.Settings.ConnectionsRecording; databaseActions.Children.Add(recording); Named(citySearch, "Search offline home cities"); citySearch.ToolTip = "Search 7,342 offline cities by name or country"; choices.Children.Add(citySearch); Named(home, "Home city"); choices.Children.Add(home); choices.Children.Add(Button("Clear home city", () => home.SelectedIndex = 0)); options.Children.Add(choices); settings.Children.Add(storage);
-        options.Children.Add(Ui.Text("Origin and destination geography are approximate; curves are illustrative. The node list follows the nodes visible on the map; the Destinations table lists every destination, including local, special-purpose and unlocated ones. The strip under the map stacks the six applications with the most traffic in the interval, plus Other; its colours identify applications, not direction. Click it to move the minute cursor, or click an application to show only it. Rolling history: 30 days, up to 256 MiB locally. CSV exports the full filtered interval to a new file. Apps in Don't record these apps show live, marked not recorded, and are never saved.", 11, "Muted")); var clearEntry = ClearHistoryEntry.Create(session, () => Window.GetWindow(this)); clearEntry.Margin = new(0, 8, 0, 0); options.Children.Add(clearEntry); settings.Children.Add(new Expander { Header = "Recording, origin and storage", Content = options }); Grid.SetRow(settings, 6); settings.Children.Insert(0, actionStatus); body.Children.Add(settings);
+        var settings = layoutSettings = new StackPanel(); var databaseActions = new WrapPanel(); download = Button("Download / update locations", () => _ = UpdateDatabaseAsync()); cancel = Button("Cancel download", () => downloadCancellation?.Cancel()); cancel.IsEnabled = false; databaseActions.Children.Add(download); databaseActions.Children.Add(cancel); databaseActions.Children.Add(progress);
+        var options = new StackPanel(); options.Children.Add(databaseActions); options.Children.Add(database); options.Children.Add(storage);
+        var choices = new WrapPanel(); recording.IsChecked = session.Settings.ConnectionsRecording; databaseActions.Children.Add(recording); Named(citySearch, "Search offline home cities"); citySearch.ToolTip = "Search 7,342 offline cities by name or country"; choices.Children.Add(citySearch); Named(home, "Home city"); choices.Children.Add(home); choices.Children.Add(Button("Clear home city", () => home.SelectedIndex = 0)); options.Children.Add(choices);
+        options.Children.Add(Ui.Text("Origin and destination geography are approximate; curves are illustrative. The node list follows the nodes visible on the map; the Destinations table lists every destination, including local, special-purpose and unlocated ones. The strip under the map stacks the six applications with the most traffic in the interval, plus Other; its colours identify applications, not direction. Click it to move the minute cursor, or click an application to show only it. Rolling history: 30 days, up to 256 MiB locally. CSV exports the full filtered interval to a new file. Apps in Don't record these apps show live, marked not recorded, and are never saved.", 11, "Muted")); var clearEntry = ClearHistoryEntry.Create(session, () => Window.GetWindow(this)); clearEntry.Margin = new(0, 8, 0, 0); options.Children.Add(clearEntry); settings.Children.Add(new Expander { Header = "Location database, recording and storage", Content = options }); Grid.SetRow(settings, 4); settings.Children.Insert(0, actionStatus); body.Children.Add(settings);
         foreach (var element in new[] { mode, range, direction }) element.Margin = new(0, 0, 6, 3); foreach (var element in new[] { search, from, to, citySearch, country }) element.Margin = new(0, 0, 6, 3);
         selection.MaxHeight = 28; selection.TextTrimming = TextTrimming.CharacterEllipsis;
-        layoutHeader.SizeChanged+=(_,_)=>InvalidateMeasure();layoutFooter.SizeChanged+=(_,_)=>InvalidateMeasure();layoutSettings.SizeChanged+=(_,_)=>InvalidateMeasure();trafficCard.SizeChanged+=(_,_)=>InvalidateMeasure();destinations.SizeChanged+=(_,_)=>InvalidateMeasure();
+        layoutHeader.SizeChanged+=(_,_)=>InvalidateMeasure();nodePanel.SizeChanged+=(_,_)=>InvalidateMeasure();layoutSettings.SizeChanged+=(_,_)=>InvalidateMeasure();lowerCard.SizeChanged+=(_,_)=>InvalidateMeasure();
+        tabs.SelectionChanged+=(_,e)=>{if(e.OriginalSource!=tabs)return;InvalidateMeasure();};
+        SizeChanged+=(_,e)=>UpdateNodePanelPlacement(e.NewSize.Width);mapToolbar.SizeChanged+=(_,_)=>{UpdateReservedArea();RefreshMappedConnections();};map.SizeChanged+=(_,_)=>UpdateReservedArea();
         SetPreset(); FilterCities(); historical.Visibility = Visibility.Collapsed;
         mode.SelectionChanged += (_, _) => ChangeMode(); range.SelectionChanged += (_, _) => { SetPreset(); FiltersChanged(); }; search.TextChanged += (_, _) => FiltersChanged(); direction.SelectionChanged += (_, _) => FiltersChanged(); country.TextChanged += (_, _) => FiltersChanged();
         // The hairline follows the cursor at once, also under syncing (playback and strip clicks), before the minute's read returns.
@@ -193,11 +206,32 @@ internal sealed class ConnectionsPage : Grid
         // Keep the map large while allowing the whole page to scroll on compact displays.
         double width=double.IsFinite(availableSize.Width)?Math.Max(1,availableSize.Width-SystemParameters.VerticalScrollBarWidth):1000;
         var measure=new Size(width,double.PositiveInfinity);
-        // A collapsed traffic card (Live) measures 0; the Destinations grid's fixed height keeps its card finite.
-        layoutHeader.Measure(measure);trafficCard.Measure(measure);layoutFooter.Measure(measure);destinations.Measure(measure);layoutSettings.Measure(measure);
-        double minimum=layoutHeader.DesiredSize.Height+trafficCard.DesiredSize.Height+layoutFooter.DesiredSize.Height+destinations.DesiredSize.Height+layoutSettings.DesiredSize.Height+300+170;
+        // Only the selected tab contributes; wide nodes are measured by the finite map row below.
+        layoutHeader.Measure(measure);lowerCard.Measure(measure);layoutSettings.Measure(measure);
+        if(!nodesBesideMap)nodePanel.Measure(measure);
+        double minimum=layoutHeader.DesiredSize.Height+lowerCard.DesiredSize.Height+layoutSettings.DesiredSize.Height+(nodesBesideMap?0:nodePanel.DesiredSize.Height)+420;
         body.Height=Math.Max(minimum,double.IsFinite(availableSize.Height)?availableSize.Height:minimum);
         return base.MeasureOverride(availableSize);
+    }
+    /// <summary>Tells the map where the overlay toolbar is, so hover chips are placed clear of it.</summary>
+    private void UpdateReservedArea()
+    {
+        if(mapToolbar.ActualWidth<=0||mapToolbar.ActualHeight<=0||map.ActualWidth<=0){map.ReservedArea=Rect.Empty;return;}
+        map.ReservedArea=new Rect(mapToolbar.TranslatePoint(new Point(),map),mapToolbar.RenderSize);map.InvalidateVisual();
+    }
+    private void UpdateNodePanelPlacement(double pageWidth)
+    {
+        bool beside=pageWidth>=1100;
+        if(nodesBesideMap==beside)return;
+        ((Panel)nodePanel.Parent).Children.Remove(nodePanel);
+        nodePanel.ClearValue(RowProperty);nodePanel.ClearValue(ColumnProperty);
+        mappedConnections.MinHeight=beside?0:45;mappedConnections.MaxHeight=beside?double.PositiveInfinity:140;
+        nodePanel.RowDefinitions[1].Height=beside?new(1,GridUnitType.Star):GridLength.Auto;
+        nodePanel.Margin=beside?new(8,0,0,0):new(0);
+        mapLayout.ColumnDefinitions[1].Width=new(beside?280:0);
+        if(beside){SetColumn(nodePanel,1);mapLayout.Children.Add(nodePanel);}
+        else {SetRow(nodePanel,2);body.Children.Insert(body.Children.IndexOf(lowerCard),nodePanel);}// before the lower card, so Tab order follows the visual order
+        nodesBesideMap=beside;InvalidateMeasure();
     }
     private static void Named(DependencyObject element, string name) => AutomationProperties.SetName(element, name);
     private static UIElement Label(string text, FrameworkElement input, string name) { Named(input, name); var p = new StackPanel { Margin = new(0, 0, 6, 0) }; p.Children.Add(Ui.Text(text, 10, "Muted")); p.Children.Add(input); return p; }
@@ -231,7 +265,7 @@ internal sealed class ConnectionsPage : Grid
     private void ChangeMode()
     {
         CancelHistory(); pendingStrip = null; if (!IsHistory) { stripContext = null; stripFailed = null; }
-        displayedHistoryQuery=null; destinationsWhole=null; StopPlayback(); ClearSelection(); ClearDestinationSelection(); historical.Visibility = trafficCard.Visibility = IsHistory ? Visibility.Visible : Visibility.Collapsed; range.IsEnabled = IsHistory; UpdateExportEnabled(); if (IsHistory) RequestHistory(); else ShowLiveView(live, true);
+        displayedHistoryQuery=null; destinationsWhole=null; StopPlayback(); ClearSelection(); ClearDestinationSelection(); historical.Visibility = trafficTab.Visibility = IsHistory ? Visibility.Visible : Visibility.Collapsed; tabs.SelectedItem=IsHistory?trafficTab:destinationsTab; range.IsEnabled = IsHistory; UpdateExportEnabled(); if (IsHistory) RequestHistory(); else ShowLiveView(live, true);
     }
     private void SetPreset()
     { int days = range.SelectedIndex switch { 1 => 7, 2 => 30, _ => 1 }; from.Text = DateTime.Today.AddDays(1 - days).ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture); to.Text = DateTime.Today.AddDays(1).ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture); syncing = true; cursor.Value = 0; syncing = false; }
@@ -276,7 +310,7 @@ internal sealed class ConnectionsPage : Grid
         if(query is null || displayedHistoryQuery is null || !SameHistoryContext(displayedHistoryQuery,query))
         {
             displayedHistoryQuery=null; rows=[];
-            selectedKey=null; map.SetData([],null,true,"Reading saved history…"); RefreshMappedConnections(); UpdateDestinationHighlight(); summary.Text="History · Reading saved observations…"; summary.ToolTip=null;
+            selectedKey=null; map.SetData([],null,true,"Reading saved history…"); RefreshMappedConnections(); UpdateDestinationHighlight(); summary.Text="History · Reading saved observations…"; summary.ToolTip=capture.Text;
         }
         // The Destinations rows clear only for a new whole-interval context: a cursor move or a playback step keeps them until the next view.
         if(query is null || whole is null || !SameContext(whole,destinationsWhole))
@@ -317,7 +351,7 @@ internal sealed class ConnectionsPage : Grid
             {
                 if (pending is { } query)
                 {
-                    pending = null; long requested = generation; var token = queryCancellation!.Token; capture.Text = "Reading saved history…"; readingGeneration = requested;
+                    pending = null; long requested = generation; var token = queryCancellation!.Token; SetCapture("Reading saved history…"); readingGeneration = requested;
                     try { var result = await readHistory(query); if (!token.IsCancellationRequested && requested == generation && IsHistory) ApplyHistory(result); }
                     catch (ConnectionHistoryLimitException) { if (!token.IsCancellationRequested && requested == generation && IsHistory) { actionStatus.Text = LimitWarning; ApplyHistory(Empty(query, "History unavailable; no saved observations shown.")); StopPlayback(); } }
                     catch (Exception error) { if (!token.IsCancellationRequested && requested == generation && IsHistory) { actionStatus.Text = $"History could not be read ({error.GetType().Name})."; ApplyHistory(Empty(query, "History unavailable; no saved observations shown.")); StopPlayback(); } }
@@ -431,7 +465,7 @@ internal sealed class ConnectionsPage : Grid
         long received = 0, sent = 0; foreach (var item in filtered) { received = Add(received, item.Traffic.ReceivedBytes); sent = Add(sent, item.Traffic.SentBytes); }
         // The summary counts the table's list, built from the same filtered array, so the two never disagree.
         destinations.ShowLive(view, filtered, LiveFiltersSet(), hasLocationDatabase(), resort, session.IsExcluded); var counts = destinations.List!.Counts;
-        summary.Text = $"Live · {Count(counts.All, "destination", "destinations")} · {Count(filtered.Select(c=>c.Location?.CountryCode).Where(c=>!string.IsNullOrEmpty(c)).Distinct(StringComparer.OrdinalIgnoreCase).Count(), "country", "countries")} · {counts.Local:N0} local · {counts.Unlocated:N0} unlocated · ↓ {Ui.Bytes(received)} received / ↑ {Ui.Bytes(sent)} sent (totals for active peers since first observed)"; summary.ToolTip = null; capture.Text = $"{view.Status}{(!view.Complete ? " · Incomplete capture" : "")} · Current observed rates; geography approximate; curves illustrative.";
+        summary.Text = $"Live · {Count(counts.All, "destination", "destinations")} · {Count(filtered.Select(c=>c.Location?.CountryCode).Where(c=>!string.IsNullOrEmpty(c)).Distinct(StringComparer.OrdinalIgnoreCase).Count(), "country", "countries")} · {counts.Local:N0} local · {counts.Unlocated:N0} unlocated · ↓ {Ui.Bytes(received)} received / ↑ {Ui.Bytes(sent)} sent (totals for active peers since first observed)"; summary.ToolTip = null; SetCapture($"{view.Status}{(!view.Complete ? " · Incomplete capture" : "")} · Current observed rates; geography approximate; curves illustrative.");
         map.SetData(filtered.Where(c => c.Location?.Point is not null).Select(c => new ConnectionMapPoint(Key(c.Traffic.Peer), c.Location!.Point!, c.Traffic.ReceivedBytes, c.Traffic.SentBytes, selectedKey == Key(c.Traffic.Peer),view.Available&&c.Traffic.DownloadBytesPerSecond>0,view.Available&&c.Traffic.UploadBytesPerSecond>0,
             Label: Marked(c.Traffic.Peer.Process.Name), Detail: $"{Location(c.Traffic.Peer.RemoteAddress, c.Location)} · ↓ {Ui.Bytes(view.Available ? c.Traffic.DownloadBytesPerSecond : null, true)} · ↑ {Ui.Bytes(view.Available ? c.Traffic.UploadBytesPerSecond : null, true)}")).ToArray(), view.Origin, view.Available, view.Status); UpdateDestinationHighlight(); UpdateMapAnimation(); RefreshMappedConnections(); UpdateExportEnabled(); range.IsEnabled = IsHistory;
     }
@@ -446,7 +480,7 @@ internal sealed class ConnectionsPage : Grid
         // The context is recorded from the raw request, as RequestHistory compares it, not from the store-normalized view.Query.
         if (minute.IsChecked != true) ApplyStrip(requestedWhole ?? view.Query, view.Strip);
         destinations.ShowHistory(view.Destinations, minute.IsChecked == true, FiltersSet(view.Query)); destinationsWhole = requestedWhole;
-        capture.Text = $"{view.Query.From.ToLocalTime():g} – {view.Query.To.ToLocalTime():g} (exclusive) · {view.Gaps.Count} gaps · {view.Status}"+(view.OmittedMarkers>0?$" · {view.OmittedMarkers:N0} grouped locations omitted from map":""); historyStorage = $"{Ui.Bytes(view.StorageBytes)} stored · Earliest {(view.EarliestRetainedTime is { } earliest ? earliest.ToLocalTime().ToString("g") : "none")} · rolling 30 days / 256 MiB. "; storage.Text = historyStorage + session.Connections?.StorageStatus;
+        SetCapture($"{view.Query.From.ToLocalTime():g} – {view.Query.To.ToLocalTime():g} (exclusive) · {view.Gaps.Count} gaps · {view.Status}"+(view.OmittedMarkers>0?$" · {view.OmittedMarkers:N0} grouped locations omitted from map":"")); historyStorage = $"{Ui.Bytes(view.StorageBytes)} stored · Earliest {(view.EarliestRetainedTime is { } earliest ? earliest.ToLocalTime().ToString("g") : "none")} · rolling 30 days / 256 MiB. "; storage.Text = historyStorage + session.Connections?.StorageStatus;
         map.SetData(view.Markers.Where(m => m.Location.Point is not null).Select(m =>
         {
             var representative = m.Representative ?? view.Rows.FirstOrDefault(r => r.Location == m.Location && r.Origin == m.Origin);
@@ -457,6 +491,11 @@ internal sealed class ConnectionsPage : Grid
     }
     /// <summary>A summary count, grouped like the Destinations count line, with the singular for 1.</summary>
     private static string Count(long count, string one, string many) => $"{count:N0} {(count == 1 ? one : many)}";
+    private void SetCapture(string text)
+    {
+        capture.Text=text;
+        if(!Equals(summary.ToolTip,"History unavailable"))summary.ToolTip=text;
+    }
     /// <summary>Search, country, direction or the application filter is set.</summary>
     private bool LiveFiltersSet() => search.Text.Trim().Length > 0 || !string.IsNullOrWhiteSpace(country.Text) || direction.SelectedItem is ConnectionDirection value && value != ConnectionDirection.Both || applicationFilter.Length > 0;
     private static bool FiltersSet(ConnectionHistoryQuery query) => query.Search.Length > 0 || query.CountryCode.Length > 0 || query.Direction != ConnectionDirection.Both || query.Application.Length > 0;
@@ -553,7 +592,7 @@ internal sealed class ConnectionsPage : Grid
             else mappedRows.Insert(i,items[i]);
         }
         mappedConnections.SelectedItem=mappedRows.FirstOrDefault(r=>r.Key==selectedKey);syncing=false;
-        mappedStatus.Text=$"{(IsHistory?"History":"Live")} · {items.Length} visible map nodes · location totals; click for connection details";
+        mappedStatus.Text=$"{(IsHistory?"History":"Live")} · {items.Length} visible nodes · click for details";
         selection.Text=items.Length==0?"No located connections in this map view. Rotate the globe, change filters or download locations.":"Select a node or listed connection to see its details beside the node.";
         selection.ToolTip=selection.Text;
         if(selectedKey is not null && !map.DisplayedPoints.Any(p=>p.Key==selectedKey))selectedKey=null;
@@ -565,8 +604,14 @@ internal sealed class ConnectionsPage : Grid
         nodeDetails.Width=Math.Min(320,Math.Max(1,map.ActualWidth-16)); nodeDetails.Visibility=Visibility.Visible;
         nodeDetails.Measure(new(nodeDetails.Width,double.PositiveInfinity));
         double x=anchor.X+12;if(x+nodeDetails.Width>map.ActualWidth-8)x=anchor.X-nodeDetails.Width-12;
-        Canvas.SetLeft(nodeDetails,Math.Clamp(x,8,Math.Max(8,map.ActualWidth-nodeDetails.Width-8)));
-        Canvas.SetTop(nodeDetails,Math.Clamp(anchor.Y-20,8,Math.Max(8,map.ActualHeight-nodeDetails.DesiredSize.Height-8)));
+        x=Math.Clamp(x,8,Math.Max(8,map.ActualWidth-nodeDetails.Width-8));
+        double y=Math.Clamp(anchor.Y-20,8,Math.Max(8,map.ActualHeight-nodeDetails.DesiredSize.Height-8));
+        if(mapToolbar.ActualWidth>0&&mapToolbar.ActualHeight>0)
+        {
+            var toolbarBounds=new Rect(mapToolbar.TranslatePoint(new Point(),mapOverlay),mapToolbar.RenderSize);
+            if(toolbarBounds.IntersectsWith(new Rect(x,y,nodeDetails.Width,nodeDetails.DesiredSize.Height)))y=toolbarBounds.Bottom+8;
+        }
+        Canvas.SetLeft(nodeDetails,x);Canvas.SetTop(nodeDetails,y);
     }
     // Trimmed like the history query, so the same text filters both views alike.
     private bool Matches(ProcessIdentity process, string address, ConnectionLocation? location, long received, long sent) => (applicationFilter.Length == 0 || ProcessGrouping.Key(process.Name) == applicationFilter) && (search.Text.Trim() is not { Length: > 0 } text || $"{process.Name} {process.Pid} {address}".Contains(text, StringComparison.OrdinalIgnoreCase)) && (string.IsNullOrWhiteSpace(country.Text) || string.Equals(location?.CountryCode, country.Text.Trim(), StringComparison.OrdinalIgnoreCase)) && (direction.SelectedItem is not ConnectionDirection selected || selected == ConnectionDirection.Both || selected == ConnectionDirection.Received && received > 0 || selected == ConnectionDirection.Sent && sent > 0);
