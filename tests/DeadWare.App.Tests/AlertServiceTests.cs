@@ -640,8 +640,12 @@ public class AlertServiceTests
     }
     private static void ReadOnly(Fixture fixture, bool on)
     {
+        // SQLite can drop its -shm/-wal companions between the listing and the attribute call; a file that is gone needs no attribute.
         foreach (var file in Directory.GetFiles(Path.GetDirectoryName(fixture.AlertPath)!, "alerts.db*"))
-            File.SetAttributes(file, on ? File.GetAttributes(file) | FileAttributes.ReadOnly : File.GetAttributes(file) & ~FileAttributes.ReadOnly);
+        {
+            try { File.SetAttributes(file, on ? File.GetAttributes(file) | FileAttributes.ReadOnly : File.GetAttributes(file) & ~FileAttributes.ReadOnly); }
+            catch (FileNotFoundException) { }
+        }
     }
 
     [Fact]
