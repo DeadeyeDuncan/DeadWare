@@ -38,6 +38,8 @@ internal static class UsageHistoryUiChecks
         typeof(UiSession).GetField("<Settings>k__BackingField", All)!.SetValue(session, new UserSettings());
         typeof(UiSession).GetField("<Usage>k__BackingField", All)!.SetValue(session, new UsageHistoryService(Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".db"), "fixture"));
         var now = new DateTimeOffset(2026, 11, 2, 12, 0, 0, TimeSpan.Zero);
+        CheckChartColumns(session, now);
+        CheckPageLayout(session, now);
         string? output = Environment.GetEnvironmentVariable("DEADWARE_UI_OUTPUT");
         foreach (string theme in new[] { "Midnight", "Daylight", "Blackout" })
         {
@@ -53,6 +55,12 @@ internal static class UsageHistoryUiChecks
                 PageType.GetMethod("ApplyStrip", All)!.Invoke(page, [StripFor(now, empty), now]);
                 double width = empty ? 620 : 1050;
                 Layout(page, width, 1100);
+                var hint = Assert.Single(Descendants(page).OfType<TextBlock>(), t => t.Text.StartsWith("Points average each slot's recorded minutes;", StringComparison.Ordinal));
+                Assert.Equal(TextWrapping.Wrap, hint.TextWrapping); Assert.Contains("or press Enter on it", hint.Text);
+                Assert.Equal("Each point is the average of the recorded minutes in its slot; the shaded band spans their minimum and maximum. Minutes with no readings stay empty and partial slots are not connected. Statistics use the stored minute values for the whole period. Dates use local time. Click a CPU, RAM or GPU point, or press Enter on it, to list its busiest apps under Application resources.", hint.ToolTip);
+                if (empty) Assert.True(hint.ActualHeight > 2 * hint.FontSize, "The caption wraps at 620 DIP instead of clipping its keyboard guidance.");
+                var retention = Assert.Single(Descendants(page).OfType<Expander>()); Assert.False(retention.IsExpanded);
+                retention.IsExpanded = true; Layout(page, width, 1100);
                 var bitmap = new RenderTargetBitmap((int)width, 1100, 96, 96, PixelFormats.Pbgra32); bitmap.Render(page);
                 Assert.Equal(width, page.ActualWidth);
                 string text = Text(page);
@@ -128,6 +136,41 @@ internal static class UsageHistoryUiChecks
         }
         finally { SynchronizationContext.SetSynchronizationContext(context); }
         ApplicationResourcesUiChecks.Run(app);
+    }
+
+    private static void CheckChartColumns(UiSession session, DateTimeOffset now)
+    {
+        var page = new UsageHistoryPage(session); page.Apply((UsagePageData)Data(now, false));
+        var original = new[] { "cpu", "cputemp", "gpu", "gputemp", "memory", "network" }.Select(page.Chart).ToArray();
+        foreach (var (width, columns) in new[] { (1300, 3), (1050, 2), (1099, 2), (1100, 3), (1300, 3), (900, 2), (1300, 3) })
+        {
+            Layout(page, width, 1100);
+            var grid = Assert.Single(Descendants(page).OfType<UniformGrid>(), g => g.Children.Count == 6);
+            Assert.Equal(columns, grid.Columns);
+            Assert.Equal(original, grid.Children.Cast<StackPanel>().Select(cell => Assert.Single(cell.Children.OfType<UsageHistoryChart>())));
+            Assert.All(original, chart => Assert.Equal(170, chart.Height));
+        }
+    }
+
+    private static void CheckPageLayout(UiSession session, DateTimeOffset now)
+    {
+        foreach (bool showOpenWindow in new[] { true, false })
+        {
+            var page = new UsageHistoryPage(session, showOpenWindow); page.Apply((UsagePageData)Data(now, false)); Layout(page, 1300, 800);
+            var body = Assert.IsType<StackPanel>(page.Content); var cards = body.Children.Cast<UIElement>().Select(Assert.IsType<Border>).ToArray();
+            Assert.Equal(4, cards.Length); Assert.Equal(new Thickness(12, 6, 12, 6), cards[0].Padding); Assert.Equal(new Thickness(0, 0, 0, 10), cards[0].Margin);
+            Assert.Contains(Field<ComboBox>(page, "range"), Descendants(cards[0])); Assert.Contains("Device", Text(cards[1])); Assert.Same(page.Tabs, cards[2].Child);
+            Assert.Equal(new Thickness(16), cards[2].Padding); Assert.Equal(new Thickness(0, 0, 0, 12), cards[2].Margin);
+            var status = Field<TextBlock>(page, "actionStatus"); Assert.Contains(status, Descendants(cards[0]));
+            status.Text = "Export saved: fixture.csv"; Layout(page, 1300, 800); Assert.Contains(status.Text, Text(cards[0])); Assert.True(status.ActualHeight > 0);
+            Assert.Equal(showOpenWindow ? 1 : 0, Descendants(cards[0]).OfType<Button>().Count(b => Equals(b.Content, "Open in window ↗")));
+            Assert.Same(page.ApplicationsTab, page.Tabs.SelectedItem); Assert.Equal(2, page.Tabs.Items.Count);
+            Assert.Contains(Field<DataGrid>(page, "applications"), Descendants(cards[2])); Assert.DoesNotContain(Field<ApplicationResourcesCard>(page, "resources"), Descendants(cards[2]));
+            page.Tabs.SelectedItem = page.ResourcesTab; page.UpdateLayout();
+            Assert.Contains(Field<ApplicationResourcesCard>(page, "resources"), Descendants(cards[2])); Assert.DoesNotContain(Field<DataGrid>(page, "applications"), Descendants(cards[2]));
+            var retention = Assert.Single(Descendants(cards[3]).OfType<Expander>()); Assert.Equal("Retention, privacy and clearing", retention.Header); Assert.False(retention.IsExpanded);
+            CheckClearHistoryEntry(page);
+        }
     }
 
     private static void CheckChart(string theme, DateTimeOffset now, string? output)
@@ -288,11 +331,17 @@ internal static class UsageHistoryUiChecks
         Assert.Equal([3, 2, 1, 0, 0, 35], moved);
     }
 
-    /// <summary>Keep a longer record ends with the Don't record line and then the Clear history… button.</summary>
+    /// <summary>The slim card keeps recording and storage visible; its expander ends with Don't record and Clear history.</summary>
     internal static void CheckClearHistoryEntry(FrameworkElement page)
     {
         var keep = Descendants(page).OfType<StackPanel>().Single(panel => panel.Children.Count > 0 && panel.Children[0] is TextBlock { Text: "Keep a longer record" });
-        var children = keep.Children.Cast<UIElement>().ToList();
+        foreach (string name in new[] { "recording", "recordingStatus", "storage" })
+        {
+            var child = Field<FrameworkElement>((UsageHistoryPage)page, name);
+            Assert.Contains(child, keep.Children.Cast<UIElement>()); Assert.Equal(Visibility.Visible, child.Visibility);
+        }
+        var expander = Assert.Single(keep.Children.OfType<Expander>());
+        var children = Assert.IsType<StackPanel>(expander.Content).Children.Cast<UIElement>().ToList();
         Assert.Equal("Clear history…", Assert.IsType<Button>(children[^1]).Content);
         Assert.Equal("Apps in Don't record these apps are not saved here; the Device charts still include their traffic.", Assert.IsType<TextBlock>(children[^2]).Text);
         Assert.True(ToolTipService.GetShowOnDisabled(children[^1]));
@@ -320,6 +369,7 @@ internal static class UsageHistoryUiChecks
         var resources = Field<ApplicationResourcesCard>(page, "resources");
         void Listed(int index)
         {
+            Assert.Same(page.ApplicationsTab, page.Tabs.SelectedItem);
             var slot = slots[index];
             Assert.Equal<(DateTimeOffset, DateTimeOffset)?>((slot.Start, slot.End), ApplicationSlot(page));
             Assert.Equal("Applications · " + ApplicationResourcesCard.SlotSpan(TrafficStrips.CeilingMinute(slot.Start), TrafficStrips.CeilingMinute(slot.End), true),
@@ -354,9 +404,10 @@ internal static class UsageHistoryUiChecks
         Assert.Null(FocusManager.GetFocusedElement(scope));
         // A Moments-chart activation lists the card's slot and leaves the Applications slot; a strip activation leaves the card's.
         var cpu = page.Chart("cpu"); cpu.SelectedIndex = 7; Assert.True(cpu.HandleKey(Key.Enter));
+        Assert.Same(page.ResourcesTab, page.Tabs.SelectedItem);
         var bucket = (start: slots[7].Start, end: slots[7].End);
         Assert.Equal<(DateTimeOffset, DateTimeOffset)?>(bucket, resources.Slot); Assert.Equal<(DateTimeOffset, DateTimeOffset)?>((slots[5].Start, slots[5].End), ApplicationSlot(page));
-        ClickSlot(chart, 3);
+        page.Tabs.SelectedItem = page.ApplicationsTab; page.UpdateLayout(); ClickSlot(chart, 3);
         Listed(3); Assert.Equal<(DateTimeOffset, DateTimeOffset)?>(bucket, resources.Slot);
         // At a window's height the table sits below the fold; activation scrolls it into view, and the refresh never scrolls.
         Click(Field<Button>(page, "applicationsClear"));
@@ -364,7 +415,9 @@ internal static class UsageHistoryUiChecks
         page.ScrollToTop(); Layout(page, window.Width, window.Height);
         Assert.Equal(0, page.VerticalOffset);
         Assert.True(Top(grid, page) > page.ViewportHeight, "The Applications table starts below the fold.");
-        ClickSlot(chart, 3);
+        page.Tabs.SelectedItem = page.ResourcesTab; page.UpdateLayout();
+        typeof(UsageHistoryPage).GetMethod("ShowApplicationsSlot", All)!.Invoke(page, [3]);
+        Assert.Same(page.ApplicationsTab, page.Tabs.SelectedItem);
         WaitFor(() => { Layout(page, window.Width, window.Height); return page.VerticalOffset > 0; });
         Assert.InRange(Top(grid, page), -0.5, page.ViewportHeight - 1);
         page.ScrollToTop(); Layout(page, window.Width, window.Height);
@@ -404,6 +457,7 @@ internal static class UsageHistoryUiChecks
         void ListBoth()
         {
             var cpu = page.Chart("cpu"); cpu.SelectedIndex = 7; Assert.True(cpu.HandleKey(Key.Enter));
+            Assert.Same(page.ResourcesTab, page.Tabs.SelectedItem); page.Tabs.SelectedItem = page.ApplicationsTab; page.UpdateLayout();
             ClickSlot(chart, 3);
             Assert.NotNull(resources.Slot); Assert.NotNull(ApplicationSlot(page)); Assert.NotNull(Marked(page));
         }
@@ -419,12 +473,20 @@ internal static class UsageHistoryUiChecks
             Assert.Equal(4, Rows(page).Count);
         }
         ListBoth(); Press(chart, Key.Escape); Cleared("Esc");
+        ListBoth(); page.Tabs.SelectedItem = page.ResourcesTab; page.UpdateLayout(); Press(page.Chart("cpu"), Key.Escape); Cleared("Esc on Resources");
+        Assert.Same(page.ResourcesTab, page.Tabs.SelectedItem);
         ListBoth(); Click(applicationsClear); Cleared("The Applications Clear");
-        ListBoth(); Click(Descendants(resources).OfType<Button>().Single(b => Equals(b.Content, "Clear"))); Cleared("The card's Clear");
-        ListBoth();
+        ListBoth(); page.Tabs.SelectedItem = page.ResourcesTab; page.UpdateLayout(); Click(Descendants(resources).OfType<Button>().Single(b => Equals(b.Content, "Clear"))); Cleared("The card's Clear");
+        Assert.Same(page.ResourcesTab, page.Tabs.SelectedItem);
+        ListBoth(); page.Tabs.SelectedItem = page.ResourcesTab; page.UpdateLayout();
         var range = Field<ComboBox>(page, "range"); range.SelectedIndex = 1; Cleared("A range change");
-        ListBoth(); Click(Descendants(page).OfType<Button>().Single(b => System.Windows.Automation.AutomationProperties.GetName(b) == "Earlier period")); Cleared("◀ Earlier");
-        ListBoth(); page.ShowDay(now.AddDays(-2)); Cleared("ShowDay");
+        Assert.Same(page.ResourcesTab, page.Tabs.SelectedItem);
+        ListBoth(); page.Tabs.SelectedItem = page.ResourcesTab; page.UpdateLayout(); Click(Descendants(page).OfType<Button>().Single(b => System.Windows.Automation.AutomationProperties.GetName(b) == "Earlier period")); Cleared("◀ Earlier");
+        Assert.Same(page.ResourcesTab, page.Tabs.SelectedItem);
+        ListBoth(); page.Tabs.SelectedItem = page.ResourcesTab; page.UpdateLayout(); Click(Descendants(page).OfType<Button>().Single(b => System.Windows.Automation.AutomationProperties.GetName(b) == "Later period")); Cleared("Later ▶");
+        Assert.Same(page.ResourcesTab, page.Tabs.SelectedItem);
+        ListBoth(); page.Tabs.SelectedItem = page.ResourcesTab; page.UpdateLayout(); page.ShowDay(now.AddDays(-2)); Cleared("ShowDay");
+        Assert.Same(page.ResourcesTab, page.Tabs.SelectedItem);
         // The Applications Clear collapses once pressed: holding the focus, it hands it to the search box below it.
         ListBoth();
         var scope = FocusManager.GetFocusScope(applicationsClear);
@@ -663,6 +725,7 @@ internal static class UsageHistoryUiChecks
     private static void ClickSlot(TrafficStripChart chart, int index)
     {
         var root = Root(chart);
+        var page = Assert.IsType<UsageHistoryPage>(root); Assert.Same(page.ApplicationsTab, page.Tabs.SelectedItem);
         Layout(root, root.RenderSize.Width > 0 ? root.RenderSize.Width : 1050, root.RenderSize.Height > 0 ? root.RenderSize.Height : 1100);
         chart.SlotAt(new Point());
         var plot = chart.PlotRect; double y = plot.Top + plot.Height / 2;

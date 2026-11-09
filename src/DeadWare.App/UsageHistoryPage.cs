@@ -38,6 +38,7 @@ internal sealed class UsageHistoryPage : ScrollViewer
     private readonly Dictionary<string, UsageHistoryChart> charts = new(StringComparer.Ordinal);
     private readonly Dictionary<string, TextBlock> statistics = new(StringComparer.Ordinal);
     private readonly Dictionary<string, TextBlock> titles = new(StringComparer.Ordinal);
+    private readonly UniformGrid grid = new() { Columns = 2, Margin = new(0, 8, 0, 0) };
     private readonly DataGrid applications = new() { AutoGenerateColumns = false, IsReadOnly = true, HeadersVisibility = DataGridHeadersVisibility.Column, MaxHeight = 420,
         CanUserSortColumns = false, SelectionMode = DataGridSelectionMode.Single };
     private readonly TextBlock applicationsHeading = Ui.Heading(ApplicationsTitle, 16);
@@ -49,6 +50,11 @@ internal sealed class UsageHistoryPage : ScrollViewer
     private readonly Button exportMetrics, exportApplications, earlier, later;
     private readonly ApplicationResourcesCard resources;
     private readonly Border resourcesCard;
+    private readonly TabControl tabs = new();
+    private readonly TabItem applicationsTab = new() { Header = "Applications" }, resourcesTab = new() { Header = "Application resources" };
+    internal TabControl Tabs => tabs;
+    internal TabItem ApplicationsTab => applicationsTab;
+    internal TabItem ResourcesTab => resourcesTab;
     private readonly DispatcherTimer timer = new() { Interval = TimeSpan.FromSeconds(60) };
     private const string ApplicationsTitle = "Applications", LoadingSlot = "Loading this slot…", SlotUnavailable = "History unavailable for this slot.";
     private UsagePageData? data;
@@ -92,10 +98,10 @@ internal sealed class UsageHistoryPage : ScrollViewer
         exportMetrics = Ui.Button("Export device CSV…", () => _ = ExportAsync(false)); controls.Children.Add(exportMetrics);
         exportApplications = Ui.Button("Export applications CSV…", () => _ = ExportAsync(true)); controls.Children.Add(exportApplications);
         if (showOpenWindow) controls.Children.Add(Ui.Button("Open in window ↗", () => session.OpenDetached("usagehistory")));
-        body.Children.Add(controls);
+        var controlBody = new StackPanel(); controlBody.Children.Add(controls); controlBody.Children.Add(actionStatus);
+        var controlsCard = Ui.Panel(controlBody, new(12, 6, 12, 6)); controlsCard.Margin = new(0, 0, 0, 10); body.Children.Add(controlsCard);
 
         var device = new StackPanel(); device.Children.Add(Ui.Heading("Device", 16));
-        var grid = new UniformGrid { Columns = 2, Margin = new(0, 8, 0, 0) };
         foreach (var (kind, title, _, _) in Charts)
         {
             var cell = new StackPanel { Margin = new(0, 0, 12, 14) };
@@ -105,7 +111,8 @@ internal sealed class UsageHistoryPage : ScrollViewer
             grid.Children.Add(cell);
         }
         device.Children.Add(grid);
-        var deviceHint = Ui.Text("Each point is the average of the recorded minutes in its slot; the shaded band spans their minimum and maximum. Minutes with no readings stay empty and partial slots are not connected. Statistics use the stored minute values for the whole period. Dates use local time. Click a CPU, RAM or GPU point, or press Enter on it, to list its busiest apps under Application resources.", 11, "Muted");
+        var deviceHint = Ui.Text("Points average each slot's recorded minutes; the band spans their minimum and maximum. Click a CPU, RAM or GPU point, or press Enter on it, to list that moment's apps.", 11, "Muted");
+        deviceHint.ToolTip = "Each point is the average of the recorded minutes in its slot; the shaded band spans their minimum and maximum. Minutes with no readings stay empty and partial slots are not connected. Statistics use the stored minute values for the whole period. Dates use local time. Click a CPU, RAM or GPU point, or press Enter on it, to list its busiest apps under Application resources.";
         device.Children.Add(deviceHint); body.Children.Add(Card(device));
 
         // While a strip slot is listed the heading names it and Clear returns to the period; Show in Connections follows.
@@ -123,8 +130,10 @@ internal sealed class UsageHistoryPage : ScrollViewer
         Column("Upload", nameof(ApplicationRow.Upload), 1); Column("Total", nameof(ApplicationRow.Total), 1); Column("Share", nameof(ApplicationRow.Share), 1);
         var table = Ui.Panel(applications, new Thickness(0)); table.Margin = new(0, 6, 0, 8); apps.Children.Add(table);
         apps.Children.Add(Ui.Text("Totals come from observed per-application traffic (ETW) during the period, summed by executable name across its processes. Time without capture is a gap, not zero traffic. The strip stacks the six applications with the most traffic, plus Other, as average rates over each slot's captured minutes; its colours identify applications, not direction. Click a slot, or press Enter on it, to list that slot's applications. Show in Connections opens where the bytes went, for up to the last 30 days.", 11, "Muted"));
-        body.Children.Add(Card(apps));
-        resources = new ApplicationResourcesCard(session); resourcesCard = Card(resources); body.Children.Add(resourcesCard);
+        resources = new ApplicationResourcesCard(session);
+        applicationsTab.Content = apps; resourcesTab.Content = resources; tabs.Items.Add(applicationsTab); tabs.Items.Add(resourcesTab); tabs.SelectedItem = applicationsTab;
+        resourcesCard = Card(tabs); body.Children.Add(resourcesCard);
+        SizeChanged += (_, e) => UpdateChartColumns(e.NewSize.Width);
         foreach (var (kind, ranking) in Moments)
         {
             charts[kind].Selectable = true;
@@ -158,11 +167,12 @@ internal sealed class UsageHistoryPage : ScrollViewer
         var settings = new StackPanel(); settings.Children.Add(Ui.Heading("Keep a longer record", 16)); recording.Margin = new(0, 12, 0, 8); settings.Children.Add(recording);
         AutomationProperties.SetName(recording, "Record usage history");
         settings.Children.Add(recordingStatus); storage.Margin = new(0, 8, 0, 8); settings.Children.Add(storage);
-        settings.Children.Add(Ui.Text("One row per minute for CPU, GPU, RAM and network, plus per-application bytes, kept for up to 400 days or 256 MiB, whichever comes first. The six-hour live graphs are separate and unchanged. Recording begins with this version while DeadWare runs; sleep and stopped monitoring leave gaps. While Per-process monitoring is on, it also keeps the busiest apps' CPU, memory, I/O and GPU for 30 days (up to 192 MiB).", 12, "Muted"));
-        var local = Ui.Text("History stays in this Windows profile in usage-history.db and process-history.db and is never uploaded. Application names and byte totals describe what runs on this computer, so treat exports as private. Back up the databases only while DeadWare is fully quit.", 11, "Muted"); local.Margin = new(0, 8, 0, 0); settings.Children.Add(local);
-        var notSaved = Ui.Text(HistoryClearCopy.UsageHistoryLine, 11, "Muted"); notSaved.Margin = new(0, 8, 0, 0); settings.Children.Add(notSaved);
-        var clearEntry = ClearHistoryEntry.Create(session, () => Window.GetWindow(this)); clearEntry.Margin = new(0, 8, 0, 0); settings.Children.Add(clearEntry);
-        body.Children.Add(Card(settings)); body.Children.Add(actionStatus);
+        var retention = new StackPanel();
+        retention.Children.Add(Ui.Text("One row per minute for CPU, GPU, RAM and network, plus per-application bytes, kept for up to 400 days or 256 MiB, whichever comes first. The six-hour live graphs are separate and unchanged. Recording begins with this version while DeadWare runs; sleep and stopped monitoring leave gaps. While Per-process monitoring is on, it also keeps the busiest apps' CPU, memory, I/O and GPU for 30 days (up to 192 MiB).", 12, "Muted"));
+        var local = Ui.Text("History stays in this Windows profile in usage-history.db and process-history.db and is never uploaded. Application names and byte totals describe what runs on this computer, so treat exports as private. Back up the databases only while DeadWare is fully quit.", 11, "Muted"); local.Margin = new(0, 8, 0, 0); retention.Children.Add(local);
+        var notSaved = Ui.Text(HistoryClearCopy.UsageHistoryLine, 11, "Muted"); notSaved.Margin = new(0, 8, 0, 0); retention.Children.Add(notSaved);
+        var clearEntry = ClearHistoryEntry.Create(session, () => Window.GetWindow(this)); clearEntry.Margin = new(0, 8, 0, 0); retention.Children.Add(clearEntry);
+        settings.Children.Add(new Expander { Header = "Retention, privacy and clearing", Content = retention, IsExpanded = false }); body.Children.Add(Card(settings));
 
         recording.IsChecked = session.Settings.UsageRecording;
         recording.Checked += (_, _) => ChangeRecording(true); recording.Unchecked += (_, _) => ChangeRecording(false);
@@ -176,6 +186,8 @@ internal sealed class UsageHistoryPage : ScrollViewer
     private void Column(string title, string binding, double weight)
         => applications.Columns.Add(new DataGridTextColumn { Header = title, Binding = new Binding(binding), Width = new DataGridLength(weight, DataGridLengthUnitType.Star) });
     private static Border Card(UIElement content) { var card = Ui.Panel(content, new(16)); card.Margin = new(0, 0, 0, 12); return card; }
+    private void UpdateChartColumns(double width)
+    { int columns = width >= 1100 ? 3 : 2; if (grid.Columns == columns) return; grid.Columns = columns; }
     private void ChangeRecording(bool enabled)
     { if (syncing) return; session.SetUsageRecording(enabled); recordingStatus.Text = session.Usage.Status; resources.RefreshStatus(); }
     /// <summary>Follows settings changed elsewhere (session.Changed), such as Per-process monitoring on the Processes page.</summary>
@@ -213,7 +225,7 @@ internal sealed class UsageHistoryPage : ScrollViewer
         marked = Middle(bucket); MarkMoment();
         // The card sits below the Device charts, out of view at a window's height: a click or Enter scrolls it in. Only activation does
         // this (never the minute refresh), and keyboard focus stays on the chart, so Left, Right and Enter keep working.
-        resourcesCard.BringIntoView();
+        tabs.SelectedItem = resourcesTab; UpdateLayout(); resourcesCard.BringIntoView();
     }
     /// <summary>Puts the cursor at the bucket Left or Right moved to on one chart and marks its time on all three charts; nothing is listed until Enter.</summary>
     private void MoveMoment(string kind, int index)
@@ -243,7 +255,7 @@ internal sealed class UsageHistoryPage : ScrollViewer
         slotApplications = null; slotPending = LoadingSlot;
         RefreshApplications();
         _ = ReadSlotAsync(slot.Start, slot.End);
-        applications.BringIntoView();
+        tabs.SelectedItem = applicationsTab; UpdateLayout(); applications.BringIntoView();
     }
     /// <summary>Esc and the Applications Clear: both cards return to the period, and the cursor and every hairline clear.</summary>
     private void ClearMoment() { ClearApplicationsSlot(); resources.ClearSlot(); }
