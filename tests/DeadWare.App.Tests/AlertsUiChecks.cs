@@ -5,15 +5,17 @@ using System.Runtime.CompilerServices;
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
+using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using System.Windows.Threading;
 using DeadWare.App;
 using DeadWare.Core;
 using Xunit;
 
 namespace DeadWare.App.Tests;
 
-/// <summary>Offscreen checks of the Alerts page and the Usage history hand-off. No store, hardware or native window is involved.</summary>
+/// <summary>Alerts layout, editor and hand-off checks; temporary stores exercise acknowledgements and an offscreen native host verifies focus.</summary>
 internal static class AlertsUiChecks
 {
     private const BindingFlags All = BindingFlags.Instance | BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic;
@@ -35,6 +37,13 @@ internal static class AlertsUiChecks
         var usage = new UsageHistoryService(Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".db"), "fixture");
         typeof(UiSession).GetField("<Usage>k__BackingField", All)!.SetValue(session, usage);
         typeof(UiSession).GetField("<Alerts>k__BackingField", All)!.SetValue(session, new AlertService(Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".db"), "fixture", usage, () => null));
+        CheckLayout(session, now);
+        CheckNarrowEpisodes(session, now);
+        CheckActionStatus(session, now);
+        CheckEditorRoundTrip(session, now);
+        CheckHostedLifecycle(session);
+        CheckIgnoredTabs(session, now);
+        CheckWheel(session, now);
         string? output = Environment.GetEnvironmentVariable("DEADWARE_UI_OUTPUT");
         foreach (string theme in new[] { "Midnight", "Daylight", "Blackout" })
         {
@@ -52,10 +61,11 @@ internal static class AlertsUiChecks
                 page.Apply(new(empty ? [] : settings.Alerts, !empty, log, "Fixture saved locally."));
                 if (!empty) page.ApplySuggestion(cpu, new(new(92, 61, 0.021, 10_080), new(95, 60, 0.018, 43_200)));
                 double width = empty ? 620 : 1050;
-                Layout(page, width, 900);
+                Select(page, false, width, 900);
                 var bitmap = new RenderTargetBitmap((int)width, 900, 96, 96, PixelFormats.Pbgra32); bitmap.Render(page);
                 string text = Text(page);
-                Assert.Contains("Rules", text); Assert.Contains("Recent alerts", text); Assert.Contains("Show tray notifications for alerts", text);
+                Assert.Equal("Rules", Tab(page, false).Header); Assert.Contains("Recent alerts", text); Assert.Contains("Show tray notifications for alerts", text);
+                Assert.Contains("Every episode is logged in Recent alerts whether or not notifications are on.", text);
                 var toggle = (CheckBox)typeof(AlertsPage).GetField("notifications", All)!.GetValue(page)!;
                 Assert.Equal(!empty, toggle.IsChecked);
                 var buttons = Descendants(page).OfType<Button>().Select(b => b.Content?.ToString()).ToArray();
@@ -93,6 +103,323 @@ internal static class AlertsUiChecks
         CheckHistoryClearRereads(session);
         CheckFirstUse(session);
     }
+
+    private static void CheckLayout(UiSession session, DateTimeOffset now)
+    {
+        var page = new AlertsPage(session); Layout(page, 1050, 700);
+        var body = Assert.IsType<Grid>(page.Content);
+        Assert.Equal(3, body.RowDefinitions.Count);
+        Assert.True(body.RowDefinitions[1].Height.IsStar);
+        Assert.True(body.RowDefinitions[0].Height.IsAuto); Assert.True(body.RowDefinitions[2].Height.IsAuto);
+        Assert.Equal(new Thickness(6, 10, 6, 10), page.Margin); Assert.Equal(new Thickness(), body.Margin);
+        var logCard = Field<Border>(page, "logCard"); var tabbedCard = Field<Border>(page, "tabbedCard"); var statusCard = Field<Border>(page, "statusCard");
+        var scroll = Field<ScrollViewer>(page, "episodeScroll"); var layout = Field<Grid>(page, "logLayout");
+        Assert.Same(body, logCard.Parent); Assert.Same(body, tabbedCard.Parent); Assert.Same(body, statusCard.Parent);
+        Assert.Equal((0, 1, 2), (Grid.GetRow(statusCard), Grid.GetRow(logCard), Grid.GetRow(tabbedCard)));
+        Assert.Equal(Visibility.Collapsed, statusCard.Visibility); Assert.Equal(new Thickness(12, 6, 12, 6), statusCard.Padding);
+        Assert.Equal(new Thickness(0, 0, 0, 10), statusCard.Margin); Assert.Equal(new Thickness(0, 0, 0, 10), logCard.Margin);
+        Assert.Same(Field<TextBlock>(page, "actionStatus"), statusCard.Child);
+        Assert.Same(page.FindResource("Warning"), Field<TextBlock>(page, "actionStatus").Foreground);
+        Assert.Equal(TextWrapping.Wrap, Field<TextBlock>(page, "actionStatus").TextWrapping);
+        Assert.Equal(360, logCard.MinHeight); Assert.True(logCard.ActualHeight >= 360);
+        Assert.Equal(5, layout.RowDefinitions.Count); Assert.True(layout.RowDefinitions[2].Height.IsStar);
+        Assert.Same(Field<StackPanel>(page, "episodes"), scroll.Content); Assert.Equal(ScrollBarVisibility.Auto, scroll.VerticalScrollBarVisibility);
+        Assert.Equal(ScrollBarVisibility.Disabled, scroll.HorizontalScrollBarVisibility); Assert.Equal(new Thickness(0, 6, 0, 0), scroll.Margin);
+        Assert.Equal(new Thickness(), Field<StackPanel>(page, "episodes").Margin);
+        var heading = Assert.Single(layout.Children.OfType<DockPanel>(), child => Grid.GetRow(child) == 0);
+        var toolbar = Assert.IsType<WrapPanel>(heading.Children[0]); Assert.Equal(Dock.Right, DockPanel.GetDock(toolbar));
+        Assert.Contains(Field<ComboBox>(page, "logRange"), toolbar.Children.Cast<UIElement>());
+        Assert.Equal("Recent alerts", Assert.IsType<TextBlock>(heading.Children[1]).Text);
+        Assert.Same(Tab(page, false), Tabs(page).SelectedItem); Assert.Equal("Rules", Tab(page, false).Header);
+        Assert.Same(Tabs(page), tabbedCard.Child); Assert.Same(Field<StackPanel>(page, "ignoredList"), Tab(page, true).Content);
+        Assert.Equal(TimeSpan.FromSeconds(30), Field<DispatcherTimer>(page, "timer").Interval);
+        page.Apply(Fixture(now, 2, 40)); Select(page, true, 1050, 700);
+        Assert.True(double.IsFinite(body.Height)); Assert.InRange(body.Height, 370, page.ViewportHeight + 1);
+        Assert.InRange(page.ScrollableHeight, 0, 1); Assert.True(scroll.ScrollableHeight > 0);
+        Assert.InRange(scroll.ActualHeight + scroll.Margin.Top, layout.RowDefinitions[2].ActualHeight - 1, layout.RowDefinitions[2].ActualHeight + 1);
+        double chrome = layout.Children.OfType<FrameworkElement>().Where(child => !ReferenceEquals(child, scroll)).Sum(child => child.DesiredSize.Height);
+        Assert.InRange(body.RowDefinitions[1].MinHeight, Math.Max(370, chrome + 32 + 240 + 10) - 1, Math.Max(370, chrome + 32 + 240 + 10) + 1);
+        double small = scroll.ViewportHeight; Layout(page, 1050, 1000); Assert.True(scroll.ViewportHeight > small + 250);
+        Assert.InRange(body.Height, 370, page.ViewportHeight + 1);
+        Layout(page, 1050, 700); Select(page, false, 1050, 700); page.Apply(Fixture(now, 20, 40)); Layout(page, 1050, 700);
+        double many = body.Height; Assert.True(tabbedCard.ActualHeight > page.ViewportHeight); Assert.True(many > page.ViewportHeight);
+        page.Apply(Fixture(now, 2, 40)); Layout(page, 1050, 700); Assert.True(body.Height < many - 200);
+        page.Apply(Fixture(now, 20, 40)); Layout(page, 1050, 700); many = body.Height;
+        Select(page, true, 1050, 700); Assert.True(body.Height < many - 200); Assert.InRange(body.Height, 370, page.ViewportHeight + 1);
+        Select(page, false, 1050, 700); Assert.InRange(body.Height, many - 1, many + 1);
+    }
+
+    /// <summary>At minimum width every long first-use summary and all three actions remain reachable; replacing rows keeps scroll and keyboard focus.</summary>
+    private static void CheckNarrowEpisodes(UiSession session, DateTimeOffset now)
+    {
+        var saved = session.Alerts; string folder = Path.Combine(Path.GetTempPath(), "deadware-alerts-ui-" + Guid.NewGuid().ToString("N")); Directory.CreateDirectory(folder);
+        var firstUse = AlertRules.DefaultFirstNetworkUse(now.AddDays(-10));
+        var list = Enumerable.Range(0, 40).Select(i => new AlertEpisode("narrow-" + i, firstUse.Id, AlertKind.FirstNetworkUse,
+            $"Fixture application {i}: " + string.Join(" ", Enumerable.Repeat("A long first network use summary keeps all of its words readable beside the episode actions.", 3)),
+            now.AddMinutes(-i - 1), now.AddMinutes(-i - 1), 0, false, $"fixture{i}.exe")).ToArray();
+        string path = Path.Combine(folder, "alerts.db"); var store = new AlertStore(path); store.Initialize(); store.Append("fixture", list, now);
+        var service = new AlertService(path, "fixture", session.Usage, () => null); Set(session, "<Alerts>k__BackingField", service);
+        var page = new AlertsPage(session); Set(page, "clock", (Func<DateTimeOffset>)(() => now)); Set(page, "showing", (Func<bool>)(() => false));
+        var host = new Window { Content = page, Width = 620, Height = 700, Left = -32000, Top = -32000, ShowInTaskbar = false, WindowStyle = WindowStyle.None };
+        try
+        {
+            host.Show(); host.Activate(); host.UpdateLayout(); Pump();
+            Assert.True(Field<DispatcherTimer>(page, "timer").IsEnabled);
+            AlertLogView Log() => store.Read("fixture", now.AddDays(-7), now.AddDays(1));
+            AlertsPageData Data(AlertLogView log) => new([firstUse], false, log, "Fixture saved locally.", IgnoredApps: []);
+            int reads = 0; Set(page, "readLog", (Func<DateTimeOffset, DateTimeOffset, Task<AlertLogView>>)((_, _) => { reads++; return Task.FromResult(Log()); }));
+            Set(page, "showing", (Func<bool>)(() => true)); page.Apply(Data(Log())); Tabs(page).SelectedItem = Tab(page, false); Settle(host);
+            { var timer = Field<DispatcherTimer>(page, "timer"); Assert.True(timer.IsEnabled); timer.Stop(); }// the 30 s refresh must not replace rows mid-assertion on a slow run
+            var scroll = Field<ScrollViewer>(page, "episodeScroll"); var rows = Field<StackPanel>(page, "episodes");
+            Assert.True(scroll.ScrollableHeight > 0); Assert.NotNull(PresentationSource.FromVisual(page));
+            foreach (var row in rows.Children.OfType<Panel>())
+            {
+                var buttons = Descendants(row).OfType<Button>().ToArray();
+                Assert.Equal(new[] { "View in Connections", "Don't alert for this app", "Acknowledge" }, buttons.Select(button => button.Content?.ToString()));
+                foreach (var element in Descendants(row).OfType<FrameworkElement>().Where(element => element is Button or TextBlock)) Reach(scroll, element, host);
+            }
+            var bitmap = new RenderTargetBitmap(620, 700, 96, 96, PixelFormats.Pbgra32); bitmap.Render(page);
+            string? output = Environment.GetEnvironmentVariable("DEADWARE_UI_OUTPUT");
+            if (output is not null) { Directory.CreateDirectory(output); using var stream = File.Create(Path.Combine(output, "alerts-populated-620.png")); var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap)); encoder.Save(stream); }
+            var selectedRow = (Panel)rows.Children[18]; var acknowledge = Descendants(selectedRow).OfType<Button>().Single(button => Equals(button.Content, "Acknowledge"));
+            // Scroll the page so the log card starts above the viewport: restoring focus to the list must not pull the page back up.
+            page.ScrollToVerticalOffset(100); Settle(host); Assert.True(page.VerticalOffset > 0);
+            Reach(scroll, acknowledge, host); Assert.True(acknowledge.Focus()); Settle(host); double offset = scroll.VerticalOffset, pageOffset = page.VerticalOffset;
+            Assert.True(offset > 0); int before = reads; Dispatcher.CurrentDispatcher.Invoke(() => acknowledge.RaiseEvent(new RoutedEventArgs(Button.ClickEvent)));
+            Until(() => reads > before && !Field<bool>(page, "refreshing")); Settle(host);
+            Assert.True(Log().Episodes.Single(episode => episode.Id == "narrow-18").Acknowledged);
+            Assert.InRange(scroll.VerticalOffset, Math.Min(offset, scroll.ScrollableHeight) - 1, Math.Min(offset, scroll.ScrollableHeight) + 1);
+            Assert.InRange(page.VerticalOffset, pageOffset - 1, pageOffset + 1);
+            AssertUsableFocus(scroll);
+            // A later refresh shortens the list, so the retained offset must clamp to the new end without losing focus.
+            scroll.ScrollToBottom(); Settle(host); offset = scroll.VerticalOffset;
+            page.Apply(Data(new(now.AddDays(-7), now.AddDays(1), list.Take(2).ToArray(), 2, 4096))); Settle(host);
+            Assert.InRange(scroll.VerticalOffset, Math.Min(offset, scroll.ScrollableHeight) - 1, Math.Min(offset, scroll.ScrollableHeight) + 1); AssertUsableFocus(scroll);
+        }
+        finally { host.Content = null; host.Close(); Set(session, "<Alerts>k__BackingField", saved); Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools(); Directory.Delete(folder, true); }
+    }
+
+    private static void AssertUsableFocus(ScrollViewer scroll)
+    {
+        var focused = Assert.IsAssignableFrom<UIElement>(Keyboard.FocusedElement);
+        Assert.True(focused.IsEnabled && focused.IsVisible && focused.Focusable);
+        Assert.True(ReferenceEquals(focused, scroll) || focused is Button && Descendants(scroll).Contains(focused), "Focus must remain on the list or a current episode action after its old row is removed.");
+    }
+
+    private static void Reach(ScrollViewer scroll, FrameworkElement element, Window host)
+    {
+        var viewport = Descendants(scroll).OfType<ScrollContentPresenter>().First(presenter => ReferenceEquals(presenter.TemplatedParent, scroll));
+        var bounds = element.TransformToAncestor(viewport).TransformBounds(new Rect(element.RenderSize));
+        scroll.ScrollToVerticalOffset(scroll.VerticalOffset + bounds.Top); Settle(host);
+        bounds = element.TransformToAncestor(viewport).TransformBounds(new Rect(element.RenderSize));
+        Assert.True(element.ActualWidth > 0 && element.ActualHeight > 0, "Episode text and actions must have a usable size.");
+        Assert.True(bounds.Left >= -1 && bounds.Right <= viewport.ActualWidth + 1 && bounds.Top >= -1 && bounds.Bottom <= viewport.ActualHeight + 1,
+            $"{element.GetType().Name} {(element is Button button ? button.Content : (element as TextBlock)?.Text)} must fit or scroll into the episode viewport: {bounds}, viewport {viewport.RenderSize}.");
+    }
+
+    private static void CheckActionStatus(UiSession session, DateTimeOffset now)
+    {
+        var saved = session.Alerts; string folder = Path.Combine(Path.GetTempPath(), "deadware-alert-failure-" + Guid.NewGuid().ToString("N")); Directory.CreateDirectory(folder);
+        try
+        {
+            // A directory in place of the database is deterministically unwritable as a database, even for an elevated test process.
+            Set(session, "<Alerts>k__BackingField", new AlertService(folder, "fixture", session.Usage, () => null));
+            var page = new AlertsPage(session); var data = Fixture(now, 20, 3); page.Apply(data); Select(page, false, 1050, 700);
+            int reads = 0; Set(page, "showing", (Func<bool>)(() => true));
+            Set(page, "readLog", (Func<DateTimeOffset, DateTimeOffset, Task<AlertLogView>>)((_, _) => { reads++; return Task.FromResult(data.Log); }));
+            var card = Field<Border>(page, "statusCard"); Assert.Equal(Visibility.Collapsed, card.Visibility);
+            page.ScrollToVerticalOffset(30); Layout(page, 1050, 700); double before = page.VerticalOffset;
+            Wait(UiTask(page, "AcknowledgeAsync", data.Log.Episodes[0].Id)); Layout(page, 1050, 700);
+            Assert.True(session.Alerts.Failed); Assert.Equal(1, reads); Assert.Equal(Visibility.Visible, card.Visibility);
+            Assert.StartsWith("The episode could not be marked as acknowledged. ", Field<TextBlock>(page, "actionStatus").Text);
+            Assert.Contains(session.Alerts.Status, Field<TextBlock>(page, "actionStatus").Text);
+            Assert.True(before > 0); Assert.Equal(before, page.VerticalOffset); Assert.Same(Tab(page, false), Tabs(page).SelectedItem);
+            string path = Path.Combine(folder, "recovered.db"); var store = new AlertStore(path); store.Initialize(); store.Append("fixture", data.Log.Episodes, now);
+            Set(session, "<Alerts>k__BackingField", new AlertService(path, "fixture", session.Usage, () => null));
+            Wait(UiTask(page, "AcknowledgeAsync", data.Log.Episodes[0].Id)); Layout(page, 1050, 700);
+            Assert.Equal(2, reads); Assert.Equal("", Field<TextBlock>(page, "actionStatus").Text); Assert.Equal(Visibility.Collapsed, card.Visibility);
+            Assert.True(store.Read("fixture", now.AddDays(-7), now.AddDays(1)).Episodes.Single(episode => episode.Id == data.Log.Episodes[0].Id).Acknowledged);
+        }
+        finally { Set(session, "<Alerts>k__BackingField", saved); Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools(); Directory.Delete(folder, true); }
+    }
+
+    private static void CheckEditorRoundTrip(UiSession session, DateTimeOffset now)
+    {
+        var saved = session.Settings.Alerts; var savedService = session.Alerts;
+        string folder = Path.Combine(Path.GetTempPath(), "deadware-alert-suggestion-" + Guid.NewGuid().ToString("N")); Directory.CreateDirectory(folder);
+        var rule = Fixture(now, 1, 0).Rules[0]; session.Settings.Alerts = [rule]; var page = new AlertsPage(session);
+        Set(page, "showing", (Func<bool>)(() => false)); page.RaiseEvent(new RoutedEventArgs(FrameworkElement.LoadedEvent)); Select(page, false, 1050, 700);
+        try
+        {
+            string[] names = ["kind", "target", "application", "threshold", "duration", "editorError", "suggestion", "add", "notifications"];
+            var controls = names.Select(name => Field<FrameworkElement>(page, name)).ToArray();
+            Descendants(page).OfType<Button>().Single(button => Equals(button.Content, "Edit")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Assert.DoesNotContain(session.Settings.Alerts, savedRule => savedRule.Id == rule.Id);
+            var threshold = Field<TextBox>(page, "threshold"); var error = Field<TextBlock>(page, "editorError");
+            threshold.Text = "invalid"; Field<Button>(page, "add").RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); Assert.Contains("number", error.Text);
+            threshold.Text = "85"; string errorText = error.Text;
+            page.ApplySuggestion(rule, new(new(92, 61, .021, 10080), new(95, 60, .018, 43200))); string suggestion = Field<TextBlock>(page, "suggestion").Text;
+            var draft = page.Draft(out _)!; Select(page, true, 1050, 700);
+            Assert.DoesNotContain(controls[0], Descendants(page)); Assert.Contains(Field<StackPanel>(page, "ignoredList"), Descendants(page));
+            Select(page, false, 1050, 700);
+            for (int i = 0; i < names.Length; i++) { Assert.Same(controls[i], Field<FrameworkElement>(page, names[i])); Assert.Contains(controls[i], Descendants(page)); }
+            var returned = page.Draft(out _)!; Assert.Equal((draft.Kind, draft.Target, draft.Threshold, draft.Minutes), (returned.Kind, returned.Target, returned.Threshold, returned.Minutes));
+            Assert.Equal(errorText, error.Text); Assert.Equal(suggestion, Field<TextBlock>(page, "suggestion").Text);
+            // Delay the real history service at initialization, so the page's actual asynchronous suggestion completes on the inactive tab.
+            var usage = new UsageHistoryService(Path.Combine(folder, "usage.db"), "fixture"); Field<UsageHistoryStore>(usage, "store").Initialize();
+            Set(session, "<Alerts>k__BackingField", new AlertService(Path.Combine(folder, "alerts.db"), "fixture", usage, () => null));
+            var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously); Set(usage, "initialization", gate.Task);
+            int revision = Field<int>(page, "suggestionRevision");
+            var pending = UiTask(page, "SuggestAsync", draft, revision);
+            Select(page, true, 1050, 700); Assert.False(pending.IsCompleted); gate.SetResult(); Wait(pending);
+            Assert.Same(Tab(page, true), Tabs(page).SelectedItem); Select(page, false, 1050, 700);
+            Assert.Contains("Recorded so far", Field<TextBlock>(page, "suggestion").Text); Assert.Contains("no recorded minutes", Field<TextBlock>(page, "suggestion").Text);
+            Assert.Equal(errorText, error.Text);
+            var staleGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously); Set(usage, "initialization", staleGate.Task);
+            var stale = UiTask(page, "SuggestAsync", draft, Field<int>(page, "suggestionRevision"));
+            threshold.Text = "86"; page.ApplySuggestion(rule, new(new(99, 70, .03, 100), new(99, 70, .03, 100))); string latest = Field<TextBlock>(page, "suggestion").Text;
+            staleGate.SetResult(); Wait(stale); Assert.Equal(latest, Field<TextBlock>(page, "suggestion").Text);
+        }
+        finally
+        {
+            page.RaiseEvent(new RoutedEventArgs(FrameworkElement.UnloadedEvent)); session.Settings.Alerts = saved; Set(session, "<Alerts>k__BackingField", savedService);
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools(); Directory.Delete(folder, true);
+        }
+    }
+
+    /// <summary>Real tab unload/load preserves a normally scheduled suggestion and the draft, without detaching the page's session subscriptions.</summary>
+    private static void CheckHostedLifecycle(UiSession session)
+    {
+        var savedService = session.Alerts; bool savedNotifications = session.Settings.AlertNotifications;
+        string folder = Path.Combine(Path.GetTempPath(), "deadware-alert-lifecycle-" + Guid.NewGuid().ToString("N")); Directory.CreateDirectory(folder);
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var host = new Window { Width = 1050, Height = 800, Left = -32000, Top = -32000, ShowInTaskbar = false, WindowStyle = WindowStyle.None };
+        try
+        {
+            // AlertsPage has no suggestion delegate seam: hold its real history read pending instead.
+            var usage = new UsageHistoryService(Path.Combine(folder, "usage.db"), "fixture"); Field<UsageHistoryStore>(usage, "store").Initialize();
+            Set(usage, "initialization", gate.Task);
+            int suggestionWindows = 0;
+            Set(session, "<Alerts>k__BackingField", new AlertService(Path.Combine(folder, "alerts.db"), "fixture", usage,
+                () => { Interlocked.Increment(ref suggestionWindows); return "/gpu/0"; }));
+            var page = new AlertsPage(session); host.Content = page;
+            int reads = 0;
+            Set(page, "readLog", (Func<DateTimeOffset, DateTimeOffset, Task<AlertLogView>>)((from, to) => { reads++; return Task.FromResult(new AlertLogView(from, to, [], 0, 0)); }));
+            var editor = Assert.IsAssignableFrom<FrameworkElement>(Tab(page, false).Content);
+            var loadedStates = new List<bool>();
+            editor.Loaded += (_, _) => loadedStates.Add(editor.IsLoaded);
+            editor.Unloaded += (_, _) => loadedStates.Add(editor.IsLoaded);
+            host.Show(); Settle(host);
+            Assert.True(page.IsLoaded); Assert.True(editor.IsLoaded); Assert.Equal(new[] { true }, loadedStates);
+            var timer = Field<DispatcherTimer>(page, "timer"); Assert.Equal(TimeSpan.FromSeconds(30), timer.Interval); Assert.True(timer.IsEnabled); timer.Stop();
+            Assert.Same(Tab(page, false), Tabs(page).SelectedItem);
+            // GPU selection makes the service's delegate count the normal suggestion entering each history window.
+            Field<ComboBox>(page, "target").SelectedIndex = 2;
+            var threshold = Field<TextBox>(page, "threshold"); var error = Field<TextBlock>(page, "editorError"); var suggestion = Field<TextBlock>(page, "suggestion");
+            threshold.Text = "invalid"; Field<Button>(page, "add").RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); Assert.Contains("number", error.Text);
+            string errorText = error.Text; const string draftText = " 85 ";
+            Assert.Equal(0, Volatile.Read(ref suggestionWindows));
+            Dispatcher.CurrentDispatcher.Invoke(() => threshold.Text = draftText);
+            Assert.Equal(1, Volatile.Read(ref suggestionWindows)); Assert.False(gate.Task.IsCompleted); Assert.Equal("", suggestion.Text);
+            Tabs(page).SelectedItem = Tab(page, true); Settle(host);
+            Assert.True(page.IsLoaded); Assert.False(editor.IsLoaded); Assert.Equal(new[] { true, false }, loadedStates);
+            Assert.False(gate.Task.IsCompleted); Assert.Equal("", suggestion.Text);
+            gate.SetResult(); Until(() => suggestion.Text.StartsWith("Recorded so far", StringComparison.Ordinal));
+            Assert.Equal(2, Volatile.Read(ref suggestionWindows)); Assert.False(usage.Failed);
+            Assert.False(editor.IsLoaded); Assert.Same(Tab(page, true), Tabs(page).SelectedItem);
+            string completedSuggestion = suggestion.Text;
+            Assert.Contains("Last 7 days: no recorded minutes.", completedSuggestion); Assert.Contains("Last 30 days: no recorded minutes.", completedSuggestion);
+            Tabs(page).SelectedItem = Tab(page, false); Settle(host);
+            Assert.True(editor.IsLoaded); Assert.Equal(new[] { true, false, true }, loadedStates);
+            Assert.True(suggestion.IsVisible); Assert.Equal(completedSuggestion, suggestion.Text);
+            Assert.Equal(draftText, threshold.Text); Assert.Equal(errorText, error.Text);
+            var notifications = Field<CheckBox>(page, "notifications");
+            foreach (bool ignored in new[] { false, true })
+            {
+                Tabs(page).SelectedItem = Tab(page, ignored); Settle(host); var selected = Tabs(page).SelectedItem;
+                int before = reads;
+                ((Action<HistoryClearStore>?)typeof(UiSession).GetField("HistoryClearChanged", All)!.GetValue(session))?.Invoke(HistoryClearStore.Alerts);
+                Settle(host); Assert.Equal(before + 1, reads); Assert.Same(selected, Tabs(page).SelectedItem);
+                bool changed = !session.Settings.AlertNotifications; Assert.NotEqual((bool?)changed, notifications.IsChecked);
+                session.Settings.AlertNotifications = changed;
+                ((Action?)typeof(UiSession).GetField("Changed", All)!.GetValue(session))?.Invoke();
+                Assert.Equal(changed, notifications.IsChecked); Assert.Same(selected, Tabs(page).SelectedItem);
+            }
+        }
+        finally
+        {
+            gate.TrySetCanceled(); host.Content = null; host.Close(); session.Settings.AlertNotifications = savedNotifications; Set(session, "<Alerts>k__BackingField", savedService);
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools(); Directory.Delete(folder, true);
+        }
+    }
+
+    private static void CheckIgnoredTabs(UiSession session, DateTimeOffset now)
+    {
+        var saved = session.Settings.FirstUseIgnoredApps; session.Settings.FirstUseIgnoredApps = [];
+        var page = new AlertsPage(session); Set(page, "showing", (Func<bool>)(() => false)); page.RaiseEvent(new RoutedEventArgs(FrameworkElement.LoadedEvent));
+        try
+        {
+            Select(page, false, 1050, 700); Assert.Equal("Don't alert", Tab(page, true).Header);
+            session.IgnoreFirstUse("zebra.exe"); session.IgnoreFirstUse("Alpha.exe"); Layout(page, 1050, 700);
+            Assert.Same(Tab(page, false), Tabs(page).SelectedItem); Assert.Equal("Don't alert · 2", Tab(page, true).Header);
+            Assert.DoesNotContain(Field<StackPanel>(page, "ignoredList"), Descendants(page)); Select(page, true, 1050, 700);
+            Assert.Contains("Not alerted, even when new again:", Text(page)); Assert.Contains("Alpha.exe", Text(page)); Assert.Contains("zebra.exe", Text(page));
+            foreach (string name in new[] { "Alpha.exe", "zebra.exe" })
+            {
+                Descendants(page).OfType<Button>().Single(button => AutomationProperties.GetName(button) == $"Alert again for {name}").RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); Layout(page, 1050, 700);
+            }
+            Assert.Equal("Don't alert", Tab(page, true).Header); Assert.Equal(Visibility.Visible, Field<StackPanel>(page, "ignoredList").Visibility);
+            Assert.Contains("No apps are kept quiet. Don't alert for this app on an episode adds one.", Text(page));
+            Assert.DoesNotContain(Descendants(page).OfType<Button>(), button => Equals(button.Content, "Alert again"));
+        }
+        finally { page.RaiseEvent(new RoutedEventArgs(FrameworkElement.UnloadedEvent)); session.Settings.FirstUseIgnoredApps = saved; }
+    }
+
+    private static void CheckWheel(UiSession session, DateTimeOffset now)
+    {
+        var page = new AlertsPage(session); page.Apply(Fixture(now, 20, 1)); Select(page, false, 1050, 500);
+        var scroll = Field<ScrollViewer>(page, "episodeScroll"); Assert.True(page.ScrollableHeight > 0); Assert.InRange(scroll.ScrollableHeight, 0, .5);
+        Wheel(Field<StackPanel>(page, "episodes").Children[0], -120); Layout(page, 1050, 500); Assert.True(page.VerticalOffset > 0);
+        page.Apply(Fixture(now, 20, 40)); Layout(page, 1050, 500); page.ScrollToTop(); scroll.ScrollToVerticalOffset(scroll.ScrollableHeight / 2); Layout(page, 1050, 500);
+        double middle = scroll.VerticalOffset; Assert.True(middle > 0); Assert.True(middle < scroll.ScrollableHeight);
+        Wheel(Field<StackPanel>(page, "episodes").Children[10], -120); Layout(page, 1050, 500);
+        Assert.True(scroll.VerticalOffset > middle); Assert.Equal(0, page.VerticalOffset);
+        scroll.ScrollToBottom(); Layout(page, 1050, 500); double bottom = scroll.VerticalOffset;
+        Wheel(Field<StackPanel>(page, "episodes").Children[^1], -120); Layout(page, 1050, 500); Assert.True(page.VerticalOffset > 0); Assert.Equal(bottom, scroll.VerticalOffset);
+        page.ScrollToVerticalOffset(120); scroll.ScrollToTop(); Layout(page, 1050, 500); double outer = page.VerticalOffset;
+        Wheel(Field<StackPanel>(page, "episodes").Children[0], 120); Layout(page, 1050, 500); Assert.True(page.VerticalOffset < outer); Assert.Equal(0, scroll.VerticalOffset);
+    }
+
+    private static void Wheel(UIElement target, int delta)
+    {
+        var preview = new MouseWheelEventArgs(Mouse.PrimaryDevice, Environment.TickCount, delta) { RoutedEvent = UIElement.PreviewMouseWheelEvent }; target.RaiseEvent(preview);
+        if (!preview.Handled) target.RaiseEvent(new MouseWheelEventArgs(Mouse.PrimaryDevice, Environment.TickCount, delta) { RoutedEvent = UIElement.MouseWheelEvent });
+        Pump();
+    }
+
+    private static AlertsPageData Fixture(DateTimeOffset now, int ruleCount, int episodeCount)
+    {
+        var rules = Enumerable.Range(0, ruleCount).Select(i => new AlertRule("layout-rule-" + i, AlertKind.Metric, UsageMetrics.CpuTemperature, 85, 15, true, now)).ToArray();
+        var episodes = Enumerable.Range(0, episodeCount).Select(i => new AlertEpisode("layout-episode-" + i, "layout-rule-0", AlertKind.Metric, "CPU temperature fixture " + i, now.AddMinutes(-i - 1), null, 91)).ToArray();
+        return new(rules, false, new(now.AddDays(-7), now.AddDays(1), episodes, episodes.Length, 4096), "Fixture saved locally.", IgnoredApps: []);
+    }
+
+    private static T Field<T>(object value, string name) => (T)value.GetType().GetField(name, All)!.GetValue(value)!;
+    private static void Set(object value, string name, object? field) => value.GetType().GetField(name, All)!.SetValue(value, field);
+    private static TabControl Tabs(AlertsPage page) => (TabControl)typeof(AlertsPage).GetProperty("Tabs", All)!.GetValue(page)!;
+    private static TabItem Tab(AlertsPage page, bool ignored) => (TabItem)typeof(AlertsPage).GetProperty(ignored ? "IgnoredTab" : "RulesTab", All)!.GetValue(page)!;
+    private static void Select(AlertsPage page, bool ignored, double width, double height) { Tabs(page).SelectedItem = Tab(page, ignored); Layout(page, width, height); }
+    private static void Settle(Window host) { host.UpdateLayout(); Pump(); host.UpdateLayout(); Pump(); }
+    private static void Pump() { var frame = new DispatcherFrame(); Dispatcher.CurrentDispatcher.BeginInvoke(DispatcherPriority.Background, new Action(() => frame.Continue = false)); Dispatcher.PushFrame(frame); }
+    private static void Until(Func<bool> done)
+    {
+        var frame = new DispatcherFrame(); var deadline = DateTime.UtcNow.AddSeconds(10); var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(5) };
+        timer.Tick += (_, _) => { if (done() || DateTime.UtcNow >= deadline) frame.Continue = false; }; timer.Start();
+        try { Dispatcher.PushFrame(frame); } finally { timer.Stop(); }
+        Assert.True(done(), "The Alerts action did not complete within 10 seconds."); Pump();
+    }
+    private static void Wait(Task task) { Until(() => task.IsCompleted); task.GetAwaiter().GetResult(); Pump(); }
+    private static Task UiTask(AlertsPage page, string method, params object[] args) => Dispatcher.CurrentDispatcher.Invoke(() => (Task)typeof(AlertsPage).GetMethod(method, All)!.Invoke(page, args)!);
 
     /// <summary>First network use on the Alerts page in the three themes: the nine rule lines, the rule row, the editor, the log rows,
     /// the Don't alert list and the Not counted note.</summary>
@@ -147,7 +474,7 @@ internal static class AlertsUiChecks
                     failed.SetValue(session.Alerts, state.Failed);
                     try { page.Apply(new([state.Enabled ? fu : fu with { Enabled = false }], true, none, "Fixture saved locally.", FirstUse: state.Status, Elevated: state.Elevated, CaptureAvailable: state.Capture)); }
                     finally { failed.SetValue(session.Alerts, false); }
-                    Layout(page, 1050, 900);
+                    Select(page, false, 1050, 900);
                     var lines = Texts(page);
                     Assert.Contains(state.Line, lines);
                     Assert.Single(lines, l => states.Any(s => s.Line == l));
@@ -158,7 +485,7 @@ internal static class AlertsUiChecks
                 // The editor: the kind hides Reading, Executable, At or above and For, parses no threshold and refuses a second rule.
                 settings.Alerts = [fu, appRule];
                 {
-                    var page = NewPage(); Layout(page, 900, 600);
+                    var page = NewPage(); Select(page, false, 900, 600);
                     var kind = (ComboBox)typeof(AlertsPage).GetField("kind", All)!.GetValue(page)!;
                     var target = (ComboBox)typeof(AlertsPage).GetField("target", All)!.GetValue(page)!;
                     var threshold = (TextBox)typeof(AlertsPage).GetField("threshold", All)!.GetValue(page)!;
@@ -195,11 +522,11 @@ internal static class AlertsUiChecks
                 {
                     var page = NewPage();
                     page.Apply(new([appRule], true, none, "Fixture saved locally."));
-                    Layout(page, 1050, 900);
+                    Select(page, false, 1050, 900);
                     Assert.DoesNotContain(notCounted, Texts(page));
                     settings.ExcludedApps = ["chrome.exe"];
                     page.Apply(new([appRule], true, none, "Fixture saved locally."));
-                    Layout(page, 1050, 900);
+                    Select(page, false, 1050, 900);
                     Assert.Contains(notCounted, Texts(page));
                     settings.ExcludedApps = [];
                 }
@@ -253,13 +580,14 @@ internal static class AlertsUiChecks
                     Assert.Equal(256, settings.FirstUseIgnoredApps.Count); Assert.DoesNotContain("chrome.exe", settings.FirstUseIgnoredApps);
                     var actionStatus = (TextBlock)typeof(AlertsPage).GetField("actionStatus", All)!.GetValue(page)!;
                     Assert.Equal("The Don't alert list holds 256 apps; remove one first.", actionStatus.Text);
+                    Assert.Equal(Visibility.Visible, Field<Border>(page, "statusCard").Visibility);
                 }
                 // The Not alerted list shows also with no first-use rule, sorted, each line with Alert again.
                 settings.FirstUseIgnoredApps = ["zoom.exe", "chrome.exe", "Brave.exe"];
                 {
                     var page = NewPage();
                     page.Apply(new([], true, none, "Fixture saved locally.", IgnoredApps: settings.FirstUseIgnoredApps));
-                    Layout(page, 1050, 900);
+                    Select(page, true, 1050, 900);
                     var lines = Texts(page).ToList();
                     int heading = lines.IndexOf("Not alerted, even when new again:");
                     Assert.True(heading >= 0);
@@ -291,16 +619,21 @@ internal static class AlertsUiChecks
         typeof(AlertsPage).GetField("showing", All)!.SetValue(page, (Func<bool>)(() => true));
         void Raise(HistoryClearStore store) => ((Action<HistoryClearStore>?)typeof(UiSession).GetField("HistoryClearChanged", All)!.GetValue(session))?.Invoke(store);
         page.RaiseEvent(new RoutedEventArgs(FrameworkElement.LoadedEvent)); int count = reads;
-        Raise(HistoryClearStore.Alerts); Assert.Equal(count + 1, reads);
-        Raise(HistoryClearStore.Connections); Raise(HistoryClearStore.Usage); Raise(HistoryClearStore.ProcessHistory); Assert.Equal(count + 1, reads);
+        foreach (bool ignored in new[] { false, true })
+        {
+            Select(page, ignored, 1050, 700); var selected = Tabs(page).SelectedItem;
+            Raise(HistoryClearStore.Alerts); Assert.Equal(++count, reads); Assert.Same(selected, Tabs(page).SelectedItem);
+            Raise(HistoryClearStore.Alerts); Assert.Equal(++count, reads); Assert.Same(selected, Tabs(page).SelectedItem);
+            Raise(HistoryClearStore.Connections); Raise(HistoryClearStore.Usage); Raise(HistoryClearStore.ProcessHistory); Assert.Equal(count, reads);
+        }
         page.RaiseEvent(new RoutedEventArgs(FrameworkElement.UnloadedEvent));
-        Raise(HistoryClearStore.Alerts); Assert.Equal(count + 1, reads);
+        Raise(HistoryClearStore.Alerts); Assert.Equal(count, reads); Assert.False(Field<DispatcherTimer>(page, "timer").IsEnabled);
     }
 
     private static void CheckEditor(UiSession session)
     {
         var page = new AlertsPage(session);
-        Layout(page, 900, 600);
+        Select(page, false, 900, 600);
         var kind = (ComboBox)typeof(AlertsPage).GetField("kind", All)!.GetValue(page)!;
         var target = (ComboBox)typeof(AlertsPage).GetField("target", All)!.GetValue(page)!;
         var threshold = (TextBox)typeof(AlertsPage).GetField("threshold", All)!.GetValue(page)!;
@@ -338,7 +671,7 @@ internal static class AlertsUiChecks
     }
 
     private static void Layout(FrameworkElement element, double width, double height)
-    { element.Measure(new(width, height)); element.Arrange(new(0, 0, width, height)); element.UpdateLayout(); }
+    { element.Measure(new(width, height)); element.Arrange(new(0, 0, width, height)); element.UpdateLayout(); Pump(); element.Measure(new(width, height)); element.Arrange(new(0, 0, width, height)); element.UpdateLayout(); }
     private static string Text(DependencyObject root) => string.Join("\n", Descendants(root).OfType<TextBlock>().Select(t => t.Text));
     private static IEnumerable<DependencyObject> Descendants(DependencyObject root)
     {
