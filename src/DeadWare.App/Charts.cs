@@ -8,6 +8,43 @@ using System.Windows.Media.Imaging;
 using System.Windows.Media.Animation;
 using DeadWare.Core;
 namespace DeadWare.App;
+/// <summary>Fills the viewport while keeping a grid's minimum content budget scrollable in short windows.</summary>
+internal sealed class FillingScroller : ScrollViewer
+{
+    private readonly Grid body;
+    private readonly Func<double,double> minimum;
+    public FillingScroller(Grid body,Func<double,double> minimum)
+    {this.body=body;this.minimum=minimum;Content=body;VerticalScrollBarVisibility=ScrollBarVisibility.Auto;HorizontalScrollBarVisibility=ScrollBarVisibility.Disabled;Background=Brushes.Transparent;}
+    protected override Size MeasureOverride(Size availableSize)
+    {
+        double width=double.IsFinite(availableSize.Width)?Math.Max(1,availableSize.Width-SystemParameters.VerticalScrollBarWidth):1000;
+        double budget=minimum(width);body.Height=Math.Max(budget,double.IsFinite(availableSize.Height)?availableSize.Height:budget);
+        return base.MeasureOverride(availableSize);
+    }
+    /// <summary>A nested scroller (a DataGrid's, a list's) marks every wheel handled even when it cannot move; a wheel it cannot use
+    /// in that direction scrolls this page instead.</summary>
+    public void ForwardWheelFrom(UIElement host)
+    {
+        host.PreviewMouseWheel+=(_,e)=>
+        {
+            if(e.Handled||e.Delta==0)return;
+            var inner=Descendant<ScrollViewer>(host);
+            bool canScroll=inner is not null&&(e.Delta<0?inner.VerticalOffset+.01<inner.ScrollableHeight:inner.VerticalOffset>.01);
+            if(canScroll)return;
+            e.Handled=true;RaiseEvent(new System.Windows.Input.MouseWheelEventArgs(e.MouseDevice,e.Timestamp,e.Delta) {RoutedEvent=MouseWheelEvent});
+        };
+    }
+    private static T? Descendant<T>(DependencyObject root) where T:DependencyObject
+    {
+        for(int i=0;i<VisualTreeHelper.GetChildrenCount(root);i++)
+        {
+            var child=VisualTreeHelper.GetChild(root,i);
+            if(child is T match)return match;
+            if(Descendant<T>(child) is { } nested)return nested;
+        }
+        return null;
+    }
+}
 internal static class Ui
 {
     public static TextBlock Text(string value,double size=13,string color="Ink",string font="BodyFont")

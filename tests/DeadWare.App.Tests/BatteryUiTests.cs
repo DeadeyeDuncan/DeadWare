@@ -253,6 +253,8 @@ public class BatteryUiTests
                 ConnectionsPageUiChecks.CheckNavigation(dashboard);
                 Phase("shell chrome");
                 ShellUiChecks.Run(dashboard);
+                Phase("network page");
+                NetworkPageUiChecks.Run(dashboard);
                 Phase("processes shell keys");
                 ProcessesPageUiChecks.CheckShellKeys(dashboard);
                 Phase("shell chrome");
@@ -589,7 +591,8 @@ public class BatteryUiTests
                         var markRun = Assert.Single(cell.Inlines.OfType<System.Windows.Documents.Run>(), r => r.Text == " · not recorded");
                         Assert.Equal(ResourceColor("Muted"), ((SolidColorBrush)markRun.Foreground).Color);
                         Assert.Equal("Fixture application", appRow.Item.GetType().GetProperty("Name")!.GetValue(appRow.Item));
-                        Assert.Contains(Descendants(shell).OfType<TextBlock>(), t => t.Text.StartsWith("Per-app totals cover", StringComparison.Ordinal) && t.Text.EndsWith(" Apps marked not recorded are in Settings → Don't record these apps; their traffic isn't saved.", StringComparison.Ordinal));
+                        var totals=Assert.Single(Descendants(shell).OfType<Expander>(),e=>Equals(e.Header,"About these totals"));Assert.False(totals.IsExpanded);
+                        Assert.Equal("Per-app totals cover each current process lifetime in this monitoring session. Exited processes are removed. ETW attribution is approximate and differs from interface totals. No packet payloads are captured. Apps marked not recorded are in Settings → Don't record these apps; their traffic isn't saved.",Assert.IsType<TextBlock>(totals.Content).Text);
                     }
                     if (destination is "network" or "sensors")
                     {
