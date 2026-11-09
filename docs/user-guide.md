@@ -56,6 +56,7 @@ Detailed setup, feature controls, data retention and compatibility notes. For a 
 - Use the filled circles in each Overview graph's corner to choose its line color, **Default / Solid / Dashed / Dotted** pattern, **Line thickness** (50–300%) and optional **Neon glow** with **Glow strength** (0–300%). 100% preserves the original thickness/glow. Choices are saved and shared with pop-outs, widget traces and legends; download and upload have separate colors. Choose **Theme default** to clear a custom color; choose **Default** under Line style, return both sliders to 100%, and turn off glow to restore the original trace style.
 - The Overview chart grid uses one, two or three columns to fit the available page width.
 - The Processes page shows action results and scan status inside its search card, and folds its column definitions into **About these columns** under the table.
+- The Updates page keeps versions, actions, progress and status in one card above the release notes, and folds its explanation into **How updates and rollback work**.
 
 ## Download and run
 
