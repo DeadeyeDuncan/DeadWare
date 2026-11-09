@@ -111,7 +111,8 @@ internal static class NetworkPageUiChecks
         var bounds=chart.TransformToAncestor(card).TransformBounds(drawing.Bounds);Assert.True(new Rect(-.5,-.5,card.ActualWidth+1,card.ActualHeight+1).Contains(bounds),$"Network drawing {bounds} is outside card {card.RenderSize}.");
         var labels=Glyphs(drawing).ToArray();Assert.Equal(3,labels.Count(g=>new string(g.GlyphRun.Characters.ToArray()).EndsWith("/s",StringComparison.Ordinal)));
         Assert.Contains(labels,g=>new string(g.GlyphRun.Characters.ToArray())=="Now");
-        Assert.All(labels,g=>Assert.True(new Rect(-.5,-.5,chart.ActualWidth+1,chart.ActualHeight+1).Contains(g.Bounds),$"Axis label {g.Bounds} is outside chart {chart.RenderSize}."));
+        // Glyph ink can overhang its advance box by a few DIP (left bearing, descenders); 4 DIP of tolerance keeps the check about placement, not font metrics.
+        Assert.All(labels,g=>Assert.True(new Rect(-4,-4,chart.ActualWidth+8,chart.ActualHeight+8).Contains(g.Bounds),$"Axis label {g.Bounds} is outside chart {chart.RenderSize}."));
     }
     private static Rect Bounds(FrameworkElement element,Visual ancestor)=>element.TransformToAncestor(ancestor).TransformBounds(new Rect(element.RenderSize));
     private static void Settle(FrameworkElement shell){for(int i=0;i<2;i++){var frame=new DispatcherFrame();Dispatcher.CurrentDispatcher.BeginInvoke(DispatcherPriority.Background,new Action(()=>frame.Continue=false));Dispatcher.PushFrame(frame);shell.UpdateLayout();}}
