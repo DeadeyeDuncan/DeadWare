@@ -26,9 +26,19 @@ internal sealed class CoolingHealthPage : ScrollViewer
     private readonly TextBlock assessmentHeading = Ui.Heading("Learning", 21), assessmentText = Ui.Text("Save a reference period before comparing cooling performance.", 13);
     private readonly TextBlock comparison = Ui.Text("", 15, font:"MetricFont"), coverage = Ui.Text("", 11, "Muted"), chartSummary = Ui.Text("", 11, "Muted"), referenceStatus = Ui.Text("No reference saved yet.", 12, "Muted");
     private readonly TextBlock actionStatus = Ui.Text("", 12, "Warning");
+    /// <summary>A recording or read failure, mirrored into the controls card so it shows whichever lower tab is selected.</summary>
+    private readonly TextBlock recordingWarning = Ui.Text("", 12, "Warning");
     private readonly StackPanel warningRows = new();
-    private readonly Expander warningSection = new() { Header = "Warnings", IsExpanded = false };
-    private readonly ThermalHistoryChart chart = new() { Height = 220, Margin = new Thickness(0, 8, 0, 0) };
+    private readonly ThermalHistoryChart chart = new() { Margin = new Thickness(0, 8, 0, 0), VerticalAlignment = VerticalAlignment.Stretch };
+    private readonly Grid body = new(), historyLayout = new(), chartColumn = new(), assessmentPanel = new();
+    private readonly Border controlsCard, historyCard, narrowAssessmentCard, lowerCard;
+    private readonly TabControl tabs = new();
+    private readonly TabItem referenceTab = new() { Header = "Reference" }, warningsTab = new() { Header = "Warnings" }, setupTab = new() { Header = "Recording & setup" };
+    private bool assessmentBeside;
+    internal TabControl Tabs => tabs;
+    internal TabItem ReferenceTab => referenceTab;
+    internal TabItem WarningsTab => warningsTab;
+    internal TabItem SetupTab => setupTab;
     private readonly Button saveReference, useReference, export, newSetup;
     private readonly DispatcherTimer refreshTimer = new() { Interval = TimeSpan.FromSeconds(15) };
     private CoolingView? view;
@@ -42,24 +52,41 @@ internal sealed class CoolingHealthPage : ScrollViewer
         Background = System.Windows.Media.Brushes.Transparent;
         VerticalScrollBarVisibility = ScrollBarVisibility.Auto;
         HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled;
-        var body = new StackPanel { Margin = new Thickness(6, 10, 6, 10) };
+        Margin = new Thickness(6, 10, 6, 10);
+        foreach(var height in new[]{GridLength.Auto,GridLength.Auto,new GridLength(1,GridUnitType.Star),GridLength.Auto})body.RowDefinitions.Add(new() {Height=height});
+        body.RowDefinitions[2].MinHeight=370;
         Content = body;
         device.ToolTip = "Choose a CPU/GPU and its recorded cooling setup. This does not change the live GPU selection.";
         SetAccessibleName(device, "Cooling history device and setup"); SetAccessibleName(range, "Thermal history time range"); SetAccessibleName(metric, "Thermal history metric");
         range.ItemsSource = new[] { new Choice<int>("Day", 1), new("Week", 7), new("Month", 30) }; range.SelectedIndex = 0;
         metric.ItemsSource = new[] { new Choice<string>("Temperature", "temperature"), new("Usage", "load"), new("Package power", "power"), new("Clock", "clock"), new("Fan speed", "fan") }; metric.SelectedIndex = 0;
-        body.Children.Add(Ui.Text("DEVICE & COOLING SETUP", 10, "Muted")); body.Children.Add(device);
-        var historyButtons = new WrapPanel { Margin = new Thickness(0, 9, 0, 8) };
-        historyButtons.Children.Add(range); historyButtons.Children.Add(metric);
-        historyButtons.Children.Add(Ui.Button("Refresh", () => _ = RefreshAsync()));
-        export = Ui.Button("Export CSV…", () => _ = ExportAsync()); historyButtons.Children.Add(export); body.Children.Add(historyButtons);
-        var history = new StackPanel(); history.Children.Add(Ui.Heading("Thermal history", 16)); history.Children.Add(chart); history.Children.Add(chartSummary);
-        var chartNote = Ui.Text("Dots show recorded averages; faint vertical lines show min–max. Gaps stay unconnected. Dates and times use this PC's local time.", 11, "Muted"); chartNote.Margin = new(0, 8, 0, 0); history.Children.Add(chartNote);
-        body.Children.Add(Card(history));
+        var controls = new StackPanel();var controlRow = new WrapPanel();
+        var deviceCaption=Ui.Text("Device & cooling setup",11,"Muted");deviceCaption.Margin=new(0,0,8,0);controlRow.Children.Add(deviceCaption);controlRow.Children.Add(device);
+        controlRow.Children.Add(Ui.Button("Refresh", () => _ = RefreshAsync()));
+        export = Ui.Button("Export CSV…", () => _ = ExportAsync());controlRow.Children.Add(export);controls.Children.Add(controlRow);
+        recordingWarning.Margin = new(3, 8, 3, 0);recordingWarning.Visibility = Visibility.Collapsed;recordingWarning.TextWrapping = TextWrapping.Wrap;controls.Children.Add(recordingWarning);actionStatus.Margin = new(3, 8, 3, 10);actionStatus.Visibility = Visibility.Collapsed;controls.Children.Add(actionStatus);
+        controlsCard=Ui.Panel(controls,new Thickness(12,6,12,6));controlsCard.Margin=new(0,0,0,10);body.Children.Add(controlsCard);
+        var historyHeading = new DockPanel();var historyButtons = new WrapPanel();historyButtons.Children.Add(range);historyButtons.Children.Add(metric);
+        DockPanel.SetDock(historyButtons,Dock.Right);historyHeading.Children.Add(historyButtons);historyHeading.Children.Add(Ui.Heading("Thermal history",16));
+        foreach(var height in new[]{GridLength.Auto,new GridLength(1,GridUnitType.Star),GridLength.Auto,GridLength.Auto})chartColumn.RowDefinitions.Add(new() {Height=height});
+        chartColumn.Children.Add(historyHeading);Grid.SetRow(chart,1);chartColumn.Children.Add(chart);Grid.SetRow(chartSummary,2);chartColumn.Children.Add(chartSummary);
+        var chartNote = Ui.Text("Dots show recorded averages; faint vertical lines show min–max. Gaps stay unconnected. Dates and times use this PC's local time.", 11, "Muted");chartNote.Margin=new(0,8,0,0);Grid.SetRow(chartNote,3);chartColumn.Children.Add(chartNote);
+        historyLayout.RowDefinitions.Add(new() {Height=new(1,GridUnitType.Star)});historyLayout.ColumnDefinitions.Add(new() {Width=new(1,GridUnitType.Star)});historyLayout.ColumnDefinitions.Add(new() {Width=new(0)});historyLayout.Children.Add(chartColumn);
+        historyCard=Card(historyLayout);historyCard.Margin=new(0,10,0,0);historyCard.MinHeight=360;Grid.SetRow(historyCard,2);body.Children.Add(historyCard);
 
         var assessment = new StackPanel(); assessment.Children.Add(assessmentHeading); assessmentText.Margin = new(0, 8, 0, 8); assessment.Children.Add(assessmentText);
         comparison.Margin = new(0, 3, 0, 9); assessment.Children.Add(comparison); assessment.Children.Add(coverage);
-        var limit = Ui.Text("This compares cooling behavior, not hardware life expectancy. Room temperature, workload, mounting, dust and fan settings can explain a change. Pump, coolant and flow diagnosis requires confirmed sensors.", 11, "Muted"); limit.Margin = new(0, 12, 0, 0); assessment.Children.Add(limit); body.Children.Add(Card(assessment));
+        var limit = Ui.Text("This compares cooling behavior, not hardware life expectancy. Room temperature, workload, mounting, dust and fan settings can explain a change. Pump, coolant and flow diagnosis requires confirmed sensors.", 11, "Muted");limit.Margin=new(0,12,0,0);assessment.Children.Add(limit);
+        assessmentPanel.RowDefinitions.Add(new() {Height=GridLength.Auto});assessmentPanel.RowDefinitions.Add(new() {Height=GridLength.Auto});assessmentPanel.Children.Add(Ui.Caption("Cooling assessment"));
+        var assessmentScroll=new ScrollViewer {Content=assessment,VerticalScrollBarVisibility=ScrollBarVisibility.Auto,HorizontalScrollBarVisibility=ScrollBarVisibility.Disabled};
+        assessmentScroll.PreviewMouseWheel+=(_,e)=>
+        {
+            if(e.Handled||e.Delta==0)return;
+            bool canScroll=e.Delta<0?assessmentScroll.VerticalOffset+.01<assessmentScroll.ScrollableHeight:assessmentScroll.VerticalOffset>.01;
+            if(canScroll)return;
+            e.Handled=true;RaiseEvent(new System.Windows.Input.MouseWheelEventArgs(e.MouseDevice,e.Timestamp,e.Delta) {RoutedEvent=MouseWheelEvent});
+        };
+        Grid.SetRow(assessmentScroll,1);assessmentPanel.Children.Add(assessmentScroll);narrowAssessmentCard=Card(assessmentPanel);Grid.SetRow(narrowAssessmentCard,1);body.Children.Insert(body.Children.IndexOf(historyCard),narrowAssessmentCard);
 
         var reference = new StackPanel(); reference.Children.Add(Ui.Heading("Your fixed reference", 16)); referenceStatus.Margin = new(0, 8, 0, 8); reference.Children.Add(referenceStatus);
         SetAccessibleName(references, "Saved cooling reference");
@@ -75,17 +102,20 @@ internal sealed class CoolingHealthPage : ScrollViewer
         var period = new WrapPanel(); period.Children.Add(Field("From (local)", referenceFrom)); period.Children.Add(Field("To (local)", referenceTo)); period.Children.Add(Field("Reference name", referenceLabel)); referenceEditor.Children.Add(period);
         referenceEditor.Children.Add(Ui.Text("Date format: yyyy-MM-dd HH:mm. Detailed history must still be retained for the selected period.", 11, "Muted"));
         saveReference = Ui.Button("Save this period as a reference", () => _ = SaveReferenceAsync()); saveReference.HorizontalAlignment = HorizontalAlignment.Left; saveReference.Margin = new(0, 12, 0, 2); referenceEditor.Children.Add(saveReference);
-        var referenceExpander = new Expander { Header = "Save a new reference", Content = referenceEditor, IsExpanded = true, Margin = new Thickness(0, 10, 0, 0) }; reference.Children.Add(referenceExpander); body.Children.Add(Card(reference));
+        var referenceExpander = new Expander { Header = "Save a new reference", Content = referenceEditor, IsExpanded = false, Margin = new Thickness(0, 10, 0, 0) };reference.Children.Add(referenceExpander);
 
-        var settings = new StackPanel(); settings.Children.Add(Ui.Heading("Recording & setup", 16));
+        var settings = new StackPanel();
         recording.Margin = new(0, 12, 0, 8); notifications.Margin = new(0, 8, 0, 8); settings.Children.Add(recording); settings.Children.Add(recordingStatus); settings.Children.Add(notifications);
         settings.Children.Add(Ui.Text("Notifications require ten consecutive comparable minutes. A warning needs at least a 5°C rise above the matched mean and 3°C above its 95th percentile. Acknowledgment and a 24-hour cooldown prevent repeated alerts. These are conservative comparison rules, not manufacturer limits.", 11, "Muted"));
         detailDays.ItemsSource = new[] { new Choice<int>("7 days", 7), new("30 days", 30) }; summaryDays.ItemsSource = new[] { new Choice<int>("30 days", 30), new("90 days", 90) };
         SetAccessibleName(detailDays, "Detailed history retention"); SetAccessibleName(summaryDays, "Summary history retention");
         var retention = new WrapPanel { Margin = new Thickness(0, 12, 0, 8) }; retention.Children.Add(Field("Minute details", detailDays)); retention.Children.Add(Field("Hourly summaries", summaryDays)); settings.Children.Add(retention); settings.Children.Add(storage);
         newSetup = Ui.Button("Start a new cooling setup", () => _ = NewSetupAsync()); newSetup.HorizontalAlignment = HorizontalAlignment.Left; newSetup.Margin = new(0, 14, 0, 6); settings.Children.Add(newSetup);
-        settings.Children.Add(Ui.Text("Use after cleaning, changing the cooler, fan curve or power limits. Earlier history and references stay available under the previous setup; new comparisons require a fresh reference.", 11, "Muted")); body.Children.Add(Card(settings));
-        warningSection.Content = warningRows; body.Children.Add(Card(warningSection)); actionStatus.Margin = new(3, 8, 3, 10); actionStatus.Visibility = Visibility.Collapsed; body.Children.Insert(2, actionStatus);
+        settings.Children.Add(Ui.Text("Use after cleaning, changing the cooler, fan curve or power limits. Earlier history and references stay available under the previous setup; new comparisons require a fresh reference.", 11, "Muted"));
+        referenceTab.Content=reference;warningsTab.Content=warningRows;setupTab.Content=settings;tabs.Items.Add(referenceTab);tabs.Items.Add(warningsTab);tabs.Items.Add(setupTab);tabs.SelectedItem=referenceTab;
+        lowerCard=Card(tabs);Grid.SetRow(lowerCard,3);body.Children.Add(lowerCard);
+        controlsCard.SizeChanged+=(_,_)=>InvalidateMeasure();assessmentPanel.SizeChanged+=(_,_)=>{if(!assessmentBeside)InvalidateMeasure();};narrowAssessmentCard.SizeChanged+=(_,_)=>InvalidateMeasure();lowerCard.SizeChanged+=(_,_)=>InvalidateMeasure();
+        tabs.SelectionChanged+=(_,e)=>{if(e.OriginalSource!=tabs)return;InvalidateMeasure();};SizeChanged+=(_,e)=>UpdateAssessmentPlacement(e.NewSize.Width);
 
         syncing = true;
         recording.IsChecked = session.Settings.CoolingRecording; notifications.IsChecked = session.Settings.CoolingNotifications;
@@ -105,6 +135,34 @@ internal sealed class CoolingHealthPage : ScrollViewer
         UpdateButtons();
     }
 
+    protected override Size MeasureOverride(Size availableSize)
+    {
+        double width=double.IsFinite(availableSize.Width)?Math.Max(1,availableSize.Width-SystemParameters.VerticalScrollBarWidth):1000;
+        var measure=new Size(width,double.PositiveInfinity);controlsCard.Measure(measure);lowerCard.Measure(measure);
+        if(!assessmentBeside)narrowAssessmentCard.Measure(measure);
+        double minimum=controlsCard.DesiredSize.Height+(assessmentBeside?0:narrowAssessmentCard.DesiredSize.Height)+lowerCard.DesiredSize.Height+370;
+        body.Height=Math.Max(minimum,double.IsFinite(availableSize.Height)?availableSize.Height:minimum);
+        return base.MeasureOverride(availableSize);
+    }
+    private void UpdateAssessmentPlacement(double width)
+    {
+        bool beside=width>=1100;if(assessmentBeside==beside)return;
+        if(beside){body.Children.Remove(narrowAssessmentCard);narrowAssessmentCard.Child=null;}
+        else historyLayout.Children.Remove(assessmentPanel);
+        assessmentPanel.ClearValue(Grid.ColumnProperty);assessmentPanel.Margin=beside?new(8,0,0,0):new(0);assessmentPanel.RowDefinitions[1].Height=beside?new(1,GridUnitType.Star):GridLength.Auto;
+        historyLayout.ColumnDefinitions[1].Width=new(beside?280:0);
+        if(beside){Grid.SetColumn(assessmentPanel,1);historyLayout.Children.Add(assessmentPanel);}
+        else {narrowAssessmentCard.Child=assessmentPanel;body.Children.Insert(body.Children.IndexOf(historyCard),narrowAssessmentCard);}
+        assessmentBeside=beside;InvalidateMeasure();
+    }
+
+    /// <summary>The Recording &amp; setup tab shows every status; a failure also shows in the controls card, which every tab leaves visible.</summary>
+    private void SetRecordingStatus(string text)
+    {
+        recordingStatus.Text = text;
+        bool failed = text.StartsWith("History recording unavailable", StringComparison.Ordinal) || text.StartsWith("History could not be read", StringComparison.Ordinal);
+        recordingWarning.Text = failed ? text : ""; recordingWarning.Visibility = failed ? Visibility.Visible : Visibility.Collapsed;
+    }
     private static void SetAccessibleName(DependencyObject control, string name) => AutomationProperties.SetName(control, name);
     private static Border Card(UIElement child) { var card = Ui.Panel(child, new Thickness(16)); card.Margin = new(0, 0, 0, 12); return card; }
     private static StackPanel Field(string label, FrameworkElement input)
@@ -134,7 +192,7 @@ internal sealed class CoolingHealthPage : ScrollViewer
             if (revision != requestRevision || !IsLoaded || !IsVisible) { refreshAgain = true; return; }
             ApplyView(result);
         }
-        catch (Exception error) { recordingStatus.Text = "History could not be read: " + error.Message; }
+        catch (Exception error) { SetRecordingStatus("History could not be read: " + error.Message); }
         finally
         {
             refreshing = false;
@@ -159,7 +217,7 @@ internal sealed class CoolingHealthPage : ScrollViewer
         references.ItemsSource = choices;
         references.SelectedItem = choices.FirstOrDefault(c => c.Value.Id == priorReference) ?? choices.FirstOrDefault(c => c.Value.Id == result.ActiveReference?.Id) ?? choices.FirstOrDefault();
         syncing = false;
-        recordingStatus.Text = result.Status;
+        SetRecordingStatus(result.Status);
         storage.Text = $"Local storage: {Ui.Bytes(result.StorageBytes)} · Database limit 256 MiB plus journal. Reducing retention removes older history; saved references are retained.";
         assessmentHeading.Text = result.Assessment.State;
         assessmentHeading.SetResourceReference(TextBlock.ForegroundProperty, result.Assessment.ShouldWarn ? "Warning" : "Accent");
@@ -203,7 +261,7 @@ internal sealed class CoolingHealthPage : ScrollViewer
     {
         warningRows.Children.Clear();
         var warnings = view?.Warnings ?? [];
-        warningSection.Header = $"Warnings ({warnings.Count(w => !w.Acknowledged)} unacknowledged)";
+        int unacknowledged=warnings.Count(w=>!w.Acknowledged);warningsTab.Header=unacknowledged==0?"Warnings":$"Warnings · {unacknowledged} need review";
         if (warnings.Count == 0) warningRows.Children.Add(Ui.Text("No warnings recorded for this device and setup. This does not certify hardware health.", 12, "Muted"));
         foreach (var warning in warnings.OrderByDescending(w => w.Created).Take(20))
         {

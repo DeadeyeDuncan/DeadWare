@@ -78,6 +78,8 @@ public class BatteryUiTests
                 ChartFrameUiChecks.Run();
                 Phase("thermal chart");
                 ThermalChartUiChecks.Run();
+                Phase("cooling health page");
+                CoolingHealthPageUiChecks.Run();
                 RuneTraceUiChecks.Run();
                 Phase("typography and range segments");
                 RangeSegmentsUiChecks.Run(app);

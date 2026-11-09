@@ -409,7 +409,10 @@ public class UsageHistoryServiceTests
         process.Configure(true, true); process.Start();
         for (int i = 0; i < 30; i++) process.TryRecord(ProcessHistoryServiceTests.Reading(i));
         await process.StopAsync();
-        var view = await process.ReadApplicationsAsync(Start, Start.AddMinutes(1), ProcessRank.CpuTime);
+        // The process readings use ProcessHistoryServiceTests.Start, a separate "ten minutes ago" that can sit one minute from this class's
+        // Start when the two classes first ran on different sides of a minute boundary; the read must use theirs.
+        var processStart = ProcessHistoryServiceTests.Start;
+        var view = await process.ReadApplicationsAsync(processStart, processStart.AddMinutes(1), ProcessRank.CpuTime);
         Assert.Empty(view.Rows);
         Assert.Equal(2.9, view.EverythingElse.CpuSeconds, 6);
     }
