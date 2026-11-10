@@ -239,6 +239,8 @@ public class BatteryUiTests
                 }
                 Phase("release notes");
                 VerifyReleaseNotes(session, assembly);
+                Phase("updates layout");
+                UpdatesPageUiChecks.Run(session);
                 Phase("dashboard and settings");
                 // Exercise the actual dashboard with an unstarted session: no hardware,
                 // database writes, native window or installed settings are involved.
@@ -1115,7 +1117,7 @@ public class BatteryUiTests
         {
             assembly.GetType("DeadWare.App.Theme")!.GetMethod("Apply", All)!.Invoke(null, [theme]);
             page = (ScrollViewer)Activator.CreateInstance(type, All, null, [session], null)!;
-            foreach (var size in new[] { new Size(420, 720), new Size(900, 900) })
+            foreach (var size in new[] { new Size(420, 720), new Size(900, 640) })
             {
                 Apply(state); page.Measure(size); page.Arrange(new Rect(new Point(), size)); page.UpdateLayout();
                 Assert.Equal(new[] { "v0.6.5", "v0.6.4", "v0.6.3" }, Versions());
@@ -1183,7 +1185,7 @@ public class BatteryUiTests
                     string[] Versions() => Descendants(page).OfType<TextBlock>().Where(block => block.Text.StartsWith("v0.")).Select(block => block.Text).ToArray();
                     var button = Descendants(page).OfType<Button>().Single(item => item.Content?.ToString() == "Show release note history");
                     var retry = Descendants(page).OfType<Button>().Single(item => item.Content?.ToString() == "Retry history");
-                    foreach (var size in new[] { new Size(420, 720), new Size(900, 900) })
+                    foreach (var size in new[] { new Size(420, 720), new Size(900, 640) })
                     {
                         int before = handler.Calls;
                         button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
