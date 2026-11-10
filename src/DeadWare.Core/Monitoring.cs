@@ -24,21 +24,59 @@ public static class HistoryRanges
 public sealed class SampleHistory
 {
     private readonly object gate=new();
-    private readonly Queue<Snapshot> samples=new();
+    // Time-ordered ring (capacity a power of two). Reads binary-search their window, so a one-minute chart
+    // costs the same after six hours as after six minutes.
+    private Snapshot[] ring=new Snapshot[256];
+    private int head,count;
     private readonly Dictionary<string,string> keys=new(StringComparer.Ordinal);
     private double lastSeconds=double.NegativeInfinity;
-    private Snapshot[]? chartSnapshot;
-    public int Count {get {lock(gate)return samples.Count;}}
+    public int Count {get {lock(gate)return count;}}
+    private Snapshot At(int index)=>ring[(head+index)&(ring.Length-1)];
+    private void Enqueue(Snapshot sample)
+    {
+        if(count==ring.Length)
+        {
+            var grown=new Snapshot[ring.Length*2];
+            CopyTo(0,count,grown);ring=grown;head=0;
+        }
+        ring[(head+count)&(ring.Length-1)]=sample;count++;
+    }
+    private void Dequeue() {ring[head]=null!;head=(head+1)&(ring.Length-1);count--;}
+    private void Clear() {Array.Clear(ring);head=0;count=0;}
+    private void CopyTo(int start,int length,Snapshot[] destination)
+    {
+        int from=(head+start)&(ring.Length-1),first=Math.Min(length,ring.Length-from);
+        Array.Copy(ring,from,destination,0,first);Array.Copy(ring,0,destination,first,length-first);
+    }
+    /// <summary>The index range [Start, End) of samples with now-seconds &lt;= time &lt;= now. Samples are strictly increasing in time.</summary>
+    private (int Start,int End) Window(double now,double seconds)
+    {
+        // A NaN bound compares false to everything, which the linear scans this replaces read as "no bound".
+        double from=now-seconds;
+        int start=0,end=count;
+        if(!double.IsNaN(from))
+        {
+            int low=0,high=count;
+            while(low<high){int middle=(low+high)>>>1;if(At(middle).MonotonicSeconds<from)low=middle+1;else high=middle;}
+            start=low;
+        }
+        if(!double.IsNaN(now))
+        {
+            int low=start,high=count;
+            while(low<high){int middle=(low+high)>>>1;if(At(middle).MonotonicSeconds<=now)low=middle+1;else high=middle;}
+            end=low;
+        }
+        return (start,end);
+    }
     public void Add(Snapshot s)
     {
         if (!double.IsFinite(s.MonotonicSeconds)) return;
         lock(gate)
         {
             if(s.MonotonicSeconds<=lastSeconds) return;
-            samples.Enqueue(Copy(s));
-            chartSnapshot=null;
+            Enqueue(Copy(s));
             lastSeconds=s.MonotonicSeconds;
-            while(samples.Count>HistoryRanges.MaximumSamples || (samples.Count>0 && samples.Peek().MonotonicSeconds<s.MonotonicSeconds-HistoryRanges.MaximumSeconds)) samples.Dequeue();
+            while(count>HistoryRanges.MaximumSamples || (count>0 && At(0).MonotonicSeconds<s.MonotonicSeconds-HistoryRanges.MaximumSeconds)) Dequeue();
         }
     }
     public static double? Finite(double? value)=>value.HasValue && double.IsFinite(value.Value)?value:null;
@@ -51,6 +89,7 @@ public sealed class SampleHistory
         lock(gate)
         {
             double cutoff=Math.Max(now,lastSeconds)-HistoryRanges.MaximumSeconds;
+            var samples=new Snapshot[count];CopyTo(0,count,samples);
             double firstLive=samples.FirstOrDefault(s=>s.SessionId is null)?.MonotonicSeconds??double.PositiveInfinity;
             var merged=samples.ToDictionary(s=>s.MonotonicSeconds);
             foreach(var sample in restored)
@@ -67,8 +106,7 @@ public sealed class SampleHistory
                 else merged[time]=Copy(sample);
             }
             var ordered=merged.Values.Where(s=>s.MonotonicSeconds>=cutoff).OrderBy(s=>s.MonotonicSeconds).TakeLast(HistoryRanges.MaximumSamples).ToArray();
-            samples.Clear();foreach(var sample in ordered)samples.Enqueue(sample);
-            chartSnapshot=null;
+            Clear();foreach(var sample in ordered)Enqueue(sample);
             if(ordered.Length>0)lastSeconds=ordered[^1].MonotonicSeconds;
         }
     }
@@ -86,15 +124,16 @@ public sealed class SampleHistory
         }
         return sample with {Values=new ReadOnlyDictionary<string,double?>(values)};
     }
-    public IReadOnlyList<Snapshot> Read() {lock(gate) return samples.ToArray();}
+    public IReadOnlyList<Snapshot> Read() {lock(gate) {var all=new Snapshot[count];CopyTo(0,count,all);return all;}}
     public IReadOnlyList<SamplePoint> Series(string id,double now,int seconds)
     {
         lock(gate)
         {
-            var points=new List<SamplePoint>();Snapshot? previous=null;
-            foreach(var sample in samples)
+            var (start,end)=Window(now,seconds);
+            var points=new List<SamplePoint>(end-start);Snapshot? previous=null;
+            for(int index=start;index<end;index++)
             {
-                if(sample.MonotonicSeconds<now-seconds||sample.MonotonicSeconds>now)continue;
+                var sample=At(index);
                 points.Add(new(sample.Timestamp,sample.MonotonicSeconds,sample.Values.GetValueOrDefault(id))
                     {BreakBefore=previous is not null&&previous.SessionId!=sample.SessionId,
                      PollingIntervalSeconds=PollingPolicy.Normalize(sample.PollingIntervalSeconds)});
@@ -109,11 +148,12 @@ public sealed class SampleHistory
         lock(gate)
         {
             var lists=new Dictionary<string,List<SamplePoint>>(StringComparer.Ordinal);
-            foreach(var id in ids)lists.TryAdd(id,[]);
+            var (start,end)=Window(now,seconds);
+            foreach(var id in ids)lists.TryAdd(id,new(end-start));
             Snapshot? previous=null;
-            foreach(var sample in samples)
+            for(int index=start;index<end;index++)
             {
-                if(sample.MonotonicSeconds<now-seconds||sample.MonotonicSeconds>now)continue;
+                var sample=At(index);
                 bool breakBefore=previous is not null&&previous.SessionId!=sample.SessionId;
                 double interval=PollingPolicy.Normalize(sample.PollingIntervalSeconds);
                 foreach(var pair in lists)
@@ -125,13 +165,28 @@ public sealed class SampleHistory
     }
     private Snapshot[] Capture(double now,int seconds)
     {
-        lock(gate)return samples.Where(s=>s.MonotonicSeconds>=now-seconds&&s.MonotonicSeconds<=now).ToArray();
+        lock(gate)
+        {
+            var (start,end)=Window(now,seconds);
+            var captured=new Snapshot[end-start];CopyTo(start,captured.Length,captured);return captured;
+        }
+    }
+    /// <summary>The window's references in a pooled buffer, so the six-hour chart passes run outside the lock without a new large array
+    /// every poll. The caller returns the buffer cleared.</summary>
+    private Snapshot[] Rent(double now,int seconds,out int length)
+    {
+        lock(gate)
+        {
+            var (start,end)=Window(now,seconds);length=end-start;
+            var buffer=System.Buffers.ArrayPool<Snapshot>.Shared.Rent(Math.Max(1,length));
+            CopyTo(start,length,buffer);return buffer;
+        }
     }
     /// <summary>Pixel-bucket averages and extrema from immutable snapshot references; gaps are never averaged across.</summary>
     public IReadOnlyList<ChartRangePoint> ChartRanges(string id,double now,int seconds,int pixelWidth)
     {
         if(!double.IsFinite(now)||seconds<=0||pixelWidth<=0)throw new ArgumentOutOfRangeException(nameof(now));
-        Snapshot[] captured;lock(gate)captured=chartSnapshot??=samples.ToArray();
+        var captured=Rent(now,seconds,out int length);
         var result=new List<ChartRangePoint>(Math.Min(pixelWidth,4096));
         int count=0;double bucket=double.NaN,total=0,min=0,max=0,start=0,end=0;
         double bucketSeconds=seconds/(double)pixelWidth;
@@ -145,10 +200,12 @@ public sealed class SampleHistory
         {
             Flush();if(result.Count==0||result[^1].Average.HasValue)result.Add(new(time,time,null,null,null,0));
         }
-        foreach(var sample in captured)
+        try
         {
+        for(int index=0;index<length;index++)
+        {
+            var sample=captured[index];
             double time=sample.MonotonicSeconds;
-            if(time<now-seconds||time>now)continue;
             double interval=PollingPolicy.Normalize(sample.PollingIntervalSeconds);
             if(previous is not null&&(sample.SessionId!=previous.SessionId||time-previous.MonotonicSeconds>Math.Max(previousInterval,interval)+1.5))Gap(time);
             previous=sample;previousInterval=interval;
@@ -161,6 +218,8 @@ public sealed class SampleHistory
             if(count==0){bucket=column;start=time;min=max=value;total=0;}
             end=time;min=Math.Min(min,value);max=Math.Max(max,value);total+=value;count++;
         }
+        }
+        finally {System.Buffers.ArrayPool<Snapshot>.Shared.Return(captured,clearArray:true);}
         Flush();return result;
     }
     /// <summary>Several <see cref="ChartRanges"/> reads from one pass over the captured snapshots; results match per-id calls.</summary>
@@ -168,28 +227,32 @@ public sealed class SampleHistory
     {
         if(!double.IsFinite(now)||seconds<=0||pixelWidth<=0)throw new ArgumentOutOfRangeException(nameof(now));
         ArgumentNullException.ThrowIfNull(ids);
-        Snapshot[] captured;lock(gate)captured=chartSnapshot??=samples.ToArray();
+        var captured=Rent(now,seconds,out int length);
         var states=new Dictionary<string,RangeState>(StringComparer.Ordinal);
         foreach(var id in ids)states.TryAdd(id,new RangeState(Math.Min(pixelWidth,4096)));
         var all=states.ToArray();
         double bucketSeconds=seconds/(double)pixelWidth;
         Snapshot? previous=null;double previousInterval=1;
-        foreach(var sample in captured)
+        try
         {
-            double time=sample.MonotonicSeconds;
-            if(time<now-seconds||time>now)continue;
-            double interval=PollingPolicy.Normalize(sample.PollingIntervalSeconds);
-            bool gap=previous is not null&&(sample.SessionId!=previous.SessionId||time-previous.MonotonicSeconds>Math.Max(previousInterval,interval)+1.5);
-            previous=sample;previousInterval=interval;
-            double column=Math.Floor(time/bucketSeconds);
-            foreach(var pair in all)
+            for(int index=0;index<length;index++)
             {
-                var state=pair.Value;
-                if(gap)state.Gap(time);
-                if(Finite(sample.Values.GetValueOrDefault(pair.Key)) is not { } value){state.Gap(time);continue;}
-                state.Add(column,time,value);
+                var sample=captured[index];
+                double time=sample.MonotonicSeconds;
+                double interval=PollingPolicy.Normalize(sample.PollingIntervalSeconds);
+                bool gap=previous is not null&&(sample.SessionId!=previous.SessionId||time-previous.MonotonicSeconds>Math.Max(previousInterval,interval)+1.5);
+                previous=sample;previousInterval=interval;
+                double column=Math.Floor(time/bucketSeconds);
+                foreach(var pair in all)
+                {
+                    var state=pair.Value;
+                    if(gap)state.Gap(time);
+                    if(Finite(sample.Values.GetValueOrDefault(pair.Key)) is not { } value){state.Gap(time);continue;}
+                    state.Add(column,time,value);
+                }
             }
         }
+        finally {System.Buffers.ArrayPool<Snapshot>.Shared.Return(captured,clearArray:true);}
         var result=new Dictionary<string,IReadOnlyList<ChartRangePoint>>(StringComparer.Ordinal);
         foreach(var pair in all){pair.Value.Flush();result[pair.Key]=pair.Value.Result;}
         return result;
