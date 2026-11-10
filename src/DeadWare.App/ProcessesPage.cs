@@ -78,11 +78,13 @@ internal sealed class ProcessesPage : UserControl
     private readonly ContextMenu picker=new() {Template=PickerTemplate};
     private readonly TextBox search=new() {Width=240};
     private readonly TextBlock offText=Ui.Text("",13),bannerText=Ui.Text("",12,"Warning"),status=Ui.Text("",11,"Muted"),capNote=Ui.Text("",11,"Muted");
-    /// <summary>End task's and Open file location's result, under the top strip; collapsed while empty.</summary>
+    /// <summary>End task's and Open file location's result, inside the top strip under the tools and the banner; collapsed while empty.</summary>
     private readonly TextBlock actionStatus=Ui.Text("",12);
     private readonly Border offCard;
     private readonly DockPanel live=new(),banner=new() {Margin=new Thickness(0,8,0,0)};
-    private readonly StackPanel footer=new() {Margin=new Thickness(8,10,8,0)};
+    /// <summary>The column definitions, folded into <see cref="about"/> under the table.</summary>
+    private readonly StackPanel footer=new() {Margin=new Thickness(0,6,0,2)};
+    private readonly Expander about=new() {Header="About these columns",IsExpanded=false};
     private readonly Button endTask,openLocation;
     private string sortKey="cpu";
     private bool sortDescending=true;
@@ -111,7 +113,7 @@ internal sealed class ProcessesPage : UserControl
         var turnOn=Labelled(Ui.Button("Turn on",TurnOn));turnOn.HorizontalAlignment=HorizontalAlignment.Left;turnOn.Margin=new Thickness(0,12,0,0);
         var offBody=new StackPanel();offBody.Children.Add(offText);offBody.Children.Add(turnOn);
         offCard=Ui.Panel(offBody,new Thickness(18,16,18,16));DockPanel.SetDock(offCard,Dock.Top);
-        // Top strip: search, actions and the column picker, then one banner when administrator rights limit the table.
+        // Top strip: search, actions and the column picker, then one banner when administrator rights limit the table, then the action result, scan status and cap note, each collapsed while empty.
         AutomationProperties.SetName(search,"Find app or PID");search.ToolTip="Search app name or PID";
         var placeholder=Ui.Text("Find app or PID",12,"Muted");placeholder.TextWrapping=TextWrapping.NoWrap;placeholder.IsHitTestVisible=false;placeholder.Margin=new Thickness(11,0,0,0);
         search.TextChanged+=(_,_)=>{placeholder.Visibility=search.Text.Length==0?Visibility.Visible:Visibility.Collapsed;Render(resort:true);};
@@ -125,12 +127,13 @@ internal sealed class ProcessesPage : UserControl
         var restart=Labelled(Ui.Button("Restart as administrator",session.RestartElevated));DockPanel.SetDock(restart,Dock.Right);
         banner.Children.Add(restart);banner.Children.Add(bannerText);
         var stripBody=new StackPanel();stripBody.Children.Add(tools);stripBody.Children.Add(banner);
+        foreach(var note in new[]{actionStatus,status,capNote}){note.Margin=new Thickness(0,8,0,0);stripBody.Children.Add(note);}
         var strip=Ui.Panel(stripBody,new Thickness(14,10,14,10));strip.Margin=new Thickness(0,2,0,10);DockPanel.SetDock(strip,Dock.Top);
-        actionStatus.Margin=new Thickness(4,0,4,8);DockPanel.SetDock(actionStatus,Dock.Top);Note(actionStatus,"");
-        status.Margin=new Thickness(4,0,4,8);DockPanel.SetDock(status,Dock.Top);
-        capNote.Margin=new Thickness(4,0,4,8);DockPanel.SetDock(capNote,Dock.Top);
+        Note(actionStatus,"");
         foreach(string line in ProcessCopy.Footer(diskColumns)){var text=Ui.Text(line,11,"Muted");text.Margin=new Thickness(0,0,0,3);footer.Children.Add(text);}
-        DockPanel.SetDock(footer,Dock.Bottom);
+        // The definitions fold away in a slim card under the table, as Network's About these totals.
+        about.Content=footer;
+        var aboutCard=Ui.Panel(about,new Thickness(14,6,14,6));aboutCard.Margin=new Thickness(0,10,0,0);DockPanel.SetDock(aboutCard,Dock.Bottom);
         // Picker: every column except NAME, in the picker's order; Columns and a header right-click open it.
         AutomationProperties.SetName(picker,"Columns");
         foreach(var choice in ProcessTableColumns.Picker(session.Settings.ProcessColumns,false,diskColumns))
@@ -154,7 +157,7 @@ internal sealed class ProcessesPage : UserControl
         Grid.MouseEnter+=(_,_)=>hold.PointerOver=true;
         Grid.MouseLeave+=(_,_)=>hold.PointerOver=false;
         var table=Ui.Panel(Grid,new Thickness(0));table.MinHeight=72;
-        live.Children.Add(strip);live.Children.Add(actionStatus);live.Children.Add(status);live.Children.Add(capNote);live.Children.Add(footer);live.Children.Add(table);
+        live.Children.Add(strip);live.Children.Add(aboutCard);live.Children.Add(table);
         var root=new DockPanel {Margin=new Thickness(6,0,6,6)};root.Children.Add(offCard);root.Children.Add(live);
         Content=root;
         // Keys: the table's own (Left, Right, Enter, Delete and the navigation hold) come first, before the DataGrid acts on them; Ctrl+F, F5 and Esc work anywhere on the page, and MainWindow sends them from its rail and header.
