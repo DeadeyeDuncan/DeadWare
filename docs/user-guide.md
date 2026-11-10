@@ -57,6 +57,7 @@ Detailed setup, feature controls, data retention and compatibility notes. For a 
 - The Overview chart grid uses one, two or three columns to fit the available page width.
 - The Processes page shows action results and scan status inside its search card, and folds its column definitions into **About these columns** under the table.
 - The Updates page keeps versions, actions, progress and status in one card above the release notes, and folds its explanation into **How updates and rollback work**.
+- The Sensors page shows its sensor count and statistics range in the search card, above the table.
 
 ## Download and run
 

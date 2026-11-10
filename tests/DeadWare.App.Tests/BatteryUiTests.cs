@@ -257,6 +257,8 @@ public class BatteryUiTests
                 ShellUiChecks.Run(dashboard);
                 Phase("network page");
                 NetworkPageUiChecks.Run(dashboard);
+                Phase("sensors page");
+                SensorsPageUiChecks.Run(dashboard);
                 Phase("processes shell keys");
                 ProcessesPageUiChecks.CheckShellKeys(dashboard);
                 Phase("shell chrome");
