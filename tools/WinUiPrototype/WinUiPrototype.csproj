@@ -24,4 +24,12 @@
     <ProjectReference Include="../WinUiPrototype.Logic/WinUiPrototype.Logic.csproj" />
     <Content Include="../../assets/deadware.ico" Link="deadware.ico" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
+  <!-- dotnet publish omits an unpackaged app's own .pri and .xbf files, so the published app fails with
+       XamlParseException at start-up. Copy them from the build output. -->
+  <Target Name="CopyXamlResourcesOnPublish" AfterTargets="Publish">
+    <ItemGroup>
+      <XamlResourceFile Include="$(OutDir)*.pri;$(OutDir)**/*.xbf" Exclude="$(OutDir)publish/**" />
+    </ItemGroup>
+    <Copy SourceFiles="@(XamlResourceFile)" DestinationFiles="@(XamlResourceFile->'$(PublishDir)%(RecursiveDir)%(Filename)%(Extension)')" SkipUnchangedFiles="true" />
+  </Target>
 </Project>

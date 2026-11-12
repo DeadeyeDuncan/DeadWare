@@ -44,23 +44,6 @@ jobs:
           $folder = (Get-ChildItem artifacts/prototype/DeadWare.WinUiPrototype -File -Recurse | Measure-Object Length -Sum).Sum
           $zip = (Get-Item artifacts/prototype/DeadWare.WinUiPrototype.zip).Length
           "Published size: $folder bytes folder, $zip bytes ZIP" | Tee-Object -FilePath $env:GITHUB_STEP_SUMMARY -Append
-      - name: Diagnose XAML load (temporary)
-        shell: pwsh
-        continue-on-error: true
-        run: |
-          'Published root files:'
-          Get-ChildItem artifacts/prototype/DeadWare.WinUiPrototype -File | Where-Object { $_.Extension -in '.pri', '.xbf', '.exe', '.json' -or $_.Name -like 'DeadWare*' } | ForEach-Object { "  $($_.Name)  $($_.Length)" }
-          'Build output XAML and resource files:'
-          $bin = Get-ChildItem tools/WinUiPrototype/bin/Release -Recurse -Directory -Filter win-x64 | Select-Object -First 1
-          Get-ChildItem $bin.FullName -File -Recurse | Where-Object { $_.Extension -in '.pri', '.xbf' } | ForEach-Object { "  $([IO.Path]::GetRelativePath($bin.FullName, $_.FullName))  $($_.Length)" }
-          'Launch from the build output:'
-          $err = Join-Path $env:RUNNER_TEMP 'bin-error.txt'
-          $p = Start-Process -FilePath (Join-Path $bin.FullName 'DeadWare.WinUiPrototype.exe') -ArgumentList @('--error-file', "`"$err`"") -PassThru
-          Start-Sleep -Seconds 15
-          $p.Refresh()
-          "  exited=$($p.HasExited) title='$($p.MainWindowTitle)'"
-          if (Test-Path -LiteralPath $err) { Get-Content -LiteralPath $err -TotalCount 6 }
-          if (-not $p.HasExited) { $p.Kill($true) }
       - name: Smoke check
         shell: pwsh
         run: |
