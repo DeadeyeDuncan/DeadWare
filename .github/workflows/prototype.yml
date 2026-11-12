@@ -72,6 +72,19 @@ jobs:
             $process = Start-Prototype $case.Extra
             try { Wait-Title $process $case.Title } finally { Stop-Prototype $process }
           }
+          # Six charts sampled once a second must draw: the app records its draw count and exits by itself.
+          foreach ($extra in @(@(), @('--no-mica'))) {
+            Remove-Item -LiteralPath "$errorFile.frames" -ErrorAction SilentlyContinue
+            $process = Start-Prototype (@('--exit-after', '10') + $extra)
+            try {
+              if (-not $process.WaitForExit(40000)) { throw 'The prototype did not exit 10 s after --exit-after 10.' }
+              if (Test-Path -LiteralPath $errorFile) { throw "The prototype wrote an error file: $(Get-Content -LiteralPath $errorFile -Raw)" }
+              if (-not (Test-Path -LiteralPath "$errorFile.frames")) { throw 'No frames file was written.' }
+              $frames = [long](Get-Content -LiteralPath "$errorFile.frames" -Raw)
+              "Frames drawn in 10 s ($($extra -join ' ')): $frames"
+              if ($frames -lt 30) { throw "Only $frames chart draws in 10 s; expected at least 30." }
+            } finally { Stop-Prototype $process }
+          }
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: WinUiPrototype-win-x64
