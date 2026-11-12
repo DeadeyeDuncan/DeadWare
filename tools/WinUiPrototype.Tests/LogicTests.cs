@@ -65,4 +65,11 @@ public class LogicTests
         var runs = ChartGeometry.Runs(s, 400, 100, 0, 100);
         Assert.Equal(100f, runs[0][0].Y); Assert.Equal(0f, runs[0][1].Y);
     }
+    [Fact] public void Fill_tops_the_series_up_to_capacity_from_the_source()
+    {
+        var s = new SampleSeries(600); s.Add(1);
+        s.Fill(new SyntheticSource(3));
+        Assert.Equal(600, s.Count); Assert.Equal(1, s[0]);
+        Assert.Equal(6, Enumerable.Range(0, 600).Count(i => s[i] is null)); // every 97th of 599 calls
+    }
 }

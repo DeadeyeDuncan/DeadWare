@@ -20,4 +20,10 @@ public sealed class SampleSeries(int capacity)
         if (Count < items.Length) { items[(start + Count) % items.Length] = value; Count++; }
         else { items[start] = value; start = (start + 1) % items.Length; }
     }
+
+    /// <summary>Tops the series up to capacity, so a chart starts with a full window as a running app would have.</summary>
+    public void Fill(SyntheticSource source)
+    {
+        while (Count < Capacity) Add(source.Next());
+    }
 }

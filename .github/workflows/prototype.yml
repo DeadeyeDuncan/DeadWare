@@ -124,7 +124,7 @@ jobs:
           $exe = Join-Path $published 'DeadWare.WinUiPrototype.exe'
           function Invoke-Measure([hashtable]$Parameters) {
             if (-not $Parameters.ContainsKey('Runs')) { $Parameters.Runs = 1 }
-            & ./scripts/measure-ui.ps1 @Parameters -SteadySeconds 5 | Out-Host
+            & ./scripts/measure-ui.ps1 @Parameters -SteadySeconds 5 -SettleSeconds 2 | Out-Host
             $LASTEXITCODE
           }
           function Read-Result([string]$Path) { Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json }
@@ -153,6 +153,7 @@ jobs:
           Assert ($code -eq 0 -and $result.runs.Count -eq 2) 'hides: two runs are recorded'
           Assert (@($result.runs | Where-Object { $_.hidden.privateBytes -gt 0 }).Count -eq 2) 'hides: both runs have hidden figures'
           Assert ($result.exe -eq 'DeadWare.WinUiPrototype.exe') 'hides: exe holds the file name only'
+          Assert ($result.settleSeconds -eq 2) 'hides: the settle time before sampling is recorded'
           Assert (-not (Get-Process -Name DeadWare.WinUiPrototype -ErrorAction SilentlyContinue)) 'hides: no prototype process is left'
 
           # 4. Spaces in the executable and output paths.

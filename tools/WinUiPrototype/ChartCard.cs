@@ -30,8 +30,9 @@ internal sealed class ChartCard : UserControl
     {
         this.unit = unit;
         source = new SyntheticSource(seed);
+        series.Fill(source); // a full window from the start: an empty chart would understate the drawing work
         reading.Style = (Style)Application.Current.Resources["TitleTextBlockStyle"];
-        reading.Text = "—";
+        reading.Text = series.Latest is { } first ? $"{first:0.0} {unit}" : "—";
         canvas.Draw += OnDraw;
         canvas.Margin = new Thickness(0, 8, 0, 0);
         if (App.Smooth) ElementCompositionPreview.SetIsTranslationEnabled(canvas, true);
