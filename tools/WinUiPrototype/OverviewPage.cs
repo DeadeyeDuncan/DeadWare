@@ -1,6 +1,7 @@
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Media;
 
 namespace WinUiPrototype;
 
@@ -15,6 +16,7 @@ internal sealed class OverviewPage : Page
 
     private readonly List<ChartCard> cards = [];
     private readonly DispatcherQueueTimer timer;
+    private bool drawing = true;
 
     public OverviewPage()
     {
@@ -34,13 +36,29 @@ internal sealed class OverviewPage : Page
         timer = DispatcherQueue.GetForCurrentThread().CreateTimer();
         timer.Interval = TimeSpan.FromSeconds(1);
         timer.Tick += (_, _) => { foreach (var card in cards) card.Tick(); };
-        Loaded += (_, _) => timer.Start();
-        Unloaded += (_, _) => timer.Stop();
+        Loaded += (_, _) =>
+        {
+            timer.Start();
+            if (App.Smooth) CompositionTarget.Rendering += OnRendering;
+        };
+        Unloaded += (_, _) =>
+        {
+            timer.Stop();
+            CompositionTarget.Rendering -= OnRendering;
+        };
+    }
+
+    /// <summary>With <c>--smooth</c>: redraw every card each frame, unless the window is hidden.</summary>
+    private void OnRendering(object? sender, object args)
+    {
+        if (!drawing) return;
+        foreach (var card in cards) card.Animate();
     }
 
     /// <summary>Turns chart redraws off while the window is hidden; sampling carries on either way.</summary>
     public void SetDrawing(bool enabled)
     {
+        drawing = enabled;
         foreach (var card in cards)
         {
             card.Drawing = enabled;

@@ -23,15 +23,17 @@ You need PowerShell 7 (`pwsh`), the .NET 10 SDK, and this branch checked out.
    ```powershell
    pwsh -File scripts/measure-ui.ps1 -Exe 'C:\Temp\DeadWare.WinUiPrototype\DeadWare.WinUiPrototype.exe' -Label winui-prototype -Out artifacts/measurements/ui-winui-prototype.json
 
+   pwsh -File scripts/measure-ui.ps1 -Exe 'C:\Temp\DeadWare.WinUiPrototype\DeadWare.WinUiPrototype.exe' -Arguments '--smooth' -Label winui-prototype-smooth -Out artifacts/measurements/ui-winui-prototype-smooth.json
+
    dotnet build tools/OverviewPreview -c Release
    pwsh -File scripts/measure-ui.ps1 -Exe tools/OverviewPreview/bin/Release/net10.0-windows/DeadWare.OverviewPreview.exe -Label wpf-overview-preview -Out artifacts/measurements/ui-wpf-overview-preview.json
 
    pwsh -File scripts/measure-ui.ps1 -Exe 'C:\path\to\installed\DeadWare.exe' -Label wpf-installed -Out artifacts/measurements/ui-wpf-installed.json
    ```
 
-4. Send back the three files from `artifacts/measurements/`. They hold the executable's file name, the Windows build, processor and video adapter names, the display scale and the measurements; no paths or user names.
+4. Send back the four files from `artifacts/measurements/`. They hold the executable's file name, the Windows build, processor and video adapter names, the display scale and the measurements; no paths or user names.
 
-The script ends each launch by killing the process it started. For the installed app that is an abrupt stop three times over: its SQLite histories are crash-safe, but the last minute or so of readings from those launches can be lost, as after any crash. Skip the third command if you would rather not; the comparison that matters is the first two.
+The script ends each launch by killing the process it started. For the installed app that is an abrupt stop three times over: its SQLite histories are crash-safe, but the last minute or so of readings from those launches can be lost, as after any crash. Skip the last command if you would rather not; the comparison that matters is the first three.
 
 The installed-app figures are a reference, not a like-for-like comparison: that app does real sensor work, while the prototype and the preview only draw made-up data.
 
@@ -45,12 +47,13 @@ Run the extracted `DeadWare.WinUiPrototype.exe` directly and note yes or no for 
 4. A right click on the icon shows **Open** and **Quit**, and the menu goes away when you click elsewhere.
 5. **Quit** removes the icon and ends the process (nothing named `DeadWare.WinUiPrototype` is left in Task Manager).
 
-Also worth a glance: whether the six charts move smoothly once a second, and how the window feels to resize.
+Also worth a glance: run it once more with `--smooth` and see whether the six charts scroll smoothly, and how the window feels to resize.
 
 ## Command line
 
 | Argument | Effect |
 |---|---|
 | `--no-mica` | Forces the solid background used where Mica is unavailable. The title then reads `DeadWare prototype (solid)`. |
+| `--smooth` | Redraws the charts every frame and scrolls the trace between samples, as the WPF charts do. Without it the charts redraw once a second. This is the like-for-like mode for comparing CPU with the WPF preview. |
 | `--error-file <path>` | Where an unhandled error, or a tray that could not be added, is written. |
 | `--exit-after <seconds>` | Writes the number of chart draws to `<error-file>.frames` and exits. Used by the workflow. |

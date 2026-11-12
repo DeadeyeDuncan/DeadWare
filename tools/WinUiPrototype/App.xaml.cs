@@ -7,6 +7,8 @@ public partial class App : Application
 {
     /// <summary>True when <c>--no-mica</c> forces the solid fallback background.</summary>
     internal static bool NoMica { get; private set; }
+    /// <summary>True when <c>--smooth</c> redraws the charts every frame, scrolling between samples as the WPF charts do.</summary>
+    internal static bool Smooth { get; private set; }
     /// <summary>The path given after <c>--error-file</c>, or null.</summary>
     internal static string? ErrorFile { get; private set; }
 
@@ -21,6 +23,7 @@ public partial class App : Application
         for (int i = 1; i < args.Length; i++)
         {
             if (args[i] == "--no-mica") NoMica = true;
+            else if (args[i] == "--smooth") Smooth = true;
             else if (args[i] == "--error-file" && i + 1 < args.Length) ErrorFile = args[++i];
             else if (args[i] == "--exit-after" && i + 1 < args.Length && int.TryParse(args[++i], out int seconds) && seconds > 0) exitAfter = seconds;
         }

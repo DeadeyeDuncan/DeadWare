@@ -4,6 +4,7 @@ using Microsoft.Graphics.Canvas.UI.Xaml;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
+using System.Diagnostics;
 using System.Numerics;
 using Windows.UI;
 using WinUiPrototype.Logic;
@@ -22,6 +23,7 @@ internal sealed class ChartCard : UserControl
     private readonly string unit;
     private readonly TextBlock reading = new();
     private readonly CanvasControl canvas = new();
+    private long lastSample = Stopwatch.GetTimestamp();
 
     public ChartCard(string title, string unit, int seed)
     {
@@ -59,9 +61,13 @@ internal sealed class ChartCard : UserControl
     public void Tick()
     {
         series.Add(source.Next());
+        lastSample = Stopwatch.GetTimestamp();
         if (!Drawing) return;
         Refresh();
     }
+
+    /// <summary>Redraws without a new sample, so the trace scrolls between samples.</summary>
+    public void Animate() => canvas.Invalidate();
 
     /// <summary>Brings the reading and chart up to date with the samples taken while hidden.</summary>
     public void Refresh()
@@ -90,25 +96,30 @@ internal sealed class ChartCard : UserControl
         session.DrawText("100", 0, 0, ink, LabelFormat);
         session.DrawText("0", 0, height - 14, ink, LabelFormat);
 
+        // With --smooth the trace slides left by one sample's width over the second after each sample.
+        float left = LabelGutter;
+        if (App.Smooth && series.Capacity > 1)
+            left -= (float)Math.Min(1, Stopwatch.GetElapsedTime(lastSample).TotalSeconds) * width / (series.Capacity - 1);
+
         foreach (var run in ChartGeometry.Runs(series, width, height, 0, 100))
         {
             if (run.Count == 1)
             {
-                session.FillCircle(LabelGutter + run[0].X, run[0].Y, 2, accent);
+                session.FillCircle(left + run[0].X, run[0].Y, 2, accent);
                 continue;
             }
             using (var fill = new CanvasPathBuilder(sender))
             {
-                fill.BeginFigure(LabelGutter + run[0].X, height);
-                foreach (var point in run) fill.AddLine(LabelGutter + point.X, point.Y);
-                fill.AddLine(LabelGutter + run[^1].X, height);
+                fill.BeginFigure(left + run[0].X, height);
+                foreach (var point in run) fill.AddLine(left + point.X, point.Y);
+                fill.AddLine(left + run[^1].X, height);
                 fill.EndFigure(CanvasFigureLoop.Closed);
                 using var area = CanvasGeometry.CreatePath(fill);
                 session.FillGeometry(area, Color.FromArgb(64, accent.R, accent.G, accent.B));
             }
             using var trace = new CanvasPathBuilder(sender);
-            trace.BeginFigure(new Vector2(LabelGutter + run[0].X, run[0].Y));
-            for (int i = 1; i < run.Count; i++) trace.AddLine(LabelGutter + run[i].X, run[i].Y);
+            trace.BeginFigure(new Vector2(left + run[0].X, run[0].Y));
+            for (int i = 1; i < run.Count; i++) trace.AddLine(left + run[i].X, run[i].Y);
             trace.EndFigure(CanvasFigureLoop.Open);
             using var path = CanvasGeometry.CreatePath(trace);
             session.DrawGeometry(path, accent, 2);
