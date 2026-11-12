@@ -13,7 +13,7 @@ public class NativePlacementMinimumTests
     {
         var saved=new WindowPlacement(1300,50,300,200,true);
         WorkArea[] areas=[new(0,0,1600,480),new(1600,0,2560,1440)];
-        var type=typeof(Collector).Assembly.GetType("DeadWare.App.NativePlacement")!;
+        var type=typeof(UiSession).Assembly.GetType("DeadWare.App.NativePlacement")!;
         double minimum=(double)type.GetMethod("MinimumHeightForWorkArea",BindingFlags.Static|BindingFlags.Public)!.Invoke(null,[saved,areas,670d,(uint)dpi])!;
         Assert.Equal(480/(dpi/96d),minimum);
         var placement=Constrain(saved,areas,300,minimum,(uint)dpi);
@@ -25,7 +25,7 @@ public class NativePlacementMinimumTests
     [InlineData(96)] [InlineData(144)] [InlineData(192)]
     public void Scrollable_widget_retains_readable_requested_minimum_on_a_tall_work_area(int dpi)
     {
-        var type=typeof(Collector).Assembly.GetType("DeadWare.App.NativePlacement")!;
+        var type=typeof(UiSession).Assembly.GetType("DeadWare.App.NativePlacement")!;
         double minimum=(double)type.GetMethod("MinimumHeightForWorkArea",BindingFlags.Static|BindingFlags.Public)!.Invoke(null,[new WindowPlacement(20,20,340,300,false),new WorkArea[]{new(0,0,3840,2160)},670d,(uint)dpi])!;
         Assert.Equal(670,minimum);
     }
@@ -85,7 +85,7 @@ public class NativePlacementMinimumTests
 
     private static WindowPlacement Constrain(WindowPlacement saved,WorkArea[] areas,double minWidth,double minHeight,uint dpi)
     {
-        var type=typeof(Collector).Assembly.GetType("DeadWare.App.NativePlacement")!;
+        var type=typeof(UiSession).Assembly.GetType("DeadWare.App.NativePlacement")!;
         var method=type.GetMethod("ClampMinimum",BindingFlags.Static|BindingFlags.Public|BindingFlags.NonPublic);
         Assert.NotNull(method);
         return (WindowPlacement)method.Invoke(null,[saved,areas,minWidth,minHeight,dpi])!;

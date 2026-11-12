@@ -22,7 +22,7 @@ public class BatteryUiTests
     [Fact]
     public void Charge_trace_only_connects_contiguous_known_observations_in_the_same_segment()
     {
-        var type = typeof(Collector).Assembly.GetType("DeadWare.App.BatteryHistoryChart"); Assert.NotNull(type);
+        var type = typeof(UiSession).Assembly.GetType("DeadWare.App.BatteryHistoryChart"); Assert.NotNull(type);
         var method = type.GetMethod("CanConnect", All)!; Assert.NotNull(method);
         var start = DateTimeOffset.UtcNow;
         var first = Bucket(start); var next = Bucket(start.AddMinutes(1));
@@ -95,7 +95,7 @@ public class BatteryUiTests
                 CpuCoreStyleUiChecks.Run();
                 CpuCoreStyleUiChecks.RunWindow();
                 Phase("battery history");
-                var assembly = typeof(Collector).Assembly;
+                var assembly = typeof(UiSession).Assembly;
                 var pageType = assembly.GetType("DeadWare.App.BatteryHistoryPage"); Assert.NotNull(pageType);
                 var session = (UiSession)RuntimeHelpers.GetUninitializedObject(typeof(UiSession));
                 var collector = (Collector)RuntimeHelpers.GetUninitializedObject(typeof(Collector));

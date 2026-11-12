@@ -1,10 +1,7 @@
 using System.Net;
 using System.IO;
-using System.Runtime.CompilerServices;
 using DeadWare.Core;
 using MaxMind.Db;
-
-[assembly: InternalsVisibleTo("DeadWare.App.Tests")]
 
 namespace DeadWare.App;
 
