@@ -249,9 +249,10 @@ internal static class ConnectionsWidgetUiChecks
         Assert.Same(button,FocusManager.GetFocusedElement(widget));
     }
 
-    internal static void CheckSettings(UiSession session,Panel settings,string path)
+    internal static void CheckSettings(UiSession session,TabControl settings,string path)
     {
-        var choice=Assert.Single(Elements(settings).OfType<CheckBox>(),c=>c.Content?.ToString()=="Connections map (live)");
+        var widget=Assert.Single(settings.Items.OfType<TabItem>(),tab=>tab.Header?.ToString()=="Widget");settings.SelectedItem=widget;settings.UpdateLayout();
+        var choice=Assert.Single(Elements(Assert.IsType<StackPanel>(widget.Content)).OfType<CheckBox>(),c=>c.Content?.ToString()=="Connections map (live)");
         Assert.False(choice.IsChecked);Assert.False(session.Settings.WidgetConnectionsMap);
         choice.IsChecked=true;Assert.True(session.Settings.WidgetConnectionsMap);
         Assert.True(ReadSavedSettings(session,path).WidgetConnectionsMap);

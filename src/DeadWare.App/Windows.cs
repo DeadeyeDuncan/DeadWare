@@ -1,5 +1,7 @@
 using System.ComponentModel;
 using System.Windows;
+using System.Windows.Automation;
+using System.Windows.Automation.Peers;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Data;
@@ -44,12 +46,21 @@ public sealed class MainWindow : Window
     private readonly CheckBox alertNotifications=new() {Content="Show tray notifications for alerts",Margin=new Thickness(0,8,0,8)};
     private readonly CheckBox startup=new() {Content="Start with Windows (administrator)",Margin=new Thickness(0,22,0,8)};
     private readonly TextBlock startupStatus=Ui.Text("Startup status is checked when this page opens.",12,"Muted"),startupResult=Ui.Text("",12,"Warning");
+    private readonly TextBlock settingsStatus=Ui.Text("",12,"Warning");
+    private Border settingsStatusCard=null!;
+    private Button settingsHistory=null!;
+    private HistoryClearProgressView settingsClearProgress=null!;
+    /// <summary>Raised when the Settings status banner announces a change to assistive technology; tests count it.</summary>
+    internal event Action<string>? SettingsStatusAnnounced;
+    private string announcedStatus="";
+    internal TabControl SettingsTabs {get;}=new();
+    internal TabItem SettingsTab(string header)=>SettingsTabs.Items.Cast<TabItem>().Single(tab=>Equals(tab.Header,header));
     private Button startupRepair=null!,startupDisable=null!,startupRefresh=null!,batteryNavigation=null!;
     private string page="overview",gpuSignature="";
     private ExcludedAppsBlock? excludedApps;
     private bool syncingGpu;
     private bool refreshingSensors;
-    private bool syncingStartup,startupBusy,syncingWidgetGraphs;
+    private bool syncingStartup,startupBusy,syncingWidgetGraphs,startupQueryFailed;
     private readonly TextBlock trayNotice=Ui.Text("Close hides to the system tray.\nQuit stops monitoring.",10,"Muted");
     private readonly TextBlock monitoringInfo=Ui.Text("",10,"Muted");
     /// <summary>Shows the dashboard window; the checks replace it so that no native window is created.</summary>
@@ -81,8 +92,8 @@ public sealed class MainWindow : Window
         gpu.SelectionChanged+=(_,_)=>{if(!syncingGpu)session.SetGpu((gpu.SelectedItem as Device)?.Id);};
         main.Children.Add(content);
         pages["overview"]=Overview();pages["network"]=Network();pages["storage"]=new StoragePage(session);pages["processes"]=new ProcessesPage(session);pages["connections"]=new ConnectionsPage(session);pages["cooling"]=new CoolingHealthPage(session);pages["battery"]=new BatteryHistoryPage(session);pages["usage"]=new UsageHistoryPage(session);pages["alerts"]=new AlertsPage(session);pages["sensors"]=Sensors();pages["desktop"]=Desktop();pages["updates"]=new UpdatesPage(session);Navigate("overview");
-        session.Changed+=Refresh;session.Updates.Changed+=RefreshUpdateNotice;session.UsageDayRequested+=ShowUsageDay;session.ConnectionsHistoryRequested+=ShowConnectionsHistory;
-        Closed+=(_,_)=>{session.Changed-=Refresh;session.Updates.Changed-=RefreshUpdateNotice;session.UsageDayRequested-=ShowUsageDay;session.ConnectionsHistoryRequested-=ShowConnectionsHistory;};Closing+=OnClosing;
+        session.Changed+=Refresh;session.Changed+=UpdateSettingsStatus;session.HistoryClearChanged+=SettingsClearChanged;session.Updates.Changed+=RefreshUpdateNotice;session.UsageDayRequested+=ShowUsageDay;session.ConnectionsHistoryRequested+=ShowConnectionsHistory;
+        Closed+=(_,_)=>{session.Changed-=Refresh;session.Changed-=UpdateSettingsStatus;session.HistoryClearChanged-=SettingsClearChanged;session.Updates.Changed-=RefreshUpdateNotice;session.UsageDayRequested-=ShowUsageDay;session.ConnectionsHistoryRequested-=ShowConnectionsHistory;};Closing+=OnClosing;
         RefreshUpdateNotice();
         IsVisibleChanged+=(_,_)=>{if(IsVisible)Refresh();};
         KeyDown+=(_,e)=>{if(PageKey(e.OriginalSource,e.Key,Keyboard.Modifiers))e.Handled=true;};
@@ -97,26 +108,31 @@ public sealed class MainWindow : Window
     private FrameworkElement Overview()=>new OverviewPage(session,memory);
     private FrameworkElement Network()
     {
-        var grid=new Grid();grid.RowDefinitions.Add(new(){Height=new GridLength(.9,GridUnitType.Star),MinHeight=220,MaxHeight=265});grid.RowDefinitions.Add(new(){Height=GridLength.Auto});grid.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star),MinHeight=72});grid.RowDefinitions.Add(new(){Height=GridLength.Auto});
+        var grid=new Grid();grid.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star),MinHeight=300});grid.RowDefinitions.Add(new(){Height=GridLength.Auto});grid.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star),MinHeight=160});grid.RowDefinitions.Add(new(){Height=GridLength.Auto});
         grid.Children.Add(new ChartCard(session,"network"));
-        var controls=new StackPanel {Margin=new Thickness(8,8,8,12)};networkStatus.Margin=new(0,0,0,10);controls.Children.Add(networkStatus);appSearch.ToolTip="Search application name or PID";System.Windows.Automation.AutomationProperties.SetName(appSearch,"Search applications");
-        var searchLabel=Ui.Text("Find application",12,"Muted");searchLabel.Margin=new(0,0,12,0);controls.Children.Add(Ui.Row(searchLabel,appSearch));appSearch.TextChanged+=(_,_)=>RefreshTables();
-        controls.Margin=new Thickness(0);var networkStrip=Ui.Panel(controls,new Thickness(14,10,14,10));networkStrip.Margin=new Thickness(6,2,6,10);Grid.SetRow(networkStrip,1);grid.Children.Add(networkStrip);
+        var controls=new StackPanel();networkStatus.Margin=new(0,0,0,10);controls.Children.Add(networkStatus);appSearch.ToolTip="Search application name or PID";System.Windows.Automation.AutomationProperties.SetName(appSearch,"Search applications");
+        var searchLabel=Ui.Text("Find application",12,"Muted");searchLabel.Margin=new(0,0,12,0);var search=new WrapPanel();search.Children.Add(searchLabel);search.Children.Add(appSearch);networkEmpty.Margin=new(16,0,0,0);networkEmpty.VerticalAlignment=VerticalAlignment.Center;search.Children.Add(networkEmpty);controls.Children.Add(search);appSearch.TextChanged+=(_,_)=>RefreshTables();
+        var controlsCard=Ui.Panel(controls,new Thickness(14,10,14,10));controlsCard.Margin=new Thickness(6,2,6,10);Grid.SetRow(controlsCard,1);grid.Children.Add(controlsCard);
         Column(apps,"Application","Name",2,new NotRecordedNameColumn(session));Column(apps,"PID","Pid",.6);Column(apps,"↓ Download","Download",1);Column(apps,"↑ Upload","Upload",1);Column(apps,"Received","Received",1);Column(apps,"Sent","Sent",1);
-        var table=Ui.Panel(apps,new Thickness(0));table.Margin=new Thickness(6,0,6,0);Grid.SetRow(table,2);grid.Children.Add(table);var foot=new StackPanel {Margin=new Thickness(8)};foot.Children.Add(networkEmpty);foot.Children.Add(Ui.Text("Per-app totals cover each current process lifetime in this monitoring session. Exited processes are removed. ETW attribution is approximate and differs from interface totals. No packet payloads are captured. Apps marked not recorded are in Settings → Don't record these apps; their traffic isn't saved.",11,"Muted"));Grid.SetRow(foot,3);grid.Children.Add(foot);return grid;
+        var table=Ui.Panel(apps,new Thickness(0));table.Margin=new Thickness(6,0,6,0);Grid.SetRow(table,2);grid.Children.Add(table);
+        var about=new Expander {Header="About these totals",IsExpanded=false,Content=Ui.Text("Per-app totals cover each current process lifetime in this monitoring session. Exited processes are removed. ETW attribution is approximate and differs from interface totals. No packet payloads are captured. Apps marked not recorded are in Settings → Don't record these apps; their traffic isn't saved.",11,"Muted")};
+        var aboutCard=Ui.Panel(about,new Thickness(14,6,14,6));aboutCard.Margin=new Thickness(6,10,6,6);Grid.SetRow(aboutCard,3);grid.Children.Add(aboutCard);
+        var scroller=new FillingScroller(grid,width=>{var size=new Size(width,double.PositiveInfinity);controlsCard.Measure(size);aboutCard.Measure(size);return controlsCard.DesiredSize.Height+aboutCard.DesiredSize.Height+300+160;});
+        controlsCard.SizeChanged+=(_,_)=>scroller.InvalidateMeasure();aboutCard.SizeChanged+=(_,_)=>scroller.InvalidateMeasure();scroller.ForwardWheelFrom(apps);return scroller;
     }
     private FrameworkElement Sensors()
     {
-        var grid=new Grid();grid.RowDefinitions.Add(new(){Height=GridLength.Auto});grid.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});grid.RowDefinitions.Add(new(){Height=GridLength.Auto});
-        var label=Ui.Text("Find sensor or hardware",12,"Muted");label.Margin=new(0,0,12,0);var search=Ui.Row(label,sensorSearch);var sensorStrip=Ui.Panel(search,new Thickness(14,10,14,10));sensorStrip.Margin=new(6,2,6,12);grid.Children.Add(sensorStrip);sensorSearch.ToolTip="Search sensors and device names";System.Windows.Automation.AutomationProperties.SetName(sensorSearch,"Search sensors");sensorSearch.TextChanged+=(_,_)=>RefreshTables();
+        var grid=new Grid();grid.RowDefinitions.Add(new(){Height=GridLength.Auto});grid.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});
+        // The count and statistics line shares the search card: beside the search when there is room, wrapped under it when narrow.
+        var label=Ui.Text("Find sensor or hardware",12,"Muted");label.Margin=new(0,0,12,0);var search=new WrapPanel();search.Children.Add(label);search.Children.Add(sensorSearch);sensorCount.Margin=new(16,0,0,0);sensorCount.VerticalAlignment=VerticalAlignment.Center;search.Children.Add(sensorCount);var sensorStrip=Ui.Panel(search,new Thickness(14,10,14,10));sensorStrip.Margin=new(6,2,6,12);grid.Children.Add(sensorStrip);sensorSearch.ToolTip="Search sensors and device names";System.Windows.Automation.AutomationProperties.SetName(sensorSearch,"Search sensors");sensorSearch.TextChanged+=(_,_)=>RefreshTables();
         Column(sensors,"Hardware / sensor","Name",3);Column(sensors,"Current","Current",1);Column(sensors,"Min","Minimum",1);Column(sensors,"Average","Average",1);Column(sensors,"Max","Maximum",1);
-        var table=Ui.Panel(sensors,new Thickness(0));table.Margin=new Thickness(6,0,6,0);Grid.SetRow(table,1);grid.Children.Add(table);Grid.SetRow(sensorCount,2);sensorCount.Margin=new(8,12,8,0);grid.Children.Add(sensorCount);return grid;
+        var table=Ui.Panel(sensors,new Thickness(0));table.Margin=new Thickness(6,0,6,6);Grid.SetRow(table,1);grid.Children.Add(table);return grid;
     }
     private FrameworkElement Desktop()
     {
         var stack=new StackPanel {Margin=new Thickness(8)};
         StackPanel monitoring=new(),appearance=new(),widgetGroup=new(),popouts=new(),startupGroup=new(),history=new();
-        stack.Children.Add(Ui.Heading("Your readings, wherever you need them",20));var intro=Ui.Text("Open any graph in its own resizable native window. Choose Always on top to keep it visible while you work. All windows share the same readings, selected GPU, history range and theme.",14,"Muted");intro.Margin=new(0,12,0,24);stack.Children.Add(intro);
+        popouts.Children.Add(Ui.Heading("Your readings, wherever you need them",16));var intro=Ui.Text("Open any graph in its own resizable native window. Choose Always on top to keep it visible while you work. All windows share the same readings, selected GPU, history range and theme.",12,"Muted");intro.Margin=new(0,12,0,24);popouts.Children.Add(intro);
         var polling=new ComboBox {ItemsSource=PollingPolicy.Intervals.Select(seconds=>new PollingChoice(seconds,seconds==1?"1 second (default)":$"{seconds:0.#} seconds")).ToArray(),DisplayMemberPath="Label",SelectedValuePath="Seconds",SelectedValue=session.Settings.PollingIntervalSeconds,MinWidth=160};
         System.Windows.Automation.AutomationProperties.SetName(polling,"Data polling interval");
         polling.SelectionChanged+=(_,_)=>{if(polling.SelectedValue is double seconds)session.SetPollingInterval(seconds);};
@@ -199,7 +215,7 @@ public sealed class MainWindow : Window
         var clearHeading=Ui.Heading(HistoryClearCopy.SettingsHeading,16);clearHeading.Margin=new(0,20,0,0);history.Children.Add(clearHeading);
         var clearHelp=Ui.Text(HistoryClearCopy.SettingsHelp,12,"Muted");clearHelp.Margin=new(0,0,0,8);history.Children.Add(clearHelp);
         history.Children.Add(ClearHistoryEntry.Create(session,()=>this));
-        history.Children.Add(new HistoryClearProgressView(session,closeButton:false) {Margin=new Thickness(0,10,0,0)});
+        settingsClearProgress=new HistoryClearProgressView(session,closeButton:false) {Margin=new Thickness(0,10,0,0)};history.Children.Add(settingsClearProgress);
         var popoutLabel=Ui.Text("Graph pop-outs",14);popoutLabel.Margin=new(0,0,0,8);popouts.Children.Add(popoutLabel);
         joinedPopouts.IsChecked=session.Settings.JoinCpuGpuPopouts;
         System.Windows.Automation.AutomationProperties.SetName(joinedPopouts,"Join CPU and GPU graphs in pop-outs");
@@ -214,18 +230,21 @@ public sealed class MainWindow : Window
         startupGroup.Children.Add(startup);startupGroup.Children.Add(startupStatus);startupResult.Margin=new(0,8,0,4);startupGroup.Children.Add(startupResult);
         var startInTray=new CheckBox {Content="Start in the system tray",IsChecked=session.Settings.StartInTray,Margin=new Thickness(0,10,0,6)};
         startInTray.Checked+=(_,_)=>session.SetStartInTray(true);startInTray.Unchecked+=(_,_)=>session.SetStartInTray(false);startupGroup.Children.Add(startInTray);
-        startupGroup.Children.Add(Ui.Text("At Windows sign-in, hide only the dashboard. Graphs and the widget still follow the reopen setting above. Manual launches show the dashboard.",12,"Muted"));
+        startupGroup.Children.Add(Ui.Text("At Windows sign-in, hide only the dashboard. Graphs and the widget still follow the reopen setting in Pop-outs. Manual launches show the dashboard.",12,"Muted"));
         startupRepair=Ui.Button("Enable / repair startup",()=>_ = ChangeStartupAsync(true));
         startupDisable=Ui.Button("Disable startup",()=>_ = ChangeStartupAsync(false));
         startupRefresh=Ui.Button("Refresh status",()=>_ = RefreshStartupAsync());
-        var startupButtons=new WrapPanel();startupButtons.Children.Add(startupRepair);startupButtons.Children.Add(startupDisable);startupButtons.Children.Add(startupRefresh);startupGroup.Children.Add(startupButtons);
-        startupGroup.Children.Add(Ui.Text("Windows asks for administrator approval when changing startup. This applies to your Windows account and this executable location. After copying DeadWare to a new location, start it from there and repair startup. The drive must be available when you sign in.",12,"Muted"));
+        var startupButtons=new WrapPanel();startupButtons.Children.Add(startupRepair);startupButtons.Children.Add(startupDisable);startupButtons.Children.Add(startupRefresh);
+        var startupRepairContent=new StackPanel();startupRepairContent.Children.Add(startupButtons);
+        startupRepairContent.Children.Add(Ui.Text("Windows asks for administrator approval when changing startup. This applies to your Windows account and this executable location. After copying DeadWare to a new location, start it from there and repair startup. The drive must be available when you sign in.",12,"Muted"));
+        startupGroup.Children.Add(new Expander {Header="Repair startup registration",IsExpanded=false,Content=startupRepairContent});
+        var sensorSources=new StackPanel();monitoring.Children.Add(new Expander {Header="Sensor sources",IsExpanded=false,Content=sensorSources});
         var extended=new CheckBox {Content="Extended sensors (may affect responsiveness)",IsChecked=session.Settings.ExtendedSensors,Margin=new Thickness(0,22,0,8)};
-        extended.Checked+=(_,_)=>session.SetExtendedSensors(true);extended.Unchecked+=(_,_)=>session.SetExtendedSensors(false);monitoring.Children.Add(extended);
-        monitoring.Children.Add(Ui.Text("Includes motherboard, controller, storage and memory sensors. Off by default. Restart DeadWare after changing this setting.",12,"Muted"));
+        extended.Checked+=(_,_)=>session.SetExtendedSensors(true);extended.Unchecked+=(_,_)=>session.SetExtendedSensors(false);sensorSources.Children.Add(extended);
+        sensorSources.Children.Add(Ui.Text("Includes motherboard, controller, storage and memory sensors. Off by default. Restart DeadWare after changing this setting.",12,"Muted"));
         var storageSensors=new CheckBox {Content="Storage sensors (temperature and health; restart to apply)",IsChecked=session.Settings.StorageSensors,Margin=new Thickness(0,14,0,8)};
-        storageSensors.Checked+=(_,_)=>session.SetStorageSensors(true);storageSensors.Unchecked+=(_,_)=>session.SetStorageSensors(false);monitoring.Children.Add(storageSensors);
-        monitoring.Children.Add(Ui.Text("Reads drive temperature, SMART health and wear from LibreHardwareMonitor every 30 seconds. Throughput and free space do not depend on this. Changing it takes effect after restarting DeadWare.",12,"Muted"));
+        storageSensors.Checked+=(_,_)=>session.SetStorageSensors(true);storageSensors.Unchecked+=(_,_)=>session.SetStorageSensors(false);sensorSources.Children.Add(storageSensors);
+        sensorSources.Children.Add(Ui.Text("Reads drive temperature, SMART health and wear from LibreHardwareMonitor every 30 seconds. Throughput and free space do not depend on this. Changing it takes effect after restarting DeadWare.",12,"Muted"));
         processMonitoring.IsChecked=session.Settings.ProcessMonitoring;
         System.Windows.Automation.AutomationProperties.SetName(processMonitoring,"Per-process monitoring");
         processMonitoring.Checked+=(_,_)=>{if(!syncingWidgetGraphs)session.SetProcessMonitoring(true);};
@@ -236,13 +255,43 @@ public sealed class MainWindow : Window
         cpuCoreUsage.Checked+=(_,_)=>{if(!syncingWidgetGraphs)session.SetCpuCoreUsage(true);};
         cpuCoreUsage.Unchecked+=(_,_)=>{if(!syncingWidgetGraphs)session.SetCpuCoreUsage(false);};monitoring.Children.Add(cpuCoreUsage);
         monitoring.Children.Add(Ui.Text("One thin line per core under the total on the CPU usage card, its pop-out and the widget. Core traces are kept in the six-hour graph history.",12,"Muted"));
-        foreach(var (title,group) in new[]{("Monitoring",monitoring),("Appearance",appearance),("Widget",widgetGroup),("Pop-outs",popouts),("Startup",startupGroup),("History and alerts",history)})stack.Children.Add(SettingsCard(title,group));
+        var statusContent=new StackPanel();statusContent.Children.Add(settingsStatus);AutomationProperties.SetLiveSetting(settingsStatus,AutomationLiveSetting.Polite);
+        settingsHistory=Ui.Button("Show in History and alerts",ShowClearProgress);settingsHistory.HorizontalAlignment=HorizontalAlignment.Left;settingsHistory.Margin=new(0,6,0,0);statusContent.Children.Add(settingsHistory);
+        settingsStatusCard=Ui.Panel(statusContent,new Thickness(16,10,16,10));settingsStatusCard.Margin=new(0,0,0,12);settingsStatusCard.Visibility=Visibility.Collapsed;stack.Children.Add(settingsStatusCard);
+        var tabs=SettingsTabs;AutomationProperties.SetName(tabs,"Settings categories");
+        foreach(var (title,group) in new[]{("Monitoring",monitoring),("Appearance",appearance),("Widget",widgetGroup),("Pop-outs",popouts),("Startup",startupGroup),("History and alerts",history)})tabs.Items.Add(new TabItem {Header=title,Content=group});
+        tabs.SelectedIndex=0;
+        stack.Children.Add(SettingsCard(tabs));UpdateSettingsStatus();
         return new ScrollViewer {Content=stack,VerticalScrollBarVisibility=ScrollBarVisibility.Auto,HorizontalScrollBarVisibility=ScrollBarVisibility.Disabled};
     }
-    private static Border SettingsCard(string title,UIElement body)
+    private static Border SettingsCard(UIElement body)
     {
-        var content=new StackPanel();var heading=Ui.Text(title,13);heading.FontWeight=FontWeights.SemiBold;heading.Margin=new(0,0,0,12);content.Children.Add(heading);content.Children.Add(body);
-        var card=new Border {Child=content,Padding=new Thickness(16,13,16,13),Margin=new Thickness(0,0,0,12)};card.SetResourceReference(StyleProperty,"Card");return card;
+        var card=Ui.Panel(body,new Thickness(16));card.Margin=new(0,0,0,12);return card;
+    }
+    private void SettingsClearChanged(HistoryClearStore _)=>UpdateSettingsStatus();
+    /// <summary>Selects History and alerts and scrolls the clear-progress results into view; the exclusions list above them can be long.</summary>
+    private void ShowClearProgress()
+    {
+        SettingsTabs.SelectedItem=SettingsTab("History and alerts");UpdateLayout();
+        settingsClearProgress.BringIntoView();
+        if(settingsClearProgress.TryAgain.IsEnabled&&settingsClearProgress.TryAgain.IsVisible)settingsClearProgress.TryAgain.Focus();else settingsClearProgress.Focus();
+    }
+    private void SetStartupResult(string text){startupResult.Text=text;UpdateSettingsStatus();}
+    private void UpdateSettingsStatus()
+    {
+        var lines=session.ClearLines();bool running=lines.Any(line=>line.State.Phase is HistoryClearPhase.Queued or HistoryClearPhase.Clearing);
+        string clear=running?HistoryClearCopy.Header(lines):lines.Any(line=>line.State.Phase is HistoryClearPhase.Failed or HistoryClearPhase.Unavailable)?HistoryClearCopy.Summary(lines):"";
+        string text=startupResult.Text.Length>0?startupResult.Text:startupQueryFailed?startupStatus.Text:"";
+        if(clear.Length>0)text+=(text.Length>0?" · ":"")+"Clear history · "+clear;
+        settingsHistory.Visibility=clear.Length>0?Visibility.Visible:Visibility.Collapsed;
+        settingsStatusCard.Visibility=text.Length>0?Visibility.Visible:Visibility.Collapsed;
+        if(settingsStatus.Text==text)return;
+        settingsStatus.Text=text;
+        // Announce a new message, not a percentage tick of the same one.
+        string announce=System.Text.RegularExpressions.Regex.Replace(text,@"\d+","#");
+        if(text.Length==0||announce==announcedStatus)return;
+        announcedStatus=announce;SettingsStatusAnnounced?.Invoke(text);
+        (UIElementAutomationPeer.FromElement(settingsStatus)??UIElementAutomationPeer.CreatePeerForElement(settingsStatus))?.RaiseAutomationEvent(AutomationEvents.LiveRegionChanged);
     }
     private void SetStartupBusy(bool busy)
     {
@@ -252,18 +301,19 @@ public sealed class MainWindow : Window
     {
         syncingStartup=true;startup.IsChecked=registration.Error is null?registration.Ready:null;syncingStartup=false;
         startupStatus.Text=registration.Message+(registration.Executable is null?"":"\nRegistered executable: "+registration.Executable)+(registration.Error is null?"":"\n"+registration.Error);
+        startupQueryFailed=registration.Error is not null;UpdateSettingsStatus();
         bool ownedOrUnknown=!registration.Registered||registration.Owned;
         startup.IsEnabled=ownedOrUnknown;startupRepair.IsEnabled=ownedOrUnknown;startupDisable.IsEnabled=ownedOrUnknown;
     }
     private async Task RefreshStartupAsync()
     {
-        if(startupBusy)return;SetStartupBusy(true);startupResult.Text="";
+        if(startupBusy)return;SetStartupBusy(true);SetStartupResult("");
         var registration=await Task.Run(StartupRegistration.Query);SetStartupBusy(false);ShowStartupStatus(registration);
     }
     private async Task ChangeStartupAsync(bool enabled)
     {
-        if(startupBusy)return;SetStartupBusy(true);startupResult.Text="Waiting for Windows administrator approval…";
-        var result=await StartupRegistration.ConfigureAsync(enabled);SetStartupBusy(false);ShowStartupStatus(result.Registration);startupResult.Text=result.Message;
+        if(startupBusy)return;SetStartupBusy(true);SetStartupResult("Waiting for Windows administrator approval…");
+        var result=await StartupRegistration.ConfigureAsync(enabled);SetStartupBusy(false);ShowStartupStatus(result.Registration);SetStartupResult(result.Message);
     }
     /// <summary>Adds a star-sized column with an upper-cased header: a text column bound to <paramref name="binding"/>, or <paramref name="column"/> sorted by it.</summary>
     private static void Column(DataGrid table,string title,string binding,double weight,DataGridColumn? column=null)

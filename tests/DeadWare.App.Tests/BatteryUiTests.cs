@@ -22,7 +22,7 @@ public class BatteryUiTests
     [Fact]
     public void Charge_trace_only_connects_contiguous_known_observations_in_the_same_segment()
     {
-        var type = typeof(Collector).Assembly.GetType("DeadWare.App.BatteryHistoryChart"); Assert.NotNull(type);
+        var type = typeof(UiSession).Assembly.GetType("DeadWare.App.BatteryHistoryChart"); Assert.NotNull(type);
         var method = type.GetMethod("CanConnect", All)!; Assert.NotNull(method);
         var start = DateTimeOffset.UtcNow;
         var first = Bucket(start); var next = Bucket(start.AddMinutes(1));
@@ -78,6 +78,8 @@ public class BatteryUiTests
                 ChartFrameUiChecks.Run();
                 Phase("thermal chart");
                 ThermalChartUiChecks.Run();
+                Phase("cooling health page");
+                CoolingHealthPageUiChecks.Run();
                 RuneTraceUiChecks.Run();
                 Phase("typography and range segments");
                 RangeSegmentsUiChecks.Run(app);
@@ -93,7 +95,7 @@ public class BatteryUiTests
                 CpuCoreStyleUiChecks.Run();
                 CpuCoreStyleUiChecks.RunWindow();
                 Phase("battery history");
-                var assembly = typeof(Collector).Assembly;
+                var assembly = typeof(UiSession).Assembly;
                 var pageType = assembly.GetType("DeadWare.App.BatteryHistoryPage"); Assert.NotNull(pageType);
                 var session = (UiSession)RuntimeHelpers.GetUninitializedObject(typeof(UiSession));
                 var collector = (Collector)RuntimeHelpers.GetUninitializedObject(typeof(Collector));
@@ -148,14 +150,16 @@ public class BatteryUiTests
                     Assert.Contains(TraceGlyphs(hoveredBattery), glyph => GlyphText(glyph) == "90%");
                     traceType.GetMethod("SetHover", All)!.Invoke(trace, [null]);
                     Assert.Equal(-1, (int)traceType.GetProperty("HoverIndex", All)!.GetValue(trace)!);
+                    var tracePage = (BatteryHistoryPage)Activator.CreateInstance(pageType, All, null, [session, false], null)!;
+                    pageType.GetMethod("ApplyView", All)!.Invoke(tracePage, [traceView]);
+                    var traceViewport = new Border { Child = tracePage };
+                    traceViewport.Measure(new Size(620, 760)); traceViewport.Arrange(new Rect(0, 0, 620, 760)); traceViewport.UpdateLayout();
+                    VerifyBatteryLayout(session, traceView);
                     string? traceOutput = Environment.GetEnvironmentVariable("DEADWARE_UI_OUTPUT");
                     if (traceOutput is not null)
                     {
                         Directory.CreateDirectory(traceOutput);
-                        var tracePage = (FrameworkElement)Activator.CreateInstance(pageType, All, null, [session, false], null)!;
-                        pageType.GetMethod("ApplyView", All)!.Invoke(tracePage, [traceView]);
-                        tracePage.Measure(new Size(620, 760)); tracePage.Arrange(new Rect(0, 0, 620, 760)); tracePage.UpdateLayout();
-                        var traceBitmap = new RenderTargetBitmap(620, 760, 96, 96, PixelFormats.Pbgra32); traceBitmap.Render(tracePage);
+                        var traceBitmap = new RenderTargetBitmap(620, 760, 96, 96, PixelFormats.Pbgra32); traceBitmap.Render(traceViewport);
                         using var stream = File.Create(Path.Combine(traceOutput, $"battery-{theme}-saver.png"));
                         var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(traceBitmap)); encoder.Save(stream);
                     }
@@ -170,15 +174,16 @@ public class BatteryUiTests
                         var selector = (ComboBox)pageType.GetField("range", All)!.GetValue(page)!;
                         selector.SelectedIndex = empty ? 0 : 4;
                         double width = empty ? 620 : 1050;
-                        page.Measure(new Size(width, 760)); page.Arrange(new Rect(0, 0, width, 760)); page.UpdateLayout();
-                        var bitmap = new RenderTargetBitmap((int)width, 760, 96, 96, PixelFormats.Pbgra32); bitmap.Render(page);
-                        Assert.Equal(width, page.ActualWidth); Assert.Equal(760, page.ActualHeight);
+                        var viewport = new Border { Child = page }; viewport.Measure(new Size(width, 760)); viewport.Arrange(new Rect(0, 0, width, 760)); viewport.UpdateLayout();
+                        var bitmap = new RenderTargetBitmap((int)width, 760, 96, 96, PixelFormats.Pbgra32); bitmap.Render(viewport);
+                        Assert.Equal(width, viewport.ActualWidth); Assert.Equal(760, viewport.ActualHeight); Assert.Equal(width - 12, page.ActualWidth); Assert.Equal(740, page.ActualHeight);
                         var text = string.Join("\n", Descendants(page).OfType<TextBlock>().Select(t => t.Text));
-                        var currentCard = (Border)((StackPanel)((ScrollViewer)page).Content).Children[0];
+                        var body = Assert.IsType<Grid>(((ScrollViewer)page).Content); var currentCard = (Border)body.Children[0];
                         Assert.DoesNotContain("saver", string.Join(" ", Descendants(currentCard).OfType<TextBlock>().Select(t => t.Text)), StringComparison.OrdinalIgnoreCase);
                         Assert.Contains("Charging", text);
-                        Assert.Contains("Saver off", text); Assert.Contains("Saver on", text);
-                        Assert.Contains("retained indefinitely", text);
+                        var historyText = string.Join(" ", Descendants(body.Children[1]).OfType<TextBlock>().Select(t => t.Text)); Assert.Contains("Saver off", historyText); Assert.Contains("Saver on", historyText);
+                        var retention = Assert.IsType<StackPanel>(Assert.Single(Descendants(page).OfType<Expander>()).Content);
+                        Assert.Contains("retained indefinitely", Assert.IsType<TextBlock>(retention.Children[0]).Text);
                         string? output = Environment.GetEnvironmentVariable("DEADWARE_UI_OUTPUT");
                         if (output is not null)
                         {
@@ -234,6 +239,8 @@ public class BatteryUiTests
                 }
                 Phase("release notes");
                 VerifyReleaseNotes(session, assembly);
+                Phase("updates layout");
+                UpdatesPageUiChecks.Run(session);
                 Phase("dashboard and settings");
                 // Exercise the actual dashboard with an unstarted session: no hardware,
                 // database writes, native window or installed settings are involved.
@@ -248,6 +255,10 @@ public class BatteryUiTests
                 ConnectionsPageUiChecks.CheckNavigation(dashboard);
                 Phase("shell chrome");
                 ShellUiChecks.Run(dashboard);
+                Phase("network page");
+                NetworkPageUiChecks.Run(dashboard);
+                Phase("sensors page");
+                SensorsPageUiChecks.Run(dashboard);
                 Phase("processes shell keys");
                 ProcessesPageUiChecks.CheckShellKeys(dashboard);
                 Phase("shell chrome");
@@ -262,15 +273,23 @@ public class BatteryUiTests
                 Assert.Single(overviewCards, card => (string)card.GetType().GetField("kind", All)!.GetValue(card)! == "memory");
                 var settingsRoot = ((ScrollViewer)pages["desktop"]).Content;
                 var settings = Assert.IsType<StackPanel>(settingsRoot is Border surfaceCard ? surfaceCard.Child : settingsRoot);
-                var widgetChoices = Descendants(settings).OfType<CheckBox>().Where(box => box.Tag is string kind && new[] { "cpu", "cputemp", "memory", "network" }.Contains(kind)).ToArray();
+                var settingsTabs=Assert.IsType<TabControl>(typeof(MainWindow).GetProperty("SettingsTabs",All)?.GetValue(dashboard));
+                StackPanel SelectSettings(string header)
+                {
+                    var tab=Assert.Single(settingsTabs.Items.OfType<TabItem>(),item=>item.Header?.ToString()==header);settingsTabs.SelectedItem=tab;
+                    settings.Measure(new Size(900,900));settings.Arrange(new Rect(0,0,900,900));settings.UpdateLayout();return Assert.IsType<StackPanel>(tab.Content);
+                }
+                var widgetSettings=SelectSettings("Widget");
+                var widgetChoices = Descendants(widgetSettings).OfType<CheckBox>().Where(box => box.Tag is string kind && new[] { "cpu", "cputemp", "memory", "network" }.Contains(kind)).ToArray();
                 Assert.Equal(4, widgetChoices.Length);
                 Assert.All(widgetChoices, choice => Assert.True(choice.IsChecked));
-                var widgetPin = Assert.Single(Descendants(settings).OfType<CheckBox>(), box => box.Content?.ToString() == "Widget always on top");
+                var widgetPin = Assert.Single(Descendants(widgetSettings).OfType<CheckBox>(), box => box.Content?.ToString() == "Widget always on top");
                 Assert.True(widgetPin.IsChecked);
-                Assert.DoesNotContain(Descendants(settings).OfType<Button>(), button => button.Content?.ToString()?.StartsWith("↗") == true);
-                var joinedPopouts = Assert.Single(Descendants(settings).OfType<CheckBox>(), box => box.Content?.ToString() == "Join CPU and GPU graphs in pop-outs");
+                foreach(var tab in settingsTabs.Items.OfType<TabItem>())
+                    Assert.DoesNotContain(Descendants(SelectSettings((string)tab.Header)).OfType<Button>(),button=>button.Content?.ToString()?.StartsWith("↗")==true);
+                var joinedPopouts = Assert.Single(Descendants(SelectSettings("Pop-outs")).OfType<CheckBox>(), box => box.Content?.ToString() == "Join CPU and GPU graphs in pop-outs");
                 Assert.False(joinedPopouts.IsChecked);
-                var polling = Assert.Single(Descendants(settings).OfType<ComboBox>(),
+                var polling = Assert.Single(Descendants(SelectSettings("Monitoring")).OfType<ComboBox>(),
                     combo => System.Windows.Automation.AutomationProperties.GetName(combo) == "Data polling interval");
                 Assert.Equal(new[] { "0.5 seconds", "1 second (default)", "2 seconds", "5 seconds", "10 seconds" }, polling.Items.Cast<object>().Select(item => item.ToString()));
                 Assert.Equal(1d, polling.SelectedValue);
@@ -278,14 +297,15 @@ public class BatteryUiTests
                 var uiTimer = new System.Windows.Threading.DispatcherTimer();
                 Set(session, "timer", uiTimer);
                 Set(session, "writer", new SettingsSnapshotWriter(pollingSettingsPath));
-                ConnectionsWidgetUiChecks.CheckSettings(session, settings, pollingSettingsPath);
-                VerifyGpuFanSpeed(session, collector, assembly, settings, pollingSettingsPath);
-                VerifyCpuPumpSpeed(session, collector, assembly, settings, pollingSettingsPath);
-                VerifyGraphSmoothing(session, settings, pollingSettingsPath);
-                VerifyUsageRecording(session, settings, pollingSettingsPath);
-                VerifyAlertNotifications(session, settings, pollingSettingsPath);
+                ConnectionsWidgetUiChecks.CheckSettings(session, settingsTabs, pollingSettingsPath);
+                VerifyGpuFanSpeed(session, collector, assembly, SelectSettings("Appearance"), pollingSettingsPath);
+                VerifyCpuPumpSpeed(session, collector, assembly, SelectSettings("Appearance"), pollingSettingsPath);
+                VerifyGraphSmoothing(session, SelectSettings("Appearance"), pollingSettingsPath);
+                VerifyUsageRecording(session, SelectSettings("History and alerts"), pollingSettingsPath);
+                VerifyAlertNotifications(session, SelectSettings("History and alerts"), pollingSettingsPath);
                 VerifyRangeDropdown(session, dashboard, assembly, pollingSettingsPath);
                 VerifyThemeMenu(session, sidebar, pollingSettingsPath);
+                SelectSettings("Monitoring");
                 foreach (double seconds in new double[] { 10, .5, 1 })
                 {
                     polling.SelectedValue = seconds;
@@ -307,9 +327,11 @@ public class BatteryUiTests
                 Set(collector, "latest", current with { Sample = current.Sample with { MonotonicSeconds = -14, PollingIntervalSeconds = 10 } });
                 Assert.True(session.Stale);
                 Set(collector, "latest", current);
+                SelectSettings("Pop-outs");
                 joinedPopouts.IsChecked = true; CompleteSettingsSave(session);
                 Assert.True(SettingsCodec.Read(File.ReadAllText(pollingSettingsPath)).Settings.JoinCpuGpuPopouts);
                 session.SetJoinedPopouts(false); Assert.False(joinedPopouts.IsChecked);
+                SelectSettings("Widget");
                 session.SetWidgetGraph("network", false);
                 Assert.False(widgetChoices.Single(choice => (string)choice.Tag == "network").IsChecked);
                 session.SetWidgetGraph("network", true);
@@ -341,7 +363,7 @@ public class BatteryUiTests
                 RefreshDashboard(); AssertBatteryVisibility(Visibility.Collapsed);
                 Assert.Same(pages["overview"], ((ContentControl)typeof(MainWindow).GetField("content", All)!.GetValue(dashboard)!).Content);
                 // Suppress the startup-status query while rendering the real Settings page.
-                Set(dashboard, "startupBusy", true); Navigate("desktop");
+                Set(dashboard, "startupBusy", true); Navigate("desktop");SelectSettings("Monitoring");
                 string? dashboardOutput = Environment.GetEnvironmentVariable("DEADWARE_UI_OUTPUT");
                 if (dashboardOutput is not null)
                 {
@@ -425,6 +447,85 @@ public class BatteryUiTests
         ("Daylight", "Segoe UI", "Segoe UI Semibold", "Segoe UI")
     ];
 
+    private static void VerifyBatteryLayout(UiSession session,BatteryHistoryView traceView)
+    {
+        T Field<T>(BatteryHistoryPage target,string name)=>(T)typeof(BatteryHistoryPage).GetField(name,All)!.GetValue(target)!;
+        void Pump(){var frame=new System.Windows.Threading.DispatcherFrame();System.Windows.Threading.Dispatcher.CurrentDispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Background,new Action(()=>frame.Continue=false));System.Windows.Threading.Dispatcher.PushFrame(frame);}
+        void Settle(FrameworkElement host){Pump();host.UpdateLayout();Pump();host.UpdateLayout();}
+        void Layout(FrameworkElement host,double width,double height){host.Measure(new Size(width,height));host.Arrange(new Rect(0,0,width,height));host.UpdateLayout();Settle(host);}
+        Rect Bounds(FrameworkElement element,FrameworkElement parent)=>element.TransformToAncestor(parent).TransformBounds(new Rect(element.RenderSize));
+        void Inside(FrameworkElement element,FrameworkElement parent)
+        {Assert.True(element.ActualWidth>0&&element.ActualHeight>0,$"{element} has no size");Assert.True(new Rect(-.5,-.5,parent.ActualWidth+1,parent.ActualHeight+1).Contains(Bounds(element,parent)),$"{element} at {Bounds(element,parent)} outside {parent.RenderSize}");}
+        void History(BatteryHistoryPage target)
+        {
+            var grid=Assert.IsType<Grid>(target.Content);var card=Assert.IsType<Border>(grid.Children[1]);var layout=Assert.IsType<Grid>(card.Child);var graph=Field<BatteryHistoryChart>(target,"chart");
+            Assert.True(double.IsFinite(grid.Height));Assert.True(card.ActualHeight>=360);Assert.Equal(360,card.MinHeight);Assert.Equal(new Thickness(0,0,0,10),card.Margin);
+            Assert.True(grid.RowDefinitions[1].Height.IsStar);Assert.True(grid.RowDefinitions[1].MinHeight>=370);Assert.True(layout.RowDefinitions[1].Height.IsStar);
+            Assert.True(double.IsNaN(graph.Height));Assert.Equal(220,graph.MinHeight);Assert.True(graph.ActualHeight>=220);Assert.Equal(VerticalAlignment.Stretch,graph.VerticalAlignment);
+            Assert.Equal(5,layout.Children.Count);foreach(FrameworkElement child in layout.Children)Inside(child,card);
+            var legend=Assert.IsType<WrapPanel>(layout.Children[2]);var summary=Field<TextBlock>(target,"summary");var hint=Assert.IsType<TextBlock>(layout.Children[4]);
+            Assert.True(Bounds(legend,card).Top>=Bounds(graph,card).Bottom);Assert.True(Bounds(summary,card).Top>=Bounds(legend,card).Bottom);Assert.True(Bounds(hint,card).Top>=Bounds(summary,card).Bottom);
+            Assert.Contains("MIN",summary.Text);Assert.Contains("Saver on",string.Join(" ",Descendants(legend).OfType<TextBlock>().Select(t=>t.Text)));
+            Assert.Equal(0,target.ScrollableWidth);Assert.Equal(ScrollBarVisibility.Disabled,target.HorizontalScrollBarVisibility);
+        }
+        void Reach(BatteryHistoryPage target,FrameworkElement host,FrameworkElement element)
+        {element.BringIntoView();Settle(host);Inside(element,target);Assert.Equal(0,target.HorizontalOffset);}
+        void ReachSettings(BatteryHistoryPage target,FrameworkElement host,Border card)
+        {
+            foreach(string name in new[]{"recording","recordingStatus","storage"})Reach(target,host,Field<FrameworkElement>(target,name));
+            var fold=Assert.Single(Descendants(card).OfType<Expander>());if(fold.IsExpanded)foreach(FrameworkElement note in Assert.IsType<StackPanel>(fold.Content).Children)Reach(target,host,note);
+        }
+        var page=new BatteryHistoryPage(session);page.ApplyView(traceView);var viewport=new Border {Child=page};Layout(viewport,1050,700);
+        var body=Assert.IsType<Grid>(page.Content);Assert.Equal(3,body.Children.Count);Assert.Equal(new Thickness(6,10,6,10),page.Margin);Assert.Equal(new Thickness(0),body.Margin);
+        History(page);double shortChart=Field<BatteryHistoryChart>(page,"chart").ActualHeight;Layout(viewport,1050,1000);History(page);
+        double tallChart=Field<BatteryHistoryChart>(page,"chart").ActualHeight;Assert.True(tallChart>320);Assert.True(tallChart>shortChart+250,$"Chart grew from {shortChart} to {tallChart}");
+        var controlsCard=Assert.IsType<Border>(body.Children[0]);Assert.Equal(new Thickness(16,12,16,12),controlsCard.Padding);Assert.Equal(new Thickness(0,0,0,10),controlsCard.Margin);
+        foreach(string name in new[]{"percentage","power","range","export","actionStatus"})Assert.Contains(Field<FrameworkElement>(page,name),Descendants(controlsCard));
+        var status=Field<TextBlock>(page,"actionStatus");Assert.Equal("",status.Text);Assert.Equal(Visibility.Visible,status.Visibility);Assert.Same(Application.Current.Resources["Warning"],status.Foreground);
+        var range=Field<ComboBox>(page,"range");Assert.Equal("Battery history time range",System.Windows.Automation.AutomationProperties.GetName(range));
+        var toolbar=Assert.IsType<WrapPanel>(range.Parent);var controlGrid=Assert.IsType<Grid>(toolbar.Parent);var reading=Assert.IsType<Grid>(Field<TextBlock>(page,"percentage").Parent);
+        var buttons=toolbar.Children.OfType<Button>().ToArray();Assert.Equal(new[]{"Refresh","Export CSV…","Open in window ↗"},buttons.Select(b=>b.Content));Assert.Same(range,toolbar.Children[0]);
+        Assert.Equal(42,Field<TextBlock>(page,"percentage").FontSize);Assert.False(reading.Focusable);
+        foreach(var (width,beside) in new[]{(1050d,true),(620d,false),(771d,false),(772d,true),(620d,false)})
+        {
+            Layout(viewport,width,760);Assert.Equal(beside?1:0,Grid.GetColumn(toolbar));Assert.Equal(beside?0:1,Grid.GetRow(toolbar));Assert.Equal(beside?1:2,Grid.GetColumnSpan(toolbar));Assert.Equal(beside?1:2,Grid.GetColumnSpan(reading));
+            Assert.Equal(beside?HorizontalAlignment.Right:HorizontalAlignment.Left,toolbar.HorizontalAlignment);Assert.Equal(2,controlGrid.ColumnDefinitions.Count);Assert.True(controlGrid.ColumnDefinitions[0].Width.IsAuto);Assert.True(controlGrid.ColumnDefinitions[1].Width.IsStar);
+            if(!beside)Assert.True(Bounds(toolbar,controlsCard).Top>=Bounds(reading,controlsCard).Bottom);
+            foreach(string power in new[]{"Charging","Battery reading unavailable · last seen 12:34"})
+            {
+                Field<TextBlock>(page,"power").Text=power;Settle(viewport);History(page);Inside(Field<TextBlock>(page,"power"),controlsCard);
+                foreach(FrameworkElement control in toolbar.Children){Inside(control,controlsCard);Inside(control,page);Assert.True(control.ActualWidth+.5>=control.DesiredSize.Width-control.Margin.Left-control.Margin.Right);}
+            }
+        }
+        var settingsCard=Assert.IsType<Border>(body.Children[2]);var expander=Assert.Single(Descendants(settingsCard).OfType<Expander>());Assert.Equal("Retention and backup",expander.Header);Assert.False(expander.IsExpanded);
+        var notes=Assert.IsType<StackPanel>(expander.Content);var paragraphs=notes.Children.OfType<TextBlock>().ToArray();Assert.Equal(2,paragraphs.Length);
+        Assert.Equal("One observation per minute, plus charging and energy saver (battery saver) changes, retained indefinitely. Recording begins with this version while DeadWare runs; sleep and stopped monitoring leave gaps. Summarizing the chart keeps the original observations. Export the selected range as a new CSV file to keep a backup.",paragraphs[0].Text);
+        Assert.Equal("History stays in this Windows profile and survives app upgrades. Copy battery-history.db while DeadWare is fully quit to back it up. A device reset or profile removal needs your own backup.",paragraphs[1].Text);
+        foreach(string name in new[]{"recording","recordingStatus","storage"}){var element=Field<FrameworkElement>(page,name);Assert.Contains(element,Descendants(settingsCard));Assert.DoesNotContain(element,notes.Children.Cast<UIElement>());Assert.Same(expander.Parent,element.Parent);}
+        expander.IsExpanded=true;Settle(viewport);foreach(var paragraph in paragraphs){Assert.Contains(paragraph,Descendants(expander));Inside(paragraph,settingsCard);Reach(page,viewport,paragraph);}History(page);expander.IsExpanded=false;Settle(viewport);
+        // Faithful pop-out content from BatteryHistoryWindow: 16 DIP inset and the same auto-height header, without creating an HWND or a real session.
+        // 620×520 is the window's OUTER minimum (Windows.cs:408); the client area is smaller by the frame and caption, so lay the fixture out at a client-sized box.
+        var frame=new Size(2*SystemParameters.ResizeFrameVerticalBorderWidth,SystemParameters.WindowCaptionHeight+2*SystemParameters.ResizeFrameHorizontalBorderHeight);
+        foreach(var size in new[]{new Size(620-frame.Width,520-frame.Height),new Size(940,830)})
+        {
+            var detached=new BatteryHistoryPage(session,false);detached.ApplyView(traceView);var panel=new DockPanel {Margin=new Thickness(16)};var header=new DockPanel {Margin=new Thickness(6,0,6,8)};
+            var pin=new CheckBox {Content="Always on top",VerticalAlignment=VerticalAlignment.Center};DockPanel.SetDock(pin,Dock.Right);header.Children.Add(pin);header.Children.Add(Ui.Heading("Battery history",24));DockPanel.SetDock(header,Dock.Top);panel.Children.Add(header);panel.Children.Add(detached);
+            var host=new Border {Child=panel};Layout(host,size.Width,size.Height);History(detached);Assert.DoesNotContain(Descendants(detached).OfType<Button>(),b=>Equals(b.Content,"Open in window ↗"));
+            var detachedBody=Assert.IsType<Grid>(detached.Content);var detachedSettings=Assert.IsType<Border>(detachedBody.Children[2]);var fold=Assert.Single(Descendants(detachedSettings).OfType<Expander>());
+            bool minimum=size.Width<700;
+            if(minimum){Assert.True(detachedBody.Height>detached.ViewportHeight);Assert.True(detached.ScrollableHeight>0);}
+            foreach(var control in new FrameworkElement[]{Field<ComboBox>(detached,"range"),Field<Button>(detached,"export"),Field<CheckBox>(detached,"recording"),fold}.Concat(Descendants(detachedBody.Children[0]).OfType<Button>()))Reach(detached,host,control);
+            double folded=detachedBody.Height;fold.IsExpanded=true;Settle(host);Assert.True(detachedBody.Height>folded);Assert.True(detached.ScrollableHeight>0);History(detached);ReachSettings(detached,host,detachedSettings);
+            fold.IsExpanded=false;Settle(host);Assert.InRange(detachedBody.Height,folded-.5,folded+.5);
+            if(!minimum)continue;
+            // Only content changes below: no explicit Measure/Arrange and no host resize.
+            string longStatus=string.Join(" ",Enumerable.Repeat("History recording unavailable; saved readings need attention before recording can continue.",5));
+            detached.ApplyView(traceView with {Status=longStatus});Settle(host);var recordingStatus=Field<TextBlock>(detached,"recordingStatus");Assert.True(recordingStatus.ActualHeight>=recordingStatus.FontSize*3);Assert.True(detachedBody.Height>folded);History(detached);ReachSettings(detached,host,detachedSettings);
+            double withStatus=detachedBody.Height;Field<TextBlock>(detached,"actionStatus").Text="Export saved: "+string.Join(" ",Enumerable.Repeat("A long export result with a folder name and saved observations.",8));Settle(host);
+            Assert.True(detachedBody.Height>withStatus);History(detached);ReachSettings(detached,host,detachedSettings);Reach(detached,host,Field<Button>(detached,"export"));
+        }
+    }
+
     private static void VerifyThemeText(UiSession session, MainWindow dashboard, Assembly assembly)
     {
         var shell = (FrameworkElement)dashboard.Content;
@@ -494,7 +595,8 @@ public class BatteryUiTests
                         var markRun = Assert.Single(cell.Inlines.OfType<System.Windows.Documents.Run>(), r => r.Text == " · not recorded");
                         Assert.Equal(ResourceColor("Muted"), ((SolidColorBrush)markRun.Foreground).Color);
                         Assert.Equal("Fixture application", appRow.Item.GetType().GetProperty("Name")!.GetValue(appRow.Item));
-                        Assert.Contains(Descendants(shell).OfType<TextBlock>(), t => t.Text.StartsWith("Per-app totals cover", StringComparison.Ordinal) && t.Text.EndsWith(" Apps marked not recorded are in Settings → Don't record these apps; their traffic isn't saved.", StringComparison.Ordinal));
+                        var totals=Assert.Single(Descendants(shell).OfType<Expander>(),e=>Equals(e.Header,"About these totals"));Assert.False(totals.IsExpanded);
+                        Assert.Equal("Per-app totals cover each current process lifetime in this monitoring session. Exited processes are removed. ETW attribution is approximate and differs from interface totals. No packet payloads are captured. Apps marked not recorded are in Settings → Don't record these apps; their traffic isn't saved.",Assert.IsType<TextBlock>(totals.Content).Text);
                     }
                     if (destination is "network" or "sensors")
                     {
@@ -1017,7 +1119,7 @@ public class BatteryUiTests
         {
             assembly.GetType("DeadWare.App.Theme")!.GetMethod("Apply", All)!.Invoke(null, [theme]);
             page = (ScrollViewer)Activator.CreateInstance(type, All, null, [session], null)!;
-            foreach (var size in new[] { new Size(420, 720), new Size(900, 900) })
+            foreach (var size in new[] { new Size(420, 720), new Size(900, 640) })
             {
                 Apply(state); page.Measure(size); page.Arrange(new Rect(new Point(), size)); page.UpdateLayout();
                 Assert.Equal(new[] { "v0.6.5", "v0.6.4", "v0.6.3" }, Versions());
@@ -1085,7 +1187,7 @@ public class BatteryUiTests
                     string[] Versions() => Descendants(page).OfType<TextBlock>().Where(block => block.Text.StartsWith("v0.")).Select(block => block.Text).ToArray();
                     var button = Descendants(page).OfType<Button>().Single(item => item.Content?.ToString() == "Show release note history");
                     var retry = Descendants(page).OfType<Button>().Single(item => item.Content?.ToString() == "Retry history");
-                    foreach (var size in new[] { new Size(420, 720), new Size(900, 900) })
+                    foreach (var size in new[] { new Size(420, 720), new Size(900, 640) })
                     {
                         int before = handler.Calls;
                         button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));

@@ -17,6 +17,30 @@ public class MonitoringTests
         Assert.All(many["missing"],p=>Assert.Null(p.Value));
         Assert.Contains(many["a"],p=>p.BreakBefore);
     }
+    [Fact] public void Windowed_reads_match_a_scan_of_every_sample_once_the_history_is_full_and_has_wrapped()
+    {
+        // Half-second samples for seven hours: the six-hour cap evicts from the front, so the ring has wrapped several times.
+        var h=new SampleHistory();
+        for(int i=0;i<7*3600*2;i++){double t=i*.5;h.Add(new Snapshot(Epoch.AddSeconds(t),t,new Dictionary<string,double?>{["cpu"]=i}){PollingIntervalSeconds=.5});}
+        var all=h.Read();
+        Assert.Equal(HistoryRanges.MaximumSamples,all.Count);
+        Assert.Equal(all.OrderBy(s=>s.MonotonicSeconds).Select(s=>s.MonotonicSeconds),all.Select(s=>s.MonotonicSeconds));
+        double last=all[^1].MonotonicSeconds;
+        // Bounds on a sample, between samples, past the newest, before the oldest, and with nothing in range.
+        foreach(var (now,seconds) in new[]{(last,60),(last-.25,60),(last+30,60),(last-3600.5,900),(last,21600),(last,40000),(all[0].MonotonicSeconds+10,60),(all[0].MonotonicSeconds-5,60),(last+500,60)})
+        {
+            var expected=all.Where(s=>s.MonotonicSeconds>=now-seconds&&s.MonotonicSeconds<=now).ToArray();
+            Assert.Equal(expected.Select(s=>s.MonotonicSeconds),h.Series("cpu",now,seconds).Select(p=>p.MonotonicSeconds));
+            Assert.Equal(expected.Select(s=>s.Values["cpu"]),h.SeriesMany(["cpu"],now,seconds)["cpu"].Select(p=>p.Value));
+            var summary=h.Summarize("cpu",now,seconds);
+            Assert.Equal(expected.Length==0?null:expected.Min(s=>s.Values["cpu"]),summary.Minimum);
+            Assert.Equal(expected.Length==0?null:expected.Max(s=>s.Values["cpu"]),summary.Maximum);
+            var ranges=h.ChartRanges("cpu",now,seconds,300);
+            Assert.Equal(expected.Length,ranges.Sum(r=>r.Samples));
+            Assert.Equal(ranges,h.ChartRangesMany(["cpu"],now,seconds,300)["cpu"]);
+            if(expected.Length>0){Assert.Equal(expected[0].MonotonicSeconds,ranges[0].StartSeconds);Assert.Equal(expected[^1].MonotonicSeconds,ranges[^1].EndSeconds);}
+        }
+    }
     [Fact] public void ChartRangesMany_matches_ChartRanges_per_id()
     {
         var h=new SampleHistory();

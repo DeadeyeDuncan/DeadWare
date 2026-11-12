@@ -458,6 +458,8 @@ public sealed class Collector : IAsyncDisposable
             h.Update();
             foreach(var s in h.Sensors)
             {
+                // LibreHardwareMonitor logs a day of values per sensor unless told not to; DeadWare keeps its own history and never reads that log.
+                if(s.ValuesTimeWindow!=TimeSpan.Zero)s.ValuesTimeWindow=TimeSpan.Zero;
                 bool lowLevel=h.HardwareType==HardwareType.Cpu && s.SensorType is SensorType.Temperature or SensorType.Power or SensorType.Voltage or SensorType.Clock;
                 double? v=SensorValidity.Normalize(s.Value,lowLevel,lowLevelAvailable);
                 if(s.SensorType==SensorType.Load && (v<0||v>100)) v=null;

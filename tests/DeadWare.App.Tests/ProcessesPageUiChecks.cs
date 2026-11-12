@@ -51,6 +51,7 @@ internal static class ProcessesPageUiChecks
             Hidden_sort_column_falls_back();
             Cap_note_is_shown();
             Footer_lists_the_definitions();
+            Status_lines_sit_in_the_strip_and_definitions_fold();
             Gpu_dashes_name_each_reason();
             Gpu_engine_cell_tooltip_and_known_zeros();
             Gpu_engine_sorts_ascending_first_and_gpu_descending_first();
@@ -264,6 +265,46 @@ internal static class ProcessesPageUiChecks
     {
         Assert.Equal(ProcessCopy.Footer(true),FooterTexts(Page(elevated:true,disk:true).Page));
         Assert.Equal(ProcessCopy.Footer(false),FooterTexts(Page(elevated:true,disk:false).Page));
+    }
+
+    /// <summary>0.17.10: the action result, scan status and cap note live in the search strip's card, and the definitions fold under the table, at a narrow and a wide page.</summary>
+    private static void Status_lines_sit_in_the_strip_and_definitions_fold()
+    {
+        var (p,_)=Page(activity:Fixture() with {TotalProcesses=5000});
+        T Field<T>(string name)=>(T)typeof(ProcessesPage).GetField(name,All)!.GetValue(p)!;
+        var notes=new[]{Field<TextBlock>("actionStatus"),Field<TextBlock>("status"),Field<TextBlock>("capNote")};
+        var footer=Field<StackPanel>("footer");
+        foreach(var size in new[]{new Size(620,640),new Size(1400,900)})
+        {
+            void Arrange(){p.Measure(size);p.Arrange(new Rect(size));p.UpdateLayout();}
+            Rect Bounds(FrameworkElement element)=>element.TransformToAncestor(p).TransformBounds(new Rect(element.RenderSize));
+            Arrange();
+            var shown=Shown(p);
+            var search=Assert.Single(shown.OfType<TextBox>());
+            // One card holds the search box and all three lines; only the cap note has text here.
+            var body=Assert.IsType<StackPanel>(notes[0].Parent);
+            Assert.All(notes,note=>Assert.Same(body,note.Parent));
+            Assert.True(search.IsDescendantOf(body));
+            var strip=Assert.IsType<Border>(body.Parent);
+            Assert.Contains(notes[2],shown);Assert.Equal("Showing 4,096 of 5,000 processes",notes[2].Text);
+            Assert.DoesNotContain(notes[0],shown);Assert.DoesNotContain(notes[1],shown);
+            Assert.True(Bounds(notes[2]).Top>=Bounds(search).Bottom,$"{size.Width}: the cap note sits under the search row");
+            // Folded: a slim card under the table, and the table takes the height between the two cards.
+            var about=Assert.Single(shown.OfType<Expander>());
+            Assert.Equal("About these columns",about.Header);Assert.False(about.IsExpanded);Assert.DoesNotContain(footer,shown);
+            var aboutCard=Assert.IsType<Border>(about.Parent);
+            Rect stripBox=Bounds(strip),table=Bounds(p.Grid),folded=Bounds(aboutCard);
+            Assert.True(stripBox.Bottom<=table.Top&&table.Bottom<=folded.Top&&folded.Bottom<=size.Height+.5,$"{size.Width}: strip {stripBox}, table {table}, about {folded}");
+            Assert.True(folded.Height<60,$"{size.Width}: folded about card is {folded.Height} high");
+            // Open: the definitions show, the table gives up the height and both stay on the page.
+            about.IsExpanded=true;Arrange();
+            Assert.Contains(footer,Shown(p));
+            Rect open=Bounds(aboutCard),tableOpen=Bounds(p.Grid);
+            Assert.True(open.Height>folded.Height&&open.Bottom<=size.Height+.5&&tableOpen.Bottom<=open.Top,$"{size.Width}: open about {open}, table {tableOpen}");
+            Assert.True(tableOpen.Height>=72,$"{size.Width}: table is {tableOpen.Height} high with the definitions open");
+            about.IsExpanded=false;Arrange();
+            Assert.DoesNotContain(footer,Shown(p));
+        }
     }
 
     private static void Gpu_dashes_name_each_reason()
@@ -798,7 +839,10 @@ internal static class ProcessesPageUiChecks
     private static string[] FooterTexts(ProcessesPage page)
     {
         var footer=(Panel)typeof(ProcessesPage).GetField("footer",All)!.GetValue(page)!;
-        Layout(page);Assert.Contains(footer,Shown(page));
+        // The definitions are folded until About these columns is opened.
+        Layout(page);Assert.DoesNotContain(footer,Shown(page));
+        var about=Assert.Single(Shown(page).OfType<Expander>());Assert.Equal("About these columns",about.Header);Assert.False(about.IsExpanded);
+        about.IsExpanded=true;Layout(page);Assert.Contains(footer,Shown(page));
         return footer.Children.OfType<TextBlock>().Select(t=>t.Text).ToArray();
     }
 

@@ -264,6 +264,15 @@ internal sealed class DestinationsCard : Border
         };
     }
 
+    /// <summary>Uses the enclosing tab's card chrome while keeping this control in the wheel-forwarding ancestor chain.</summary>
+    internal void HostInTab()
+    {
+        Background = Brushes.Transparent;
+        BorderThickness = new Thickness(0);
+        Padding = new Thickness(0);
+        Margin = new Thickness(0);
+    }
+
     /// <summary>The scope shown, which Export destinations… exports.</summary>
     internal DestinationScope CurrentScope => (DestinationScope)Math.Max(0, Scope.SelectedIndex);
 

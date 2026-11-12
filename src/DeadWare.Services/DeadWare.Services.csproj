@@ -1,0 +1,7 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Everything DeadWare does that is not user interface: sensors, ETW capture, histories, alerts, updates.
+       No WPF reference, so a second front end can use it. Types keep the DeadWare.App namespace from when
+       they lived in the app project. -->
+  <PropertyGroup><TargetFramework>net10.0-windows</TargetFramework><RootNamespace>DeadWare.App</RootNamespace><Platforms>AnyCPU;x64</Platforms></PropertyGroup>
+  <ItemGroup><ProjectReference Include="../DeadWare.Core/DeadWare.Core.csproj"/><ProjectReference Include="../DeadWare.UpdateCore/DeadWare.UpdateCore.csproj"/><PackageReference Include="LibreHardwareMonitorLib" Version="0.9.6"/><PackageReference Include="Microsoft.Diagnostics.Tracing.TraceEvent" Version="4.0.0"/><PackageReference Include="MaxMind.Db" Version="5.2.0"/><PackageReference Include="System.Management" Version="10.0.14"/><PackageReference Include="System.Diagnostics.PerformanceCounter" Version="10.0.14"/></ItemGroup>
+</Project>

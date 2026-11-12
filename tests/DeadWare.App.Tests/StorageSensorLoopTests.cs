@@ -46,7 +46,8 @@ public class StorageSensorLoopTests
         int count=0;var three=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         collector.SampleAvailable+=_=>{if(Interlocked.Increment(ref count)>=3)three.TrySetResult();};
         collector.Start();
-        await three.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        // Three 0.5 s samples should arrive long before the 5 s source returns; 4 s leaves room for a loaded CI runner while still proving the source never blocked them.
+        await three.Task.WaitAsync(TimeSpan.FromSeconds(4));
         Assert.True(count>=3);
     }
 

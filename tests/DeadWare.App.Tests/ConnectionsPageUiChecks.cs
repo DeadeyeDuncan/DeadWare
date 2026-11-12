@@ -22,20 +22,23 @@ namespace DeadWare.App.Tests;
 internal static class ConnectionsPageUiChecks
 {
     private const BindingFlags All = BindingFlags.Instance | BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic;
-    private static readonly Type PageType = typeof(Collector).Assembly.GetType("DeadWare.App.ConnectionsPage")!;
+    private static readonly Type PageType = typeof(UiSession).Assembly.GetType("DeadWare.App.ConnectionsPage")!;
     public static void Run(Application app)
     {
         var previous = SynchronizationContext.Current;
         SynchronizationContext.SetSynchronizationContext(new DispatcherSynchronizationContext(Dispatcher.CurrentDispatcher));
         try { RunCore(app); } finally { SynchronizationContext.SetSynchronizationContext(previous); }
     }
-    /// <summary>The Recording, origin and storage expander holds Clear history….</summary>
+    /// <summary>The location database, recording and storage expander holds Clear history….</summary>
     private static void CheckClearHistoryEntry(FrameworkElement page)
     {
-        var expander = Assert.Single(Elements(page).OfType<Expander>(), e => e.Header as string == "Recording, origin and storage");
+        var expander = Assert.Single(Elements(page).OfType<Expander>(), e => e.Header as string == "Location database, recording and storage");
         var options = Assert.IsType<StackPanel>(expander.Content);
         var button = Assert.Single(options.Children.OfType<Button>(), b => b.Content as string == "Clear history…");
         Assert.True(ToolTipService.GetShowOnDisabled(button)); Assert.True(button.IsEnabled);
+        Assert.False(expander.IsExpanded);
+        foreach(string name in new[]{"download","cancel","recording","database","storage"})Assert.True(IsWithin(Field<FrameworkElement>(page,name),options),$"{name} belongs in the collapsed settings.");
+        var settings=Field<StackPanel>(page,"layoutSettings");Assert.Same(Field<TextBlock>(page,"actionStatus"),settings.Children[0]);Assert.Equal(Visibility.Visible,settings.Children[0].Visibility);
     }
     private static void RunCore(Application app)
     {
@@ -71,6 +74,10 @@ internal static class ConnectionsPageUiChecks
         CheckVisibleNodesAndPopup(session,live);
         CheckSavedMapDetails(session,now);
         CheckWholePageLayout(page);
+        CheckResponsiveNodes(session,live);
+        CheckMapToolbar(session,live);
+        CheckTabbedLowerCard(session,live);
+        CheckStripPaletteReload(session);
         CheckHistoryQueries(session,now);
         CheckHistoryLimitError(session);
         CheckStripReads(session, now);
@@ -97,6 +104,15 @@ internal static class ConnectionsPageUiChecks
         CheckThemes(app, page, live, history);
     }
     private static T Field<T>(object page, string name) => (T)PageType.GetField(name, All)!.GetValue(page)!;
+    private static bool IsWithin(DependencyObject element,DependencyObject ancestor)
+    {
+        for(DependencyObject? current=element;current is not null;current=LogicalTreeHelper.GetParent(current)??VisualTreeHelper.GetParent(current))if(ReferenceEquals(current,ancestor))return true;
+        return false;
+    }
+    private static TabControl Tabs(FrameworkElement page)=>Assert.Single(Elements(page).OfType<TabControl>());
+    private static TabItem Tab(FrameworkElement page,string header)=>Assert.Single(Tabs(page).Items.OfType<TabItem>(),item=>item.Header as string==header);
+    private static void SelectTab(FrameworkElement page,string header,double width=1000,double height=700)
+    {Layout(page,width,height);Tab(page,header).IsSelected=true;Layout(page,width,height);Pump();Layout(page,width,height);}
 
 
 
@@ -219,26 +235,29 @@ internal static class ConnectionsPageUiChecks
     }
     private static void CheckWholePageLayout(FrameworkElement page)
     {
-        // The traffic strip sits in row 2, under the map and above the node list, in History only.
-        var card=Field<Border>(page,"trafficCard");var mode=Field<ComboBox>(page,"mode");
+        // Narrow windows put the nodes in row 2, above the shared lower card in row 3.
+        var mode=Field<ComboBox>(page,"mode");
         mode.SelectedIndex=1;Layout(page,671,440);Pump();Layout(page,671,440);
+        var tabs=Tabs(page);var card=Assert.IsType<Border>(tabs.Parent);
         var nodeList=(UIElement)VisualTreeHelper.GetParent(Field<ListBox>(page,"mappedConnections"));
-        Assert.Equal(Visibility.Visible,card.Visibility);Assert.Equal(2,Grid.GetRow(card));Assert.Equal(3,Grid.GetRow(nodeList));
+        Assert.Equal(Visibility.Visible,card.Visibility);Assert.Equal(3,Grid.GetRow(card));Assert.Equal(2,Grid.GetRow(nodeList));
+        Assert.Equal(Visibility.Visible,Tab(page,"Traffic").Visibility);Assert.True(Tab(page,"Traffic").IsSelected);
         Assert.True(card.ActualHeight>0);
-        Assert.True(card.TransformToAncestor(page).Transform(new Point()).Y+card.ActualHeight<=nodeList.TransformToAncestor(page).Transform(new Point()).Y+1,"The traffic strip sits above the node list.");
-        Assert.True(Field<ConnectionMap>(page,"map").ActualHeight>=300,$"Map height {Field<ConnectionMap>(page,"map").ActualHeight} with the strip.");
-        mode.SelectedIndex=0;Layout(page,671,440);Assert.Equal(Visibility.Collapsed,card.Visibility);
+        Assert.True(((FrameworkElement)nodeList).TransformToAncestor(page).Transform(new Point()).Y+((FrameworkElement)nodeList).ActualHeight<=card.TransformToAncestor(page).Transform(new Point()).Y+1,"The narrow node panel sits above the tabs.");
+        Assert.Equal(5,Field<Grid>(page,"body").RowDefinitions.Count);Assert.Equal(420,Field<Grid>(page,"body").RowDefinitions[1].MinHeight);
+        Assert.True(Field<ConnectionMap>(page,"map").ActualHeight>=400,$"Map height {Field<ConnectionMap>(page,"map").ActualHeight} with the strip.");
+        mode.SelectedIndex=0;Layout(page,671,440);Assert.Equal(Visibility.Visible,card.Visibility);Assert.Equal(Visibility.Collapsed,Tab(page,"Traffic").Visibility);Assert.True(Tab(page,"Destinations").IsSelected);
         Layout(page,671,440);Pump();Layout(page,671,440);
-        var map=Field<ConnectionMap>(page,"map");Assert.True(map.ActualHeight>=300);
+        var map=Field<ConnectionMap>(page,"map");Assert.True(map.ActualHeight>=400);
         Assert.Equal("Destinations",AutomationProperties.GetName(Assert.Single(Elements(page).OfType<DataGrid>())));
         var scroll=Assert.IsType<ScrollViewer>(((Grid)page).Children[0]);Assert.True(double.IsFinite(scroll.ExtentHeight));
-        scroll.ScrollToBottom();Pump();Layout(page,671,440);
-        var download=Field<Button>(page,"download");Assert.InRange(download.TransformToAncestor(page).Transform(new Point()).Y,0,440-download.ActualHeight);
         var expander=Elements(page).OfType<Expander>().Single();expander.IsExpanded=true;Layout(page,671,440);scroll.ScrollToBottom();Pump();Layout(page,671,440);
+        var download=Field<Button>(page,"download");download.BringIntoView();Pump();Layout(page,671,440);Assert.InRange(download.TransformToAncestor(page).Transform(new Point()).Y,0,440-download.ActualHeight);
+        Field<ComboBox>(page,"home").BringIntoView();Pump();Layout(page,671,440);
         var city=Field<ComboBox>(page,"home");Assert.InRange(city.TransformToAncestor(page).Transform(new Point()).Y,0,440-city.ActualHeight);
         expander.IsExpanded=false;scroll.ScrollToTop();Pump();Layout(page,671,440);
         // The Destinations card: a fixed 315 DIP grid, reached by scrolling the page.
-        var destinations=Card(page);Assert.Equal(5,Grid.GetRow(destinations));Assert.Equal(315,destinations.Grid.ActualHeight);
+        var destinations=Card(page);Assert.Same(destinations,Tab(page,"Destinations").Content);Assert.Equal(new Thickness(0),destinations.BorderThickness);Assert.Equal(new Thickness(0),destinations.Padding);Assert.Equal(new Thickness(0),destinations.Margin);Assert.Equal(Colors.Transparent,Assert.IsType<SolidColorBrush>(destinations.Background).Color);Assert.Equal(315,destinations.Grid.ActualHeight);
         double top=destinations.Grid.TransformToAncestor((Visual)scroll.Content).Transform(new Point()).Y;
         scroll.ScrollToVerticalOffset(top-40);Pump();Layout(page,671,440);
         double shown=destinations.Grid.TransformToAncestor(page).Transform(new Point()).Y;
@@ -252,6 +271,105 @@ internal static class ConnectionsPageUiChecks
         scroll.ScrollToTop();Pump();Layout(page,671,440);
     }
     private static DestinationsCard Card(object page) => (DestinationsCard)PageType.GetField("destinations", All)!.GetValue(page)!;
+    private static void CheckResponsiveNodes(UiSession session,ConnectionLiveView live)
+    {
+        var page=new ConnectionsPage(session);var first=live.Connections[0];
+        page.ApplyLive(live with {Connections=Enumerable.Range(0,200).Select(i=>first with {Traffic=first.Traffic with {Peer=first.Traffic.Peer with {RemotePort=i}},Location=first.Location! with {Point=new(0,-100+i)}}).ToArray()});
+        var map=Field<ConnectionMap>(page,"map");map.Flat=true;map.ResetView();var list=Field<ListBox>(page,"mappedConnections");var body=Field<Grid>(page,"body");
+        Grid? panel=null;object? retained=null;
+        foreach(double width in new[]{1300d,900,1300,1099,1100})
+        {
+            Layout(page,width,700);Pump();Layout(page,width,700);
+            var current=Assert.IsType<Grid>(VisualTreeHelper.GetParent(list));panel??=current;Assert.Same(panel,current);
+            Assert.Equal(3,current.RowDefinitions.Count);Assert.Equal(200,list.Items.Count);retained??=list.Items[100];Assert.Same(retained,list.Items[100]);
+            Assert.Equal("Connections drawn on map",AutomationProperties.GetName(list));Assert.True(double.IsFinite(body.Height));Assert.True(double.IsFinite(list.ActualHeight));
+            Assert.Contains("200 visible nodes · click for details",Field<TextBlock>(page,"mappedStatus").Text);
+            bool wide=width>=1100;
+            if(wide)
+            {
+                Assert.NotSame(body,current.Parent);Assert.Equal(1,Grid.GetColumn(current));Assert.Equal(GridUnitType.Star,current.RowDefinitions[1].Height.GridUnitType);
+                Assert.Equal(280,Assert.IsType<Grid>(current.Parent).ColumnDefinitions[1].Width.Value);Assert.Equal(0,list.MinHeight);Assert.True(double.IsPositiveInfinity(list.MaxHeight));Assert.True(list.ActualHeight>140);
+                Assert.DoesNotContain(body.Children.Cast<UIElement>(),child=>Grid.GetRow(child)==2);
+                var scroll=Assert.Single(Elements(list).OfType<ScrollViewer>());Assert.True(scroll.ScrollableHeight>0);scroll.ScrollToVerticalOffset(50);Pump();Assert.True(scroll.VerticalOffset>0);
+            }
+            else
+            {
+                Assert.Same(body,current.Parent);Assert.Equal(2,Grid.GetRow(current));Assert.Equal(0,Grid.GetColumn(current));Assert.Equal(GridLength.Auto,current.RowDefinitions[1].Height);
+                Assert.Equal(45,list.MinHeight);Assert.Equal(140,list.MaxHeight);Assert.InRange(list.ActualHeight,45,140);
+                // Re-parented before the lower card, so Tab order follows the visual order (nodes, then tabs).
+                Assert.True(body.Children.IndexOf(current)<body.Children.IndexOf(Field<Border>(page,"lowerCard")),"The narrow node panel precedes the lower card in child order.");
+            }
+        }
+    }
+    private static void CheckMapToolbar(UiSession session,ConnectionLiveView live)
+    {
+        var page=new ConnectionsPage(session);page.ApplyLive(live);Layout(page,1300,700);Pump();Layout(page,1300,700);
+        var map=Field<ConnectionMap>(page,"map");var host=Assert.IsType<Grid>(map.Parent);var overlay=Field<Canvas>(page,"mapOverlay");
+        var toolbar=Assert.IsType<Border>(host.Children[^1]);Assert.Same(map,host.Children[0]);Assert.Same(overlay,host.Children[1]);Assert.Null(overlay.Background);
+        Assert.Equal(HorizontalAlignment.Right,toolbar.HorizontalAlignment);Assert.Equal(VerticalAlignment.Top,toolbar.VerticalAlignment);Assert.Equal(new Thickness(8),toolbar.Margin);Assert.Equal(new Thickness(4),toolbar.Padding);
+        var controls=Assert.IsType<WrapPanel>(toolbar.Child);
+        foreach(string label in new[]{"Globe / 2D","+","−","Reset"})Assert.Single(controls.Children.OfType<Button>(),b=>AutomationProperties.GetName(b)==label);
+        Assert.Contains(Field<CheckBox>(page,"animation"),controls.Children.Cast<UIElement>());
+        var header=Field<StackPanel>(page,"layoutHeader");var headerCard=Assert.IsType<Border>(Assert.Single(header.Children.Cast<UIElement>()));var rows=Assert.IsType<StackPanel>(headerCard.Child);
+        Assert.IsType<WrapPanel>(rows.Children[0]);Assert.IsType<WrapPanel>(rows.Children[1]);Assert.Same(Field<TextBlock>(page,"summary"),rows.Children[2]);Assert.Same(Field<TextBlock>(page,"capture"),rows.Children[3]);
+        var historical=Field<WrapPanel>(page,"historical");Assert.Same(rows.Children[0],historical.Parent);Assert.DoesNotContain(historical.Children.Cast<UIElement>(),child=>child is WrapPanel);
+        Assert.True(IsWithin(Field<Slider>(page,"cursor"),historical));Assert.True(IsWithin(Field<Button>(page,"play"),historical));
+        map.Flat=true;map.SetView(new(0,0),1);Layout(page,1300,700);
+        var first=live.Connections[0];page.ApplyLive(live with {Connections=[first with {Location=first.Location! with {Point=new(80,145)}}]});Layout(page,1300,700);SelectNode(page,Assert.Single(map.DisplayedPoints).Key);Layout(page,1300,700);
+        var details=Field<Border>(page,"nodeDetails");Assert.Equal(Visibility.Visible,details.Visibility);
+        var toolbarRect=new Rect(toolbar.TranslatePoint(new(),host),toolbar.RenderSize);var detailsRect=new Rect(details.TranslatePoint(new(),host),details.RenderSize);
+        Assert.False(toolbarRect.IntersectsWith(detailsRect),$"Node details {detailsRect} overlap toolbar {toolbarRect}.");
+        var inside=VisualTreeHelper.HitTest(host,new Point(toolbarRect.Left+toolbarRect.Width/2,toolbarRect.Top+toolbarRect.Height/2))?.VisualHit;Assert.NotNull(inside);Assert.True(IsWithin(inside!,toolbar));
+        var outside=VisualTreeHelper.HitTest(host,new Point(40,host.ActualHeight/2))?.VisualHit;Assert.Same(map,outside);
+        double zoom=map.Camera.Zoom;var wheel=new System.Windows.Input.MouseWheelEventArgs(System.Windows.Input.Mouse.PrimaryDevice,0,120){RoutedEvent=UIElement.MouseWheelEvent};map.RaiseEvent(wheel);Assert.True(wheel.Handled);Assert.True(map.Camera.Zoom>zoom);
+        // The overlay leaves the map as the drag target; its existing press/release handlers still consume that gesture.
+        var down=new System.Windows.Input.MouseButtonEventArgs(System.Windows.Input.Mouse.PrimaryDevice,0,System.Windows.Input.MouseButton.Left){RoutedEvent=UIElement.MouseLeftButtonDownEvent};map.RaiseEvent(down);Assert.True(down.Handled);
+        var up=new System.Windows.Input.MouseButtonEventArgs(System.Windows.Input.Mouse.PrimaryDevice,0,System.Windows.Input.MouseButton.Left){RoutedEvent=UIElement.MouseLeftButtonUpEvent};map.RaiseEvent(up);Assert.True(up.Handled);
+    }
+    private static void CheckTabbedLowerCard(UiSession session,ConnectionLiveView live)
+    {
+        var page=new ConnectionsPage(session);var reads=new FakeReads(page);page.ApplyLive(live);Layout(page,671,440);Pump();Layout(page,671,440);
+        var tabs=Tabs(page);var lower=Assert.IsType<Border>(tabs.Parent);var body=Field<Grid>(page,"body");
+        Assert.Equal(Visibility.Visible,lower.Visibility);Assert.Equal(Visibility.Collapsed,Tab(page,"Traffic").Visibility);Assert.True(Tab(page,"Destinations").IsSelected);
+        Field<ComboBox>(page,"mode").SelectedIndex=1;reads.Drain();SelectTab(page,"Traffic",671,440);Assert.Equal(Visibility.Visible,Tab(page,"Traffic").Visibility);
+        var query=reads.Last;var apps=Enumerable.Range(0,6).Select(i=>new TrafficStripApplication($"Application {i} with an intentionally long label for wrapping","APP"+i,1000,500)).ToArray();
+        var strip=new TrafficStrip(query.From,query.To,60_000,TrafficMeasure.Total,apps,0,0,0,[new(query.From,query.From.AddMinutes(1),1,60,false,[1000,1000,1000,1000,1000,1000,0],[500,500,500,500,500,500,0])]);
+        page.ApplyHistory(StripView(query,strip:strip));Layout(page,671,440);Pump();Layout(page,671,440);
+        var legend=Assert.Single(Field<TrafficStripView>(page,"trafficStrip").Children.OfType<WrapPanel>());Assert.True(legend.ActualHeight>40,"The measurement fixture must wrap its legend.");
+        double trafficHeight=lower.ActualHeight,trafficBody=body.Height;
+        SelectTab(page,"Destinations",671,440);double destinationsHeight=lower.ActualHeight,destinationsBody=body.Height;Assert.NotEqual(trafficHeight,destinationsHeight);
+        Assert.Equal(destinationsHeight-trafficHeight,destinationsBody-trafficBody,1);
+        SelectTab(page,"Traffic",671,440);Assert.Equal(trafficHeight,lower.ActualHeight,1);Assert.Equal(trafficBody,body.Height,1);
+        SelectTab(page,"Destinations",671,440);int count=reads.Requested.Count;long generation=Field<long>(page,"generation");
+        // A selection event bubbling from a nested control is not a tab change or a history request.
+        Card(page).Scope.SelectedIndex=1;Assert.Equal(count,reads.Requested.Count);Assert.Equal(generation,Field<long>(page,"generation"));Assert.True(Tab(page,"Destinations").IsSelected);
+        Field<TextBox>(page,"search").Text="Browser";reads.Drain();Assert.True(Tab(page,"Destinations").IsSelected);
+        Field<CheckBox>(page,"minute").IsChecked=true;reads.Drain();Click(page,"play");reads.Drain();Assert.True(Field<bool>(page,"playing"));
+        count=reads.Requested.Count;generation=Field<long>(page,"generation");SelectTab(page,"Traffic",671,440);SelectTab(page,"Destinations",671,440);
+        Assert.True(Field<bool>(page,"playing"));Assert.Equal("Pause",Field<Button>(page,"play").Content);Assert.Equal(count,reads.Requested.Count);Assert.Equal(generation,Field<long>(page,"generation"));Click(page,"play");
+        Field<ComboBox>(page,"mode").SelectedIndex=0;Assert.True(Tab(page,"Destinations").IsSelected);Assert.Equal(Visibility.Collapsed,Tab(page,"Traffic").Visibility);
+        Field<ComboBox>(page,"mode").SelectedIndex=1;reads.Drain();Assert.True(Tab(page,"Traffic").IsSelected);
+    }
+    private static void CheckStripPaletteReload(UiSession session)
+    {
+        var page=new ConnectionsPage(session);var reads=new FakeReads(page);page.clock=()=>Local(11,0);Field<TextBox>(page,"from").Text="2026-10-29 10:00";Field<TextBox>(page,"to").Text="2026-10-29 10:05";Field<ComboBox>(page,"mode").SelectedIndex=1;reads.Drain();SelectTab(page,"Traffic");
+        var view=Field<TrafficStripView>(page,"trafficStrip");view.RaiseEvent(new RoutedEventArgs(FrameworkElement.LoadedEvent));
+        var theme=typeof(UiSession).Assembly.GetType("DeadWare.App.Theme")!;var apply=theme.GetMethod("Apply",BindingFlags.Public|BindingFlags.Static)!;
+        try
+        {
+            var before=Assert.IsType<SolidColorBrush>(view.Legend.First(entry=>entry.IsButton).Swatch).Color;
+            SelectTab(page,"Destinations");view.RaiseEvent(new RoutedEventArgs(FrameworkElement.UnloadedEvent));apply.Invoke(null,["Ember"]);Pump();
+            Assert.Equal(before,Assert.IsType<SolidColorBrush>(view.Legend.First(entry=>entry.IsButton).Swatch).Color);
+            SelectTab(page,"Traffic");view.RaiseEvent(new RoutedEventArgs(FrameworkElement.LoadedEvent));
+            var expected=Assert.IsType<SolidColorBrush>(theme.GetMethod("StripBrush",All)!.Invoke(null,[0]));Assert.NotEqual(before,expected.Color);Assert.Equal(expected.Color,Assert.IsType<SolidColorBrush>(view.Legend.First(entry=>entry.IsButton).Swatch).Color);
+            // Repeated tab lifetimes refresh the palette without multiplying application/slot/key callbacks.
+            for(int i=0;i<2;i++){SelectTab(page,"Destinations");view.RaiseEvent(new RoutedEventArgs(FrameworkElement.UnloadedEvent));SelectTab(page,"Traffic");view.RaiseEvent(new RoutedEventArgs(FrameworkElement.LoadedEvent));}
+            int chosen=0,activated=0,moved=0;view.ApplicationChosen+=(_,_)=>chosen++;view.Chart.SlotActivated+=(_,_)=>activated++;view.Chart.SelectionMoved+=_=>moved++;
+            Assert.Single(Elements(view).OfType<Button>()).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));Assert.Equal(1,chosen);reads.Drain();Layout(page,1000,700);view.Chart.SlotAt(new());
+            var plot=view.Chart.PlotRect;view.Chart.HandleClick(new(plot.Left+plot.Width/2,plot.Top+plot.Height/2));Assert.Equal(1,activated);reads.Drain();view.Chart.HandleKey(System.Windows.Input.Key.Right);Assert.Equal(1,moved);reads.Drain();
+        }
+        finally{view.RaiseEvent(new RoutedEventArgs(FrameworkElement.UnloadedEvent));apply.Invoke(null,["Midnight"]);Pump();}
+    }
     private static T Cell<T>(DestinationsCard card, string key, Func<DestinationRow, T> pick) => pick(card.Rows.Single(r => r.Key == key));
     private static DataGridColumn Column(DestinationsCard card, string header) => card.Grid.Columns.Single(c => (string)c.Header == header);
     private static string[] Keys(DestinationsCard card) => card.Rows.Select(r => r.Key).ToArray();
@@ -265,7 +383,7 @@ internal static class ConnectionsPageUiChecks
     /// <summary>The realized header's tooltip, through the card's real header style.</summary>
     private static string? HeaderTip(FrameworkElement page, DestinationsCard card, string header)
     {
-        Layout(page, 1000, 700);
+        SelectTab(page,"Destinations");
         return (string?)Elements(card.Grid).OfType<System.Windows.Controls.Primitives.DataGridColumnHeader>().Single(h => h.Column?.Header as string == header).ToolTip;
     }
     /// <summary>A header click through DataGrid's own Sorting event.</summary>
@@ -710,7 +828,7 @@ internal static class ConnectionsPageUiChecks
         page.clock = () => Local(10, 2);
         minute.IsChecked = true; Assert.True(IsMinute(reads.Last, 10, 0)); reads.Answer(); Assert.Empty(reads.Replies);
         search.Text = "v"; reads.Answer(); Assert.True(IsWhole(reads.Last, 3)); reads.Answer(); Assert.NotNull(chart.Strip);
-        Assert.Null(summary.ToolTip);
+        Assert.Equal(Field<TextBlock>(page,"capture").Text,Assert.IsType<string>(summary.ToolTip));
         count = reads.Requested.Count; page.RaiseEvent(new RoutedEventArgs(FrameworkElement.UnloadedEvent)); page.RaiseEvent(new RoutedEventArgs(FrameworkElement.LoadedEvent));
         Assert.Equal(count + 1, reads.Requested.Count); Assert.Equal(TimeSpan.FromMinutes(1), reads.Last.To - reads.Last.From);
         page.clock = () => Local(10, 10);
@@ -798,10 +916,11 @@ internal static class ConnectionsPageUiChecks
         Assert.Contains("— destinations", summary.Text); Assert.Equal("History unavailable", summary.ToolTip);
         Assert.Equal("History could not be read (IOException).", Field<TextBlock>(page, "actionStatus").Text);
         Field<Slider>(page, "cursor").Value = 1; Assert.True(IsMinute(reads.Last, 10, 1));
-        reads.Answer(destinations: 5); Assert.Contains("5 destinations", summary.Text); Assert.Null(summary.ToolTip); Assert.Same(strip, chart.Strip); Assert.Empty(reads.Replies);
+        reads.Answer(destinations: 5); Assert.Contains("5 destinations", summary.Text); Assert.Equal(Field<TextBlock>(page,"capture").Text,Assert.IsType<string>(summary.ToolTip)); Assert.Same(strip, chart.Strip); Assert.Empty(reads.Replies);
         // The summary groups its counts like the Destinations count line and says "1 destination".
         Field<Slider>(page, "cursor").Value = 2; reads.Answer(destinations: 1234); Assert.Contains($"· {1234:N0} destinations · 0 countries ·", summary.Text);
         Field<Slider>(page, "cursor").Value = 1; reads.Answer(destinations: 1); Assert.Contains("· 1 destination · 0 countries ·", summary.Text);
+        Field<ComboBox>(page,"mode").SelectedIndex=0;Assert.Equal(Field<TextBlock>(page,"capture").Text,Assert.IsType<string>(summary.ToolTip));Assert.NotEqual("History unavailable",summary.ToolTip);
     }
     /// <summary>chrome.exe and two more applications in Other, over the query's first minute.</summary>
     private static TrafficStrip ChromeStrip(ConnectionHistoryQuery query)
@@ -984,9 +1103,10 @@ internal static class ConnectionsPageUiChecks
         Assert.Equal(("", "", ConnectionDirection.Both, "CHROME.EXE"), (first.Search, first.CountryCode, first.Direction, first.Application));
         Assert.Equal(Visibility.Visible, button.Visibility); Assert.Equal("Application: Chrome.exe ✕", Assert.IsType<TextBlock>(button.Content).Text);
         // From History a request follows at once; an empty interval opens its minute, and null shows every application.
-        reads.Drain(); int count = reads.Requested.Count;
+        reads.Drain();SelectTab(page,"Destinations");int count = reads.Requested.Count;
         page.ShowHistory(now.AddMinutes(-20), now.AddMinutes(-20), null);
         Assert.Equal(count + 1, reads.Requested.Count); Assert.Equal(1, mode.SelectedIndex);
+        Assert.True(Tab(page,"Destinations").IsSelected);
         var second = reads.Last; Assert.Equal((now.AddMinutes(-20), now.AddMinutes(-19), ""), (second.From, second.To, second.Application));
         Assert.Equal(Visibility.Collapsed, button.Visibility);
         // An interval wholly before what Connections keeps: one "Not kept" band, and the storage line still names the earliest retained time.
@@ -994,7 +1114,7 @@ internal static class ConnectionsPageUiChecks
         var notKept = new TrafficStrip(query.From, query.To, 60_000, TrafficMeasure.Total, [], 0, 0, 0, [], RetainedFrom: query.To);
         reply.SetResult(new(query, [], 0, new(0, 0, 0, 0, 0, 0), [], [], [], earliest, 4096, "fixture", Strip: notKept)); Pump();
         var view = Field<TrafficStripView>(page, "trafficStrip"); var chart = view.Chart;
-        Layout(page, 1000, 700); chart.SlotAt(new Point());
+        SelectTab(page,"Traffic");chart.SlotAt(new Point());
         Assert.Same(notKept, chart.Strip); Assert.True(chart.PlotRect.Width > 100, $"Strip plot width {chart.PlotRect.Width}.");
         Assert.Equal<Rect?>(chart.PlotRect, chart.NotKept);
         Assert.StartsWith("Not kept before ", view.NotKeptLine);
@@ -1094,7 +1214,7 @@ internal static class ConnectionsPageUiChecks
             list.SelectedIndex = 0; Assert.Contains("Browser · not recorded", Field<TextBlock>(page, "nodeText").Text);
             Assert.EndsWith(" · not recorded", Assert.Single(map.DisplayedPoints).Label);
             // The expander text ends with the new sentence.
-            var options = Assert.Single(Elements(page).OfType<Expander>(), e => e.Header as string == "Recording, origin and storage");
+            var options = Assert.Single(Elements(page).OfType<Expander>(), e => e.Header as string == "Location database, recording and storage");
             Assert.Contains(Elements((DependencyObject)options.Content).OfType<TextBlock>(), t => t.Text.EndsWith(" Apps in Don't record these apps show live, marked not recorded, and are never saved.", StringComparison.Ordinal));
             // Search matches the bare name: "Browser" keeps the node and the row, "not recorded" matches nothing.
             var search = Field<TextBox>(page, "search");
@@ -1237,7 +1357,7 @@ internal static class ConnectionsPageUiChecks
         var culture=CultureInfo.CurrentCulture;CultureInfo.CurrentCulture=CultureInfo.GetCultureInfo("en-US");
         // Constructing a Window registers the resource-invalidation root, without creating an HWND.
         var host = new Window { Content = page };
-        var theme = typeof(Collector).Assembly.GetType("DeadWare.App.Theme")!;
+        var theme = typeof(UiSession).Assembly.GetType("DeadWare.App.Theme")!;
         foreach (string name in new[] { "Midnight", "Ember", "Glacier", "Amethyst", "Neon", "Blackout", "Skyrim", "Mage", "Daylight" })
         {
             theme.GetMethod("Apply", BindingFlags.Public | BindingFlags.Static)!.Invoke(null, [name]); Pump();
@@ -1248,11 +1368,12 @@ internal static class ConnectionsPageUiChecks
                     var scroll=Assert.IsType<ScrollViewer>(((Grid)page).Children[0]);
                     Field<ComboBox>(page, "mode").SelectedIndex = historical ? 1 : 0; if (historical) Call(page, "ApplyHistory", history); else Call(page, "ApplyLive", live);scroll.ScrollToTop(); Layout(page, size.Width, size.Height);
                 Pump();Layout(page,size.Width,size.Height);
-                var map = Field<ConnectionMap>(page, "map"); var list=Field<ListBox>(page,"mappedConnections"); Assert.InRange(map.ActualWidth,500,size.Width);Assert.True(map.ActualHeight>=300);Assert.InRange(list.ActualHeight,45,140);
-                var stripCard=Field<Border>(page,"trafficCard");var stripChart=Field<TrafficStripView>(page,"trafficStrip").Chart;
-                Assert.Equal(historical?Visibility.Visible:Visibility.Collapsed,stripCard.Visibility);
-                if(historical){Assert.Same(history.Strip,stripChart.Strip);Assert.True(stripChart.ActualHeight>=120,$"Strip height {stripChart.ActualHeight}.");}
+                var map = Field<ConnectionMap>(page, "map"); var list=Field<ListBox>(page,"mappedConnections"); Assert.InRange(map.ActualWidth,500,size.Width);Assert.True(map.ActualHeight>=400);if(size.Width<1100)Assert.InRange(list.ActualHeight,45,140);else Assert.True(list.ActualHeight>140);
+                var tabs=Tabs(page);var lowerCard=Assert.IsType<Border>(tabs.Parent);var stripChart=Field<TrafficStripView>(page,"trafficStrip").Chart;
+                Assert.Equal(Visibility.Visible,lowerCard.Visibility);Assert.Equal(historical?Visibility.Visible:Visibility.Collapsed,Tab(page,"Traffic").Visibility);
+                if(historical){SelectTab(page,"Traffic",size.Width,size.Height);Assert.Same(history.Strip,stripChart.Strip);Assert.True(stripChart.ActualHeight>=120,$"Strip height {stripChart.ActualHeight}.");}
                 Assert.True(Field<TextBlock>(page,"summary").TransformToAncestor(page).Transform(new Point()).Y+Field<TextBlock>(page,"summary").ActualHeight<map.TransformToAncestor(page).Transform(new Point()).Y+1);
+                SelectTab(page,"Destinations",size.Width,size.Height);
                 var destinations=Card(page);Assert.Equal(315,destinations.Grid.ActualHeight);Assert.Equal(historical?1:3,destinations.Rows.Count);
                 CheckNotTrimmed(destinations,name,size.Width<900);
                 if(!historical)
@@ -1277,9 +1398,9 @@ internal static class ConnectionsPageUiChecks
                         Assert.Same(app.Resources["GlassPanel"],Field<Border>(page,"nodeDetails").Background);
                         Assert.Contains(historical?"Historical connection":"Live connection",Field<TextBlock>(page,"nodeText").Text);
                     }
-                    scroll.ScrollToBottom();Pump();Layout(page,size.Width,size.Height);
-                    var download=Field<Button>(page,"download");var location=download.TransformToAncestor(page).Transform(new Point());Assert.InRange(location.Y,0,size.Height-download.ActualHeight);
-                    Snapshot("-bottom");scroll.ScrollToTop();Pump();
+                    var expander=Assert.Single(Elements(page).OfType<Expander>(),e=>e.Header as string=="Location database, recording and storage");expander.IsExpanded=true;Layout(page,size.Width,size.Height);scroll.ScrollToBottom();Pump();Layout(page,size.Width,size.Height);
+                    var download=Field<Button>(page,"download");download.BringIntoView();Pump();Layout(page,size.Width,size.Height);var location=download.TransformToAncestor(page).Transform(new Point());Assert.InRange(location.Y,0,size.Height-download.ActualHeight);
+                    Snapshot("-bottom");expander.IsExpanded=false;scroll.ScrollToTop();Pump();
                 }
         }
         Field<ComboBox>(page, "mode").SelectedIndex = 0;
@@ -1388,7 +1509,7 @@ internal static class ConnectionsPageUiChecks
         Assert.NotSame(mapCard, stripCard);
         Assert.True(stripCard.TransformToAncestor(page).Transform(new Point()).Y < mapCard.TransformToAncestor(page).Transform(new Point()).Y, "The controls strip sits above the map card.");
         Assert.Same(card, Field<Border>(page, "nodeDetails").Style);
-        Assert.True(map.ActualHeight >= 280, $"Map height {map.ActualHeight} with card padding.");
+        Assert.True(map.ActualHeight >= 400, $"Map height {map.ActualHeight} with card padding.");
     }
     private static IEnumerable<DependencyObject> Elements(DependencyObject root)
     { for (int i = 0; i < VisualTreeHelper.GetChildrenCount(root); i++) { var child = VisualTreeHelper.GetChild(root, i); yield return child; foreach (var descendant in Elements(child)) yield return descendant; } }

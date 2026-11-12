@@ -98,7 +98,7 @@ internal sealed class ApplicationResourcesCard : StackPanel
     private string? pending = LoadingText;
     private ProcessRank shownRank;
     private int request, seriesRequest;
-    private bool syncing;
+    private bool syncing, rankPending;
 
     public ApplicationResourcesCard(UiSession session)
     {
@@ -133,10 +133,15 @@ internal sealed class ApplicationResourcesCard : StackPanel
         seriesDelay.Tick += (_, _) => { seriesDelay.Stop(); ReadSeries(); };
         search.TextChanged += (_, _) => RefreshRows();
         table.SelectionChanged += (_, _) => { if (syncing) return; SelectedApp = (table.SelectedItem as ResourceRow)?.Name; ShowSeries(); };
-        // A waiting read is dropped with the page; its next load reads again. A series that never started is read again then too.
+        // Tabs unload their content. Keep stopped debounce work until the card is realized again; reads already in flight finish normally.
+        Loaded += (_, _) =>
+        {
+            if (rankPending && Loading) { rankDelay.Stop(); rankDelay.Start(); }
+            if (SelectedApp is not null && charted is null) ShowSeries();
+        };
         Unloaded += (_, _) =>
         {
-            rankDelay.Stop();
+            rankPending |= rankDelay.IsEnabled; rankDelay.Stop();
             if (seriesDelay.IsEnabled) { seriesDelay.Stop(); charted = null; }
         };
     }
@@ -228,6 +233,7 @@ internal sealed class ApplicationResourcesCard : StackPanel
 
     private async Task ReloadAsync()
     {
+        rankPending = false;
         if ((slot ?? period) is not { } range) return;
         int current = ++request; var ranking = Rank;
         if (session.ProcessHistory is not { } service) { Loading = false; Unavailable("Application resource history is not available."); return; }

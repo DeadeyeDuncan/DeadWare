@@ -4,8 +4,10 @@ using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
 using System.Windows.Controls.Primitives;
 using System.Windows.Media;
+using System.Windows.Threading;
 using DeadWare.App;
 using DeadWare.Core;
 using Xunit;
@@ -29,6 +31,7 @@ internal static class StoragePageUiChecks
         try
         {
             CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
+            Narrow_layout_places_drives_above_detail();
             Page_lists_one_row_per_drive_with_badge();
             Selecting_a_row_fills_detail_with_volumes();
             Live_only_drive_shows_identity_note();
@@ -38,6 +41,12 @@ internal static class StoragePageUiChecks
             Nine_drive_note_is_shown();
             Refresh_keeps_row_instances_and_focus();
             Exactly_one_row_shows_selection();
+            Wide_layout_gives_chart_spare_height_and_scrolls_drives();
+            Resizing_keeps_buttons_selection_and_chart();
+            Tabs_default_to_volumes_and_show_health_on_selection();
+            Empty_page_and_removed_last_drive_show_chart_placeholder();
+            New_rows_use_current_density_and_volumes_keep_empty_state();
+            Wheel_over_drives_scrolls_the_page_when_the_list_cannot();
         }
         finally { CultureInfo.CurrentCulture = culture; }
     }
@@ -66,13 +75,16 @@ internal static class StoragePageUiChecks
         Assert.Equal("live-1", page.SelectedDriveId);
         Click(page.Rows.Children.OfType<Button>().ElementAt(0));
         Assert.Equal("S1", page.SelectedDriveId);
+        page.Tabs.SelectedItem = page.VolumesTab;
         page.UpdateLayout();
         var table = Texts(page.Volumes);
         Assert.Contains("LETTER", table); Assert.Contains("LABEL", table); Assert.Contains("USED", table); Assert.Contains("FREE", table);
         Assert.Contains("C", table); Assert.Contains("D", table); Assert.Contains("System", table);
         Assert.Contains(Ui.Bytes(300 * Gb), table); Assert.Contains(Ui.Bytes(200 * Gb), table);
         Assert.DoesNotContain("E", table);
-        var smart = Texts(page.Detail);
+        page.Tabs.SelectedItem = page.HealthTab;
+        page.UpdateLayout();
+        var smart = Texts(page.Smart);
         Assert.Contains("Power-on hours · 1200", smart); Assert.Contains("Highest temperature · 63.0°C", smart); Assert.Contains("Remaining life · 87%", smart);
         // The detail chart follows the selected drive only.
         var card = Descendants(page.Detail).OfType<ChartCard>().Single();
@@ -88,8 +100,9 @@ internal static class StoragePageUiChecks
         var row = Texts(page.Rows.Children.OfType<Button>().ElementAt(1));
         Assert.Contains(row, t => t.Contains("no serial number") && t.Contains("removable"));
         Click(page.Rows.Children.OfType<Button>().ElementAt(1));
+        page.Tabs.SelectedItem = page.HealthTab;
         page.UpdateLayout();
-        var detail = Texts(page.Detail);
+        var detail = Texts(page.Smart);
         Assert.Contains(detail, t => t.Contains("no serial number"));
         Assert.Contains("Power-on hours · —", detail);
     }
@@ -99,8 +112,15 @@ internal static class StoragePageUiChecks
         var off = new StorageHealth("S1", "Unknown", null, null, null, null, null, "Unavailable · storage sensors off");
         var page = Page(Session([Ssd], [off], ""));
         Assert.Contains("storage sensors off", page.Status.Text);
+        page.Tabs.SelectedItem = page.HealthTab;
+        page.UpdateLayout();
+        Assert.DoesNotContain(off.Unavailable!, Texts(page.Smart));
         var reported = Page(Session([Ssd], [Failing], "Storage enumeration failed"));
         Assert.Equal("Storage enumeration failed", reported.Status.Text);
+        var separate = Page(Session([Ssd], [off], "Storage enumeration failed"));
+        separate.Tabs.SelectedItem = separate.HealthTab;
+        separate.UpdateLayout();
+        Assert.Contains(off.Unavailable!, Texts(separate.Smart));
     }
 
     private static void Open_in_window_pops_out_selected_drive()
@@ -176,12 +196,191 @@ internal static class StoragePageUiChecks
 
     private static void Refresh(StoragePage page) => typeof(StoragePage).GetMethod("Refresh", Fields)!.Invoke(page, []);
 
-    private static StoragePage Page(UiSession session)
+    private static void Narrow_layout_places_drives_above_detail()
+    {
+        foreach (double width in new[] { 1000d, 900d })
+        {
+            var page = Page(Session([Ssd, Stick], [Failing], ""), width);
+            var body = Assert.IsType<Grid>(Assert.IsType<ScrollViewer>(page.Content).Content);
+            var panel = body.Children.OfType<Grid>().Single(child => Descendants(child).Contains(page.Rows));
+            Assert.Equal(1, Grid.GetRow(panel));
+            Assert.Equal(2, Grid.GetRow(page.Detail));
+            Assert.True(body.Children.IndexOf(panel) < body.Children.IndexOf(page.Detail));
+            Assert.True(panel.TranslatePoint(new Point(), body).Y + panel.ActualHeight <= page.Detail.TranslatePoint(new Point(), body).Y);
+            Assert.All(page.Rows.Children.OfType<Button>(), row =>
+            {
+                Assert.Equal(new Thickness(12, 8, 12, 8), row.Padding);
+                Assert.Equal(new Thickness(0, 0, 0, 6), row.Margin);
+            });
+        }
+    }
+
+    private static void Wide_layout_gives_chart_spare_height_and_scrolls_drives()
+    {
+        var page = Page(Session([Ssd, Stick], [Failing], ""), 1300, 700);
+        var body = Assert.IsType<Grid>(Assert.IsType<ScrollViewer>(page.Content).Content);
+        var detail = Assert.IsType<Grid>(page.Detail.Child);
+        var panel = detail.Children.OfType<Grid>().Single(child => Grid.GetColumn(child) == 1);
+        Assert.Equal(280, detail.ColumnDefinitions[1].Width.Value);
+        Assert.InRange(panel.ActualWidth, 271.9, 272.1);
+        Assert.Contains("DRIVES", Texts(panel));
+        var scroll = Descendants(panel).OfType<ScrollViewer>().Single();
+        Assert.Same(page.Rows, scroll.Content);
+        Assert.Equal(ScrollBarVisibility.Auto, scroll.VerticalScrollBarVisibility);
+        Assert.True(page.Detail.ActualHeight >= 360);
+        Assert.Equal(370, body.RowDefinitions[2].MinHeight);
+        var chart = Descendants(page.Detail).OfType<ChartCard>().Single();
+        Assert.True(chart.ActualHeight > 260);
+        Assert.True(double.IsNaN(chart.Height));
+        Assert.Equal(0, chart.MinHeight);
+        var chartColumn = Assert.IsType<Grid>(chart.Parent);
+        Assert.True(chartColumn.RowDefinitions[Grid.GetRow(chart)].Height.IsStar);
+        double before = chart.ActualHeight;
+        Layout(page, 1300, 1000);
+        Assert.True(chart.ActualHeight > before + 250);
+        Assert.Equal(Visibility.Collapsed, page.Status.Visibility);
+
+        var drives = Enumerable.Range(0, 12).Select(i => Ssd with { Id = "S" + i, Index = i }).ToArray();
+        var many = Page(Session(drives, [], "Drives beyond eight are not recorded."), 1300, 700);
+        var viewport = Assert.IsType<ScrollViewer>(many.Content);
+        var manyBody = Assert.IsType<Grid>(viewport.Content);
+        var side = Descendants(many.Detail).OfType<ScrollViewer>().Single(s => ReferenceEquals(s.Content, many.Rows));
+        Assert.True(double.IsFinite(manyBody.Height));
+        Assert.InRange(manyBody.Height, 370, 700);
+        Assert.True(many.Detail.ActualHeight >= 360);
+        Assert.True(side.ScrollableHeight > 0);
+        Assert.InRange(viewport.ScrollableHeight, 0, 1);
+        side.ScrollToBottom(); Pump(); many.UpdateLayout();
+        Assert.True(side.VerticalOffset > 0);
+    }
+
+    private static void Wheel_over_drives_scrolls_the_page_when_the_list_cannot()
+    {
+        // Narrow: the drive list has nothing to scroll, so a wheel over a drive row must reach the page viewport.
+        var drives = Enumerable.Range(0, 12).Select(i => Ssd with { Id = "S" + i, Index = i }).ToArray();
+        var page = Page(Session(drives, [], ""), 900, 500);
+        var viewport = Assert.IsType<ScrollViewer>(page.Content);
+        Assert.True(viewport.ScrollableHeight > 0);
+        var inner = Descendants(page).OfType<ScrollViewer>().Single(s => ReferenceEquals(s.Content, page.Rows));
+        Assert.InRange(inner.ScrollableHeight, 0, .5);
+        page.Rows.Children.OfType<Button>().First().RaiseEvent(new MouseWheelEventArgs(Mouse.PrimaryDevice, 0, -120) { RoutedEvent = UIElement.PreviewMouseWheelEvent });
+        Pump(); page.UpdateLayout();
+        Assert.True(viewport.VerticalOffset > 0, "The wheel over a drive row scrolls the page.");
+        // Wide: the list scrolls itself first; a wheel at its top going up falls through to the page.
+        var wide = Page(Session(drives, [], ""), 1300, 500);
+        var wideViewport = Assert.IsType<ScrollViewer>(wide.Content);
+        var side = Descendants(wide.Detail).OfType<ScrollViewer>().Single(s => ReferenceEquals(s.Content, wide.Rows));
+        Assert.True(side.ScrollableHeight > 0);
+        wide.Rows.Children.OfType<Button>().First().RaiseEvent(new MouseWheelEventArgs(Mouse.PrimaryDevice, 0, -120) { RoutedEvent = UIElement.PreviewMouseWheelEvent });
+        Pump(); wide.UpdateLayout();
+        Assert.True(side.VerticalOffset > 0 || wideViewport.VerticalOffset == 0, "A list that can scroll keeps the wheel.");
+    }
+
+    private static void Resizing_keeps_buttons_selection_and_chart()
+    {
+        var page = Page(Session([Ssd, Stick], [Failing], ""), 1300, 700);
+        var rows = page.Rows.Children.OfType<Button>().ToArray();
+        Click(rows[1]);
+        var chart = Descendants(page.Detail).OfType<ChartCard>().Single();
+        // The page owns 12 DIP of horizontal outer margin; 1111 / 1112 offer 1099 / 1100 to the page itself.
+        foreach (var (width, beside) in new[] { (1300d, true), (900d, false), (1300d, true), (1111d, false), (1112d, true) })
+        {
+            Layout(page, width, 700);
+            Refresh(page);
+            Layout(page, width, 700);
+            Assert.Equal("live-1", page.SelectedDriveId);
+            Assert.Same(chart, Descendants(page.Detail).OfType<ChartCard>().Single());
+            Assert.Same(rows[0], page.Rows.Children[0]); Assert.Same(rows[1], page.Rows.Children[1]);
+            var detail = Assert.IsType<Grid>(page.Detail.Child);
+            Assert.Equal(beside ? 280 : 0, detail.ColumnDefinitions[1].Width.Value);
+            Assert.All(rows, row =>
+            {
+                Assert.Equal(beside ? new Thickness(10, 6, 10, 6) : new Thickness(12, 8, 12, 8), row.Padding);
+                Assert.Equal(new Thickness(0, 0, 0, beside ? 4 : 6), row.Margin);
+            });
+            if (!beside)
+            {
+                var body = Assert.IsType<Grid>(Assert.IsType<ScrollViewer>(page.Content).Content);
+                var panel = body.Children.OfType<Grid>().Single(child => Descendants(child).Contains(page.Rows));
+                Assert.Equal(1, Grid.GetRow(panel));
+                Assert.True(body.Children.IndexOf(panel) < body.Children.IndexOf(page.Detail));
+            }
+        }
+    }
+
+    private static void Tabs_default_to_volumes_and_show_health_on_selection()
+    {
+        var page = Page(Session([Ssd], [Failing], ""));
+        Assert.Same(page.VolumesTab, page.Tabs.SelectedItem);
+        Assert.Equal("Volumes", page.VolumesTab.Header); Assert.Equal("Health", page.HealthTab.Header);
+        Assert.Contains(page.Volumes, Descendants(page)); Assert.DoesNotContain(page.Smart, Descendants(page));
+        Assert.Equal(new[] { 1d, 2, 1, 1 }, page.Volumes.ColumnDefinitions.Select(column => column.Width.Value).ToArray());
+        page.Tabs.SelectedItem = page.HealthTab;
+        page.UpdateLayout();
+        Assert.Contains(page.Smart, Descendants(page)); Assert.DoesNotContain(page.Volumes, Descendants(page));
+        Assert.Contains("Power-on hours · 1200", Texts(page.Smart));
+        Assert.Contains("Highest temperature · 63.0°C", Texts(page.Smart));
+        Assert.Contains("Remaining life · 87%", Texts(page.Smart));
+    }
+
+    private static void Empty_page_and_removed_last_drive_show_chart_placeholder()
+    {
+        var session = Session([], [], "");
+        var page = Page(session);
+        var placeholder = Descendants(page.Detail).OfType<TextBlock>().Single(text => text.Text == "Select a drive.");
+        Assert.Equal(Visibility.Visible, placeholder.Visibility);
+        Assert.Contains("No drives detected", Texts(page.Rows));
+        SetStorage(session, [Ssd], [Failing]); Refresh(page); Layout(page, 1000, 1400);
+        Assert.Equal(Visibility.Collapsed, placeholder.Visibility);
+        Assert.Single(Descendants(page.Detail).OfType<ChartCard>());
+        SetStorage(session, [], []); Refresh(page); Layout(page, 1000, 1400);
+        Assert.Null(page.SelectedDriveId);
+        Assert.Same(placeholder, Descendants(page.Detail).OfType<TextBlock>().Single(text => text.Text == "Select a drive."));
+        Assert.Equal(Visibility.Visible, placeholder.Visibility);
+        Assert.Empty(Descendants(page.Detail).OfType<ChartCard>());
+        page.Tabs.SelectedItem = page.HealthTab;
+        page.UpdateLayout();
+        Assert.Empty(Texts(page.Smart));
+    }
+
+    private static void New_rows_use_current_density_and_volumes_keep_empty_state()
+    {
+        var session = Session([Ssd], [Failing], "");
+        var page = Page(session, 1300, 700);
+        SetStorage(session, [Ssd, Stick with { Volumes = [] }], [Failing]); Refresh(page); Layout(page, 1300, 700);
+        var added = page.Rows.Children.OfType<Button>().Last();
+        Assert.Equal(new Thickness(10, 6, 10, 6), added.Padding);
+        Assert.Equal(new Thickness(0, 0, 0, 4), added.Margin);
+        Assert.Contains("No volumes", Texts(added));
+        Assert.Contains("USB Stick", System.Windows.Automation.AutomationProperties.GetName(added));
+        Click(added);
+        page.Tabs.SelectedItem = page.VolumesTab;
+        page.UpdateLayout();
+        Assert.Contains("No mounted volumes", Texts(page.Volumes));
+    }
+
+    private static void SetStorage(UiSession session, IReadOnlyList<StorageDrive> drives, IReadOnlyList<StorageHealth> health)
+    {
+        var collector = session.Collector;
+        collector.GetType().GetField("latest", Fields)!.SetValue(collector, session.Current! with { Storage = new(drives, health, "") });
+    }
+
+    private static StoragePage Page(UiSession session, double width = 1000, double height = 1400)
     {
         var page = new StoragePage(session);
-        page.Measure(new Size(1000, 1400)); page.Arrange(new Rect(0, 0, 1000, 1400)); page.UpdateLayout();
+        Layout(page, width, height);
         return page;
     }
+
+    private static void Layout(StoragePage page, double width, double height)
+    {
+        page.Measure(new Size(width, height)); page.Arrange(new Rect(0, 0, width, height)); page.UpdateLayout();
+        Pump();
+        page.Measure(new Size(width, height)); page.Arrange(new Rect(0, 0, width, height)); page.UpdateLayout();
+    }
+
+    private static void Pump()
+    { var frame = new DispatcherFrame(); Dispatcher.CurrentDispatcher.BeginInvoke(DispatcherPriority.Background, new Action(() => frame.Continue = false)); Dispatcher.PushFrame(frame); }
 
     private static void Click(Button button) => button.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
 
