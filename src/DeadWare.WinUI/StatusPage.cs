@@ -7,7 +7,7 @@ namespace DeadWare.WinUI;
 
 /// <summary>
 /// Stands in for Overview until it is ported: live readings from the real collector as plain text, which shows that
-/// the services run under this front end. It draws no charts.
+/// the services run under this front end, and the five Overview charts drawn by the new chart kit.
 /// </summary>
 internal sealed class StatusPage : Page
 {
@@ -45,12 +45,51 @@ internal sealed class StatusPage : Page
         };
         var intro = new TextBlock
         {
-            Text = "The WinUI interface is being built page by page. This page shows live readings from the same monitoring services as the current app; the other pages are placeholders.",
+            Text = "The WinUI interface is being built page by page. This page shows live readings and charts from the same monitoring services as the current app; the other pages are placeholders.",
             TextWrapping = TextWrapping.Wrap,
         };
-        Content = new StackPanel { Padding = new Thickness(24), Spacing = 16, MaxWidth = 720, HorizontalAlignment = HorizontalAlignment.Left, Children = { intro, card, status } };
+        var charts = new Grid { ColumnSpacing = 12, RowSpacing = 12 };
+        charts.ColumnDefinitions.Add(new ColumnDefinition());
+        charts.ColumnDefinitions.Add(new ColumnDefinition());
+        (string Title, string Kind, bool Compare)[] kinds =
+            [("CPU / GPU usage", "cpu", true), ("CPU / GPU temperature", "cputemp", true), ("RAM usage", "memory", false), ("Network activity", "network", false), ("Disk activity", "storage", false)];
+        for (int i = 0; i < kinds.Length; i++)
+        {
+            if (i % 2 == 0) charts.RowDefinitions.Add(new RowDefinition { Height = new GridLength(220) });
+            var chartCard = ChartCard(kinds[i].Title, new HistoryChartView(session, kinds[i].Kind, kinds[i].Compare));
+            Grid.SetRow(chartCard, i / 2);
+            Grid.SetColumn(chartCard, i % 2);
+            charts.Children.Add(chartCard);
+        }
+        Content = new ScrollViewer
+        {
+            Content = new StackPanel { Padding = new Thickness(24), Spacing = 16, Children = { intro, card, charts, status } },
+        };
         Loaded += (_, _) => { session.Changed += Refresh; Refresh(); };
         Unloaded += (_, _) => session.Changed -= Refresh;
+    }
+
+    /// <summary>A titled card holding one chart, with the main trace's minimum, average and maximum beside the title.</summary>
+    private static Border ChartCard(string title, HistoryChartView chart)
+    {
+        var heading = new TextBlock { Text = title, Style = (Style)Application.Current.Resources["BodyStrongTextBlockStyle"] };
+        var statistics = new TextBlock { Opacity = 0.7, HorizontalAlignment = HorizontalAlignment.Right };
+        chart.StatisticsReady += summary => statistics.Text = summary.Average is { } average && summary.Minimum is { } minimum && summary.Maximum is { } maximum
+            ? $"min {minimum:0.#} · avg {average:0.#} · max {maximum:0.#}" : "";
+        var layout = new Grid();
+        layout.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        layout.RowDefinitions.Add(new RowDefinition());
+        Grid.SetRow(chart, 1);
+        layout.Children.Add(heading);
+        layout.Children.Add(statistics);
+        layout.Children.Add(chart);
+        return new Border
+        {
+            Background = (Brush)Application.Current.Resources["CardBackgroundFillColorDefaultBrush"],
+            CornerRadius = new CornerRadius(8),
+            Padding = new Thickness(16),
+            Child = layout,
+        };
     }
 
     private void Refresh()
