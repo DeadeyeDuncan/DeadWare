@@ -49,7 +49,7 @@ Run the extracted `DeadWare.WinUiPrototype.exe` directly and note yes or no for 
 4. A right click on the icon shows **Open** and **Quit**, and the menu goes away when you click elsewhere.
 5. **Quit** removes the icon and ends the process (nothing named `DeadWare.WinUiPrototype` is left in Task Manager).
 
-Also worth a glance: run it once more with `--smooth`, and once with `--every-frame`, and see whether the six charts scroll smoothly, and how the window feels to resize.
+Also worth a glance: run it once more with `--smooth`, and once with `--every-frame`, and see whether the six charts scroll smoothly, and how the window feels to resize. While `--every-frame` is running, also try **Quit** from the tray and say whether the process ends at once: an early CI run of that mode failed to exit and the cause was not pinned down.
 
 ## Command line
 
