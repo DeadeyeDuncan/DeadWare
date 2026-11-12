@@ -109,7 +109,8 @@ jobs:
           $published = (Resolve-Path artifacts/prototype/DeadWare.WinUiPrototype).Path
           $exe = Join-Path $published 'DeadWare.WinUiPrototype.exe'
           function Invoke-Measure([hashtable]$Parameters) {
-            & ./scripts/measure-ui.ps1 @Parameters -Runs $(if ($Parameters.ContainsKey('Runs')) { $Parameters.Runs } else { 1 }) -SteadySeconds 5 | Out-Host
+            if (-not $Parameters.ContainsKey('Runs')) { $Parameters.Runs = 1 }
+            & ./scripts/measure-ui.ps1 @Parameters -SteadySeconds 5 | Out-Host
             $LASTEXITCODE
           }
           function Read-Result([string]$Path) { Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json }
