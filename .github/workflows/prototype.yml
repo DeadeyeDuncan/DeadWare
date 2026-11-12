@@ -3,7 +3,7 @@ name: WinUI prototype
 # Runs only when the prototype changes and never gates the Windows build.
 on:
   pull_request:
-    paths: &prototype
+    paths:
       - 'tools/WinUiPrototype/**'
       - 'tools/WinUiPrototype.Logic/**'
       - 'tools/WinUiPrototype.Tests/**'
@@ -11,7 +11,12 @@ on:
       - '.github/workflows/prototype.yml'
   push:
     branches: [main]
-    paths: *prototype
+    paths:
+      - 'tools/WinUiPrototype/**'
+      - 'tools/WinUiPrototype.Logic/**'
+      - 'tools/WinUiPrototype.Tests/**'
+      - 'scripts/measure-ui.ps1'
+      - '.github/workflows/prototype.yml'
   workflow_dispatch:
 permissions:
   contents: read
