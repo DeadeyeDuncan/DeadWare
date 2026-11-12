@@ -159,6 +159,7 @@ jobs:
             Assert ($code -ne 0) 'already-running: the script refuses with a non-zero exit'
             Assert (-not (Test-Path -LiteralPath $out)) 'already-running: no output file is written'
           } finally { $stray.Kill($true); $stray.WaitForExit(10000) | Out-Null }
+          exit 0   # the refusal above leaves a non-zero $LASTEXITCODE, which would otherwise fail this step
       - name: Measure
         shell: pwsh
         # Three launches of 60 s shown and 60 s hidden each. The numbers are recorded, never judged: this runner has
