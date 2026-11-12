@@ -26,7 +26,7 @@ concurrency:
 jobs:
   prototype:
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
@@ -159,6 +159,27 @@ jobs:
             Assert ($code -ne 0) 'already-running: the script refuses with a non-zero exit'
             Assert (-not (Test-Path -LiteralPath $out)) 'already-running: no output file is written'
           } finally { $stray.Kill($true); $stray.WaitForExit(10000) | Out-Null }
+      - name: Measure
+        shell: pwsh
+        # Three launches of 60 s shown and 60 s hidden each. The numbers are recorded, never judged: this runner has
+        # no GPU, so the chart figures are pessimistic and the deciding run is the one on real hardware.
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet build tools/OverviewPreview -c Release --nologo
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $prototype = 'artifacts/prototype/DeadWare.WinUiPrototype/DeadWare.WinUiPrototype.exe'
+          $preview = (Get-ChildItem tools/OverviewPreview/bin/Release -Recurse -Filter DeadWare.OverviewPreview.exe | Select-Object -First 1).FullName
+          ./scripts/measure-ui.ps1 -Exe $prototype -Label winui-prototype -Out artifacts/measurements/ui-winui-prototype.json
+          ./scripts/measure-ui.ps1 -Exe $prototype -Arguments '--no-mica' -Label winui-prototype-solid -Out artifacts/measurements/ui-winui-prototype-solid.json
+          ./scripts/measure-ui.ps1 -Exe $preview -Label wpf-overview-preview -Out artifacts/measurements/ui-wpf-overview-preview.json
+          Get-ChildItem artifacts/measurements -Filter 'ui-*.json' | ForEach-Object { "### $($_.Name)"; Get-Content -LiteralPath $_.FullName -Raw }
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        if: always()
+        with:
+          name: WinUiPrototype-measurements
+          path: artifacts/measurements/
+          if-no-files-found: warn
+          retention-days: 14
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: WinUiPrototype-win-x64
