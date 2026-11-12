@@ -102,6 +102,62 @@ jobs:
             'Close hid the window and the process kept running.'
           } finally { Stop-Prototype $process }
           if (Get-Process -Name DeadWare.WinUiPrototype -ErrorAction SilentlyContinue) { throw 'A prototype process is still running after the checks.' }
+      - name: Check the measuring script
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $published = (Resolve-Path artifacts/prototype/DeadWare.WinUiPrototype).Path
+          $exe = Join-Path $published 'DeadWare.WinUiPrototype.exe'
+          function Invoke-Measure([hashtable]$Parameters) {
+            & ./scripts/measure-ui.ps1 @Parameters -Runs $(if ($Parameters.ContainsKey('Runs')) { $Parameters.Runs } else { 1 }) -SteadySeconds 5 | Out-Host
+            $LASTEXITCODE
+          }
+          function Read-Result([string]$Path) { Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json }
+          function Assert([bool]$Condition, [string]$Message) { if (-not $Condition) { throw $Message } else { "ok: $Message" } }
+
+          # 1. An app that never shows a window: give up at the timeout, record why, leave nothing running.
+          $out = 'artifacts/measurements/check-no-window.json'
+          $code = Invoke-Measure @{ Exe = 'ping.exe'; Arguments = @('-n', '30', '127.0.0.1'); Label = 'check-no-window'; Out = $out; StartupTimeoutSeconds = 5 }
+          $run = (Read-Result $out).runs[0]
+          Assert ($code -eq 0) 'no-window: the script exits 0'
+          Assert ($null -eq $run.startupMs -and $run.startupReason) 'no-window: startupMs is null with a reason'
+          Assert (-not (Get-Process -Name ping -ErrorAction SilentlyContinue)) 'no-window: no ping process is left'
+
+          # 2. An app that exits on close: visible figures are taken, hidden ones are null with the reason.
+          $out = 'artifacts/measurements/check-exits-on-close.json'
+          $code = Invoke-Measure @{ Exe = 'winver.exe'; Label = 'check-exits-on-close'; Out = $out }
+          $run = (Read-Result $out).runs[0]
+          Assert ($code -eq 0 -and $run.startupMs -gt 0) 'exits-on-close: a start-up time is recorded'
+          Assert ($run.visible.privateBytes -gt 0) 'exits-on-close: visible memory is recorded'
+          Assert ($null -eq $run.hidden -and $run.hiddenReason -eq 'process exited on close') 'exits-on-close: hidden is null with the reason'
+
+          # 3. The prototype hides to the tray: hidden figures are taken in every run and nothing is left behind.
+          $out = 'artifacts/measurements/check-hides.json'
+          $code = Invoke-Measure @{ Exe = $exe; Label = 'check-hides'; Out = $out; Runs = 2 }
+          $result = Read-Result $out
+          Assert ($code -eq 0 -and $result.runs.Count -eq 2) 'hides: two runs are recorded'
+          Assert (@($result.runs | Where-Object { $_.hidden.privateBytes -gt 0 }).Count -eq 2) 'hides: both runs have hidden figures'
+          Assert ($result.exe -eq 'DeadWare.WinUiPrototype.exe') 'hides: exe holds the file name only'
+          Assert (-not (Get-Process -Name DeadWare.WinUiPrototype -ErrorAction SilentlyContinue)) 'hides: no prototype process is left'
+
+          # 4. Spaces in the executable and output paths.
+          $spaced = 'artifacts/prototype/with space/DeadWare.WinUiPrototype'
+          New-Item -ItemType Directory -Force -Path 'artifacts/prototype/with space' | Out-Null
+          Copy-Item -LiteralPath $published -Destination $spaced -Recurse
+          $out = 'artifacts/measurements/with space/out.json'
+          $code = Invoke-Measure @{ Exe = (Join-Path $spaced 'DeadWare.WinUiPrototype.exe'); Label = 'check-spaces'; Out = $out }
+          Assert ($code -eq 0 -and (Read-Result $out).runs[0].startupMs -gt 0) 'spaces: measured and written'
+          Remove-Item -LiteralPath 'artifacts/prototype/with space' -Recurse -Force
+
+          # 5. Refuse to measure beside an instance that is already running.
+          $out = 'artifacts/measurements/check-already-running.json'
+          $stray = Start-Process -FilePath $exe -PassThru
+          try {
+            Start-Sleep -Seconds 5
+            $code = Invoke-Measure @{ Exe = $exe; Label = 'check-already-running'; Out = $out }
+            Assert ($code -ne 0) 'already-running: the script refuses with a non-zero exit'
+            Assert (-not (Test-Path -LiteralPath $out)) 'already-running: no output file is written'
+          } finally { $stray.Kill($true); $stray.WaitForExit(10000) | Out-Null }
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: WinUiPrototype-win-x64
