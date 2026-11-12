@@ -85,6 +85,23 @@ jobs:
               if ($frames -lt 30) { throw "Only $frames chart draws in 10 s; expected at least 30." }
             } finally { Stop-Prototype $process }
           }
+          # Closing the window must hide it to the tray and keep the process alive.
+          Add-Type -Namespace Native -Name User32 -MemberDefinition @'
+          [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr window, uint message, IntPtr w, IntPtr l);
+          [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr window);
+          '@
+          $process = Start-Prototype @()
+          try {
+            Wait-Title $process 'DeadWare prototype ('
+            $window = $process.MainWindowHandle
+            [Native.User32]::PostMessage($window, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null
+            Start-Sleep -Seconds 5
+            if ($process.HasExited) { throw "The prototype exited (code $($process.ExitCode)) on close instead of hiding to the tray." }
+            if ([Native.User32]::IsWindowVisible($window)) { throw 'The window is still visible after close.' }
+            if (Test-Path -LiteralPath $errorFile) { throw "The prototype wrote an error file: $(Get-Content -LiteralPath $errorFile -Raw)" }
+            'Close hid the window and the process kept running.'
+          } finally { Stop-Prototype $process }
+          if (Get-Process -Name DeadWare.WinUiPrototype -ErrorAction SilentlyContinue) { throw 'A prototype process is still running after the checks.' }
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: WinUiPrototype-win-x64
