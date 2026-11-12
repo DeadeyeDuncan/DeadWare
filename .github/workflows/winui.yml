@@ -79,7 +79,7 @@ jobs:
             'Close hid the window and the process kept running.'
           } finally { if (-not $process.HasExited) { $process.Kill($true); $process.WaitForExit(15000) | Out-Null } }
 
-          # 2. With the solid fallback: readings arrive, and the ordinary quit path stops everything and exits 0.
+          # 2. With the solid fallback: readings arrive, the charts draw, and the ordinary quit path stops everything and exits 0.
           $process = Start-Shell @('--no-mica', '--exit-after', '15')
           try {
             if (-not $process.WaitForExit(90000)) { throw 'The shell did not quit within 90 s of --exit-after 15.' }
@@ -87,7 +87,9 @@ jobs:
             if ($process.ExitCode -ne 0) { throw "The shell quit with exit code $($process.ExitCode)." }
             $status = Get-Content -LiteralPath "$errorFile.status" -Raw
             "Status at quit: $status"
-            if ($status -notmatch '^readings=(\d+)$' -or [int]$Matches[1] -lt 1) { throw "The session never held a reading ($status)." }
+            if ($status -notmatch '^readings=(\d+) frames=(\d+)$') { throw "Unexpected status: $status" }
+            if ([int]$Matches[1] -lt 1) { throw "The session never held a reading ($status)." }
+            if ([int]$Matches[2] -lt 5) { throw "The five Overview charts did not all draw ($status)." }
           } finally { if (-not $process.HasExited) { $process.Kill($true); $process.WaitForExit(15000) | Out-Null } }
           if (Get-Process -Name DeadWare.WinUI -ErrorAction SilentlyContinue) { throw 'A shell process is still running after the checks.' }
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7

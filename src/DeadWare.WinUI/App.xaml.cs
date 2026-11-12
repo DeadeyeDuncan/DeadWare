@@ -74,7 +74,7 @@ public partial class App : Application
                 // A thread-pool timer starts the ordinary quit path, so the smoke check also proves a clean shutdown.
                 exitTimer = new Timer(_ => queue.TryEnqueue(() =>
                 {
-                    if (ErrorFile is not null) File.WriteAllText(ErrorFile + ".status", $"readings={Interlocked.Read(ref TicksWithReading)}");
+                    if (ErrorFile is not null) File.WriteAllText(ErrorFile + ".status", $"readings={Interlocked.Read(ref TicksWithReading)} frames={Interlocked.Read(ref HistoryChartView.FramesDrawn)}");
                     RequestQuit();
                 }), null, TimeSpan.FromSeconds(seconds), Timeout.InfiniteTimeSpan);
             }
