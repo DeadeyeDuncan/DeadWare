@@ -7,6 +7,9 @@ Written for the WinUI 3 prototype comparison (docs/superpowers/specs/2026-11-11-
 but it measures any executable, so the same script covers the WPF side. It asserts nothing about the numbers; it only
 records them. Each run starts the app afresh and always ends by killing the process it started.
 
+Start-up is the time to the first visible top-level window, which is not the same as the first drawn content: an app that
+shows its window before laying it out looks faster by that measure. Memory is one sample at the end of each period.
+
 Exit code 0 means the output file was written, even when a run recorded nulls with a reason. A non-zero exit means the
 measurement could not be attempted: bad parameters, an unwritable output path, or the app already running.
 #>
@@ -18,6 +21,8 @@ param(
     [Parameter(Mandatory)][string]$Out,
     [ValidateRange(1, 20)][int]$Runs = 3,
     [ValidateRange(1, 3600)][int]$SteadySeconds = 60,
+    # Seconds to wait after the window appears before sampling, so first layout, device set-up and JIT are not counted as steady cost.
+    [ValidateRange(0, 600)][int]$SettleSeconds = 10,
     [ValidateRange(1, 600)][int]$StartupTimeoutSeconds = 60
 )
 $ErrorActionPreference = 'Stop'
@@ -118,6 +123,7 @@ function Invoke-Run {
         $run.startupMs = [int]$clock.ElapsedMilliseconds
         $run.windowTitle = $process.MainWindowTitle   # shows when what appeared was an error box, not the app
 
+        Start-Sleep -Seconds $SettleSeconds
         $run.visible = Measure-Steady $process
         if ($null -eq $run.visible) { $run.hiddenReason = 'process exited while visible'; return $run }
 
@@ -141,6 +147,7 @@ $result = [ordered]@{
     label         = $Label
     exe           = [IO.Path]::GetFileName($exePath)   # the name only: a full path can hold a user name
     steadySeconds = $SteadySeconds
+    settleSeconds = $SettleSeconds
     machine       = Get-Machine
     runs          = @()
 }

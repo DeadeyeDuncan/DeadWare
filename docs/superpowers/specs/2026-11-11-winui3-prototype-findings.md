@@ -75,13 +75,17 @@ The prototype contains none of the app's own code, maps, fonts or dependencies. 
 
 ## How far the comparison can be trusted
 
+**The tables above predate two corrections and flatter WinUI.** An independent review of the branch found that the prototype's charts started empty (at most 60 of 600 points drawn during a measurement, against a full window in WPF) and that sampling began the instant the window appeared. Both are fixed in the code: charts now start full, and the script waits 10 seconds before sampling. The user then chose to stop the prototype work, so the tables were not regenerated. Expect the prototype's CPU and memory to be higher than shown. The `WinUI prototype` workflow's latest run holds figures taken after the fixes.
+
 1. **No GPU.** WPF software-renders whole frames on the CPU, and its 204 CPU-seconds in 60 (more than three cores) is that. On a machine with a GPU the WPF figure will be far lower. The WinUI figures would also change. The ratio between them on real hardware is unknown.
-2. **Unequal complexity.** The WPF preview is the production Overview with its glass styling, theme controls and the whole `DeadWare.App` assembly loaded. The prototype is a plain shell with six cards. Part of the memory and start-up gap is that difference, not the framework.
+2. **Unequal complexity.** The WPF preview is the production Overview: nine charts with several traces each (per-core lines, drives, glow copies, splines, time ticks) against six single-trace charts, six hours of history held in memory, glass styling, theme controls, and the whole `DeadWare.App` assembly loaded. The prototype is a plain shell with six cards. Memory and CPU are comparable in order of magnitude only.
 3. **Different scrolling distances.** The prototype keeps 600 samples per chart; the preview shows 300 seconds. The per-second slide is under two pixels in both, so this should not matter much, but it was not equalised.
 4. **In-process cost only.** The script reads the measured process. Work done by the desktop compositor on behalf of either app is not attributed to it.
-5. **Three launches, one machine.** Enough to show the figures are stable run to run; not a benchmark.
+5. **Start-up means first visible window, not first drawn content.** WinUI shows its window before laying it out; the WPF preview builds its view first. This flatters WinUI by an unknown amount.
+6. **Other differences.** The preview is a framework-dependent build output, the prototype a self-contained publish; the windows differ in size (1060 x 970 against 1220 x 900); the preview was always measured last; `--every-frame` redraws six separate canvases and is an upper bound, not a design.
+7. **Three launches, one machine.** Enough to show the figures are stable run to run; not a benchmark.
 
-What the numbers do support: on the same machine, drawing comparable charts, the WinUI prototype started faster, held less memory, and used much less CPU both when animating and when idle, and its cost when hidden to the tray was close to zero.
+What the numbers do support: nothing here argues against WinUI 3 on performance, and its cost when hidden to the tray was close to zero. They do not establish how much faster or lighter a real WinUI DeadWare would be than the WPF one.
 
 ## The four risks
 
@@ -96,6 +100,7 @@ What the numbers do support: on the same machine, drawing comparable charts, the
 
 - **One unexplained failure.** An early version of the per-frame mode, whose exit timer ran on the UI thread and called `Environment.Exit`, never exited on the runner within 40 seconds. A starved UI thread was suspected and then ruled out: with per-frame redraw the one-second sample timer still fired 9 times in 10 seconds. The failure stopped when the exit timer moved to the thread pool. The cause was not identified. The tray's Quit also exits from the UI thread; the user reported that Quit worked, but did not say whether it was tried with `--every-frame` running. Sub-project 2 should shut the app down through the normal WinUI exit path and test quitting while charts animate.
 - **The performance measurement on real hardware** is still owed, as the condition above says.
+- **Review items left as they are:** `CompositionTarget.Rendering` stays subscribed while the window is hidden (which may explain the 0.5 to 0.9 CPU-seconds `--every-frame` used when hidden); the script's writability probe leaves a zero-byte file if a run is interrupted; exiting from the UI thread is the likely cause of the unexplained hang above.
 - **Tables and the connection map** were out of scope and remain the largest unknowns for sub-project 3.
 
 ## What happens to the prototype

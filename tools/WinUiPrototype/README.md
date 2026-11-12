@@ -18,19 +18,19 @@ You need PowerShell 7 (`pwsh`), the .NET 10 SDK, and this branch checked out.
 
 1. Download the `WinUiPrototype-win-x64` artifact from the latest **WinUI prototype** run in the Actions tab and extract it somewhere, for example `C:\Temp\DeadWare.WinUiPrototype`.
 2. Choose **Quit DeadWare** in the installed app, so it does not share the machine with the measurement.
-3. From the repository root, run these in turn. Each takes about six and a half minutes: three launches, a minute with the window shown and a minute hidden. Leave the computer alone while they run.
+3. Open PowerShell 7 (`pwsh`) at the repository root and run these in turn, in that session (this is how the workflow calls the script). Each takes about seven minutes: three launches, each with ten seconds to settle, a minute with the window shown and a minute hidden. Leave the computer alone while they run.
 
    ```powershell
-   pwsh -File scripts/measure-ui.ps1 -Exe 'C:\Temp\DeadWare.WinUiPrototype\DeadWare.WinUiPrototype.exe' -Label winui-prototype -Out artifacts/measurements/ui-winui-prototype.json
+   ./scripts/measure-ui.ps1 -Exe 'C:\Temp\DeadWare.WinUiPrototype\DeadWare.WinUiPrototype.exe' -Label winui-prototype -Out artifacts/measurements/ui-winui-prototype.json
 
-   pwsh -File scripts/measure-ui.ps1 -Exe 'C:\Temp\DeadWare.WinUiPrototype\DeadWare.WinUiPrototype.exe' -Arguments '--smooth' -Label winui-prototype-smooth -Out artifacts/measurements/ui-winui-prototype-smooth.json
+   ./scripts/measure-ui.ps1 -Exe 'C:\Temp\DeadWare.WinUiPrototype\DeadWare.WinUiPrototype.exe' -Arguments '--smooth' -Label winui-prototype-smooth -Out artifacts/measurements/ui-winui-prototype-smooth.json
 
-   pwsh -File scripts/measure-ui.ps1 -Exe 'C:\Temp\DeadWare.WinUiPrototype\DeadWare.WinUiPrototype.exe' -Arguments '--every-frame' -Label winui-prototype-every-frame -Out artifacts/measurements/ui-winui-prototype-every-frame.json
+   ./scripts/measure-ui.ps1 -Exe 'C:\Temp\DeadWare.WinUiPrototype\DeadWare.WinUiPrototype.exe' -Arguments '--every-frame' -Label winui-prototype-every-frame -Out artifacts/measurements/ui-winui-prototype-every-frame.json
 
    dotnet build tools/OverviewPreview -c Release
-   pwsh -File scripts/measure-ui.ps1 -Exe tools/OverviewPreview/bin/Release/net10.0-windows/DeadWare.OverviewPreview.exe -Label wpf-overview-preview -Out artifacts/measurements/ui-wpf-overview-preview.json
+   ./scripts/measure-ui.ps1 -Exe tools/OverviewPreview/bin/Release/net10.0-windows/DeadWare.OverviewPreview.exe -Label wpf-overview-preview -Out artifacts/measurements/ui-wpf-overview-preview.json
 
-   pwsh -File scripts/measure-ui.ps1 -Exe 'C:\path\to\installed\DeadWare.exe' -Label wpf-installed -Out artifacts/measurements/ui-wpf-installed.json
+   ./scripts/measure-ui.ps1 -Exe 'C:\path\to\installed\DeadWare.exe' -Label wpf-installed -Out artifacts/measurements/ui-wpf-installed.json
    ```
 
 4. Send back the five files from `artifacts/measurements/`. They hold the executable's file name, the Windows build, processor and video adapter names, the display scale and the measurements; no paths or user names.
