@@ -1,0 +1,75 @@
+name: WinUI prototype
+# Throwaway measured prototype for docs/superpowers/specs/2026-11-11-winui3-migration-prototype-design.md.
+# Runs only when the prototype changes and never gates the Windows build.
+on:
+  pull_request:
+    paths: &prototype
+      - 'tools/WinUiPrototype/**'
+      - 'tools/WinUiPrototype.Logic/**'
+      - 'tools/WinUiPrototype.Tests/**'
+      - 'scripts/measure-ui.ps1'
+      - '.github/workflows/prototype.yml'
+  push:
+    branches: [main]
+    paths: *prototype
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: prototype-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  prototype:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
+        with:
+          dotnet-version: '10.0.402'
+      - name: Test the logic
+        shell: pwsh
+        run: dotnet test tools/WinUiPrototype.Tests -c Release --nologo
+      - name: Publish
+        shell: pwsh
+        run: |
+          dotnet publish tools/WinUiPrototype/WinUiPrototype.csproj -c Release -r win-x64 --self-contained true -o artifacts/prototype/DeadWare.WinUiPrototype --nologo
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Compress-Archive -Path artifacts/prototype/DeadWare.WinUiPrototype -DestinationPath artifacts/prototype/DeadWare.WinUiPrototype.zip -CompressionLevel Optimal -Force
+          $folder = (Get-ChildItem artifacts/prototype/DeadWare.WinUiPrototype -File -Recurse | Measure-Object Length -Sum).Sum
+          $zip = (Get-Item artifacts/prototype/DeadWare.WinUiPrototype.zip).Length
+          "Published size: $folder bytes folder, $zip bytes ZIP" | Tee-Object -FilePath $env:GITHUB_STEP_SUMMARY -Append
+      - name: Smoke check
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = Resolve-Path artifacts/prototype/DeadWare.WinUiPrototype/DeadWare.WinUiPrototype.exe
+          $errorFile = Join-Path (Resolve-Path artifacts/prototype) 'error.txt'
+          function Start-Prototype([string[]]$Extra) {
+            Remove-Item -LiteralPath $errorFile -ErrorAction SilentlyContinue
+            Start-Process -FilePath $exe -ArgumentList (@('--error-file', "`"$errorFile`"") + $Extra) -PassThru
+          }
+          function Wait-Title($Process, [string]$Expected) {
+            $deadline = (Get-Date).AddSeconds(60)
+            while ((Get-Date) -lt $deadline) {
+              if (Test-Path -LiteralPath $errorFile) { throw "The prototype wrote an error file: $(Get-Content -LiteralPath $errorFile -Raw)" }
+              if ($Process.HasExited) { throw "The prototype exited with code $($Process.ExitCode) before showing a window." }
+              $Process.Refresh()
+              if ($Process.MainWindowTitle.StartsWith($Expected)) { "Window: $($Process.MainWindowTitle)"; return }
+              Start-Sleep -Milliseconds 200
+            }
+            throw "No window titled '$Expected…' within 60 s (last title: '$($Process.MainWindowTitle)')."
+          }
+          function Stop-Prototype($Process) {
+            if (-not $Process.HasExited) { $Process.Kill($true); $Process.WaitForExit(10000) | Out-Null }
+          }
+          foreach ($case in @(@{ Extra = @(); Title = 'DeadWare prototype (' }, @{ Extra = @('--no-mica'); Title = 'DeadWare prototype (solid)' })) {
+            $process = Start-Prototype $case.Extra
+            try { Wait-Title $process $case.Title } finally { Stop-Prototype $process }
+          }
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: WinUiPrototype-win-x64
+          path: artifacts/prototype/DeadWare.WinUiPrototype/
+          if-no-files-found: error
+          retention-days: 14
