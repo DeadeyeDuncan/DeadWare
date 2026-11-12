@@ -10,7 +10,7 @@ public class ThermalChartCadenceTests
     [Fact]
     public void Sparse_minute_windows_connect_while_real_gaps_restarts_and_missing_metrics_remain_separate()
     {
-        var type=typeof(Collector).Assembly.GetType("DeadWare.App.ThermalHistoryChart")!;
+        var type=typeof(UiSession).Assembly.GetType("DeadWare.App.ThermalHistoryChart")!;
         var method=type.GetMethod("CanConnect",BindingFlags.Static|BindingFlags.NonPublic)!;
         bool Connect(ThermalWindow first,ThermalWindow second)=>(bool)method.Invoke(null,[first,second,"temperature"])!;
         var first=Window(0);var next=Window(60);

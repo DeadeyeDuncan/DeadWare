@@ -18,7 +18,7 @@ namespace DeadWare.App.Tests;
 internal static class UsageHistoryUiChecks
 {
     private const BindingFlags All = BindingFlags.Instance | BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic;
-    private static readonly Assembly Assembly = typeof(Collector).Assembly;
+    private static readonly Assembly Assembly = typeof(UiSession).Assembly;
     private static readonly Type PageType = Assembly.GetType("DeadWare.App.UsageHistoryPage")!;
     private static readonly Type ChartType = Assembly.GetType("DeadWare.App.UsageHistoryChart")!;
     private static readonly Type TraceType = Assembly.GetType("DeadWare.App.UsageTrace")!;

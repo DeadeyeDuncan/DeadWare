@@ -22,7 +22,7 @@ namespace DeadWare.App.Tests;
 internal static class ConnectionsPageUiChecks
 {
     private const BindingFlags All = BindingFlags.Instance | BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic;
-    private static readonly Type PageType = typeof(Collector).Assembly.GetType("DeadWare.App.ConnectionsPage")!;
+    private static readonly Type PageType = typeof(UiSession).Assembly.GetType("DeadWare.App.ConnectionsPage")!;
     public static void Run(Application app)
     {
         var previous = SynchronizationContext.Current;
@@ -354,7 +354,7 @@ internal static class ConnectionsPageUiChecks
     {
         var page=new ConnectionsPage(session);var reads=new FakeReads(page);page.clock=()=>Local(11,0);Field<TextBox>(page,"from").Text="2026-10-29 10:00";Field<TextBox>(page,"to").Text="2026-10-29 10:05";Field<ComboBox>(page,"mode").SelectedIndex=1;reads.Drain();SelectTab(page,"Traffic");
         var view=Field<TrafficStripView>(page,"trafficStrip");view.RaiseEvent(new RoutedEventArgs(FrameworkElement.LoadedEvent));
-        var theme=typeof(Collector).Assembly.GetType("DeadWare.App.Theme")!;var apply=theme.GetMethod("Apply",BindingFlags.Public|BindingFlags.Static)!;
+        var theme=typeof(UiSession).Assembly.GetType("DeadWare.App.Theme")!;var apply=theme.GetMethod("Apply",BindingFlags.Public|BindingFlags.Static)!;
         try
         {
             var before=Assert.IsType<SolidColorBrush>(view.Legend.First(entry=>entry.IsButton).Swatch).Color;
@@ -1357,7 +1357,7 @@ internal static class ConnectionsPageUiChecks
         var culture=CultureInfo.CurrentCulture;CultureInfo.CurrentCulture=CultureInfo.GetCultureInfo("en-US");
         // Constructing a Window registers the resource-invalidation root, without creating an HWND.
         var host = new Window { Content = page };
-        var theme = typeof(Collector).Assembly.GetType("DeadWare.App.Theme")!;
+        var theme = typeof(UiSession).Assembly.GetType("DeadWare.App.Theme")!;
         foreach (string name in new[] { "Midnight", "Ember", "Glacier", "Amethyst", "Neon", "Blackout", "Skyrim", "Mage", "Daylight" })
         {
             theme.GetMethod("Apply", BindingFlags.Public | BindingFlags.Static)!.Invoke(null, [name]); Pump();

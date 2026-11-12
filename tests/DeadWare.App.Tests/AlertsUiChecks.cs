@@ -19,7 +19,7 @@ namespace DeadWare.App.Tests;
 internal static class AlertsUiChecks
 {
     private const BindingFlags All = BindingFlags.Instance | BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic;
-    private static readonly Assembly Assembly = typeof(Collector).Assembly;
+    private static readonly Assembly Assembly = typeof(UiSession).Assembly;
 
     internal static void Run(Application app)
     {
