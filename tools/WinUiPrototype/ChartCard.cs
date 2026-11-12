@@ -3,6 +3,7 @@ using Microsoft.Graphics.Canvas.Text;
 using Microsoft.Graphics.Canvas.UI.Xaml;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Hosting;
 using Microsoft.UI.Xaml.Media;
 using System.Diagnostics;
 using System.Numerics;
@@ -33,6 +34,7 @@ internal sealed class ChartCard : UserControl
         reading.Text = "—";
         canvas.Draw += OnDraw;
         canvas.Margin = new Thickness(0, 8, 0, 0);
+        if (App.Smooth) ElementCompositionPreview.SetIsTranslationEnabled(canvas, true);
 
         var layout = new Grid();
         layout.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
@@ -64,6 +66,23 @@ internal sealed class ChartCard : UserControl
         lastSample = Stopwatch.GetTimestamp();
         if (!Drawing) return;
         Refresh();
+        if (App.Smooth) StartScroll();
+    }
+
+    /// <summary>
+    /// Slides the drawn chart one sample's width to the left over the next second, on the compositor: no redraw and
+    /// no work on the UI thread until the next sample.
+    /// </summary>
+    private void StartScroll()
+    {
+        float width = (float)canvas.ActualWidth - LabelGutter;
+        if (width <= 0) return;
+        var visual = ElementCompositionPreview.GetElementVisual(canvas);
+        var animation = visual.Compositor.CreateVector3KeyFrameAnimation();
+        animation.InsertKeyFrame(0, Vector3.Zero);
+        animation.InsertKeyFrame(1, new Vector3(-width / (Capacity - 1), 0, 0), visual.Compositor.CreateLinearEasingFunction());
+        animation.Duration = TimeSpan.FromSeconds(1);
+        visual.StartAnimation("Translation", animation);
     }
 
     /// <summary>Redraws without a new sample, so the trace scrolls between samples.</summary>
@@ -96,9 +115,9 @@ internal sealed class ChartCard : UserControl
         session.DrawText("100", 0, 0, ink, LabelFormat);
         session.DrawText("0", 0, height - 14, ink, LabelFormat);
 
-        // With --smooth the trace slides left by one sample's width over the second after each sample.
+        // With --every-frame the trace slides left by one sample's width over the second after each sample.
         float left = LabelGutter;
-        if (App.Smooth && series.Capacity > 1)
+        if (App.EveryFrame && series.Capacity > 1)
             left -= (float)Math.Min(1, Stopwatch.GetElapsedTime(lastSample).TotalSeconds) * width / (series.Capacity - 1);
 
         foreach (var run in ChartGeometry.Runs(series, width, height, 0, 100))

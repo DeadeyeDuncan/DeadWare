@@ -26,7 +26,7 @@ concurrency:
 jobs:
   prototype:
     runs-on: windows-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
@@ -85,16 +85,20 @@ jobs:
               if ($frames -lt 30) { throw "Only $frames chart draws in 10 s; expected at least 30." }
             } finally { Stop-Prototype $process }
           }
-          # --smooth redraws every frame, as the WPF charts do while they scroll: far more draws than one a second.
-          Remove-Item -LiteralPath "$errorFile.frames" -ErrorAction SilentlyContinue
-          $process = Start-Prototype @('--smooth', '--exit-after', '10')
-          try {
-            if (-not $process.WaitForExit(40000)) { throw 'The prototype did not exit 10 s after --smooth --exit-after 10.' }
-            if (Test-Path -LiteralPath $errorFile) { throw "The prototype wrote an error file: $(Get-Content -LiteralPath $errorFile -Raw)" }
-            $frames = [long](Get-Content -LiteralPath "$errorFile.frames" -Raw)
-            "Frames drawn in 10 s (--smooth): $frames"
-            if ($frames -lt 300) { throw "Only $frames chart draws in 10 s with --smooth; expected at least 300." }
-          } finally { Stop-Prototype $process }
+          # --smooth scrolls each drawn chart on the compositor: it must not add redraws.
+          # --every-frame redraws every chart each frame: far more draws than one a second.
+          foreach ($case in @(@{ Flag = '--smooth'; Least = 30; Most = 150 }, @{ Flag = '--every-frame'; Least = 300; Most = [long]::MaxValue })) {
+            Remove-Item -LiteralPath "$errorFile.frames", "$errorFile.ticks" -ErrorAction SilentlyContinue
+            $process = Start-Prototype @($case.Flag, '--exit-after', '10')
+            try {
+              if (-not $process.WaitForExit(40000)) { throw "The prototype did not exit 10 s after $($case.Flag) --exit-after 10." }
+              if (Test-Path -LiteralPath $errorFile) { throw "The prototype wrote an error file: $(Get-Content -LiteralPath $errorFile -Raw)" }
+              $frames = [long](Get-Content -LiteralPath "$errorFile.frames" -Raw)
+              $ticks = [long](Get-Content -LiteralPath "$errorFile.ticks" -Raw)
+              "Frames drawn in 10 s ($($case.Flag)): $frames, with $ticks one-second sample ticks"
+              if ($frames -lt $case.Least -or $frames -gt $case.Most) { throw "$frames chart draws in 10 s with $($case.Flag); expected $($case.Least) to $($case.Most)." }
+            } finally { Stop-Prototype $process }
+          }
           # Closing the window must hide it to the tray and keep the process alive.
           Add-Type -Namespace Native -Name User32 -MemberDefinition @'
           [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr window, uint message, IntPtr w, IntPtr l);
@@ -183,6 +187,7 @@ jobs:
           ./scripts/measure-ui.ps1 -Exe $prototype -Label winui-prototype -Out artifacts/measurements/ui-winui-prototype.json
           ./scripts/measure-ui.ps1 -Exe $prototype -Arguments '--no-mica' -Label winui-prototype-solid -Out artifacts/measurements/ui-winui-prototype-solid.json
           ./scripts/measure-ui.ps1 -Exe $prototype -Arguments '--smooth' -Label winui-prototype-smooth -Out artifacts/measurements/ui-winui-prototype-smooth.json
+          ./scripts/measure-ui.ps1 -Exe $prototype -Arguments '--every-frame' -Label winui-prototype-every-frame -Out artifacts/measurements/ui-winui-prototype-every-frame.json
           ./scripts/measure-ui.ps1 -Exe $preview -Label wpf-overview-preview -Out artifacts/measurements/ui-wpf-overview-preview.json
           Get-ChildItem artifacts/measurements -Filter 'ui-*.json' | ForEach-Object { "### $($_.Name)"; Get-Content -LiteralPath $_.FullName -Raw }
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7

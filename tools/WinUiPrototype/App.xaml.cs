@@ -7,14 +7,17 @@ public partial class App : Application
 {
     /// <summary>True when <c>--no-mica</c> forces the solid fallback background.</summary>
     internal static bool NoMica { get; private set; }
-    /// <summary>True when <c>--smooth</c> redraws the charts every frame, scrolling between samples as the WPF charts do.</summary>
+    /// <summary>True when <c>--smooth</c> has the compositor slide each drawn chart between samples, as the WPF charts' transform animation does.</summary>
     internal static bool Smooth { get; private set; }
+    /// <summary>True when <c>--every-frame</c> redraws every chart on every frame: the worst case, like the WPF map's animation.</summary>
+    internal static bool EveryFrame { get; private set; }
     /// <summary>The path given after <c>--error-file</c>, or null.</summary>
     internal static string? ErrorFile { get; private set; }
 
     /// <summary>Seconds after which the app records its frame count and exits 0; null in normal use.</summary>
     private static int? exitAfter;
 
+    private static Timer? exitTimer;
     private MainWindow? window;
 
     public App()
@@ -24,6 +27,7 @@ public partial class App : Application
         {
             if (args[i] == "--no-mica") NoMica = true;
             else if (args[i] == "--smooth") Smooth = true;
+            else if (args[i] == "--every-frame") EveryFrame = true;
             else if (args[i] == "--error-file" && i + 1 < args.Length) ErrorFile = args[++i];
             else if (args[i] == "--exit-after" && i + 1 < args.Length && int.TryParse(args[++i], out int seconds) && seconds > 0) exitAfter = seconds;
         }
@@ -37,14 +41,16 @@ public partial class App : Application
         window = new MainWindow();
         window.Activate();
         if (exitAfter is not { } seconds) return;
-        var timer = Microsoft.UI.Dispatching.DispatcherQueue.GetForCurrentThread().CreateTimer();
-        timer.Interval = TimeSpan.FromSeconds(seconds);
-        timer.Tick += (_, _) =>
+        // A thread-pool timer, so a saturated UI thread cannot stop the app from reporting and exiting.
+        exitTimer = new Timer(_ =>
         {
-            if (ErrorFile is not null) File.WriteAllText(ErrorFile + ".frames", Interlocked.Read(ref OverviewPage.FramesDrawn).ToString());
+            if (ErrorFile is not null)
+            {
+                File.WriteAllText(ErrorFile + ".frames", Interlocked.Read(ref OverviewPage.FramesDrawn).ToString());
+                File.WriteAllText(ErrorFile + ".ticks", Interlocked.Read(ref OverviewPage.Ticks).ToString());
+            }
             Environment.Exit(0);
-        };
-        timer.Start();
+        }, null, TimeSpan.FromSeconds(seconds), Timeout.InfiniteTimeSpan);
     }
 
     /// <summary>Appends a line to the error file without ending the process.</summary>

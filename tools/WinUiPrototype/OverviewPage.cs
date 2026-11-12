@@ -11,6 +11,9 @@ internal sealed class OverviewPage : Page
     /// <summary>Canvas draws since start-up, across all cards; read by the workflow's frames check.</summary>
     public static long FramesDrawn;
 
+    /// <summary>One-second sample ticks since start-up; fewer than expected means the UI thread was starved.</summary>
+    public static long Ticks;
+
     private static readonly (string Title, string Unit)[] Metrics =
         [("CPU", "%"), ("GPU", "%"), ("Memory", "%"), ("Disk", "%"), ("Download", "Mb/s"), ("Upload", "Mb/s")];
 
@@ -35,11 +38,11 @@ internal sealed class OverviewPage : Page
 
         timer = DispatcherQueue.GetForCurrentThread().CreateTimer();
         timer.Interval = TimeSpan.FromSeconds(1);
-        timer.Tick += (_, _) => { foreach (var card in cards) card.Tick(); };
+        timer.Tick += (_, _) => { Interlocked.Increment(ref Ticks); foreach (var card in cards) card.Tick(); };
         Loaded += (_, _) =>
         {
             timer.Start();
-            if (App.Smooth) CompositionTarget.Rendering += OnRendering;
+            if (App.EveryFrame) CompositionTarget.Rendering += OnRendering;
         };
         Unloaded += (_, _) =>
         {
@@ -48,7 +51,7 @@ internal sealed class OverviewPage : Page
         };
     }
 
-    /// <summary>With <c>--smooth</c>: redraw every card each frame, unless the window is hidden.</summary>
+    /// <summary>With <c>--every-frame</c>: redraw every card each frame, unless the window is hidden.</summary>
     private void OnRendering(object? sender, object args)
     {
         if (!drawing) return;
