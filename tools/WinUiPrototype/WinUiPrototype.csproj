@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Throwaway measured prototype. Not part of DeadWare.slnx and never shipped. -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.19041.0</TargetPlatformMinVersion>
+    <SupportedOSPlatformVersion>10.0.19041.0</SupportedOSPlatformVersion>
+    <UseWinUI>true</UseWinUI>
+    <Platforms>x64</Platforms>
+    <PlatformTarget>x64</PlatformTarget>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <WindowsPackageType>None</WindowsPackageType>
+    <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+    <EnableMsixTooling>false</EnableMsixTooling>
+    <PublishTrimmed>false</PublishTrimmed>
+    <PublishSingleFile>false</PublishSingleFile>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>../../assets/deadware.ico</ApplicationIcon>
+    <AssemblyName>DeadWare.WinUiPrototype</AssemblyName>
+    <RootNamespace>WinUiPrototype</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.6.5" />
+    <PackageReference Include="Microsoft.Graphics.Win2D" Version="1.4.0" />
+    <ProjectReference Include="../WinUiPrototype.Logic/WinUiPrototype.Logic.csproj" />
+    <Content Include="../../assets/deadware.ico" Link="deadware.ico" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+  <!-- dotnet publish omits an unpackaged app's own .pri and .xbf files, so the published app fails with
+       XamlParseException at start-up. Copy them from the build output. -->
+  <Target Name="CopyXamlResourcesOnPublish" AfterTargets="Publish">
+    <ItemGroup>
+      <XamlResourceFile Include="$(OutDir)*.pri;$(OutDir)**/*.xbf" Exclude="$(OutDir)publish/**" />
+    </ItemGroup>
+    <Copy SourceFiles="@(XamlResourceFile)" DestinationFiles="@(XamlResourceFile->'$(PublishDir)%(RecursiveDir)%(Filename)%(Extension)')" SkipUnchangedFiles="true" />
+  </Target>
+</Project>

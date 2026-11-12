@@ -1,0 +1,206 @@
+name: WinUI prototype
+# Throwaway measured prototype for docs/superpowers/specs/2026-11-11-winui3-migration-prototype-design.md.
+# Runs only when the prototype changes and never gates the Windows build.
+on:
+  pull_request:
+    paths:
+      - 'tools/WinUiPrototype/**'
+      - 'tools/WinUiPrototype.Logic/**'
+      - 'tools/WinUiPrototype.Tests/**'
+      - 'scripts/measure-ui.ps1'
+      - '.github/workflows/prototype.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'tools/WinUiPrototype/**'
+      - 'tools/WinUiPrototype.Logic/**'
+      - 'tools/WinUiPrototype.Tests/**'
+      - 'scripts/measure-ui.ps1'
+      - '.github/workflows/prototype.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: prototype-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  prototype:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
+        with:
+          dotnet-version: '10.0.402'
+      - name: Test the logic
+        shell: pwsh
+        run: dotnet test tools/WinUiPrototype.Tests -c Release --nologo
+      - name: Publish
+        shell: pwsh
+        run: |
+          dotnet publish tools/WinUiPrototype/WinUiPrototype.csproj -c Release -r win-x64 --self-contained true -o artifacts/prototype/DeadWare.WinUiPrototype --nologo
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Compress-Archive -Path artifacts/prototype/DeadWare.WinUiPrototype -DestinationPath artifacts/prototype/DeadWare.WinUiPrototype.zip -CompressionLevel Optimal -Force
+          $folder = (Get-ChildItem artifacts/prototype/DeadWare.WinUiPrototype -File -Recurse | Measure-Object Length -Sum).Sum
+          $zip = (Get-Item artifacts/prototype/DeadWare.WinUiPrototype.zip).Length
+          "Published size: $folder bytes folder, $zip bytes ZIP" | Tee-Object -FilePath $env:GITHUB_STEP_SUMMARY -Append
+      - name: Smoke check
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = Resolve-Path artifacts/prototype/DeadWare.WinUiPrototype/DeadWare.WinUiPrototype.exe
+          $errorFile = Join-Path (Resolve-Path artifacts/prototype) 'error.txt'
+          function Start-Prototype([string[]]$Extra) {
+            Remove-Item -LiteralPath $errorFile -ErrorAction SilentlyContinue
+            Start-Process -FilePath $exe -ArgumentList (@('--error-file', "`"$errorFile`"") + $Extra) -PassThru
+          }
+          function Wait-Title($Process, [string]$Expected) {
+            $deadline = (Get-Date).AddSeconds(60)
+            while ((Get-Date) -lt $deadline) {
+              if (Test-Path -LiteralPath $errorFile) { throw "The prototype wrote an error file: $(Get-Content -LiteralPath $errorFile -Raw)" }
+              if ($Process.HasExited) { throw "The prototype exited with code $($Process.ExitCode) before showing a window." }
+              $Process.Refresh()
+              if ($Process.MainWindowTitle.StartsWith($Expected)) { "Window: $($Process.MainWindowTitle)"; return }
+              Start-Sleep -Milliseconds 200
+            }
+            throw "No window titled '$Expected…' within 60 s (last title: '$($Process.MainWindowTitle)')."
+          }
+          function Stop-Prototype($Process) {
+            if (-not $Process.HasExited) { $Process.Kill($true); $Process.WaitForExit(10000) | Out-Null }
+          }
+          foreach ($case in @(@{ Extra = @(); Title = 'DeadWare prototype (' }, @{ Extra = @('--no-mica'); Title = 'DeadWare prototype (solid)' })) {
+            $process = Start-Prototype $case.Extra
+            try { Wait-Title $process $case.Title } finally { Stop-Prototype $process }
+          }
+          # Six charts sampled once a second must draw: the app records its draw count and exits by itself.
+          foreach ($extra in @(@(), @('--no-mica'))) {
+            Remove-Item -LiteralPath "$errorFile.frames" -ErrorAction SilentlyContinue
+            $process = Start-Prototype (@('--exit-after', '10') + $extra)
+            try {
+              if (-not $process.WaitForExit(40000)) { throw 'The prototype did not exit 10 s after --exit-after 10.' }
+              if (Test-Path -LiteralPath $errorFile) { throw "The prototype wrote an error file: $(Get-Content -LiteralPath $errorFile -Raw)" }
+              if (-not (Test-Path -LiteralPath "$errorFile.frames")) { throw 'No frames file was written.' }
+              $frames = [long](Get-Content -LiteralPath "$errorFile.frames" -Raw)
+              "Frames drawn in 10 s ($($extra -join ' ')): $frames"
+              if ($frames -lt 30) { throw "Only $frames chart draws in 10 s; expected at least 30." }
+            } finally { Stop-Prototype $process }
+          }
+          # --smooth scrolls each drawn chart on the compositor: it must not add redraws.
+          # --every-frame redraws every chart each frame: far more draws than one a second.
+          foreach ($case in @(@{ Flag = '--smooth'; Least = 30; Most = 150 }, @{ Flag = '--every-frame'; Least = 300; Most = [long]::MaxValue })) {
+            Remove-Item -LiteralPath "$errorFile.frames", "$errorFile.ticks" -ErrorAction SilentlyContinue
+            $process = Start-Prototype @($case.Flag, '--exit-after', '10')
+            try {
+              if (-not $process.WaitForExit(40000)) { throw "The prototype did not exit 10 s after $($case.Flag) --exit-after 10." }
+              if (Test-Path -LiteralPath $errorFile) { throw "The prototype wrote an error file: $(Get-Content -LiteralPath $errorFile -Raw)" }
+              $frames = [long](Get-Content -LiteralPath "$errorFile.frames" -Raw)
+              $ticks = [long](Get-Content -LiteralPath "$errorFile.ticks" -Raw)
+              "Frames drawn in 10 s ($($case.Flag)): $frames, with $ticks one-second sample ticks"
+              if ($frames -lt $case.Least -or $frames -gt $case.Most) { throw "$frames chart draws in 10 s with $($case.Flag); expected $($case.Least) to $($case.Most)." }
+            } finally { Stop-Prototype $process }
+          }
+          # Closing the window must hide it to the tray and keep the process alive.
+          Add-Type -Namespace Native -Name User32 -MemberDefinition @'
+          [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr window, uint message, IntPtr w, IntPtr l);
+          [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr window);
+          '@
+          $process = Start-Prototype @()
+          try {
+            Wait-Title $process 'DeadWare prototype ('
+            $window = $process.MainWindowHandle
+            [Native.User32]::PostMessage($window, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null
+            Start-Sleep -Seconds 5
+            if ($process.HasExited) { throw "The prototype exited (code $($process.ExitCode)) on close instead of hiding to the tray." }
+            if ([Native.User32]::IsWindowVisible($window)) { throw 'The window is still visible after close.' }
+            if (Test-Path -LiteralPath $errorFile) { throw "The prototype wrote an error file: $(Get-Content -LiteralPath $errorFile -Raw)" }
+            'Close hid the window and the process kept running.'
+          } finally { Stop-Prototype $process }
+          if (Get-Process -Name DeadWare.WinUiPrototype -ErrorAction SilentlyContinue) { throw 'A prototype process is still running after the checks.' }
+      - name: Check the measuring script
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $published = (Resolve-Path artifacts/prototype/DeadWare.WinUiPrototype).Path
+          $exe = Join-Path $published 'DeadWare.WinUiPrototype.exe'
+          function Invoke-Measure([hashtable]$Parameters) {
+            if (-not $Parameters.ContainsKey('Runs')) { $Parameters.Runs = 1 }
+            & ./scripts/measure-ui.ps1 @Parameters -SteadySeconds 5 -SettleSeconds 2 | Out-Host
+            $LASTEXITCODE
+          }
+          function Read-Result([string]$Path) { Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json }
+          function Assert([bool]$Condition, [string]$Message) { if (-not $Condition) { throw $Message } else { "ok: $Message" } }
+
+          # 1. An app that never shows a window: give up at the timeout, record why, leave nothing running.
+          $out = 'artifacts/measurements/check-no-window.json'
+          $code = Invoke-Measure @{ Exe = 'ping.exe'; Arguments = @('-n', '30', '127.0.0.1'); Label = 'check-no-window'; Out = $out; StartupTimeoutSeconds = 5 }
+          $run = (Read-Result $out).runs[0]
+          Assert ($code -eq 0) 'no-window: the script exits 0'
+          Assert ($null -eq $run.startupMs -and $run.startupReason) 'no-window: startupMs is null with a reason'
+          Assert (-not (Get-Process -Name ping -ErrorAction SilentlyContinue)) 'no-window: no ping process is left'
+
+          # 2. An app that exits on close: visible figures are taken, hidden ones are null with the reason.
+          $out = 'artifacts/measurements/check-exits-on-close.json'
+          $code = Invoke-Measure @{ Exe = 'winver.exe'; Label = 'check-exits-on-close'; Out = $out }
+          $run = (Read-Result $out).runs[0]
+          Assert ($code -eq 0 -and $run.startupMs -gt 0) 'exits-on-close: a start-up time is recorded'
+          Assert ($run.visible.privateBytes -gt 0) 'exits-on-close: visible memory is recorded'
+          Assert ($null -eq $run.hidden -and $run.hiddenReason -eq 'process exited on close') 'exits-on-close: hidden is null with the reason'
+
+          # 3. The prototype hides to the tray: hidden figures are taken in every run and nothing is left behind.
+          $out = 'artifacts/measurements/check-hides.json'
+          $code = Invoke-Measure @{ Exe = $exe; Label = 'check-hides'; Out = $out; Runs = 2 }
+          $result = Read-Result $out
+          Assert ($code -eq 0 -and $result.runs.Count -eq 2) 'hides: two runs are recorded'
+          Assert (@($result.runs | Where-Object { $_.hidden.privateBytes -gt 0 }).Count -eq 2) 'hides: both runs have hidden figures'
+          Assert ($result.exe -eq 'DeadWare.WinUiPrototype.exe') 'hides: exe holds the file name only'
+          Assert ($result.settleSeconds -eq 2) 'hides: the settle time before sampling is recorded'
+          Assert (-not (Get-Process -Name DeadWare.WinUiPrototype -ErrorAction SilentlyContinue)) 'hides: no prototype process is left'
+
+          # 4. Spaces in the executable and output paths.
+          $spaced = 'artifacts/prototype/with space/DeadWare.WinUiPrototype'
+          New-Item -ItemType Directory -Force -Path 'artifacts/prototype/with space' | Out-Null
+          Copy-Item -LiteralPath $published -Destination $spaced -Recurse
+          $out = 'artifacts/measurements/with space/out.json'
+          $code = Invoke-Measure @{ Exe = (Join-Path $spaced 'DeadWare.WinUiPrototype.exe'); Label = 'check-spaces'; Out = $out }
+          Assert ($code -eq 0 -and (Read-Result $out).runs[0].startupMs -gt 0) 'spaces: measured and written'
+          Remove-Item -LiteralPath 'artifacts/prototype/with space' -Recurse -Force
+
+          # 5. Refuse to measure beside an instance that is already running.
+          $out = 'artifacts/measurements/check-already-running.json'
+          $stray = Start-Process -FilePath $exe -PassThru
+          try {
+            Start-Sleep -Seconds 5
+            $code = Invoke-Measure @{ Exe = $exe; Label = 'check-already-running'; Out = $out }
+            Assert ($code -ne 0) 'already-running: the script refuses with a non-zero exit'
+            Assert (-not (Test-Path -LiteralPath $out)) 'already-running: no output file is written'
+          } finally { $stray.Kill($true); $stray.WaitForExit(10000) | Out-Null }
+          exit 0   # the refusal above leaves a non-zero $LASTEXITCODE, which would otherwise fail this step
+      - name: Measure
+        shell: pwsh
+        # Three launches of 60 s shown and 60 s hidden each, per configuration. The numbers are recorded, never judged: this runner has
+        # no GPU, so the chart figures are pessimistic and the deciding run is the one on real hardware.
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet build tools/OverviewPreview -c Release --nologo
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $prototype = 'artifacts/prototype/DeadWare.WinUiPrototype/DeadWare.WinUiPrototype.exe'
+          $preview = (Get-ChildItem tools/OverviewPreview/bin/Release -Recurse -Filter DeadWare.OverviewPreview.exe | Select-Object -First 1).FullName
+          ./scripts/measure-ui.ps1 -Exe $prototype -Label winui-prototype -Out artifacts/measurements/ui-winui-prototype.json
+          ./scripts/measure-ui.ps1 -Exe $prototype -Arguments '--no-mica' -Label winui-prototype-solid -Out artifacts/measurements/ui-winui-prototype-solid.json
+          ./scripts/measure-ui.ps1 -Exe $prototype -Arguments '--smooth' -Label winui-prototype-smooth -Out artifacts/measurements/ui-winui-prototype-smooth.json
+          ./scripts/measure-ui.ps1 -Exe $prototype -Arguments '--every-frame' -Label winui-prototype-every-frame -Out artifacts/measurements/ui-winui-prototype-every-frame.json
+          ./scripts/measure-ui.ps1 -Exe $preview -Label wpf-overview-preview -Out artifacts/measurements/ui-wpf-overview-preview.json
+          Get-ChildItem artifacts/measurements -Filter 'ui-*.json' | ForEach-Object { "### $($_.Name)"; Get-Content -LiteralPath $_.FullName -Raw }
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        if: always()
+        with:
+          name: WinUiPrototype-measurements
+          path: artifacts/measurements/
+          if-no-files-found: warn
+          retention-days: 14
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: WinUiPrototype-win-x64
+          path: artifacts/prototype/DeadWare.WinUiPrototype/
+          if-no-files-found: error
+          retention-days: 14

@@ -1,0 +1,27 @@
+<Window
+    x:Class="WinUiPrototype.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <Grid x:Name="Root">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="32" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+        <Grid x:Name="TitleBarArea">
+            <TextBlock x:Name="TitleText" Margin="16,0,0,0" VerticalAlignment="Center" Style="{StaticResource CaptionTextBlockStyle}" />
+        </Grid>
+        <NavigationView
+            x:Name="Nav"
+            Grid.Row="1"
+            PaneDisplayMode="Left"
+            IsSettingsVisible="False"
+            IsBackButtonVisible="Collapsed"
+            SelectionChanged="OnSelectionChanged">
+            <NavigationView.MenuItems>
+                <NavigationViewItem x:Name="OverviewItem" Content="Overview" Icon="Home" />
+                <NavigationViewItem x:Name="EmptyItem" Content="Empty" Icon="Page" />
+            </NavigationView.MenuItems>
+            <Frame x:Name="ContentFrame" />
+        </NavigationView>
+    </Grid>
+</Window>
