@@ -85,6 +85,16 @@ jobs:
               if ($frames -lt 30) { throw "Only $frames chart draws in 10 s; expected at least 30." }
             } finally { Stop-Prototype $process }
           }
+          # --smooth redraws every frame, as the WPF charts do while they scroll: far more draws than one a second.
+          Remove-Item -LiteralPath "$errorFile.frames" -ErrorAction SilentlyContinue
+          $process = Start-Prototype @('--smooth', '--exit-after', '10')
+          try {
+            if (-not $process.WaitForExit(40000)) { throw 'The prototype did not exit 10 s after --smooth --exit-after 10.' }
+            if (Test-Path -LiteralPath $errorFile) { throw "The prototype wrote an error file: $(Get-Content -LiteralPath $errorFile -Raw)" }
+            $frames = [long](Get-Content -LiteralPath "$errorFile.frames" -Raw)
+            "Frames drawn in 10 s (--smooth): $frames"
+            if ($frames -lt 300) { throw "Only $frames chart draws in 10 s with --smooth; expected at least 300." }
+          } finally { Stop-Prototype $process }
           # Closing the window must hide it to the tray and keep the process alive.
           Add-Type -Namespace Native -Name User32 -MemberDefinition @'
           [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr window, uint message, IntPtr w, IntPtr l);
