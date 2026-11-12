@@ -10,6 +10,9 @@ public partial class App : Application
     /// <summary>The path given after <c>--error-file</c>, or null.</summary>
     internal static string? ErrorFile { get; private set; }
 
+    /// <summary>Seconds after which the app records its frame count and exits 0; null in normal use.</summary>
+    private static int? exitAfter;
+
     private MainWindow? window;
 
     public App()
@@ -19,6 +22,7 @@ public partial class App : Application
         {
             if (args[i] == "--no-mica") NoMica = true;
             else if (args[i] == "--error-file" && i + 1 < args.Length) ErrorFile = args[++i];
+            else if (args[i] == "--exit-after" && i + 1 < args.Length && int.TryParse(args[++i], out int seconds) && seconds > 0) exitAfter = seconds;
         }
         UnhandledException += (_, e) => Fail(e.Exception);
         AppDomain.CurrentDomain.UnhandledException += (_, e) => Fail(e.ExceptionObject as Exception);
@@ -29,6 +33,15 @@ public partial class App : Application
     {
         window = new MainWindow();
         window.Activate();
+        if (exitAfter is not { } seconds) return;
+        var timer = Microsoft.UI.Dispatching.DispatcherQueue.GetForCurrentThread().CreateTimer();
+        timer.Interval = TimeSpan.FromSeconds(seconds);
+        timer.Tick += (_, _) =>
+        {
+            if (ErrorFile is not null) File.WriteAllText(ErrorFile + ".frames", Interlocked.Read(ref OverviewPage.FramesDrawn).ToString());
+            Environment.Exit(0);
+        };
+        timer.Start();
     }
 
     /// <summary>Appends a line to the error file without ending the process.</summary>

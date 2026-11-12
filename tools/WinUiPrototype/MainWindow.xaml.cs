@@ -10,7 +10,8 @@ namespace WinUiPrototype;
 /// <summary>The prototype's only window: Mica or a solid fallback, a title bar and two navigation entries.</summary>
 public sealed partial class MainWindow : Window
 {
-    private readonly Page overview = new(), empty = new();
+    private readonly OverviewPage overview = new();
+    private readonly Page empty = new();
 
     public MainWindow()
     {

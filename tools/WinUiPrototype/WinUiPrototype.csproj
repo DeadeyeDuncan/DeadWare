@@ -21,6 +21,7 @@
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.6.5" />
+    <PackageReference Include="Microsoft.Graphics.Win2D" Version="1.4.0" />
     <ProjectReference Include="../WinUiPrototype.Logic/WinUiPrototype.Logic.csproj" />
     <Content Include="../../assets/deadware.ico" Link="deadware.ico" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
