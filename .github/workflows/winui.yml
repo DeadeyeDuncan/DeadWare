@@ -1,0 +1,98 @@
+name: WinUI shell
+# Builds and smoke-checks the WinUI 3 front end while it is built beside the WPF app. It is not packaged or released,
+# and this workflow never gates the Windows build.
+on:
+  pull_request:
+    paths:
+      - 'src/DeadWare.WinUI/**'
+      - 'src/DeadWare.Services/**'
+      - 'src/DeadWare.Core/**'
+      - 'src/DeadWare.UpdateCore/**'
+      - '.github/workflows/winui.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'src/DeadWare.WinUI/**'
+      - 'src/DeadWare.Services/**'
+      - 'src/DeadWare.Core/**'
+      - 'src/DeadWare.UpdateCore/**'
+      - '.github/workflows/winui.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: winui-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  shell:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
+        with:
+          dotnet-version: '10.0.402'
+      - name: Publish
+        shell: pwsh
+        run: |
+          dotnet publish src/DeadWare.WinUI/DeadWare.WinUI.csproj -c Release -r win-x64 --self-contained true -o artifacts/winui/DeadWare.WinUI --nologo
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Compress-Archive -Path artifacts/winui/DeadWare.WinUI -DestinationPath artifacts/winui/DeadWare.WinUI.zip -CompressionLevel Optimal -Force
+          $folder = (Get-ChildItem artifacts/winui/DeadWare.WinUI -File -Recurse | Measure-Object Length -Sum).Sum
+          $zip = (Get-Item artifacts/winui/DeadWare.WinUI.zip).Length
+          "Published size: $folder bytes folder, $zip bytes ZIP" | Tee-Object -FilePath $env:GITHUB_STEP_SUMMARY -Append
+      - name: Smoke check
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = Resolve-Path artifacts/winui/DeadWare.WinUI/DeadWare.WinUI.exe
+          $errorFile = Join-Path (Resolve-Path artifacts/winui) 'error.txt'
+          Add-Type -Namespace Native -Name User32 -MemberDefinition @'
+          [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr window, uint message, IntPtr w, IntPtr l);
+          [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr window);
+          '@
+          function Start-Shell([string[]]$Extra) {
+            Remove-Item -LiteralPath $errorFile, "$errorFile.status" -ErrorAction SilentlyContinue
+            Start-Process -FilePath $exe -ArgumentList (@('--error-file', "`"$errorFile`"") + $Extra) -PassThru
+          }
+          function Assert-NoErrorFile { if (Test-Path -LiteralPath $errorFile) { throw "The shell wrote an error file: $(Get-Content -LiteralPath $errorFile -Raw)" } }
+
+          # 1. It starts on the real monitoring services, shows the dashboard, and close hides it to the tray.
+          $process = Start-Shell @()
+          try {
+            $deadline = (Get-Date).AddSeconds(90)
+            while ($true) {
+              Assert-NoErrorFile
+              if ($process.HasExited) { throw "The shell exited with code $($process.ExitCode) before showing a window." }
+              $process.Refresh()
+              if ($process.MainWindowTitle -eq 'DeadWare') { break }
+              if ((Get-Date) -gt $deadline) { throw "No window titled 'DeadWare' within 90 s (last title: '$($process.MainWindowTitle)')." }
+              Start-Sleep -Milliseconds 200
+            }
+            'The dashboard window opened.'
+            $window = $process.MainWindowHandle
+            [Native.User32]::PostMessage($window, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null
+            Start-Sleep -Seconds 5
+            if ($process.HasExited) { throw "The shell exited (code $($process.ExitCode)) on close instead of hiding to the tray." }
+            if ([Native.User32]::IsWindowVisible($window)) { throw 'The window is still visible after close.' }
+            Assert-NoErrorFile
+            'Close hid the window and the process kept running.'
+          } finally { if (-not $process.HasExited) { $process.Kill($true); $process.WaitForExit(15000) | Out-Null } }
+
+          # 2. With the solid fallback: readings arrive, and the ordinary quit path stops everything and exits 0.
+          $process = Start-Shell @('--no-mica', '--exit-after', '15')
+          try {
+            if (-not $process.WaitForExit(90000)) { throw 'The shell did not quit within 90 s of --exit-after 15.' }
+            Assert-NoErrorFile
+            if ($process.ExitCode -ne 0) { throw "The shell quit with exit code $($process.ExitCode)." }
+            $status = Get-Content -LiteralPath "$errorFile.status" -Raw
+            "Status at quit: $status"
+            if ($status -notmatch '^readings=(\d+)$' -or [int]$Matches[1] -lt 1) { throw "The session never held a reading ($status)." }
+          } finally { if (-not $process.HasExited) { $process.Kill($true); $process.WaitForExit(15000) | Out-Null } }
+          if (Get-Process -Name DeadWare.WinUI -ErrorAction SilentlyContinue) { throw 'A shell process is still running after the checks.' }
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: DeadWare.WinUI-win-x64
+          path: artifacts/winui/DeadWare.WinUI/
+          if-no-files-found: error
+          retention-days: 14

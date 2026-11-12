@@ -1,5 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
-  <!-- Throwaway measured prototype. Not part of DeadWare.slnx and never shipped. -->
+  <!-- The WinUI 3 front end, built beside the WPF app until it reaches parity. It is built and smoke-checked in CI
+       but not packaged by scripts/publish.ps1. Unpackaged and self-contained, as DeadWare ships. -->
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
@@ -16,14 +17,14 @@
     <PublishSingleFile>false</PublishSingleFile>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>../../assets/deadware.ico</ApplicationIcon>
-    <AssemblyName>DeadWare.WinUiPrototype</AssemblyName>
-    <RootNamespace>WinUiPrototype</RootNamespace>
+    <AssemblyName>DeadWare.WinUI</AssemblyName>
+    <RootNamespace>DeadWare.WinUI</RootNamespace>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.6.5" />
-    <PackageReference Include="Microsoft.Graphics.Win2D" Version="1.4.0" />
-    <ProjectReference Include="../WinUiPrototype.Logic/WinUiPrototype.Logic.csproj" />
+    <ProjectReference Include="../DeadWare.Services/DeadWare.Services.csproj" />
     <Content Include="../../assets/deadware.ico" Link="deadware.ico" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="../../assets/maps/cities.json" Link="maps/cities.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
   <!-- dotnet publish omits an unpackaged app's own .pri and .xbf files, so the published app fails with
        XamlParseException at start-up. Copy them from the build output. -->
