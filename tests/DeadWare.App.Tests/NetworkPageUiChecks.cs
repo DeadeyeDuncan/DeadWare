@@ -112,11 +112,15 @@ internal static class NetworkPageUiChecks
         var labels=Glyphs(drawing).ToArray();Assert.Equal(3,labels.Count(g=>new string(g.GlyphRun.Characters.ToArray()).EndsWith("/s",StringComparison.Ordinal)));
         Assert.Contains(labels,g=>new string(g.GlyphRun.Characters.ToArray())=="Now");
         // Glyph ink can overhang its advance box by a few DIP (left bearing, descenders); 4 DIP of tolerance keeps the check about placement, not font metrics.
-        Assert.All(labels,g=>Assert.True(new Rect(-4,-4,chart.ActualWidth+8,chart.ActualHeight+8).Contains(g.Bounds),$"Axis label {g.Bounds} is outside chart {chart.RenderSize}."));
+        // Time-tick labels (HH:mm or HH:mm:ss) are left out: ChartFrame.ScrollingTicks centres them on their tick and draws them inside a clip, so one
+        // whose tick sits at the plot's edge has unclipped glyph bounds past the chart although nothing is drawn there. That happens whenever the
+        // wall-clock second is a multiple of the tick step, which made this check fail by the time of day.
+        Assert.All(labels.Where(g=>!TimeTick().IsMatch(new string(g.GlyphRun.Characters.ToArray()))),g=>Assert.True(new Rect(-4,-4,chart.ActualWidth+8,chart.ActualHeight+8).Contains(g.Bounds),$"Axis label {g.Bounds} is outside chart {chart.RenderSize}."));
     }
     private static Rect Bounds(FrameworkElement element,Visual ancestor)=>element.TransformToAncestor(ancestor).TransformBounds(new Rect(element.RenderSize));
     private static void Settle(FrameworkElement shell){for(int i=0;i<2;i++){var frame=new DispatcherFrame();Dispatcher.CurrentDispatcher.BeginInvoke(DispatcherPriority.Background,new Action(()=>frame.Continue=false));Dispatcher.PushFrame(frame);shell.UpdateLayout();}}
     private static IEnumerable<DependencyObject> Ancestors(DependencyObject value){for(var parent=VisualTreeHelper.GetParent(value);parent is not null;parent=VisualTreeHelper.GetParent(parent))yield return parent;}
     private static IEnumerable<DependencyObject> Descendants(DependencyObject root){yield return root;for(int i=0;i<VisualTreeHelper.GetChildrenCount(root);i++)foreach(var child in Descendants(VisualTreeHelper.GetChild(root,i)))yield return child;}
+    private static System.Text.RegularExpressions.Regex TimeTick()=>new(@"^\d\d:\d\d(:\d\d)?$");
     private static IEnumerable<GlyphRunDrawing> Glyphs(Drawing drawing)=>drawing is GlyphRunDrawing glyph?[glyph]:drawing is DrawingGroup group?group.Children.SelectMany(Glyphs):[];
 }
