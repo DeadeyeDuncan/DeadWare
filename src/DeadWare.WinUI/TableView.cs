@@ -18,11 +18,20 @@ internal sealed class TableView : UserControl
     public static long RowsBound;
 
     private readonly ObservableCollection<TableRow> rows = [];
+    private readonly IReadOnlyList<TableColumn> columns;
+    private readonly Grid header;
 
     public TableView(IReadOnlyList<TableColumn> columns)
     {
-        var header = RowFactory.NewRow(columns, heading: true);
-        for (int i = 0; i < columns.Count; i++) ((TextBlock)header.Children[i]).Text = columns[i].Title.ToUpperInvariant();
+        this.columns = columns;
+        header = RowFactory.NewRow(columns, heading: true);
+        for (int i = 0; i < columns.Count; i++)
+        {
+            int column = i;
+            var cell = (TextBlock)header.Children[i];
+            cell.Text = columns[i].Title.ToUpperInvariant();
+            cell.Tapped += (_, _) => HeaderClicked?.Invoke(column);
+        }
         var repeater = new ItemsRepeater { ItemsSource = rows, ItemTemplate = new RowFactory(columns), Layout = new StackLayout() };
         var scroll = new ScrollViewer { Content = repeater, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
         var layout = new Grid();
@@ -35,6 +44,16 @@ internal sealed class TableView : UserControl
     }
 
     public int Count => rows.Count;
+
+    /// <summary>Raised with the column's position when its heading is clicked; a page that sorts handles it.</summary>
+    public event Action<int>? HeaderClicked;
+
+    /// <summary>Marks one heading as the sort column with an arrow, or none when <paramref name="column"/> is null.</summary>
+    public void SetSort(int? column, bool descending)
+    {
+        for (int i = 0; i < columns.Count; i++)
+            ((TextBlock)header.Children[i]).Text = columns[i].Title.ToUpperInvariant() + (i == column ? (descending ? " ▼" : " ▲") : "");
+    }
 
     /// <summary>Shows these rows, in this order, redrawing only the ones that changed.</summary>
     public void SetRows(IReadOnlyList<TableRow> source) => TableSync.Apply(rows, source);
