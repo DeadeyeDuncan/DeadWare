@@ -28,7 +28,7 @@ internal sealed class HistoryChartView : UserControl
     private static readonly CanvasTextFormat RightLabelFormat = new() { FontSize = 11, HorizontalAlignment = CanvasHorizontalAlignment.Right };
     private static readonly CanvasTextFormat TickFormat = new() { FontSize = 11, HorizontalAlignment = CanvasHorizontalAlignment.Center };
 
-    /// <summary>Default trace colours by graph colour key; cpu and download follow the system accent. Saved per-graph colours are not read yet.</summary>
+    /// <summary>Default trace colours by graph colour key; cpu and download default to the system accent. A colour saved in settings wins.</summary>
     private static readonly Dictionary<string, Color> Palette = new()
     {
         ["gpu"] = Color.FromArgb(255, 0x8E, 0x6C, 0xEF), ["cputemp"] = Color.FromArgb(255, 0xF2, 0x99, 0x4A), ["gputemp"] = Color.FromArgb(255, 0xEB, 0x57, 0x57),
@@ -39,7 +39,8 @@ internal sealed class HistoryChartView : UserControl
     private readonly MonitorSession session;
     private readonly string kind;
     private readonly bool compare;
-    private readonly CanvasControl axes = new(), traces = new();
+    private readonly CanvasControl axes = new(), traces = new(), readout = new();
+    private Point? pointer;
     private readonly RectangleGeometry clip = new();
     private HistoryChartFrame? frame;
     private ChartPlot plot;
@@ -53,9 +54,14 @@ internal sealed class HistoryChartView : UserControl
         traces.Draw += DrawTraces;
         traces.Clip = clip;
         ElementCompositionPreview.SetIsTranslationEnabled(traces, true);
-        var layers = new Grid();
+        readout.Draw += DrawReadout;
+        // A transparent background, so the pointer reaches the chart everywhere and not only over drawn pixels.
+        var layers = new Grid { Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent) };
         layers.Children.Add(axes);
         layers.Children.Add(traces);
+        layers.Children.Add(readout);
+        layers.PointerMoved += (_, e) => { pointer = e.GetCurrentPoint(layers).Position; readout.Invalidate(); };
+        layers.PointerExited += (_, _) => { pointer = null; readout.Invalidate(); };
         Content = layers;
         MinHeight = 120;
         Loaded += (_, _) => { session.Changed += Refresh; Refresh(); };
@@ -76,6 +82,7 @@ internal sealed class HistoryChartView : UserControl
         clip.Rect = plot.Width > 0 && plot.Height > 0 ? new Rect(plot.Left, 0, plot.Width, ActualHeight) : new Rect(0, 0, 0, 0);
         axes.Invalidate();
         traces.Invalidate();
+        readout.Invalidate();
         if (frame.HasReadings) StartScroll();
     }
 
@@ -99,8 +106,44 @@ internal sealed class HistoryChartView : UserControl
         return (Color.FromArgb(170, c, c, c), Color.FromArgb(32, c, c, c), Color.FromArgb(10, c, c, c));
     }
 
-    private Color TraceColor(string key) =>
-        Palette.TryGetValue(key, out var color) ? color : (Color)Application.Current.Resources["SystemAccentColor"];
+    private Color TraceColor(string key)
+    {
+        // Saved colours are normalised to "#RRGGBB" when settings load.
+        if (session.Settings.GraphColors.TryGetValue(key, out string? saved) && GraphColorSettings.IsColor(saved))
+            return Color.FromArgb(255, Convert.ToByte(saved[1..3], 16), Convert.ToByte(saved[3..5], 16), Convert.ToByte(saved[5..7], 16));
+        return Palette.TryGetValue(key, out var color) ? color : (Color)Application.Current.Resources["SystemAccentColor"];
+    }
+
+    /// <summary>The hover readout: a line at the nearest sample, a dot on each trace and a chip with the time and values.</summary>
+    private void DrawReadout(CanvasControl sender, CanvasDrawEventArgs args)
+    {
+        if (frame is not { } current || pointer is not { } position) return;
+        if (HistoryChartModel.Hover(current, position.X, position.Y, session.Settings.PollingIntervalSeconds) is not { } hover) return;
+        var drawing = args.DrawingSession;
+        var (ink, line, _) = Inks();
+        bool dark = ActualTheme == ElementTheme.Dark;
+        drawing.DrawLine((float)hover.X, (float)plot.Top, (float)hover.X, (float)(plot.Top + plot.Height), ink, 1);
+        foreach (var value in hover.Lines) drawing.FillCircle((float)value.Dot.X, (float)value.Dot.Y, 3, TraceColor(value.ColorKey));
+
+        var rows = new List<(string Text, Color Color)> { (hover.Time, ink) };
+        rows.AddRange(hover.Lines.Select(value => (value.Text, TraceColor(value.ColorKey))));
+        const float rowHeight = 16, padding = 6;
+        float width = 0;
+        foreach (var row in rows)
+        {
+            using var layout = new CanvasTextLayout(sender, row.Text, LabelFormat, 0, 0);
+            width = Math.Max(width, (float)layout.LayoutBounds.Width);
+        }
+        width += padding * 2;
+        float height = rows.Count * rowHeight + padding * 2;
+        // The chip sits to the right of the line, or to its left when it would leave the plot.
+        float x = (float)hover.X + 10;
+        if (x + width > plot.Left + plot.Width) x = (float)hover.X - 10 - width;
+        float y = (float)Math.Clamp(position.Y - height / 2, plot.Top, Math.Max(plot.Top, plot.Top + plot.Height - height));
+        drawing.FillRoundedRectangle(x, y, width, height, 4, 4, dark ? Color.FromArgb(240, 32, 32, 32) : Color.FromArgb(240, 252, 252, 252));
+        drawing.DrawRoundedRectangle(x, y, width, height, 4, 4, line, 1);
+        for (int i = 0; i < rows.Count; i++) drawing.DrawText(rows[i].Text, x + padding, y + padding + i * rowHeight, rows[i].Color, LabelFormat);
+    }
 
     private void DrawAxes(CanvasControl sender, CanvasDrawEventArgs args)
     {
