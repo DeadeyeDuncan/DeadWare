@@ -45,7 +45,9 @@ internal sealed class StoragePage : Page
         var storage = reading?.Storage ?? StorageReading.Empty;
         status.Text = reading is null ? "" : StoragePresenter.Status(storage.Status, storage.Health, reading.HardwareStatus);
         status.Visibility = status.Text.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
-        var ordered = storage.Drives.OrderBy(drive => drive.Index).ToArray();
+        // Two drives can report the same id (the same serial number, on some virtual and USB hardware). One card per id:
+        // adding the same card to the list twice is an error in XAML, and the health and chart are keyed by id anyway.
+        var ordered = storage.Drives.OrderBy(drive => drive.Index).DistinctBy(drive => drive.Id).ToArray();
         empty.Text = reading is null ? "Discovering drives…" : "No drives detected";
         empty.Visibility = ordered.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
 
@@ -71,8 +73,8 @@ internal sealed class StoragePage : Page
         var used = new ProgressBar { Maximum = 1 };
         var free = new TextBlock { Opacity = 0.7 };
         var chart = new HistoryChartView(session, "storage") { DriveId = drive.Id, Height = 200 };
-        // A plain grid, not the virtualised TableView: a drive has a handful of volumes, and a list with its own scroller
-        // inside this page's scroller made the page fail fast in XAML layout (0xC000027B) about one start in two.
+        // A plain grid, not the virtualised TableView: a drive has a handful of volumes, so there is nothing to virtualise,
+        // and this avoids a list with its own scroller inside this page's scroller.
         var volumes = new Grid { ColumnSpacing = 12, RowSpacing = 4 };
         foreach (double weight in new[] { 0.6, 2, 1, 1 }) volumes.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(weight, GridUnitType.Star) });
         var noVolumes = new TextBlock { Text = "No mounted volumes", Opacity = 0.7 };
