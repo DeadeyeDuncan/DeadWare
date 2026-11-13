@@ -47,7 +47,13 @@ public sealed partial class MainWindow : Window
         foreach (var (key, label, symbol) in Destinations)
         {
             var item = new NavigationViewItem { Content = label, Icon = new SymbolIcon(symbol), Tag = key };
-            Page page = key == "overview" ? new StatusPage(session, mica) : new PlaceholderPage(label);
+            Page page = key switch
+            {
+                "overview" => new StatusPage(session, mica),
+                "network" => new NetworkPage(session),
+                "sensors" => new SensorsPage(session),
+                _ => new PlaceholderPage(label),
+            };
             pages[key] = (item, page);
             Nav.MenuItems.Add(item);
         }

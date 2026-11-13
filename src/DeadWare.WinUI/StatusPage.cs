@@ -45,7 +45,7 @@ internal sealed class StatusPage : Page
         };
         var intro = new TextBlock
         {
-            Text = "The WinUI interface is being built page by page. This page shows live readings and charts from the same monitoring services as the current app; the other pages are placeholders.",
+            Text = "The WinUI interface is being built page by page. This page shows live readings and charts from the same monitoring services as the current app; Network and Sensors are ported; the remaining pages are placeholders.",
             TextWrapping = TextWrapping.Wrap,
         };
         var charts = new Grid { ColumnSpacing = 12, RowSpacing = 12 };

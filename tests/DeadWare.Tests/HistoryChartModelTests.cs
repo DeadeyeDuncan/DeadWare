@@ -5,6 +5,9 @@ namespace DeadWare.Tests;
 
 public class HistoryChartModelTests
 {
+    // Decimals are written in the user's locale; the expected texts here are for the invariant one.
+    public HistoryChartModelTests() => System.Globalization.CultureInfo.CurrentCulture = System.Globalization.CultureInfo.InvariantCulture;
+
     static readonly DateTimeOffset Epoch = DateTimeOffset.UnixEpoch;
     static readonly ChartPlot Plot = new(Left: 10, Top: 20, Width: 600, Height: 100);
 

@@ -21,6 +21,8 @@ public partial class App : Application
         ?? typeof(App).Assembly.GetName().Version?.ToString() ?? "unknown";
 
     private static int? exitAfter;
+    /// <summary>The destination given after <c>--page</c>, shown at start instead of Overview.</summary>
+    private static string? startPage;
     private static Timer? exitTimer;
 
     private readonly ApplicationLifetime lifetime = new();
@@ -37,6 +39,7 @@ public partial class App : Application
         {
             if (arguments[i] == "--no-mica") NoMica = true;
             else if (arguments[i] == "--error-file" && i + 1 < arguments.Length) ErrorFile = arguments[++i];
+            else if (arguments[i] == "--page" && i + 1 < arguments.Length) startPage = arguments[++i];
             else if (arguments[i] == "--exit-after" && i + 1 < arguments.Length && int.TryParse(arguments[++i], out int seconds) && seconds > 0) exitAfter = seconds;
         }
         UnhandledException += (_, e) => Fail(e.Exception);
@@ -61,6 +64,7 @@ public partial class App : Application
             var cities = Cities.Load();
             session = new MonitorSession(Version, () => new QueueTimer(queue), id => id is not null && cities.TryGetValue(id, out var point) ? (id, point) : null);
             window = new MainWindow(session, lifetime, () => tray is { Available: true });
+            if (startPage is not null) window.Navigate(startPage);
             tray = new Tray(ShowDashboard, RequestQuit);
             Subscribe(session);
             session.Changed += () => { if (session.Current is not null) Interlocked.Increment(ref TicksWithReading); };
@@ -74,7 +78,7 @@ public partial class App : Application
                 // A thread-pool timer starts the ordinary quit path, so the smoke check also proves a clean shutdown.
                 exitTimer = new Timer(_ => queue.TryEnqueue(() =>
                 {
-                    if (ErrorFile is not null) File.WriteAllText(ErrorFile + ".status", $"readings={Interlocked.Read(ref TicksWithReading)} frames={Interlocked.Read(ref HistoryChartView.FramesDrawn)}");
+                    if (ErrorFile is not null) File.WriteAllText(ErrorFile + ".status", $"readings={Interlocked.Read(ref TicksWithReading)} frames={Interlocked.Read(ref HistoryChartView.FramesDrawn)} rows={Interlocked.Read(ref TableView.RowsBound)}");
                     RequestQuit();
                 }), null, TimeSpan.FromSeconds(seconds), Timeout.InfiniteTimeSpan);
             }
