@@ -87,7 +87,7 @@ jobs:
             if ($process.ExitCode -ne 0) { throw "The shell quit with exit code $($process.ExitCode)." }
             $status = Get-Content -LiteralPath "$errorFile.status" -Raw
             "Status at quit: $status"
-            if ($status -notmatch '^readings=(\d+) frames=(\d+) rows=(\d+)$') { throw "Unexpected status: $status" }
+            if ($status -notmatch '^readings=(\d+) frames=(\d+) rows=(\d+) ') { throw "Unexpected status: $status" }
             if ([int]$Matches[1] -lt 1) { throw "The session never held a reading ($status)." }
             if ([int]$Matches[2] -lt 5) { throw "The five Overview charts did not all draw ($status)." }
           } finally { if (-not $process.HasExited) { $process.Kill($true); $process.WaitForExit(15000) | Out-Null } }
@@ -102,7 +102,7 @@ jobs:
               if ($process.ExitCode -ne 0) { throw "The shell quit with exit code $($process.ExitCode) on $page." }
               $status = Get-Content -LiteralPath "$errorFile.status" -Raw
               "Status at quit on ${page}: $status"
-              if ($page -eq 'sensors' -and ($status -notmatch 'rows=(\d+)$' -or [int]$Matches[1] -lt 1)) { throw "The Sensors table bound no rows ($status)." }
+              if ($page -eq 'sensors' -and ($status -notmatch 'rows=(\d+) ' -or [int]$Matches[1] -lt 1)) { throw "The Sensors table bound no rows ($status)." }
             } finally { if (-not $process.HasExited) { $process.Kill($true); $process.WaitForExit(15000) | Out-Null } }
           }
 

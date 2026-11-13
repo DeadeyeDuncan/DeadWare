@@ -26,6 +26,9 @@ internal sealed class StoragePage : Page
         public IReadOnlyList<TableRow> Shown { get; set; } = [];
     }
 
+    /// <summary>The drives and distinct drive ids in the last reading shown; reported by <c>--exit-after</c> for the smoke check.</summary>
+    public static int DrivesSeen, DriveIdsSeen;
+
     private readonly MonitorSession session;
     private readonly TextBlock status = new() { TextWrapping = TextWrapping.Wrap, Opacity = 0.7 }, empty = new() { Opacity = 0.7 };
     private readonly StackPanel drives = new() { Spacing = 12 };
@@ -48,6 +51,7 @@ internal sealed class StoragePage : Page
         // Two drives can report the same id (the same serial number, on some virtual and USB hardware). One card per id:
         // adding the same card to the list twice is an error in XAML, and the health and chart are keyed by id anyway.
         var ordered = storage.Drives.OrderBy(drive => drive.Index).DistinctBy(drive => drive.Id).ToArray();
+        (DrivesSeen, DriveIdsSeen) = (storage.Drives.Count, ordered.Length);
         empty.Text = reading is null ? "Discovering drives…" : "No drives detected";
         empty.Visibility = ordered.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
 
