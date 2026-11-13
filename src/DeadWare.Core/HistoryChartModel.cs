@@ -279,12 +279,12 @@ public static class HistoryChartModel
     /// <summary>The graph colour a kind's main trace uses.</summary>
     public static string ColorKey(string kind)=>kind switch {"network"=>"download","storage"=>"diskread",_=>kind};
 
-    /// <summary>A byte count in decimal units, as the dashboard writes it: 1.5 MB, or 1.5 MB/s for a rate.</summary>
+    /// <summary>A byte count in decimal units and the user's locale, as the dashboard writes it: 1.5 MB, or 1.5 MB/s for a rate.</summary>
     public static string Bytes(double? bytes,bool rate=false)
     {
         if(!bytes.HasValue||!double.IsFinite(bytes.Value))return "—";
         double value=bytes.Value;string[] units=["B","KB","MB","GB","TB"];int i=0;
         while(value>=1000&&i<units.Length-1){value/=1000;i++;}
-        return FormattableString.Invariant($"{value:0.0} {units[i]}{(rate?"/s":"")}");
+        return string.Create(System.Globalization.CultureInfo.CurrentCulture,$"{value:0.0} {units[i]}{(rate?"/s":"")}");
     }
 }
