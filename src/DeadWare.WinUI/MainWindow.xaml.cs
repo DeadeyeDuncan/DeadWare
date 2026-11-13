@@ -51,6 +51,7 @@ public sealed partial class MainWindow : Window
             {
                 "overview" => new StatusPage(session, mica),
                 "network" => new NetworkPage(session),
+                "processes" => new ProcessesPage(session),
                 "sensors" => new SensorsPage(session),
                 _ => new PlaceholderPage(label),
             };
