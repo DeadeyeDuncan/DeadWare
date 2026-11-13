@@ -11,6 +11,8 @@ public partial class App : Application
 {
     /// <summary>True when <c>--no-mica</c> forces the solid background used where Mica is unavailable.</summary>
     internal static bool NoMica { get; private set; }
+    /// <summary>The dashboard window's handle, which file pickers need as their owner.</summary>
+    internal static nint WindowHandle { get; set; }
     /// <summary>The path given after <c>--error-file</c>, or null.</summary>
     internal static string? ErrorFile { get; private set; }
     /// <summary>One-second ticks on which the session held a reading; written by <c>--exit-after</c> for the smoke check.</summary>

@@ -39,6 +39,7 @@ public sealed partial class MainWindow : Window
         SetTitleBar(TitleBarArea);
 
         nint handle = WinRT.Interop.WindowNative.GetWindowHandle(this);
+        App.WindowHandle = handle;
         double scale = GetDpiForWindow(handle) / 96.0;
         AppWindow.Resize(new SizeInt32((int)(1220 * scale), (int)(900 * scale)));
         string icon = Path.Combine(AppContext.BaseDirectory, "deadware.ico");
@@ -53,6 +54,7 @@ public sealed partial class MainWindow : Window
                 "network" => new NetworkPage(session),
                 "processes" => new ProcessesPage(session),
                 "storage" => new StoragePage(session),
+                "battery" => new BatteryPage(session),
                 "sensors" => new SensorsPage(session),
                 _ => new PlaceholderPage(label),
             };
