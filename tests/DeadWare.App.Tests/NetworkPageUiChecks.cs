@@ -111,8 +111,49 @@ internal static class NetworkPageUiChecks
         var bounds=chart.TransformToAncestor(card).TransformBounds(drawing.Bounds);Assert.True(new Rect(-.5,-.5,card.ActualWidth+1,card.ActualHeight+1).Contains(bounds),$"Network drawing {bounds} is outside card {card.RenderSize}.");
         var labels=Glyphs(drawing).ToArray();Assert.Equal(3,labels.Count(g=>new string(g.GlyphRun.Characters.ToArray()).EndsWith("/s",StringComparison.Ordinal)));
         Assert.Contains(labels,g=>new string(g.GlyphRun.Characters.ToArray())=="Now");
-        // Glyph ink can overhang its advance box by a few DIP (left bearing, descenders); 4 DIP of tolerance keeps the check about placement, not font metrics.
-        Assert.All(labels,g=>Assert.True(new Rect(-4,-4,chart.ActualWidth+8,chart.ActualHeight+8).Contains(g.Bounds),$"Axis label {g.Bounds} is outside chart {chart.RenderSize}."));
+        // Time-tick labels are clipped to the plot by ChartFrame.ScrollingTicks, so a tick at the plot's edge has glyph bounds past the chart
+        // with nothing drawn there. Placement is therefore judged on what is visible, which keeps the check independent of the wall clock.
+        var misplaced=Misplaced(drawing,chart.RenderSize);Assert.True(misplaced.Length==0,$"Axis label {string.Join("; ",misplaced)} is outside chart {chart.RenderSize}.");
+        AssertEdgeTicksAreNotMisplaced(chart.RenderSize);
+    }
+    /// <summary>The wall clock puts a tick exactly on the plot's edge only when the current second is a multiple of the tick step, so that
+    /// case is drawn here directly: clipped edge ticks pass, while an unclipped label outside the chart still fails.</summary>
+    private static void AssertEdgeTicksAreNotMisplaced(Size size)
+    {
+        var plot=new Rect(8,8,size.Width-16,Math.Max(1,size.Height-36));
+        var edges=new DrawingGroup();
+        using(var context=edges.Open())ChartFrame.ScrollingTicks(context,plot,[(plot.Left,"12:00:00",0L),(plot.Right,"12:10:00",1L)],Theme.ChartTypeface,1,false,new TranslateTransform());
+        var ticks=VisibleGlyphs(edges,Matrix.Identity,null).Where(g=>Text(g.Glyph)!="Now").ToArray();Assert.Equal(2,ticks.Length);
+        Assert.Contains(ticks,g=>g.Glyph.Bounds.Left<-4);Assert.Contains(ticks,g=>g.Glyph.Bounds.Right>size.Width+4);
+        Assert.All(ticks,g=>Assert.True(g.Visible.IsEmpty||g.Visible.Left>=plot.Left-.01&&g.Visible.Right<=plot.Right+.01,$"Tick {Text(g.Glyph)} is visible at {g.Visible}, outside plot {plot}."));
+        Assert.Empty(Misplaced(edges,size));
+        foreach(var origin in new[]{new Point(-30,20),new Point(size.Width+10,20),new Point(20,size.Height+10)})
+        {
+            var stray=new DrawingGroup();
+            using(var context=stray.Open())context.DrawText(ChartFrame.Text("Now",Theme.ChartTypeface,1,Theme.Brush("Muted")),origin);
+            Assert.Single(Misplaced(stray,size));
+        }
+    }
+    // Glyph ink can overhang its advance box by a few DIP (left bearing, descenders); 4 DIP of tolerance keeps the check about placement, not font metrics.
+    private static string[] Misplaced(Drawing drawing,Size chart)
+    {
+        var allowed=new Rect(-4,-4,chart.Width+8,chart.Height+8);
+        return VisibleGlyphs(drawing,Matrix.Identity,null).Where(g=>!g.Visible.IsEmpty&&!allowed.Contains(g.Visible)).Select(g=>$"\"{Text(g.Glyph)}\" {g.Visible}").ToArray();
+    }
+    private static string Text(GlyphRunDrawing glyph)=>new(glyph.GlyphRun.Characters.ToArray());
+    /// <summary>Each glyph run with the part of its bounds that is actually drawn: mapped through the transforms of the groups above it
+    /// and intersected with their clips (a group's clip is in that group's own, transformed, space). Empty when fully clipped away.</summary>
+    private static IEnumerable<(GlyphRunDrawing Glyph,Rect Visible)> VisibleGlyphs(Drawing drawing,Matrix toRoot,Rect? clip)
+    {
+        if(drawing is GlyphRunDrawing glyph)
+        {
+            var visible=glyph.Bounds;visible.Transform(toRoot);if(clip is {} within)visible.Intersect(within);
+            yield return (glyph,visible);yield break;
+        }
+        if(drawing is not DrawingGroup group)yield break;
+        if(group.Transform is {} transform)toRoot=transform.Value*toRoot;
+        if(group.ClipGeometry is {} geometry){var area=geometry.Bounds;area.Transform(toRoot);if(clip is {} within)area.Intersect(within);clip=area;}
+        foreach(var child in group.Children)foreach(var found in VisibleGlyphs(child,toRoot,clip))yield return found;
     }
     private static Rect Bounds(FrameworkElement element,Visual ancestor)=>element.TransformToAncestor(ancestor).TransformBounds(new Rect(element.RenderSize));
     private static void Settle(FrameworkElement shell){for(int i=0;i<2;i++){var frame=new DispatcherFrame();Dispatcher.CurrentDispatcher.BeginInvoke(DispatcherPriority.Background,new Action(()=>frame.Continue=false));Dispatcher.PushFrame(frame);shell.UpdateLayout();}}
