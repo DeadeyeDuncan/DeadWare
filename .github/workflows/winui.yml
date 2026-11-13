@@ -87,14 +87,14 @@ jobs:
             if ($process.ExitCode -ne 0) { throw "The shell quit with exit code $($process.ExitCode)." }
             $status = Get-Content -LiteralPath "$errorFile.status" -Raw
             "Status at quit: $status"
-            if ($status -notmatch '^readings=(\d+) frames=(\d+) rows=(\d+)$') { throw "Unexpected status: $status" }
+            if ($status -notmatch '^readings=(\d+) frames=(\d+) rows=(\d+) ') { throw "Unexpected status: $status" }
             if ([int]$Matches[1] -lt 1) { throw "The session never held a reading ($status)." }
             if ([int]$Matches[2] -lt 5) { throw "The five Overview charts did not all draw ($status)." }
           } finally { if (-not $process.HasExited) { $process.Kill($true); $process.WaitForExit(15000) | Out-Null } }
 
           # 3. The ported pages open and quit cleanly on the real collector, and Sensors fills its table. Process monitoring is off
           #    by default and Network needs per-app capture, so those two tables may be empty on a fresh runner.
-          foreach ($page in 'sensors', 'processes', 'network', 'storage') {
+          foreach ($page in 'sensors', 'processes', 'network', 'storage', 'battery') {
             $process = Start-Shell @('--page', $page, '--exit-after', '15')
             try {
               if (-not $process.WaitForExit(90000)) { throw "The shell did not quit within 90 s of --page $page --exit-after 15." }
@@ -102,10 +102,32 @@ jobs:
               if ($process.ExitCode -ne 0) { throw "The shell quit with exit code $($process.ExitCode) on $page." }
               $status = Get-Content -LiteralPath "$errorFile.status" -Raw
               "Status at quit on ${page}: $status"
-              if ($page -eq 'sensors' -and ($status -notmatch 'rows=(\d+)$' -or [int]$Matches[1] -lt 1)) { throw "The Sensors table bound no rows ($status)." }
+              if ($page -eq 'sensors' -and ($status -notmatch 'rows=(\d+) ' -or [int]$Matches[1] -lt 1)) { throw "The Sensors table bound no rows ($status)." }
+            } finally { if (-not $process.HasExited) { $process.Kill($true); $process.WaitForExit(15000) | Out-Null } }
+          }
+
+          # 4. Storage crashed once in three runs with a stowed XAML exception (0xC000027B). Open it repeatedly so an
+          #    intermittent crash shows up here, with the event-log details printed by the next step.
+          foreach ($attempt in 1..10) {
+            $process = Start-Shell @('--page', 'storage', '--exit-after', '8')
+            try {
+              if (-not $process.WaitForExit(90000)) { throw "Storage attempt ${attempt}: the shell did not quit within 90 s." }
+              Assert-NoErrorFile
+              if ($process.ExitCode -ne 0) { throw "Storage attempt ${attempt}: the shell quit with exit code $($process.ExitCode) (0x$('{0:X8}' -f $process.ExitCode))." }
+              "Storage attempt ${attempt}: clean quit."
             } finally { if (-not $process.HasExited) { $process.Kill($true); $process.WaitForExit(15000) | Out-Null } }
           }
           if (Get-Process -Name DeadWare.WinUI -ErrorAction SilentlyContinue) { throw 'A shell process is still running after the checks.' }
+      - name: Crash details
+        if: failure()
+        shell: pwsh
+        # A crash below the managed layer (a XAML or graphics failure) leaves no error file, only an exit code. Windows
+        # records the faulting module and, for .NET, the exception and stack in the Application event log.
+        run: |
+          $events = Get-WinEvent -FilterHashtable @{ LogName = 'Application'; StartTime = (Get-Date).AddMinutes(-30) } -ErrorAction SilentlyContinue |
+            Where-Object { $_.Message -match 'DeadWare\.WinUI' } | Select-Object -First 8
+          if (-not $events) { 'No Application event log entries mention DeadWare.WinUI.' }
+          foreach ($event in $events) { "--- $($event.TimeCreated.ToString('HH:mm:ss')) $($event.ProviderName) event $($event.Id)"; $event.Message }
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: DeadWare.WinUI-win-x64

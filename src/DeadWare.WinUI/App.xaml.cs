@@ -11,6 +11,8 @@ public partial class App : Application
 {
     /// <summary>True when <c>--no-mica</c> forces the solid background used where Mica is unavailable.</summary>
     internal static bool NoMica { get; private set; }
+    /// <summary>The dashboard window's handle, which file pickers need as their owner.</summary>
+    internal static nint WindowHandle { get; set; }
     /// <summary>The path given after <c>--error-file</c>, or null.</summary>
     internal static string? ErrorFile { get; private set; }
     /// <summary>One-second ticks on which the session held a reading; written by <c>--exit-after</c> for the smoke check.</summary>
@@ -78,7 +80,7 @@ public partial class App : Application
                 // A thread-pool timer starts the ordinary quit path, so the smoke check also proves a clean shutdown.
                 exitTimer = new Timer(_ => queue.TryEnqueue(() =>
                 {
-                    if (ErrorFile is not null) File.WriteAllText(ErrorFile + ".status", $"readings={Interlocked.Read(ref TicksWithReading)} frames={Interlocked.Read(ref HistoryChartView.FramesDrawn)} rows={Interlocked.Read(ref TableView.RowsBound)}");
+                    if (ErrorFile is not null) File.WriteAllText(ErrorFile + ".status", $"readings={Interlocked.Read(ref TicksWithReading)} frames={Interlocked.Read(ref HistoryChartView.FramesDrawn)} rows={Interlocked.Read(ref TableView.RowsBound)} drives={StoragePage.DrivesSeen} driveids={StoragePage.DriveIdsSeen}");
                     RequestQuit();
                 }), null, TimeSpan.FromSeconds(seconds), Timeout.InfiniteTimeSpan);
             }

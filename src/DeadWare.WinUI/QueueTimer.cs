@@ -11,7 +11,17 @@ internal sealed class QueueTimer : ISessionTimer
     public QueueTimer(DispatcherQueue queue)
     {
         timer = queue.CreateTimer();
-        timer.Tick += (_, _) => Tick?.Invoke();
+        timer.Tick += (_, _) =>
+        {
+            // An exception that escapes a dispatcher callback fails the process fast inside the message loop (0xC000027B),
+            // bypassing Application.UnhandledException, so nothing would say what went wrong. Record it first.
+            try { Tick?.Invoke(); }
+            catch (Exception error)
+            {
+                App.Note($"Unhandled error in a timer callback: {error}");
+                throw;
+            }
+        };
     }
 
     public event Action? Tick;
