@@ -16,9 +16,11 @@ public sealed record HistoryChartRequest(SampleHistory History,string Kind,strin
 /// <param name="Cores">How many per-core lines a cpu chart carries; 0 for none. They replace the aggregate line.</param>
 /// <param name="Drives">Drive ids whose read rate a storage chart traces, in display order.</param>
 /// <param name="DriveNames">Drive id to model name, for the hover readout; an unlisted drive shows its id.</param>
+/// <param name="Smoothed">Graph smoothing: from an hour up, draw each column's average with a band from its lowest to its highest reading.</param>
+/// <param name="DriveId">Limits a storage chart to one drive: its read and write become the traces and the per-drive lines are off.</param>
 /// <param name="PumpWithDevices">Keeps the pump line on a device comparison (the widget).</param>
 /// <param name="CoresWithDevices">Keeps the per-core lines on a device comparison (the widget).</param>
-public sealed record HistoryChartOptions(bool GpuFan=false,bool CpuPump=false,int Cores=0,IReadOnlyList<string>? Drives=null,IReadOnlyDictionary<string,string>? DriveNames=null,bool PumpWithDevices=false,bool CoresWithDevices=false);
+public sealed record HistoryChartOptions(bool GpuFan=false,bool CpuPump=false,int Cores=0,IReadOnlyList<string>? Drives=null,IReadOnlyDictionary<string,string>? DriveNames=null,bool PumpWithDevices=false,bool CoresWithDevices=false,bool Smoothed=false,string? DriveId=null);
 
 /// <summary>What a trace is, which decides its stroke and where it sits: cores and drives underneath, then the local share, then the rest.</summary>
 public enum ChartTraceRole {Main,Core,Drive,Local,Rpm}
@@ -44,6 +46,8 @@ public sealed record ChartTrace(string Metric,string ColorKey,bool Dashed,double
     public double Maximum {get;init;}
     /// <summary>A drive's id, for a <see cref="ChartTraceRole.Drive"/> trace.</summary>
     public string? DriveId {get;init;}
+    /// <summary>With smoothing: one bar per column from its lowest to its highest reading, drawn faintly behind the average.</summary>
+    public IReadOnlyList<ChartBand> Bands {get;init;}=[];
     /// <summary>A drive's write rate, kept for the hover readout only; it is never drawn.</summary>
     public IReadOnlyList<SamplePoint> WriteSamples {get;init;}=[];
 }
@@ -55,7 +59,12 @@ public sealed record HistoryChartFrame(double Maximum,IReadOnlyList<ChartLine> L
     public double RpmMaximum {get;init;}
     /// <summary>The RPM labels for the same three value lines; empty when no fan or pump line is shown.</summary>
     public IReadOnlyList<ChartLine> RpmLines {get;init;}=[];
+    /// <summary>Whether lines are drawn as smooth curves: always, except on ranges of an hour or more without smoothing.</summary>
+    public bool Curved {get;init;}
 }
+
+/// <summary>One column of a smoothed trace's range band.</summary>
+public readonly record struct ChartBand(double Left,double Right,double Top,double Bottom);
 
 /// <summary>One trace's value at the hovered sample, and where its dot goes.</summary>
 /// <param name="ColorKey">The trace's graph colour, or "muted" for a summary line.</param>
@@ -68,7 +77,7 @@ public sealed record ChartHover(double X,string Time,IReadOnlyList<ChartHoverLin
 /// <summary>
 /// Lays out a live history chart with no user-interface framework, so any front end can draw it and the rules can be
 /// tested directly. The axis, colour, fill and readout rules are those of the WPF HistoryChart. Not yet covered:
-/// smoothed ranges, splines and the single-drive storage chart.
+/// nothing the dashboard's live charts draw; the pop-out and widget variants add their own options when they are ported.
 /// </summary>
 public static class HistoryChartModel
 {
@@ -84,20 +93,33 @@ public static class HistoryChartModel
 
         bool compare=request.CompareDevices&&kind is "cpu" or "cputemp";
         bool bytes=kind is "network" or "storage";
-        string primary=MetricId(kind,request.GpuId);
+        var options=request.Options??new HistoryChartOptions();
+        bool smoothed=options.Smoothed&&request.Seconds>=3600;
+        string? drive=kind=="storage"?options.DriveId:null;
+        string primary=drive is null?MetricId(kind,request.GpuId):StorageMetrics.Key(drive,"read");
         (string Metric,string ColorKey,double Fill)? second=kind switch
         {
             "network"=>("network/upload","upload",.42),
-            "storage"=>("storage/total/write","diskwrite",.42),
+            "storage"=>(drive is null?"storage/total/write":StorageMetrics.Key(drive,"write"),"diskwrite",.42),
             "cpu" when compare=>(MetricId("gpu",request.GpuId),"gpu",.45),
             "cputemp" when compare=>(MetricId("gputemp",request.GpuId),"gputemp",.45),
             _=>null,
         };
 
         int columns=(int)Math.Ceiling(plot.Width);
-        var primaryRaw=request.History.Series(primary,request.Now,request.Seconds);
-        var secondRaw=second is { } other?request.History.Series(other.Metric,request.Now,request.Seconds):[];
-        double peak=Math.Max(primaryRaw.Max(p=>p.Value)??0,secondRaw.Max(p=>p.Value)??0);
+        // Smoothed: one point per column at its average, with the column's range kept for the band and the statistics.
+        (IReadOnlyList<SamplePoint> Points,IReadOnlyList<ChartRangePoint>? Ranges) Read(string metric)
+        {
+            if(!smoothed)return (request.History.Series(metric,request.Now,request.Seconds),null);
+            var ranges=request.History.ChartRanges(metric,request.Now,request.Seconds,columns);
+            return (ranges.Select(p=>new SamplePoint(DateTimeOffset.UnixEpoch,p.EndSeconds,p.Average)).ToArray(),ranges);
+        }
+        // Smoothed byte axes follow the average trace; raw peaks remain in the band and the statistics.
+        double Peak((IReadOnlyList<SamplePoint> Points,IReadOnlyList<ChartRangePoint>? Ranges) data)=>
+            data.Ranges is { } ranges?ranges.Max(p=>bytes?p.Average:p.Maximum)??0:data.Points.Max(p=>p.Value)??0;
+        var primaryData=Read(primary);
+        var secondData=second is { } other?Read(other.Metric):([],null);
+        double peak=Math.Max(Peak(primaryData),Peak(secondData));
         double maximum=kind is "cpu" or "gpu" or "memory"?100:bytes?Math.Max(1000,peak*1.15):Math.Max(100,peak*1.1);
         if(compare&&kind=="cputemp")maximum=Math.Ceiling(maximum/20)*20;
 
@@ -109,28 +131,35 @@ public static class HistoryChartModel
             lines[i]=new(plot.Top+plot.Height*(1-value/maximum),Axis(value));
         }
 
-        IReadOnlyList<SamplePoint> Read(string metric)=>request.History.Series(metric,request.Now,request.Seconds);
-        ChartTrace Trace(string metric,string colorKey,bool dashed,double fill,IReadOnlyList<SamplePoint> raw,double top)
+        double X(double monotonic)=>plot.Left+plot.Width*(1-(request.Now-monotonic)/request.Seconds);
+        ChartTrace Trace(string metric,string colorKey,bool dashed,double fill,(IReadOnlyList<SamplePoint> Points,IReadOnlyList<ChartRangePoint>? Ranges) data,double top,bool band=false)
         {
             var runs=new List<IReadOnlyList<ChartPoint>>();List<ChartPoint>? run=null;
-            var drawn=SampleHistory.ReduceForChart(raw,request.Now,request.Seconds,columns);
+            var drawn=smoothed?data.Points:SampleHistory.ReduceForChart(data.Points,request.Now,request.Seconds,columns);
             foreach(var point in drawn)
             {
                 if(point.Value is not { } value||!double.IsFinite(value)){run=null;continue;}
                 if(run is null)runs.Add(run=[]);
-                run.Add(new(plot.Left+plot.Width*(1-(request.Now-point.MonotonicSeconds)/request.Seconds),plot.Top+plot.Height*(1-Math.Clamp(value/top,0,1))));
+                run.Add(new(X(point.MonotonicSeconds),plot.Top+plot.Height*(1-Math.Clamp(value/top,0,1))));
             }
-            return new(metric,colorKey,dashed,fill,runs,drawn){Maximum=top};
+            var bands=new List<ChartBand>();
+            if(band&&data.Ranges is { } ranges)
+                foreach(var point in ranges)
+                {
+                    if(point.Minimum is not { } low||point.Maximum is not { } high)continue;
+                    double left=X(point.StartSeconds);
+                    bands.Add(new(left,Math.Max(left+.8,X(point.EndSeconds)),plot.Top+plot.Height*(1-Math.Clamp(high/top,0,1)),plot.Top+plot.Height*(1-Math.Clamp(low/top,0,1))));
+                }
+            return new(metric,colorKey,dashed,fill,runs,drawn){Maximum=top,Bands=bands};
         }
 
-        var options=request.Options??new HistoryChartOptions();
         int cores=kind=="cpu"&&(!request.CompareDevices||options.CoresWithDevices)?Math.Clamp(options.Cores,0,GraphColorSettings.MaxCores):0;
         bool showFan=options.GpuFan&&(kind=="gputemp"||kind=="cputemp"&&compare);
         bool showPump=options.CpuPump&&kind=="cputemp"&&(!compare||options.PumpWithDevices);
 
         // With per-core lines the aggregate CPU line is hidden (the cores replace it) but still laid out for the readout.
-        var traces=new List<ChartTrace> {Trace(primary,ColorKey(kind),false,bytes||compare?.65:1,primaryRaw,maximum) with {Hidden=cores>0}};
-        if(second is { } added)traces.Add(Trace(added.Metric,added.ColorKey,true,added.Fill,secondRaw,maximum));
+        var traces=new List<ChartTrace> {Trace(primary,drive is null?ColorKey(kind):"diskread",false,bytes||compare?.65:1,primaryData,maximum,band:true) with {Hidden=cores>0}};
+        if(second is { } added)traces.Add(Trace(added.Metric,added.ColorKey,true,added.Fill,secondData,maximum,band:true));
         if(kind=="network")
         {
             // The local share never exceeds its total, so it rides the totals' axis without driving it.
@@ -141,24 +170,34 @@ public static class HistoryChartModel
         if(showFan||showPump)
         {
             // GPU fan and CPU pump share the left RPM scale when both are shown.
-            var fanRaw=showFan?Read(MetricId("gpufan",request.GpuId)):[];
-            var pumpRaw=showPump?Read(MetricId("cpupump",request.GpuId)):[];
-            rpmMaximum=Math.Max(1000,Math.Ceiling(Math.Max(fanRaw.Max(p=>p.Value)??0,pumpRaw.Max(p=>p.Value)??0)/1000)*1000);
+            (IReadOnlyList<SamplePoint> Points,IReadOnlyList<ChartRangePoint>? Ranges) none=([],null);
+            var fanData=showFan?Read(MetricId("gpufan",request.GpuId)):none;
+            var pumpData=showPump?Read(MetricId("cpupump",request.GpuId)):none;
+            double RpmPeak((IReadOnlyList<SamplePoint> Points,IReadOnlyList<ChartRangePoint>? Ranges) data)=>data.Ranges is { } ranges?ranges.Max(p=>p.Maximum)??0:data.Points.Max(p=>p.Value)??0;
+            rpmMaximum=Math.Max(1000,Math.Ceiling(Math.Max(RpmPeak(fanData),RpmPeak(pumpData))/1000)*1000);
             rpmLines=lines.Select((line,i)=>new ChartLine(line.Y,FormattableString.Invariant($"{rpmMaximum*i/2:0} RPM"))).ToArray();
-            if(showFan)traces.Add(Trace(MetricId("gpufan",request.GpuId),"gpufan",false,0,fanRaw,rpmMaximum) with {Role=ChartTraceRole.Rpm,Dotted=true});
-            if(showPump)traces.Add(Trace(MetricId("cpupump",request.GpuId),"cpupump",false,0,pumpRaw,rpmMaximum) with {Role=ChartTraceRole.Rpm,Dotted=true});
+            if(showFan)traces.Add(Trace(MetricId("gpufan",request.GpuId),"gpufan",false,0,fanData,rpmMaximum,band:true) with {Role=ChartTraceRole.Rpm,Dotted=true});
+            if(showPump)traces.Add(Trace(MetricId("cpupump",request.GpuId),"cpupump",false,0,pumpData,rpmMaximum,band:true) with {Role=ChartTraceRole.Rpm,Dotted=true});
         }
         for(int i=0;i<cores;i++)traces.Add(Trace(CoreMetric(i),GraphColorSettings.CoreKey(i),false,0,Read(CoreMetric(i)),maximum) with {Role=ChartTraceRole.Core,Index=i});
-        if(kind=="storage"&&options.Drives is { } drives)
+        if(kind=="storage"&&drive is null&&options.Drives is { } drives)
             for(int i=0;i<drives.Count;i++)
                 traces.Add(Trace(StorageMetrics.Key(drives[i],"read"),"diskread",false,0,Read(StorageMetrics.Key(drives[i],"read")),maximum)
-                    with {Role=ChartTraceRole.Drive,Index=i,DriveId=drives[i],WriteSamples=SampleHistory.ReduceForChart(Read(StorageMetrics.Key(drives[i],"write")),request.Now,request.Seconds,columns)});
+                    with {Role=ChartTraceRole.Drive,Index=i,DriveId=drives[i],WriteSamples=Trace("","",false,0,Read(StorageMetrics.Key(drives[i],"write")),maximum).Samples});
+
+        Summary statistics;
+        if(primaryData.Ranges is { } primaryRanges)
+        {
+            long count=primaryRanges.Sum(p=>(long)p.Samples);
+            statistics=count==0?new(null,null,null):new(primaryRanges.Min(p=>p.Minimum),primaryRanges.Max(p=>p.Maximum),primaryRanges.Sum(p=>(p.Average??0)*(p.Samples/(double)count)));
+        }
+        else statistics=SampleHistory.Statistics(primaryData.Points);
 
         var ticks=TimeTicks.For(request.Seconds,request.Now,request.WallNow,plot.Width,request.Compact,request.Zone)
             .Select(t=>new ChartTick(plot.Left+plot.Width*(1-(request.Now-t.MonotonicSeconds)/request.Seconds),t.Label)).ToArray();
         // Cores, drives and the local share never decide whether the chart has readings: their totals do.
         bool readings=traces.Any(t=>t.Role is ChartTraceRole.Main or ChartTraceRole.Rpm&&t.Runs.Count>0);
-        return new(maximum,lines,ticks,traces,SampleHistory.Statistics(primaryRaw),readings,request){RpmMaximum=rpmMaximum,RpmLines=rpmLines};
+        return new(maximum,lines,ticks,traces,statistics,readings,request){RpmMaximum=rpmMaximum,RpmLines=rpmLines,Curved=!(request.Seconds>=3600&&!smoothed)};
     }
 
     /// <summary>

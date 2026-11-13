@@ -69,6 +69,9 @@ internal sealed class HistoryChartView : UserControl
         SizeChanged += (_, _) => Refresh();
     }
 
+    /// <summary>Limits a storage chart to one drive's read and write; null for the totals with per-drive lines.</summary>
+    public string? DriveId { get; init; }
+
     /// <summary>Raised after each rebuild with the main trace's minimum, maximum and average over the range.</summary>
     public event Action<Summary>? StatisticsReady;
 
@@ -83,7 +86,9 @@ internal sealed class HistoryChartView : UserControl
             CpuPump: settings.ShowCpuPumpSpeed,
             Cores: settings.ShowCpuCoreUsage ? session.Current?.CpuCoreCount ?? 0 : 0,
             Drives: drives.Select(drive => drive.Id).ToList(),
-            DriveNames: drives.GroupBy(drive => drive.Id).ToDictionary(group => group.Key, group => group.First().Model));
+            DriveNames: drives.GroupBy(drive => drive.Id).ToDictionary(group => group.Key, group => group.First().Model),
+            Smoothed: settings.GraphSmoothing,
+            DriveId: DriveId);
         frame = HistoryChartModel.Build(new HistoryChartRequest(session.Collector.History, kind, session.SelectedGpuId, compare,
             session.HistorySeconds, session.Collector.ElapsedSeconds, DateTimeOffset.Now, plot, TimeZoneInfo.Local, Options: options));
         StatisticsReady?.Invoke(frame.Statistics);
@@ -214,6 +219,9 @@ internal sealed class HistoryChartView : UserControl
             Color color = TraceColor(trace);
             bool thin = trace.Role is ChartTraceRole.Core or ChartTraceRole.Drive or ChartTraceRole.Local;
             if (trace.Role == ChartTraceRole.Local) color = Color.FromArgb(140, color.R, color.G, color.B);
+            // With smoothing: each column's lowest-to-highest range, faintly, behind its average line.
+            foreach (var band in trace.Bands)
+                session.FillRectangle((float)band.Left, (float)band.Top, (float)(band.Right - band.Left), (float)Math.Max(1, band.Bottom - band.Top), Color.FromArgb(40, color.R, color.G, color.B));
             foreach (var run in trace.Runs)
             {
                 if (run.Count == 1)
@@ -225,7 +233,8 @@ internal sealed class HistoryChartView : UserControl
                 {
                     using var area = new CanvasPathBuilder(sender);
                     area.BeginFigure((float)run[0].X, baseline);
-                    foreach (var point in run) area.AddLine((float)point.X, (float)point.Y);
+                    area.AddLine((float)run[0].X, (float)run[0].Y);
+                    AddRun(area, run, current.Curved);
                     area.AddLine((float)run[^1].X, baseline);
                     area.EndFigure(CanvasFigureLoop.Closed);
                     using var filled = CanvasGeometry.CreatePath(area);
@@ -233,7 +242,7 @@ internal sealed class HistoryChartView : UserControl
                 }
                 using var path = new CanvasPathBuilder(sender);
                 path.BeginFigure((float)run[0].X, (float)run[0].Y);
-                for (int i = 1; i < run.Count; i++) path.AddLine((float)run[i].X, (float)run[i].Y);
+                AddRun(path, run, current.Curved);
                 path.EndFigure(CanvasFigureLoop.Open);
                 using var stroke = CanvasGeometry.CreatePath(path);
                 float weight = thin ? 1 : 2;
@@ -242,5 +251,17 @@ internal sealed class HistoryChartView : UserControl
                 else session.DrawGeometry(stroke, color, weight);
             }
         }
+    }
+
+    /// <summary>Continues a figure from the run's first point through the rest: as a monotone curve, or straight segments.</summary>
+    private static void AddRun(CanvasPathBuilder builder, IReadOnlyList<ChartPoint> run, bool curved)
+    {
+        if (curved)
+        {
+            foreach (var segment in MonotoneSpline.Build(run))
+                builder.AddCubicBezier(new Vector2((float)segment.Control1.X, (float)segment.Control1.Y), new Vector2((float)segment.Control2.X, (float)segment.Control2.Y), new Vector2((float)segment.End.X, (float)segment.End.Y));
+            return;
+        }
+        for (int i = 1; i < run.Count; i++) builder.AddLine((float)run[i].X, (float)run[i].Y);
     }
 }

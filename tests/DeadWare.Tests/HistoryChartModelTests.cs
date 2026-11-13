@@ -280,6 +280,65 @@ public class HistoryChartModelTests
         Assert.Equal([1, 0], lines.Skip(2).Select(l => l.Index));
     }
 
+    /// <summary>An hour of one-second samples alternating between two values.</summary>
+    static SampleHistory Hour(string metric, double low, double high)
+    {
+        var history = new SampleHistory();
+        for (int second = 0; second <= 3600; second++)
+            history.Add(new Snapshot(Epoch.AddSeconds(second), second, new Dictionary<string, double?> { [metric] = second % 2 == 0 ? low : high }));
+        return history;
+    }
+
+    [Fact] public void Smoothing_an_hour_draws_the_average_with_a_band_from_lowest_to_highest()
+    {
+        var chart = HistoryChartModel.Build(Request("cpu", Hour("cpu/usage", 10, 90), now: 3600, seconds: 3600) with { Options = new(Smoothed: true) });
+        var trace = Assert.Single(chart.Traces);
+        Assert.NotEmpty(trace.Bands);
+        Assert.All(trace.Bands, band =>
+        {
+            Assert.InRange(band.Left, Plot.Left - 0.001, Plot.Left + Plot.Width + 0.001); Assert.True(band.Right > band.Left);
+            Assert.True(band.Top <= band.Bottom);
+        });
+        // Every column spans 10 % to 90 %, except an edge column that holds a single sample and so is flat.
+        int full = trace.Bands.Count(band => Math.Abs(band.Top - (Plot.Top + Plot.Height * 0.1)) < 1e-6 && Math.Abs(band.Bottom - (Plot.Top + Plot.Height * 0.9)) < 1e-6);
+        Assert.InRange(full, trace.Bands.Count - 2, trace.Bands.Count);
+        var averages = trace.Samples.Where(p => p.Value.HasValue).Select(p => p.Value!.Value).ToArray();
+        Assert.InRange(averages.Count(v => v is >= 40 and <= 60), averages.Length - 2, averages.Length);   // the same edge column aside
+        Assert.Equal(10, chart.Statistics.Minimum); Assert.Equal(90, chart.Statistics.Maximum);
+        Assert.InRange(chart.Statistics.Average!.Value, 49, 51);
+    }
+
+    [Fact] public void Smoothing_applies_only_from_an_hour_up()
+    {
+        var short_ = HistoryChartModel.Build(Request("cpu", Two(("cpu/usage", 40))) with { Options = new(Smoothed: true) });
+        Assert.Empty(Assert.Single(short_.Traces).Bands);
+    }
+
+    [Fact] public void Lines_are_curved_except_on_long_unsmoothed_ranges()
+    {
+        var hour = Hour("cpu/usage", 10, 90);
+        Assert.True(HistoryChartModel.Build(Request("cpu", Two(("cpu/usage", 40)))).Curved);
+        Assert.False(HistoryChartModel.Build(Request("cpu", hour, now: 3600, seconds: 3600)).Curved);
+        Assert.True(HistoryChartModel.Build(Request("cpu", hour, now: 3600, seconds: 3600) with { Options = new(Smoothed: true) }).Curved);
+    }
+
+    [Fact] public void A_smoothed_byte_axis_follows_the_average_and_leaves_peaks_to_the_band()
+    {
+        var chart = HistoryChartModel.Build(Request("network", Hour("network/download", 0, 10_000_000), now: 3600, seconds: 3600) with { Options = new(Smoothed: true) });
+        Assert.InRange(chart.Maximum, 5_000_000 * 1.15 * 0.9, 5_000_000 * 1.15 * 1.1);
+        var raw = HistoryChartModel.Build(Request("network", Hour("network/download", 0, 10_000_000), now: 3600, seconds: 3600));
+        Assert.Equal(11_500_000, raw.Maximum, 3);
+    }
+
+    [Fact] public void A_single_drive_chart_reads_that_drive_s_read_and_write()
+    {
+        var history = Two(("storage/total/read", 9), ("storage/d1/read", 2_000_000), ("storage/d1/write", 1_000_000));
+        var chart = HistoryChartModel.Build(Request("storage", history) with { Options = new(Drives: ["d0", "d1"], DriveId: "d1") });
+        Assert.Equal(["storage/d1/read", "storage/d1/write"], chart.Traces.Select(t => t.Metric));
+        Assert.Equal(["diskread", "diskwrite"], chart.Traces.Select(t => t.ColorKey));
+        Assert.Equal(2_300_000, chart.Maximum, 3);
+    }
+
     [Theory]
     [InlineData(null, "—")] [InlineData(double.NaN, "—")] [InlineData(999d, "999.0 B/s")] [InlineData(1000d, "1.0 KB/s")] [InlineData(2_500_000d, "2.5 MB/s")]
     public void Byte_rates_are_formatted_in_decimal_units(double? value, string expected) => Assert.Equal(expected, HistoryChartModel.Bytes(value, rate: true));
