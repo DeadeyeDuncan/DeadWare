@@ -26,7 +26,7 @@ public sealed partial class MainWindow : Window
     private readonly Func<bool> trayAvailable;
     private bool closingForExit;
 
-    public MainWindow(MonitorSession session, ApplicationLifetime lifetime, Func<bool> trayAvailable)
+    public MainWindow(MonitorSession session, ApplicationLifetime lifetime, Func<bool> trayAvailable, Func<Task> quit)
     {
         this.lifetime = lifetime;
         this.trayAvailable = trayAvailable;
@@ -55,6 +55,7 @@ public sealed partial class MainWindow : Window
                 "processes" => new ProcessesPage(session),
                 "storage" => new StoragePage(session),
                 "battery" => new BatteryPage(session),
+                "updates" => new UpdatesPage(session, quit),
                 "sensors" => new SensorsPage(session),
                 _ => new PlaceholderPage(label),
             };
