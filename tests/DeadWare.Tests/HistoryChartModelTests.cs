@@ -136,6 +136,47 @@ public class HistoryChartModelTests
         Assert.Throws<ArgumentException>(() => HistoryChartModel.Build(Request("nonsense", new SampleHistory())));
     }
 
+    [Fact] public void Hovering_a_sample_gives_its_time_value_and_dot()
+    {
+        var chart = HistoryChartModel.Build(Request("cpu", History((58, "cpu/usage", 0), (59, "cpu/usage", 50), (60, "cpu/usage", 100))));
+        var hover = HistoryChartModel.Hover(chart, x: 601, y: 60, pollingSeconds: 1)!;       // nearest to the sample at 59 s (x = 600)
+        Assert.Equal(600, hover.X);
+        Assert.Equal("00:00:59", hover.Time);
+        var line = Assert.Single(hover.Lines);
+        Assert.Equal(("cpu", "50%", new ChartPoint(600, 70)), (line.ColorKey, line.Text, line.Dot));
+    }
+
+    [Fact] public void Hovering_a_two_trace_chart_lists_both_in_trace_order()
+    {
+        var chart = HistoryChartModel.Build(Request("network", History((59, "network/download", 2_000_000), (59, "network/upload", 500_000), (60, "network/download", 1_000_000), (60, "network/upload", 4_000_000))));
+        var hover = HistoryChartModel.Hover(chart, x: 610, y: 30, pollingSeconds: 1)!;
+        Assert.Equal(["download", "upload"], hover.Lines.Select(l => l.ColorKey));
+        Assert.Equal(["1.0 MB/s", "4.0 MB/s"], hover.Lines.Select(l => l.Text));
+    }
+
+    [Fact] public void Hovering_a_gap_or_outside_the_plot_gives_nothing()
+    {
+        var chart = HistoryChartModel.Build(Request("cpu", History((0, "cpu/usage", 10), (1, "cpu/usage", 10), (59, "cpu/usage", 20), (60, "cpu/usage", 20))));
+        Assert.Null(HistoryChartModel.Hover(chart, x: 310, y: 60, pollingSeconds: 1));     // 30 s: nothing was sampled near it
+        Assert.Null(HistoryChartModel.Hover(chart, x: 5, y: 60, pollingSeconds: 1));       // left of the plot
+        Assert.Null(HistoryChartModel.Hover(chart, x: 600, y: 300, pollingSeconds: 1));    // below the plot
+        Assert.NotNull(HistoryChartModel.Hover(chart, x: 605, y: 60, pollingSeconds: 1));
+    }
+
+    [Fact] public void Hovering_an_empty_chart_gives_nothing()
+    {
+        var empty = HistoryChartModel.Build(Request("cpu", History((0, "cpu/usage", 1))) with { Plot = new ChartPlot(0, 0, 0, 0) });
+        Assert.Null(HistoryChartModel.Hover(empty, 10, 10, 1));
+        Assert.Null(HistoryChartModel.Hover(HistoryChartModel.Build(Request("cpu", new SampleHistory())), 300, 60, 1));
+    }
+
+    [Fact] public void A_trace_with_no_reading_at_the_hovered_time_is_left_out_of_the_readout()
+    {
+        var chart = HistoryChartModel.Build(Request("cpu", History((59, "cpu/usage", 5), (60, "cpu/usage", 6), (60, "gpu0/usage", 9)), compare: true));
+        Assert.Equal(["cpu"], HistoryChartModel.Hover(chart, x: 600, y: 60, pollingSeconds: 0.25)!.Lines.Select(l => l.ColorKey));
+        Assert.Equal(["cpu", "gpu"], HistoryChartModel.Hover(chart, x: 610, y: 60, pollingSeconds: 0.25)!.Lines.Select(l => l.ColorKey));
+    }
+
     [Theory]
     [InlineData(null, "—")] [InlineData(double.NaN, "—")] [InlineData(999d, "999.0 B/s")] [InlineData(1000d, "1.0 KB/s")] [InlineData(2_500_000d, "2.5 MB/s")]
     public void Byte_rates_are_formatted_in_decimal_units(double? value, string expected) => Assert.Equal(expected, HistoryChartModel.Bytes(value, rate: true));

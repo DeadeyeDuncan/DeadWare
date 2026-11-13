@@ -16,14 +16,21 @@ public sealed record ChartTick(double X,string Label);
 /// <summary>One line on the chart. A missing reading ends a run; the next reading starts another.</summary>
 /// <param name="ColorKey">The graph colour this trace uses, such as cpu, download or diskwrite.</param>
 /// <param name="Fill">How strongly the area under the trace is filled, 0 to 1.</param>
-public sealed record ChartTrace(string Metric,string ColorKey,bool Dashed,double Fill,IReadOnlyList<IReadOnlyList<ChartPoint>> Runs);
+/// <param name="Samples">The drawn samples in time order, gaps included as null values; the hover readout reads them.</param>
+public sealed record ChartTrace(string Metric,string ColorKey,bool Dashed,double Fill,IReadOnlyList<IReadOnlyList<ChartPoint>> Runs,IReadOnlyList<SamplePoint> Samples);
 /// <summary>Everything a renderer needs to draw one frame of a history chart, already laid out in plot coordinates.</summary>
-public sealed record HistoryChartFrame(double Maximum,IReadOnlyList<ChartLine> Lines,IReadOnlyList<ChartTick> Ticks,IReadOnlyList<ChartTrace> Traces,Summary Statistics,bool HasReadings);
+/// <param name="Request">What the frame was built from; the hover readout needs its range, clock and plot.</param>
+public sealed record HistoryChartFrame(double Maximum,IReadOnlyList<ChartLine> Lines,IReadOnlyList<ChartTick> Ticks,IReadOnlyList<ChartTrace> Traces,Summary Statistics,bool HasReadings,HistoryChartRequest Request);
+
+/// <summary>One trace's value at the hovered sample, and where its dot goes.</summary>
+public sealed record ChartHoverLine(string ColorKey,string Text,ChartPoint Dot);
+/// <summary>The hover readout: a vertical line at <paramref name="X"/>, the sample's local time, and a line per trace that has a reading there.</summary>
+public sealed record ChartHover(double X,string Time,IReadOnlyList<ChartHoverLine> Lines);
 
 /// <summary>
 /// Lays out a live history chart with no user-interface framework, so any front end can draw it and the rules can be
 /// tested directly. The axis, colour and fill rules are those of the WPF HistoryChart. Not yet covered: per-core and
-/// per-drive traces, the local-network share, fan and pump lines, smoothed ranges, splines and hover.
+/// per-drive traces, the local-network share, fan and pump lines, smoothed ranges and splines.
 /// </summary>
 public static class HistoryChartModel
 {
@@ -35,7 +42,7 @@ public static class HistoryChartModel
         if(!Kinds.Contains(kind))throw new ArgumentException($"Unknown chart kind '{kind}'.",nameof(request));
         var plot=request.Plot;
         if(!(plot.Width>0)||!(plot.Height>0)||!double.IsFinite(plot.Width)||!double.IsFinite(plot.Height)||request.Seconds<=0||!double.IsFinite(request.Now))
-            return new(0,[],[],[],new(null,null,null),false);
+            return new(0,[],[],[],new(null,null,null),false,request);
 
         bool compare=request.CompareDevices&&kind is "cpu" or "cputemp";
         bool bytes=kind is "network" or "storage";
@@ -56,7 +63,7 @@ public static class HistoryChartModel
         double maximum=kind is "cpu" or "gpu" or "memory"?100:bytes?Math.Max(1000,peak*1.15):Math.Max(100,peak*1.1);
         if(compare&&kind=="cputemp")maximum=Math.Ceiling(maximum/20)*20;
 
-        string Axis(double value)=>bytes?Bytes(value,true):$"{value:0}{(kind.Contains("temp")?(compare?"°C":"°"):"%")}";
+        string Axis(double value)=>AxisLabel(kind,compare,value);
         var lines=new ChartLine[3];
         for(int i=0;i<3;i++)
         {
@@ -64,25 +71,59 @@ public static class HistoryChartModel
             lines[i]=new(plot.Top+plot.Height*(1-value/maximum),Axis(value));
         }
 
-        IReadOnlyList<IReadOnlyList<ChartPoint>> Runs(IReadOnlyList<SamplePoint> raw)
+        ChartTrace Trace(string metric,string colorKey,bool dashed,double fill,IReadOnlyList<SamplePoint> raw)
         {
             var runs=new List<IReadOnlyList<ChartPoint>>();List<ChartPoint>? run=null;
-            foreach(var point in SampleHistory.ReduceForChart(raw,request.Now,request.Seconds,columns))
+            var drawn=SampleHistory.ReduceForChart(raw,request.Now,request.Seconds,columns);
+            foreach(var point in drawn)
             {
                 if(point.Value is not { } value||!double.IsFinite(value)){run=null;continue;}
                 if(run is null)runs.Add(run=[]);
                 run.Add(new(plot.Left+plot.Width*(1-(request.Now-point.MonotonicSeconds)/request.Seconds),plot.Top+plot.Height*(1-Math.Clamp(value/maximum,0,1))));
             }
-            return runs;
+            return new(metric,colorKey,dashed,fill,runs,drawn);
         }
 
-        var traces=new List<ChartTrace> {new(primary,ColorKey(kind),false,bytes||compare?.65:1,Runs(primaryRaw))};
-        if(second is { } added)traces.Add(new(added.Metric,added.ColorKey,true,added.Fill,Runs(secondRaw)));
+        var traces=new List<ChartTrace> {Trace(primary,ColorKey(kind),false,bytes||compare?.65:1,primaryRaw)};
+        if(second is { } added)traces.Add(Trace(added.Metric,added.ColorKey,true,added.Fill,secondRaw));
 
         var ticks=TimeTicks.For(request.Seconds,request.Now,request.WallNow,plot.Width,request.Compact,request.Zone)
             .Select(t=>new ChartTick(plot.Left+plot.Width*(1-(request.Now-t.MonotonicSeconds)/request.Seconds),t.Label)).ToArray();
-        return new(maximum,lines,ticks,traces,SampleHistory.Statistics(primaryRaw),traces.Any(t=>t.Runs.Count>0));
+        return new(maximum,lines,ticks,traces,SampleHistory.Statistics(primaryRaw),traces.Any(t=>t.Runs.Count>0),request);
     }
+
+    /// <summary>
+    /// The readout for a pointer at (<paramref name="x"/>, <paramref name="y"/>) in the chart's coordinates: the sample of
+    /// the main trace nearest in time, or null outside the plot, over a gap, or farther from any sample than one and a
+    /// half polling intervals (or one plot column, if that is longer).
+    /// </summary>
+    public static ChartHover? Hover(HistoryChartFrame frame,double x,double y,double pollingSeconds)
+    {
+        var request=frame.Request;var plot=request.Plot;
+        if(frame.Traces.Count==0||x<plot.Left||x>plot.Left+plot.Width||y<plot.Top||y>plot.Top+plot.Height)return null;
+        var primary=frame.Traces[0];
+        double seconds=request.Now-(plot.Left+plot.Width-x)/plot.Width*request.Seconds;
+        double tolerance=Math.Max(1.5*Math.Max(1,pollingSeconds),request.Seconds/Math.Max(1,Math.Ceiling(plot.Width)));
+        int index=NearestSample.Find(primary.Samples,seconds,tolerance);
+        if(index<0)return null;
+        var sample=primary.Samples[index];
+        double at=plot.Left+plot.Width*(1-(request.Now-sample.MonotonicSeconds)/request.Seconds);
+        bool compare=request.CompareDevices&&request.Kind is "cpu" or "cputemp";
+        var lines=new List<ChartHoverLine>();
+        foreach(var trace in frame.Traces)
+        {
+            int found=ReferenceEquals(trace,primary)?index:NearestSample.Find(trace.Samples,sample.MonotonicSeconds,tolerance);
+            if(found<0||trace.Samples[found].Value is not { } value)continue;
+            lines.Add(new(trace.ColorKey,AxisLabel(request.Kind,compare,value),new(at,plot.Top+plot.Height*(1-Math.Clamp(value/frame.Maximum,0,1)))));
+        }
+        var wall=request.WallNow.AddSeconds(sample.MonotonicSeconds-request.Now);
+        string time=(request.Zone is null?wall:TimeZoneInfo.ConvertTime(wall,request.Zone)).ToString("HH:mm:ss",System.Globalization.CultureInfo.InvariantCulture);
+        return new(at,time,lines);
+    }
+
+    /// <summary>A value as the chart's axis and readout write it: a byte rate, a percentage, or degrees (°C when devices are compared).</summary>
+    public static string AxisLabel(string kind,bool compare,double value)=>kind is "network" or "storage"?Bytes(value,true)
+        :FormattableString.Invariant($"{value:0}{(kind.Contains("temp")?(compare?"°C":"°"):"%")}");
 
     /// <summary>The sample id a chart kind reads; a GPU kind with no card selected reads an id that never has samples.</summary>
     public static string MetricId(string kind,string? gpuId)=>kind switch
