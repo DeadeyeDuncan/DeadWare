@@ -75,8 +75,17 @@ internal sealed class HistoryChartView : UserControl
     private void Refresh()
     {
         plot = new ChartPlot(Left, Top, ActualWidth - Left - Right, ActualHeight - Top - Bottom);
+        var settings = session.Settings;
+        // Every present drive by disk index, as the dashboard traces them.
+        var drives = kind == "storage" ? (session.Current?.Storage.Drives ?? []).OrderBy(drive => drive.Index).ToList() : new List<StorageDrive>();
+        var options = new HistoryChartOptions(
+            GpuFan: settings.ShowGpuFanSpeed,
+            CpuPump: settings.ShowCpuPumpSpeed,
+            Cores: settings.ShowCpuCoreUsage ? session.Current?.CpuCoreCount ?? 0 : 0,
+            Drives: drives.Select(drive => drive.Id).ToList(),
+            DriveNames: drives.GroupBy(drive => drive.Id).ToDictionary(group => group.Key, group => group.First().Model));
         frame = HistoryChartModel.Build(new HistoryChartRequest(session.Collector.History, kind, session.SelectedGpuId, compare,
-            session.HistorySeconds, session.Collector.ElapsedSeconds, DateTimeOffset.Now, plot, TimeZoneInfo.Local));
+            session.HistorySeconds, session.Collector.ElapsedSeconds, DateTimeOffset.Now, plot, TimeZoneInfo.Local, Options: options));
         StatisticsReady?.Invoke(frame.Statistics);
         // The clip keeps scrolled traces inside the plot and leaves room below it for the time labels that scroll with them.
         clip.Rect = plot.Width > 0 && plot.Height > 0 ? new Rect(plot.Left, 0, plot.Width, ActualHeight) : new Rect(0, 0, 0, 0);
@@ -106,8 +115,31 @@ internal sealed class HistoryChartView : UserControl
         return (Color.FromArgb(170, c, c, c), Color.FromArgb(32, c, c, c), Color.FromArgb(10, c, c, c));
     }
 
+    /// <summary>
+    /// A trace's colour. Core and drive lines share a base colour (CPU, disk read) and are told apart by a tint that
+    /// steps with their index, unless a colour was saved for that core.
+    /// </summary>
+    private Color TraceColor(ChartTrace trace) => trace.Role switch
+    {
+        ChartTraceRole.Core => Tinted(trace.ColorKey, "cpu", trace.Index),
+        ChartTraceRole.Drive => Tinted(null, "diskread", trace.Index),
+        _ => TraceColor(trace.ColorKey),
+    };
+
+    private Color Tinted(string? ownKey, string baseKey, int index)
+    {
+        if (ownKey is not null && session.Settings.GraphColors.ContainsKey(ownKey)) return TraceColor(ownKey);
+        Color color = TraceColor(baseKey);
+        // Alternate lighter and darker steps, so neighbouring lines differ most.
+        double amount = 0.18 + 0.12 * (index / 2 % 4);
+        byte target = index % 2 == 0 ? (byte)255 : (byte)0;
+        byte Mix(byte channel) => (byte)(channel + (target - channel) * amount);
+        return Color.FromArgb(255, Mix(color.R), Mix(color.G), Mix(color.B));
+    }
+
     private Color TraceColor(string key)
     {
+        if (key == "muted") return Inks().Ink;
         // Saved colours are normalised to "#RRGGBB" when settings load.
         if (session.Settings.GraphColors.TryGetValue(key, out string? saved) && GraphColorSettings.IsColor(saved))
             return Color.FromArgb(255, Convert.ToByte(saved[1..3], 16), Convert.ToByte(saved[3..5], 16), Convert.ToByte(saved[5..7], 16));
@@ -123,10 +155,13 @@ internal sealed class HistoryChartView : UserControl
         var (ink, line, _) = Inks();
         bool dark = ActualTheme == ElementTheme.Dark;
         drawing.DrawLine((float)hover.X, (float)plot.Top, (float)hover.X, (float)(plot.Top + plot.Height), ink, 1);
-        foreach (var value in hover.Lines) drawing.FillCircle((float)value.Dot.X, (float)value.Dot.Y, 3, TraceColor(value.ColorKey));
+        Color LineColor(ChartHoverLine value) =>
+            value.Index < 0 ? TraceColor(value.ColorKey) : value.ColorKey == "diskread" ? Tinted(null, "diskread", value.Index) : Tinted(value.ColorKey, "cpu", value.Index);
+        foreach (var value in hover.Lines)
+            if (value.Dot is { } dot) drawing.FillCircle((float)dot.X, (float)dot.Y, 3, LineColor(value));
 
         var rows = new List<(string Text, Color Color)> { (hover.Time, ink) };
-        rows.AddRange(hover.Lines.Select(value => (value.Text, TraceColor(value.ColorKey))));
+        rows.AddRange(hover.Lines.Select(value => (value.Text, LineColor(value))));
         const float rowHeight = 16, padding = 6;
         float width = 0;
         foreach (var row in rows)
@@ -156,6 +191,8 @@ internal sealed class HistoryChartView : UserControl
             session.DrawLine((float)plot.Left, (float)value.Y, (float)(plot.Left + plot.Width), (float)value.Y, line, 1);
             session.DrawText(value.Label, (float)(plot.Left + plot.Width - 4), (float)value.Y - 14, ink, RightLabelFormat);
         }
+        // Fan and pump lines read against RPM labels on the left of the same value lines.
+        foreach (var value in current.RpmLines) session.DrawText(value.Label, (float)plot.Left + 4, (float)value.Y - 14, ink, LabelFormat);
         if (!current.HasReadings)
             session.DrawText(this.session.Current is null ? "Waiting for first sample…" : "No available readings in this range", (float)plot.Left + 15, (float)(plot.Top + plot.Height / 2 - 8), ink, LabelFormat);
     }
@@ -169,9 +206,14 @@ internal sealed class HistoryChartView : UserControl
         float baseline = (float)(plot.Top + plot.Height);
         foreach (var tick in current.Ticks) session.DrawText(tick.Label, (float)tick.X, baseline + 4, ink, TickFormat);
         using var dashes = new CanvasStrokeStyle { DashStyle = CanvasDashStyle.Dash };
-        foreach (var trace in current.Traces)
+        using var dots = new CanvasStrokeStyle { DashStyle = CanvasDashStyle.Dot };
+        // Cores and drives sit underneath, then the local share, then the totals and comparison lines.
+        static int Layer(ChartTrace trace) => trace.Role switch { ChartTraceRole.Core or ChartTraceRole.Drive => 0, ChartTraceRole.Local => 1, _ => 2 };
+        foreach (var trace in current.Traces.Where(trace => !trace.Hidden).OrderBy(Layer))
         {
-            Color color = TraceColor(trace.ColorKey);
+            Color color = TraceColor(trace);
+            bool thin = trace.Role is ChartTraceRole.Core or ChartTraceRole.Drive or ChartTraceRole.Local;
+            if (trace.Role == ChartTraceRole.Local) color = Color.FromArgb(140, color.R, color.G, color.B);
             foreach (var run in trace.Runs)
             {
                 if (run.Count == 1)
@@ -194,8 +236,10 @@ internal sealed class HistoryChartView : UserControl
                 for (int i = 1; i < run.Count; i++) path.AddLine((float)run[i].X, (float)run[i].Y);
                 path.EndFigure(CanvasFigureLoop.Open);
                 using var stroke = CanvasGeometry.CreatePath(path);
-                if (trace.Dashed) session.DrawGeometry(stroke, color, 2, dashes);
-                else session.DrawGeometry(stroke, color, 2);
+                float weight = thin ? 1 : 2;
+                if (trace.Dotted) session.DrawGeometry(stroke, color, weight, dots);
+                else if (trace.Dashed) session.DrawGeometry(stroke, color, weight, dashes);
+                else session.DrawGeometry(stroke, color, weight);
             }
         }
     }
