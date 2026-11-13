@@ -106,6 +106,16 @@ jobs:
             } finally { if (-not $process.HasExited) { $process.Kill($true); $process.WaitForExit(15000) | Out-Null } }
           }
           if (Get-Process -Name DeadWare.WinUI -ErrorAction SilentlyContinue) { throw 'A shell process is still running after the checks.' }
+      - name: Crash details
+        if: failure()
+        shell: pwsh
+        # A crash below the managed layer (a XAML or graphics failure) leaves no error file, only an exit code. Windows
+        # records the faulting module and, for .NET, the exception and stack in the Application event log.
+        run: |
+          $events = Get-WinEvent -FilterHashtable @{ LogName = 'Application'; StartTime = (Get-Date).AddMinutes(-30) } -ErrorAction SilentlyContinue |
+            Where-Object { $_.Message -match 'DeadWare\.WinUI' } | Select-Object -First 8
+          if (-not $events) { 'No Application event log entries mention DeadWare.WinUI.' }
+          foreach ($event in $events) { "--- $($event.TimeCreated.ToString('HH:mm:ss')) $($event.ProviderName) event $($event.Id)"; $event.Message }
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: DeadWare.WinUI-win-x64
