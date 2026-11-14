@@ -294,8 +294,15 @@ internal sealed class HistoryChartView : UserControl
         }
         // Fan and pump lines read against RPM labels on the left of the same value lines.
         foreach (var value in current.RpmLines) session.DrawText(value.Label, (float)plot.Left + 4, (float)value.Y - 14, ink, LabelFormat);
+        session.DrawText("Now", (float)(plot.Left + plot.Width), (float)(plot.Top + plot.Height + 4), ink, RightLabelFormat);
         if (!current.HasReadings)
             session.DrawText(this.session.Current is null ? "Waiting for first sample…" : "No available readings in this range", (float)plot.Left + 15, (float)(plot.Top + plot.Height / 2 + 2), ink, LabelFormat);
+    }
+
+    private static double TextWidth(Microsoft.Graphics.Canvas.ICanvasResourceCreator creator, string text, CanvasTextFormat format)
+    {
+        using var layout = new CanvasTextLayout(creator, text, format, 0, 0) { WordWrapping = CanvasWordWrapping.NoWrap };
+        return layout.LayoutBounds.Width;
     }
 
     private void DrawTraces(CanvasControl sender, CanvasDrawEventArgs args)
@@ -307,7 +314,10 @@ internal sealed class HistoryChartView : UserControl
         var session = args.DrawingSession;
         var (ink, _, _) = Inks();
         float baseline = (float)(plot.Top + plot.Height);
-        foreach (var tick in current.Ticks) session.DrawText(tick.Label, (float)tick.X, baseline + 4, ink, TickFormat);
+        // Time labels stop short of "Now", which stays put at the right end of the axis.
+        double limit = plot.Left + plot.Width - TextWidth(sender, "Now", LabelFormat) - 6;
+        foreach (var tick in current.Ticks)
+            if (tick.X + TextWidth(sender, tick.Label, TickFormat) / 2 <= limit) session.DrawText(tick.Label, (float)tick.X, baseline + 4, ink, TickFormat);
         using var dashes = new CanvasStrokeStyle { DashStyle = CanvasDashStyle.Dash };
         using var dots = new CanvasStrokeStyle { DashStyle = CanvasDashStyle.Dot };
         // Cores and drives sit underneath, then the local share, then the totals and comparison lines.
