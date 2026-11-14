@@ -58,6 +58,7 @@ public sealed partial class MainWindow : Window
                 "updates" => new UpdatesPage(session, quit),
                 "alerts" => new AlertsPage(session),
                 "cooling" => new CoolingPage(session),
+                "usage" => new UsagePage(session),
                 "desktop" => new SettingsPage(session, quit) { NavigateRequested = Navigate },
                 "sensors" => new SensorsPage(session),
                 _ => new PlaceholderPage(label),
@@ -66,8 +67,8 @@ public sealed partial class MainWindow : Window
             Nav.MenuItems.Add(item);
         }
         Navigate("overview");
-        // Until Usage history and Connections can open on a requested interval, a request opens the page.
-        session.UsageDayRequested += _ => Navigate("usage");
+        // Until Connections can open on a requested interval, that request only opens the page.
+        session.UsageDayRequested += at => { Navigate("usage"); if (pages["usage"].Page is UsagePage usage) usage.ShowDay(at); };
         session.ConnectionsHistoryRequested += _ => Navigate("connections");
 
         AppWindow.Closing += (_, args) =>

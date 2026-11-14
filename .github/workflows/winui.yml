@@ -94,7 +94,7 @@ jobs:
 
           # 3. The ported pages open and quit cleanly on the real collector, and Sensors fills its table. Process monitoring is off
           #    by default and Network needs per-app capture, so those two tables may be empty on a fresh runner.
-          foreach ($page in 'sensors', 'processes', 'network', 'storage', 'battery', 'updates', 'alerts', 'cooling', 'desktop') {
+          foreach ($page in 'sensors', 'processes', 'network', 'storage', 'battery', 'updates', 'alerts', 'cooling', 'desktop', 'usage') {
             $process = Start-Shell @('--page', $page, '--exit-after', '15')
             try {
               if (-not $process.WaitForExit(90000)) { throw "The shell did not quit within 90 s of --page $page --exit-after 15." }
