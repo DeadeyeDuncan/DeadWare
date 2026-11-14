@@ -58,6 +58,7 @@ public sealed partial class MainWindow : Window
                 "updates" => new UpdatesPage(session, quit),
                 "alerts" => new AlertsPage(session),
                 "cooling" => new CoolingPage(session),
+                "desktop" => new SettingsPage(session, quit) { NavigateRequested = Navigate },
                 "sensors" => new SensorsPage(session),
                 _ => new PlaceholderPage(label),
             };
