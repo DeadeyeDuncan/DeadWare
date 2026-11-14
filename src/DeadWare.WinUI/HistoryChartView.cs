@@ -72,6 +72,9 @@ internal sealed class HistoryChartView : UserControl
     /// <summary>Limits a storage chart to one drive's read and write; null for the totals with per-drive lines.</summary>
     public string? DriveId { get; init; }
 
+    /// <summary>Keeps the CPU pump line and the per-core lines on a CPU / GPU comparison, as the widget shows them.</summary>
+    public bool PumpAndCoresWithDevices { get; init; }
+
     /// <summary>Raised after each rebuild with the main trace's minimum, maximum and average over the range.</summary>
     public event Action<Summary>? StatisticsReady;
 
@@ -87,6 +90,8 @@ internal sealed class HistoryChartView : UserControl
             Cores: settings.ShowCpuCoreUsage ? session.Current?.CpuCoreCount ?? 0 : 0,
             Drives: drives.Select(drive => drive.Id).ToList(),
             DriveNames: drives.GroupBy(drive => drive.Id).ToDictionary(group => group.Key, group => group.First().Model),
+            PumpWithDevices: PumpAndCoresWithDevices,
+            CoresWithDevices: PumpAndCoresWithDevices,
             Smoothed: settings.GraphSmoothing,
             DriveId: DriveId);
         frame = HistoryChartModel.Build(new HistoryChartRequest(session.Collector.History, kind, session.SelectedGpuId, compare,
@@ -141,6 +146,9 @@ internal sealed class HistoryChartView : UserControl
         byte Mix(byte channel) => (byte)(channel + (target - channel) * amount);
         return Color.FromArgb(255, Mix(color.R), Mix(color.G), Mix(color.B));
     }
+
+    /// <summary>The colour a graph colour key is drawn in, so a card can tint its reading to match its trace.</summary>
+    public Color ColorOf(string key) => TraceColor(key);
 
     private Color TraceColor(string key)
     {
@@ -254,7 +262,9 @@ internal sealed class HistoryChartView : UserControl
     }
 
     /// <summary>Continues a figure from the run's first point through the rest: as a monotone curve, or straight segments.</summary>
-    private static void AddRun(CanvasPathBuilder builder, IReadOnlyList<ChartPoint> run, bool curved)
+    /// <summary>Continues a figure begun at the run's first point through the rest of it: the monotone spline when curved, straight
+    /// segments otherwise. The thermal and usage charts share it, so Graph smoothing looks the same everywhere.</summary>
+    internal static void AddRun(CanvasPathBuilder builder, IReadOnlyList<ChartPoint> run, bool curved)
     {
         if (curved)
         {

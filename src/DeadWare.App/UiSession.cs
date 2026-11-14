@@ -5,8 +5,6 @@ using System.Windows;
 using System.Windows.Threading;
 using DeadWare.Core;
 namespace DeadWare.App;
-/// <summary>A Show in Connections request: the interval and the bare application name, or null for every application. It lives only in memory.</summary>
-public sealed record ConnectionsHistoryRequest(DateTimeOffset From, DateTimeOffset To, string? Application);
 public sealed class UiSession
 {
     public Collector Collector {get;}

@@ -108,7 +108,7 @@ internal sealed class ProcessesPage : UserControl
     internal ProcessesPage(UiSession session,bool diskColumns,IProcessControl? control)
     {
         this.session=session;this.diskColumns=diskColumns;this.control=control??new NativeProcessControl();
-        Confirm=ProcessActions.MessageBoxConfirm(Dispatcher);
+        Confirm=ProcessConfirm.MessageBox(Dispatcher);
         // Off state.
         var turnOn=Labelled(Ui.Button("Turn on",TurnOn));turnOn.HorizontalAlignment=HorizontalAlignment.Left;turnOn.Margin=new Thickness(0,12,0,0);
         var offBody=new StackPanel();offBody.Children.Add(offText);offBody.Children.Add(turnOn);

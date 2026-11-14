@@ -26,7 +26,7 @@ public sealed partial class MainWindow : Window
     private readonly Func<bool> trayAvailable;
     private bool closingForExit;
 
-    public MainWindow(MonitorSession session, ApplicationLifetime lifetime, Func<bool> trayAvailable)
+    public MainWindow(MonitorSession session, ApplicationLifetime lifetime, Func<bool> trayAvailable, Func<Task> quit)
     {
         this.lifetime = lifetime;
         this.trayAvailable = trayAvailable;
@@ -50,11 +50,17 @@ public sealed partial class MainWindow : Window
             var item = new NavigationViewItem { Content = label, Icon = new SymbolIcon(symbol), Tag = key };
             Page page = key switch
             {
-                "overview" => new StatusPage(session, mica),
+                "overview" => new OverviewPage(session),
                 "network" => new NetworkPage(session),
-                "processes" => new ProcessesPage(session),
+                "processes" => new ProcessesPage(session, quit),
                 "storage" => new StoragePage(session),
                 "battery" => new BatteryPage(session),
+                "updates" => new UpdatesPage(session, quit),
+                "alerts" => new AlertsPage(session),
+                "cooling" => new CoolingPage(session),
+                "usage" => new UsagePage(session),
+                "connections" => new ConnectionsPage(session),
+                "desktop" => new SettingsPage(session, quit) { NavigateRequested = Navigate },
                 "sensors" => new SensorsPage(session),
                 _ => new PlaceholderPage(label),
             };
@@ -62,6 +68,8 @@ public sealed partial class MainWindow : Window
             Nav.MenuItems.Add(item);
         }
         Navigate("overview");
+        session.UsageDayRequested += at => { Navigate("usage"); if (pages["usage"].Page is UsagePage usage) usage.ShowDay(at); };
+        session.ConnectionsHistoryRequested += request => { ShowFromTray(); Navigate("connections"); if (pages["connections"].Page is ConnectionsPage connections) connections.ShowHistory(request); };
 
         AppWindow.Closing += (_, args) =>
         {

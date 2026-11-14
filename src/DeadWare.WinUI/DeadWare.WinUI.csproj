@@ -26,6 +26,9 @@
     <ProjectReference Include="../DeadWare.Services/DeadWare.Services.csproj" />
     <Content Include="../../assets/deadware.ico" Link="deadware.ico" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="../../assets/maps/cities.json" Link="maps/cities.json" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="../../assets/maps/land.json" Link="maps/land.json" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="../../assets/maps/borders.json" Link="maps/borders.json" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="../../assets/maps/states.json" Link="maps/states.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
   <!-- dotnet publish omits an unpackaged app's own .pri and .xbf files, so the published app fails with
        XamlParseException at start-up. Copy them from the build output. -->

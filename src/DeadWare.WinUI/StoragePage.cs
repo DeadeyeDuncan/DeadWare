@@ -83,7 +83,16 @@ internal sealed class StoragePage : Page
         foreach (double weight in new[] { 0.6, 2, 1, 1 }) volumes.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(weight, GridUnitType.Star) });
         var noVolumes = new TextBlock { Text = "No mounted volumes", Opacity = 0.7 };
         var details = new StackPanel { Spacing = 2 };
-        var card = Pages.Card(new StackPanel { Spacing = 8, Padding = new Thickness(8), Children = { title, health, used, free, chart, volumes, noVolumes, details } });
+        // The button carries the drive as first seen; the window it opens follows the drive by id.
+        var open = new Button { Content = "Open in window ↗", HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Top };
+        open.Click += (_, _) => App.Popouts?.OpenDrive(session.Current?.Storage?.Drives.FirstOrDefault(d => d.Id == drive.Id) ?? drive);
+        var heading = new Grid { ColumnSpacing = 8 };
+        heading.ColumnDefinitions.Add(new ColumnDefinition());
+        heading.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        heading.Children.Add(title);
+        Grid.SetColumn(open, 1);
+        heading.Children.Add(open);
+        var card = Pages.Card(new StackPanel { Spacing = 8, Padding = new Thickness(8), Children = { heading, health, used, free, chart, volumes, noVolumes, details } });
         card.Tag = drive.Id;
         return new DriveCard(card, title, health, used, free, volumes, noVolumes, details);
     }

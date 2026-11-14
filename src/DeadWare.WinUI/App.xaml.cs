@@ -17,6 +17,8 @@ public partial class App : Application
     internal static string? ErrorFile { get; private set; }
     /// <summary>One-second ticks on which the session held a reading; written by <c>--exit-after</c> for the smoke check.</summary>
     internal static long TicksWithReading;
+    /// <summary>The pop-out windows and the widget; null until the session exists.</summary>
+    internal static WindowManager? Popouts { get; private set; }
 
     internal static string Version { get; } =
         typeof(App).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion.Split('+')[0]
@@ -28,12 +30,14 @@ public partial class App : Application
     private static Timer? exitTimer;
 
     private readonly ApplicationLifetime lifetime = new();
+    private readonly CancellationTokenSource updateChecks = new();
     private readonly string[] arguments = Environment.GetCommandLineArgs()[1..];
     private DispatcherQueue? queue;
     private GuiInstance? instance;
     private MonitorSession? session;
     private MainWindow? window;
     private Tray? tray;
+    private SessionEndHook? sessionEnd;
 
     public App()
     {
@@ -65,7 +69,9 @@ public partial class App : Application
             }
             var cities = Cities.Load();
             session = new MonitorSession(Version, () => new QueueTimer(queue), id => id is not null && cities.TryGetValue(id, out var point) ? (id, point) : null);
-            window = new MainWindow(session, lifetime, () => tray is { Available: true });
+            window = new MainWindow(session, lifetime, () => tray is { Available: true }, () => QuitAsync());
+            Popouts = new WindowManager(session);
+            sessionEnd = new SessionEndHook(WindowHandle, OnSessionEnding);
             if (startPage is not null) window.Navigate(startPage);
             tray = new Tray(ShowDashboard, RequestQuit);
             Subscribe(session);
@@ -74,6 +80,11 @@ public partial class App : Application
             bool windowsStartup = arguments.Contains("--startup") && !arguments.Contains("--restart-from");
             if (ApplicationLifetime.ShouldShowDashboardOnLaunch(windowsStartup, session.Settings.StartInTray, tray.Available)) window.Activate();
             session.Start();
+            // Graphs and the widget from the previous session come back whether or not the dashboard is shown.
+            Popouts.RestoreRemembered();
+            // As the WPF app does: acknowledge an update that just restarted us, then look for a newer release once.
+            UpdateService.AcknowledgeStartup(arguments, AppContext.BaseDirectory, Version);
+            _ = session.Updates.CheckAtStartupAsync(updateChecks.Token);
 
             if (exitAfter is { } seconds)
             {
@@ -118,6 +129,8 @@ public partial class App : Application
             string peak = rule is null ? episode.Peak.ToString("0.#") : AlertRules.FormatValue(rule, episode.Peak);
             tray?.ShowBalloon("DeadWare alert", $"{episode.Summary}. Observed {peak} at {episode.Start.ToLocalTime():t}. Open Alerts to review.", warning: true, ShowAlerts);
         });
+        session.Updates.UpdateAvailable += release => OnUi(() =>
+            tray?.ShowBalloon("DeadWare update available", $"Version {release.Version} is available. Open Updates to review it and install when you are ready.", warning: false, ShowUpdates));
         session.Alerts.FirstUseGroupClosed += group => OnUi(() =>
         {
             if (session.Settings.AlertNotifications)
@@ -137,16 +150,39 @@ public partial class App : Application
         if (!lifetime.IsEnding) window?.Navigate("alerts");
     }
 
+    private void ShowUpdates()
+    {
+        ShowDashboard();
+        if (!lifetime.IsEnding) window?.Navigate("updates");
+    }
+
+    /// <summary>
+    /// Windows is signing out or shutting down: record the window layout and settings synchronously and stop the
+    /// collector within its short deadline, as the WPF app does. The process is ended by Windows soon after.
+    /// </summary>
+    private void OnSessionEnding()
+    {
+        lifetime.BeginSessionEnding();
+        updateChecks.Cancel();
+        try { session?.SaveForSessionEnding(); }
+        finally
+        {
+            try { session?.StopCollectorForSessionEnding(); }
+            finally { tray?.Dispose(); tray = null; }
+        }
+    }
+
     private async void RequestQuit() => await QuitAsync();
 
     /// <summary>Stops the session, removes the tray icon and leaves through the ordinary WinUI exit.</summary>
     private Task QuitAsync(int exitCode = 0) => lifetime.QuitAsync(async () =>
     {
+        updateChecks.Cancel();
         try { if (session is not null) await session.ShutdownAsync(); }
         catch (Exception error) { Note($"DeadWare reported a shutdown error: {error}"); exitCode = exitCode == 0 ? 2 : exitCode; }
     }, () =>
     {
-        try { tray?.Dispose(); tray = null; instance?.Dispose(); }
+        try { sessionEnd?.Dispose(); sessionEnd = null; Popouts?.CloseAll(); tray?.Dispose(); tray = null; instance?.Dispose(); }
         finally
         {
             // Exit() is the normal path. A failed start has no clean state to unwind, so it leaves from the thread

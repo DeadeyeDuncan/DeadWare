@@ -2,6 +2,8 @@ using System.Collections.Frozen;
 using DeadWare.Core;
 namespace DeadWare.App;
 /// <summary>A timer that ticks on the front end's UI thread; each front end supplies its own.</summary>
+/// <summary>A Show in Connections request: the interval and the bare application name, or null for every application. It lives only in memory.</summary>
+public sealed record ConnectionsHistoryRequest(DateTimeOffset From, DateTimeOffset To, string? Application);
 public interface ISessionTimer
 {
     TimeSpan Interval {get;set;}
@@ -41,6 +43,12 @@ public sealed class MonitorSession
     private readonly ISessionTimer timer,saveTimer;
     private readonly Func<string?,(string Id,GeoPoint Point)?> homeCity;
     public event Action? Changed;
+    /// <summary>Asks the window to open Usage history on the day holding this instant.</summary>
+    public event Action<DateTimeOffset>? UsageDayRequested;
+    public void RequestUsageDay(DateTimeOffset at)=>UsageDayRequested?.Invoke(at);
+    /// <summary>Asks the window to open Connections history on an interval, optionally for one application.</summary>
+    public event Action<ConnectionsHistoryRequest>? ConnectionsHistoryRequested;
+    public void RequestConnectionsHistory(DateTimeOffset from,DateTimeOffset to,string? application)=>ConnectionsHistoryRequested?.Invoke(new(from,to,application));
     /// <summary>Raised on the UI thread when a store's clear starts clearing and when it leaves Clearing, so the page it feeds re-reads.</summary>
     public event Action<HistoryClearStore>? HistoryClearChanged;
     // The Don't record keys, set from the loaded settings; null in fixtures built without the constructor.
@@ -375,8 +383,24 @@ public sealed class MonitorSession
         _ = SaveAsync();
     }
     public string MetricId(string kind)=>kind switch {"cpu"=>"cpu/usage","cputemp"=>"cpu/temperature","cpupump"=>"cpu/pump","gpu"=>(SelectedGpuId??"unavailable")+"/usage","gputemp"=>(SelectedGpuId??"unavailable")+"/temperature","gpufan"=>(SelectedGpuId??"unavailable")+"/fan","memory"=>"memory/usage","storage"=>"storage/total/read",_=>"network/download"};
+    // The front end's pop-out windows. Until a front end adopts the layout, saves leave Settings.OpenWindows as loaded.
+    private bool managesWindows;
+    private Action? captureWindows;
+    /// <summary>The pop-out windows remembered from the previous session (empty when reopening is off) plus those opened since.</summary>
+    public IReadOnlyList<string> RememberedWindows=>layout.Remembered;
+    /// <summary>The front end takes over the saved window layout: saves now write the open windows, and <paramref name="capture"/> records every window's placement before a final save.</summary>
+    public void ManageWindows(Action capture) {managesWindows=true;captureWindows=capture;}
+    public void WindowOpened(string kind) {if(layout.Ending)return;layout.Open(kind);diagnostics?.Record("window_opened",new {Kind=kind,OpenWindows=layout.Remembered});QueueSave();}
+    public void WindowClosed(string kind) {layout.Close(kind);diagnostics?.Record("window_closed",new {Kind=kind,layout.Ending,OpenWindows=layout.Remembered});QueueSave();}
+    /// <summary>Remembers a window's normal placement, in physical screen pixels, and saves soon.</summary>
+    public void SetWindowPlacement(string key,WindowPlacement placement)
+    {
+        if(Settings.Windows.GetValueOrDefault(key)==placement)return;
+        Settings.Windows[key]=placement;QueueSave();
+    }
     public async Task SaveAsync()
     {
+        if(managesWindows)Settings.OpenWindows=layout.Remembered.ToList();
         string text;
         try {text=SettingsCodec.Write(Settings);}
         catch(Exception e) {diagnostics?.Record("settings_serialization_failed",error:e);throw;}
@@ -400,7 +424,8 @@ public sealed class MonitorSession
     public void SaveForSessionEnding()
     {
         diagnostics?.Record("windows_session_ending",new {OpenWindows=layout.Remembered});
-        layout.BeginShutdown();timer.Stop();saveTimer.Stop();
+        layout.BeginShutdown();timer.Stop();saveTimer.Stop();captureWindows?.Invoke();
+        if(managesWindows)Settings.OpenWindows=layout.Remembered.ToList();
         // Synchronous final disk checkpoint never waits for a UI continuation. The writer's
         // revision gate prevents a previously queued background save from replacing it later.
         try {WriteSnapshot(++saveRevision,SettingsCodec.Write(Settings));}
@@ -463,7 +488,7 @@ public sealed class MonitorSession
     private async Task ShutdownCoreAsync()
     {
         diagnostics?.Record("shutdown_begin",new {OpenWindows=layout.Remembered});
-        layout.BeginShutdown();timer.Stop();saveTimer.Stop();
+        layout.BeginShutdown();timer.Stop();saveTimer.Stop();captureWindows?.Invoke();
         try {await SaveAsync();}finally {await StopCollectorAsync(QuitDeadline,QuitDeadline,HistoryDeadline);}
         diagnostics?.Record("shutdown_completed");
     }
