@@ -138,6 +138,9 @@ internal sealed class BatteryPage : Page
     private readonly TextBlock storage = new() { Opacity = 0.7, TextWrapping = TextWrapping.Wrap }, actionStatus = new() { TextWrapping = TextWrapping.Wrap };
     private readonly ComboBox range = new() { MinWidth = 120 };
     private readonly Button export = new() { Content = "Export CSV…" };
+    private readonly Button openInWindow = new() { Content = "Open in window ↗" };
+    /// <summary>True when this page is the content of its own pop-out window, which has no use for the button that opens one.</summary>
+    public bool InWindow { set => openInWindow.Visibility = value ? Visibility.Collapsed : Visibility.Visible; }
     private readonly CheckBox recording = new() { Content = "Record battery history on this device" };
     private readonly BatteryChartView chart = new() { Height = 360 };
     private readonly DispatcherQueueTimer timer;
@@ -156,7 +159,8 @@ internal sealed class BatteryPage : Page
         export.Click += async (_, _) => await ExportAsync();
 
         var now = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 26, Children = { percentage, power } };
-        var controls = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, Children = { range, refresh, export } };
+        openInWindow.Click += (_, _) => App.Popouts?.Open("batteryhistory");
+        var controls = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, Children = { range, refresh, export, openInWindow } };
         var controlsCard = Pages.Card(new StackPanel { Spacing = 8, Padding = new Thickness(8), Children = { now, controls, actionStatus } });
 
         var legend = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 18 };

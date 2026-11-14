@@ -83,6 +83,8 @@ internal sealed class SettingsPage : Page
         this.session = session;
         this.quit = quit;
         suggestions = new AppSuggestions(session);
+        // The banner is a polite live region, so a screen reader reads a new status without moving focus.
+        AutomationProperties.SetLiveSetting(status, Microsoft.UI.Xaml.Automation.Peers.AutomationLiveSetting.Polite);
         panels = [Monitoring(), Appearance(), Widget(), Popouts(), Startup(), History()];
         foreach (string section in Sections) tabs.Items.Add(new SelectorBarItem { Text = section });
         AutomationProperties.SetName(tabs, "Settings categories");
@@ -534,8 +536,12 @@ internal sealed class SettingsPage : Page
         if (session.SettingsStatus.Length > 0) text += (text.Length > 0 ? " · " : "") + session.SettingsStatus;
         if (clearing.Length > 0) text += (text.Length > 0 ? " · " : "") + "Clear history · " + clearing;
         showProgress.Visibility = clearing.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
-        if (status.Message != text) status.Message = text;
+        bool changed = status.Message != text;
+        if (changed) status.Message = text;
         status.IsOpen = text.Length > 0;
+        if (changed && text.Length > 0)
+            Microsoft.UI.Xaml.Automation.Peers.FrameworkElementAutomationPeer.FromElement(status)
+                ?.RaiseAutomationEvent(Microsoft.UI.Xaml.Automation.Peers.AutomationEvents.LiveRegionChanged);
     }
 
     /// <summary>Reflects the saved settings into every control.</summary>

@@ -132,3 +132,32 @@ internal static class ClearHistoryDialog
         return session.ClearHistory(clear);
     }
 }
+
+/// <summary>The Clear history… button of the Usage history and Connections pages. It is disabled while a clear is active or waits for a
+/// restart, with the reason as its tooltip, and opens <see cref="ClearHistoryDialog"/> over the page it sits in.</summary>
+internal static class ClearHistoryEntry
+{
+    public static Button Create(MonitorSession session)
+    {
+        var button = new Button { Content = HistoryClearCopy.EntryButton, HorizontalAlignment = HorizontalAlignment.Left };
+        AppSuggestions? suggestions = null;
+        void Refresh()
+        {
+            // One at a time: Queued, Clearing, or Failed with its marker saved.
+            bool waiting = session.ClearWaitingForRestart, enabled = !session.ClearActive && !waiting;
+            if (button.IsEnabled != enabled) button.IsEnabled = enabled;
+            ToolTipService.SetToolTip(button, enabled ? null : HistoryClearCopy.DisabledTip(waiting));
+        }
+        void Changed(HistoryClearStore _) => Refresh();
+        button.Click += async (_, _) =>
+        {
+            if (session.ClearActive || session.Ending) return;
+            try { await ClearHistoryDialog.ShowAsync(session, suggestions ??= new AppSuggestions(session), button.XamlRoot); }
+            catch (Exception error) { App.Note($"Clear history dialog failed: {error.Message}"); }
+            Refresh();
+        };
+        button.Loaded += (_, _) => { session.Changed += Refresh; session.HistoryClearChanged += Changed; Refresh(); };
+        button.Unloaded += (_, _) => { session.Changed -= Refresh; session.HistoryClearChanged -= Changed; };
+        return button;
+    }
+}

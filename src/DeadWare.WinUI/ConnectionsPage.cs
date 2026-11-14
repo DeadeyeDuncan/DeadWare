@@ -182,7 +182,8 @@ internal sealed class ConnectionsPage : Page
         var choices = new FlowPanel();
         choices.Children.Add(citySearch); choices.Children.Add(home); choices.Children.Add(Action("Clear home city", () => home.SelectedIndex = 0));
         var options = new StackPanel { Spacing = 8, Children = { databaseActions, database, storage, choices } };
-        options.Children.Add(Muted("Origin and destination geography are approximate; curves are illustrative. The node list follows the nodes visible on the map; the Destinations table lists every destination, including local, special-purpose and unlocated ones. The strip under the map stacks the six applications with the most traffic in the interval, plus Other; its colours identify applications, not direction. Click it to move the minute cursor, or click an application to show only it. Rolling history: 30 days, up to 256 MiB locally. CSV exports the full filtered interval to a new file. Apps in Don't record these apps show live, marked not recorded, and are never saved. Saved connection history is cleared from Settings."));
+        options.Children.Add(Muted("Origin and destination geography are approximate; curves are illustrative. The node list follows the nodes visible on the map; the Destinations table lists every destination, including local, special-purpose and unlocated ones. The strip under the map stacks the six applications with the most traffic in the interval, plus Other; its colours identify applications, not direction. Click it to move the minute cursor, or click an application to show only it. Rolling history: 30 days, up to 256 MiB locally. CSV exports the full filtered interval to a new file. Apps in Don't record these apps show live, marked not recorded, and are never saved."));
+        options.Children.Add(ClearHistoryEntry.Create(session));
         body.Children.Add(new Expander
         {
             Header = "Location database, recording and storage", Content = options,
@@ -237,14 +238,31 @@ internal sealed class ConnectionsPage : Page
             session.Changed += RefreshSession; session.HistoryClearChanged += HistoryClearChanged;
             RefreshSession(); ShowStripAgain();
             if (IsHistory && !ReadOutstanding()) RequestHistory();
+            watchedRoot = XamlRoot; hostVisible = watchedRoot?.IsHostVisible ?? true;
+            if (watchedRoot is not null) watchedRoot.Changed += RootChanged;
         };
         Unloaded += (_, _) =>
         {
             active = false;
+            if (watchedRoot is not null) { watchedRoot.Changed -= RootChanged; watchedRoot = null; }
             session.Changed -= RefreshSession; session.HistoryClearChanged -= HistoryClearChanged;
             CancelHistory(); pendingStrip = null; StopPlayback(); downloadCancellation?.Cancel(); destinations.ReleaseHolds();
         };
         ShowTab(); RefreshSession();
+    }
+
+    // The window this page sits in, watched so a return from the tray reads History again, as showing the page does.
+    private XamlRoot? watchedRoot;
+    private bool hostVisible = true;
+
+    private void RootChanged(XamlRoot sender, XamlRootChangedEventArgs args)
+    {
+        bool visible = sender.IsHostVisible;
+        if (visible == hostVisible) return;
+        hostVisible = visible;
+        if (!visible || !active) return;
+        RefreshSession(); ShowStripAgain();
+        if (IsHistory && !ReadOutstanding()) RequestHistory();
     }
 
     private static TextBlock Text(string text) => new() { Text = text, FontSize = 12, TextWrapping = TextWrapping.Wrap };

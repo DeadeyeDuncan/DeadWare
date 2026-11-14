@@ -29,7 +29,7 @@ internal sealed class PopoutWindow : Window
             var header = new Grid { Margin = new Thickness(24, 12, 24, 0) };
             header.Children.Add(new TextBlock { Text = battery ? "Battery history" : "Usage history", Style = (Style)Application.Current.Resources["SubtitleTextBlockStyle"], VerticalAlignment = VerticalAlignment.Center });
             header.Children.Add(pin);
-            Page page = battery ? new BatteryPage(session) : new UsagePage(session);
+            Page page = battery ? new BatteryPage(session) { InWindow = true } : new UsagePage(session) { InWindow = true };
             root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
             root.RowDefinitions.Add(new RowDefinition());
             Grid.SetRow(page, 1);

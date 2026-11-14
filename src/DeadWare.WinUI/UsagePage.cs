@@ -10,7 +10,7 @@ namespace DeadWare.WinUI;
 /// <summary>
 /// Usage history: the Device charts for a day, week or month with their statistics, the applications' traffic totals, the busiest
 /// applications' resources with a chart for a selected one, CSV export and the recording switch. Clicking a CPU, RAM or GPU point lists
-/// that moment's busiest apps. The traffic strip, the pop-out window and the clear-history dialog are not ported yet.
+/// that moment's busiest apps. The Applications card's traffic strip joins the cursor, and activating one of its slots lists that slot in the table.
 /// </summary>
 internal sealed class UsagePage : Page
 {
@@ -26,6 +26,7 @@ internal sealed class UsagePage : Page
     private static readonly (string Kind, string Metric, ProcessRank Rank)[] Moments =
         [("cpu", UsageMetrics.Cpu, ProcessRank.CpuTime), ("memory", UsageMetrics.Memory, ProcessRank.AverageMemory), ("gpu", UsageMetrics.Gpu, ProcessRank.Gpu)];
     private const string OtherKey = "\0";
+    private const string ApplicationsTitle = "Applications", LoadingSlot = "Loading this slot…", SlotUnavailable = "History unavailable for this slot.";
 
     private sealed record PageData(DateTimeOffset From, DateTimeOffset To, IReadOnlyDictionary<string, UsageHistoryView> Metrics,
         UsageApplicationView Applications, string Status, string? GpuName);
@@ -40,6 +41,17 @@ internal sealed class UsagePage : Page
     private readonly List<FrameworkElement> cells = [];
     private readonly Grid grid = new() { ColumnSpacing = 12, RowSpacing = 14 };
     private readonly PickTable applications;
+    // The traffic strip in the Applications card; it joins the CPU, RAM and GPU cursor and lists a slot's applications in the table.
+    private readonly TrafficStripView strip = new(TrafficStripKind.UsageHistory) { Selectable = true };
+    private readonly TextBlock applicationsHeading = new() { Text = ApplicationsTitle, VerticalAlignment = VerticalAlignment.Center };
+    private readonly Button applicationsClear = new() { Content = "Clear", Visibility = Visibility.Collapsed };
+    private readonly Button openInWindow = new() { Content = "Open in window ↗" };
+    // The strip slot the Applications table lists, or null for the period; its last read (null while loading or unreadable) and the
+    // text shown meanwhile.
+    private (DateTimeOffset From, DateTimeOffset To)? applicationSlot;
+    private UsageApplicationView? slotApplications;
+    private string? slotPending;
+    private int stripRequest, slotRequest;
     private readonly Button showInConnections = new() { Content = "Show in Connections", IsEnabled = false };
     private readonly Button exportMetrics = new() { Content = "Export device CSV…" }, exportApplications = new() { Content = "Export applications CSV…" };
     private readonly Button earlier = new() { Content = "◀ Earlier" }, later = new() { Content = "Later ▶" };
@@ -73,7 +85,8 @@ internal sealed class UsagePage : Page
         refresh.Click += (_, _) => RequestRefresh();
         exportMetrics.Click += async (_, _) => await ExportAsync(false);
         exportApplications.Click += async (_, _) => await ExportAsync(true);
-        var controlRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, Children = { range, earlier, later, period, refresh, exportMetrics, exportApplications } };
+        openInWindow.Click += (_, _) => App.Popouts?.Open("usagehistory");
+        var controlRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, Children = { range, earlier, later, period, refresh, exportMetrics, exportApplications, openInWindow } };
         var controls = Pages.Card(new StackPanel
         {
             Spacing = 8, Padding = new Thickness(8),
@@ -112,11 +125,17 @@ internal sealed class UsagePage : Page
         gapNotice.Opacity = 1;
         gapNotice.Foreground = (Brush)Application.Current.Resources["SystemFillColorCautionBrush"];
         gapNotice.Visibility = Visibility.Collapsed;
+        // While a strip slot is listed the heading names it and Clear returns to the period; Show in Connections follows.
+        applicationsHeading.Style = (Style)Application.Current.Resources["BodyStrongTextBlockStyle"];
+        AutomationProperties.SetName(applicationsClear, "Clear the listed slot");
+        applicationsClear.Click += (_, _) => ClearMoment();
+        applicationsPanel.Children.Add(new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12, Children = { applicationsHeading, applicationsClear } });
+        applicationsPanel.Children.Add(strip);
         applicationsPanel.Children.Add(new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12, Children = { search, showInConnections } });
         applicationsPanel.Children.Add(applicationSummary);
         applicationsPanel.Children.Add(gapNotice);
         applicationsPanel.Children.Add(applications);
-        applicationsPanel.Children.Add(Muted("Totals come from observed per-application traffic (ETW) during the period, summed by executable name across its processes. Time without capture is a gap, not zero traffic. Show in Connections opens where the bytes went, for up to the last 30 days."));
+        applicationsPanel.Children.Add(Muted("Totals come from observed per-application traffic (ETW) during the period, summed by executable name across its processes. Time without capture is a gap, not zero traffic. The strip stacks the applications with the most traffic, plus Other, as average rates over each slot's captured minutes; click a slot, or press Enter on it, to list it here. Show in Connections opens where the bytes went, for up to the last 30 days."));
 
         resources = new ApplicationResourcesView(session) { Visibility = Visibility.Collapsed };
         tabs.Items.Add(applicationsTab); tabs.Items.Add(resourcesTab);
@@ -133,6 +152,7 @@ internal sealed class UsagePage : Page
                 Muted("One row per minute for CPU, GPU, RAM and network, plus per-application bytes, kept for up to 400 days or 256 MiB, whichever comes first. The six-hour live graphs are separate and unchanged. Recording begins with this version while DeadWare runs; sleep and stopped monitoring leave gaps. While Per-process monitoring is on, it also keeps the busiest apps' CPU, memory, I/O and GPU for 30 days (up to 192 MiB)."),
                 Muted("History stays in this Windows profile in usage-history.db and process-history.db and is never uploaded. Application names and byte totals describe what runs on this computer, so treat exports as private. Back up the databases only while DeadWare is fully quit."),
                 Muted(HistoryClearCopy.UsageHistoryLine),
+                ClearHistoryEntry.Create(session),
             },
         };
         var settings = Pages.Card(new StackPanel
@@ -154,18 +174,22 @@ internal sealed class UsagePage : Page
             charts[kind].BucketActivated += index => ShowMoment(kind, index, ranking);
             charts[kind].SelectionMoved += index => MoveMoment(kind, index);
         }
+        // The strip joins the cursor but is not a Moments chart: moving on it marks the time, and activating a slot lists it in the table.
+        strip.SelectionMoved += MoveOnStrip;
+        strip.SlotActivated += (index, _) => ShowApplicationsSlot(index);
         applications.SelectionChanged += key => { selectedApplication = key; UpdateShowInConnections(); };
         // ClearSlot always raises SlotCleared, so a range change, Earlier, Later and ShowDay clear the cursor too.
         resources.SlotCleared += () =>
         {
             marked = null;
             foreach (var (kind, _, _) in Moments) charts[kind].SelectedIndex = null;
+            strip.SelectedIndex = null; ClearApplicationsSlot();
         };
         // Esc returns Application resources to the period from anywhere on the page, and clears the cursor.
         KeyDown += (_, e) =>
         {
-            if (e.Key != Windows.System.VirtualKey.Escape || (resources.Slot is null && marked is null)) return;
-            resources.ClearSlot(); e.Handled = true;
+            if (e.Key != Windows.System.VirtualKey.Escape || (resources.Slot is null && marked is null && applicationSlot is null)) return;
+            ClearMoment(); e.Handled = true;
         };
         SizeChanged += (_, e) => ArrangeCharts(e.NewSize.Width >= 1100 ? 3 : 2);
 
@@ -185,10 +209,83 @@ internal sealed class UsagePage : Page
         {
             loaded = false;
             session.Changed -= RefreshCurrent; session.HistoryClearChanged -= HistoryClearChanged;
-            timer.Stop(); revision++;
+            timer.Stop(); revision++; stripRequest++; slotRequest++;
         };
         RefreshCurrent(); UpdatePeriod();
     }
+
+    /// <summary>True when this page is the content of its own pop-out window, which has no use for the button that opens one.</summary>
+    public bool InWindow { set => openInWindow.Visibility = value ? Visibility.Collapsed : Visibility.Visible; }
+
+    private static DateTimeOffset Middle(TrafficStripSlot slot) => slot.Start + (slot.End - slot.Start) / 2;
+
+    /// <summary>Puts the cursor at the strip slot Left or Right moved to and marks its time on the CPU, RAM and GPU charts; nothing is listed.</summary>
+    private void MoveOnStrip(int index)
+    {
+        if (strip.Strip is not { } shown || index < 0 || index >= shown.Slots.Count) return;
+        marked = Middle(shown.Slots[index]); MarkMoment();
+    }
+
+    /// <summary>Lists the activated strip slot in the Applications table and reads it at once. It never lists or clears the Application
+    /// resources card's slot.</summary>
+    private void ShowApplicationsSlot(int index)
+    {
+        if (strip.Strip is not { } shown || index < 0 || index >= shown.Slots.Count) return;
+        var slot = shown.Slots[index];
+        applicationSlot = (slot.Start, slot.End);
+        marked = Middle(slot); MarkMoment();
+        applicationsHeading.Text = $"{ApplicationsTitle} · " + UsagePresenter.SlotSpan(TrafficStrips.CeilingMinute(slot.Start),
+            TrafficStrips.CeilingMinute(slot.End), shown.To - shown.From > TimeSpan.FromDays(1));
+        applicationsClear.Visibility = Visibility.Visible;
+        slotApplications = null; slotPending = LoadingSlot;
+        RefreshApplications();
+        _ = ReadSlotAsync(slot.Start, slot.End);
+        tabs.SelectedItem = applicationsTab; ShowTab();
+        applications.StartBringIntoView();
+    }
+
+    /// <summary>Esc and the Applications Clear: both cards return to the period, and the cursor and every hairline clear.</summary>
+    private void ClearMoment() { ClearApplicationsSlot(); resources.ClearSlot(); }
+
+    private void ClearApplicationsSlot()
+    {
+        if (applicationSlot is null) return;
+        applicationSlot = null; slotRequest++; slotApplications = null; slotPending = null;
+        applicationsHeading.Text = ApplicationsTitle; applicationsClear.Visibility = Visibility.Collapsed;
+        RefreshApplications();
+    }
+
+    /// <summary>Shows a strip read for the period; null shows "History unavailable". The minutes not saved yet stay unhatched.</summary>
+    private void ApplyStrip(TrafficStrip? read, DateTimeOffset now)
+    {
+        var saveDelay = UsageHistoryService.DefaultFlushInterval + TimeSpan.FromSeconds(session.Settings.PollingIntervalSeconds);
+        strip.Apply(read, read is null ? now : TrafficStrips.DueUntil(read.To, now, saveDelay), now);
+        MarkStrip();
+    }
+
+    private async Task ReadStripAsync(DateTimeOffset from, DateTimeOffset to, int points)
+    {
+        int current = ++stripRequest;
+        TrafficStrip? read;
+        try { read = await session.Usage.TryReadApplicationSeriesAsync(from, to, points); }
+        catch (Exception) { read = null; }
+        if (current != stripRequest || !loaded) return;
+        ApplyStrip(read, DateTimeOffset.UtcNow);
+    }
+
+    private async Task ReadSlotAsync(DateTimeOffset from, DateTimeOffset to)
+    {
+        int current = ++slotRequest;
+        UsageApplicationView? view;
+        try { view = await session.Usage.TryReadApplicationsAsync(from, to); }
+        catch (Exception) { view = null; }
+        if (current != slotRequest || !loaded || applicationSlot is null) return;
+        slotApplications = view; slotPending = view is null ? SlotUnavailable : null;
+        RefreshApplications();
+    }
+
+    private void MarkStrip()
+        => strip.SelectedIndex = marked is { } time && strip.Strip is { } shown ? TrafficStrips.SlotAt(shown, time) : null;
 
     private int Days => range.SelectedIndex >= 0 ? Ranges[range.SelectedIndex].Days : 1;
 
@@ -272,6 +369,7 @@ internal sealed class UsagePage : Page
     /// has no such bucket. The charts match by time, not by index, because their bucket lists differ where one metric has no minutes.</summary>
     private void MarkMoment()
     {
+        MarkStrip();
         if (data is not { } shown || marked is not { } time) return;
         foreach (var (kind, metric, _) in Moments)
             charts[kind].SelectedIndex = UsageChartModel.BucketHolding(shown.Metrics.GetValueOrDefault(metric)?.Buckets ?? [], time);
@@ -293,7 +391,8 @@ internal sealed class UsagePage : Page
     /// <summary>A Usage history or Application resources clear started or ended: everything is read again.</summary>
     private void HistoryClearChanged(HistoryClearStore store) { if (store is HistoryClearStore.Usage or HistoryClearStore.ProcessHistory) RequestRefresh(); }
 
-    private void RequestRefresh() { revision++; UpdatePeriod(); _ = RefreshAsync(); }
+    // A strip read still in flight is for the period before this request, so it is dropped when it answers.
+    private void RequestRefresh() { revision++; stripRequest++; UpdatePeriod(); _ = RefreshAsync(); }
 
     private async Task RefreshAsync()
     {
@@ -322,6 +421,9 @@ internal sealed class UsagePage : Page
         // The resources view reads on its own, so the Device charts never wait for a month of process history. It reads the selected
         // app's series with the same point count, so that chart's buckets are the CPU, RAM and GPU charts' slots.
         resources.Load(from, to, points);
+        // The strip, and a listed strip slot, read on their own the same way.
+        _ = ReadStripAsync(from, to, points);
+        if (applicationSlot is { } listed) _ = ReadSlotAsync(listed.From, listed.To);
         string? gpu = session.GpuName is var name && name != "GPU unavailable" ? name : null;
         var service = session.Usage;
         var reads = new Dictionary<string, Task<UsageHistoryView>>(StringComparer.Ordinal)
@@ -374,23 +476,24 @@ internal sealed class UsagePage : Page
     private void RefreshApplications()
     {
         if (data is null) return;
-        var view = data.Applications;
+        // A listed slot shows its own read; while that loads or is unreadable the table is empty and the summary says why.
+        var view = applicationSlot is null ? data.Applications : slotApplications;
         string query = search.Text.Trim();
-        var rows = UsagePresenter.ApplicationRows(view, query);
-        applicationSummary.Text = UsagePresenter.ApplicationSummary(view, query, rows.Count, false);
-        gapNotice.Text = view.CaptureGapMinutes > 0
-            ? $"{view.CaptureGapMinutes:N0} recorded minutes had no or incomplete per-application capture; the totals may miss some of their traffic." : "";
+        IReadOnlyList<TableRow> rows = view is null ? [] : UsagePresenter.ApplicationRows(view, query);
+        applicationSummary.Text = view is null ? slotPending ?? LoadingSlot : UsagePresenter.ApplicationSummary(view, query, rows.Count, applicationSlot is not null);
+        gapNotice.Text = view is { CaptureGapMinutes: > 0 }
+            ? $"{view.CaptureGapMinutes:N0} recorded minutes had no or incomplete per-application capture; the totals may miss some of their traffic, and the strip leaves them out." : "";
         gapNotice.Visibility = gapNotice.Text.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
         if (selectedApplication is not null && !rows.Any(r => r.Key == selectedApplication)) selectedApplication = null;
         applications.SetRows(rows, selectedApplication);
         UpdateShowInConnections();
     }
 
-    /// <summary>The whole minutes Show in Connections opens: the applied period's, clipped to the 30 days Connections keeps.</summary>
+    /// <summary>The whole minutes Show in Connections opens: the listed slot's, otherwise the applied period's, clipped to the 30 days Connections keeps.</summary>
     private ((DateTimeOffset From, DateTimeOffset To) Span, (DateTimeOffset From, DateTimeOffset To)? Target)? ConnectionsSpan()
     {
-        if (data is not { } shown) return null;
-        return ((shown.From, shown.To), TrafficStrips.ConnectionsTarget(shown.From, shown.To, DateTimeOffset.UtcNow));
+        if ((applicationSlot ?? (data is { } shown ? (shown.From, shown.To) : null)) is not { } span) return null;
+        return (span, TrafficStrips.ConnectionsTarget(span.From, span.To, DateTimeOffset.UtcNow));
     }
 
     /// <summary>The selected row's bare name, or null for the Other row, "Unknown application" or no selection.</summary>
@@ -402,7 +505,7 @@ internal sealed class UsagePage : Page
         if (ConnectionsSpan() is not { } connections) { showInConnections.IsEnabled = false; ToolTipService.SetToolTip(showInConnections, null); return; }
         showInConnections.IsEnabled = connections.Target is not null;
         if (connections.Target is not { } target) { ToolTipService.SetToolTip(showInConnections, "Connections keeps up to 30 days; this period is older."); return; }
-        string tip = "Opens Connections History for this period.";
+        string tip = applicationSlot is null ? "Opens Connections History for this period." : "Opens Connections History for the listed slot.";
         if (CarriedApplication() is not null) tip += " Only the selected application is shown.";
         if (target.From - TrafficStrips.CeilingMinute(connections.Span.From) > TimeSpan.FromHours(1)) tip += " Connections keeps up to 30 days, so earlier minutes are left out.";
         ToolTipService.SetToolTip(showInConnections, tip);

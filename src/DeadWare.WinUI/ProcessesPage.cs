@@ -183,6 +183,22 @@ internal sealed class ProcessesPage : Page
         // The marker at the start of the name opens and closes an application; so does a double-click anywhere on its row.
         built.RowClicked += (key, column, x) => { if (column == 0 && x < 26) Toggle(key); };
         built.RowDoubleClicked += Toggle;
+        // Left closes an open application (or goes to a process's application), Right opens one, Delete ends the task, Esc clears the selection.
+        built.KeyDown += (_, e) =>
+        {
+            if (e.Handled) return;
+            var row = Selection;
+            switch (e.Key)
+            {
+                case Windows.System.VirtualKey.Left when row is { Expandable: true, Open: true }: Toggle(row.Row.Key); break;
+                case Windows.System.VirtualKey.Left when row is { ParentKey: { } parent }: built.SelectedKey = parent; break;
+                case Windows.System.VirtualKey.Right when row is { Expandable: true, Open: false }: Toggle(row.Row.Key); break;
+                case Windows.System.VirtualKey.Delete when row is not null: EndTask(); break;
+                case Windows.System.VirtualKey.Escape when row is not null: built.SelectedKey = null; break;
+                default: return;
+            }
+            e.Handled = true;
+        };
         built.RowContext += (key, element, point) =>
         {
             var menu = new MenuFlyout();

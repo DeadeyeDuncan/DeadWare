@@ -262,7 +262,9 @@ internal sealed class HistoryChartView : UserControl
     }
 
     /// <summary>Continues a figure from the run's first point through the rest: as a monotone curve, or straight segments.</summary>
-    private static void AddRun(CanvasPathBuilder builder, IReadOnlyList<ChartPoint> run, bool curved)
+    /// <summary>Continues a figure begun at the run's first point through the rest of it: the monotone spline when curved, straight
+    /// segments otherwise. The thermal and usage charts share it, so Graph smoothing looks the same everywhere.</summary>
+    internal static void AddRun(CanvasPathBuilder builder, IReadOnlyList<ChartPoint> run, bool curved)
     {
         if (curved)
         {

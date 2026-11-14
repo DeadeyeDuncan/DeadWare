@@ -26,6 +26,9 @@ internal sealed class ThermalChartView : UserControl
     private ThermalChartFrame? frame;
     private Point? pointer;
 
+    /// <summary>Draws the line as the live graphs' smoothed curve; the page sets it from the Graph smoothing setting.</summary>
+    public bool Smoothed { get; set; }
+
     public ThermalChartView()
     {
         canvas.Draw += Draw;
@@ -87,7 +90,7 @@ internal sealed class ThermalChartView : UserControl
                 if (run.Count < 2) continue;
                 using var builder = new CanvasPathBuilder(sender);
                 builder.BeginFigure((float)current.Points[run[0]].X, (float)current.Points[run[0]].Y);
-                for (int i = 1; i < run.Count; i++) builder.AddLine((float)current.Points[run[i]].X, (float)current.Points[run[i]].Y);
+                HistoryChartView.AddRun(builder, [.. run.Select(index => new ChartPoint(current.Points[index].X, current.Points[index].Y))], Smoothed);
                 builder.EndFigure(CanvasFigureLoop.Open);
                 using var geometry = CanvasGeometry.CreatePath(builder);
                 session.DrawGeometry(geometry, accent, 1.8f, style);
@@ -390,6 +393,7 @@ internal sealed class CoolingPage : Page
     {
         if (view is null) return;
         displayedTo = DateTimeOffset.UtcNow; displayedFrom = displayedTo.AddDays(-Days);
+        chart.Smoothed = session.Settings.GraphSmoothing;
         chart.SetData(view.History, SelectedMetric, displayedFrom, displayedTo);
         chartSummary.Text = ThermalChartModel.Summary(view.History, SelectedMetric);
     }

@@ -169,7 +169,7 @@ internal sealed class UsageChartView : UserControl
                 if (run.Count == 1) { drawing.FillCircle((float)run[0].X, (float)run[0].Y, 1.6f, color); continue; }
                 using var builder = new CanvasPathBuilder(sender);
                 builder.BeginFigure((float)run[0].X, (float)run[0].Y);
-                for (int i = 1; i < run.Count; i++) builder.AddLine((float)run[i].X, (float)run[i].Y);
+                HistoryChartView.AddRun(builder, [.. run.Select(point => new ChartPoint(point.X, point.Y))], session.Settings.GraphSmoothing);
                 builder.EndFigure(CanvasFigureLoop.Open);
                 using var geometry = CanvasGeometry.CreatePath(builder);
                 drawing.DrawGeometry(geometry, color, 1.8f, trace.Dashed ? dashes : solid);

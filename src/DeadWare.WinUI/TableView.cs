@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using DeadWare.Core;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
 
@@ -21,6 +22,7 @@ internal sealed class TableView : UserControl
     private readonly ObservableCollection<TableRow> rows = [];
     private readonly IReadOnlyList<TableColumn> columns;
     private readonly Grid header;
+    private readonly ScrollViewer scroller;
 
     public TableView(IReadOnlyList<TableColumn> columns)
     {
@@ -42,6 +44,8 @@ internal sealed class TableView : UserControl
         layout.Children.Add(header);
         layout.Children.Add(scroll);
         Content = layout;
+        scroller = scroll;
+        KeyDown += OnKeyDown;
         PointerEntered += (_, _) => PointerOver = true;
         PointerExited += (_, _) => PointerOver = false;
         PointerCanceled += (_, _) => PointerOver = false;
@@ -55,7 +59,57 @@ internal sealed class TableView : UserControl
     public bool PointerOver { get; private set; }
 
     /// <summary>When true, clicking a row selects it and the selected row is highlighted. Off by default.</summary>
-    public bool Selectable { get; set; }
+    public bool Selectable
+    {
+        get => selectable;
+        // A selectable table is one tab stop: the arrow keys move its selection.
+        set { selectable = value; IsTabStop = value; UseSystemFocusVisuals = value; }
+    }
+    private bool selectable;
+
+    /// <summary>Moves the selection with Up, Down, Home, End, Page Up and Page Down and keeps it in view; Enter acts as a double-click.</summary>
+    private void OnKeyDown(object sender, Microsoft.UI.Xaml.Input.KeyRoutedEventArgs e)
+    {
+        if (!Selectable || rows.Count == 0) return;
+        int current = -1;
+        if (selectedKey is not null) for (int i = 0; i < rows.Count && current < 0; i++) if (rows[i].Key == selectedKey) current = i;
+        double rowHeight = RowHeight();
+        int page = Math.Max(1, (int)(scroller.ViewportHeight / rowHeight) - 1);
+        int target;
+        switch (e.Key)
+        {
+            case Windows.System.VirtualKey.Down: target = current + 1; break;
+            case Windows.System.VirtualKey.Up: target = current < 0 ? 0 : current - 1; break;
+            case Windows.System.VirtualKey.Home: target = 0; break;
+            case Windows.System.VirtualKey.End: target = rows.Count - 1; break;
+            case Windows.System.VirtualKey.PageDown: target = current + page; break;
+            case Windows.System.VirtualKey.PageUp: target = current < 0 ? 0 : current - page; break;
+            case Windows.System.VirtualKey.Enter:
+                if (selectedKey is { } chosen && current >= 0) { RowDoubleClicked?.Invoke(chosen); e.Handled = true; }
+                return;
+            default: return;
+        }
+        target = Math.Clamp(target, 0, rows.Count - 1);
+        SelectedKey = rows[target].Key;
+        ScrollTo(target, rowHeight);
+        e.Handled = true;
+    }
+
+    private double RowHeight()
+    {
+        foreach (var element in live.Keys) if (element.ActualHeight > 0) return element.ActualHeight;
+        return 32;
+    }
+
+    /// <summary>Scrolls just far enough that the row at this position is inside the viewport. Rows share one height, so the position is arithmetic
+    /// and works for rows that have no element yet.</summary>
+    private void ScrollTo(int index, double rowHeight)
+    {
+        double top = index * rowHeight, bottom = top + rowHeight, offset = scroller.VerticalOffset, viewport = scroller.ViewportHeight;
+        if (viewport <= 0) return;
+        if (top < offset) scroller.ChangeView(null, top, null, true);
+        else if (bottom > offset + viewport) scroller.ChangeView(null, bottom - viewport, null, true);
+    }
 
     /// <summary>The selected row's key, or null. Setting it repaints the rows on screen; it survives refreshes while a row has that key.</summary>
     public string? SelectedKey
@@ -91,7 +145,7 @@ internal sealed class TableView : UserControl
         element.Tapped += (_, e) =>
         {
             if (!live.TryGetValue(element, out string? key)) return;
-            if (Selectable) SelectedKey = key;
+            if (Selectable) { SelectedKey = key; Focus(FocusState.Pointer); }
             double x = e.GetPosition(element).X;
             int column = 0;
             double offset = x;
@@ -176,6 +230,8 @@ internal sealed class TableView : UserControl
                 owner.Paint(element, row.Key);
                 for (int i = 0; i < element.Children.Count; i++) ((TextBlock)element.Children[i]).Text = i < row.Cells.Count ? row.Cells[i] : "";
                 ToolTipService.SetToolTip(element, row.Tip);
+                // A screen reader reads a row as its cells in order.
+                AutomationProperties.SetName(element, string.Join(", ", row.Cells.Where(cell => cell.Length > 0)));
             }
             return element;
         }
