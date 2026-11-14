@@ -82,8 +82,7 @@ internal sealed class OverviewPage : Page
         SizeChanged += (_, _) => Arrange();
         footer.SizeChanged += (_, _) => Fit();
         toolbar.SizeChanged += (_, _) => Fit();
-        Loaded += (_, _) => { session.Changed += Refresh; Refresh(); Arrange(); };
-        Unloaded += (_, _) => session.Changed -= Refresh;
+        this.WhileLoaded(() => { session.Changed += Refresh; Refresh(); Arrange(); }, () => session.Changed -= Refresh);
         SyncDrives();
     }
 
@@ -191,7 +190,15 @@ internal sealed class OverviewCard : UserControl
     private readonly TextBlock value = Reading(28), upload = Reading(26);
     private readonly TextBlock subtitle = Line(), fan = Line(), pump = Line();
     private readonly TextBlock[] statistics = new TextBlock[3];
-    private readonly Border tile = new() { Width = 24, Height = 24, CornerRadius = new CornerRadius(7), Opacity = 0.9 };
+    private readonly Border tile = new() { Width = 24, Height = 24, CornerRadius = new CornerRadius(7) };
+    private readonly Microsoft.UI.Xaml.Shapes.Path glyph = new()
+    {
+        Width = 15, Height = 15, Stretch = Stretch.Uniform, StrokeThickness = 1.35, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center,
+        StrokeStartLineCap = PenLineCap.Round, StrokeEndLineCap = PenLineCap.Round, StrokeLineJoin = PenLineJoin.Round,
+    };
+    // A wash of the trace colour from the top left corner, a little stronger under the pointer.
+    private readonly Border wash = new() { CornerRadius = new CornerRadius(8), Opacity = RestingWash, IsHitTestVisible = false, OpacityTransition = new ScalarTransition { Duration = TimeSpan.FromMilliseconds(120) } };
+    private const double RestingWash = 0.035, HoveredWash = 0.065;
     private readonly BusiestDrive busiest = new();
     private readonly Dictionary<TextBlock, Windows.UI.Color> tints = [];
 
@@ -205,6 +212,8 @@ internal sealed class OverviewCard : UserControl
         title.Text = this.driveId is not null ? "Disk" : OverviewPresenter.Title(kind);
         ToolTipService.SetToolTip(title, OverviewPresenter.Title(kind));
 
+        glyph.Data = (Geometry)Microsoft.UI.Xaml.Markup.XamlBindingHelper.ConvertValue(typeof(Geometry), GlyphData(kind));
+        tile.Child = glyph;
         var header = new Grid { ColumnSpacing = 9 };
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         header.ColumnDefinitions.Add(new ColumnDefinition());
@@ -284,10 +293,23 @@ internal sealed class OverviewCard : UserControl
         layout.Children.Add(chart);
         var card = Pages.Card(layout);
         card.Padding = new Thickness(16, 13, 16, 11);
-        Content = card;
+        Content = new Grid { Children = { card, wash } };
+        PointerEntered += (_, _) => wash.Opacity = HoveredWash;
+        PointerExited += (_, _) => wash.Opacity = RestingWash;
+        PointerCanceled += (_, _) => wash.Opacity = RestingWash;
         HorizontalContentAlignment = HorizontalAlignment.Stretch;
         VerticalContentAlignment = VerticalAlignment.Stretch;
     }
+
+    /// <summary>The metric's outline glyph, on a 20 by 20 grid: a chip, a thermometer, a memory module, a drive, or the two network arrows.</summary>
+    private static string GlyphData(string kind) => kind switch
+    {
+        "cpu" or "gpu" => "M 5,5 L 15,5 15,15 5,15 Z M 8,8 L 12,8 12,12 8,12 Z M 7,2 L 7,5 M 13,2 L 13,5 M 7,15 L 7,18 M 13,15 L 13,18 M 2,7 L 5,7 M 2,13 L 5,13 M 15,7 L 18,7 M 15,13 L 18,13",
+        "cputemp" or "gputemp" => "M 8,11 L 8,4 C 8,1 12,1 12,4 L 12,11 C 17,15 11,21 7,17 C 5,15 6,12 8,11 M 10,7 L 10,14 M 15,5 L 18,5 M 15,9 L 17,9",
+        "memory" => "M 2,5 L 18,5 18,15 2,15 Z M 5,8 L 8,8 8,12 5,12 Z M 12,8 L 15,8 15,12 12,12 Z M 5,15 L 5,18 M 10,15 L 10,18 M 15,15 L 15,18",
+        "storage" => "M 2,4 L 18,4 18,16 2,16 Z M 2,12 L 18,12 M 14,14 L 15,14 M 5,14 L 9,14",
+        _ => "M 6,2 L 6,16 M 2,12 L 6,16 10,12 M 14,18 L 14,4 M 10,8 L 14,4 18,8",
+    };
 
     private static TextBlock Reading(double size) => new() { Text = "—", FontSize = size, FontWeight = FontWeights.SemiBold, TextWrapping = TextWrapping.NoWrap };
 
@@ -317,7 +339,16 @@ internal sealed class OverviewCard : UserControl
         Tint(value, OverviewPresenter.ColorKey(kind));
         var tileColor = chart.ColorOf(OverviewPresenter.ColorKey(kind));
         var tileFill = Windows.UI.Color.FromArgb(36, tileColor.R, tileColor.G, tileColor.B);
-        if (tile.Background is not SolidColorBrush brush || !brush.Color.Equals(tileFill)) tile.Background = new SolidColorBrush(tileFill);
+        if (tile.Background is not SolidColorBrush brush || !brush.Color.Equals(tileFill))
+        {
+            tile.Background = new SolidColorBrush(tileFill);
+            glyph.Stroke = new SolidColorBrush(tileColor);
+            wash.Background = new LinearGradientBrush
+            {
+                StartPoint = new Windows.Foundation.Point(0, 0), EndPoint = new Windows.Foundation.Point(0.85, 1),
+                GradientStops = { new GradientStop { Color = tileColor, Offset = 0 }, new GradientStop { Color = Windows.UI.Color.FromArgb(0, tileColor.R, tileColor.G, tileColor.B), Offset = 1 } },
+            };
+        }
 
         bool showFan = kind == "gputemp" && session.Settings.ShowGpuFanSpeed;
         fan.Visibility = showFan ? Visibility.Visible : Visibility.Collapsed;

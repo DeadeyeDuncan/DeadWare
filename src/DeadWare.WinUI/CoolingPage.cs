@@ -106,7 +106,7 @@ internal sealed class ThermalChartView : UserControl
         float width = 0;
         foreach (var row in rows)
         {
-            using var layout = new CanvasTextLayout(sender, row.Text, LabelFormat, 0, 0);
+            using var layout = new CanvasTextLayout(sender, row.Text, LabelFormat, 0, 0) { WordWrapping = CanvasWordWrapping.NoWrap };
             width = Math.Max(width, (float)layout.LayoutBounds.Width);
         }
         width += 12;
@@ -288,8 +288,7 @@ internal sealed class CoolingPage : Page
         notifications.Checked += (_, _) => ApplySettings(); notifications.Unchecked += (_, _) => ApplySettings();
         detailDays.SelectionChanged += (_, _) => ApplySettings(); summaryDays.SelectionChanged += (_, _) => ApplySettings();
         refreshTimer.Tick += () => _ = RefreshAsync();
-        Loaded += (_, _) => { loaded = true; refreshTimer.Start(); _ = RefreshAsync(); };
-        Unloaded += (_, _) => { loaded = false; refreshTimer.Stop(); requestRevision++; };
+        this.WhileLoaded(() => { loaded = true; refreshTimer.Start(); _ = RefreshAsync(); }, () => { loaded = false; refreshTimer.Stop(); requestRevision++; });
         UpdateButtons();
     }
 

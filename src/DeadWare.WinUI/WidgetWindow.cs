@@ -276,8 +276,7 @@ internal sealed class WidgetMap : Grid
         Children.Add(map);
         Children.Add(region);
         region.Click += (_, _) => { session.SetWidgetConnectionsNorthAmerica(!session.Settings.WidgetConnectionsNorthAmerica); Refresh(); };
-        Loaded += (_, _) => { loaded = true; Refresh(); };
-        Unloaded += (_, _) => { loaded = false; map.AnimationEnabled = false; };
+        this.WhileLoaded(() => { loaded = true; Refresh(); }, () => { loaded = false; map.AnimationEnabled = false; });
     }
 
     /// <summary>The app's name, with " · not recorded" when it is in Don't record these apps.</summary>

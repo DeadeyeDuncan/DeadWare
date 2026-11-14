@@ -107,18 +107,18 @@ internal sealed class ApplicationResourcesView : UserControl
             ShowSeries();
         };
         // The tab unloads its content. Keep stopped debounce work until the view is shown again; reads already in flight finish normally.
-        Loaded += (_, _) =>
+        this.WhileLoaded(() =>
         {
             loaded = true;
             if (rankPending && loading) { rankDelay.Stop(); rankDelay.Start(); }
             if (selectedApp is not null && charted is null) ShowSeries();
-        };
-        Unloaded += (_, _) =>
+        },
+        () =>
         {
             loaded = false;
             rankPending |= rankDelay.IsEnabled; rankDelay.Stop();
             if (seriesDelay.IsEnabled) { seriesDelay.Stop(); charted = null; }
-        };
+        });
     }
 
     /// <summary>The selected application's chart over the page's period.</summary>

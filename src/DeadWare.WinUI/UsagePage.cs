@@ -199,18 +199,18 @@ internal sealed class UsagePage : Page
         range.SelectionChanged += (_, _) => { if (syncing) return; offset = 0; resources.ClearSlot(); RequestRefresh(); };
         search.TextChanged += (_, _) => RefreshApplications();
         timer.Tick += () => _ = RefreshAsync();
-        Loaded += (_, _) =>
+        this.WhileLoaded(() =>
         {
             loaded = true;
             session.Changed += RefreshCurrent; session.HistoryClearChanged += HistoryClearChanged;
             timer.Start(); RefreshCurrent(); UpdatePeriod(); _ = RefreshAsync();
-        };
-        Unloaded += (_, _) =>
+        },
+        () =>
         {
             loaded = false;
             session.Changed -= RefreshCurrent; session.HistoryClearChanged -= HistoryClearChanged;
             timer.Stop(); revision++; stripRequest++; slotRequest++;
-        };
+        });
         RefreshCurrent(); UpdatePeriod();
     }
 

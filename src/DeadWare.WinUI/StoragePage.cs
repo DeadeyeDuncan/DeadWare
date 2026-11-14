@@ -38,8 +38,7 @@ internal sealed class StoragePage : Page
     {
         this.session = session;
         Content = new ScrollViewer { Content = new StackPanel { Padding = new Thickness(24), Spacing = 12, Children = { status, empty, drives } } };
-        Loaded += (_, _) => { session.Changed += Refresh; Refresh(); };
-        Unloaded += (_, _) => session.Changed -= Refresh;
+        this.WhileLoaded(() => { session.Changed += Refresh; Refresh(); }, () => session.Changed -= Refresh);
     }
 
     private void Refresh()

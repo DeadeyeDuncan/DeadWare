@@ -110,7 +110,7 @@ internal sealed class BatteryChartView : UserControl
         float width = 0;
         foreach (var row in rows)
         {
-            using var layout = new CanvasTextLayout(sender, row.Text, LabelFormat, 0, 0);
+            using var layout = new CanvasTextLayout(sender, row.Text, LabelFormat, 0, 0) { WordWrapping = CanvasWordWrapping.NoWrap };
             width = Math.Max(width, (float)layout.LayoutBounds.Width);
         }
         width += 12;
@@ -200,8 +200,9 @@ internal sealed class BatteryPage : Page
         timer = DispatcherQueue.GetForCurrentThread().CreateTimer();
         timer.Interval = TimeSpan.FromSeconds(15);
         timer.Tick += async (_, _) => await RefreshAsync();
-        Loaded += async (_, _) => { session.Changed += RefreshCurrent; timer.Start(); RefreshCurrent(); await RefreshAsync(); };
-        Unloaded += (_, _) => { session.Changed -= RefreshCurrent; timer.Stop(); revision++; };
+        this.WhileLoaded(
+            async () => { session.Changed += RefreshCurrent; timer.Start(); RefreshCurrent(); await RefreshAsync(); },
+            () => { session.Changed -= RefreshCurrent; timer.Stop(); revision++; });
     }
 
     private static TextBlock Heading(string text) => new() { Text = text, Style = (Style)Application.Current.Resources["BodyStrongTextBlockStyle"] };

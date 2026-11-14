@@ -103,18 +103,18 @@ internal sealed class ConnectionMapView : UserControl
         KeyDown += OnKeyDown;
         SizeChanged += (_, _) => { DropGeometry(); canvas.Invalidate(); ViewChanged?.Invoke(); };
         ActualThemeChanged += (_, _) => canvas.Invalidate();
-        Loaded += (_, _) =>
+        this.WhileLoaded(() =>
         {
             loaded = true;
             if (XamlRoot is { } root) root.Changed += OnRootChanged;
             UpdateAnimation();
-        };
-        Unloaded += (_, _) =>
+        },
+        () =>
         {
             loaded = false;
             if (XamlRoot is { } root) root.Changed -= OnRootChanged;
             UpdateAnimation();
-        };
+        });
     }
 
     public bool Flat { get => camera.Flat; set { if (camera.Flat != value) ChangeCamera(camera with { Flat = value }); } }
@@ -459,7 +459,7 @@ internal sealed class ConnectionMapView : UserControl
 
     private static float LegendChip(ICanvasResourceCreator creator, CanvasDrawingSession ds, float x, string label, Color dot, Color hairline, Color text, bool dark)
     {
-        using var layout = new CanvasTextLayout(creator, label, SmallFormat, 0, 0);
+        using var layout = new CanvasTextLayout(creator, label, SmallFormat, 0, 0) { WordWrapping = CanvasWordWrapping.NoWrap };
         float width = 8 + 8 + 6 + (float)layout.LayoutBounds.Width + 8;
         ds.FillRoundedRectangle(x, 2, width, 18, 9, 9, dark ? Color.FromArgb(200, 40, 40, 40) : Color.FromArgb(220, 250, 250, 250));
         ds.DrawRoundedRectangle(x, 2, width, 18, 9, 9, hairline, 1);
@@ -475,7 +475,7 @@ internal sealed class ConnectionMapView : UserControl
         float width = 0;
         foreach (var line in lines)
         {
-            using var layout = new CanvasTextLayout(creator, line.Text, LabelFormat, 0, 0);
+            using var layout = new CanvasTextLayout(creator, line.Text, LabelFormat, 0, 0) { WordWrapping = CanvasWordWrapping.NoWrap };
             width = Math.Max(width, (float)layout.LayoutBounds.Width);
         }
         width += 12;

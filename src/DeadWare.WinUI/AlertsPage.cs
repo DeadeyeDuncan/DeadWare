@@ -118,18 +118,18 @@ internal sealed class AlertsPage : Page
         notifications.Unchecked += (_, _) => { if (!syncing) session.SetAlertNotifications(false); };
         logRange.SelectionChanged += (_, _) => RequestRefresh();
         timer.Tick += () => _ = RefreshAsync();
-        Loaded += (_, _) =>
+        this.WhileLoaded(() =>
         {
             loaded = true;
             session.Changed += SyncSettings; session.HistoryClearChanged += HistoryClearChanged;
             timer.Start(); SyncSettings(); _ = RefreshAsync(); RequestSuggestion();
-        };
-        Unloaded += (_, _) =>
+        },
+        () =>
         {
             loaded = false;
             session.Changed -= SyncSettings; session.HistoryClearChanged -= HistoryClearChanged;
             timer.Stop(); revision++;
-        };
+        });
         UpdateEditor(); SyncSettings();
     }
 
