@@ -24,6 +24,14 @@ public sealed class ChartGeometryTests
         Assert.Equal(["14:28","14:29","14:30","14:31","14:32"],ticks.Select(t=>t.Label));
         Assert.Equal(1000-40,ticks[^1].MonotonicSeconds);
     }
+    [Fact] public void Ticks_account_for_the_part_of_a_second_past_now()
+    {
+        // 14:32:40.75: the 14:32 tick is 40.75 s old, not 40. Dropping the .75 moved the labels between drawings.
+        var now=new DateTimeOffset(2026,11,2,14,32,40,750,TimeSpan.Zero);
+        var ticks=TimeTicks.For(300,1000,now,330,false);
+        Assert.Equal("14:32",ticks[^1].Label);
+        Assert.Equal(1000-40.75,ticks[^1].MonotonicSeconds,6);
+    }
     [Fact] public void Tick_ordinals_are_wall_clock_multiples_of_the_step_and_stable_across_polls()
     {
         var now=new DateTimeOffset(2026,11,2,14,32,40,TimeSpan.Zero);

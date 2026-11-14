@@ -27,7 +27,9 @@ internal sealed class HistoryChartView : UserControl
     private const double Left = 8, Top = 14, Right = 8, Bottom = 22;
     private static readonly CanvasTextFormat LabelFormat = new() { FontSize = 11 };
     private static readonly CanvasTextFormat RightLabelFormat = new() { FontSize = 11, HorizontalAlignment = CanvasHorizontalAlignment.Right };
-    private static readonly CanvasTextFormat TickFormat = new() { FontSize = 11, HorizontalAlignment = CanvasHorizontalAlignment.Center };
+    // Time labels slide with the traces, so they are placed where they belong and not on the nearest whole pixel: snapped,
+    // each drawing lands them up to half a pixel off and they tremble against the trace.
+    private static readonly CanvasTextFormat TickFormat = new() { FontSize = 11, HorizontalAlignment = CanvasHorizontalAlignment.Center, Options = CanvasDrawTextOptions.NoPixelSnap };
 
     /// <summary>Default trace colours by graph colour key; cpu and download default to the system accent. A colour saved in settings wins.</summary>
     private static readonly Dictionary<string, Color> Palette = new()
