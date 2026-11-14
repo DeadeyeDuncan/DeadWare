@@ -270,15 +270,22 @@ internal sealed class HistoryChartView : UserControl
             using var layout = new CanvasTextLayout(sender, row.Text, LabelFormat, 0, 0) { WordWrapping = CanvasWordWrapping.NoWrap };
             width = Math.Max(width, (float)layout.LayoutBounds.Width);
         }
-        width += padding * 2;
-        float height = rows.Count * rowHeight + padding * 2;
+        // A chip taller than the chart (a CPU chart lists its busiest cores) would be cut off at the bottom: it then
+        // continues in further columns, the time staying at the top of the first.
+        float room = (float)sender.ActualHeight - 2;
+        int perColumn = Math.Max(2, (int)((room - padding * 2) / rowHeight));
+        int columns = (rows.Count + perColumn - 1) / perColumn;
+        float column = width + 12;
+        width = columns * column - 12 + padding * 2;
+        float height = Math.Min(rows.Count, perColumn) * rowHeight + padding * 2;
         // The chip sits to the right of the line, or to its left when it would leave the plot.
         float x = (float)hover.X + 10;
-        if (x + width > plot.Left + plot.Width) x = (float)hover.X - 10 - width;
-        float y = (float)Math.Clamp(position.Y - height / 2, plot.Top, Math.Max(plot.Top, plot.Top + plot.Height - height));
+        if (x + width > plot.Left + plot.Width) x = Math.Max(0, (float)hover.X - 10 - width);
+        float y = Math.Clamp((float)position.Y - height / 2, 1, Math.Max(1, room - height));
         drawing.FillRoundedRectangle(x, y, width, height, 4, 4, dark ? Color.FromArgb(240, 32, 32, 32) : Color.FromArgb(240, 252, 252, 252));
         drawing.DrawRoundedRectangle(x, y, width, height, 4, 4, line, 1);
-        for (int i = 0; i < rows.Count; i++) drawing.DrawText(rows[i].Text, x + padding, y + padding + i * rowHeight, rows[i].Color, LabelFormat);
+        for (int i = 0; i < rows.Count; i++)
+            drawing.DrawText(rows[i].Text, x + padding + i / perColumn * column, y + padding + i % perColumn * rowHeight, rows[i].Color, LabelFormat);
     }
 
     private void DrawAxes(CanvasControl sender, CanvasDrawEventArgs args)
