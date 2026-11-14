@@ -72,6 +72,9 @@ internal sealed class HistoryChartView : UserControl
     /// <summary>Limits a storage chart to one drive's read and write; null for the totals with per-drive lines.</summary>
     public string? DriveId { get; init; }
 
+    /// <summary>Keeps the CPU pump line and the per-core lines on a CPU / GPU comparison, as the widget shows them.</summary>
+    public bool PumpAndCoresWithDevices { get; init; }
+
     /// <summary>Raised after each rebuild with the main trace's minimum, maximum and average over the range.</summary>
     public event Action<Summary>? StatisticsReady;
 
@@ -87,6 +90,8 @@ internal sealed class HistoryChartView : UserControl
             Cores: settings.ShowCpuCoreUsage ? session.Current?.CpuCoreCount ?? 0 : 0,
             Drives: drives.Select(drive => drive.Id).ToList(),
             DriveNames: drives.GroupBy(drive => drive.Id).ToDictionary(group => group.Key, group => group.First().Model),
+            PumpWithDevices: PumpAndCoresWithDevices,
+            CoresWithDevices: PumpAndCoresWithDevices,
             Smoothed: settings.GraphSmoothing,
             DriveId: DriveId);
         frame = HistoryChartModel.Build(new HistoryChartRequest(session.Collector.History, kind, session.SelectedGpuId, compare,

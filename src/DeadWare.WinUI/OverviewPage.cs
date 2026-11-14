@@ -60,7 +60,11 @@ internal sealed class OverviewPage : Page
         }
         var toolbar = new Grid();
         toolbar.Children.Add(gpuControls);
-        toolbar.Children.Add(rangeRow);
+        var widget = new Button { Content = "Open widget", VerticalAlignment = VerticalAlignment.Center };
+        ToolTipService.SetToolTip(widget, "Open the Quick glance widget in its own window");
+        widget.Click += (_, _) => App.Popouts?.Open("widget");
+        rangeRow.HorizontalAlignment = HorizontalAlignment.Left;
+        toolbar.Children.Add(new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12, HorizontalAlignment = HorizontalAlignment.Right, Children = { rangeRow, widget } });
 
         foreach (string kind in OverviewPresenter.Kinds) fixedCards.Add(new OverviewCard(session, kind, null));
 
@@ -205,6 +209,24 @@ internal sealed class OverviewCard : UserControl
         header.Children.Add(tile);
         Grid.SetColumn(title, 1);
         header.Children.Add(title);
+        // Pop this graph out into its own window; a drive card opens that drive's window.
+        var popOut = new Button
+        {
+            Content = new FontIcon { Glyph = "\uE8A7", FontSize = 12 }, Padding = new Thickness(6, 4, 6, 4), VerticalAlignment = VerticalAlignment.Center,
+            Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent), BorderThickness = new Thickness(0),
+        };
+        string popOutName = this.driveId is not null ? "Pop out this drive" : "Open in window";
+        ToolTipService.SetToolTip(popOut, popOutName);
+        AutomationProperties.SetName(popOut, this.driveId is not null ? popOutName : $"Open {OverviewPresenter.Title(kind)} in a window");
+        popOut.Click += (_, _) =>
+        {
+            if (this.driveId is null) { App.Popouts?.Open(kind); return; }
+            var drive = session.Current?.Storage.Drives.FirstOrDefault(candidate => candidate.Id == this.driveId);
+            if (drive is not null) App.Popouts?.OpenDrive(drive);
+        };
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        Grid.SetColumn(popOut, 2);
+        header.Children.Add(popOut);
 
         // MIN / AVG / MAX share the reading's line, so the chart's star row takes the height a footer would.
         var statsLine = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 14, VerticalAlignment = VerticalAlignment.Bottom };
