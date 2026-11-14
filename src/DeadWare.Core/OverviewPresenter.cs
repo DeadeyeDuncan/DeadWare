@@ -41,9 +41,9 @@ public static class OverviewPresenter
     public static string Statistic(string kind, double? value) => kind is "network" or "storage" ? HistoryChartModel.Bytes(value, true)
         : Number(value, kind.Contains("temp", StringComparison.Ordinal) ? "°C" : "%");
 
-    /// <summary>A fan or pump line: its speed, or why there is none, then how its trace is drawn.</summary>
-    public static string Rpm(string label, bool stale, double? rpm, string pattern) =>
-        $"{label} · {(stale ? "stale" : rpm.HasValue && double.IsFinite(rpm.Value) ? rpm.Value.ToString("0", CultureInfo.CurrentCulture) + " RPM" : "unavailable")} · {pattern} · left RPM";
+    /// <summary>A fan or pump line: its speed, or why there is none, then how its trace is drawn. Without a pattern it is the short form for the widget.</summary>
+    public static string Rpm(string label, bool stale, double? rpm, string? pattern = null) =>
+        $"{label} · {(stale ? "stale" : rpm.HasValue && double.IsFinite(rpm.Value) ? rpm.Value.ToString("0", CultureInfo.CurrentCulture) + " RPM" : "unavailable")}{(pattern is null ? "" : $" · {pattern} · left RPM")}";
 
     /// <summary>The line pattern in words: the saved one, else the trace's default.</summary>
     public static string Pattern(string? saved, bool dashed = false, bool dotted = false) =>

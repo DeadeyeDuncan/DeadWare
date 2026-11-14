@@ -43,6 +43,7 @@ public class OverviewPresenterTests
         Assert.Equal("GPU fan · 1200 RPM · dotted · left RPM", OverviewPresenter.Rpm("GPU fan", false, 1200.4, OverviewPresenter.Pattern(null, dotted: true)));
         Assert.Equal("CPU pump · stale · dashed · left RPM", OverviewPresenter.Rpm("CPU pump", true, 900, OverviewPresenter.Pattern("dashed", dotted: true)));
         Assert.Equal("CPU pump · unavailable · solid · left RPM", OverviewPresenter.Rpm("CPU pump", false, null, "solid"));
+        Assert.Equal("GPU fan · 845 RPM", OverviewPresenter.Rpm("GPU fan", false, 845));
         Assert.Equal("Solid: download    ·    Dashed: upload    ·    Shared scale", OverviewPresenter.NetworkSubtitle("default", null));
     }
 

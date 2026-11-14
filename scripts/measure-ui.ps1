@@ -55,7 +55,7 @@ if (Get-Process -Name $processName -ErrorAction SilentlyContinue) {
 }
 
 # Prove the output is writable before spending minutes measuring.
-$outPath = [IO.Path]::GetFullPath($Out, (Get-Location).Path)
+$outPath = [IO.Path]::GetFullPath([IO.Path]::Combine((Get-Location).Path, $Out))
 try {
     [IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($outPath)) | Out-Null
     [IO.File]::WriteAllText($outPath, '')
@@ -136,7 +136,8 @@ function Invoke-Run {
         return $run
     } finally {
         if (-not $process.HasExited) {
-            try { $process.Kill($true) } catch [InvalidOperationException] { }
+            # taskkill takes the whole tree on Windows PowerShell too, where Process.Kill has no such overload.
+            cmd /c "taskkill /PID $($process.Id) /T /F >nul 2>&1"
             $process.WaitForExit(15000) | Out-Null
         }
         $process.Dispose()

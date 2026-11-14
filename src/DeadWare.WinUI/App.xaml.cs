@@ -27,6 +27,8 @@ public partial class App : Application
     private static int? exitAfter;
     /// <summary>The destination given after <c>--page</c>, shown at start instead of Overview.</summary>
     private static string? startPage;
+    /// <summary>"light" or "dark" given after <c>--theme</c>, overriding the Windows app theme for this run.</summary>
+    private static string? theme;
     private static Timer? exitTimer;
 
     private readonly ApplicationLifetime lifetime = new();
@@ -46,11 +48,14 @@ public partial class App : Application
             if (arguments[i] == "--no-mica") NoMica = true;
             else if (arguments[i] == "--error-file" && i + 1 < arguments.Length) ErrorFile = arguments[++i];
             else if (arguments[i] == "--page" && i + 1 < arguments.Length) startPage = arguments[++i];
+            else if (arguments[i] == "--theme" && i + 1 < arguments.Length) theme = arguments[++i];
             else if (arguments[i] == "--exit-after" && i + 1 < arguments.Length && int.TryParse(arguments[++i], out int seconds) && seconds > 0) exitAfter = seconds;
         }
         UnhandledException += (_, e) => Fail(e.Exception);
         AppDomain.CurrentDomain.UnhandledException += (_, e) => Fail(e.ExceptionObject as Exception);
         InitializeComponent();
+        // The app follows Windows; the flag is for looking at the other theme without changing the Windows setting.
+        if (theme is "light" or "dark") RequestedTheme = theme == "light" ? ApplicationTheme.Light : ApplicationTheme.Dark;
     }
 
     protected override async void OnLaunched(LaunchActivatedEventArgs args)
