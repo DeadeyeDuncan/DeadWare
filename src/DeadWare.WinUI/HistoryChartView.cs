@@ -4,6 +4,7 @@ using DeadWare.Core;
 using Microsoft.Graphics.Canvas.Geometry;
 using Microsoft.Graphics.Canvas.Text;
 using Microsoft.Graphics.Canvas.UI.Xaml;
+using Microsoft.UI.Composition;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Hosting;
@@ -44,8 +45,13 @@ internal sealed class HistoryChartView : UserControl
     private readonly RectangleGeometry clip = new();
     private HistoryChartFrame? frame;
     private HistoryChartRequest? pending;
-    private bool building, scrollDue;
+    private bool building;
     private double frameNow, frameSeconds, frameWidth;
+    // The frame the trace layer last drew, which is what the slide has to follow until the next one is on screen.
+    private bool drawnScrolls;
+    private double drawnNow, drawnSeconds, drawnWidth;
+    private CompositionPropertySet? scroll;
+    private ExpressionAnimation? scrolling;
     private ChartPlot plot;
 
     public HistoryChartView(MonitorSession session, string kind, bool compare = false)
@@ -63,12 +69,11 @@ internal sealed class HistoryChartView : UserControl
         layers.Children.Add(axes);
         layers.Children.Add(traces);
         layers.Children.Add(readout);
-        layers.PointerMoved += (_, e) => { pointer = e.GetCurrentPoint(layers).Position; readout.Invalidate(); };
-        layers.PointerExited += (_, _) => { pointer = null; readout.Invalidate(); };
+        layers.PointerMoved += (_, e) => { bool entered = pointer is null; pointer = e.GetCurrentPoint(layers).Position; if (entered) Scroll(); readout.Invalidate(); };
+        layers.PointerExited += (_, _) => { pointer = null; Scroll(); readout.Invalidate(); };
         Content = layers;
         MinHeight = 120;
-        Loaded += (_, _) => { session.Changed += Refresh; Refresh(); };
-        Unloaded += (_, _) => session.Changed -= Refresh;
+        this.WhileLoaded(() => { session.Changed += Refresh; Refresh(); }, () => session.Changed -= Refresh);
         SizeChanged += (_, _) => Refresh();
     }
 
@@ -122,7 +127,6 @@ internal sealed class HistoryChartView : UserControl
                 StatisticsReady?.Invoke(built.Statistics);
                 // The clip keeps scrolled traces inside the plot and leaves room below it for the time labels that scroll with them.
                 clip.Rect = plot.Width > 0 && plot.Height > 0 ? new Rect(plot.Left, 0, plot.Width, ActualHeight) : new Rect(0, 0, 0, 0);
-                scrollDue = built.HasReadings;
                 axes.Invalidate();
                 traces.Invalidate();
                 readout.Invalidate();
@@ -132,24 +136,72 @@ internal sealed class HistoryChartView : UserControl
     }
 
     /// <summary>
-    /// Slides the trace layer left at the chart's pace, as the WPF chart does. It starts from where the drawing already is
-    /// (the time since the frame was built) and is started from the draw itself, so the new drawing and the reset of the
-    /// slide reach the screen together; restarting earlier shows the old drawing snapped back for a frame. It runs a second
-    /// interval past the next expected frame so a late one does not leave the trace standing still.
+    /// Slides the trace layer left at the chart's pace, as the WPF chart does. Every chart follows one compositor clock that
+    /// runs for as long as the app does; a new drawing only tells the expression which moment it shows. An animation
+    /// restarted per sample begins whenever the compositor picks it up, a little after its drawing, and that showed as a
+    /// step back on every sample; with a clock that never restarts, any such lag is the same before and after a sample and
+    /// cancels out. The slide stops a second interval past the frame, where a late frame would otherwise run the trace off
+    /// the plot, and holds still under the pointer so the readout stays on its sample.
     /// </summary>
-    private void StartScroll()
+    private void Scroll()
     {
-        double interval = Math.Min(1, session.Settings.PollingIntervalSeconds);
-        if (!(interval > 0) || frameSeconds <= 0 || !(frameWidth > 0)) return;
-        double perSecond = frameWidth / frameSeconds;
-        double elapsed = Math.Clamp(session.Collector.ElapsedSeconds - frameNow, 0, interval);
-        double remaining = 2 * interval - elapsed;
         var visual = ElementCompositionPreview.GetElementVisual(traces);
-        var animation = visual.Compositor.CreateVector3KeyFrameAnimation();
-        animation.InsertKeyFrame(0, new Vector3((float)(-perSecond * elapsed), 0, 0));
-        animation.InsertKeyFrame(1, new Vector3((float)(-perSecond * 2 * interval), 0, 0), visual.Compositor.CreateLinearEasingFunction());
-        animation.Duration = TimeSpan.FromSeconds(remaining);
-        visual.StartAnimation("Translation", animation);
+        double interval = Math.Min(1, session.Settings.PollingIntervalSeconds);
+        if (!drawnScrolls || !(interval > 0) || !(drawnSeconds > 0) || !(drawnWidth > 0))
+        {
+            visual.StopAnimation("Translation");
+            traces.Translation = Vector3.Zero;
+            return;
+        }
+        double speed = drawnWidth / drawnSeconds, limit = 2 * interval;
+        if (pointer is not null)
+        {
+            visual.StopAnimation("Translation");
+            traces.Translation = new Vector3((float)(-speed * Math.Clamp(session.Collector.ElapsedSeconds - drawnNow, 0, limit)), 0, 0);
+            return;
+        }
+        var clock = ScrollClock.For(visual.Compositor, session.Collector.ElapsedSeconds);
+        scroll ??= visual.Compositor.CreatePropertySet();
+        scroll.InsertScalar("Shown", (float)clock.At(drawnNow));
+        scroll.InsertScalar("Speed", (float)speed);
+        scroll.InsertScalar("Limit", (float)limit);
+        if (scrolling is null)
+        {
+            // Time since the drawing's moment, read around the clock's period so the hourly wrap passes unnoticed.
+            scrolling = visual.Compositor.CreateExpressionAnimation(
+                $"Vector3(-own.Speed * Clamp(Mod(clock.Seconds - own.Shown + {ScrollClock.Period}, {ScrollClock.Period}), 0, own.Limit), 0, 0)");
+            scrolling.SetReferenceParameter("clock", clock.Properties);
+            scrolling.SetReferenceParameter("own", scroll);
+        }
+        visual.StartAnimation("Translation", scrolling);
+    }
+
+    /// <summary>A compositor value that counts seconds, wrapping every <see cref="Period"/>, for every chart to slide by.</summary>
+    private sealed class ScrollClock
+    {
+        public const int Period = 3600;
+        private static ScrollClock? shared;
+        private readonly double startedAt;
+
+        private ScrollClock(Compositor compositor, double now)
+        {
+            startedAt = now;
+            Properties = compositor.CreatePropertySet();
+            Properties.InsertScalar("Seconds", 0);
+            var run = compositor.CreateScalarKeyFrameAnimation();
+            run.InsertKeyFrame(0, 0);
+            run.InsertKeyFrame(1, Period, compositor.CreateLinearEasingFunction());
+            run.Duration = TimeSpan.FromSeconds(Period);
+            run.IterationBehavior = AnimationIterationBehavior.Forever;
+            Properties.StartAnimation("Seconds", run);
+        }
+
+        public CompositionPropertySet Properties { get; }
+
+        public static ScrollClock For(Compositor compositor, double now) => shared ??= new ScrollClock(compositor, now);
+
+        /// <summary>The clock's reading at a moment of the collector's clock.</summary>
+        public double At(double collectorSeconds) => ((collectorSeconds - startedAt) % Period + Period) % Period;
     }
 
     private (Color Ink, Color Line, Color Surface) Inks()
@@ -248,7 +300,8 @@ internal sealed class HistoryChartView : UserControl
     {
         Interlocked.Increment(ref FramesDrawn);
         if (frame is not { } current) return;
-        if (scrollDue) { scrollDue = false; StartScroll(); }
+        (drawnScrolls, drawnNow, drawnSeconds, drawnWidth) = (current.HasReadings, frameNow, frameSeconds, frameWidth);
+        Scroll();
         var session = args.DrawingSession;
         var (ink, _, _) = Inks();
         float baseline = (float)(plot.Top + plot.Height);

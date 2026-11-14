@@ -150,7 +150,9 @@ internal sealed class OverviewPage : Page
     private void Place()
     {
         var all = AllCards.ToList();
-        cards.Children.Clear();
+        // Cards that stay are only moved to their new cell. Taking one out and putting it back makes WinUI raise Unloaded
+        // after Loaded, which leaves its Win2D canvases believing they are off screen: they then never redraw.
+        foreach (var gone in cards.Children.Except(all).ToList()) cards.Children.Remove(gone);
         cards.ColumnDefinitions.Clear();
         cards.RowDefinitions.Clear();
         for (int i = 0; i < columns; i++) cards.ColumnDefinitions.Add(new ColumnDefinition());
@@ -160,7 +162,7 @@ internal sealed class OverviewPage : Page
         {
             Grid.SetRow(all[i], i / columns);
             Grid.SetColumn(all[i], i % columns);
-            cards.Children.Add(all[i]);
+            if (!cards.Children.Contains(all[i])) cards.Children.Add(all[i]);
         }
         Fit();
     }
