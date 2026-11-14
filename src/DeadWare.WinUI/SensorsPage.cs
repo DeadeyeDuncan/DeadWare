@@ -19,7 +19,7 @@ internal sealed class SensorsPage : Page
         this.session = session;
         Content = Pages.Layout(search, Pages.Card(table), count);
         search.TextChanged += (_, _) => Refresh();
-        this.WhileLoaded(() => { session.Changed += Refresh; Refresh(); }, () => session.Changed -= Refresh);
+        this.WhileShowing(() => { session.Changed += Refresh; Refresh(); }, () => session.Changed -= Refresh);
     }
 
     private async void Refresh()
@@ -66,7 +66,7 @@ internal sealed class NetworkPage : Page
         chart.Height = 300;
         Content = Pages.Layout(chart, status, search, Pages.Card(table), count);
         search.TextChanged += (_, _) => Refresh();
-        this.WhileLoaded(() => { session.Changed += Refresh; Refresh(); }, () => session.Changed -= Refresh);
+        this.WhileShowing(() => { session.Changed += Refresh; Refresh(); }, () => session.Changed -= Refresh);
     }
 
     private void Refresh()
