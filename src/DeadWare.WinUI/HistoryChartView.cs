@@ -142,6 +142,9 @@ internal sealed class HistoryChartView : UserControl
         return Color.FromArgb(255, Mix(color.R), Mix(color.G), Mix(color.B));
     }
 
+    /// <summary>The colour a graph colour key is drawn in, so a card can tint its reading to match its trace.</summary>
+    public Color ColorOf(string key) => TraceColor(key);
+
     private Color TraceColor(string key)
     {
         if (key == "muted") return Inks().Ink;

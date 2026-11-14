@@ -50,7 +50,7 @@ public sealed partial class MainWindow : Window
             var item = new NavigationViewItem { Content = label, Icon = new SymbolIcon(symbol), Tag = key };
             Page page = key switch
             {
-                "overview" => new StatusPage(session, mica),
+                "overview" => new OverviewPage(session),
                 "network" => new NetworkPage(session),
                 "processes" => new ProcessesPage(session),
                 "storage" => new StoragePage(session),
