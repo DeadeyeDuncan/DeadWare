@@ -79,6 +79,15 @@ internal sealed class WindowManager
         else root.Background = (Brush)Application.Current.Resources["ApplicationPageBackgroundThemeBrush"];
         string icon = Path.Combine(AppContext.BaseDirectory, "deadware.ico");
         if (File.Exists(icon)) window.AppWindow.SetIcon(icon);
+        // A standard title bar is light unless the window asks otherwise, whatever the app theme: have it follow the content.
+        void MatchTitleBar()
+        {
+            int dark = root.ActualTheme == ElementTheme.Dark ? 1 : 0;
+            _ = DwmSetWindowAttribute(handle, 20 /* DWMWA_USE_IMMERSIVE_DARK_MODE */, ref dark, sizeof(int));
+        }
+        root.ActualThemeChanged += (_, _) => MatchTitleBar();
+        root.Loaded += (_, _) => MatchTitleBar();
+        MatchTitleBar();
 
         WindowPlacement? saved = key is not null && session.Settings.Windows.TryGetValue(key, out var found) ? found : null;
         var presenter = window.AppWindow.Presenter as OverlappedPresenter;
@@ -128,4 +137,7 @@ internal sealed class WindowManager
             try { window.Close(); } catch (Exception error) { App.Note($"A window did not close cleanly: {error.Message}"); }
         }
     }
+
+    [System.Runtime.InteropServices.DllImport("dwmapi.dll")]
+    private static extern int DwmSetWindowAttribute(nint window, int attribute, ref int value, int size);
 }
