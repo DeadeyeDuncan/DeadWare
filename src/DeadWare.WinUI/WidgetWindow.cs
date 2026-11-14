@@ -153,8 +153,8 @@ internal sealed class WidgetGraph : UserControl
         fanLegend = Legend(fan, "gpufan", false, true);
         pumpLegend = Legend(pump, "cpupump", false, true);
         fanLegend.Visibility = pumpLegend.Visibility = Visibility.Collapsed;
-        // One under the other: side by side they are wider than the widget and the pump's line was cut off.
-        var rpm = new StackPanel { Spacing = 1, Margin = new Thickness(0, 3, 0, 0), Children = { fanLegend, pumpLegend } };
+        // Short labels and no pattern, so both fit side by side in the widget's width; the tooltips carry the pattern and the scale.
+        var rpm = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10, Margin = new Thickness(0, 3, 0, 0), Children = { fanLegend, pumpLegend } };
 
         var layout = new Grid();
         layout.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
@@ -205,15 +205,15 @@ internal sealed class WidgetGraph : UserControl
         fanLegend.Visibility = showFan ? Visibility.Visible : Visibility.Collapsed;
         if (showFan)
         {
-            fan.Text = OverviewPresenter.Rpm("GPU fan", session.Stale, Live(session.MetricId("gpufan")), Pattern("gpufan", dotted: true));
-            ToolTipService.SetToolTip(fanLegend, "Selected GPU's first reported fan · separate left RPM scale");
+            fan.Text = OverviewPresenter.Rpm("Fan", session.Stale, Live(session.MetricId("gpufan")));
+            ToolTipService.SetToolTip(fanLegend, $"Selected GPU's first reported fan · {Pattern("gpufan", dotted: true)} trace · separate left RPM scale");
         }
         bool showPump = kind == "cputemp" && session.Settings.ShowCpuPumpSpeed;
         pumpLegend.Visibility = showPump ? Visibility.Visible : Visibility.Collapsed;
         if (showPump)
         {
-            pump.Text = OverviewPresenter.Rpm("CPU pump", session.Stale, Live(session.MetricId("cpupump")), Pattern("cpupump", dotted: true));
-            ToolTipService.SetToolTip(pumpLegend, "CPU cooler pump, or the CPU Fan header · " + (showFan ? "shares the left RPM scale with the GPU fan" : "separate left RPM scale"));
+            pump.Text = OverviewPresenter.Rpm("Pump", session.Stale, Live(session.MetricId("cpupump")));
+            ToolTipService.SetToolTip(pumpLegend, $"CPU cooler pump, or the CPU Fan header · {Pattern("cpupump", dotted: true)} trace · " + (showFan ? "shares the left RPM scale with the GPU fan" : "separate left RPM scale"));
         }
 
         if (kind == "network")
