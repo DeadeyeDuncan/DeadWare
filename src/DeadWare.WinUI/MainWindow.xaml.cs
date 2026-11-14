@@ -52,7 +52,7 @@ public sealed partial class MainWindow : Window
             {
                 "overview" => new OverviewPage(session),
                 "network" => new NetworkPage(session),
-                "processes" => new ProcessesPage(session),
+                "processes" => new ProcessesPage(session, quit),
                 "storage" => new StoragePage(session),
                 "battery" => new BatteryPage(session),
                 "updates" => new UpdatesPage(session, quit),

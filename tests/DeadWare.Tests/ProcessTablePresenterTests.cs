@@ -73,4 +73,46 @@ public class ProcessTablePresenterTests
     [InlineData("cpu", 9.04, "9 %")] [InlineData("gpu", 12.5, "12.5 %")] [InlineData("memory", 1_500_000, "1.5 MB")]
     [InlineData("gpumemory", 0, "0 B")] [InlineData("gpushared", 2_000_000, "2.0 MB")] [InlineData("network", 2000, "2.0 KB/s")] [InlineData("pid", 4321, "4321")]
     public void Values_are_formatted_by_column(string key, double value, string expected) => Assert.Equal(expected, ProcessTablePresenter.Format(key, value));
+
+    static readonly HashSet<string> None = [];
+
+    [Fact] public void An_app_with_several_processes_is_marked_closed_and_lists_none_of_them()
+    {
+        var rows = ProcessTablePresenter.Tree(Sample, ["cpu"], "name", false, "", None);
+        Assert.Equal(["▸ chrome.exe (2)", "   notepad.exe", "   zed.exe"], rows.Select(r => r.Row.Cells[0]));
+        Assert.True(rows[0].Expandable);
+        Assert.False(rows[1].Expandable);
+        Assert.Equal([(10, 1L), (11, 1L)], rows[0].Members);
+    }
+
+    [Fact] public void An_expanded_app_is_followed_by_its_processes_in_the_sort_order()
+    {
+        var rows = ProcessTablePresenter.Tree(Sample, ["cpu"], "cpu", true, "", new HashSet<string> { "app:" + ProcessGrouping.Key("chrome.exe") });
+        int chrome = rows.ToList().FindIndex(r => r.Row.Cells[0].StartsWith("▾ chrome.exe"));
+        Assert.True(rows[chrome].Open);
+        Assert.Equal(["7.5 %", "5 %"], [rows[chrome + 1].Row.Cells[1], rows[chrome + 2].Row.Cells[1]]);
+        Assert.Equal(rows[chrome].Row.Key, rows[chrome + 1].ParentKey);
+        Assert.Equal([(11, 1L)], rows[chrome + 1].Members);
+        Assert.Contains("PID 11", rows[chrome + 1].Row.Cells[0]);
+        Assert.Equal(5, rows.Count);
+    }
+
+    [Fact] public void A_single_process_app_does_not_open_even_when_listed_as_expanded()
+    {
+        var rows = ProcessTablePresenter.Tree(Sample, ["cpu"], "name", false, "", new HashSet<string> { "app:" + ProcessGrouping.Key("zed.exe") });
+        Assert.Equal(3, rows.Count);
+    }
+
+    [Fact] public void A_held_order_keeps_listed_apps_in_place_and_puts_new_ones_after()
+    {
+        string[] held = ["app:" + ProcessGrouping.Key("notepad.exe"), "app:" + ProcessGrouping.Key("zed.exe")];
+        var rows = ProcessTablePresenter.Tree(Sample, ["cpu"], "cpu", true, "", None, null, held);
+        Assert.Equal(["   notepad.exe", "   zed.exe", "▸ chrome.exe (2)"], rows.Select(r => r.Row.Cells[0]));
+    }
+
+    [Fact] public void An_app_that_is_not_recorded_says_so_after_its_name()
+    {
+        var rows = ProcessTablePresenter.Tree(Sample, ["cpu"], "name", false, "", None, name => name == "zed.exe");
+        Assert.Equal("   zed.exe" + ProcessCopy.NotRecordedSuffix, rows[2].Row.Cells[0]);
+    }
 }
