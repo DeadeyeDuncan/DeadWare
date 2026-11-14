@@ -161,8 +161,7 @@ internal sealed class GraphPopout : UserControl
         HorizontalContentAlignment = HorizontalAlignment.Stretch;
         VerticalContentAlignment = VerticalAlignment.Stretch;
 
-        Loaded += (_, _) => { session.Changed += Refresh; Refresh(); };
-        Unloaded += (_, _) => session.Changed -= Refresh;
+        this.WhileLoaded(() => { session.Changed += Refresh; Refresh(); }, () => session.Changed -= Refresh);
     }
 
     private static TextBlock Reading(double size) => new() { Text = "—", FontSize = size, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, TextWrapping = TextWrapping.NoWrap, VerticalAlignment = VerticalAlignment.Center };

@@ -82,8 +82,7 @@ internal sealed class OverviewPage : Page
         SizeChanged += (_, _) => Arrange();
         footer.SizeChanged += (_, _) => Fit();
         toolbar.SizeChanged += (_, _) => Fit();
-        Loaded += (_, _) => { session.Changed += Refresh; Refresh(); Arrange(); };
-        Unloaded += (_, _) => session.Changed -= Refresh;
+        this.WhileLoaded(() => { session.Changed += Refresh; Refresh(); Arrange(); }, () => session.Changed -= Refresh);
         SyncDrives();
     }
 

@@ -99,18 +99,18 @@ internal sealed class SettingsPage : Page
         foreach (var panel in panels) card.Children.Add(panel);
         Content = new ScrollViewer { Content = new StackPanel { Padding = new Thickness(24), Spacing = 12, Children = { status, Pages.Card(card) } } };
 
-        Loaded += (_, _) =>
+        this.WhileLoaded(() =>
         {
             loaded = true;
             session.Changed += Sync; session.HistoryClearChanged += ClearChanged; suggestions.Changed += OfferExcluded;
             Sync();
             _ = RefreshStartupAsync(); _ = RefreshSuggestionsAsync();
-        };
-        Unloaded += (_, _) =>
+        },
+        () =>
         {
             loaded = false;
             session.Changed -= Sync; session.HistoryClearChanged -= ClearChanged; suggestions.Changed -= OfferExcluded;
-        };
+        });
         Sync();
     }
 

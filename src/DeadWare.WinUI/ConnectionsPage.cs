@@ -232,7 +232,7 @@ internal sealed class ConnectionsPage : Page
             else if (e.Key == VirtualKey.F5) { destinations.Resort(); e.Handled = true; }
         };
         playback.Tick += AdvancePlayback;
-        Loaded += (_, _) =>
+        this.WhileLoaded(() =>
         {
             active = true;
             session.Changed += RefreshSession; session.HistoryClearChanged += HistoryClearChanged;
@@ -240,14 +240,14 @@ internal sealed class ConnectionsPage : Page
             if (IsHistory && !ReadOutstanding()) RequestHistory();
             watchedRoot = XamlRoot; hostVisible = watchedRoot?.IsHostVisible ?? true;
             if (watchedRoot is not null) watchedRoot.Changed += RootChanged;
-        };
-        Unloaded += (_, _) =>
+        },
+        () =>
         {
             active = false;
             if (watchedRoot is not null) { watchedRoot.Changed -= RootChanged; watchedRoot = null; }
             session.Changed -= RefreshSession; session.HistoryClearChanged -= HistoryClearChanged;
             CancelHistory(); pendingStrip = null; StopPlayback(); downloadCancellation?.Cancel(); destinations.ReleaseHolds();
-        };
+        });
         ShowTab(); RefreshSession();
     }
 

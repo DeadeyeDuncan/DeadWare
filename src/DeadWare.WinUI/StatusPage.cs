@@ -65,8 +65,7 @@ internal sealed class StatusPage : Page
         {
             Content = new StackPanel { Padding = new Thickness(24), Spacing = 16, Children = { intro, card, charts, status } },
         };
-        Loaded += (_, _) => { session.Changed += Refresh; Refresh(); };
-        Unloaded += (_, _) => session.Changed -= Refresh;
+        this.WhileLoaded(() => { session.Changed += Refresh; Refresh(); }, () => session.Changed -= Refresh);
     }
 
     /// <summary>A titled card holding one chart, with the main trace's minimum, average and maximum beside the title.</summary>

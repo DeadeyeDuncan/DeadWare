@@ -267,7 +267,7 @@ internal sealed class HistoryChartView : UserControl
         float width = 0;
         foreach (var row in rows)
         {
-            using var layout = new CanvasTextLayout(sender, row.Text, LabelFormat, 0, 0);
+            using var layout = new CanvasTextLayout(sender, row.Text, LabelFormat, 0, 0) { WordWrapping = CanvasWordWrapping.NoWrap };
             width = Math.Max(width, (float)layout.LayoutBounds.Width);
         }
         width += padding * 2;
@@ -295,7 +295,7 @@ internal sealed class HistoryChartView : UserControl
         // Fan and pump lines read against RPM labels on the left of the same value lines.
         foreach (var value in current.RpmLines) session.DrawText(value.Label, (float)plot.Left + 4, (float)value.Y - 14, ink, LabelFormat);
         if (!current.HasReadings)
-            session.DrawText(this.session.Current is null ? "Waiting for first sample…" : "No available readings in this range", (float)plot.Left + 15, (float)(plot.Top + plot.Height / 2 - 8), ink, LabelFormat);
+            session.DrawText(this.session.Current is null ? "Waiting for first sample…" : "No available readings in this range", (float)plot.Left + 15, (float)(plot.Top + plot.Height / 2 + 2), ink, LabelFormat);
     }
 
     private void DrawTraces(CanvasControl sender, CanvasDrawEventArgs args)

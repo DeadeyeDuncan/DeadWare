@@ -60,13 +60,13 @@ internal sealed class UpdatesPage : Page
         var about = new Expander { Header = "How updates and rollback work", Content = information, HorizontalAlignment = HorizontalAlignment.Stretch };
 
         Content = new ScrollViewer { Content = new StackPanel { Padding = new Thickness(24), Spacing = 12, Children = { controls, releaseNotes, about } } };
-        Loaded += async (_, _) =>
+        this.WhileLoaded(async () =>
         {
             service.Changed += Changed;
             ApplyState(service.State);
             try { await service.ReadLocalAsync(); } catch (Exception error) { service.ReportFailure(error); }
-        };
-        Unloaded += (_, _) => service.Changed -= Changed;
+        },
+        () => service.Changed -= Changed);
     }
 
     /// <summary>The service raises its change from whichever thread finished the work.</summary>

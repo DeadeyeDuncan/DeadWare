@@ -156,8 +156,9 @@ internal static class ClearHistoryEntry
             catch (Exception error) { App.Note($"Clear history dialog failed: {error.Message}"); }
             Refresh();
         };
-        button.Loaded += (_, _) => { session.Changed += Refresh; session.HistoryClearChanged += Changed; Refresh(); };
-        button.Unloaded += (_, _) => { session.Changed -= Refresh; session.HistoryClearChanged -= Changed; };
+        button.WhileLoaded(
+            () => { session.Changed += Refresh; session.HistoryClearChanged += Changed; Refresh(); },
+            () => { session.Changed -= Refresh; session.HistoryClearChanged -= Changed; });
         return button;
     }
 }
