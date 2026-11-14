@@ -57,6 +57,7 @@ public sealed partial class MainWindow : Window
                 "battery" => new BatteryPage(session),
                 "updates" => new UpdatesPage(session, quit),
                 "alerts" => new AlertsPage(session),
+                "cooling" => new CoolingPage(session),
                 "sensors" => new SensorsPage(session),
                 _ => new PlaceholderPage(label),
             };
