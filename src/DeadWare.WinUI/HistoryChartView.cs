@@ -43,6 +43,9 @@ internal sealed class HistoryChartView : UserControl
     private Point? pointer;
     private readonly RectangleGeometry clip = new();
     private HistoryChartFrame? frame;
+    private HistoryChartRequest? pending;
+    private bool building, scrollDue;
+    private double frameNow, frameSeconds, frameWidth;
     private ChartPlot plot;
 
     public HistoryChartView(MonitorSession session, string kind, bool compare = false)
@@ -94,27 +97,58 @@ internal sealed class HistoryChartView : UserControl
             CoresWithDevices: PumpAndCoresWithDevices,
             Smoothed: settings.GraphSmoothing,
             DriveId: DriveId);
-        frame = HistoryChartModel.Build(new HistoryChartRequest(session.Collector.History, kind, session.SelectedGpuId, compare,
-            session.HistorySeconds, session.Collector.ElapsedSeconds, DateTimeOffset.Now, plot, TimeZoneInfo.Local, Options: options));
-        StatisticsReady?.Invoke(frame.Statistics);
-        // The clip keeps scrolled traces inside the plot and leaves room below it for the time labels that scroll with them.
-        clip.Rect = plot.Width > 0 && plot.Height > 0 ? new Rect(plot.Left, 0, plot.Width, ActualHeight) : new Rect(0, 0, 0, 0);
-        axes.Invalidate();
-        traces.Invalidate();
-        readout.Invalidate();
-        if (frame.HasReadings) StartScroll();
+        // Six hours of per-core history is far too much to walk on the UI thread every second for every chart: that starves
+        // input and the compositor alike. Build off-thread and keep only the newest request, as the WPF chart does.
+        pending = new HistoryChartRequest(session.Collector.History, kind, session.SelectedGpuId, compare,
+            session.HistorySeconds, session.Collector.ElapsedSeconds, DateTimeOffset.Now, plot, TimeZoneInfo.Local, Options: options);
+        if (!building) _ = BuildLatestAsync();
     }
 
-    /// <summary>Slides the trace layer left by one polling interval's width over that interval, as the WPF chart does.</summary>
+    private async Task BuildLatestAsync()
+    {
+        building = true;
+        try
+        {
+            while (pending is { } request)
+            {
+                pending = null;
+                HistoryChartFrame built;
+                try { built = await Task.Run(() => HistoryChartModel.Build(request)); }
+                catch (Exception error) { App.Note($"A {kind} chart could not be built: {error.Message}"); continue; }
+                frame = built;
+                frameNow = request.Now;
+                frameSeconds = request.Seconds;
+                frameWidth = request.Plot.Width;
+                StatisticsReady?.Invoke(built.Statistics);
+                // The clip keeps scrolled traces inside the plot and leaves room below it for the time labels that scroll with them.
+                clip.Rect = plot.Width > 0 && plot.Height > 0 ? new Rect(plot.Left, 0, plot.Width, ActualHeight) : new Rect(0, 0, 0, 0);
+                scrollDue = built.HasReadings;
+                axes.Invalidate();
+                traces.Invalidate();
+                readout.Invalidate();
+            }
+        }
+        finally { building = false; }
+    }
+
+    /// <summary>
+    /// Slides the trace layer left at the chart's pace, as the WPF chart does. It starts from where the drawing already is
+    /// (the time since the frame was built) and is started from the draw itself, so the new drawing and the reset of the
+    /// slide reach the screen together; restarting earlier shows the old drawing snapped back for a frame. It runs a second
+    /// interval past the next expected frame so a late one does not leave the trace standing still.
+    /// </summary>
     private void StartScroll()
     {
         double interval = Math.Min(1, session.Settings.PollingIntervalSeconds);
-        if (!(interval > 0) || session.HistorySeconds <= 0) return;
+        if (!(interval > 0) || frameSeconds <= 0 || !(frameWidth > 0)) return;
+        double perSecond = frameWidth / frameSeconds;
+        double elapsed = Math.Clamp(session.Collector.ElapsedSeconds - frameNow, 0, interval);
+        double remaining = 2 * interval - elapsed;
         var visual = ElementCompositionPreview.GetElementVisual(traces);
         var animation = visual.Compositor.CreateVector3KeyFrameAnimation();
-        animation.InsertKeyFrame(0, Vector3.Zero);
-        animation.InsertKeyFrame(1, new Vector3((float)(-plot.Width / session.HistorySeconds * interval), 0, 0), visual.Compositor.CreateLinearEasingFunction());
-        animation.Duration = TimeSpan.FromSeconds(interval);
+        animation.InsertKeyFrame(0, new Vector3((float)(-perSecond * elapsed), 0, 0));
+        animation.InsertKeyFrame(1, new Vector3((float)(-perSecond * 2 * interval), 0, 0), visual.Compositor.CreateLinearEasingFunction());
+        animation.Duration = TimeSpan.FromSeconds(remaining);
         visual.StartAnimation("Translation", animation);
     }
 
@@ -214,6 +248,7 @@ internal sealed class HistoryChartView : UserControl
     {
         Interlocked.Increment(ref FramesDrawn);
         if (frame is not { } current) return;
+        if (scrollDue) { scrollDue = false; StartScroll(); }
         var session = args.DrawingSession;
         var (ink, _, _) = Inks();
         float baseline = (float)(plot.Top + plot.Height);
