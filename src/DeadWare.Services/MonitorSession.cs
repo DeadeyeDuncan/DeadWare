@@ -2,6 +2,8 @@ using System.Collections.Frozen;
 using DeadWare.Core;
 namespace DeadWare.App;
 /// <summary>A timer that ticks on the front end's UI thread; each front end supplies its own.</summary>
+/// <summary>A Show in Connections request: the interval and the bare application name, or null for every application. It lives only in memory.</summary>
+public sealed record ConnectionsHistoryRequest(DateTimeOffset From, DateTimeOffset To, string? Application);
 public interface ISessionTimer
 {
     TimeSpan Interval {get;set;}
@@ -41,6 +43,12 @@ public sealed class MonitorSession
     private readonly ISessionTimer timer,saveTimer;
     private readonly Func<string?,(string Id,GeoPoint Point)?> homeCity;
     public event Action? Changed;
+    /// <summary>Asks the window to open Usage history on the day holding this instant.</summary>
+    public event Action<DateTimeOffset>? UsageDayRequested;
+    public void RequestUsageDay(DateTimeOffset at)=>UsageDayRequested?.Invoke(at);
+    /// <summary>Asks the window to open Connections history on an interval, optionally for one application.</summary>
+    public event Action<ConnectionsHistoryRequest>? ConnectionsHistoryRequested;
+    public void RequestConnectionsHistory(DateTimeOffset from,DateTimeOffset to,string? application)=>ConnectionsHistoryRequested?.Invoke(new(from,to,application));
     /// <summary>Raised on the UI thread when a store's clear starts clearing and when it leaves Clearing, so the page it feeds re-reads.</summary>
     public event Action<HistoryClearStore>? HistoryClearChanged;
     // The Don't record keys, set from the loaded settings; null in fixtures built without the constructor.

@@ -56,6 +56,7 @@ public sealed partial class MainWindow : Window
                 "storage" => new StoragePage(session),
                 "battery" => new BatteryPage(session),
                 "updates" => new UpdatesPage(session, quit),
+                "alerts" => new AlertsPage(session),
                 "sensors" => new SensorsPage(session),
                 _ => new PlaceholderPage(label),
             };
@@ -63,6 +64,9 @@ public sealed partial class MainWindow : Window
             Nav.MenuItems.Add(item);
         }
         Navigate("overview");
+        // Until Usage history and Connections can open on a requested interval, a request opens the page.
+        session.UsageDayRequested += _ => Navigate("usage");
+        session.ConnectionsHistoryRequested += _ => Navigate("connections");
 
         AppWindow.Closing += (_, args) =>
         {
