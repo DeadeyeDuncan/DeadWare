@@ -55,7 +55,7 @@ if (Get-Process -Name $processName -ErrorAction SilentlyContinue) {
 }
 
 # Prove the output is writable before spending minutes measuring.
-$outPath = [IO.Path]::GetFullPath($Out, (Get-Location).Path)
+$outPath = [IO.Path]::GetFullPath([IO.Path]::Combine((Get-Location).Path, $Out))
 try {
     [IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($outPath)) | Out-Null
     [IO.File]::WriteAllText($outPath, '')

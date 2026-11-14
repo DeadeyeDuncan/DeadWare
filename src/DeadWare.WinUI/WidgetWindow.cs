@@ -153,7 +153,8 @@ internal sealed class WidgetGraph : UserControl
         fanLegend = Legend(fan, "gpufan", false, true);
         pumpLegend = Legend(pump, "cpupump", false, true);
         fanLegend.Visibility = pumpLegend.Visibility = Visibility.Collapsed;
-        var rpm = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10, Margin = new Thickness(0, 3, 0, 0), Children = { fanLegend, pumpLegend } };
+        // One under the other: side by side they are wider than the widget and the pump's line was cut off.
+        var rpm = new StackPanel { Spacing = 1, Margin = new Thickness(0, 3, 0, 0), Children = { fanLegend, pumpLegend } };
 
         var layout = new Grid();
         layout.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
