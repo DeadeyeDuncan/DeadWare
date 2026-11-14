@@ -24,7 +24,7 @@ internal sealed class UsageHistoryPage : ScrollViewer
     [
         ("cpu", "CPU usage", "%", 100), ("cputemp", "CPU temperature", "°C", null),
         ("gpu", "GPU usage", "%", 100), ("gputemp", "GPU temperature", "°C", null),
-        ("memory", "RAM usage", "%", 100), ("network", "Network download / upload", "B/s", null),
+        ("memory", "RAM usage", "%", 100), ("network", "Network download / upload", Ui.NetworkRateLabel, null),
     ];
     // Click a moment: the CPU, RAM and GPU charts list a slot's busiest apps in the Application resources card, ranked by their own metric.
     // The GPU chart plots only the dashboard's selected GPU, but its slots rank by each app's stored GPU-seconds (its busiest engine on any
@@ -412,7 +412,7 @@ internal sealed class UsageHistoryPage : ScrollViewer
     private static string Statistics(UsageHistoryView view, string unit)
     {
         if (view.Minutes == 0 || view.Statistics.Average is null) return "No readings in this period.";
-        string Format(double? value) => unit == "B/s" ? Ui.Bytes(value, true) : Ui.Number(value, unit == "%" ? "%" : " " + unit);
+        string Format(double? value) => unit == Ui.NetworkRateLabel ? Ui.Rate(value) : unit == "B/s" ? Ui.Bytes(value, true) : Ui.Number(value, unit == "%" ? "%" : " " + unit);
         return $"MIN {Format(view.Statistics.Minimum)}    AVG {Format(view.Statistics.Average)}    MAX {Format(view.Statistics.Maximum)}    ·    {view.Minutes:N0} minutes";
     }
     /// <summary>Shows the period's applications, or the listed slot's, filtered by the search, and re-selects the selected row by name.</summary>

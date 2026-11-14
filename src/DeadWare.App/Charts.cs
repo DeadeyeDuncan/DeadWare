@@ -82,6 +82,12 @@ internal static class Ui
         double? rpm=session.Stale?null:session.Value(session.MetricId("cpupump"));
         return "CPU pump · "+(session.Stale?"stale":rpm.HasValue&&double.IsFinite(rpm.Value)?$"{rpm.Value:0} RPM":"unavailable");
     }
+    /// <summary>The network rate unit the session chose; stored values stay bytes per second.</summary>
+    public static NetworkRateUnit NetworkUnit {get;set;}=NetworkRateUnit.BytesPerSecond;
+    /// <summary>The Usage history unit label of the network series, which formats through <see cref="Rate"/>.</summary>
+    public const string NetworkRateLabel="network/s";
+    /// <summary>A network rate (bytes per second) in the chosen unit; storage rates keep <see cref="Bytes"/>.</summary>
+    public static string Rate(double? bytesPerSecond)=>NetworkRateUnits.Format(bytesPerSecond,NetworkUnit);
     public static string Bytes(double? bytes,bool rate=false)
     {
         if(!bytes.HasValue||!double.IsFinite(bytes.Value)) return "—";
@@ -329,7 +335,7 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
         double peak=Math.Max(Peak(primaryMetric,points),secondaryMetric is null?0:Peak(secondaryMetric,secondary));
         double maximum=kind is "cpu" or "gpu" or "memory"?100:bytes?Math.Max(1000,peak*1.15):Math.Max(100,peak*1.1);
         if(compare&&kind=="cputemp")maximum=Math.Ceiling(maximum/20)*20;
-        string Axis(double value)=>bytes?Ui.Bytes(value,true):$"{value:0}{(kind.Contains("temp")?(compare?"°C":"°"):"%")}";
+        string Axis(double value)=>kind=="network"?Ui.Rate(value):bytes?Ui.Bytes(value,true):$"{value:0}{(kind.Contains("temp")?(compare?"°C":"°"):"%")}";
         // GPU fan and CPU pump share the left RPM scale when both are shown.
         double fanMaximum=Math.Max(1000,Math.Ceiling(Math.Max(showFan?Peak(session.MetricId("gpufan"),fan):0,showPump?Peak(session.MetricId("cpupump"),pump):0)/1000)*1000);
         string FanAxis(double value)=>$"{value:0} RPM";
@@ -424,7 +430,7 @@ internal sealed class HistoryChart(UiSession session,string kind,bool compact=fa
             hoverLines.Add((spec.Dotted?fanAxis(value):axis(value),brush));
         }
         hoverAnchor??=hiddenAnchor;
-        if(localDown is not null||localUp is not null)hoverLines.Add(($"Local ↓ {Ui.Bytes(localDown,true)} ↑ {Ui.Bytes(localUp,true)}",Theme.Brush("Muted")));
+        if(localDown is not null||localUp is not null)hoverLines.Add(($"Local ↓ {Ui.Rate(localDown)} ↑ {Ui.Rate(localUp)}",Theme.Brush("Muted")));
         foreach(var (text,core) in HoverCoreLines(cores))hoverLines.Add((text,core>=0?coreBrushes[core]:Theme.Brush("Muted")));
         // Drives follow the totals, busiest first; a drive with neither rate at this sample is left out.
         var models=(session.Current?.Storage.Drives??[]).GroupBy(d=>d.Id).ToDictionary(g=>g.Key,g=>g.First().Model);
@@ -672,7 +678,7 @@ internal sealed class ChartCard : Border
         value.SetResourceReference(TextBlock.ForegroundProperty,Theme.GraphKey(kind));
         if(kind=="network")
         {
-            downloadValue.Text=(overview?"":"↓ ")+Ui.Bytes(current,true)+(overview?"":"    ");uploadValue.Text=(overview?"":"↑ ")+Ui.Bytes(session.Stale?null:session.Value("network/upload"),true);
+            downloadValue.Text=(overview?"":"↓ ")+Ui.Rate(current)+(overview?"":"    ");uploadValue.Text=(overview?"":"↑ ")+Ui.Rate(session.Stale?null:session.Value("network/upload"));
             string Pattern(string metric,bool dashed)=>CultureInfo.CurrentCulture.TextInfo.ToTitleCase(GraphStroke.Pattern(session.Settings,metric,dashed));
             subtitle.Text=$"{Pattern("download",false)}: download    ·    {Pattern("upload",true)}: upload    ·    Shared scale";
         }
@@ -720,7 +726,7 @@ internal sealed class ChartCard : Border
     }
     private void UpdateStatistics(Summary summary)
     {
-        Func<double?,string> format=kind is "network" or "storage"?v=>Ui.Bytes(v,true):v=>Ui.Number(v,kind.Contains("temp")?"°C":"%");
+        Func<double?,string> format=kind=="network"?Ui.Rate:kind=="storage"?v=>Ui.Bytes(v,true):v=>Ui.Number(v,kind.Contains("temp")?"°C":"%");
         stats.Text=$"MIN  {format(summary.Minimum)}      AVG  {format(summary.Average)}      MAX  {format(summary.Maximum)}"+(kind=="network"?"    · Download":"");
         if(overview)
         {

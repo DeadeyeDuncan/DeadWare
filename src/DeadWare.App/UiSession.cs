@@ -64,6 +64,7 @@ public sealed class UiSession
             Settings=loaded.Settings;SettingsStatus=loaded.Error??"";
         }
         catch(Exception e) when(e is IOException or UnauthorizedAccessException) {Settings=new();SettingsStatus="Settings unavailable; using defaults.";diagnostics?.Record("settings_load_failed",error:e);}
+        Theme.SetGraphColors(Settings.GraphColors);Theme.GlassLevel=Settings.GlassLevel;Ui.NetworkUnit=NetworkRateUnits.Parse(Settings.NetworkRateUnit);
         Theme.SetGraphColors(Settings.GraphColors);Theme.GlassLevel=Settings.GlassLevel;
         excludedKeys=AppExclusions.Keys(Settings.ExcludedApps);
         writer=new(settingsPath);
@@ -71,7 +72,7 @@ public sealed class UiSession
         diagnostics?.Record("settings_loaded",new {Status=SettingsStatus,Settings.RestoreOpenWindows,OpenWindows=layout.Remembered,Settings.SelectedGpuId,Disk=LayoutDiagnostics.ReadSettingsState(settingsPath)});
         saveTimer.Tick+=async (_,_)=>{saveTimer.Stop();await SaveAsync();};
         timer.Interval=TimeSpan.FromSeconds(Math.Min(1,Settings.PollingIntervalSeconds));
-        Collector=new(new CollectorOptions(ExtendedSensors:Settings.ExtendedSensors,PollingIntervalSeconds:Settings.PollingIntervalSeconds,StorageSensors:Settings.StorageSensors,ProcessMonitoring:Settings.ProcessMonitoring,ProcessDiskTracing:ProcessFeatures.DiskColumns&&Collector.IsElevated));
+        Collector=new(new CollectorOptions(ExtendedSensors:Settings.ExtendedSensors,PollingIntervalSeconds:Settings.PollingIntervalSeconds,StorageSensors:Settings.StorageSensors,ProcessMonitoring:Settings.ProcessMonitoring,ExcludeVirtualAdapters:Settings.ExcludeVirtualAdapters,ProcessDiskTracing:ProcessFeatures.DiskColumns&&Collector.IsElevated));
         GraphHistory=new(Path.Combine(Path.GetDirectoryName(settingsPath)!,"live-graph-history.db"),Environment.MachineName,Collector.History);
         Collector.SampleAvailable+=GraphHistory.TryRecord;
         Cooling=new(Path.Combine(Path.GetDirectoryName(settingsPath)!,"cooling-history.db"),Environment.MachineName,Settings.CoolingConfigurationId);
@@ -168,6 +169,16 @@ public sealed class UiSession
         }
         if(!changed)return;
         Theme.SetGraphColors(Settings.GraphColors);Changed?.Invoke();_ = SaveAsync();
+    }
+    public void SetNetworkRateUnit(string unit)
+    {
+        unit=NetworkRateUnits.Normalize(unit);if(Settings.NetworkRateUnit==unit)return;
+        Settings.NetworkRateUnit=unit;Ui.NetworkUnit=NetworkRateUnits.Parse(unit);Changed?.Invoke();_ = SaveAsync();
+    }
+    public void SetExcludeVirtualAdapters(bool enabled)
+    {
+        if(Settings.ExcludeVirtualAdapters==enabled)return;
+        Settings.ExcludeVirtualAdapters=enabled;Collector.SetExcludeVirtualAdapters(enabled);Changed?.Invoke();_ = SaveAsync();
     }
     public void SetGraphSmoothing(bool enabled)
     {

@@ -117,7 +117,7 @@ internal sealed class DestinationRow : INotifyPropertyChanged
         string? appsTip = d.Apps.Count == 0 ? null : Lines(d.Apps.Select(a => Line(Excluded(a.Name) ? a.Name + ProcessCopy.NotRecordedSuffix : a.Name, a.ReceivedBytes, a.SentBytes)), d.AppCount - d.Apps.Count);
         string ports = d.Ports.Count == 0 ? "" : Port(d.Ports[0]) + More(d.PortCount);
         string? portsTip = d.Ports.Count == 0 ? null : Lines(d.Ports.Select(p => Line(Port(p), p.ReceivedBytes, p.SentBytes)), d.PortCount - d.Ports.Count);
-        string download = c.History ? "" : Ui.Bytes(d.DownloadBytesPerSecond, true), upload = c.History ? "" : Ui.Bytes(d.UploadBytesPerSecond, true);
+        string download = c.History ? "" : Ui.Rate(d.DownloadBytesPerSecond), upload = c.History ? "" : Ui.Rate(d.UploadBytesPerSecond);
         string? downloadTip = !c.History && d.DownloadBytesPerSecond is null ? DestinationCopy.RateUnavailable : null;
         string? uploadTip = !c.History && d.UploadBytesPerSecond is null ? DestinationCopy.RateUnavailable : null;
         string received = Ui.Bytes(d.ReceivedBytes), sent = Ui.Bytes(d.SentBytes);

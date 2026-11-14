@@ -98,12 +98,12 @@ internal sealed class CompactGraph : Border
         }
         else if(kind=="network")
         {
-            value.Text=$"↓ {Ui.Bytes(current,true)}";upload.Text=$"↑ {Ui.Bytes(session.Stale?null:session.Value("network/upload"),true)}";
+            value.Text=$"↓ {Ui.Rate(current)}";upload.Text=$"↑ {Ui.Rate(session.Stale?null:session.Value("network/upload"))}";
             double? localDown=session.Stale?null:session.Value("network/download/local");
             local.Visibility=localDown is null?Visibility.Collapsed:Visibility.Visible;
-            if(localDown is not null)local.Text=$"· local ↓ {Ui.Bytes(localDown,true)} ↑ {Ui.Bytes(session.Value("network/upload/local"),true)}";
+            if(localDown is not null)local.Text=$"· local ↓ {Ui.Rate(localDown)} ↑ {Ui.Rate(session.Value("network/upload/local"))}";
             details.Text=$"↓ Download: {GraphStroke.Pattern(session.Settings,"download")} line\n↑ Upload: {GraphStroke.Pattern(session.Settings,"upload",true)} line\nBoth directions share the same scale."+(localDown is null?"":"\nMuted traces: local-network share (LAN, loopback, link-local) from per-app capture.");
-            AutomationProperties.SetName(value,$"Download {Ui.Bytes(current,true)}");AutomationProperties.SetName(upload,$"Upload {Ui.Bytes(session.Stale?null:session.Value("network/upload"),true)}");
+            AutomationProperties.SetName(value,$"Download {Ui.Rate(current)}");AutomationProperties.SetName(upload,$"Upload {Ui.Rate(session.Stale?null:session.Value("network/upload"))}");
         }
         else if(kind=="storage")
         {
@@ -138,7 +138,7 @@ internal sealed class CompactGraph : Border
     private void RefreshStatistics()
     {
         double now=session.Collector.ElapsedSeconds;
-        Func<double?,string> format=kind is "network" or "storage"?v=>Ui.Bytes(v,true):v=>Ui.Number(v,chartKind.Contains("temp")?" °C":" %");
+        Func<double?,string> format=kind=="network"?Ui.Rate:kind=="storage"?v=>Ui.Bytes(v,true):v=>Ui.Number(v,chartKind.Contains("temp")?" °C":" %");
         string Summary(string metric)
         {
             var summary=session.Collector.History.Summarize(metric.StartsWith("storage/",StringComparison.Ordinal)?metric:session.MetricId(metric),now,session.HistorySeconds);
