@@ -35,6 +35,19 @@ public class HistoryChartModelTests
         Assert.Equal([new ChartPoint(590, 120), new ChartPoint(600, 70), new ChartPoint(610, 20)], run);
     }
 
+    [Fact] public void A_lead_puts_the_newest_samples_beyond_the_right_edge_and_the_readout_follows()
+    {
+        var history = History((57, "cpu/usage", 10), (58, "cpu/usage", 0), (59, "cpu/usage", 50), (60, "cpu/usage", 100));
+        var chart = HistoryChartModel.Build(Request("cpu", history) with { Lead = 2 });
+        // The right edge (x = 610) is two seconds ago; the two newer samples wait to its right, 10 px a second.
+        Assert.Equal([600d, 610d, 620d, 630d], Assert.Single(Assert.Single(chart.Traces).Runs).Select(p => Math.Round(p.X, 6)));
+        var hover = HistoryChartModel.Hover(chart, 610, 60, 1);
+        Assert.NotNull(hover); Assert.Equal(610, hover!.X, 6);
+        // A sample 62 seconds old still reaches the left edge, since the plot now ends two seconds ago.
+        var older = HistoryChartModel.Build(Request("cpu", History((38, "cpu/usage", 5), (39, "cpu/usage", 5), (100, "cpu/usage", 5)), now: 100) with { Lead = 2 });
+        Assert.Contains(older.Traces[0].Runs.SelectMany(run => run), p => Math.Abs(p.X - 10) < 1e-6);
+    }
+
     [Fact] public void A_missing_reading_splits_the_trace_into_runs()
     {
         var chart = HistoryChartModel.Build(Request("memory", History((57, "memory/usage", 10), (58, "memory/usage", null), (59, "memory/usage", 30), (60, "memory/usage", 40))));

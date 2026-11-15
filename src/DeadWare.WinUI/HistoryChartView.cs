@@ -42,18 +42,26 @@ internal sealed class HistoryChartView : UserControl
     private readonly MonitorSession session;
     private readonly string kind;
     private readonly bool compare;
-    private readonly CanvasControl axes = new(), traces = new(), readout = new();
+    private readonly CanvasControl axes = new(), traces = new(), ticks = new(), readout = new();
     private Point? pointer;
     private readonly RectangleGeometry clip = new();
+    // The trace canvas is wider than the chart by what it slides, and sits in a host that clips it to the plot. The clip
+    // has to be on the host: one on the canvas itself would slide with it.
+    private readonly Canvas traceHost = new(), tickHost = new();
+    // The time labels ride the same slide as the traces but end sooner, so they pass under "Now" and not through it.
+    private readonly RectangleGeometry tickClip = new();
+    // Where the sliding layers stand while the pointer holds them still, so the readout lands on what is under it.
+    private float held;
     private HistoryChartFrame? frame;
     private HistoryChartRequest? pending;
     private bool building;
-    private double frameNow, frameSeconds, frameWidth;
+    private double frameNow, frameSeconds, frameWidth, frameLead;
     // The frame the trace layer last drew, which is what the slide has to follow until the next one is on screen.
     private bool drawnScrolls;
-    private double drawnNow, drawnSeconds, drawnWidth;
-    private CompositionPropertySet? scroll;
-    private ExpressionAnimation? scrolling;
+    private double drawnNow, drawnSeconds, drawnWidth, drawnLead;
+    // The value at the top of the axis in the drawing on screen, and what it stood for: a change of scale is eased in.
+    private double drawnMaximum;
+    private (string Kind, string? Gpu, bool Compare, int Seconds, string? Drive) drawnScale;
     private ChartPlot plot;
 
     public HistoryChartView(MonitorSession session, string kind, bool compare = false)
@@ -63,13 +71,19 @@ internal sealed class HistoryChartView : UserControl
         this.compare = compare;
         axes.Draw += DrawAxes;
         traces.Draw += DrawTraces;
-        traces.Clip = clip;
+        traceHost.Clip = clip;
+        traceHost.Children.Add(traces);
         ElementCompositionPreview.SetIsTranslationEnabled(traces, true);
+        ticks.Draw += DrawTicks;
+        tickHost.Clip = tickClip;
+        tickHost.Children.Add(ticks);
+        ElementCompositionPreview.SetIsTranslationEnabled(ticks, true);
         readout.Draw += DrawReadout;
         // A transparent background, so the pointer reaches the chart everywhere and not only over drawn pixels.
         var layers = new Grid { Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent) };
         layers.Children.Add(axes);
-        layers.Children.Add(traces);
+        layers.Children.Add(traceHost);
+        layers.Children.Add(tickHost);
         layers.Children.Add(readout);
         layers.PointerMoved += (_, e) => { bool entered = pointer is null; pointer = e.GetCurrentPoint(layers).Position; if (entered) Scroll(); readout.Invalidate(); };
         layers.PointerExited += (_, _) => { pointer = null; Scroll(); readout.Invalidate(); };
@@ -92,6 +106,14 @@ internal sealed class HistoryChartView : UserControl
     {
         plot = new ChartPlot(Left, Top, ActualWidth - Left - Right, ActualHeight - Top - Bottom);
         var settings = session.Settings;
+        double lead = Lead(settings.PollingIntervalSeconds);
+        // Room on the right for the samples that have arrived but not yet slid into the plot.
+        double beyond = plot.Width > 0 && session.HistorySeconds > 0 ? Math.Ceiling(plot.Width / session.HistorySeconds * lead) + 4 : 0;
+        if (ActualWidth > 0 && ActualHeight > 0)
+        {
+            (traces.Width, traces.Height) = (ActualWidth + beyond, ActualHeight);
+            (ticks.Width, ticks.Height) = (ActualWidth + beyond, ActualHeight);
+        }
         // Every present drive by disk index, as the dashboard traces them.
         var drives = kind == "storage" ? (session.Current?.Storage.Drives ?? []).OrderBy(drive => drive.Index).ToList() : new List<StorageDrive>();
         var options = new HistoryChartOptions(
@@ -107,7 +129,7 @@ internal sealed class HistoryChartView : UserControl
         // Six hours of per-core history is far too much to walk on the UI thread every second for every chart: that starves
         // input and the compositor alike. Build off-thread and keep only the newest request, as the WPF chart does.
         pending = new HistoryChartRequest(session.Collector.History, kind, session.SelectedGpuId, compare,
-            session.HistorySeconds, session.Collector.ElapsedSeconds, DateTimeOffset.Now, plot, TimeZoneInfo.Local, Options: options);
+            session.HistorySeconds, session.Collector.ElapsedSeconds, DateTimeOffset.Now, plot, TimeZoneInfo.Local, Options: options, Lead: lead);
         if (!building) _ = BuildLatestAsync();
     }
 
@@ -126,11 +148,16 @@ internal sealed class HistoryChartView : UserControl
                 frameNow = request.Now;
                 frameSeconds = request.Seconds;
                 frameWidth = request.Plot.Width;
+                frameLead = request.Lead;
                 StatisticsReady?.Invoke(built.Statistics);
-                // The clip keeps scrolled traces inside the plot and leaves room below it for the time labels that scroll with them.
-                clip.Rect = plot.Width > 0 && plot.Height > 0 ? new Rect(plot.Left, 0, plot.Width, ActualHeight) : new Rect(0, 0, 0, 0);
+                // The clips keep the sliding traces inside the plot, and the time labels under it and short of "Now".
+                bool room = plot.Width > 0 && plot.Height > 0;
+                clip.Rect = room ? new Rect(plot.Left, 0, plot.Width, plot.Top + plot.Height + 1) : new Rect(0, 0, 0, 0);
+                double labels = plot.Width - NowWidth - 6;
+                tickClip.Rect = room && labels > 0 ? new Rect(plot.Left, plot.Top + plot.Height, labels, ActualHeight - plot.Top - plot.Height) : new Rect(0, 0, 0, 0);
                 axes.Invalidate();
                 traces.Invalidate();
+                ticks.Invalidate();
                 readout.Invalidate();
             }
         }
@@ -138,73 +165,74 @@ internal sealed class HistoryChartView : UserControl
     }
 
     /// <summary>
-    /// Slides the trace layer left at the chart's pace, as the WPF chart does. Every chart follows one compositor clock that
-    /// runs for as long as the app does; a new drawing only tells the expression which moment it shows. An animation
-    /// restarted per sample begins whenever the compositor picks it up, a little after its drawing, and that showed as a
-    /// step back on every sample; with a clock that never restarts, any such lag is the same before and after a sample and
-    /// cancels out. The slide stops a second interval past the frame, where a late frame would otherwise run the trace off
-    /// the plot, and holds still under the pointer so the readout stays on its sample.
+    /// How far behind the present the plot's right edge sits, in seconds: two samples at up to one a second. The newest
+    /// sample is then drawn beyond the edge and slides into view, so the trace never ends short of the edge and waits for
+    /// the next reading; and the curve into a sample is still out of sight when the sample after it arrives and bends it.
+    /// </summary>
+    private static double Lead(double pollingSeconds) => 2 * Math.Min(1, pollingSeconds > 0 ? pollingSeconds : 1);
+
+    /// <summary>
+    /// Slides the trace layer left at the chart's pace. Each drawing starts its own run from where that drawing already
+    /// stands (the time since its moment) to the point where its last sample reaches the edge, and holds there if the next
+    /// reading is late. The run and the drawing are committed together, so the first frame that shows the new drawing shows
+    /// it in the right place. An earlier version followed one clock that ran for the life of the app; the compositor stops
+    /// that clock while the window is covered or hidden, and every chart then stood still between samples until restart.
+    /// Under the pointer the layer holds still, so the readout stays on its sample.
     /// </summary>
     private void Scroll()
     {
-        var visual = ElementCompositionPreview.GetElementVisual(traces);
-        double interval = Math.Min(1, session.Settings.PollingIntervalSeconds);
-        if (!drawnScrolls || !(interval > 0) || !(drawnSeconds > 0) || !(drawnWidth > 0))
+        var layers = new[] { traces, ticks };
+        var visuals = layers.Select(layer => ElementCompositionPreview.GetElementVisual(layer)).ToArray();
+        void Hold(Vector3 at)
         {
-            visual.StopAnimation("Translation");
-            traces.Translation = Vector3.Zero;
-            return;
+            held = at.X;
+            for (int i = 0; i < layers.Length; i++) { visuals[i].StopAnimation("Translation"); layers[i].Translation = at; }
         }
-        double speed = drawnWidth / drawnSeconds, limit = 2 * interval;
-        if (pointer is not null)
-        {
-            visual.StopAnimation("Translation");
-            traces.Translation = new Vector3((float)(-speed * Math.Clamp(session.Collector.ElapsedSeconds - drawnNow, 0, limit)), 0, 0);
-            return;
-        }
-        var clock = ScrollClock.For(visual.Compositor, session.Collector.ElapsedSeconds);
-        scroll ??= visual.Compositor.CreatePropertySet();
-        scroll.InsertScalar("Shown", (float)clock.At(drawnNow));
-        scroll.InsertScalar("Speed", (float)speed);
-        scroll.InsertScalar("Limit", (float)limit);
-        if (scrolling is null)
-        {
-            // Time since the drawing's moment, read around the clock's period so the hourly wrap passes unnoticed.
-            scrolling = visual.Compositor.CreateExpressionAnimation(
-                $"Vector3(-own.Speed * Clamp(Mod(clock.Seconds - own.Shown + {ScrollClock.Period}, {ScrollClock.Period}), 0, own.Limit), 0, 0)");
-            scrolling.SetReferenceParameter("clock", clock.Properties);
-            scrolling.SetReferenceParameter("own", scroll);
-        }
-        visual.StartAnimation("Translation", scrolling);
+        if (!drawnScrolls || !(drawnLead > 0) || !(drawnSeconds > 0) || !(drawnWidth > 0)) { Hold(Vector3.Zero); return; }
+        double speed = drawnWidth / drawnSeconds;
+        double elapsed = Math.Clamp(session.Collector.ElapsedSeconds - drawnNow, 0, drawnLead);
+        var from = new Vector3((float)(-speed * elapsed), 0, 0);
+        Hold(from);
+        if (pointer is not null || drawnLead - elapsed < 0.001) return;
+        var compositor = visuals[0].Compositor;
+        var run = compositor.CreateVector3KeyFrameAnimation();
+        run.InsertKeyFrame(0, from);
+        run.InsertKeyFrame(1, new Vector3((float)(-speed * drawnLead), 0, 0), compositor.CreateLinearEasingFunction());
+        run.Duration = TimeSpan.FromSeconds(drawnLead - elapsed);
+        foreach (var visual in visuals) visual.StartAnimation("Translation", run);
     }
 
-    /// <summary>A compositor value that counts seconds, wrapping every <see cref="Period"/>, for every chart to slide by.</summary>
-    private sealed class ScrollClock
+    /// <summary>
+    /// Eases a change of the value axis. A network or disk chart's axis follows its highest reading, so it shifts a little
+    /// with most samples; redrawn at the new scale in one step, the whole trace twitches. The new drawing instead starts
+    /// stretched to the height the old one had and settles over a quarter of a second. A change of more than three times,
+    /// a different chart (range, device, drive) and a chart under the pointer are shown at once.
+    /// </summary>
+    private void Rescale(HistoryChartFrame current)
     {
-        public const int Period = 3600;
-        private static ScrollClock? shared;
-        private readonly double startedAt;
-
-        private ScrollClock(Compositor compositor, double now)
+        var scale = (kind, session.SelectedGpuId, compare, (int)drawnSeconds, DriveId);
+        double before = drawnMaximum, after = current.Maximum;
+        bool same = scale == drawnScale;
+        (drawnMaximum, drawnScale) = (after, scale);
+        var visual = ElementCompositionPreview.GetElementVisual(traces);
+        visual.CenterPoint = new Vector3(0, (float)(plot.Top + plot.Height), 0);
+        double ratio = before > 0 ? after / before : 1;
+        if (!same || pointer is not null || !current.HasReadings || !(after > 0) || Math.Abs(ratio - 1) < 0.002 || ratio > 3 || ratio < 1 / 3d)
         {
-            startedAt = now;
-            Properties = compositor.CreatePropertySet();
-            Properties.InsertScalar("Seconds", 0);
-            var run = compositor.CreateScalarKeyFrameAnimation();
-            run.InsertKeyFrame(0, 0);
-            run.InsertKeyFrame(1, Period, compositor.CreateLinearEasingFunction());
-            run.Duration = TimeSpan.FromSeconds(Period);
-            run.IterationBehavior = AnimationIterationBehavior.Forever;
-            Properties.StartAnimation("Seconds", run);
+            visual.StopAnimation("Scale");
+            visual.Scale = Vector3.One;
+            return;
         }
-
-        public CompositionPropertySet Properties { get; }
-
-        public static ScrollClock For(Compositor compositor, double now) => shared ??= new ScrollClock(compositor, now);
-
-        /// <summary>The clock's reading at a moment of the collector's clock.</summary>
-        public double At(double collectorSeconds) => ((collectorSeconds - startedAt) % Period + Period) % Period;
+        var settle = visual.Compositor.CreateVector3KeyFrameAnimation();
+        settle.InsertKeyFrame(0, new Vector3(1, (float)ratio, 1));
+        settle.InsertKeyFrame(1, Vector3.One, visual.Compositor.CreateCubicBezierEasingFunction(new Vector2(0.2f, 0.8f), new Vector2(0.2f, 1)));
+        settle.Duration = TimeSpan.FromMilliseconds(250);
+        visual.StartAnimation("Scale", settle);
     }
+
+    /// <summary>The width of the "Now" label, which the sliding time labels stop short of.</summary>
+    private static double NowWidth => nowWidth ??= TextWidth(Microsoft.Graphics.Canvas.CanvasDevice.GetSharedDevice(), "Now", LabelFormat);
+    private static double? nowWidth;
 
     private (Color Ink, Color Line, Color Surface) Inks()
     {
@@ -235,6 +263,23 @@ internal sealed class HistoryChartView : UserControl
         return Color.FromArgb(255, Mix(color.R), Mix(color.G), Mix(color.B));
     }
 
+    /// <summary>
+    /// The saved line style a trace is drawn with. A core line takes the CPU line's thickness, times its own when it has a
+    /// style of its own; drive lines have none.
+    /// </summary>
+    private GraphLineStyle StyleOf(ChartTrace trace)
+    {
+        var styles = session.Settings.GraphStyles;
+        if (trace.Role == ChartTraceRole.Drive) return new();
+        if (trace.Role != ChartTraceRole.Core) return styles.GetValueOrDefault(trace.ColorKey, new());
+        double cpu = styles.TryGetValue("cpu", out var whole) ? whole.Thickness : 1;
+        return styles.TryGetValue(trace.ColorKey, out var own) ? own with { Thickness = cpu * own.Thickness } : new GraphLineStyle(Thickness: cpu);
+    }
+
+    /// <summary>High contrast draws no glow, as in the WPF charts.</summary>
+    private static bool HighContrast => accessibility.HighContrast;
+    private static readonly Windows.UI.ViewManagement.AccessibilitySettings accessibility = new();
+
     /// <summary>The colour a graph colour key is drawn in, so a card can tint its reading to match its trace.</summary>
     public Color ColorOf(string key) => TraceColor(key);
 
@@ -251,7 +296,10 @@ internal sealed class HistoryChartView : UserControl
     private void DrawReadout(CanvasControl sender, CanvasDrawEventArgs args)
     {
         if (frame is not { } current || pointer is not { } position) return;
-        if (HistoryChartModel.Hover(current, position.X, position.Y, session.Settings.PollingIntervalSeconds) is not { } hover) return;
+        // The layers stand `held` to the left of where they were drawn, so the pointer is that much further along them.
+        if (position.X < plot.Left || position.X > plot.Left + plot.Width) return;
+        if (HistoryChartModel.Hover(current, Math.Min(position.X - held, plot.Left + plot.Width), position.Y, session.Settings.PollingIntervalSeconds) is not { } found) return;
+        var hover = found with { X = found.X + held, Lines = found.Lines.Select(value => value.Dot is { } dot ? value with { Dot = dot with { X = dot.X + held } } : value).ToList() };
         var drawing = args.DrawingSession;
         var (ink, line, _) = Inks();
         bool dark = ActualTheme == ElementTheme.Dark;
@@ -312,21 +360,26 @@ internal sealed class HistoryChartView : UserControl
         return layout.LayoutBounds.Width;
     }
 
+    /// <summary>The time labels, every one of them: the clip on their host hides those still to come and those under "Now".</summary>
+    private void DrawTicks(CanvasControl sender, CanvasDrawEventArgs args)
+    {
+        if (frame is not { } current) return;
+        var (ink, _, _) = Inks();
+        foreach (var tick in current.Ticks) args.DrawingSession.DrawText(tick.Label, (float)tick.X, (float)(plot.Top + plot.Height) + 4, ink, TickFormat);
+    }
+
     private void DrawTraces(CanvasControl sender, CanvasDrawEventArgs args)
     {
         Interlocked.Increment(ref FramesDrawn);
         if (frame is not { } current) return;
-        (drawnScrolls, drawnNow, drawnSeconds, drawnWidth) = (current.HasReadings, frameNow, frameSeconds, frameWidth);
+        (drawnScrolls, drawnNow, drawnSeconds, drawnWidth, drawnLead) = (current.HasReadings, frameNow, frameSeconds, frameWidth, frameLead);
         Scroll();
+        Rescale(current);
         var session = args.DrawingSession;
-        var (ink, _, _) = Inks();
         float baseline = (float)(plot.Top + plot.Height);
-        // Time labels stop short of "Now", which stays put at the right end of the axis.
-        double limit = plot.Left + plot.Width - TextWidth(sender, "Now", LabelFormat) - 6;
-        foreach (var tick in current.Ticks)
-            if (tick.X + TextWidth(sender, tick.Label, TickFormat) / 2 <= limit) session.DrawText(tick.Label, (float)tick.X, baseline + 4, ink, TickFormat);
-        using var dashes = new CanvasStrokeStyle { DashStyle = CanvasDashStyle.Dash };
-        using var dots = new CanvasStrokeStyle { DashStyle = CanvasDashStyle.Dot };
+        using var dashes = new CanvasStrokeStyle { DashStyle = CanvasDashStyle.Dash, LineJoin = CanvasLineJoin.Round };
+        using var dots = new CanvasStrokeStyle { DashStyle = CanvasDashStyle.Dot, LineJoin = CanvasLineJoin.Round };
+        using var round = new CanvasStrokeStyle { LineJoin = CanvasLineJoin.Round };
         // Cores and drives sit underneath, then the local share, then the totals and comparison lines.
         static int Layer(ChartTrace trace) => trace.Role switch { ChartTraceRole.Core or ChartTraceRole.Drive => 0, ChartTraceRole.Local => 1, _ => 2 };
         foreach (var trace in current.Traces.Where(trace => !trace.Hidden).OrderBy(Layer))
@@ -360,10 +413,17 @@ internal sealed class HistoryChartView : UserControl
                 AddRun(path, run, current.Curved);
                 path.EndFigure(CanvasFigureLoop.Open);
                 using var stroke = CanvasGeometry.CreatePath(path);
-                float weight = thin ? 1 : 2;
-                if (trace.Dotted) session.DrawGeometry(stroke, color, weight, dots);
-                else if (trace.Dashed) session.DrawGeometry(stroke, color, weight, dashes);
-                else session.DrawGeometry(stroke, color, weight);
+                // The line style saved for this trace in Settings: its pattern, thickness and glow, as the WPF charts draw them.
+                var style = StyleOf(trace);
+                float weight = (float)((thin ? 1 : 2) * style.Thickness);
+                var pattern = style.Pattern switch { "solid" => null, "dashed" => dashes, "dotted" => dots, _ => trace.Dotted ? dots : trace.Dashed ? dashes : null };
+                if (style.Glow && style.GlowStrength > 0 && !HighContrast)
+                {
+                    var halo = Color.FromArgb((byte)Math.Clamp(color.A * .16 * style.GlowStrength, 0, 255), color.R, color.G, color.B);
+                    session.DrawGeometry(stroke, halo, (float)(weight + 4 * style.GlowStrength), round);
+                }
+                if (pattern is null) session.DrawGeometry(stroke, color, weight, round);
+                else session.DrawGeometry(stroke, color, weight, pattern);
             }
         }
     }

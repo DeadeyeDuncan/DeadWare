@@ -8,7 +8,9 @@ public readonly record struct ChartPlot(double Left,double Top,double Width,doub
 /// <param name="CompareDevices">Adds the GPU to a cpu or cputemp chart; ignored for other kinds.</param>
 /// <param name="Now">The collector's monotonic clock, in seconds, at the right-hand edge.</param>
 /// <param name="Options">The optional extra lines; null draws only the main traces.</param>
-public sealed record HistoryChartRequest(SampleHistory History,string Kind,string? GpuId,bool CompareDevices,int Seconds,double Now,DateTimeOffset WallNow,ChartPlot Plot,TimeZoneInfo? Zone=null,bool Compact=false,HistoryChartOptions? Options=null);
+/// <param name="Lead">Seconds between the right-hand edge and <paramref name="Now"/>: the edge shows the moment that long ago, and
+/// newer samples are laid out beyond it, where a chart that slides between samples brings them into view.</param>
+public sealed record HistoryChartRequest(SampleHistory History,string Kind,string? GpuId,bool CompareDevices,int Seconds,double Now,DateTimeOffset WallNow,ChartPlot Plot,TimeZoneInfo? Zone=null,bool Compact=false,HistoryChartOptions? Options=null,double Lead=0);
 
 /// <summary>The optional lines of a history chart. The settings switch them on; the chart's kind decides which apply.</summary>
 /// <param name="GpuFan">Show GPU fan speed: on a gputemp chart, or a cputemp chart that compares devices.</param>
@@ -107,10 +109,13 @@ public static class HistoryChartModel
         };
 
         int columns=(int)Math.Ceiling(plot.Width);
+        // The moment at the right-hand edge, and the stretch of history that reaches from the left edge to the newest sample.
+        double lead=double.IsFinite(request.Lead)?Math.Max(0,request.Lead):0,edge=request.Now-lead;
+        int span=request.Seconds+(int)Math.Ceiling(lead),spanColumns=(int)Math.Ceiling(plot.Width*span/request.Seconds);
         // Smoothed: one point per column at its average, with the column's range kept for the band and the statistics.
         (IReadOnlyList<SamplePoint> Points,IReadOnlyList<ChartRangePoint>? Ranges) Read(string metric)
         {
-            if(!smoothed)return (request.History.Series(metric,request.Now,request.Seconds),null);
+            if(!smoothed)return (request.History.Series(metric,request.Now,span),null);
             var ranges=request.History.ChartRanges(metric,request.Now,request.Seconds,columns);
             return (ranges.Select(p=>new SamplePoint(DateTimeOffset.UnixEpoch,p.EndSeconds,p.Average)).ToArray(),ranges);
         }
@@ -131,11 +136,11 @@ public static class HistoryChartModel
             lines[i]=new(plot.Top+plot.Height*(1-value/maximum),Axis(value));
         }
 
-        double X(double monotonic)=>plot.Left+plot.Width*(1-(request.Now-monotonic)/request.Seconds);
+        double X(double monotonic)=>plot.Left+plot.Width*(1-(edge-monotonic)/request.Seconds);
         ChartTrace Trace(string metric,string colorKey,bool dashed,double fill,(IReadOnlyList<SamplePoint> Points,IReadOnlyList<ChartRangePoint>? Ranges) data,double top,bool band=false)
         {
             var runs=new List<IReadOnlyList<ChartPoint>>();List<ChartPoint>? run=null;
-            var drawn=smoothed?data.Points:SampleHistory.ReduceForChart(data.Points,request.Now,request.Seconds,columns);
+            var drawn=smoothed?data.Points:SampleHistory.ReduceForChart(data.Points,request.Now,span,spanColumns);
             foreach(var point in drawn)
             {
                 if(point.Value is not { } value||!double.IsFinite(value)){run=null;continue;}
@@ -194,7 +199,7 @@ public static class HistoryChartModel
         else statistics=SampleHistory.Statistics(primaryData.Points);
 
         var ticks=TimeTicks.For(request.Seconds,request.Now,request.WallNow,plot.Width,request.Compact,request.Zone)
-            .Select(t=>new ChartTick(plot.Left+plot.Width*(1-(request.Now-t.MonotonicSeconds)/request.Seconds),t.Label)).ToArray();
+            .Select(t=>new ChartTick(X(t.MonotonicSeconds),t.Label)).ToArray();
         // Cores, drives and the local share never decide whether the chart has readings: their totals do.
         bool readings=traces.Any(t=>t.Role is ChartTraceRole.Main or ChartTraceRole.Rpm&&t.Runs.Count>0);
         return new(maximum,lines,ticks,traces,statistics,readings,request){RpmMaximum=rpmMaximum,RpmLines=rpmLines,Curved=!(request.Seconds>=3600&&!smoothed)};
@@ -210,12 +215,13 @@ public static class HistoryChartModel
         var request=frame.Request;var plot=request.Plot;
         if(frame.Traces.Count==0||x<plot.Left||x>plot.Left+plot.Width||y<plot.Top||y>plot.Top+plot.Height)return null;
         var primary=frame.Traces[0];
-        double seconds=request.Now-(plot.Left+plot.Width-x)/plot.Width*request.Seconds;
+        double edge=request.Now-(double.IsFinite(request.Lead)?Math.Max(0,request.Lead):0);
+        double seconds=edge-(plot.Left+plot.Width-x)/plot.Width*request.Seconds;
         double tolerance=Math.Max(1.5*Math.Max(1,pollingSeconds),request.Seconds/Math.Max(1,Math.Ceiling(plot.Width)));
         int index=NearestSample.Find(primary.Samples,seconds,tolerance);
         if(index<0)return null;
         var sample=primary.Samples[index];
-        double at=plot.Left+plot.Width*(1-(request.Now-sample.MonotonicSeconds)/request.Seconds);
+        double at=plot.Left+plot.Width*(1-(edge-sample.MonotonicSeconds)/request.Seconds);
         bool compare=request.CompareDevices&&request.Kind is "cpu" or "cputemp";
         var lines=new List<ChartHoverLine>();
         var coreValues=new List<(int Core,double Value,string ColorKey)>();
