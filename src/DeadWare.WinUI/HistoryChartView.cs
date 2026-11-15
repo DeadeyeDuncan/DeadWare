@@ -365,7 +365,15 @@ internal sealed class HistoryChartView : UserControl
     {
         if (frame is not { } current) return;
         var (ink, _, _) = Inks();
-        foreach (var tick in current.Ticks) args.DrawingSession.DrawText(tick.Label, (float)tick.X, (float)(plot.Top + plot.Height) + 4, ink, TickFormat);
+        // On the short ranges a label slides in from under "Now" within a second or two. On the long ones the same label
+        // would sit cut in half for minutes, so there it waits until it fits whole, as it did before the labels slid.
+        bool slow = !(frameSeconds > 0) || frameWidth / frameSeconds < 4;
+        double limit = plot.Left + plot.Width - NowWidth - 6;
+        foreach (var tick in current.Ticks)
+        {
+            if (slow && tick.X + TextWidth(sender, tick.Label, TickFormat) / 2 > limit) continue;
+            args.DrawingSession.DrawText(tick.Label, (float)tick.X, (float)(plot.Top + plot.Height) + 4, ink, TickFormat);
+        }
     }
 
     private void DrawTraces(CanvasControl sender, CanvasDrawEventArgs args)
