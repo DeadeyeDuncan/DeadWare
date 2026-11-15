@@ -15,8 +15,9 @@ public interface ISessionTimer
 /// <summary>
 /// The monitoring session without any user-interface framework: it loads and saves settings, builds and wires the
 /// services, and raises <see cref="Changed"/> once a second. It began as a copy of the WPF app's UiSession, which
-/// stays as it is until the WPF app is retired; a fix to session logic before then belongs in both. It never
-/// touches the saved pop-out windows or their positions, so running a front end on it leaves the WPF layout alone.
+/// was removed with that app in 0.18.0; the shutdown and history tests that reached into UiSession now reach into
+/// this class's private members by name. It never touches the saved pop-out windows or their positions; the front
+/// end's window manager owns those.
 /// </summary>
 public sealed class MonitorSession
 {

@@ -1,6 +1,6 @@
 <Solution>
   <Folder Name="/src/">
-    <Project Path="src/DeadWare.App/DeadWare.App.csproj" />
+    <Project Path="src/DeadWare.WinUI/DeadWare.WinUI.csproj" />
     <Project Path="src/DeadWare.Services/DeadWare.Services.csproj" />
     <Project Path="src/DeadWare.UpdateCore/DeadWare.UpdateCore.csproj" />
     <Project Path="src/DeadWare.Updater/DeadWare.Updater.csproj" />

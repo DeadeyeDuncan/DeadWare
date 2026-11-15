@@ -261,18 +261,18 @@ public class ConnectionServiceTests
         finally {await service.StopAsync();System.IO.Directory.Delete(root,true);}
     }
     private const System.Reflection.BindingFlags NonPublicInstance=System.Reflection.BindingFlags.Instance|System.Reflection.BindingFlags.NonPublic;
-    /// <summary>An uninitialized UiSession holding the collector, the connection service and fixture history services under root, with a fixture ETW capture.</summary>
-    private static (UiSession Session,EtwNetwork Capture) FixtureSession(string root,Collector collector,ConnectionService service)
+    /// <summary>An uninitialized MonitorSession holding the collector, the connection service and fixture history services under root, with a fixture ETW capture.</summary>
+    private static (MonitorSession Session,EtwNetwork Capture) FixtureSession(string root,Collector collector,ConnectionService service)
     {
-        var session=(UiSession)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(UiSession));
-        void Set(string name,object value)=>typeof(UiSession).GetField("<"+name+">k__BackingField",NonPublicInstance)!.SetValue(session,value);
+        var session=(MonitorSession)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(MonitorSession));
+        void Set(string name,object value)=>typeof(MonitorSession).GetField("<"+name+">k__BackingField",NonPublicInstance)!.SetValue(session,value);
         var capture=new EtwNetwork(_=>new(11,1,"fixture"));typeof(Collector).GetField("etw",NonPublicInstance)!.SetValue(collector,capture);
         Set("Collector",collector);Set("Connections",service);Set("Cooling",new CoolingHistoryService(System.IO.Path.Combine(root,"cooling.db"),"fixture","setup"));
         Set("GraphHistory",new GraphHistoryService(System.IO.Path.Combine(root,"graphs.db"),"fixture",new SampleHistory()));Set("Battery",new BatteryHistoryService(System.IO.Path.Combine(root,"battery.db"),"fixture"));Set("Usage",new UsageHistoryService(System.IO.Path.Combine(root,"usage.db"),"fixture"));Set("Alerts",new AlertService(System.IO.Path.Combine(root,"alerts.db"),"fixture",new UsageHistoryService(System.IO.Path.Combine(root,"usage-alerts.db"),"fixture"),()=>null));
         return (session,capture);
     }
-    private static Task StopCollector(UiSession session,TimeSpan providers,TimeSpan connections,TimeSpan history)
-        =>(Task)typeof(UiSession).GetMethod("StopCollectorAsync",NonPublicInstance)!.Invoke(session,[providers,connections,history])!;
+    private static Task StopCollector(MonitorSession session,TimeSpan providers,TimeSpan connections,TimeSpan history)
+        =>(Task)typeof(MonitorSession).GetMethod("StopCollectorAsync",NonPublicInstance)!.Invoke(session,[providers,connections,history])!;
     [Theory][InlineData(false)][InlineData(true)]
     public async Task Session_normal_quit_keeps_final_subscription_until_the_endpoint_drain_is_persisted(bool failingFinalSubscriber)
     {

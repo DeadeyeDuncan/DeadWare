@@ -28,15 +28,15 @@ public class DiagnosticOptionsTests : IAsyncLifetime
     private static ProcessActivity ActivityWith(params string[] names)=>new(ProcessActivityKind.Available,1,DateTimeOffset.UtcNow,1,1,8,
         names.Select((n,i)=>new ProcessSample(i+1,1,n,1,1.0,1000,null,null,ProcessGap.None,null)).ToArray(),ProcessOmitted.None,names.Length,1);
 
-    [Fact] public void Diagnose_runs_the_scan_unless_no_processes(){ Assert.True(App.DiagnosticOptions(["--diagnose","o.json"],false).ProcessMonitoring);Assert.False(App.DiagnosticOptions(["--diagnose","o.json","--no-processes"],false).ProcessMonitoring);}
+    [Fact] public void Diagnose_runs_the_scan_unless_no_processes(){ Assert.True(DiagnosticRun.Options(["--diagnose","o.json"],false).ProcessMonitoring);Assert.False(DiagnosticRun.Options(["--diagnose","o.json","--no-processes"],false).ProcessMonitoring);}
     [Theory][InlineData(new[]{"--diagnose","o"},false,false)][InlineData(new[]{"--diagnose","o","--no-etw"},true,false)][InlineData(new[]{"--diagnose","o","--no-processes"},true,false)]
-    public void Disk_tracing_needs_elevation_and_the_disk_build(string[] args,bool elevated,bool expected)=>Assert.Equal(expected,App.DiagnosticOptions(args,elevated).ProcessDiskTracing);
-    [Fact] public void Disk_tracing_follows_the_disk_build_when_elevated()=>Assert.Equal(ProcessFeatures.DiskColumns,App.DiagnosticOptions(["--diagnose","o"],true).ProcessDiskTracing);
+    public void Disk_tracing_needs_elevation_and_the_disk_build(string[] args,bool elevated,bool expected)=>Assert.Equal(expected,DiagnosticRun.Options(args,elevated).ProcessDiskTracing);
+    [Fact] public void Disk_tracing_follows_the_disk_build_when_elevated()=>Assert.Equal(ProcessFeatures.DiskColumns,DiagnosticRun.Options(["--diagnose","o"],true).ProcessDiskTracing);
     [Fact] public void Diagnostic_report_has_counts_and_no_app_names(){
         var traffic=new ProcessTraffic[]{new(101,1,"secret-net.exe",10,20,100,200),new(102,2,"PID 102",null,null,5,0)};
         var activity=ActivityWith("secret-app.exe","OtherSecret.EXE");
         var reading=Fixture() with {Processes=traffic,ProcessActivity=activity,ProcessSummary=ProcessSummary.From(activity)};
-        string json=App.DiagnosticReport("Completed","Idle between samples",15,App.DiagnosticOptions(["--diagnose","o.json"],true),[reading]);
+        string json=DiagnosticRun.Report("test","Completed","Idle between samples",15,DiagnosticRun.Options(["--diagnose","o.json"],true),[reading]);
         foreach(string name in new[]{"secret-net","PID 102","secret-app","OtherSecret"})Assert.DoesNotContain(name,json,StringComparison.OrdinalIgnoreCase);
         using var doc=JsonDocument.Parse(json);var s=doc.RootElement.GetProperty("Samples")[0];
         Assert.False(s.TryGetProperty("Processes",out _));Assert.False(s.TryGetProperty("Connections",out _));Assert.False(s.TryGetProperty("ProcessActivity",out _));
@@ -47,7 +47,7 @@ public class DiagnosticOptionsTests : IAsyncLifetime
         var engine=new GpuEngineUse(0xA,0,0,"3D","GPU 0 · 3D","Secret Adapter 9000",40);
         var process=new ProcessSample(1,1,"secret-app.exe",1,1.0,1000,null,null,ProcessGap.None,null){GpuPercent=40,GpuEngine=engine.Label,GpuAdapter=engine.Adapter,GpuEngines=[engine]};
         var activity=ActivityWith("secret-app.exe") with {Processes=[process],GpuSummary=new(12,1,1,0.8,ProcessColumnState.Ready,GpuCounterSummary.EveryPoll)};
-        string json=App.DiagnosticReport("Completed","Idle between samples",15,App.DiagnosticOptions(["--diagnose","o.json"],false),[Fixture() with {ProcessActivity=activity,ProcessSummary=ProcessSummary.From(activity)}]);
+        string json=DiagnosticRun.Report("test","Completed","Idle between samples",15,DiagnosticRun.Options(["--diagnose","o.json"],false),[Fixture() with {ProcessActivity=activity,ProcessSummary=ProcessSummary.From(activity)}]);
         Assert.DoesNotContain("Secret Adapter",json);Assert.DoesNotContain("secret-app",json,StringComparison.OrdinalIgnoreCase);
         using var doc=JsonDocument.Parse(json);var gpu=doc.RootElement.GetProperty("Samples")[0].GetProperty("ProcessSummary").GetProperty("Gpu");
         Assert.Equal(12,gpu.GetProperty("Instances").GetInt32());Assert.Equal(1,gpu.GetProperty("Adapters").GetInt32());Assert.Equal("every poll",gpu.GetProperty("Placement").GetString());}

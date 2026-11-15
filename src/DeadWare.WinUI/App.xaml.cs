@@ -72,8 +72,9 @@ public partial class App : Application
             instance = new GuiInstance();
             if (!instance.Acquired)
             {
-                // The WPF app and this one share the single-instance marker, so they never write the same histories at once.
-                // A sign-in launch that finds DeadWare running leaves quietly, as the WPF app does.
+                // One DeadWare per Windows session, so two never write the same histories at once. The marker is the one
+                // the WPF releases used, so this also holds against a 0.17 or older copy that is still running.
+                // A sign-in launch that finds DeadWare running leaves quietly.
                 if (!arguments.Contains("--startup"))
                     Tell("DeadWare is already running in this Windows session. Double-click its system tray icon or right-click it and choose Show dashboard. The icon may be in the tray overflow.", MessageIcon.Information);
                 Exit();

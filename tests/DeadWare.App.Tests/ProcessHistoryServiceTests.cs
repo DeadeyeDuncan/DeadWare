@@ -264,10 +264,10 @@ public class ProcessHistoryServiceTests
     private const BindingFlags All = BindingFlags.Instance | BindingFlags.NonPublic;
 
     /// <summary>A session wired only for the two recording switches, like the UI-check fixtures. Never starts hardware or a window.</summary>
-    private static UiSession Session(Fixture fixture, ProcessHistoryService? history, string name)
+    private static MonitorSession Session(Fixture fixture, ProcessHistoryService? history, string name)
     {
-        var session = (UiSession)RuntimeHelpers.GetUninitializedObject(typeof(UiSession));
-        void Set(string field, object? value) => typeof(UiSession).GetField(field, All)!.SetValue(session, value);
+        var session = (MonitorSession)RuntimeHelpers.GetUninitializedObject(typeof(MonitorSession));
+        void Set(string field, object? value) => typeof(MonitorSession).GetField(field, All)!.SetValue(session, value);
         Set("<Collector>k__BackingField", RuntimeHelpers.GetUninitializedObject(typeof(Collector)));
         Set("<Settings>k__BackingField", new UserSettings { ProcessMonitoring = false, UsageRecording = true });
         Set("<Usage>k__BackingField", new UsageHistoryService(fixture.Path + "." + name + ".usage", "tablet"));
@@ -278,10 +278,10 @@ public class ProcessHistoryServiceTests
     }
 
     /// <summary>Waits until the session's last settings revision is on disk, so no background save outlives the fixture.</summary>
-    private static async Task Saved(UiSession session)
+    private static async Task Saved(MonitorSession session)
     {
-        long revision = (long)typeof(UiSession).GetField("saveRevision", All)!.GetValue(session)!;
-        var writer = typeof(UiSession).GetField("writer", All)!.GetValue(session)!;
+        long revision = (long)typeof(MonitorSession).GetField("saveRevision", All)!.GetValue(session)!;
+        var writer = typeof(MonitorSession).GetField("writer", All)!.GetValue(session)!;
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
         while ((long)writer.GetType().GetField("savedRevision", All)!.GetValue(writer)! != revision) await Task.Delay(10, deadline.Token);
     }
