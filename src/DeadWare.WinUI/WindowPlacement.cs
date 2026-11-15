@@ -63,9 +63,19 @@ internal static class NativePlacement
         var minimum = WindowCoordinates.FromDipSize(placement.Left, placement.Top, minWidthDips, minHeightDips, dpi, false);
         var target = Target(placement, areas);
         placement = WindowPlacement.Clamp(placement with { Width = Math.Max(placement.Width, minimum.Width), Height = Math.Max(placement.Height, minimum.Height) }, [target], placement.Width, placement.Height);
-        SetWindowPos(handle, 0, (int)placement.Left, (int)placement.Top, (int)placement.Width, (int)placement.Height, 0x0014 /* SWP_NOZORDER | SWP_NOACTIVATE */);
+        Apply(handle, placement);
+        // A new window starts on the main monitor. Moving it onto one with a different scale makes Windows resize it for
+        // the new DPI while the move is in progress, so a rectangle saved in that monitor's own pixels came out scaled by
+        // the ratio of the two (two thirds, from a 150% screen to a 100% one), and that smaller size was then saved over
+        // the real one. Once the window is on its monitor the same rectangle crosses no scale change, so it holds.
+        if (GetWindowRect(handle, out var now) && (now.Left != (int)placement.Left || now.Top != (int)placement.Top ||
+            now.Right - now.Left != (int)placement.Width || now.Bottom - now.Top != (int)placement.Height))
+            Apply(handle, placement);
         return dpi;
     }
+
+    private static void Apply(nint handle, WindowPlacement placement) =>
+        SetWindowPos(handle, 0, (int)placement.Left, (int)placement.Top, (int)placement.Width, (int)placement.Height, 0x0014 /* SWP_NOZORDER | SWP_NOACTIVATE */);
 
     private static WorkArea Target(WindowPlacement placement, IReadOnlyList<WorkArea> areas)
     {
