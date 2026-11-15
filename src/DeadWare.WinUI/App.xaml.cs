@@ -61,6 +61,11 @@ public partial class App : Application
     protected override async void OnLaunched(LaunchActivatedEventArgs args)
     {
         queue = DispatcherQueue.GetForCurrentThread();
+        // Two kinds of run show no window and leave with their result: the elevated helper that Settings starts to
+        // register or remove the sign-in task, and the diagnostic collection. Both must come before the single-instance
+        // check, since the helper runs while the dashboard that started it is open.
+        if (await StartupRegistration.HandleCommandLineAsync(arguments) is int configured) { Leave(configured); return; }
+        if (arguments.Contains("--diagnose")) { Leave(await DiagnosticRun.RunAsync(arguments, Version)); return; }
         try
         {
             await GuiInstance.WaitForPreviousAsync(arguments);
@@ -68,17 +73,22 @@ public partial class App : Application
             if (!instance.Acquired)
             {
                 // The WPF app and this one share the single-instance marker, so they never write the same histories at once.
-                Note("DeadWare is already running in this Windows session.");
+                // A sign-in launch that finds DeadWare running leaves quietly, as the WPF app does.
+                if (!arguments.Contains("--startup"))
+                    Tell("DeadWare is already running in this Windows session. Double-click its system tray icon or right-click it and choose Show dashboard. The icon may be in the tray overflow.", MessageIcon.Information);
                 Exit();
                 return;
             }
             var cities = Cities.Load();
-            session = new MonitorSession(Version, () => new QueueTimer(queue), id => id is not null && cities.TryGetValue(id, out var point) ? (id, point) : null);
+            session = new MonitorSession(Version, () => new QueueTimer(queue), id => id is not null && cities.TryGetValue(id, out var point) ? (id, point) : null,
+                LayoutDiagnostics.RequestedPath(arguments));
             window = new MainWindow(session, lifetime, () => tray is { Available: true }, () => QuitAsync());
             Popouts = new WindowManager(session);
+            window.RememberPlacement(Popouts);
             sessionEnd = new SessionEndHook(WindowHandle, OnSessionEnding);
             if (startPage is not null) window.Navigate(startPage);
             tray = new Tray(ShowDashboard, RequestQuit);
+            if (!tray.Available) window.SetTrayUnavailable();
             Subscribe(session);
             session.Changed += () => { if (session.Current is not null) Interlocked.Increment(ref TicksWithReading); };
 
@@ -104,9 +114,28 @@ public partial class App : Application
         catch (Exception error)
         {
             Note($"DeadWare could not start: {error}");
+            if (ErrorFile is null) Tell($"DeadWare could not start: {error.Message}", MessageIcon.Error);
             await QuitAsync(1);
         }
     }
+
+    /// <summary>Ends a run that never showed a window, with its exit code. From the thread pool: nothing here needs unwinding.</summary>
+    private static void Leave(int exitCode) => Task.Run(() => Environment.Exit(exitCode));
+
+    private enum MessageIcon : uint { Error = 0x10, Warning = 0x30, Information = 0x40 }
+
+    /// <summary>
+    /// A plain Windows message box, for the moments the WPF app also stops to say something and there may be no window of
+    /// ours to say it in. A run given <c>--error-file</c> is automated and gets the note in that file only.
+    /// </summary>
+    private static void Tell(string text, MessageIcon icon)
+    {
+        Note(text);
+        if (ErrorFile is null) MessageBoxW(WindowHandle, text, "DeadWare", (uint)icon);
+    }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+    private static extern int MessageBoxW(nint owner, string text, string caption, uint type);
 
     /// <summary>Appends a line to the error file without ending the process.</summary>
     internal static void Note(string text)
@@ -184,7 +213,12 @@ public partial class App : Application
     {
         updateChecks.Cancel();
         try { if (session is not null) await session.ShutdownAsync(); }
-        catch (Exception error) { Note($"DeadWare reported a shutdown error: {error}"); exitCode = exitCode == 0 ? 2 : exitCode; }
+        catch (Exception error)
+        {
+            Note($"DeadWare reported a shutdown error: {error}");
+            if (ErrorFile is null) Tell($"DeadWare reported a shutdown error: {error.Message}", MessageIcon.Warning);
+            exitCode = exitCode == 0 ? 2 : exitCode;
+        }
     }, () =>
     {
         try { sessionEnd?.Dispose(); sessionEnd = null; Popouts?.CloseAll(); tray?.Dispose(); tray = null; instance?.Dispose(); }

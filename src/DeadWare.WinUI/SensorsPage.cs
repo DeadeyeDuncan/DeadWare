@@ -58,19 +58,35 @@ internal sealed class NetworkPage : Page
     private readonly TextBlock status = new() { TextWrapping = TextWrapping.Wrap, Opacity = 0.7 }, count = new() { Opacity = 0.7 };
     private readonly TextBox search = new() { PlaceholderText = "Search application name or PID", MaxWidth = 360, HorizontalAlignment = HorizontalAlignment.Left };
     private readonly TableView table = new([new("Application", 2), new("PID", 0.6, true), new("↓ Download", 1, true), new("↑ Upload", 1, true), new("Received", 1, true), new("Sent", 1, true)]);
+    private readonly OverviewCard chart;
 
     public NetworkPage(MonitorSession session)
     {
         this.session = session;
-        var chart = Pages.Card(new HistoryChartView(session, "network"));
-        chart.Height = 300;
-        Content = Pages.Layout(chart, status, search, Pages.Card(table), count);
+        // The Overview's Network activity card, as on the WPF page: both rates, the legend, the pop-out button and the
+        // range's lowest, average and highest above and below the chart.
+        chart = new OverviewCard(session, "network", null) { Height = 340 };
+        // As on the WPF page: what the totals cover, folded away under the table.
+        var about = new Expander
+        {
+            Header = "About these totals",
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            HorizontalContentAlignment = HorizontalAlignment.Stretch,
+            Content = new TextBlock
+            {
+                TextWrapping = TextWrapping.Wrap,
+                Opacity = 0.7,
+                Text = "Per-app totals cover each current process lifetime in this monitoring session. Exited processes are removed. ETW attribution is approximate and differs from interface totals. No packet payloads are captured. Apps marked not recorded are in Settings → Don't record these apps; their traffic isn't saved.",
+            },
+        };
+        Content = Pages.Layout(chart, status, search, Pages.Card(table), count, about);
         search.TextChanged += (_, _) => Refresh();
         this.WhileShowing(() => { session.Changed += Refresh; Refresh(); }, () => session.Changed -= Refresh);
     }
 
     private void Refresh()
     {
+        chart.Refresh();
         if (session.Current is not { } reading) return;
         status.Text = reading.EtwStatus;
         string query = search.Text;
