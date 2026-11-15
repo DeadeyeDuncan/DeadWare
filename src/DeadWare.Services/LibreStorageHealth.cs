@@ -15,6 +15,8 @@ internal interface ISmartDevice
     bool StatusBad {get;}
     /// <summary>An NVMe drive: its attribute list is the NVMe health log by position, not ATA attributes by id.</summary>
     bool IsNvme {get;}
+    /// <summary>DiskInfoToolkit could not judge the drive (its verdict reads <c>Unknown</c>), as behind some USB bridges.</summary>
+    bool StatusUnknown {get;}
     int? Temperature {get;}
     int? TemperatureWarning {get;}
     int? TemperatureCritical {get;}
@@ -33,6 +35,7 @@ internal sealed class LibreSmartDevice(LibreHardwareMonitor.Hardware.Storage.Sto
     public bool HasSmart=>Smart is not null;
     public bool StatusBad=>Smart?.DiskStatus==DiskInfoToolkit.Enums.Interop.DiskStatus.Bad;
     public bool IsNvme=>device.Storage?.IsNVMe==true;
+    public bool StatusUnknown=>Smart?.DiskStatus==DiskInfoToolkit.Enums.Interop.DiskStatus.Unknown;
     public int? Temperature=>Smart?.Temperature;
     public int? TemperatureWarning=>Smart?.TemperatureWarning;
     public int? TemperatureCritical=>Smart?.TemperatureCritical;
@@ -102,7 +105,15 @@ internal sealed partial class LibreStorageHealth : IStorageHealthSource
         int? max=smart.TemperatureCritical??smart.TemperatureWarning;
         // DiskInfoToolkit reports 0 hours when it could not read them; 0 is shown as unknown, never as a brand-new drive.
         double? hours=smart.PowerOnHours>0?smart.PowerOnHours:null;
-        return new(true,critical,life??smart.Life,temperature??smart.Temperature,max,Raw(0x05),Raw(0xC5),Raw(0xC6),hours,used,false);
+        life??=smart.Life;
+        // An NVMe drive behind a USB bridge can return a health log the library cannot read: no verdict, no life figure, no
+        // error counts, and a composite temperature of exactly 0. That is no reading, not a cold and healthy drive, so the
+        // drive is reported as unknown. A drive with no verdict whose error counts are readable is still judged by them.
+        bool counted=attributes.Any(a=>a.Id is 0x05 or 0xC5 or 0xC6);
+        bool judged=!smart.StatusUnknown||life.HasValue||counted;
+        temperature??=smart.Temperature;
+        if(!judged&&temperature is 0)temperature=null;
+        return new(judged,critical,life,temperature,max,Raw(0x05),Raw(0xC5),Raw(0xC6),hours,used,false);
     }
     internal static int? Index(string identifier)
     {

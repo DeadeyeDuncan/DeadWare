@@ -118,7 +118,7 @@ public class StorageSensorLoopTests
     }
 
     private sealed record FakeSmart(bool HasSmart=true,bool StatusBad=false,int? Temperature=38,int? TemperatureWarning=70,int? TemperatureCritical=null,double? Life=90,ulong PowerOnHours=1234,
-        IReadOnlyList<SmartAttributeReading>? Readings=null,string? Serial="SN1",int? DriveNumber=0,bool IsNvme=false) : ISmartDevice
+        IReadOnlyList<SmartAttributeReading>? Readings=null,string? Serial="SN1",int? DriveNumber=0,bool IsNvme=false,bool StatusUnknown=false) : ISmartDevice
     {
         public IReadOnlyList<SmartAttributeReading> Attributes=>Readings??[];
     }
@@ -136,6 +136,12 @@ public class StorageSensorLoopTests
         Assert.False(zeroCounters.CriticalWarning);Assert.Equal("OK",StorageProjection.Badge(zeroCounters));
         var nvme=LibreStorageHealth.Summary(null,null,null,false,false,new FakeSmart(Life:87,IsNvme:true,Readings:[new(0x05,13)]));
         Assert.Equal(0,nvme.Reallocated);Assert.Equal("OK",StorageProjection.Badge(nvme));
+        // A drive the library cannot judge, with nothing readable (an NVMe drive behind a USB bridge), is unknown and has no temperature.
+        var bridged=LibreStorageHealth.Summary(0,null,4,true,false,new FakeSmart(Temperature:null,Life:null,IsNvme:true,StatusUnknown:true,Readings:[new(0xCF,88)]));
+        Assert.Equal("Unknown",StorageProjection.Badge(bridged));Assert.Null(bridged.Temperature);
+        // One with no verdict but readable error counts (a USB hard disk) is still judged by them and keeps its temperature.
+        var disk=LibreStorageHealth.Summary(42,null,80,true,false,new FakeSmart(Temperature:42,Life:null,StatusUnknown:true,Readings:[new(0x05,0),new(0xC5,0),new(0xC6,0)]));
+        Assert.Equal("OK",StorageProjection.Badge(disk));Assert.Equal(42,disk.Temperature);
         Assert.Null(LibreStorageHealth.Summary(null,null,null,false,false,new FakeSmart(PowerOnHours:0)).PowerOnHours);
         Assert.NotEqual("OK",StorageProjection.Health("S",LibreStorageHealth.Summary(null,null,null,false,false,new FakeSmart(StatusBad:true)),null).Badge);
     }
