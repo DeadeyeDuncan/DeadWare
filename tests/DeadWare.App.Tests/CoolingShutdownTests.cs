@@ -28,7 +28,7 @@ public class CoolingShutdownTests
         Set(collector,"cancellation",cancellation);Set(collector,"worker",blocked.Task);
         Set(collector,"etwStopGate",new object());Set(collector,"publicationGate",new object());Set(collector,"clock",Stopwatch.StartNew());Set(collector,"options",new CollectorOptions(EtwEnabled:false));
         Set(collector,"etw",Activator.CreateInstance(typeof(Collector).Assembly.GetType("DeadWare.App.EtwNetwork")!,[false])!);
-        var session=(UiSession)RuntimeHelpers.GetUninitializedObject(typeof(UiSession));
+        var session=(MonitorSession)RuntimeHelpers.GetUninitializedObject(typeof(MonitorSession));
         Set(session,"<Collector>k__BackingField",collector);Set(session,"<Cooling>k__BackingField",history);Set(session,"<GraphHistory>k__BackingField",graphs);
         Set(session,"<Battery>k__BackingField",battery);Set(session,"<Usage>k__BackingField",new UsageHistoryService(Path.Combine(root,"usage.db"),"fixture"));Set(session,"<Alerts>k__BackingField",new AlertService(Path.Combine(root,"alerts.db"),"fixture",new UsageHistoryService(Path.Combine(root,"usage-alerts.db"),"fixture"),()=>null));
         try
@@ -44,7 +44,7 @@ public class CoolingShutdownTests
             using(var warm=new CancellationTokenSource(TimeSpan.FromSeconds(30)))
                 while(history.PendingSamples+graphs.PendingSamples+battery.PendingSamples>0)await Task.Delay(10,warm.Token);
             var watch=Stopwatch.StartNew();
-            typeof(UiSession).GetMethod("StopCollectorForSessionEnding",flags)!.Invoke(session,null);
+            typeof(MonitorSession).GetMethod("StopCollectorForSessionEnding",flags)!.Invoke(session,null);
             Assert.InRange(watch.Elapsed.TotalSeconds,2.8,4.5);
             Assert.True(cancellation.IsCancellationRequested);
             Assert.True(history.StopAsync().IsCompleted);
@@ -54,10 +54,10 @@ public class CoolingShutdownTests
             var savedGraphs=new GraphHistoryStore(Path.Combine(root,"graphs.db"));savedGraphs.Initialize();
             Assert.Single(savedGraphs.Read(DateTimeOffset.UtcNow));
             Assert.Single((await history.ReadViewAsync(null,null,1)).Devices);
-            var stop=(Task)typeof(UiSession).GetField("collectorStop",flags)!.GetValue(session)!;
+            var stop=(Task)typeof(MonitorSession).GetField("collectorStop",flags)!.GetValue(session)!;
             blocked.SetResult();await stop.WaitAsync(TimeSpan.FromSeconds(3));
-            typeof(UiSession).GetMethod("StopCollectorForSessionEnding",flags)!.Invoke(session,null);
-            Assert.Same(stop,typeof(UiSession).GetField("collectorStop",flags)!.GetValue(session));
+            typeof(MonitorSession).GetMethod("StopCollectorForSessionEnding",flags)!.Invoke(session,null);
+            Assert.Same(stop,typeof(MonitorSession).GetField("collectorStop",flags)!.GetValue(session));
         }
         finally {blocked.TrySetResult();await Task.WhenAll(history.StopAsync(),graphs.StopAsync(),battery.StopAsync());if(Directory.Exists(root))Directory.Delete(root,true);}
     }
@@ -65,7 +65,7 @@ public class CoolingShutdownTests
     private static void SetField(object target,string name,object value)=>target.GetType().GetField(name,Flags)!.SetValue(target,value);
     private static string Root()=>Path.Combine(Path.GetTempPath(),"DeadWare-tests-"+Guid.NewGuid().ToString("N"));
     /// <summary>Normal Quit shape: the final drain may use the whole provider deadline; history has its own cap.</summary>
-    private static Task Stop(UiSession session,TimeSpan providerDeadline)=>(Task)typeof(UiSession).GetMethod("StopCollectorAsync",Flags)!.Invoke(session,[providerDeadline,providerDeadline,TimeSpan.FromSeconds(10)])!;
+    private static Task Stop(MonitorSession session,TimeSpan providerDeadline)=>(Task)typeof(MonitorSession).GetMethod("StopCollectorAsync",Flags)!.Invoke(session,[providerDeadline,providerDeadline,TimeSpan.FromSeconds(10)])!;
     private sealed class NoLocation:IConnectionGeolocation {public ConnectionLocation? Lookup(string address)=>null;}
     private static async Task<long> SavedBytes(ConnectionService connections,DateTimeOffset now)=>(await connections.ReadViewAsync(new(now.AddMinutes(-1),now.AddMinutes(1)))).Summary.ReceivedBytes;
     /// <summary>Takes the ledger's baseline snapshot and records 71 received bytes at the same instant. Both clocks are read here,
@@ -78,14 +78,14 @@ public class CoolingShutdownTests
         return (timestamp,seconds);
     }
     /// <summary>A session wired like the real one whose hardware worker never finishes. Never starts hardware or ETW.</summary>
-    private static (UiSession Session,Collector Collector,ConnectionService Connections,TaskCompletionSource Worker) StuckSession(string root,EtwNetwork capture,ConnectionService? connections=null)
+    private static (MonitorSession Session,Collector Collector,ConnectionService Connections,TaskCompletionSource Worker) StuckSession(string root,EtwNetwork capture,ConnectionService? connections=null)
     {
         var worker=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var collector=(Collector)RuntimeHelpers.GetUninitializedObject(typeof(Collector));
         SetField(collector,"cancellation",new CancellationTokenSource());SetField(collector,"worker",worker.Task);SetField(collector,"etwStopGate",new object());
         SetField(collector,"publicationGate",new object());SetField(collector,"clock",Stopwatch.StartNew());SetField(collector,"options",new CollectorOptions());SetField(collector,"etw",capture);
         connections??=new ConnectionService(Path.Combine(root,"connections.db"));
-        var session=(UiSession)RuntimeHelpers.GetUninitializedObject(typeof(UiSession));
+        var session=(MonitorSession)RuntimeHelpers.GetUninitializedObject(typeof(MonitorSession));
         SetField(session,"<Collector>k__BackingField",collector);SetField(session,"<Connections>k__BackingField",connections);
         SetField(session,"<Cooling>k__BackingField",new CoolingHistoryService(Path.Combine(root,"cooling.db"),"fixture","setup"));
         SetField(session,"<GraphHistory>k__BackingField",new GraphHistoryService(Path.Combine(root,"graphs.db"),"fixture",new SampleHistory()));
@@ -127,7 +127,7 @@ public class CoolingShutdownTests
             var watch=Stopwatch.StartNew();
             if(sessionEnding)
             {
-                typeof(UiSession).GetMethod("StopCollectorForSessionEnding",Flags)!.Invoke(session,null);
+                typeof(MonitorSession).GetMethod("StopCollectorForSessionEnding",Flags)!.Invoke(session,null);
                 Assert.InRange(watch.Elapsed.TotalSeconds,2.8,4.5);
             }
             else
@@ -153,7 +153,7 @@ public class CoolingShutdownTests
         try
         {
             connections.Start();await SavedBytes(connections,now);Observe(capture,collector);
-            typeof(UiSession).GetMethod("StopCollectorForSessionEnding",Flags)!.Invoke(session,null);
+            typeof(MonitorSession).GetMethod("StopCollectorForSessionEnding",Flags)!.Invoke(session,null);
             Assert.True(connections.StopAsync().IsCompleted);Assert.Equal(71,await SavedBytes(connections,now));
             Assert.Contains("session_end_collector_stop_failed",File.ReadAllText(Path.Combine(root,"trace.jsonl")));
         }
@@ -166,8 +166,8 @@ public class CoolingShutdownTests
         try
         {
             // StuckSession, like a session built before process history existed, never sets ProcessHistory.
-            Assert.Null(typeof(UiSession).GetProperty("ProcessHistory")!.GetValue(session));
-            var stop=Task.Run(()=>typeof(UiSession).GetMethod("StopCollectorForSessionEnding",Flags)!.Invoke(session,null));await stop.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Null(typeof(MonitorSession).GetProperty("ProcessHistory")!.GetValue(session));
+            var stop=Task.Run(()=>typeof(MonitorSession).GetMethod("StopCollectorForSessionEnding",Flags)!.Invoke(session,null));await stop.WaitAsync(TimeSpan.FromSeconds(5));
             Assert.True(connections.StopAsync().IsCompleted);string trace=Path.Combine(root,"trace.jsonl");
             string text=File.ReadAllText(trace);Assert.Contains("session_end_collector_stopped",text);Assert.DoesNotContain("session_end_collector_stop_failed",text);
             // A stage that misses its deadline records collector_stop_timeout and the stop still ends in session_end_collector_stopped.

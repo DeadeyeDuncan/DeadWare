@@ -5,11 +5,7 @@ Captured/generated on November 6, 2026 for the repository feature tour.
 - `overview.jpg`: unedited live capture of the installed DeadWare v0.14.0 dashboard on Windows, using the Blackout theme. The desktop capture tool supplied JPEG bytes.
 - `processes.png`, `connections.png`, `storage.png`, `cooling-health.png`: production WPF views rendered offscreen with the repository's synthetic fixtures and Midnight theme at 1220 × 900. These are labeled sample-data previews in the project README.
 
-Generate the previews from the repository root:
-
-```powershell
-dotnet run --project tools/OverviewPreview -c Release -- --render-shell artifacts/readme-feature-previews
-```
+The previews came from the WPF preview tool, `tools/OverviewPreview`, which was removed with the WPF app in 0.18.0; check out `v0.17.13` to run it (`dotnet run --project tools/OverviewPreview -c Release -- --render-shell artifacts/readme-feature-previews`). These images show the earlier WPF interface.
 
 The four PNGs are copied without modification from `glass-shell-Midnight-processes.png`, `glass-shell-Midnight-connections.png`, `glass-shell-Midnight-storage.png`, and `glass-shell-Midnight-cooling.png`. Source baseline: `dd4fb74` (v0.14.0).
 

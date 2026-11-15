@@ -13,6 +13,10 @@ internal interface ISmartDevice
     bool HasSmart {get;}
     /// <summary>DiskInfoToolkit's overall verdict reads <c>Bad</c>.</summary>
     bool StatusBad {get;}
+    /// <summary>An NVMe drive: its attribute list is the NVMe health log by position, not ATA attributes by id.</summary>
+    bool IsNvme {get;}
+    /// <summary>DiskInfoToolkit could not judge the drive (its verdict reads <c>Unknown</c>), as behind some USB bridges.</summary>
+    bool StatusUnknown {get;}
     int? Temperature {get;}
     int? TemperatureWarning {get;}
     int? TemperatureCritical {get;}
@@ -20,7 +24,7 @@ internal interface ISmartDevice
     ulong PowerOnHours {get;}
     IReadOnlyList<SmartAttributeReading> Attributes {get;}
 }
-internal sealed record SmartAttributeReading(byte Id,double Value,byte Threshold,ulong Raw);
+internal sealed record SmartAttributeReading(byte Id,ulong Raw);
 
 /// <summary>Adapts LibreHardwareMonitor's public <see cref="LibreHardwareMonitor.Hardware.Storage.StorageDevice"/> (0.9.6, DiskInfoToolkit 1.1.2).</summary>
 internal sealed class LibreSmartDevice(LibreHardwareMonitor.Hardware.Storage.StorageDevice device) : ISmartDevice
@@ -30,12 +34,15 @@ internal sealed class LibreSmartDevice(LibreHardwareMonitor.Hardware.Storage.Sto
     public int? DriveNumber=>device.Storage?.DriveNumber;
     public bool HasSmart=>Smart is not null;
     public bool StatusBad=>Smart?.DiskStatus==DiskInfoToolkit.Enums.Interop.DiskStatus.Bad;
+    public bool IsNvme=>device.Storage?.IsNVMe==true;
+    public bool StatusUnknown=>Smart?.DiskStatus==DiskInfoToolkit.Enums.Interop.DiskStatus.Unknown;
     public int? Temperature=>Smart?.Temperature;
     public int? TemperatureWarning=>Smart?.TemperatureWarning;
     public int? TemperatureCritical=>Smart?.TemperatureCritical;
     public double? Life=>Smart?.Life;
-    public ulong PowerOnHours=>Smart?.MeasuredPowerOnHours??0;
-    public IReadOnlyList<SmartAttributeReading> Attributes=>(device.Attributes??[]).Select(a=>new SmartAttributeReading(a.Id,a.Value,a.Threshold,a.Attribute?.Attribute.RawValueULong??0)).ToList();
+    // SATA drives leave the measured figure at 0 and report their hours as the detected one; NVMe drives fill both.
+    public ulong PowerOnHours=>Smart is {} smart?(smart.MeasuredPowerOnHours>0?smart.MeasuredPowerOnHours:smart.DetectedPowerOnHours):0;
+    public IReadOnlyList<SmartAttributeReading> Attributes=>(device.Attributes??[]).Select(a=>new SmartAttributeReading(a.Id,a.Attribute?.Attribute.RawValueULong??0)).ToList();
 }
 
 /// <summary>Storage health from a dedicated LibreHardwareMonitor <see cref="Computer"/>.</summary>
@@ -88,13 +95,25 @@ internal sealed partial class LibreStorageHealth : IStorageHealthSource
     internal static SmartSummary Summary(double? temperature,double? life,double? used,bool sensorsReadable,bool needsAdmin,ISmartDevice? smart)
     {
         if(smart is null||!smart.HasSmart)return new(sensorsReadable,false,life,temperature,null,0,0,0,null,used,needsAdmin);
-        var attributes=smart.Attributes;
+        // The reallocated, pending and uncorrectable counts are ATA attributes. An NVMe drive numbers its health log 1, 2, 3…, so
+        // "attribute 5" there is Percentage Used and would read as reallocated sectors.
+        var attributes=smart.IsNvme?[]:smart.Attributes;
         long Raw(byte id)=>(long)Math.Min(attributes.FirstOrDefault(a=>a.Id==id)?.Raw??0,long.MaxValue);
-        bool critical=smart.StatusBad||attributes.Any(a=>a.Threshold>0&&a.Value<a.Threshold);
+        // The library's verdict is the failure test. Its attributes carry a converted raw value and no drive threshold, so comparing
+        // the two here called a drive with zero failed blocks failing.
+        bool critical=smart.StatusBad;
         int? max=smart.TemperatureCritical??smart.TemperatureWarning;
         // DiskInfoToolkit reports 0 hours when it could not read them; 0 is shown as unknown, never as a brand-new drive.
         double? hours=smart.PowerOnHours>0?smart.PowerOnHours:null;
-        return new(true,critical,life??smart.Life,temperature??smart.Temperature,max,Raw(0x05),Raw(0xC5),Raw(0xC6),hours,used,false);
+        life??=smart.Life;
+        // An NVMe drive behind a USB bridge can return a health log the library cannot read: no verdict, no life figure, no
+        // error counts, and a composite temperature of exactly 0. That is no reading, not a cold and healthy drive, so the
+        // drive is reported as unknown. A drive with no verdict whose error counts are readable is still judged by them.
+        bool counted=attributes.Any(a=>a.Id is 0x05 or 0xC5 or 0xC6);
+        bool judged=!smart.StatusUnknown||life.HasValue||counted;
+        temperature??=smart.Temperature;
+        if(!judged&&temperature is 0)temperature=null;
+        return new(judged,critical,life,temperature,max,Raw(0x05),Raw(0xC5),Raw(0xC6),hours,used,false);
     }
     internal static int? Index(string identifier)
     {

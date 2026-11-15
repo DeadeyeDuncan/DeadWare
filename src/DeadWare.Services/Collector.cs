@@ -179,6 +179,7 @@ public sealed class Collector : IAsyncDisposable
                 intervalSeconds=PollingIntervalSeconds;
                 double started=clock.Elapsed.TotalSeconds;
                 bool monitoring=processMonitoring;
+                if(options.EtwEnabled)etw.Flush();
                 // Queued on the disk lifecycle's own pool task on the first pass and on every change, so the poll never waits on it.
                 if(disk is not null&&diskRequested!=monitoring){diskRequested=monitoring;disk.Request(monitoring);}
                 try
@@ -579,7 +580,9 @@ internal sealed class WindowsCounters
         var active=new HashSet<string>();
         try
         {
-            foreach(var adapter in NetworkInterface.GetAllNetworkInterfaces().Where(n=>n.OperationalStatus==OperationalStatus.Up&&n.NetworkInterfaceType!=NetworkInterfaceType.Loopback))
+            // Windows also lists each adapter's filter layers (WFP, QoS Packet Scheduler) as interfaces of their own, repeating the
+            // adapter's byte counters; summing them counted the same traffic several times. Only an adapter itself holds an address.
+            foreach(var adapter in NetworkInterface.GetAllNetworkInterfaces().Where(n=>n.OperationalStatus==OperationalStatus.Up&&n.NetworkInterfaceType!=NetworkInterfaceType.Loopback&&n.GetIPProperties().UnicastAddresses.Count>0))
             {
                 if(excludeVirtual&&VirtualAdapters.IsVirtual(adapter.NetworkInterfaceType,adapter.Name,adapter.Description)){excluded++;continue;}
                 count++;active.Add(adapter.Id);

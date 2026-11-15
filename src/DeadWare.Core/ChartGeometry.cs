@@ -60,13 +60,16 @@ public static class TimeTicks
         long utc=nowWallClock.ToUnixTimeSeconds();
         long local=utc+(long)offset.TotalSeconds;
         long first=local-((local%step)+step)%step;
+        // "Now" is rarely on a whole second. Without the part past it every tick sits up to a second late, by an amount
+        // that changes from one drawing to the next, and on a short range the labels visibly shake as the chart scrolls.
+        double fraction=(nowWallClock-DateTimeOffset.FromUnixTimeSeconds(utc)).TotalSeconds;
         var ticks=new List<TimeTick>();
         for(long t=first;t>=local-historySeconds;t-=step)
         {
-            double age=local-t;
-            var instant=DateTimeOffset.FromUnixTimeSeconds(utc-(long)age);
+            long age=local-t;
+            var instant=DateTimeOffset.FromUnixTimeSeconds(utc-age);
             var wall=zone is null?instant.ToOffset(nowWallClock.Offset):TimeZoneInfo.ConvertTime(instant,zone);
-            ticks.Add(new(nowMonotonic-age,wall.ToString(format,System.Globalization.CultureInfo.InvariantCulture),t/step));
+            ticks.Add(new(nowMonotonic-age-fraction,wall.ToString(format,System.Globalization.CultureInfo.InvariantCulture),t/step));
         }
         ticks.Reverse();
         // The widget used to keep only the two ticks nearest "Now"; the nearer one then collided with the "Now" label, leaving one.

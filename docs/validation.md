@@ -1,5 +1,16 @@
 # Release validation
 
+## WinUI 3 interface (0.18.0, 2026-11-15)
+
+Sections below this one were written against the WPF app. The `*UiChecks` classes, `BatteryUiTests`, `ThemeTokenTests`, `NativePlacementMinimumTests`, `ThermalChartCadenceTests` and `UiTypographyTests` they name were removed with it in 0.18.0.
+
+- **Packaging.** A full `scripts/publish.ps1 -Version 0.18.0 -TestFilter 'FullyQualifiedName!~MeasurementTests'` run on Windows PowerShell 5.1: 1454 + 448 tests pass and the package builds (697 archive entries, 132 MB ZIP, 301 MB expanded). The script's own archive check (entries under `DeadWare/`, at most 2048, 256 MB compressed, 768 MB expanded) passes. An archive made by that shell's `Compress-Archive` was refused by `Packages.Extract` for its backslash separators, which is why the script writes the archive itself.
+- **Update from a WPF release.** On a copy of an installed 0.17.13 (580 managed files), with the updater's own code (`Packages.Extract`, `InstallTransaction.Apply`, `Commit`) and a temporary update folder: 696 managed files in place, no file left that the new package does not own, 15 empty folders left from the WPF layout, rollback to 0.17.13 available. The swapped `DeadWare.exe` completed `--diagnose` with 3 samples as version 0.18.0 and answered `--startup-status`.
+- **Not done: a live Update & restart.** No 0.18.0 release exists before the tag, so the running 0.17.13, its helper and the new app's start-up acknowledgement were not run end to end. The acknowledgement is the shared `UpdateService.AcknowledgeStartup` the WPF app called, and it compares the same version string the package manifest carries.
+- **Session tests.** The shutdown, history-clear, process-history and connection tests that built an uninitialised `UiSession` build a `MonitorSession`; 88 tests in those classes pass.
+- **What CI covers for the interface.** The WinUI shell workflow starts the published app on the real services, hides it to the tray, opens every page and quits, opens Storage ten times, and runs `--diagnose` and `--startup-status`.
+- **Compared by hand against the WPF app, 2026-11-13 to 2026-11-15, on one Windows 11 desktop.** Not checked: the Battery page (no battery), the update-available banner (no newer release), changing Start with Windows from the new app (only the status query ran), and the note shown when the tray is unavailable.
+
 ## First network use alerts and history controls (0.17.0, 2026-11-08)
 
 ### CI measurements (as measured, no threshold)

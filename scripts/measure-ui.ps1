@@ -55,7 +55,7 @@ if (Get-Process -Name $processName -ErrorAction SilentlyContinue) {
 }
 
 # Prove the output is writable before spending minutes measuring.
-$outPath = [IO.Path]::GetFullPath($Out, (Get-Location).Path)
+$outPath = [IO.Path]::GetFullPath([IO.Path]::Combine((Get-Location).Path, $Out))
 try {
     [IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($outPath)) | Out-Null
     [IO.File]::WriteAllText($outPath, '')
@@ -100,7 +100,9 @@ function Measure-Steady($Process) {
 function Invoke-Run {
     $run = [ordered]@{ startupMs = $null; startupReason = $null; windowTitle = $null; visible = $null; hidden = $null; hiddenReason = $null }
     $start = [Diagnostics.ProcessStartInfo]::new($exePath)
-    foreach ($argument in $Arguments) { $start.ArgumentList.Add($argument) }
+    # ArgumentList exists on PowerShell 7's .NET only; Windows PowerShell takes one quoted command line.
+    if ($start.PSObject.Properties['ArgumentList']) { foreach ($argument in $Arguments) { $start.ArgumentList.Add($argument) } }
+    else { $start.Arguments = (@($Arguments) | ForEach-Object { if ($_ -match '[\s"]') { '"' + ($_ -replace '"', '\"') + '"' } else { $_ } }) -join ' ' }
     $start.UseShellExecute = $false
     $start.CreateNoWindow = $true   # keeps a console program's window away; a windowed app still shows its own
     $start.WorkingDirectory = [IO.Path]::GetDirectoryName($exePath)
@@ -136,7 +138,8 @@ function Invoke-Run {
         return $run
     } finally {
         if (-not $process.HasExited) {
-            try { $process.Kill($true) } catch [InvalidOperationException] { }
+            # taskkill takes the whole tree on Windows PowerShell too, where Process.Kill has no such overload.
+            cmd /c "taskkill /PID $($process.Id) /T /F >nul 2>&1"
             $process.WaitForExit(15000) | Out-Null
         }
         $process.Dispose()

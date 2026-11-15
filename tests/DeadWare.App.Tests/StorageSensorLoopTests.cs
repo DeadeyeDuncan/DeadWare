@@ -118,20 +118,30 @@ public class StorageSensorLoopTests
     }
 
     private sealed record FakeSmart(bool HasSmart=true,bool StatusBad=false,int? Temperature=38,int? TemperatureWarning=70,int? TemperatureCritical=null,double? Life=90,ulong PowerOnHours=1234,
-        IReadOnlyList<SmartAttributeReading>? Readings=null,string? Serial="SN1",int? DriveNumber=0) : ISmartDevice
+        IReadOnlyList<SmartAttributeReading>? Readings=null,string? Serial="SN1",int? DriveNumber=0,bool IsNvme=false,bool StatusUnknown=false) : ISmartDevice
     {
         public IReadOnlyList<SmartAttributeReading> Attributes=>Readings??[];
     }
     [Fact] public void Smart_summary_reads_counts_limits_hours_and_critical_state()
     {
-        var healthy=LibreStorageHealth.Summary(null,null,40,false,false,new FakeSmart(Readings:[new(0x05,100,10,3),new(0xC5,100,0,2),new(0xC6,100,0,1)]));
+        var healthy=LibreStorageHealth.Summary(null,null,40,false,false,new FakeSmart(Readings:[new(0x05,3),new(0xC5,2),new(0xC6,1)]));
         Assert.True(healthy.Readable);Assert.False(healthy.CriticalWarning);Assert.Equal(3,healthy.Reallocated);Assert.Equal(2,healthy.Pending);Assert.Equal(1,healthy.Uncorrectable);
         Assert.Equal(70,healthy.MaxTemperature);Assert.Equal(1234,healthy.PowerOnHours);Assert.Equal(38,healthy.Temperature);Assert.Equal(90,healthy.LifePercent);Assert.Equal(40,healthy.UsedPercent);
         // Sensor values win over SMART values; critical limit wins over warning.
         var preferred=LibreStorageHealth.Summary(41,80,null,true,false,new FakeSmart(TemperatureCritical:85));
         Assert.Equal(41,preferred.Temperature);Assert.Equal(80,preferred.LifePercent);Assert.Equal(85,preferred.MaxTemperature);Assert.Equal(0,preferred.Reallocated);
         Assert.True(LibreStorageHealth.Summary(null,null,null,false,false,new FakeSmart(StatusBad:true)).CriticalWarning);
-        Assert.True(LibreStorageHealth.Summary(null,null,null,false,false,new FakeSmart(Readings:[new(0x01,5,6,0)])).CriticalWarning);
+        // A healthy SATA drive's zero counters are not a failure, and an NVMe drive's fifth health field (Percentage Used) is not a reallocated count.
+        var zeroCounters=LibreStorageHealth.Summary(null,null,null,false,false,new FakeSmart(Readings:[new(0xB3,0),new(0xB5,0),new(0xB6,0)]));
+        Assert.False(zeroCounters.CriticalWarning);Assert.Equal("OK",StorageProjection.Badge(zeroCounters));
+        var nvme=LibreStorageHealth.Summary(null,null,null,false,false,new FakeSmart(Life:87,IsNvme:true,Readings:[new(0x05,13)]));
+        Assert.Equal(0,nvme.Reallocated);Assert.Equal("OK",StorageProjection.Badge(nvme));
+        // A drive the library cannot judge, with nothing readable (an NVMe drive behind a USB bridge), is unknown and has no temperature.
+        var bridged=LibreStorageHealth.Summary(0,null,4,true,false,new FakeSmart(Temperature:null,Life:null,IsNvme:true,StatusUnknown:true,Readings:[new(0xCF,88)]));
+        Assert.Equal("Unknown",StorageProjection.Badge(bridged));Assert.Null(bridged.Temperature);
+        // One with no verdict but readable error counts (a USB hard disk) is still judged by them and keeps its temperature.
+        var disk=LibreStorageHealth.Summary(42,null,80,true,false,new FakeSmart(Temperature:42,Life:null,StatusUnknown:true,Readings:[new(0x05,0),new(0xC5,0),new(0xC6,0)]));
+        Assert.Equal("OK",StorageProjection.Badge(disk));Assert.Equal(42,disk.Temperature);
         Assert.Null(LibreStorageHealth.Summary(null,null,null,false,false,new FakeSmart(PowerOnHours:0)).PowerOnHours);
         Assert.NotEqual("OK",StorageProjection.Health("S",LibreStorageHealth.Summary(null,null,null,false,false,new FakeSmart(StatusBad:true)),null).Badge);
     }

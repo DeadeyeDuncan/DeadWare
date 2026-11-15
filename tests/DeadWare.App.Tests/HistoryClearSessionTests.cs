@@ -22,7 +22,7 @@ public class HistoryClearSessionTests
     private sealed class Fixture : IAsyncDisposable
     {
         public readonly string Root;
-        public readonly UiSession Session = (UiSession)RuntimeHelpers.GetUninitializedObject(typeof(UiSession));
+        public readonly MonitorSession Session = (MonitorSession)RuntimeHelpers.GetUninitializedObject(typeof(MonitorSession));
         public readonly ConnectionService Connections;
         public readonly UsageHistoryService Usage, AlertUsage;
         public readonly ProcessHistoryService ProcessHistory;
@@ -66,7 +66,7 @@ public class HistoryClearSessionTests
     {
         // The Don't record list answers from the loaded settings, by key, and never throws.
         {
-            var bare = (UiSession)RuntimeHelpers.GetUninitializedObject(typeof(UiSession));
+            var bare = (MonitorSession)RuntimeHelpers.GetUninitializedObject(typeof(MonitorSession));
             SetField(bare, "<Settings>k__BackingField", new UserSettings { ExcludedApps = ["Steam.exe"] });
             Assert.True(bare.IsExcluded("STEAM.EXE")); Assert.False(bare.IsExcluded("chrome.exe")); Assert.False(bare.IsExcluded(null));
             Assert.Contains(AppKey.Of("steam.exe"), (IReadOnlySet<string>)bare.ExcludedKeys);
@@ -248,7 +248,7 @@ public class HistoryClearSessionTests
             Assert.True(fixture.Session.ClearHistory(AllAppsAllTime()));
             await Until(() => fixture.States.All(s => s.Phase == HistoryClearPhase.Clearing && s.MarkerSaved), "every store to start clearing");
             var watch = Stopwatch.StartNew();
-            var stop = (Task)typeof(UiSession).GetMethod("StopCollectorAsync", Flags)!.Invoke(fixture.Session, [TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(20)])!;
+            var stop = (Task)typeof(MonitorSession).GetMethod("StopCollectorAsync", Flags)!.Invoke(fixture.Session, [TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(20)])!;
             await stop.WaitAsync(TimeSpan.FromSeconds(20));
             Assert.True(watch.Elapsed < TimeSpan.FromSeconds(20), $"Quit took {watch.Elapsed}.");
             Assert.True(fixture.Connections.StopAsync().IsCompleted); Assert.True(fixture.Usage.StopAsync().IsCompleted);
@@ -283,7 +283,7 @@ public class HistoryClearSessionTests
             Assert.Equal(seeded, Count(path, "SELECT COUNT(*) FROM traffic"));
             Volatile.Write(ref stopping, true);
             var watch = Stopwatch.StartNew();
-            typeof(UiSession).GetMethod("StopCollectorForSessionEnding", Flags)!.Invoke(fixture.Session, null);
+            typeof(MonitorSession).GetMethod("StopCollectorForSessionEnding", Flags)!.Invoke(fixture.Session, null);
             Assert.True(watch.Elapsed < TimeSpan.FromSeconds(3), $"Sign-out took {watch.Elapsed}.");
             Assert.True(connections.StopAsync().IsCompleted); Assert.True(fixture.Usage.StopAsync().IsCompleted);
             Assert.True(fixture.ProcessHistory.StopAsync().IsCompleted); Assert.True(fixture.Alerts.StopAsync().IsCompleted);

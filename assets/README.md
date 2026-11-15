@@ -2,7 +2,7 @@
 
 The icon belongs to the Dead app visual family: dark metal, silver edges, red eyes and illumination. A skull integrated with a processor and pulse trace identifies hardware monitoring. Functional chart colors remain separate from the red brand accent.
 
-`deadware.png` is the transparent source image. `deadware.ico` contains BMP-encoded 16, 20, 24, 32, 48, 64, 128 and 256 pixel frames for Windows/WPF compatibility.
+`deadware.png` is the transparent source image. `deadware.ico` contains BMP-encoded 16, 20, 24, 32, 48, 64, 128 and 256 pixel frames for Windows compatibility.
 
 Created with OpenAI's built-in image generation tool on 2026-10-25, using the owner's DeadLight emblem as a style reference. No third-party stock art was used.
 

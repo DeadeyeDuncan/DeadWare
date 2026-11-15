@@ -25,7 +25,7 @@ public static class NetworkRateUnits
         bool bits=unit==NetworkRateUnit.BitsPerSecond;
         double value=bits?bytesPerSecond.Value*8:bytesPerSecond.Value;var units=bits?BitUnits:ByteUnits;int i=0;
         while(value>=1000&&i<units.Length-1){value/=1000;i++;}
-        return $"{value:0.0} {units[i]}";
+        return string.Create(System.Globalization.CultureInfo.CurrentCulture,$"{value:0.0} {units[i]}");
     }
 }
 /// <summary>Recognizes virtual network adapters (hypervisor switches, VPN tunnels, container bridges) that re-count traffic already seen on a physical adapter.</summary>

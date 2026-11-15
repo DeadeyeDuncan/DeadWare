@@ -1,5 +1,5 @@
 using System.Runtime.CompilerServices;
 
-// The services keep their internal visibility: the app and its tests are the only consumers.
+// The services keep their internal visibility: the app (src/DeadWare.WinUI, assembly DeadWare) and the tests are the only consumers.
 [assembly: InternalsVisibleTo("DeadWare")]
 [assembly: InternalsVisibleTo("DeadWare.App.Tests")]
