@@ -1,6 +1,7 @@
 name: WinUI shell
-# Builds and smoke-checks the WinUI 3 front end while it is built beside the WPF app. It is not packaged or released,
-# and this workflow never gates the Windows build.
+# Publishes the WinUI 3 app (the app that ships, as DeadWare.exe) and smoke-checks it on the real monitoring services:
+# start-up, hide to tray, every page, the quit path and the runs that show no window. Packaging and the unit tests are
+# the Windows build's job.
 on:
   pull_request:
     paths:
@@ -45,7 +46,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $exe = Resolve-Path artifacts/winui/DeadWare.WinUI/DeadWare.WinUI.exe
+          $exe = Resolve-Path artifacts/winui/DeadWare.WinUI/DeadWare.exe
           $errorFile = Join-Path (Resolve-Path artifacts/winui) 'error.txt'
           Add-Type -Namespace Native -Name User32 -MemberDefinition @'
           [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr window, uint message, IntPtr w, IntPtr l);
@@ -137,7 +138,7 @@ jobs:
             if (-not (Test-Path -LiteralPath $registration)) { throw "The start-up status query wrote no report (exit code $($process.ExitCode))." }
             'The start-up status query wrote its report and exited.'
           } finally { if (-not $process.HasExited) { $process.Kill($true); $process.WaitForExit(15000) | Out-Null } }
-          if (Get-Process -Name DeadWare.WinUI -ErrorAction SilentlyContinue) { throw 'A shell process is still running after the checks.' }
+          if (Get-Process -Name DeadWare -ErrorAction SilentlyContinue) { throw 'A shell process is still running after the checks.' }
       - name: Crash details
         if: failure()
         shell: pwsh
@@ -145,8 +146,8 @@ jobs:
         # records the faulting module and, for .NET, the exception and stack in the Application event log.
         run: |
           $events = Get-WinEvent -FilterHashtable @{ LogName = 'Application'; StartTime = (Get-Date).AddMinutes(-30) } -ErrorAction SilentlyContinue |
-            Where-Object { $_.Message -match 'DeadWare\.WinUI' } | Select-Object -First 8
-          if (-not $events) { 'No Application event log entries mention DeadWare.WinUI.' }
+            Where-Object { $_.Message -match 'DeadWare\.(exe|dll)' } | Select-Object -First 8
+          if (-not $events) { 'No Application event log entries mention DeadWare.exe or DeadWare.dll.' }
           foreach ($event in $events) { "--- $($event.TimeCreated.ToString('HH:mm:ss')) $($event.ProviderName) event $($event.Id)"; $event.Message }
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:

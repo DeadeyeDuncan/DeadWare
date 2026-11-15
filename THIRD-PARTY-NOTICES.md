@@ -16,10 +16,12 @@ DeadWare's MIT license applies to original DeadWare code. Included dependencies 
 
 ## Windows diagnostics and runtime
 
-- **Microsoft.Data.Sqlite 10.0.10** — Microsoft and contributors, MIT. **SQLitePCLRaw.bundle_e_sqlite3 3.0.5** and its managed/native dependencies retain their upstream license notices; exact versions, manifests and supplied notices are included in the release inventory. SQLite is public-domain software; see the native package's attribution and bundled license material.
+- **Windows App SDK 2.6.5** (WinUI 3, `Microsoft.WindowsAppSDK` and its component packages) — Microsoft Corporation; Microsoft Software License Terms. Redistributed unmodified as the app's self-contained interface runtime. The package's `license.txt` and `NOTICE.txt` are included in the release inventory.
+- **Win2D 1.4.0** (`Microsoft.Graphics.Win2D`) — Microsoft Corporation. Redistributed unmodified for drawing the graphs and the map; its license terms are at the address recorded in the bundled package manifest.
+- **Microsoft.Data.Sqlite 10.0.14** — Microsoft and contributors, MIT. **SQLitePCLRaw.bundle_e_sqlite3 3.0.5** and its managed/native dependencies retain their upstream license notices; exact versions, manifests and supplied notices are included in the release inventory. SQLite is public-domain software; see the native package's attribution and bundled license material.
 
 - **Microsoft.Diagnostics.Tracing.TraceEvent**, **Microsoft.Diagnostics.NETCore.Client**, Microsoft.Extensions and System packages — Microsoft Corporation, MIT license. Individual package versions, copyright statements, repositories and notices are preserved in the release inventory and package manifests.
-- **.NET runtime and Windows Desktop runtime** — Microsoft and contributors; MIT and third-party licenses. See `licenses/texts/DOTNET-LICENSE.txt` and `DOTNET-THIRD-PARTY-NOTICES.txt` in a release archive.
+- **.NET runtime** — Microsoft and contributors; MIT and third-party licenses. See `licenses/texts/DOTNET-LICENSE.txt` and `DOTNET-THIRD-PARTY-NOTICES.txt` in a release archive.
 - **Mono.Posix.NETStandard** is a transitive dependency resolved by NuGet. Its manifest and available notices are preserved even where its platform-specific assets are not used on Windows.
 
 ## Connections and offline geography
