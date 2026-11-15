@@ -91,6 +91,17 @@ internal sealed class EtwNetwork : IAsyncDisposable
             status=$"ETW lost {cumulative:N0} events · attribution reset; totals cover activity since the latest loss";
         }
     }
+    /// <summary>
+    /// Asks Windows to hand over the events it is holding. A real-time session delivers about once a second on its own, so a
+    /// poll faster than that reads no traffic and then a double-sized burst in turn. Called at the start of each poll, so the
+    /// events are counted by the time that poll takes its snapshot.
+    /// </summary>
+    public void Flush()
+    {
+        if(!active||stopping)return;
+        try {session?.Flush();}
+        catch(Exception) {} // a session that is stopping or gone: the next snapshot reports that
+    }
     public IReadOnlyList<ProcessTraffic> Take(double now)=>TakeSnapshot(DateTimeOffset.UtcNow,now).Processes;
     internal NetworkCaptureSnapshot TakeSnapshot(DateTimeOffset timestamp,double now,bool available=true)
     {
