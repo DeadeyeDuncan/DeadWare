@@ -1,5 +1,15 @@
 # Release validation
 
+## Widget size, saved graphs and map cost (0.18.1, 2026-11-15)
+
+All on one Windows 11 desktop: a 3840x2160 main monitor at 150% and a 1920x1080 second monitor at 100%, 0.5-second polling, DeadWare elevated, started in the tray with the widget (five graphs and the live map) on the second monitor. The installed 0.18.0 was quit through its own Quit button for each run and restarted afterwards.
+
+- **Map cost.** Processor time per thread, read from outside over 30 seconds starting 20 seconds after launch, release build and fixed build back to back, twice: 0.18.0 used 26.8 and 27.0 s/min in total with 11.3 and 11.3 on the UI thread; the fixed build 18.9 and 18.2 in total with 4.1 and 3.5 on the UI thread. With the widget's map switched off the UI thread used 0.8 s/min, which is what placed the cost in the map. With the Connections page open as well (one run each): 37.2 against 23.1 in total, 18.6 against 6.0 on the UI thread. Window captures of the Connections globe from both builds match. Not measured: the flat map on the Connections page, and dragging or zooming, which still rebuild the base on every change.
+- **Graph history.** The installed cache was at its limit (16,383 of 16,384 pages, 31,457 rows spanning 4.7 hours, newest row 25 minutes old, average payload 1,741 characters) and the app showed "Graph history unavailable (SqliteException)". `A_full_file_drops_its_oldest_rows_and_keeps_recording` failed with SQLite error 13 before the change and passes after. On a copy of that file, 40 batches of 30 rows all saved, 20 of them dropping old rows, with the file still 64.0 MiB. A run of the fixed build then saved to the real file again (newest row 4 seconds old at quit).
+- **Window size.** With the widget saved at -647,0 654x1039 (physical pixels): 0.18.0 opened it at -654,0 436x688 on three tray starts and saved that; the fixed build opened it at -654,0 654x1032 (the saved width, and the height of that monitor's work area) and saved that. Not checked: pop-out graphs on the second monitor (they use the same restore), and a main monitor at a lower scale than the second.
+- **Tests.** `dotnet test DeadWare.slnx -c Release --filter 'FullyQualifiedName!~MeasurementTests'`: 1456 + 448 pass.
+- **Memory, measured but not changed.** With only the widget, private memory held at about 325 MB for seven minutes. With the Connections page opened it was about 620 MB one minute after launch. What the page holds was not broken down.
+
 ## WinUI 3 interface (0.18.0, 2026-11-15)
 
 Sections below this one were written against the WPF app. The `*UiChecks` classes, `BatteryUiTests`, `ThemeTokenTests`, `NativePlacementMinimumTests`, `ThermalChartCadenceTests` and `UiTypographyTests` they name were removed with it in 0.18.0.
