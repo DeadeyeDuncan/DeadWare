@@ -100,7 +100,9 @@ function Measure-Steady($Process) {
 function Invoke-Run {
     $run = [ordered]@{ startupMs = $null; startupReason = $null; windowTitle = $null; visible = $null; hidden = $null; hiddenReason = $null }
     $start = [Diagnostics.ProcessStartInfo]::new($exePath)
-    foreach ($argument in $Arguments) { $start.ArgumentList.Add($argument) }
+    # ArgumentList exists on PowerShell 7's .NET only; Windows PowerShell takes one quoted command line.
+    if ($start.PSObject.Properties['ArgumentList']) { foreach ($argument in $Arguments) { $start.ArgumentList.Add($argument) } }
+    else { $start.Arguments = (@($Arguments) | ForEach-Object { if ($_ -match '[\s"]') { '"' + ($_ -replace '"', '\"') + '"' } else { $_ } }) -join ' ' }
     $start.UseShellExecute = $false
     $start.CreateNoWindow = $true   # keeps a console program's window away; a windowed app still shows its own
     $start.WorkingDirectory = [IO.Path]::GetDirectoryName($exePath)
