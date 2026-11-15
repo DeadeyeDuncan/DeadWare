@@ -12,13 +12,14 @@ namespace DeadWare.WinUI;
 /// </summary>
 internal sealed class StoragePage : Page
 {
-    private sealed class DriveCard(Border card, TextBlock title, TextBlock health, ProgressBar used, TextBlock free, Grid volumes, TextBlock noVolumes, StackPanel details)
+    private sealed class DriveCard(Border card, TextBlock title, TextBlock health, ProgressBar used, TextBlock free, TextBlock rates, Grid volumes, TextBlock noVolumes, StackPanel details)
     {
         public Border Card => card;
         public TextBlock Title => title;
         public TextBlock Health => health;
         public ProgressBar Used => used;
         public TextBlock Free => free;
+        public TextBlock Rates => rates;
         public Grid Volumes => volumes;
         public TextBlock NoVolumes => noVolumes;
         public StackPanel Details => details;
@@ -75,7 +76,13 @@ internal sealed class StoragePage : Page
         var health = new TextBlock();
         var used = new ProgressBar { Maximum = 1 };
         var free = new TextBlock { Opacity = 0.7 };
+        // What the WPF page's detail chart carries for its one selected drive: the current read and write rates above the
+        // chart, and the range's lowest, average and highest read rate under it.
+        var rates = new TextBlock { Style = (Style)Application.Current.Resources["BodyStrongTextBlockStyle"] };
+        var statistics = new TextBlock { Opacity = 0.7, Style = (Style)Application.Current.Resources["CaptionTextBlockStyle"] };
         var chart = new HistoryChartView(session, "storage") { DriveId = drive.Id, Height = 200 };
+        chart.StatisticsReady += summary => statistics.Text =
+            $"MIN {OverviewPresenter.Statistic("storage", summary.Minimum)} · AVG {OverviewPresenter.Statistic("storage", summary.Average)} · MAX {OverviewPresenter.Statistic("storage", summary.Maximum)} · read";
         // A plain grid, not the virtualised TableView: a drive has a handful of volumes, so there is nothing to virtualise,
         // and this avoids a list with its own scroller inside this page's scroller.
         var volumes = new Grid { ColumnSpacing = 12, RowSpacing = 4 };
@@ -91,9 +98,9 @@ internal sealed class StoragePage : Page
         heading.Children.Add(title);
         Grid.SetColumn(open, 1);
         heading.Children.Add(open);
-        var card = Pages.Card(new StackPanel { Spacing = 8, Padding = new Thickness(8), Children = { heading, health, used, free, chart, volumes, noVolumes, details } });
+        var card = Pages.Card(new StackPanel { Spacing = 8, Padding = new Thickness(8), Children = { heading, health, used, free, rates, chart, statistics, volumes, noVolumes, details } });
         card.Tag = drive.Id;
-        return new DriveCard(card, title, health, used, free, volumes, noVolumes, details);
+        return new DriveCard(card, title, health, used, free, rates, volumes, noVolumes, details);
     }
 
     /// <summary>Rebuilds the volume grid: a caption row, then letter, label, used and free for each volume.</summary>
@@ -120,9 +127,11 @@ internal sealed class StoragePage : Page
         }
     }
 
-    private static void Update(DriveCard card, StorageDrive drive, StorageHealth? health, string status)
+    private void Update(DriveCard card, StorageDrive drive, StorageHealth? health, string status)
     {
         card.Title.Text = StoragePresenter.Title(drive);
+        double? Live(string metric) => session.Stale ? null : session.Value(StorageMetrics.Key(drive.Id, metric));
+        card.Rates.Text = $"↓ Read {HistoryChartModel.Bytes(Live("read"), true)}    ↑ Write {HistoryChartModel.Bytes(Live("write"), true)}";
         card.Health.Text = StoragePresenter.HealthLine(health);
         if (StoragePresenter.Failing(health)) card.Health.Foreground = (Brush)Application.Current.Resources["SystemFillColorCriticalBrush"];
         else card.Health.ClearValue(TextBlock.ForegroundProperty);
