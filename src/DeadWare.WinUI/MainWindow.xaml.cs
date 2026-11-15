@@ -100,10 +100,11 @@ public sealed partial class MainWindow : Window
         Nav.PaneOpening += (_, _) => PaneFoot.Visibility = Visibility.Visible;
         Nav.PaneClosing += (_, _) => PaneFoot.Visibility = Visibility.Collapsed;
         PaneFoot.Visibility = Nav.IsPaneOpen ? Visibility.Visible : Visibility.Collapsed;
-        session.Changed += RefreshShell;
+        // The header, status lines and pane foot follow each reading only while the dashboard is on screen: in the tray
+        // they would be rewritten twice a second for nobody, and they catch up when the window returns.
+        Root.WhileShowing(() => { session.Changed += RefreshShell; RefreshShell(); }, () => session.Changed -= RefreshShell);
         // The update service reports from its own thread.
         session.Updates.Changed += () => DispatcherQueue.TryEnqueue(RefreshUpdateNotice);
-        Closed += (_, _) => session.Changed -= RefreshShell;
         RefreshShell();
         RefreshUpdateNotice();
         session.UsageDayRequested += at => { Navigate("usage"); if (pages["usage"].Page is UsagePage usage) usage.ShowDay(at); };
