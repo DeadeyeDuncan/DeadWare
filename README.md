@@ -22,11 +22,11 @@ DeadWare is a Windows desktop monitor for CPU, GPU, memory, drives and network a
 - **See your connections:** explore observed destinations on a globe or 2D map, filter by application, replay locally saved history, see when each app used the network and list every destination. Locations are approximate; arcs illustrate connections, not measured routes.
 - **Look back:** review device and application usage, battery charge and Cooling Health. Export CSVs, compare cooling against a saved reference, set your own threshold alerts, get an alert the first time an app uses the network, and keep chosen apps out of history or clear it.
 - **Build your workspace:** detach graphs, use the compact widget, pin windows above other apps and restore their positions. Monitoring continues in the tray when the dashboard closes.
-- **Make it yours:** choose from nine themes, optional window glass and saved graph colors, line styles and glow.
+- **Make it yours:** a native Windows 11 look that follows your light or dark mode and accent colour, with saved graph colors, line styles and glow.
 
 ## In action
 
-The dashboard above is a live capture. Feature previews below use the app’s own renderer with sample data.
+The dashboard above is a live capture. Feature previews below use sample data. These images show the interface before 0.18.0, which moved to WinUI 3; the pages and their contents are the same.
 
 | Processes | Connections |
 | --- | --- |
@@ -40,7 +40,7 @@ The dashboard above is a live capture. Feature previews below use the app’s ow
 
 ## Get started
 
-Download the **Windows x64 ZIP**, extract the **entire** archive and run `DeadWare.exe` inside the `DeadWare` folder. The .NET runtime is included. DeadWare is portable and unsigned; Windows 10/11 x64 is the target. Other platforms are not validated.
+Download the **Windows x64 ZIP**, extract the **entire** archive and run `DeadWare.exe` inside the `DeadWare` folder. The .NET runtime is included. DeadWare is portable and unsigned; Windows 11 and Windows 10 version 2004 or later, x64, are the target. Other platforms are not validated.
 
 Use **Updates → Update & restart** for in-app upgrades, and **Quit DeadWare** before replacing files manually.
 
