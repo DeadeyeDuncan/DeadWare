@@ -248,7 +248,7 @@ Install the stable [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10
 ```powershell
 dotnet build DeadWare.slnx -c Release
 dotnet test DeadWare.slnx -c Release
-dotnet run --project src/DeadWare.App/DeadWare.App.csproj
+dotnet run --project src/DeadWare.WinUI/DeadWare.WinUI.csproj
 ```
 
 Create a self-contained portable ZIP and SHA-256 checksum:
