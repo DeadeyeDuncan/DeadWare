@@ -175,6 +175,7 @@ public sealed class Collector : IAsyncDisposable
                 intervalSeconds=PollingIntervalSeconds;
                 double started=clock.Elapsed.TotalSeconds;
                 bool monitoring=processMonitoring;
+                if(options.EtwEnabled)etw.Flush();
                 // Queued on the disk lifecycle's own pool task on the first pass and on every change, so the poll never waits on it.
                 if(disk is not null&&diskRequested!=monitoring){diskRequested=monitoring;disk.Request(monitoring);}
                 try
