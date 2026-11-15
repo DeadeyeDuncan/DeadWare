@@ -95,7 +95,7 @@ internal sealed class ProcessesPage : Page
         resortNow.Invoked += (_, e) => { Refresh(resort: true); e.Handled = true; };
         KeyboardAccelerators.Add(find); KeyboardAccelerators.Add(resortNow);
 
-        this.WhileLoaded(() => { loaded = true; session.Changed += OnChanged; Refresh(resort: true); }, () => { loaded = false; session.Changed -= OnChanged; });
+        this.WhileShowing(() => { loaded = true; session.Changed += OnChanged; Refresh(resort: true); }, () => { loaded = false; session.Changed -= OnChanged; });
     }
 
     private static TextBlock Muted() => new() { TextWrapping = TextWrapping.Wrap, Opacity = 0.7, FontSize = 12 };

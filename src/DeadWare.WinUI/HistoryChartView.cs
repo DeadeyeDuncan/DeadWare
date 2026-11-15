@@ -75,7 +75,7 @@ internal sealed class HistoryChartView : UserControl
         layers.PointerExited += (_, _) => { pointer = null; Scroll(); readout.Invalidate(); };
         Content = layers;
         MinHeight = 120;
-        this.WhileLoaded(() => { session.Changed += Refresh; Refresh(); }, () => session.Changed -= Refresh);
+        this.WhileShowing(() => { session.Changed += Refresh; Refresh(); }, () => session.Changed -= Refresh);
         SizeChanged += (_, _) => Refresh();
     }
 
