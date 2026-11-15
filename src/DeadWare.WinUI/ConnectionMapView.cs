@@ -74,9 +74,12 @@ internal sealed class ConnectionMapView : UserControl
     private DrawnRoute[] busiest = [];
     private readonly List<(PlotPoint Center, string Key)> hitPoints = [];
     private bool routesDirty = true;
-    // Geometry for one size and camera; rebuilt when either changes or the device is recreated.
+    // The frame for one size and camera; rebuilt when either changes or the device is recreated.
     private MapFrame? frame;
-    private CanvasGeometry? coast, land, borders, stateBorders, grid;
+    // What only the size, camera and theme change (ocean, graticule, land, coasts, borders), drawn once into a bitmap.
+    // Filling and stroking those outlines afresh cost about 20 ms a draw, on the UI thread, up to 30 times a second.
+    private CanvasRenderTarget? baseLayer;
+    private bool baseDark;
 
     public ConnectionMapView(MonitorSession session)
     {
@@ -212,8 +215,7 @@ internal sealed class ConnectionMapView : UserControl
     private void DropGeometry()
     {
         frame = null;
-        coast?.Dispose(); land?.Dispose(); borders?.Dispose(); stateBorders?.Dispose(); grid?.Dispose();
-        coast = land = borders = stateBorders = grid = null;
+        baseLayer?.Dispose(); baseLayer = null;
         routesDirty = true;
     }
 
@@ -267,20 +269,71 @@ internal sealed class ConnectionMapView : UserControl
         return CanvasGeometry.CreatePath(builder);
     }
 
-    private void EnsureGeometry(ICanvasResourceCreator creator)
+    /// <summary>The globe's disc or the flat map's rectangle: nothing of the map is drawn outside it.</summary>
+    private CanvasGeometry ClipShape(ICanvasResourceCreator creator, MapFrame current)
     {
-        var current = Scene;
-        if (coast is null)
+        var (center, radius) = current.Globe;
+        return Flat
+            ? CanvasGeometry.CreateRectangle(creator, new Rect(current.FlatArea.X, current.FlatArea.Y, current.FlatArea.Width, current.FlatArea.Height))
+            : CanvasGeometry.CreateCircle(creator, V(center), (float)radius);
+    }
+
+    /// <summary>Draws ocean, graticule, land, coast and borders into <see cref="baseLayer"/> when the size, camera, theme or DPI changed.</summary>
+    private void EnsureBase(CanvasControl sender, bool dark, Color ocean, Color landColor, Color hairline, Color muted)
+    {
+        if (baseLayer is not null && baseDark == dark && baseLayer.Dpi == sender.Dpi) return;
+        baseLayer?.Dispose();
+        baseLayer = new CanvasRenderTarget(sender, (float)ActualWidth, (float)ActualHeight, sender.Dpi);
+        baseDark = dark;
+        var current = Scene; var bounds = current.Bounds; var geography = MapAssets.Geography;
+        using var ds = baseLayer.CreateDrawingSession();
+        ds.Clear(Color.FromArgb(0, 0, 0, 0));
+        using var clip = ClipShape(sender, current);
+        using var grid = Polylines(sender, current.Lines(MapFrame.Graticules()), false);
+        using var land = Polylines(sender, current.LandPolygons(geography.Land), true);
+        using var coast = Polylines(sender, current.Lines(geography.Land), false);
+        using var borders = Polylines(sender, current.Lines(geography.Borders), false);
+        using var stateBorders = camera.Zoom > 1.25 ? Polylines(sender, current.Lines(geography.StateBorders), false) : null;
+        using (ds.CreateLayer(1, new Rect(bounds.X, bounds.Y, bounds.Width, bounds.Height)))
         {
-            var geography = MapAssets.Geography;
-            coast = Polylines(creator, current.Lines(geography.Land), false);
-            land = Polylines(creator, current.LandPolygons(geography.Land), true);
-            borders = Polylines(creator, current.Lines(geography.Borders), false);
-            grid = Polylines(creator, current.Lines(MapFrame.Graticules()), false);
-            stateBorders = camera.Zoom > 1.25 ? Polylines(creator, current.Lines(geography.StateBorders), false) : null;
-            routesDirty = true;
+            ds.FillGeometry(clip, ocean);
+            ds.DrawGeometry(clip, hairline, 1);
+            using (ds.CreateLayer(1, clip))
+            {
+                ds.DrawGeometry(grid, Alpha(hairline, .5), .6f);
+                if (Flat)
+                {
+                    float shift = (float)current.SeamShift;
+                    foreach (float offset in new[] { -shift, 0f, shift })
+                    {
+                        ds.Transform = Matrix3x2.CreateTranslation(offset, 0);
+                        ds.FillGeometry(land, landColor);
+                    }
+                    ds.Transform = Matrix3x2.Identity;
+                }
+                else ds.FillGeometry(land, landColor);
+                ds.DrawGeometry(coast, hairline, 1);
+                if (stateBorders is not null) ds.DrawGeometry(stateBorders, Alpha(muted, .48 * Math.Clamp((camera.Zoom - 1.25) / 1.25, 0, 1)), .5f);
+                ds.DrawGeometry(borders, Alpha(muted, .28), .65f);
+                if (!Flat)
+                {
+                    var (globeCenter, globeRadius) = current.Globe;
+                    using var limb = new CanvasRadialGradientBrush(sender,
+                    [
+                        new CanvasGradientStop { Position = 0, Color = Color.FromArgb(0, 0, 0, 0) }, new CanvasGradientStop { Position = .8f, Color = Color.FromArgb(0, 0, 0, 0) },
+                        new CanvasGradientStop { Position = 1, Color = Color.FromArgb(dark ? (byte)140 : (byte)60, 0, 0, 0) },
+                    ])
+                    { Center = V(globeCenter), RadiusX = (float)globeRadius, RadiusY = (float)globeRadius };
+                    ds.FillGeometry(clip, limb);
+                }
+            }
         }
+    }
+
+    private void EnsureRoutes()
+    {
         if (!routesDirty) return;
+        var current = Scene;
         foreach (var route in routes) route.Dispose();
         routes.Clear();
         foreach (var route in current.Routes(points, origin))
@@ -309,48 +362,18 @@ internal sealed class ConnectionMapView : UserControl
         Color ocean = dark ? Color.FromArgb(255, 22, 28, 38) : Color.FromArgb(255, 226, 234, 244);
         Color landColor = dark ? Color.FromArgb(255, 46, 54, 66) : Color.FromArgb(255, 250, 250, 248);
         Color download = UsageColors.Of(session, "download"), upload = UsageColors.Of(session, "upload"), accent = UsageColors.Accent;
-        StepMotion(); UpdateAnimation(); EnsureGeometry(sender); hitPoints.Clear();
+        StepMotion(); UpdateAnimation(); EnsureBase(sender, dark, ocean, landColor, hairline, muted); EnsureRoutes(); hitPoints.Clear();
         var current = Scene; var bounds = current.Bounds;
         var boundsRect = new Rect(bounds.X, bounds.Y, bounds.Width, bounds.Height);
         using var round = new CanvasStrokeStyle { StartCap = CanvasCapStyle.Round, EndCap = CanvasCapStyle.Round, LineJoin = CanvasLineJoin.Round };
 
+        // Ocean, graticule, land, coast, borders: one bitmap, drawn when the view last changed.
+        ds.DrawImage(baseLayer);
         using (ds.CreateLayer(1, boundsRect))
         {
-            var (globeCenter, globeRadius) = current.Globe;
-            using CanvasGeometry clip = Flat
-                ? CanvasGeometry.CreateRectangle(sender, new Rect(current.FlatArea.X, current.FlatArea.Y, current.FlatArea.Width, current.FlatArea.Height))
-                : CanvasGeometry.CreateCircle(sender, V(globeCenter), (float)globeRadius);
-            // Ocean, graticule, land, coast, borders.
-            ds.FillGeometry(clip, ocean);
-            ds.DrawGeometry(clip, hairline, 1);
+            using CanvasGeometry clip = ClipShape(sender, current);
             using (ds.CreateLayer(1, clip))
             {
-                ds.DrawGeometry(grid!, Alpha(hairline, .5), .6f);
-                if (Flat)
-                {
-                    float shift = (float)current.SeamShift;
-                    foreach (float offset in new[] { -shift, 0f, shift })
-                    {
-                        ds.Transform = Matrix3x2.CreateTranslation(offset, 0);
-                        ds.FillGeometry(land!, landColor);
-                    }
-                    ds.Transform = Matrix3x2.Identity;
-                }
-                else ds.FillGeometry(land!, landColor);
-                ds.DrawGeometry(coast!, hairline, 1);
-                if (stateBorders is not null) ds.DrawGeometry(stateBorders, Alpha(muted, .48 * Math.Clamp((camera.Zoom - 1.25) / 1.25, 0, 1)), .5f);
-                ds.DrawGeometry(borders!, Alpha(muted, .28), .65f);
-                if (!Flat)
-                {
-                    using var limb = new CanvasRadialGradientBrush(sender,
-                    [
-                        new CanvasGradientStop { Position = 0, Color = Color.FromArgb(0, 0, 0, 0) }, new CanvasGradientStop { Position = .8f, Color = Color.FromArgb(0, 0, 0, 0) },
-                        new CanvasGradientStop { Position = 1, Color = Color.FromArgb(dark ? (byte)140 : (byte)60, 0, 0, 0) },
-                    ])
-                    { Center = V(globeCenter), RadiusX = (float)globeRadius, RadiusY = (float)globeRadius };
-                    ds.FillGeometry(clip, limb);
-                }
-
                 // Arcs, then particles on the busiest routes, then nodes.
                 foreach (var route in routes) DrawConnection(sender, ds, route, download, upload, ink, round);
                 if (subscribed)
