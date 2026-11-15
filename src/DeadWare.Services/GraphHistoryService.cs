@@ -65,10 +65,12 @@ public sealed class GraphHistoryService
             long seenDrops=0;
             DateTimeOffset lastCoreStamp=DateTimeOffset.MinValue;
             bool skippedFrame=false;
+            bool sizeLimited=false;
             void Flush()
             {
-                store.Append(pending,time.GetUtcNow());pending.Clear();
-                Volatile.Write(ref status,"Graph history saved locally · last 6 hours");
+                // Once the file has dropped rows for space it holds less than six hours, so the status stops promising six.
+                sizeLimited|=store.Append(pending,time.GetUtcNow());pending.Clear();
+                Volatile.Write(ref status,sizeLimited?"Graph history saved locally · the newest hours that fit its 64 MiB file":"Graph history saved locally · last 6 hours");
             }
             void Process(Pending queued)
             {
