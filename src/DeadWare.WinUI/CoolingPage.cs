@@ -270,7 +270,10 @@ internal sealed class CoolingPage : Page
         };
         var lowerCard = Pages.Card(new StackPanel { Spacing = 8, Padding = new Thickness(8), Children = { tabs, reference, warningRows, settings } });
 
-        Content = new ScrollViewer { Content = new StackPanel { Padding = new Thickness(24), Spacing = 12, Children = { controlsCard, narrowAssessmentCard, historyCard, lowerCard } } };
+        var stack = new StackPanel { Padding = new Thickness(24), Spacing = 12, Children = { controlsCard, narrowAssessmentCard, historyCard, lowerCard } };
+        Content = new ScrollViewer { Content = stack };
+        // The thermal history chart takes the height the rest of the page leaves, as on the WPF page.
+        Pages.Grow(this, stack, chart, 300);
         PlaceAssessment(false);
         SizeChanged += (_, e) => PlaceAssessment(e.NewSize.Width >= 1100);
 

@@ -9,7 +9,8 @@ namespace DeadWare.WinUI;
 internal sealed class SensorsPage : Page
 {
     private readonly MonitorSession session;
-    private readonly TextBox search = new() { PlaceholderText = "Search hardware or sensor", MaxWidth = 360, HorizontalAlignment = HorizontalAlignment.Left };
+    // A fixed width: sized to its content, the box shrank to the text typed into it.
+    private readonly TextBox search = new() { PlaceholderText = "Search hardware or sensor", Width = 320, HorizontalAlignment = HorizontalAlignment.Left };
     private readonly TableView table = new([new("Hardware / sensor", 3), new("Current", 1, true), new("Min", 1, true), new("Average", 1, true), new("Max", 1, true)]);
     private readonly TextBlock count = new() { Opacity = 0.7 };
     private bool refreshing;
@@ -56,7 +57,7 @@ internal sealed class NetworkPage : Page
 {
     private readonly MonitorSession session;
     private readonly TextBlock status = new() { TextWrapping = TextWrapping.Wrap, Opacity = 0.7 }, count = new() { Opacity = 0.7 };
-    private readonly TextBox search = new() { PlaceholderText = "Search application name or PID", MaxWidth = 360, HorizontalAlignment = HorizontalAlignment.Left };
+    private readonly TextBox search = new() { PlaceholderText = "Search application name or PID", Width = 320, HorizontalAlignment = HorizontalAlignment.Left };
     private readonly TableView table = new([new("Application", 2), new("PID", 0.6, true), new("↓ Download", 1, true), new("↑ Upload", 1, true), new("Received", 1, true), new("Sent", 1, true)]);
     private readonly OverviewCard chart;
 
@@ -130,5 +131,25 @@ internal static class Pages
             grid.Children.Add(parts[i]);
         }
         return grid;
+    }
+
+    /// <summary>
+    /// Gives one part of a scrolling page the height the rest leaves free, and never less than its minimum, so it grows with
+    /// the window as the WPF pages' main cards do. <paramref name="stack"/> is the page's scrolled content; the growing
+    /// part may sit anywhere inside it.
+    /// </summary>
+    public static void Grow(FrameworkElement page, FrameworkElement stack, FrameworkElement growing, double minimum)
+    {
+        void Fit()
+        {
+            if (page.ActualHeight <= 0 || stack.ActualHeight <= 0) return;
+            double others = stack.ActualHeight - growing.ActualHeight;
+            double wanted = Math.Max(minimum, Math.Floor(page.ActualHeight - others));
+            if (double.IsNaN(growing.Height) || Math.Abs(wanted - growing.Height) > 1) growing.Height = wanted;
+        }
+        // Top-aligned, the stack is as tall as its content; stretched, it would fill the viewport and report no spare height.
+        stack.VerticalAlignment = VerticalAlignment.Top;
+        page.SizeChanged += (_, _) => Fit();
+        stack.SizeChanged += (_, _) => Fit();
     }
 }

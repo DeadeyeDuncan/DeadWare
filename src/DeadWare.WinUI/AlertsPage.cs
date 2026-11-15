@@ -98,17 +98,21 @@ internal sealed class AlertsPage : Page
         var heading = new Grid();
         heading.Children.Add(new TextBlock { Text = "Recent alerts", Style = (Style)Application.Current.Resources["BodyStrongTextBlockStyle"], VerticalAlignment = VerticalAlignment.Center });
         heading.Children.Add(new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, HorizontalAlignment = HorizontalAlignment.Right, Children = { logRange, refresh } });
+        var episodeScroll = new ScrollViewer { Content = episodes, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
         var log = Pages.Card(new StackPanel
         {
             Spacing = 8, Padding = new Thickness(8),
             Children =
             {
-                heading, logSummary, episodes, status,
+                heading, logSummary, episodeScroll, status,
                 Muted("Episodes stay in alerts.db in this Windows profile for up to 400 days and are never uploaded. Acknowledging marks an episode as seen; it does not stop later episodes. The first network use rule also keeps the names of apps it has seen, with the first and last minute, for up to 400 days after each was last seen."),
             },
         });
 
-        Content = new ScrollViewer { Content = new StackPanel { Padding = new Thickness(24), Spacing = 12, Children = { actionStatus, log, tabbed } } };
+        var stack = new StackPanel { Padding = new Thickness(24), Spacing = 12, Children = { actionStatus, log, tabbed } };
+        Content = new ScrollViewer { Content = stack };
+        // Recent alerts takes the height the rules leave and its list scrolls inside the card, as on the WPF page.
+        Pages.Grow(this, stack, episodeScroll, 160);
 
         kind.SelectionChanged += (_, _) => { if (syncing) return; UpdateEditor(); RequestSuggestion(); };
         target.SelectionChanged += (_, _) => { if (syncing) return; UpdateUnit(); RequestSuggestion(); };

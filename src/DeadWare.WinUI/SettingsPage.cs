@@ -43,7 +43,7 @@ internal sealed class SettingsPage : Page
     private readonly CheckBox extended = new() { Content = "Extended sensors (may affect responsiveness)" }, storageSensors = new() { Content = "Storage sensors (temperature and health; restart to apply)" };
     private readonly TextBlock elevateResult = Muted("");
     // Appearance
-    private readonly CheckBox graphSmoothing = new() { Content = "Graph smoothing" }, gpuFanSpeed = new() { Content = "Show GPU fan speed on temperature graphs" }, cpuPumpSpeed = new() { Content = "Show CPU pump speed on CPU temperature graphs" };
+    private readonly CheckBox graphSmoothing = new() { Content = "Smooth long-range graphs (1, 3 and 6 hours)" }, gpuFanSpeed = new() { Content = "Show GPU fan speed on temperature graphs" }, cpuPumpSpeed = new() { Content = "Show CPU pump speed on CPU temperature graphs" };
     private readonly ComboBox line = new() { MinWidth = 220 }, pattern = new() { MinWidth = 140 };
     private readonly Border lineDot = new() { Width = 16, Height = 16, CornerRadius = new CornerRadius(8), VerticalAlignment = VerticalAlignment.Center };
     private readonly TextBlock lineColor = Muted(""), thicknessLabel = new(), strengthLabel = new();
@@ -183,7 +183,7 @@ internal sealed class SettingsPage : Page
     {
         var panel = Section();
         panel.Children.Add(Muted("Light or dark mode and the accent colour follow your Windows settings."));
-        panel.Children.Add(Bind(graphSmoothing, "Graph smoothing", session.SetGraphSmoothing));
+        panel.Children.Add(Bind(graphSmoothing, "Smooth long-range graphs (1, 3 and 6 hours)", session.SetGraphSmoothing));
         panel.Children.Add(Muted("On shows an average line with a min/max band. Off shows raw traces. Applies immediately to the dashboard, pop-outs and widget; recorded data is unchanged."));
         panel.Children.Add(Bind(gpuFanSpeed, "Show GPU fan speed on temperature graphs", session.SetGpuFanSpeed));
         panel.Children.Add(Muted("Adds the selected GPU's first reported fan on its own left RPM scale, dotted and amber by default. Unsupported fan readings stay unavailable; 0 RPM means stopped."));
