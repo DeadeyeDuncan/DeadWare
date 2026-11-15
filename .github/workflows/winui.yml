@@ -117,6 +117,26 @@ jobs:
               "Storage attempt ${attempt}: clean quit."
             } finally { if (-not $process.HasExited) { $process.Kill($true); $process.WaitForExit(15000) | Out-Null } }
           }
+          # 5. The runs that show no window: a diagnostic collection writes its report and exits 0, and the start-up
+          #    registration query writes its answer and exits. Both must leave before the dashboard would open.
+          $report = Join-Path (Resolve-Path artifacts/winui) 'diagnose.json'
+          Remove-Item -LiteralPath $report -ErrorAction SilentlyContinue
+          $process = Start-Process -FilePath $exe -ArgumentList @('--diagnose', "`"$report`"", '--samples', '2', '--no-hardware', '--no-etw') -PassThru
+          try {
+            if (-not $process.WaitForExit(90000)) { throw 'The diagnostic run did not exit within 90 s.' }
+            if ($process.ExitCode -ne 0) { throw "The diagnostic run exited with code $($process.ExitCode)." }
+            $diagnosis = Get-Content -LiteralPath $report -Raw | ConvertFrom-Json
+            if ($diagnosis.Status -ne 'Completed' -or @($diagnosis.Samples).Count -ne 2) { throw "Unexpected diagnostic report: status '$($diagnosis.Status)', $(@($diagnosis.Samples).Count) samples." }
+            "The diagnostic run completed with $(@($diagnosis.Samples).Count) samples."
+          } finally { if (-not $process.HasExited) { $process.Kill($true); $process.WaitForExit(15000) | Out-Null } }
+          $registration = Join-Path (Resolve-Path artifacts/winui) 'startup.json'
+          Remove-Item -LiteralPath $registration -ErrorAction SilentlyContinue
+          $process = Start-Process -FilePath $exe -ArgumentList @('--startup-status', "`"$registration`"") -PassThru
+          try {
+            if (-not $process.WaitForExit(90000)) { throw 'The start-up status query did not exit within 90 s.' }
+            if (-not (Test-Path -LiteralPath $registration)) { throw "The start-up status query wrote no report (exit code $($process.ExitCode))." }
+            'The start-up status query wrote its report and exited.'
+          } finally { if (-not $process.HasExited) { $process.Kill($true); $process.WaitForExit(15000) | Out-Null } }
           if (Get-Process -Name DeadWare.WinUI -ErrorAction SilentlyContinue) { throw 'A shell process is still running after the checks.' }
       - name: Crash details
         if: failure()
