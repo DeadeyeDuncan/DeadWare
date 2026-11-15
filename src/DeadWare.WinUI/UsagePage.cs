@@ -327,7 +327,13 @@ internal sealed class UsagePage : Page
         string gpu = session.GpuName;
         titles["gpu"].Text = gpu == "GPU unavailable" ? "GPU usage" : $"GPU usage · {gpu}";
         titles["gputemp"].Text = gpu == "GPU unavailable" ? "GPU temperature" : $"GPU temperature · {gpu}";
+        // A page shown before the first reading (a remembered window, at start-up) read its charts with no GPU known
+        // and would say none is selected until the minute refresh; read again as soon as one is.
+        if (loaded && readGpu is not null && readGpu != gpu) RequestRefresh();
     }
+
+    /// <summary>The GPU name the charts were last read for; null before the first read.</summary>
+    private string? readGpu;
 
     // Another period has another bucket grid, so a listed slot and its hairlines clear with it.
     private void Step(int direction) { offset = Math.Max(0, offset + direction); resources.ClearSlot(); UpdatePeriod(); RequestRefresh(); }
@@ -425,6 +431,7 @@ internal sealed class UsagePage : Page
         _ = ReadStripAsync(from, to, points);
         if (applicationSlot is { } listed) _ = ReadSlotAsync(listed.From, listed.To);
         string? gpu = session.GpuName is var name && name != "GPU unavailable" ? name : null;
+        readGpu = name;
         var service = session.Usage;
         var reads = new Dictionary<string, Task<UsageHistoryView>>(StringComparer.Ordinal)
         {

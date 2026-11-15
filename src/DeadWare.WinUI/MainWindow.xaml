@@ -16,8 +16,48 @@
             PaneDisplayMode="Left"
             IsSettingsVisible="False"
             IsBackButtonVisible="Collapsed"
+            AlwaysShowHeader="False"
             SelectionChanged="OnSelectionChanged">
-            <Frame x:Name="ContentFrame" />
+            <NavigationView.PaneFooter>
+                <!-- As at the foot of the WPF sidebar: the way to stop monitoring, what closing does, and what is running. -->
+                <StackPanel x:Name="PaneFoot" Margin="16,8,16,12" Spacing="6">
+                    <Button x:Name="ElevateButton" Content="Restart as administrator" HorizontalAlignment="Stretch" Click="OnElevate" />
+                    <TextBlock x:Name="ElevateResult" TextWrapping="Wrap" Visibility="Collapsed" Style="{StaticResource CaptionTextBlockStyle}" />
+                    <Button x:Name="QuitButton" Content="Quit DeadWare" HorizontalAlignment="Stretch" Click="OnQuit" />
+                    <TextBlock x:Name="TrayNotice" TextWrapping="Wrap" Opacity="0.7" Style="{StaticResource CaptionTextBlockStyle}" />
+                    <TextBlock x:Name="MonitoringInfo" TextWrapping="Wrap" Opacity="0.7" Style="{StaticResource CaptionTextBlockStyle}" />
+                </StackPanel>
+            </NavigationView.PaneFooter>
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+                <!-- The page's name, the hardware being watched and how fresh the last sample is, then the shared controls. -->
+                <Grid Margin="32,20,24,8" ColumnSpacing="16">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <StackPanel Spacing="2">
+                        <TextBlock x:Name="PageTitle" Style="{StaticResource TitleTextBlockStyle}" TextTrimming="CharacterEllipsis" />
+                        <TextBlock x:Name="PageSubtitle" Opacity="0.7" TextTrimming="CharacterEllipsis" Style="{StaticResource CaptionTextBlockStyle}" />
+                    </StackPanel>
+                    <StackPanel x:Name="HeaderTools" Grid.Column="1" Orientation="Horizontal" Spacing="12" VerticalAlignment="Center">
+                        <StackPanel x:Name="RangeRow" Orientation="Horizontal" Spacing="2" />
+                        <Button x:Name="OpenWidget" Content="Open widget" Click="OnOpenWidget" />
+                    </StackPanel>
+                </Grid>
+                <InfoBar x:Name="UpdateNotice" Grid.Row="1" Margin="24,0,24,8" IsOpen="False" IsClosable="False" Severity="Informational" Message="Install when you are ready.">
+                    <InfoBar.ActionButton>
+                        <Button Content="Review update" Click="OnReviewUpdate" />
+                    </InfoBar.ActionButton>
+                </InfoBar>
+                <Frame x:Name="ContentFrame" Grid.Row="2" />
+                <TextBlock x:Name="StatusLines" Grid.Row="3" Margin="32,4,24,10" TextWrapping="Wrap" Opacity="0.7" Style="{StaticResource CaptionTextBlockStyle}" />
+            </Grid>
         </NavigationView>
     </Grid>
 </Window>
