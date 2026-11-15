@@ -23,12 +23,19 @@ internal static class DiagnosticRun
         Collector? collector=null;string? output=null;int exit=0;string status="Starting";
         var readings=new List<Reading>();int deadlineSeconds=15;
         var options=Options(args,Collector.IsElevated);
-        async Task WriteReport()
+        // Something may be reading the report as it is replaced (a watchdog, a script waiting on it), which fails the
+        // replacement for as long as the reader holds the file. The writes that matter try again for a few seconds.
+        async Task WriteReport(int attempts=1)
         {
             if(output is null)return;
             Directory.CreateDirectory(Path.GetDirectoryName(output)!);
             var text=Report(version,status,collector?.Stage,deadlineSeconds,options,readings);
-            string temporary=output+".tmp";await File.WriteAllTextAsync(temporary,text);File.Move(temporary,output,true);
+            string temporary=output+".tmp";
+            for(int attempt=1;;attempt++)
+            {
+                try {await File.WriteAllTextAsync(temporary,text);File.Move(temporary,output,true);return;}
+                catch(Exception e) when(e is IOException or UnauthorizedAccessException&&attempt<attempts) {await Task.Delay(100);}
+            }
         }
         try
         {
@@ -41,7 +48,7 @@ internal static class DiagnosticRun
             deadlineSeconds=Math.Max(15,count+10);
             collector=new(options);
             // An initial report survives an external watchdog exit during blocked hardware discovery.
-            await WriteReport();
+            await WriteReport(30);
             var channel=Channel.CreateUnbounded<Reading>(new(){SingleReader=true,SingleWriter=true});
             collector.SampleAvailable+=reading=>channel.Writer.TryWrite(reading);
             collector.Start();
@@ -49,7 +56,12 @@ internal static class DiagnosticRun
             using var deadline=new CancellationTokenSource(TimeSpan.FromSeconds(deadlineSeconds));
             while(readings.Count<count)
             {
-                readings.Add(await channel.Reader.ReadAsync(deadline.Token));status="Collecting";await WriteReport();
+                readings.Add(await channel.Reader.ReadAsync(deadline.Token));status="Collecting";
+                // A progress write that loses to a reader is skipped: the next sample writes again, and the final
+                // writes below decide the exit code.
+                try {await WriteReport();}
+                catch(IOException) {}
+                catch(UnauthorizedAccessException) {}
             }
             status="Completed";
         }
@@ -58,14 +70,14 @@ internal static class DiagnosticRun
         finally
         {
             // Write partial results before cleanup so a native hardware hang cannot discard evidence.
-            try {await WriteReport();}catch(Exception){exit=1;}
+            try {await WriteReport(30);}catch(Exception){exit=1;}
             if(collector is not null)
             {
                 try {await collector.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(3));}
                 catch(TimeoutException) {status+="; provider shutdown deadline exceeded";exit=1;}
                 catch(Exception e) {status+=$"; shutdown failed ({e.GetType().Name})";exit=1;}
             }
-            try {await WriteReport();}catch(Exception){exit=1;}
+            try {await WriteReport(30);}catch(Exception){exit=1;}
         }
         return exit;
     }
