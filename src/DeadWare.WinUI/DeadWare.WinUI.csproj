@@ -20,6 +20,8 @@
     <ApplicationIcon>../../assets/deadware.ico</ApplicationIcon>
     <AssemblyName>DeadWare</AssemblyName>
     <RootNamespace>DeadWare.WinUI</RootNamespace>
+    <!-- DeadWare can run as administrator; a user-set DOTNET_STARTUP_HOOKS must not load code into it. -->
+    <StartupHookSupport>false</StartupHookSupport>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.6.5" />
