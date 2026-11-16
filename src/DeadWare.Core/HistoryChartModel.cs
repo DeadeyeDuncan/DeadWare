@@ -85,6 +85,9 @@ public static class HistoryChartModel
 {
     private static readonly string[] Kinds=["cpu","cputemp","gpu","gputemp","memory","network","storage"];
 
+    /// <summary>One line as read from history: its drawn points, a smoothed line's column ranges, and an unsmoothed line's statistics.</summary>
+    private readonly record struct LineData(IReadOnlyList<SamplePoint> Points,IReadOnlyList<ChartRangePoint>? Ranges,Summary? Statistics=null);
+
     public static HistoryChartFrame Build(HistoryChartRequest request)
     {
         string kind=request.Kind;
@@ -112,18 +115,20 @@ public static class HistoryChartModel
         // The moment at the right-hand edge, and the stretch of history that reaches from the left edge to the newest sample.
         double lead=double.IsFinite(request.Lead)?Math.Max(0,request.Lead):0,edge=request.Now-lead;
         int span=request.Seconds+(int)Math.Ceiling(lead),spanColumns=(int)Math.Ceiling(plot.Width*span/request.Seconds);
-        // Smoothed: one point per column at its average, with the column's range kept for the band and the statistics.
-        (IReadOnlyList<SamplePoint> Points,IReadOnlyList<ChartRangePoint>? Ranges) Read(string metric)
+        // Each line comes from one pass over its column, with no point for every sample. Smoothed: one point per column at its
+        // average, with the column's range kept for the band and the statistics. Otherwise each pixel column's first, lowest,
+        // highest and last reading, which keep the peak, and the statistics of every reading in the span.
+        LineData Read(string metric)
         {
-            if(!smoothed)return (request.History.Series(metric,request.Now,span),null);
+            if(!smoothed){var line=request.History.ReduceSeries(metric,request.Now,span,spanColumns);return new(line.Points,null,line.Statistics);}
             var ranges=request.History.ChartRanges(metric,request.Now,request.Seconds,columns);
-            return (ranges.Select(p=>new SamplePoint(DateTimeOffset.UnixEpoch,p.EndSeconds,p.Average)).ToArray(),ranges);
+            return new(ranges.Select(p=>new SamplePoint(DateTimeOffset.UnixEpoch,p.EndSeconds,p.Average)).ToArray(),ranges);
         }
         // Smoothed byte axes follow the average trace; raw peaks remain in the band and the statistics.
-        double Peak((IReadOnlyList<SamplePoint> Points,IReadOnlyList<ChartRangePoint>? Ranges) data)=>
+        double Peak(LineData data)=>
             data.Ranges is { } ranges?ranges.Max(p=>bytes?p.Average:p.Maximum)??0:data.Points.Max(p=>p.Value)??0;
         var primaryData=Read(primary);
-        var secondData=second is { } other?Read(other.Metric):([],null);
+        var secondData=second is { } other?Read(other.Metric):new LineData([],null);
         double peak=Math.Max(Peak(primaryData),Peak(secondData));
         double maximum=kind is "cpu" or "gpu" or "memory"?100:bytes?Math.Max(1000,peak*1.15):Math.Max(100,peak*1.1);
         if(compare&&kind=="cputemp")maximum=Math.Ceiling(maximum/20)*20;
@@ -137,10 +142,11 @@ public static class HistoryChartModel
         }
 
         double X(double monotonic)=>plot.Left+plot.Width*(1-(edge-monotonic)/request.Seconds);
-        ChartTrace Trace(string metric,string colorKey,bool dashed,double fill,(IReadOnlyList<SamplePoint> Points,IReadOnlyList<ChartRangePoint>? Ranges) data,double top,bool band=false)
+        ChartTrace Trace(string metric,string colorKey,bool dashed,double fill,LineData data,double top,bool band=false)
         {
             var runs=new List<IReadOnlyList<ChartPoint>>();List<ChartPoint>? run=null;
-            var drawn=smoothed?data.Points:SampleHistory.ReduceForChart(data.Points,request.Now,span,spanColumns);
+            // Already reduced to the pixel columns when it was read.
+            var drawn=data.Points;
             foreach(var point in drawn)
             {
                 if(point.Value is not { } value||!double.IsFinite(value)){run=null;continue;}
@@ -175,10 +181,10 @@ public static class HistoryChartModel
         if(showFan||showPump)
         {
             // GPU fan and CPU pump share the left RPM scale when both are shown.
-            (IReadOnlyList<SamplePoint> Points,IReadOnlyList<ChartRangePoint>? Ranges) none=([],null);
+            var none=new LineData([],null);
             var fanData=showFan?Read(MetricId("gpufan",request.GpuId)):none;
             var pumpData=showPump?Read(MetricId("cpupump",request.GpuId)):none;
-            double RpmPeak((IReadOnlyList<SamplePoint> Points,IReadOnlyList<ChartRangePoint>? Ranges) data)=>data.Ranges is { } ranges?ranges.Max(p=>p.Maximum)??0:data.Points.Max(p=>p.Value)??0;
+            double RpmPeak(LineData data)=>data.Ranges is { } ranges?ranges.Max(p=>p.Maximum)??0:data.Points.Max(p=>p.Value)??0;
             rpmMaximum=Math.Max(1000,Math.Ceiling(Math.Max(RpmPeak(fanData),RpmPeak(pumpData))/1000)*1000);
             rpmLines=lines.Select((line,i)=>new ChartLine(line.Y,FormattableString.Invariant($"{rpmMaximum*i/2:0} RPM"))).ToArray();
             if(showFan)traces.Add(Trace(MetricId("gpufan",request.GpuId),"gpufan",false,0,fanData,rpmMaximum,band:true) with {Role=ChartTraceRole.Rpm,Dotted=true});
@@ -196,7 +202,7 @@ public static class HistoryChartModel
             long count=primaryRanges.Sum(p=>(long)p.Samples);
             statistics=count==0?new(null,null,null):new(primaryRanges.Min(p=>p.Minimum),primaryRanges.Max(p=>p.Maximum),primaryRanges.Sum(p=>(p.Average??0)*(p.Samples/(double)count)));
         }
-        else statistics=SampleHistory.Statistics(primaryData.Points);
+        else statistics=primaryData.Statistics??new(null,null,null);
 
         var ticks=TimeTicks.For(request.Seconds,request.Now,request.WallNow,plot.Width,request.Compact,request.Zone)
             .Select(t=>new ChartTick(X(t.MonotonicSeconds),t.Label)).ToArray();

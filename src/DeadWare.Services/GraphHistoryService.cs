@@ -17,6 +17,9 @@ public sealed class GraphHistoryService
     private Task? worker;
     private bool started,stopped,accepting;
     private long dropped;
+    // The cache as read at start, for the first restore only. Six hours of rows were otherwise held for the whole session, when
+    // only a mapping that appears later (a new GPU, a changed drive set) needs them again, and that reads the store anew.
+    private IReadOnlyList<GraphHistoryRecord>? startup;
     private string status="Graph history starts with monitoring.";
     public long DroppedSamples=>Interlocked.Read(ref dropped);
     public int PendingSamples=>queue.Reader.Count;
@@ -57,7 +60,7 @@ public sealed class GraphHistoryService
         try
         {
             store.Initialize();
-            var saved=store.Read(time.GetUtcNow());
+            startup=store.Read(time.GetUtcNow());
             var restoredKeys=new HashSet<string>(StringComparer.Ordinal);
             var pending=new List<GraphHistoryRecord>(120);
             Snapshot? anchor=null,previous=null;
@@ -86,6 +89,10 @@ public sealed class GraphHistoryService
                 var newMappings=mappings.Where(p=>!restoredKeys.Contains(p.Key)).ToDictionary(p=>p.Key,p=>p.Value,StringComparer.Ordinal);
                 if(newMappings.Count>0)
                 {
+                    // This session's own rows come after the anchor and are skipped below, so a fresh read restores what the first
+                    // would have, less rows pruned since. It is a best effort: a failed read leaves the new lines without history and
+                    // recording goes on.
+                    var saved=startup??ReadSaved(now);startup=null;
                     var restored=new List<Snapshot>();
                     // Core keys are written on a thinned cadence; carry them across the thinned records so restored traces stay continuous.
                     var fillWindow=GraphHistoryProjection.CoreCadence(reading.CpuCoreCount)+TimeSpan.FromSeconds(0.5);
@@ -149,5 +156,11 @@ public sealed class GraphHistoryService
             while(queue.Reader.TryRead(out _))Interlocked.Increment(ref dropped);
             Volatile.Write(ref status,$"Graph history unavailable ({error.GetType().Name}). Live monitoring continues; the cache was preserved. Resolve storage access and restart to retry.");
         }
+        finally {startup=null;}
+    }
+    private IReadOnlyList<GraphHistoryRecord> ReadSaved(DateTimeOffset now)
+    {
+        try {return store.Read(now);}
+        catch(Exception error) when(error is InvalidDataException or IOException or System.Data.Common.DbException) {return [];}
     }
 }

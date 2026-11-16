@@ -115,15 +115,26 @@ public sealed class GraphHistoryStore
             """, null, ("$cutoff", Cutoff(now)), ("$now", now.UtcTicks), ("$limit", MaximumRows));
         using var reader = command.ExecuteReader();
         var result = new List<GraphHistoryRecord>();
+        // Every row repeats the same few dozen keys of some 70 characters, and few session ids. Kept once each, a full read held
+        // for the restore is about a fifth of the size it was with fresh strings for every row.
+        var known = new Dictionary<string, string>(StringComparer.Ordinal);
+        string Intern(string text)
+        {
+            if (known.TryGetValue(text, out var kept)) return kept;
+            if (known.Count < 4096) known.Add(text, text);
+            return text;
+        }
         while (reader.Read())
         {
             try
             {
                 if (reader.GetInt64(4) > MaximumPayloadLength) throw new InvalidDataException("Graph cache contains an oversized record.");
-                var values = JsonSerializer.Deserialize<Dictionary<string, double?>>(reader.GetString(3))
+                var parsed = JsonSerializer.Deserialize<Dictionary<string, double?>>(reader.GetString(3))
                     ?? throw new InvalidDataException("Graph cache contains an empty record.");
-                double interval = values.Remove(PollingIntervalKey, out var storedInterval) ? storedInterval ?? double.NaN : 1;
-                var record = new GraphHistoryRecord(reader.GetString(0), new DateTimeOffset(reader.GetInt64(2), TimeSpan.Zero), reader.GetDouble(1),
+                double interval = parsed.Remove(PollingIntervalKey, out var storedInterval) ? storedInterval ?? double.NaN : 1;
+                var values = new Dictionary<string, double?>(parsed.Count, StringComparer.Ordinal);
+                foreach (var pair in parsed) values[Intern(pair.Key)] = pair.Value;
+                var record = new GraphHistoryRecord(Intern(reader.GetString(0)), new DateTimeOffset(reader.GetInt64(2), TimeSpan.Zero), reader.GetDouble(1),
                     new ReadOnlyDictionary<string, double?>(values)) { PollingIntervalSeconds = interval };
                 Validate(record); result.Add(record);
             }

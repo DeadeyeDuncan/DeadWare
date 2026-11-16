@@ -53,6 +53,61 @@ public class GraphHistoryServiceTests
     }
 
     [Fact]
+    public async Task The_cache_read_at_start_is_let_go_once_the_first_restore_has_used_it()
+    {
+        using var fixture=new Fixture();var now=DateTimeOffset.UtcNow.AddSeconds(-2);
+        var first=new GraphHistoryService(fixture.Path,"machine",new SampleHistory());
+        first.Start();for(int i=0;i<20;i++)first.TryRecord(Reading(now.AddSeconds(-30+i),i+1,cpu:i));await first.StopAsync();
+        var history=new SampleHistory();var live=Reading(now,1);history.Add(live.Sample);
+        var second=new GraphHistoryService(fixture.Path,"machine",history);
+        var startup=typeof(GraphHistoryService).GetField("startup",BindingFlags.NonPublic|BindingFlags.Instance)!;
+        using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        try
+        {
+            second.Start();
+            while(startup.GetValue(second) is not IReadOnlyList<GraphHistoryRecord> {Count:20})await Task.Delay(5,timeout.Token);
+            second.TryRecord(live);
+            while(!history.Read().Any(s=>s.SessionId is not null))await Task.Delay(5,timeout.Token);
+            // Still running, and the six hours read at start are no longer held.
+            Assert.Null(startup.GetValue(second));
+            Assert.Equal(Enumerable.Range(0,20).Select(i=>(double?)i),history.Read().Where(s=>s.SessionId is not null).Select(s=>s.Values["cpu/usage"]));
+        }
+        finally {await second.StopAsync();}
+    }
+
+    [Fact]
+    public async Task A_mapping_that_appears_later_reads_the_cache_again_but_not_this_sessions_own_rows()
+    {
+        using var fixture=new Fixture();var now=DateTimeOffset.UtcNow.AddSeconds(-2);
+        var first=new GraphHistoryService(fixture.Path,"machine",new SampleHistory());
+        first.Start();first.TryRecord(Reading(now.AddSeconds(-10),10,25,60,123,45));await first.StopAsync();
+        // Initialized before the service starts, so polling the file below only reads.
+        var reader=new GraphHistoryStore(fixture.Path);reader.Initialize();
+        var history=new SampleHistory();var second=new GraphHistoryService(fixture.Path,"machine",history,flushInterval:TimeSpan.FromMilliseconds(50));
+        try
+        {
+            second.Start();
+            var empty=Reading(now,1,50,65,999,30) with {Sensors=[],Gpus=[],CpuName="Processor"};
+            history.Add(empty.Sample);second.TryRecord(empty);
+            // This session's first row is in the file before the CPU appears and the cache is read again.
+            var waited=Stopwatch.StartNew();
+            while(true)
+            {
+                Assert.True(waited.Elapsed<TimeSpan.FromSeconds(5),$"No flush within 5 s. Service status: {second.Status}");
+                try {if(reader.Read(DateTimeOffset.UtcNow).Count==2)break;}
+                catch(Microsoft.Data.Sqlite.SqliteException) { }
+                await Task.Delay(20);
+            }
+            var metadata=Reading(now.AddSeconds(1),2,60,66,1000,31);history.Add(metadata.Sample);second.TryRecord(metadata);
+        }
+        finally {await second.StopAsync();}
+        var restored=Assert.Single(history.Read().Where(s=>s.SessionId is not null));
+        Assert.Equal(25,restored.Values["cpu/usage"]);Assert.Equal(123,restored.Values["network/download"]);
+        Assert.Equal(new double?[]{25,50,60},history.Series("cpu/usage",2,21600).Select(p=>p.Value));
+        Assert.DoesNotContain("unavailable",second.Status,StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task Distinct_gpu_models_restore_after_enumeration_changes_but_replacements_do_not()
     {
         using var fixture=new Fixture();var now=DateTimeOffset.UtcNow.AddSeconds(-2);
