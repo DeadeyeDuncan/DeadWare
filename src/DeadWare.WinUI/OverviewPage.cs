@@ -28,6 +28,8 @@ internal sealed class OverviewPage : Page
     private string[] driveIds = [], gpuIds = [];
     private int columns = 2;
     private bool syncing;
+    // The colour flyout every card's dots share, made the first time a dot is clicked.
+    private LineStyleFlyout? colours;
 
     public OverviewPage(MonitorSession session)
     {
@@ -66,7 +68,8 @@ internal sealed class OverviewPage : Page
         rangeRow.HorizontalAlignment = HorizontalAlignment.Left;
         toolbar.Children.Add(new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12, HorizontalAlignment = HorizontalAlignment.Right, Children = { rangeRow, widget } });
 
-        foreach (string kind in OverviewPresenter.Kinds) fixedCards.Add(new OverviewCard(session, kind, null));
+        Func<LineStyleFlyout> flyout = () => colours ??= new LineStyleFlyout(session);
+        foreach (string kind in OverviewPresenter.Kinds) fixedCards.Add(new OverviewCard(session, kind, null, flyout));
 
         footer = Pages.Card(new StackPanel
         {
@@ -201,8 +204,10 @@ internal sealed class OverviewCard : UserControl
     private const double RestingWash = 0.035, HoveredWash = 0.065;
     private readonly BusiestDrive busiest = new();
     private readonly Dictionary<TextBlock, Windows.UI.Color> tints = [];
+    private readonly LineStyleDot[] dots = [];
 
-    public OverviewCard(MonitorSession session, string kind, string? driveId)
+    /// <param name="colours">The colour flyout a page shares among its cards; a card without one makes its own when a dot is first clicked.</param>
+    public OverviewCard(MonitorSession session, string kind, string? driveId, Func<LineStyleFlyout>? colours = null)
     {
         this.session = session;
         this.kind = kind;
@@ -220,6 +225,21 @@ internal sealed class OverviewCard : UserControl
         header.Children.Add(tile);
         Grid.SetColumn(title, 1);
         header.Children.Add(title);
+        // One colour dot per trace between the title and the pop-out button, as in the WPF app. Drive cards share the Disk
+        // card's read and write colours, so they carry none.
+        if (this.driveId is null)
+        {
+            LineStyleFlyout? own = null;
+            var flyout = colours ?? (() => own ??= new LineStyleFlyout(session));
+            dots = [.. LineStyleDot.Keys(kind).Select(key => new LineStyleDot(session, key, flyout))];
+            // The 26 px dots overhang the 24 px glyph tile by a pixel above and below, so the header keeps its height and
+            // the chart lines up with a drive card's beside it.
+            var dotRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 2, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, -1, 0, -1) };
+            foreach (var dot in dots) dotRow.Children.Add(dot.Button);
+            header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            Grid.SetColumn(dotRow, 2);
+            header.Children.Add(dotRow);
+        }
         // Pop this graph out into its own window; a drive card opens that drive's window.
         var popOut = new Button
         {
@@ -236,7 +256,7 @@ internal sealed class OverviewCard : UserControl
             if (drive is not null) App.Popouts?.OpenDrive(drive);
         };
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        Grid.SetColumn(popOut, 2);
+        Grid.SetColumn(popOut, header.ColumnDefinitions.Count - 1);
         header.Children.Add(popOut);
 
         // MIN / AVG / MAX share the reading's line, so the chart's star row takes the height a footer would.
@@ -349,6 +369,8 @@ internal sealed class OverviewCard : UserControl
                 GradientStops = { new GradientStop { Color = tileColor, Offset = 0 }, new GradientStop { Color = Windows.UI.Color.FromArgb(0, tileColor.R, tileColor.G, tileColor.B), Offset = 1 } },
             };
         }
+        // The first dot is the card's own trace, whose colour the tile has just looked up.
+        foreach (var dot in dots) dot.Refresh(chart, dot.Key == OverviewPresenter.ColorKey(kind) ? tileColor : null);
 
         bool showFan = kind == "gputemp" && session.Settings.ShowGpuFanSpeed;
         fan.Visibility = showFan ? Visibility.Visible : Visibility.Collapsed;
