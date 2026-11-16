@@ -1,0 +1,319 @@
+# Lighting: DeadLight merged into DeadWare (0.19.0)
+
+Status: proposed on 2026-11-15. Brainstormed with the user in the fan-control session. The user approved the scope, the desk view (plan A), the Lighting page mockup and the approach (a background device host); this document awaits their approval. The version number is tentative, and releasing stays the user's call. Fan control, the request that started this session, follows as its own spec. It builds on the device host and the iCUE LINK hub driver defined here.
+
+## Intent
+
+DeadLight is the user's own RGB lighting app: Electron, React and TypeScript on a bundled OpenRGB 1.0rc3 engine, at `I:\DeadLight`. It runs alongside DeadWare. The user wants one app.
+
+The trigger was cooling. The user wants DeadWare to replace FanControl and iCUE. iCUE has to go because its lighting fights DeadLight's on the Corsair iCUE LINK System Hub, which makes the LEDs blink. But the hub has **one** software/hardware mode that covers lighting and cooling together:
+
+- OpenRGB switches the whole hub to software mode when it starts.
+- It switches it back to hardware mode whenever it exits or rescans.
+- It never sets fan or pump speeds.
+
+Two programs owning the hub will always fight, so lighting and cooling need a single owner. The user chose to merge DeadLight into DeadWare first and make DeadWare that owner. Fan control comes next.
+
+Success looks like this:
+
+- One app and one tray icon for monitoring, lighting and, later, fans.
+- DeadLight and iCUE retired.
+- Nothing blinks, and lighting survives a crash of DeadWare's window.
+- Fan control can be added later without moving the hub driver.
+
+## Decisions taken in brainstorming
+
+- **Order:** merge DeadLight first, fan control second. The user chose this knowing the AIO stays on fixed speeds until fan control lands. That has been the state since iCUE's app last ran (2025-10-03); a read-only probe on 2026-11-15 found the pump at about 2,716 RPM and the fans at about 1,330 RPM with coolant at 38.4 °C.
+- **Features kept:**
+  - static colours per zone, with "set all colours"
+  - synchronised desk effects: Wave, Breathing, Spectrum
+  - the desk layout editor
+  - keyboard modes and per-key painting
+  - device tuning: per-device brightness and RGB calibration
+  - ordered layers, with named-key masks, key fade and key ripple
+  - lights off: manual toggle, global shortcut, off when idle, off when locked
+  - Aerox 9 mouse: shared USB/wireless settings, battery and charging, sleep timer
+  - per-device hardware modes (DeadLight's Mode menu), for devices that must stay on their own effects, such as the Lighting Node Pro (see Devices)
+- **Features dropped:** screen ambient, audio-reactive lighting (and its visualisers), the OpenMW/Morrowind bridge, and **profiles**. Profiles means named profiles, the startup profile, per-application switching and profile import/export. The merged version has one saved lighting setup.
+- **Nothing is imported from DeadLight.** Colours, effects and per-key paint are set up fresh. The desk layout is recreated from the user's photos (see Desk layout).
+- **Desk view:** plan A, a top-down plan of the user's L-shaped desk. The tower can be tapped to show an inside view drawn from the side-window photo.
+- **Lighting page:** approved as mocked, described under Proposed experience.
+- **The PS5 controller** (Bluetooth, VID 054C PID 0CE6) is left out of the desk layout.
+- **Approach:** a separate background process, the *device host*, owns the hardware; DeadWare's window is the interface. The user calls it the "background helper".
+
+## Goals, non-goals and anti-goals
+
+**Goals:** the kept features above, inside DeadWare; DeadWare as the only owner of the iCUE LINK hub; lighting that keeps running when the window crashes, hangs or restarts; a device host that fan control can extend.
+
+**Non-goals:**
+- the dropped features
+- fan and pump control, including any speed command to the hub
+- bundling OpenRGB in DeadWare's package
+- importing DeadLight's saved data
+- Corsair devices other than the iCUE LINK System Hub
+- lighting on non-Windows systems
+
+**Anti-goals.** Each of these is a failure even if everything else works:
+- DeadWare makes any device blink or flicker during normal running. That includes the hub, through redundant mode switches or by fighting another program.
+- Lighting writes stop the Aerox mouse from sleeping.
+- Restart churn wedges USB device firmware. DeadLight hit this with a 1-second respawn; the floor is 4 s, and kill/relaunch is never cycled.
+- Any log grows without bound. DeadLight's `reconcile-diag.log` reached 23 GB.
+- Lighting costs noticeable CPU, or the window does per-frame work while hidden.
+- Two programs drive the same device at once (DeadLight, iCUE or a second OpenRGB alongside DeadWare).
+- The hub's cooling state changes without the user's say-so. Entering or leaving software mode is a cooling change; see Hardware verification.
+
+## Constraints
+
+- DeadWare is .NET 10 and WinUI 3, MIT-licensed, with a public repository. A `v*` tag publishes an update to every installed copy, so **never tag without asking**.
+- This PC runs DeadWare elevated, polling every 0.5 s. OpenRGB needs administrator rights for SMBus/I²C devices: RAM, the GPU, the motherboard. DeadLight runs elevated today.
+- **OpenRGB 1.0rc3** (GPL-2.0-or-later) stays a separate download that the user points DeadWare at. DeadWare talks to it only over its network SDK, never linking or bundling it.
+- **Corsair protocol details may inform DeadWare, but no code may be copied.** OpenLinkHub (GPL-3.0), OpenRGB (GPL-2.0), liquidctl (GPL-3.0) and FanControl.CorsairLink (no licence) are off-limits. Add the courtesy attribution from `research-corsair.md` §4 to `THIRD-PARTY-NOTICES.md`. HidSharp 2.6.4 (Apache-2.0) already ships with LibreHardwareMonitor and can be used directly.
+- **No elevated code from user-writable folders.** The device host runs elevated, so it inherits DeadWare's protected-folder rule (`InstallLocation`, v0.6.39). OpenRGB's config folder, which OpenRGB also loads plugin DLLs from, lives in `%ProgramData%\DeadWare\openrgb`, created with the protected DACL the way `ProtectedRoot` creates the updates folder. OpenRGB's own folder is checked with the same ACL policy. If anyone but administrators can write to it, Settings → Lighting warns, as DeadWare already warns about its own install, and recommends `C:\Program Files\OpenRGB`. The only OpenRGB 1.0rc3 on this PC is `I:\DeadLight\resources\openrgb`, which ordinary users can modify. Moving it is a user step, asked for before the step 1 hardware check.
+- **Updater limits:** entries under `DeadWare/`, at most 2048 of them, 256 MB compressed, 768 MB expanded. The updater also copies `DeadWare.Updater.exe` into its job folder as `helper.exe`, so no new file, class or log may be called "helper".
+- **0.18.1 is in flight.** PR #132 and branch `claude/0181-polish` touch `MainWindow.xaml(.cs)`, `SettingsPage.cs`, `Collector.cs`, `Monitoring.cs`, `HistoryChartView.cs`, `OverviewPage.cs` and `WindowManager.cs`. Implementation starts from main once 0.18.1 has merged.
+- **Claude's shells see shadow AppData.** They run inside the Claude app's MSIX container, so `%APPDATA%` and `%LOCALAPPDATA%` reads can return stale copies from `%LOCALAPPDATA%\Packages\Claude_pzs8sxrjxfjjc\LocalCache\`. Never launch DeadLight or OpenRGB from a Claude shell. Verify AppData facts against something the live app is writing.
+- **Hardware steps:** each live step is approved by the user one at a time. No on-screen automation while the user is gaming; check GPU load first.
+
+## Approaches considered
+
+1. **Device host process (chosen).** DeadLight's engine is ported to C# and runs in a small headless process that DeadWare starts and supervises. The window talks to it over a local pipe.
+   - Lights survive a crash of the window, and the hub keeps one long-lived owner.
+   - Fan control drops into the same process with the crash isolation it needs.
+   - The cost is more work now: the pipe contract, supervision, update and quit integration, and more tests.
+2. **Inside DeadWare's main process.** Cheaper and with no updater changes, but the lights freeze when the window crashes, and fan control would force the hub driver to move out later.
+3. **Rejected: keep DeadLight's TypeScript engine as a sidecar.** It ships a second runtime that likely breaks the updater limits, and it splits the hub across two codebases.
+4. **Rejected: native drivers for every device instead of OpenRGB.** A large effort for no gain.
+
+## Proposed experience
+
+- **Sidebar:** a new **Lighting** item after Cooling Health.
+- **Header:** a **Lights on** switch and a global **Brightness** slider. Under the title, a status line such as `8 devices through OpenRGB · the iCUE LINK hub is driven by DeadWare`, or the reason lighting is unavailable:
+  - OpenRGB not found
+  - DeadLight is running
+  - iCUE is running
+  - "Restart as administrator for RAM, motherboard and GPU lighting"
+  - the device host has stopped, with the reason
+- **Effects:** four tiles, **Static** (your saved colours), **Wave** (sweeps across the desk), **Breathing** (everything pulses together) and **Spectrum** (everything cycles through colours together). Under them sit the selected effect's settings: colours, speed, and direction and spread for Wave. Static has **Set all colours** with Undo for that picker session, as in DeadLight's Static card; this is the main way to colour things. A single device or zone gets its own colour in the device panel.
+- **Desk card (plan A):**
+  - The L-shaped desk drawn from above, with the main monitor, keyboard and mouse on the front part and the second monitor, headphones and amp on the left part. Grey items only help orientation.
+  - The PC tower sits on the floor at the lower left. Tapping a lit device selects it; tapping the tower opens the **inside view**, a side-window drawing with:
+    - radiator fans 1–3 across the top (iCUE LINK hub)
+    - the TITAN pump ring
+    - RAM ×2
+    - the GPU logo
+    - front fans ×3 in a column on the right (Lighting Node Pro), marked "own hardware effect" while the Node Pro runs a hardware mode
+    - the rear fan, drawn unlit
+  - **Edit layout** lets the user drag devices and zones and pick a desk shape preset (straight, L-left, L-right), as in DeadLight's editor.
+  - A **Not placed** list holds devices without a position: the motherboard's four zones and the PS5 controller. They take the static colour but sit out the moving effects.
+- **Device panel** (right side, for the selected device). Every device gets a **Colour** row: its static colour, with its zones listed for individual colours. Devices that offer hardware modes get a **Hardware mode** menu (DeadLight's Mode menu: *DeadWare effects* or one of the device's own modes). Then, by device:
+  - **Keyboard (Apex Pro):** Lighting mode (*Follow the desk effect*, Static, Breathing, Color cycle, Rainbow wave), **Paint keys…** (the per-key editor on the real 112-LED map), Brightness, Calibration (R/G/B) and Layers (key ripple, key fade, with named-key masks).
+  - **Mouse (Aerox 9):** brightness and calibration, battery level and charging, and the sleep timer, shared between USB and wireless.
+  - **Other devices:** brightness and calibration.
+- **Everyday card:** lights-off shortcut (default Ctrl+Alt+L, configurable), *Off when idle for N minutes* (off by default), *Off when the PC is locked* (off by default). These are DeadLight's defaults.
+- **Tray menu:** a **Lights off** toggle.
+- **Settings:** a new **Lighting** category:
+  - **Enable lighting**, off by default for every install. It starts or stops the device host.
+  - **OpenRGB location**, with Browse. It checks that `OpenRGB.exe` exists and reports its version; 1.0rc3 is expected. It also applies the protected-folder check from Constraints and warns when the folder is user-writable.
+  - **DeadLight**, showing whether DeadLight or its startup task is present. A **Retire DeadLight** action disables DeadLight's startup task and stops it, only after the user confirms.
+- **Hidden window:** the desk canvas uses Win2D like the existing charts. Live colour preview frames flow only while the Lighting page is visible, using the `Lifetime.WhileShowing` pattern, so nothing animates or repaints while the page or window is hidden.
+
+## Architecture
+
+### Processes
+
+| Process | Role |
+|---|---|
+| `DeadWare.exe` (existing WinUI app) | The interface, monitoring as today, and the Lighting page. Starts, supervises and stops the device host, and talks to it over a named pipe. Never touches lighting hardware. |
+| `DeadWare.Devices.exe` (**new**, headless, no window) | The **device host**. Owns the OpenRGB child process and SDK client, the painter and effects loop, the iCUE LINK hub driver, the Aerox wireless driver, the low-level keyboard hook, the global hotkey, idle and lock watchers, power notifications, and `lighting.json`. |
+| `OpenRGB.exe` (child of the device host) | Drives every lit device except the iCUE LINK hub once phase 5 lands. Started with `--server --server-port 6744 --noautoconnect --config %ProgramData%\DeadWare\openrgb`, the protected folder from Constraints. DeadLight uses port 6742; DeadWare's own config folder keeps the two apart. |
+
+The device host is a separate executable, not a mode of `DeadWare.exe`. That gives a distinct name in Task Manager, simple process detection, and no WinUI start-up in a headless process. It is published self-contained into the same folder as `DeadWare.exe` and shares its runtime files. The package check must still pass.
+
+### Lifecycle and supervision
+
+- **Single instance:** one device host per user and session, guarded by `Local\DeadWare.Devices.<sid>.<session>`, following `GuiInstance`. A starting window connects to a running host instead of starting a second one.
+- **Start:** if **Enable lighting** is on, the window starts the host during app start-up. On a `--startup` launch at sign-in, the host waits about 10 s before OpenRGB detection so USB devices can settle; DeadLight's task used a 15 s delay.
+- **Supervision:** the window restarts the host after an unexpected exit, waiting 4 s, then 8, 16 and 32, capped at 60 s. After five unexpected exits within 10 minutes it stops trying and shows the reason. The host restarts OpenRGB under the same rule; never faster than 4 s.
+- **Crash of the window:** the host keeps running and the lights stay on. The next window start reconnects.
+- **Quit DeadWare:** the window asks the host to stop. The host stops painting, returns the hub to hardware mode (once it owns the hub), closes OpenRGB cleanly, releases the mouse and exits. The window waits up to 5 s, then ends a hung host. If the host is hung, the hub's own watchdog, about 10 s of silence (unconfirmed on firmware 4.1.656), returns the hub to hardware mode.
+- **Update and restart:** before handing over to the updater, the window stops the host exactly as on Quit. The updater must confirm that neither `DeadWare.Devices.exe` nor its OpenRGB child is still running from the install folder before replacing files. The restarted window starts the new host.
+- **Sleep and resume:** on suspend the host stops all writes. On resume it waits about 10 s, asks OpenRGB to rescan, clears every device's diff cache, re-initialises the hub (software mode only if iCUE isn't running) and repaints.
+- **Elevation:** the host inherits the window's token. Without administrator rights, OpenRGB's SMBus devices are missing, and the page says so. If the window is restarted elevated while a non-elevated host runs, the window restarts the host.
+- **Conflicts.** The host refuses to start lighting, and says why, if any of these is running:
+  - DeadLight's `electron.exe` from a DeadLight folder
+  - an `OpenRGB.exe` it didn't start
+  - iCUE: `iCUE.exe` or `iCUE Launcher.exe`
+  - a Corsair service executable: `C:\Program Files\Corsair\Corsair Device Control Service\bin\CorsairDeviceControlService.exe`, `CorsairDeviceListerService.exe`, or the legacy `…\Corsair iCUE5 Software\clink\Corsair.Service.exe`. Whether the legacy one touches the hub is unconfirmed, so it is treated as a conflict for the hub driver.
+
+  Launchers that run briefly at sign-in are rechecked before the hub driver takes the hub.
+
+  The hub driver also refuses while iCUE runs. Match processes by path, never by name alone.
+
+### Pipe contract
+
+- Named pipe `\\.\pipe\DeadWare.Devices.<sid>`, restricted to the current user and Administrators. Messages are length-prefixed JSON, using source-generated `System.Text.Json`. Each request has an id and gets a response; the host also sends events.
+- Every message carries a protocol version. The window and host come from the same build; on a mismatch the window restarts the host.
+- **Requests:**
+  - state: `GetState`, `Rescan`, `Stop`
+  - global lighting: `SetLightsOn`, `SetBrightness`, `SetEffect(kind, settings)`
+  - colours: `SetZoneColors`, `SetAllColors`, `PaintKeys(device, keys)`
+  - devices and layout: `SetDeviceSettings(device, patch)`, `SetLayout(layout)`
+  - everyday controls: `SetEveryday(settings)`
+- **Events:**
+  - `StateChanged`: devices, zones, statuses and warnings
+  - `BatteryChanged`
+  - `HubReadings`: coolant temperature and fan/pump RPM, every 2–3 s once the hub driver lands
+  - `PreviewFrame`: current zone colours at 10 fps or less, sent only while a window has subscribed
+- Effects run inside the host, so no per-frame traffic crosses the pipe except the optional preview.
+
+### Persistence
+
+- `%LOCALAPPDATA%\DeadWare\lighting.json` is written **only by the host**. Writes go to a temporary file that is then renamed into place, and the data is validated on every read and write. An unreadable or invalid file is quarantined, not overwritten, as DeadLight's stores do. The file holds:
+  - the zone static colours
+  - the effect and its settings
+  - per-device settings: brightness, calibration, keyboard mode, per-key paint, layers
+  - the desk layout: zone positions, the tower group, the desk shape, Not placed and hidden devices
+  - everyday settings
+  - the Aerox settings
+- DeadWare's `settings.json`, written by the window, gains only `LightingEnabled` and `OpenRgbPath`, which the window needs before any host exists.
+- The host keeps a rolling, size-capped log: `%LOCALAPPDATA%\DeadWare\logs\devices.log`, about 2 MB × 3 files, recording changes only. Never a line per frame or per poll.
+
+### Devices
+
+- **OpenRGB devices** go through the SDK. The plan is **OpenRGB.NET 3.1.1** (MIT, NuGet), pinned. The first task must confirm protocol negotiation and controller-data parsing against the user's OpenRGB 1.0rc3. If it falls short, write a minimal client for the SDK subset DeadLight uses (controller count and data, update LEDs, set custom or Direct mode, rescan, device-list-updated).
+- **DeadLight lessons to keep:**
+  - pushes are rate-capped and diff-cached per device, and every cache is cleared after any OpenRGB restart or rescan
+  - Direct or custom mode is set once per device
+  - device keys combine serial and location, and are remapped when a USB serial drops or comes back (`remapDeviceKeys`/`reconcileDeviceKeys`)
+  - an OpenRGB hardware rescan runs when the Aerox switches between USB and wireless
+- **Hardware modes and the Lighting Node Pro.** DeadLight never puts the Node Pro, with its three LL fans, into Direct mode. On this PC, OpenRGB 1.0rc3's Direct writes to it render partially or strobe (tested live 2026-08-22). DeadLight sets it to its own **Rainbow Wave** by name (`HARDWARE_MODE_DEFAULTS`), and DeadWare keeps that default:
+  - A device in a hardware mode sits out DeadWare's effects, brightness and calibration. Its panel and the inside view say so.
+  - For lights off, a device whose modes include Static is switched to hardware Static black; otherwise it stays on and the page says so.
+  - Never write "Direct" into a hardware-defaulted device's saved settings. That would defeat the fallback by mode name, as DeadLight's comment warns.
+  - The same Hardware mode menu serves the motherboard.
+  - The step 1 hardware check may include one Direct-mode re-test on the Node Pro, only with the user's approval. If it renders cleanly, the default can change.
+- **Refresh:** some devices drop back to their hardware effect without a periodic refresh (DeadLight's `REFRESH_TTL_MS`, about 2 s, in `device-service.ts`). Port the per-device refresh rules unchanged. Lights-off on a device in Direct mode therefore means refreshing black, not sending nothing. The idle-gated Aerox is the exception.
+- **Apex Pro keyboard** goes through OpenRGB: Direct only, 112 LEDs, the real matrix map from the zone's matrix.
+- **Aerox 9:** wired (`1038:1858`) through OpenRGB. Wireless (`1038:185A`) uses DeadWare's own 2.4 GHz dongle driver on HidSharp, ported from `aerox-wireless.ts`:
+  - wireless opcodes are the wired opcode OR `0x40`, each with a readback
+  - battery is polled only while the mouse is in use, and replies are matched to battery requests by opcode
+  - there is a sleep-timer command
+  - writes are gated when idle, so effect frames and keepalives never reset the mouse's idle timer
+- **iCUE LINK System Hub** (VID `1B1C`, PID `0C3F`, interface MI_00; never MI_01) gets DeadWare's own HidSharp driver in **phase 5**, written from `research-corsair.md` §3 and the 2026-11-15 read:
+  - firmware 4.1.656
+  - channels 1–3: RX RGB fans (type `0x0F`, 8 LEDs each)
+  - channel 13: TITAN 360 pump (type `0x11`, model `0x02`, 20 LEDs)
+  - find devices by type code, never by position or name
+
+  It works like this:
+  - **Every transaction** holds `Global\CorsairLinkReadWriteGuardMutex`, created if missing with a permissive ACL. Stale input reports are drained first, and replies are matched by opcode echo and data type.
+  - **Taking the hub:** check that iCUE isn't running, enter software mode (`01 03 00 02`), and read devices, temperatures and speeds.
+  - **Lighting:** colour-endpoint writes, chunked at 508 bytes. Hub frames are throttled to about 8 fps, because each transaction is about four 513-byte round trips. Colours are re-sent at least every 5 s while idle, inside the hub's roughly 10 s watchdog.
+  - **Readings:** coolant temperature and fan/pump RPM every 2–3 s, published as `HubReadings`.
+  - **Releasing:** hardware mode (`01 03 00 01`) on stop.
+  - **The merge never sends a speed command** (endpoint `0x18`). An allow-list in the driver forbids it until fan control.
+  - Until phase 5, the hub's lights stay on OpenRGB with its iCUE Link detector enabled, exactly as under DeadLight today. Phase 5 turns that detector off in DeadWare's OpenRGB config and hands the hub to the driver.
+- **Hub readings in DeadWare's monitoring (phase 5):** the window adds the host's `HubReadings` as sensors (Sensors page: coolant temperature, pump RPM, three fan RPMs). Following the 0.18.1 session's plan for the user's request ("I would like to see my Corsair AIO water cooler's reservoir temp on a graph"), it also adds an optional **Coolant temperature** line on the CPU temperature graph. The line shares the °C scale and has a Settings toggle beside the existing pump-speed option. The pump RPM already reaches DeadWare through the board's PUMP_FAN header, which carries the TITAN pump's tach.
+
+### Painter and effects (ported from DeadLight)
+
+- These files at commit `0497cd3` on `codex/static-color-control` are the behavioural reference, and their vitest cases should be ported to xUnit:
+  - `shared/effects.ts`, `shared/layout.ts`, `shared/device-lighting.ts`
+  - `electron/painter.ts`, `electron/device-service.ts`, `electron/openrgb-host.ts`, `electron/lighting-power.ts`, `electron/aerox-wireless.ts`
+- **Desk effects:**
+  - **Wave** is the only effect computed from zone positions in the unit square, using DeadLight's maths: speed 0–100 maps to 0.05–2 cycles per second; direction is 0–359°, where 0 is left to right; spread is inverted, so higher spread means a shorter wavelength; an empty palette means the full hue circle.
+  - **Breathing** pulses every zone in step.
+  - **Spectrum** cycles every zone through the palette in step.
+
+  DeadLight times Breathing and Spectrum by desk position. The approved mockup asks for them in step, so those DeadLight tests are rewritten, not ported.
+- **Loop:** 30 frames per second in the host. While lights are off it computes no effects and sends only the refresh black frames the Refresh rule requires.
+- **Colour order:** DeadLight's `compose` order, so brightness caps everything: static colour or effect, then key paint, then layers in order, then per-device RGB calibration, then global × device brightness. Key ripple and key fade use the low-level keyboard hook on a dedicated message-loop thread in the host.
+- **Not placed zones** get the static colour only.
+- **Lights-off rules** port `lighting-power.ts`: a manual toggle, a global hotkey through `RegisterHotKey`, idle via `GetLastInputInfo`, and lock via session notifications.
+
+### Desk layout
+
+- The model is DeadLight's: points in the unit square, a tower group, and desk rectangles used only as a visual guide.
+- **Default for this PC:** the L-left desk, with the long part in front and the short part on the left.
+  - The keyboard sits in the middle of the front part, with the mouse to its right.
+  - The tower is on the floor at the lower left, holding: hub fans ×3 and pump, RAM ×2, GPU, Lighting Node Pro channels and the motherboard.
+  - Inside the tower, zones sit where the inside view draws them: radiator fans along the top from rear to front, the pump at the centre, RAM to its right, the GPU logo below, and front fans down the front edge.
+  - Devices are matched by identity. Anything unmatched goes to Not placed.
+  - The user's current DeadLight `layout.json` (real file, 2026-11-08) is a reasonable cross-check for which zones exist.
+
+## Reference material
+
+- **In the repository**, next to this spec:
+  - `2026-11-15-corsair-icue-link-notes.md`: the iCUE LINK protocol facts the hub driver is written from, distilled from the 0.18.1 session's research and the 2026-11-15 read, with the courtesy attribution. It holds no local paths and no device serial numbers.
+  - `2026-11-15-lighting-mockups/`: the approved mockups, desk plan A with the inside view, and the Lighting page.
+- **Private copies, not committed** because they contain this PC's device IDs and local paths: the full research report `research-corsair.md` and the probe output `hubread-output.txt`. They are in the shared session notes folder (`side-session-notes\local_b6185fbd-…`).
+- **Hub test fixtures** are built from the decoded values: firmware 4.1.656; channels 1–3 type `0x0F`, channel 13 type `0x11` model `0x02`; coolant 38.4 °C; fans 1,337, 1,326 and 1,337 RPM; pump 2,716 RPM. Device IDs are synthetic. The 2026-11-15 probe logged only the first 24 bytes of each frame. If step 5 needs full frames, take one fresh full-frame capture, with the user's approval, and keep it out of the repository.
+
+## Build order (proposed; each step is a PR with its own hardware check)
+
+1. **Host and basics:**
+   - device host, supervision and the pipe contract
+   - OpenRGB host and SDK client, static colours, lights on/off
+   - the Lighting page with header, status and device list
+   - Settings → Lighting
+   - conflict detection, and Quit and update integration
+2. **Desk:** layout (plan A, Edit layout, inside view, Not placed), the Wave, Breathing and Spectrum effects, and preview frames.
+3. **Device controls:** tuning (brightness, calibration), keyboard modes, per-key painting, and layers with key reactions.
+4. **Mouse and everyday:** the Aerox (wireless driver, battery, sleep timer, shared settings), Everyday (shortcut, idle, lock), the tray item, and sleep/resume handling.
+5. **The hub:** DeadWare's iCUE LINK driver (lighting plus read-only readings), OpenRGB's hub detector off, hub sensors and the coolant line, and the DeadLight retirement steps.
+
+Each step merges through the normal branch and PR flow in `docs/development.md` and `AGENTS.md`. Cutting a release is always the user's call.
+
+## Hardware verification
+
+- Every live step is described to the user and approved before it runs: the cutover rehearsal (DeadLight stopped, DeadWare lighting started, DeadLight restored afterwards if wanted), the hub take-over, the hub watchdog check, the Aerox sleep check, and sleep/resume.
+- **The hub take-over is a cooling change.** Before it, read the hub's speeds and coolant temperature. After entering software mode, read them again. If pump or fan speeds drop below the pre-take-over reading, return the hub to hardware mode and stop.
+- **The hub watchdog check** answers one question: does the hub fall back to hardware mode within about 10 s when the host stops talking? Only with the user's approval, and only once.
+- At most two kill/relaunch tests per session; never cycle restarts.
+- No on-screen automation while the user is gaming; check GPU load first.
+
+## Testing
+
+- **Core unit tests:**
+  - effects maths, colour resolution, layout geometry and validation
+  - keyboard modes, layers, lights-off rules, device-key remapping
+  - `lighting.json` validation and quarantine
+  - pipe contract round trips
+  - supervisor back-off: never a restart under 4 s, and the give-up rule
+- **Hub protocol tests:** framing and parsing against fixtures built as described in Reference material. Also colour-packet chunking, and the opcode allow-list, including that no speed write can be built.
+- **DeadLight's tests:** port the relevant vitest cases, including `tests/fixtures/controllers.json` for SDK parsing.
+- **Host integration:** against a fake OpenRGB SDK server and a fake HID transport.
+- **Window:** checks in the existing `DeadWare.App.Tests` patterns for the page, settings, tray item and the hidden-window rule.
+
+## Out of scope and later
+
+- **Fan control**, the next spec: board headers through LibreHardwareMonitor, hub fan and pump speeds, curves, and the safety rules the user set. It reuses the device host and the hub driver. Its brainstorm already found:
+  - LibreHardwareMonitor 0.9.6's NCT6687D hand-back bug
+  - the crash-coverage problem
+  - FanControl's and iCUE's current configurations
+
+  The notes are in the shared notes file `fan-control-recon.md`.
+- Profiles, screen ambient, audio-reactive lighting, the Morrowind bridge, bundling OpenRGB, and Corsair devices beyond the LINK hub.
+
+## Left to the builder
+
+- Class and project layout, the exact pipe message shapes, and test structure.
+- Exact back-off numbers within the bounds above, and pipe security details.
+- OpenRGB.NET versus a minimal own client, after the protocol check.
+- Win2D drawing details, and how the inside view's components map to OpenRGB zones and LEDs.
+
+## Calls made in writing this up (for the user to check)
+
+- The device host is a separate `DeadWare.Devices.exe`, not a mode of `DeadWare.exe`.
+- Lighting is off by default on every install, and turned on in Settings.
+- DeadWare's OpenRGB uses port 6744 and its own config folder.
+- The hub's lights stay on OpenRGB until step 5, then move to DeadWare's driver.
+- The coolant-temperature line and hub sensors are part of step 5, not fan control.
+- The lights-off defaults follow DeadLight: Ctrl+Alt+L, with the idle and lock rules off. The mockup's "idle 10 min: on" was only an illustration.
+- The version is 0.19.0, tentatively.
+- The Lighting Node Pro stays on its own Rainbow Wave, as in DeadLight, so the front fans don't follow DeadWare's effects. One Direct-mode re-test is offered at the step 1 hardware check. DeadLight's Hardware mode menu is kept.
+- Colours are per device and per zone. **Set all colours** is the main action, and individual colours sit in the device panel.
+- Breathing and Spectrum run in step everywhere, as in the mockup, not timed by desk position as in DeadLight.
+- DeadLight's colour order is kept, so brightness applies last and caps everything.
+- OpenRGB's config is in `%ProgramData%\DeadWare\openrgb`, and an OpenRGB folder that ordinary users can modify gets a warning. Moving OpenRGB to `C:\Program Files\OpenRGB` is asked for before step 1's hardware check.
+- Reference material goes into the repository without personal data; the raw research and probe output stay in the private notes folder.
