@@ -120,6 +120,7 @@ public sealed class Collector : IAsyncDisposable
     private int heldCores;
     private readonly GpuFanSpeed gpuFanSpeed=new();
     private readonly CpuPumpSpeed cpuPumpSpeed=new();
+    private readonly WindowsThermalZones thermalZones=new();
     private readonly EtwNetwork etw;
     private bool lowLevelAvailable;
     private Task? worker;
@@ -207,6 +208,18 @@ public sealed class Collector : IAsyncDisposable
                             values[id+"/fan"]=gpuFanSpeed.Read(id,hardwareSensors);
                         }
                     }
+                    var battery=WindowsBattery.Read();
+                    // No processor sensor gave a temperature: Windows' thermal zones may stand in on a laptop or tablet. Read only
+                    // then, so machines whose CPU sensors work pay nothing, and not in diagnostic isolation.
+                    ThermalZoneFallback? zoneTemp=null;
+                    if(cpuTemp is null&&options.HardwareEnabled)
+                    {
+                        stage="Reading thermal zones";
+                        var zones=thermalZones.Read(timings);
+                        sensors.AddRange(WindowsThermalZones.Sensors(zones));
+                        zoneTemp=ThermalZones.CpuFallback(zones,ThermalZones.IsPortable(battery.PowerState));
+                        cpuTemp=zoneTemp?.Celsius;
+                    }
                     stage="Reading Windows counters";
                     long providerStarted=Stopwatch.GetTimestamp();var fallbackCpu=windows.Cpu();
                     if(timings is not null)timings["windows/cpu"]=Stopwatch.GetElapsedTime(providerStarted).TotalMilliseconds;
@@ -237,7 +250,6 @@ public sealed class Collector : IAsyncDisposable
                     Volatile.Write(ref storageDrives,drives);
                     bool beyondEight=drives.Count(d=>d.Persistable)>StorageMetrics.MaximumPersistedDrives;
                     var storageReading=new StorageReading(drives,StorageHealthFor(drives),StorageStatus(storageError,Volatile.Read(ref healthLoop)?.Status,beyondEight));
-                    var battery=WindowsBattery.Read();
                     foreach(var sensor in sensors) values[sensor.Id]=sensor.Value;
                     foreach(var health in storageReading.Health)
                     {
@@ -247,7 +259,8 @@ public sealed class Collector : IAsyncDisposable
                         values[StorageMetrics.Key(health.DriveId,"used")]=health.UsedPercent;
                     }
                     string hardwareStatus=initialization.Length>0?initialization:!options.HardwareEnabled?"Hardware collection disabled for diagnostic isolation":$"{sensors.Count} sensors · {(IsElevated?"Administrator":"Standard user")} · {(options.ExtendedSensors?"Extended sensors enabled":"CPU/GPU sensors")}";
-                    if(cpuTemp is null) hardwareStatus+=" · CPU temperature unavailable (hardware support, elevation or PawnIO may be required).";
+                    // Diagnostic isolation reads no temperature at all, and its status already says so.
+                    if(options.HardwareEnabled&&(zoneTemp is not null||cpuTemp is null)) hardwareStatus+=ThermalZones.StatusNote(zoneTemp,lowLevelAvailable);
                     if(gpus.Count==0&&options.HardwareEnabled) hardwareStatus+=" · No supported GPU discovered.";
                     if(droppedCores>0) hardwareStatus+=$" · Showing the first {CpuCoreUsage.MaximumCores} of {CpuCoreUsage.MaximumCores+droppedCores} CPU cores.";
                     if(errors.Count>0) hardwareStatus+=" · "+string.Join("; ",errors.Distinct());
@@ -337,7 +350,7 @@ public sealed class Collector : IAsyncDisposable
             {
                 // No GPU read starts after the worker ends: a running loop is cancelled without waiting, its read in flight returns on its own
                 // and the loop then closes the query. The finally never waits on a GPU read; disposal bounds that wait by HardwareStopBudget.
-                try {ReleaseGpu();}
+                try {thermalZones.Close();ReleaseGpu();}
                 finally {computer?.Close();}
             }
             finally {await Task.WhenAll(StopEtwAsync(),diskStop);}
