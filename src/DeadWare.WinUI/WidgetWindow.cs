@@ -110,7 +110,8 @@ internal sealed class WidgetWindow : Window
             }
         }
         foreach (var graph in graphs.Values) if (graph.Visibility == Visibility.Visible) graph.Refresh();
-        if (showMap) map!.Refresh();
+        // Also once the map is switched off, so it stops animating.
+        map?.Refresh();
     }
 }
 
@@ -266,7 +267,9 @@ internal sealed class WidgetMap : Grid
         HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Top,
     };
     private bool? previousNorthAmerica;
-    private bool loaded;
+    private bool showing;
+    // The live view last handed to the map; a poll that brings the same one changes nothing.
+    private ConnectionLiveView? shown;
 
     public WidgetMap(MonitorSession session)
     {
@@ -277,21 +280,31 @@ internal sealed class WidgetMap : Grid
         Children.Add(map);
         Children.Add(region);
         region.Click += (_, _) => { session.SetWidgetConnectionsNorthAmerica(!session.Settings.WidgetConnectionsNorthAmerica); Refresh(); };
-        this.WhileLoaded(() => { loaded = true; Refresh(); }, () => { loaded = false; map.AnimationEnabled = false; });
+        // A minimised or hidden widget hands its map nothing; showing it again catches up.
+        this.WhileShowing(() => { showing = true; Refresh(); }, () => { showing = false; map.AnimationEnabled = false; });
     }
 
-    /// <summary>The app's name, with " · not recorded" when it is in Don't record these apps.</summary>
-    private string Marked(string name) => session.IsExcluded(name) ? name + ProcessCopy.NotRecordedSuffix : name;
+    /// <summary>
+    /// A key that stays the same for one connection from poll to poll, which is all the map needs: built from the fields, where the
+    /// records' generated text made several strings per connection on every poll. The widget draws no hover names, so no labels either.
+    /// </summary>
+    private static string Key(ConnectionPeer peer) => $"{peer.Process.Pid}:{peer.Process.Generation}:{peer.Process.Name}:{peer.RemoteAddress}:{peer.RemotePort}:{peer.Protocol}";
 
     public void Refresh()
     {
+        // Minimised, hidden, or switched off in Settings (collapsed), the map is handed nothing and does not animate.
+        if (!showing || Visibility != Visibility.Visible) { map.AnimationEnabled = false; return; }
         var live = session.Connections.Live;
-        string status = live.Status + (!live.Complete ? " · Incomplete capture" : "");
-        var points = live.Connections.Where(c => c.Location?.Point is { } point && ConnectionProjection.IsValid(point))
-            .Select(c => new ConnectionMapPoint($"{c.Traffic.Peer.Process}:{c.Traffic.Peer.RemoteAddress}:{c.Traffic.Peer.RemotePort}:{c.Traffic.Peer.Protocol}",
-                c.Location!.Point!, c.Traffic.ReceivedBytes, c.Traffic.SentBytes, false, live.Available && c.Traffic.DownloadBytesPerSecond > 0, live.Available && c.Traffic.UploadBytesPerSecond > 0,
-                Label: Marked(c.Traffic.Peer.Process.Name))).ToArray();
-        map.SetData(points, live.Origin, live.Available, status);
+        // Capture publishes at most one view a poll, and none while it is idle or unavailable; the same view would give the same points.
+        if (!live.Equals(shown))
+        {
+            shown = live;
+            string status = live.Status + (!live.Complete ? " · Incomplete capture" : "");
+            var points = live.Connections.Where(c => c.Location?.Point is { } point && ConnectionProjection.IsValid(point))
+                .Select(c => new ConnectionMapPoint(Key(c.Traffic.Peer), c.Location!.Point!, c.Traffic.ReceivedBytes, c.Traffic.SentBytes, false,
+                    live.Available && c.Traffic.DownloadBytesPerSecond > 0, live.Available && c.Traffic.UploadBytesPerSecond > 0)).ToArray();
+            map.SetData(points, live.Origin, live.Available, status);
+        }
         bool northAmerica = session.Settings.WidgetConnectionsNorthAmerica;
         if (previousNorthAmerica != northAmerica)
         {
@@ -301,7 +314,7 @@ internal sealed class WidgetMap : Grid
             AutomationProperties.SetName(region, northAmerica ? "North America view. Switch to World view." : "World view. Zoom to North America.");
             region.Style = northAmerica ? (Style)Application.Current.Resources["AccentButtonStyle"] : (Style)Application.Current.Resources["DefaultButtonStyle"];
         }
-        bool animate = loaded && Visibility == Visibility.Visible && session.Settings.ConnectionsAnimation;
+        bool animate = session.Settings.ConnectionsAnimation;
         if (map.AnimationEnabled != animate) map.AnimationEnabled = animate;
     }
 }

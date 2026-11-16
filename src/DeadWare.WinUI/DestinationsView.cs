@@ -1,3 +1,4 @@
+using System.Collections.ObjectModel;
 using System.Diagnostics;
 using DeadWare.App;
 using DeadWare.Core;
@@ -5,6 +6,7 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
+using Microsoft.UI.Xaml.Markup;
 using Microsoft.UI.Xaml.Media;
 using Windows.System;
 
@@ -13,26 +15,48 @@ namespace DeadWare.WinUI;
 /// <summary>
 /// The Destinations table below the map: one row per remote address in Live and in History, narrowed by the All / Internet / Local
 /// scope. Rows update in place and stay calm: new data re-sorts only outside a hold (the pointer over the table, the row menu open,
-/// or 3 s after a navigation key), while header clicks, the scope, F5, a mode change and filter changes re-sort at once.
+/// or 3 s after a navigation key), while header clicks, the scope, F5, a mode change and filter changes re-sort at once. The list is
+/// virtualised: its rows (up to 1,000 a scope) are plain data, and only the dozen or so on screen have elements, filled in as the list
+/// shows them, so a busy PC or a long History interval does not build an element per destination.
 /// </summary>
 internal sealed class DestinationsView : UserControl
 {
     /// <summary>How a show orders the rows: re-sorted at once, re-sorted unless the order is held (new data), or kept in place (same data, other values).</summary>
     private enum Order { Resort, NewData, Values }
 
+    /// <summary>One destination, as data. Its cells are worked out only when an element shows it or it is copied.</summary>
     private sealed class Row(string key)
     {
+        private DestinationCells? cells;
+        private DestinationCellContext context = null!;
         public string Key { get; } = key;
-        public ConnectionDestination Value = null!;
-        public DestinationCells? Cells;
-        public ListViewItem Item = null!;
-        public TextBlock[] Texts = [];
+        public ConnectionDestination Value { get; private set; } = null!;
+        public DestinationCells Cells => cells ??= DestinationCells.Build(Value, context);
+        public void Set(ConnectionDestination value, DestinationCellContext context) { Value = value; this.context = context; cells = null; }
+        // What a screen reader falls back to; an element showing the row is named from its cells.
+        public override string ToString() => Key;
     }
 
+    /// <summary>An element the list shows rows in, reused as it scrolls: a text per column, and the row and the cells it shows now.</summary>
+    private sealed class Line(ListViewItem container, Grid grid)
+    {
+        public ListViewItem Container { get; } = container;
+        public Grid Grid { get; } = grid;
+        public TextBlock[] Texts = [];
+        public IReadOnlyList<ConnectionDestinationColumn> Columns = [];
+        public Row? Row;
+        public DestinationCells? Shown;
+    }
+
+    // Each element starts as an empty grid; a text per column is added the first time it shows a row, and again after a mode change.
+    private const string LineTemplate = "<DataTemplate xmlns=\"http://schemas.microsoft.com/winfx/2006/xaml/presentation\"><Grid /></DataTemplate>";
     private static readonly Stopwatch Monotonic = Stopwatch.StartNew();
     private readonly MonitorSession session;
     private readonly Dictionary<string, Row> kept = new(StringComparer.Ordinal);
     private readonly List<Row> rows = [];
+    // The list's rows in order, and the rows an element shows now, with that element.
+    private readonly ObservableCollection<Row> items = [];
+    private readonly Dictionary<Row, Line> lines = [];
     private readonly ComboBox scope = new() { Width = 130 };
     private readonly TextBlock countLine = Muted(""), status = Muted(""), footnote = Muted(DestinationCopy.Footnote(false)), emptyText = Muted("");
     private readonly Grid header = new() { Padding = new Thickness(16, 4, 12, 4), ColumnSpacing = 8 };
@@ -60,6 +84,9 @@ internal sealed class DestinationsView : UserControl
         toolbar.Children.Add(show); toolbar.Children.Add(scope); toolbar.Children.Add(Export);
 
         AutomationProperties.SetName(list, "Destinations");
+        list.ItemTemplate = (DataTemplate)XamlReader.Load(LineTemplate);
+        list.ItemsSource = items;
+        list.ContainerContentChanging += OnContainerContentChanging;
         list.SelectionChanged += (_, _) => { if (!syncing) SelectionChanged?.Invoke(); };
         list.PointerEntered += (_, _) => Hold.PointerOver = true;
         list.PointerExited += (_, _) => Hold.PointerOver = false;
@@ -85,7 +112,7 @@ internal sealed class DestinationsView : UserControl
         list.RightTapped += (_, e) =>
         {
             for (var element = e.OriginalSource as DependencyObject; element is not null; element = VisualTreeHelper.GetParent(element))
-                if (element is ListViewItem item) { list.SelectedItem = item; break; }
+                if (element is ListViewItem item) { if (list.ItemFromContainer(item) is Row row) list.SelectedItem = row; break; }
         };
 
         emptyText.HorizontalAlignment = HorizontalAlignment.Center; emptyText.VerticalAlignment = VerticalAlignment.Center;
@@ -118,7 +145,7 @@ internal sealed class DestinationsView : UserControl
     /// <summary>The key hold's clock in seconds: monotonic, so a wall-clock change can neither extend nor end it.</summary>
     public Func<double> ClockSeconds { get; set; } = () => Monotonic.Elapsed.TotalSeconds;
     /// <summary>The selected row's destination, or null.</summary>
-    public ConnectionDestination? Selected => list.SelectedItem is ListViewItem { Tag: string key } && kept.TryGetValue(key, out var row) ? row.Value : null;
+    public ConnectionDestination? Selected => SelectedRow?.Value;
     /// <summary>The scope shown, which Export destinations… exports.</summary>
     public DestinationScope CurrentScope => (DestinationScope)Math.Max(0, scope.SelectedIndex);
     /// <summary>Raised when the selected row changes, to another row or to none (also when the selected row leaves).</summary>
@@ -128,12 +155,12 @@ internal sealed class DestinationsView : UserControl
 
     private static TextBlock Muted(string text) => new() { Text = text, FontSize = 12, Opacity = 0.7, TextWrapping = TextWrapping.Wrap };
 
-    private Row? SelectedRow => list.SelectedItem is ListViewItem { Tag: string key } && kept.TryGetValue(key, out var row) ? row : null;
+    private Row? SelectedRow => list.SelectedItem is Row row && kept.TryGetValue(row.Key, out var current) && ReferenceEquals(current, row) ? row : null;
 
     /// <summary>Copies the selected row's shown cells in column order, tab-separated, on one line, with no header.</summary>
     private void CopyRow()
     {
-        if (SelectedRow is { Cells: { } cells }) CopyRequested?.Invoke(string.Join("\t", columns.Select(cells.Cell)));
+        if (SelectedRow is { } row) CopyRequested?.Invoke(string.Join("\t", columns.Select(row.Cells.Cell)));
     }
 
     /// <summary>Copies the selected row's address only.</summary>
@@ -220,7 +247,7 @@ internal sealed class DestinationsView : UserControl
     {
         bool selected = list.SelectedItem is not null;
         syncing = true;
-        try { list.Items.Clear(); rows.Clear(); kept.Clear(); }
+        try { items.Clear(); rows.Clear(); kept.Clear(); }
         finally { syncing = false; }
         if (selected) SelectionChanged?.Invoke();
         countLine.Text = count;
@@ -234,8 +261,8 @@ internal sealed class DestinationsView : UserControl
         var shown = new List<Row>();
         foreach (var destination in ConnectionDestinations.InScope(value, inScope))
         {
-            if (!kept.TryGetValue(destination.Address, out var row)) row = NewRow(destination.Address);
-            Update(row, destination, context);
+            if (!kept.TryGetValue(destination.Address, out var row)) row = new Row(destination.Address);
+            row.Set(destination, context);
             shown.Add(row);
         }
         var sorted = Sorted(shown);
@@ -247,6 +274,8 @@ internal sealed class DestinationsView : UserControl
             var byKey = sorted.ToDictionary(r => r.Key, StringComparer.Ordinal);
             Reconcile([.. CalmOrderPlanner.Held([.. rows.Select(r => r.Key)], [.. sorted.Select(r => r.Key)], _ => null).Select(key => byKey[key])]);
         }
+        // The rows on screen show their new values now; the others are filled in when the list shows them.
+        foreach (var line in lines.Values.ToArray()) Fill(line);
         // An empty list names why it is empty; the scope only when it emptied the table.
         ShowEmpty(shown.Count > 0 ? null : emptyReason(value.Counts.All == 0 ? DestinationScope.All : inScope));
         if (topPending) { topPending = false; ScrollToTop(); }
@@ -261,7 +290,7 @@ internal sealed class DestinationsView : UserControl
 
     private void ScrollToTop()
     {
-        if (list.Items.Count > 0) list.ScrollIntoView(list.Items[0]);
+        if (items.Count > 0) list.ScrollIntoView(items[0]);
     }
 
     private void ShowEmpty(string? text)
@@ -271,78 +300,102 @@ internal sealed class DestinationsView : UserControl
         list.Visibility = text is null ? Visibility.Visible : Visibility.Collapsed;
     }
 
-    /// <summary>Lays out one line of the table: a star column per shown column.</summary>
-    private Grid NewLine()
+    /// <summary>The list shows a row in an element, or takes the element back to reuse; the element's texts follow the row it shows.</summary>
+    private void OnContainerContentChanging(ListViewBase sender, ContainerContentChangingEventArgs args)
     {
-        var line = new Grid { ColumnSpacing = 8 };
-        foreach (var column in columns)
-            line.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(DestinationCells.Column(column).Weight, GridUnitType.Star) });
-        return line;
+        if (args.ItemContainer is not ListViewItem container || container.ContentTemplateRoot is not Grid grid) return;
+        args.Handled = true;
+        if (grid.Tag is not Line line)
+        {
+            grid.Tag = line = new Line(container, grid);
+            container.HorizontalContentAlignment = HorizontalAlignment.Stretch;
+            container.Padding = new Thickness(16, 0, 12, 0);
+            container.MinHeight = 30;
+        }
+        // The element may have shown another row; a newer element for that row has already taken its place.
+        if (line.Row is { } previous && lines.TryGetValue(previous, out var current) && ReferenceEquals(current, line)) lines.Remove(previous);
+        line.Row = null;
+        if (args.InRecycleQueue || args.Item is not Row row) return;
+        line.Row = row;
+        lines[row] = line;
+        Fill(line);
     }
 
-    private Row NewRow(string key)
+    /// <summary>Writes the element's texts, tooltips and spoken name from its row's cells, touching only what differs from what it shows.</summary>
+    private void Fill(Line line)
     {
-        var row = new Row(key);
-        var line = NewLine();
-        row.Texts = new TextBlock[columns.Count];
+        if (line.Row is not { } row) return;
+        if (!ReferenceEquals(line.Columns, columns)) Layout(line);
+        var cells = row.Cells;
+        var before = line.Shown;
+        if (cells == before) return;
         for (int i = 0; i < columns.Count; i++)
         {
-            bool value = DestinationCells.Column(columns[i]).Value;
+            string text = cells.Cell(columns[i]);
+            if (line.Texts[i].Text != text) line.Texts[i].Text = text;
+            string? tip = cells.Tip(columns[i]);
+            if (before is null ? tip is not null : before.Tip(columns[i]) != tip) ToolTipService.SetToolTip(line.Texts[i], tip);
+        }
+        if (before?.Spoken != cells.Spoken) AutomationProperties.SetName(line.Container, cells.Spoken);
+        line.Shown = cells;
+    }
+
+    /// <summary>Lays an element out for the mode's columns: a star column and a text per shown column.</summary>
+    private void Layout(Line line)
+    {
+        var grid = line.Grid;
+        grid.Children.Clear(); grid.ColumnDefinitions.Clear();
+        grid.ColumnSpacing = 8;
+        line.Texts = new TextBlock[columns.Count];
+        for (int i = 0; i < columns.Count; i++)
+        {
+            var (_, weight, value) = DestinationCells.Column(columns[i]);
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(weight, GridUnitType.Star) });
             var text = new TextBlock
             {
                 TextTrimming = TextTrimming.CharacterEllipsis, TextWrapping = TextWrapping.NoWrap, VerticalAlignment = VerticalAlignment.Center,
                 HorizontalAlignment = value ? HorizontalAlignment.Right : HorizontalAlignment.Left,
             };
             Grid.SetColumn(text, i);
-            line.Children.Add(text);
-            row.Texts[i] = text;
+            grid.Children.Add(text);
+            line.Texts[i] = text;
         }
-        row.Item = new ListViewItem { Tag = key, Content = line, HorizontalContentAlignment = HorizontalAlignment.Stretch, Padding = new Thickness(16, 0, 12, 0), MinHeight = 30 };
-        return row;
-    }
-
-    /// <summary>Sets every cell's text and tooltip, touching only what changed.</summary>
-    private void Update(Row row, ConnectionDestination value, DestinationCellContext context)
-    {
-        row.Value = value;
-        var next = DestinationCells.Build(value, context);
-        if (next == row.Cells) return;
-        row.Cells = next;
-        for (int i = 0; i < columns.Count; i++)
-        {
-            string text = next.Cell(columns[i]);
-            if (row.Texts[i].Text != text) row.Texts[i].Text = text;
-            ToolTipService.SetToolTip(row.Texts[i], next.Tip(columns[i]));
-        }
-        AutomationProperties.SetName(row.Item, next.Spoken);
+        line.Columns = columns; line.Shown = null;
     }
 
     /// <summary>Moves the list to <paramref name="target"/>: gone rows leave (a selected one clears the selection), kept rows move only
-    /// when their place changed, and new rows are inserted at their place. Row items are kept per address, so the selection and the
-    /// scroll offset survive.</summary>
+    /// when their place changed, and new rows are inserted at their place. Rows are kept per address, so the selection and the scroll
+    /// offset survive.</summary>
     private void Reconcile(IReadOnlyList<Row> target)
     {
-        string? selectedKey = list.SelectedItem is ListViewItem { Tag: string key } ? key : null;
+        string? selectedKey = list.SelectedItem is Row selected ? selected.Key : null;
         kept.Clear(); foreach (var row in target) kept[row.Key] = row;
         syncing = true;
         try
         {
-            for (int i = list.Items.Count - 1; i >= 0; i--)
-                if (list.Items[i] is ListViewItem { Tag: string gone } && !kept.ContainsKey(gone)) list.Items.RemoveAt(i);
+            for (int i = items.Count - 1; i >= 0; i--)
+                if (!kept.TryGetValue(items[i].Key, out var keep) || !ReferenceEquals(keep, items[i])) items.RemoveAt(i);
             for (int i = 0; i < target.Count; i++)
             {
-                if (i < list.Items.Count && ReferenceEquals(list.Items[i], target[i].Item)) continue;
-                int at = list.Items.IndexOf(target[i].Item);
-                if (at >= 0) list.Items.RemoveAt(at);
-                list.Items.Insert(i, target[i].Item);
+                if (i < items.Count && ReferenceEquals(items[i], target[i])) continue;
+                int at = IndexOf(target[i], i);
+                if (at >= 0) items.RemoveAt(at);
+                items.Insert(i, target[i]);
             }
             rows.Clear(); rows.AddRange(target);
-            // Moving the selected item takes it out of the list for a moment, which drops the selection.
-            var wanted = selectedKey is not null && kept.TryGetValue(selectedKey, out var selected) ? selected.Item : null;
+            // Moving the selected row takes it out of the list for a moment, which drops the selection.
+            var wanted = selectedKey is not null && kept.TryGetValue(selectedKey, out var match) ? match : null;
             if (!ReferenceEquals(list.SelectedItem, wanted)) list.SelectedItem = wanted;
         }
         finally { syncing = false; }
         if (selectedKey is not null && !kept.ContainsKey(selectedKey)) SelectionChanged?.Invoke();
+    }
+
+    /// <summary>Where <paramref name="row"/> is in the list, looking from <paramref name="from"/> on (everything before it is in place), or -1.</summary>
+    private int IndexOf(Row row, int from)
+    {
+        for (int i = from; i < items.Count; i++) if (ReferenceEquals(items[i], row)) return i;
+        return -1;
     }
 
     /// <summary>Swaps in the mode's columns; the sort stays when its column exists in the new mode and otherwise returns to RECEIVED
@@ -353,11 +406,11 @@ internal sealed class DestinationsView : UserControl
         history = value; topPending = true;
         var key = ConnectionDestinationSort.InMode(sortKey, value);
         if (key != sortKey) { sortKey = key; sortDescending = true; }
+        // The elements lay themselves out for the new columns as the list shows rows in them again.
         columns = ConnectionDestinationSort.Columns(value);
-        // The rows hold one text per column, so another column set needs new rows.
         bool selected = list.SelectedItem is not null;
         syncing = true;
-        try { list.Items.Clear(); rows.Clear(); kept.Clear(); }
+        try { items.Clear(); rows.Clear(); kept.Clear(); }
         finally { syncing = false; }
         if (selected) SelectionChanged?.Invoke();
         footnote.Text = DestinationCopy.Footnote(value);
