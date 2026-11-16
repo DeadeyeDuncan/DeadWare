@@ -26,7 +26,7 @@ public class OverviewPresenterTests
         Assert.Equal(3, OverviewPresenter.Columns(1500));
         Assert.Equal(4, OverviewPresenter.Rows(7, 2));
         Assert.Equal(3, OverviewPresenter.Rows(9, 3));
-        Assert.Equal(1080, OverviewPresenter.GridHeight(7, 2, 800, 60));
+        Assert.Equal(880, OverviewPresenter.GridHeight(7, 2, 800, 60));
         Assert.Equal(1340, OverviewPresenter.GridHeight(7, 2, 1400.6, 60));
     }
 
@@ -44,7 +44,16 @@ public class OverviewPresenterTests
         Assert.Equal("CPU pump · stale · dashed · left RPM", OverviewPresenter.Rpm("CPU pump", true, 900, OverviewPresenter.Pattern("dashed", dotted: true)));
         Assert.Equal("CPU pump · unavailable · solid · left RPM", OverviewPresenter.Rpm("CPU pump", false, null, "solid"));
         Assert.Equal("GPU fan · 845 RPM", OverviewPresenter.Rpm("GPU fan", false, 845));
-        Assert.Equal("Solid: download    ·    Dashed: upload    ·    Shared scale", OverviewPresenter.NetworkSubtitle("default", null));
+        Assert.Equal("Solid: download · Dashed: upload · Shared scale", OverviewPresenter.NetworkSubtitle("default", null));
+    }
+
+    [Fact] public void A_fan_or_pump_speed_alone_is_its_rpm_or_a_dash()
+    {
+        Assert.Equal("1200 RPM", OverviewPresenter.RpmValue(false, 1200.4));
+        Assert.Equal("0 RPM", OverviewPresenter.RpmValue(false, 0));
+        Assert.Equal("—", OverviewPresenter.RpmValue(true, 900));
+        Assert.Equal("—", OverviewPresenter.RpmValue(false, null));
+        Assert.Equal("—", OverviewPresenter.RpmValue(false, double.NaN));
     }
 
     [Fact] public void Storage_lines_cover_discovery_no_drives_and_a_drive_card()

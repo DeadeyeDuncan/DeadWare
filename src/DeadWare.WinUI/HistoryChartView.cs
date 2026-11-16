@@ -24,12 +24,21 @@ internal sealed class HistoryChartView : UserControl
     /// <summary>Trace-layer draws since start-up, across all charts; reported by <c>--exit-after</c> for the smoke check.</summary>
     public static long FramesDrawn;
 
-    private const double Left = 8, Top = 14, Right = 8, Bottom = 22;
-    private static readonly CanvasTextFormat LabelFormat = new() { FontSize = 11 };
-    private static readonly CanvasTextFormat RightLabelFormat = new() { FontSize = 11, HorizontalAlignment = CanvasHorizontalAlignment.Right };
+    // The top value label sits inside the plot, under its line, so above the plot there is only room for a trace at the top of
+    // the scale to show its whole stroke; below it, room for one row of time labels.
+    private const double Left = 8, Top = 4, Right = 8, Bottom = 17;
+    private static readonly CanvasTextFormat LabelFormat = new() { FontSize = 10 };
+    private static readonly CanvasTextFormat RightLabelFormat = new() { FontSize = 10, HorizontalAlignment = CanvasHorizontalAlignment.Right };
     // Time labels slide with the traces, so they are placed where they belong and not on the nearest whole pixel: snapped,
     // each drawing lands them up to half a pixel off and they tremble against the trace.
-    private static readonly CanvasTextFormat TickFormat = new() { FontSize = 11, HorizontalAlignment = CanvasHorizontalAlignment.Center, Options = CanvasDrawTextOptions.NoPixelSnap };
+    private static readonly CanvasTextFormat TickFormat = new() { FontSize = 10, HorizontalAlignment = CanvasHorizontalAlignment.Center, Options = CanvasDrawTextOptions.NoPixelSnap };
+    // The hover chip keeps the larger size: it floats over the plot, so it takes the chart no room.
+    private static readonly CanvasTextFormat ReadoutFormat = new() { FontSize = 11 };
+    // A value label's text box starts this far above its line, which puts its digits a couple of pixels over the line. The top
+    // line's starts only a pixel above it: the room the font leaves above its digits then puts them a few pixels under the
+    // line, inside the plot. The time labels and "Now" start this far under the plot, which keeps their whole text height
+    // inside the bottom margin.
+    private const float LabelAbove = 13, TopLabelAbove = 1, UnderPlot = 3;
 
     /// <summary>Default trace colours by graph colour key; cpu and download default to the system accent. A colour saved in settings wins.</summary>
     private static readonly Dictionary<string, Color> Palette = new()
@@ -37,6 +46,9 @@ internal sealed class HistoryChartView : UserControl
         ["gpu"] = Color.FromArgb(255, 0x8E, 0x6C, 0xEF), ["cputemp"] = Color.FromArgb(255, 0xF2, 0x99, 0x4A), ["gputemp"] = Color.FromArgb(255, 0xEB, 0x57, 0x57),
         ["memory"] = Color.FromArgb(255, 0x27, 0xAE, 0x60), ["upload"] = Color.FromArgb(255, 0xF2, 0xC9, 0x4C),
         ["diskread"] = Color.FromArgb(255, 0x2D, 0x9C, 0xDB), ["diskwrite"] = Color.FromArgb(255, 0xBB, 0x6B, 0xD9),
+        // The WPF app's default theme draws the GPU fan amber and the CPU pump blue (its Warning and Download colours), as
+        // the Settings help says; without these both fell back to the accent colour.
+        ["gpufan"] = Color.FromArgb(255, 0xF2, 0xCD, 0x91), ["cpupump"] = Color.FromArgb(255, 0x82, 0xAD, 0xFF),
     };
 
     private readonly MonitorSession session;
@@ -315,7 +327,7 @@ internal sealed class HistoryChartView : UserControl
         float width = 0;
         foreach (var row in rows)
         {
-            using var layout = new CanvasTextLayout(sender, row.Text, LabelFormat, 0, 0) { WordWrapping = CanvasWordWrapping.NoWrap };
+            using var layout = new CanvasTextLayout(sender, row.Text, ReadoutFormat, 0, 0) { WordWrapping = CanvasWordWrapping.NoWrap };
             width = Math.Max(width, (float)layout.LayoutBounds.Width);
         }
         // A chip taller than the chart (a CPU chart lists its busiest cores) would be cut off at the bottom: it then
@@ -333,7 +345,7 @@ internal sealed class HistoryChartView : UserControl
         drawing.FillRoundedRectangle(x, y, width, height, 4, 4, dark ? Color.FromArgb(240, 32, 32, 32) : Color.FromArgb(240, 252, 252, 252));
         drawing.DrawRoundedRectangle(x, y, width, height, 4, 4, line, 1);
         for (int i = 0; i < rows.Count; i++)
-            drawing.DrawText(rows[i].Text, x + padding + i / perColumn * column, y + padding + i % perColumn * rowHeight, rows[i].Color, LabelFormat);
+            drawing.DrawText(rows[i].Text, x + padding + i / perColumn * column, y + padding + i % perColumn * rowHeight, rows[i].Color, ReadoutFormat);
     }
 
     private void DrawAxes(CanvasControl sender, CanvasDrawEventArgs args)
@@ -345,14 +357,20 @@ internal sealed class HistoryChartView : UserControl
         foreach (var value in current.Lines)
         {
             session.DrawLine((float)plot.Left, (float)value.Y, (float)(plot.Left + plot.Width), (float)value.Y, line, 1);
-            session.DrawText(value.Label, (float)(plot.Left + plot.Width - 4), (float)value.Y - 14, ink, RightLabelFormat);
+            session.DrawText(value.Label, (float)(plot.Left + plot.Width - 4), LabelY(value.Y), ink, RightLabelFormat);
         }
         // Fan and pump lines read against RPM labels on the left of the same value lines.
-        foreach (var value in current.RpmLines) session.DrawText(value.Label, (float)plot.Left + 4, (float)value.Y - 14, ink, LabelFormat);
-        session.DrawText("Now", (float)(plot.Left + plot.Width), (float)(plot.Top + plot.Height + 4), ink, RightLabelFormat);
+        foreach (var value in current.RpmLines) session.DrawText(value.Label, (float)plot.Left + 4, LabelY(value.Y), ink, LabelFormat);
+        session.DrawText("Now", (float)(plot.Left + plot.Width), (float)(plot.Top + plot.Height) + UnderPlot, ink, RightLabelFormat);
         if (!current.HasReadings)
             session.DrawText(this.session.Current is null ? "Waiting for first sample…" : "No available readings in this range", (float)plot.Left + 15, (float)(plot.Top + plot.Height / 2 + 2), ink, LabelFormat);
     }
+
+    /// <summary>
+    /// Where a value label's text starts: just above its line, except the top line's, which goes just below it inside the plot,
+    /// so the chart keeps no strip above the plot for it.
+    /// </summary>
+    private float LabelY(double y) => (float)y - (y < plot.Top + 1 ? TopLabelAbove : LabelAbove);
 
     private static double TextWidth(Microsoft.Graphics.Canvas.ICanvasResourceCreator creator, string text, CanvasTextFormat format)
     {
@@ -372,7 +390,7 @@ internal sealed class HistoryChartView : UserControl
         foreach (var tick in current.Ticks)
         {
             if (slow && tick.X + TextWidth(sender, tick.Label, TickFormat) / 2 > limit) continue;
-            args.DrawingSession.DrawText(tick.Label, (float)tick.X, (float)(plot.Top + plot.Height) + 4, ink, TickFormat);
+            args.DrawingSession.DrawText(tick.Label, (float)tick.X, (float)(plot.Top + plot.Height) + UnderPlot, ink, TickFormat);
         }
     }
 

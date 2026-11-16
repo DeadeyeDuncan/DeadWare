@@ -6,7 +6,11 @@ public static class OverviewPresenter
 {
     /// <summary>The fixed cards in order; one Disk card per present drive follows them.</summary>
     public static IReadOnlyList<string> Kinds { get; } = Array.AsReadOnly(new[] { "cpu", "gpu", "cputemp", "gputemp", "memory", "network", "storage" });
-    public const double RowHeight = 270;
+    /// <summary>
+    /// The shortest a row of cards gets before the page scrolls. A card's padding, header, reading line and the chart's labels
+    /// take about 95 of it, which leaves the plot about 125: what it had (about 123) when those took about 147 of a 270 row.
+    /// </summary>
+    public const double RowHeight = 220;
     /// <summary>How many polls in a row another drive must be busier before the Disk card names it instead.</summary>
     public const int BusiestHold = 5;
 
@@ -45,14 +49,19 @@ public static class OverviewPresenter
     public static string Rpm(string label, bool stale, double? rpm, string? pattern = null) =>
         $"{label} · {(stale ? "stale" : rpm.HasValue && double.IsFinite(rpm.Value) ? rpm.Value.ToString("0", CultureInfo.CurrentCulture) + " RPM" : "unavailable")}{(pattern is null ? "" : $" · {pattern} · left RPM")}";
 
+    /// <summary>A fan or pump speed alone, for an Overview card's reading line, with a dash when there is none; <see cref="Rpm"/> says why, in its tooltip.</summary>
+    public static string RpmValue(bool stale, double? rpm) =>
+        !stale && rpm.HasValue && double.IsFinite(rpm.Value) ? rpm.Value.ToString("0", CultureInfo.CurrentCulture) + " RPM" : "—";
+
     /// <summary>The line pattern in words: the saved one, else the trace's default.</summary>
     public static string Pattern(string? saved, bool dashed = false, bool dotted = false) =>
         saved is { Length: > 0 } && saved != "default" ? saved : dotted ? "dotted" : dashed ? "dashed" : "solid";
 
+    /// <summary>The Network card's legend, after its title in the header; spaced like the other cards' lines, so it trims later.</summary>
     public static string NetworkSubtitle(string? downloadPattern, string? uploadPattern)
     {
         static string Cased(string text) => CultureInfo.CurrentCulture.TextInfo.ToTitleCase(text);
-        return $"{Cased(Pattern(downloadPattern))}: download    ·    {Cased(Pattern(uploadPattern, dashed: true))}: upload    ·    Shared scale";
+        return $"{Cased(Pattern(downloadPattern))}: download · {Cased(Pattern(uploadPattern, dashed: true))}: upload · Shared scale";
     }
 
     public static string MemorySubtitle(bool discovered, bool stale, bool hasValue, double? used, double? total) =>

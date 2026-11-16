@@ -37,6 +37,26 @@ public class StoragePresenterTests
         Assert.Equal("Samsung 990", StoragePresenter.Name(Drive(volumes: [new("", "Recovery", 1, 1)])));
     }
 
+    [Fact] public void The_ending_windows_gives_a_bridged_or_usb_drive_is_dropped_from_the_name()
+    {
+        Assert.Equal("E: WD P40 Game Drive", StoragePresenter.Name(Drive(volumes: [new("E", "Games", 1, 1)]) with { Model = "WD P40 Game Drive SCSI Disk Device" }));
+        Assert.Equal("SanDisk Extreme", StoragePresenter.Name(Drive() with { Model = "SanDisk Extreme USB Device" }));
+        Assert.Equal("ST2000DM008-2FR102", StoragePresenter.Name(Drive() with { Model = "ST2000DM008-2FR102 ATA Device" }));
+        // Matched in any case, and the space before the ending goes with it.
+        Assert.Equal("Kingston DataTraveler", StoragePresenter.Name(Drive() with { Model = "Kingston DataTraveler  usb device" }));
+        // The title names the drive the same way.
+        Assert.Equal("WD P40 Game Drive · NVMe · 2.0 TB", StoragePresenter.Title(Drive() with { Model = "WD P40 Game Drive SCSI Disk Device" }));
+    }
+
+    [Fact] public void A_model_keeps_an_ending_that_is_not_at_its_end_or_is_all_there_is()
+    {
+        Assert.Equal("USB Device Hub Drive", StoragePresenter.Name(Drive() with { Model = "USB Device Hub Drive" }));
+        Assert.Equal("Samsung SCSI Disk Device Pro", StoragePresenter.Name(Drive() with { Model = "Samsung SCSI Disk Device Pro" }));
+        Assert.Equal("SCSI Disk Device", StoragePresenter.Name(Drive() with { Model = "SCSI Disk Device" }));
+        Assert.Equal(" ATA Device", StoragePresenter.Name(Drive() with { Model = " ATA Device" }));
+        Assert.Equal("D: \t USB Device", StoragePresenter.Name(Drive(volumes: [D]) with { Model = "\t USB Device" }));
+    }
+
     [Fact] public void The_health_line_gives_temperature_badge_and_life_with_dashes_for_unknowns()
     {
         Assert.Equal("41.5°C · Healthy · Life 97%", StoragePresenter.HealthLine(Health()));

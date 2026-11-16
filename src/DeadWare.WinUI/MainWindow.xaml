@@ -10,18 +10,23 @@
         <Grid x:Name="TitleBarArea">
             <TextBlock x:Name="TitleText" Margin="16,0,0,0" VerticalAlignment="Center" Style="{StaticResource CaptionTextBlockStyle}" />
         </Grid>
+        <!-- The pane is as wide as its longest labels need ("Cooling Health", "Usage history"), not WinUI's default 320. -->
         <NavigationView
             x:Name="Nav"
             Grid.Row="1"
             PaneDisplayMode="Left"
+            OpenPaneLength="220"
             IsSettingsVisible="False"
             IsBackButtonVisible="Collapsed"
             AlwaysShowHeader="False"
             SelectionChanged="OnSelectionChanged">
             <NavigationView.PaneFooter>
                 <!-- As at the foot of the WPF sidebar: the way to stop monitoring, what closing does, and what is running. -->
-                <StackPanel x:Name="PaneFoot" Margin="16,8,16,12" Spacing="6">
-                    <Button x:Name="ElevateButton" Content="Restart as administrator" HorizontalAlignment="Stretch" Click="OnElevate" />
+                <StackPanel x:Name="PaneFoot" Margin="12,6,12,10" Spacing="4">
+                    <!-- Wraps rather than clips if the narrow pane, a larger text size or a translation leaves it too little room. -->
+                    <Button x:Name="ElevateButton" HorizontalAlignment="Stretch" Click="OnElevate">
+                        <TextBlock Text="Restart as administrator" TextWrapping="Wrap" TextAlignment="Center" />
+                    </Button>
                     <TextBlock x:Name="ElevateResult" TextWrapping="Wrap" Visibility="Collapsed" Style="{StaticResource CaptionTextBlockStyle}" />
                     <Button x:Name="QuitButton" Content="Quit DeadWare" HorizontalAlignment="Stretch" Click="OnQuit" />
                     <TextBlock x:Name="TrayNotice" TextWrapping="Wrap" Opacity="0.7" Style="{StaticResource CaptionTextBlockStyle}" />
@@ -35,15 +40,17 @@
                     <RowDefinition Height="*" />
                     <RowDefinition Height="Auto" />
                 </Grid.RowDefinitions>
-                <!-- The page's name, the hardware being watched and how fresh the last sample is, then the shared controls. -->
-                <Grid Margin="32,20,24,8" ColumnSpacing="16">
+                <!-- The page's name, the hardware being watched and how fresh the last sample is, then the shared controls, led by
+                     the page's own control if it has one. Kept short so the page below gets the height; the right margin lines the
+                     controls up with Overview's cards. The texts trim rather than wrap, so a narrow window keeps the header one row. -->
+                <Grid Margin="24,8,16,6" ColumnSpacing="16">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*" />
                         <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
-                    <StackPanel Spacing="2">
-                        <TextBlock x:Name="PageTitle" Style="{StaticResource TitleTextBlockStyle}" TextTrimming="CharacterEllipsis" />
-                        <TextBlock x:Name="PageSubtitle" Opacity="0.7" TextTrimming="CharacterEllipsis" Style="{StaticResource CaptionTextBlockStyle}" />
+                    <StackPanel Spacing="2" VerticalAlignment="Center">
+                        <TextBlock x:Name="PageTitle" Style="{StaticResource SubtitleTextBlockStyle}" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" />
+                        <TextBlock x:Name="PageSubtitle" Opacity="0.7" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" Style="{StaticResource CaptionTextBlockStyle}" />
                     </StackPanel>
                     <StackPanel x:Name="HeaderTools" Grid.Column="1" Orientation="Horizontal" Spacing="12" VerticalAlignment="Center">
                         <StackPanel x:Name="RangeRow" Orientation="Horizontal" Spacing="2" />
