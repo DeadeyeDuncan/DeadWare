@@ -361,7 +361,7 @@ public class GraphHistoryServiceTests
         var history=new SampleHistory();var live=WithCores(Reading(now,1),8);history.Add(live.Sample);
         var second=new GraphHistoryService(fixture.Path,"machine",history);
         second.Start();second.TryRecord(live);await second.StopAsync();
-        var restored=Assert.Single(history.Read().Where(s=>s.SessionId is not null));
+        var restored=Assert.Single(history.Read(),s=>s.SessionId is not null);
         Assert.True(restored.Values.ContainsKey("cpu/core/7/usage"));
         Assert.False(restored.Values.ContainsKey("cpu/core/8/usage"));
         Assert.DoesNotContain("unavailable",second.Status);
