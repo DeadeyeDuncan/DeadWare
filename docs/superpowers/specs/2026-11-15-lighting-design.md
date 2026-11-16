@@ -193,7 +193,13 @@ The device host is a separate executable, not a mode of `DeadWare.exe`. That giv
   - Never write "Direct" into a hardware-defaulted device's saved settings. That would defeat the fallback by mode name, as DeadLight's comment warns.
   - The same Hardware mode menu serves the motherboard.
   - The step 1 hardware check may include one Direct-mode re-test on the Node Pro, only with the user's approval. If it renders cleanly, the default can change.
-- **Refresh:** some devices drop back to their hardware effect without a periodic refresh (DeadLight's `REFRESH_TTL_MS`, about 2 s, in `device-service.ts`). Port the per-device refresh rules unchanged. Lights-off on a device in Direct mode therefore means refreshing black, not sending nothing. The idle-gated Aerox is the exception.
+- **Refresh and pacing:** port DeadLight's `device-service.ts` and `main.ts` timings unchanged:
+  - An unchanged frame is re-sent once its last push is older than **400 ms** (`REFRESH_TTL_MS`). The Node Pro drops back to its hardware effect after about 2 s without it.
+  - Pushes are capped per device at **33 ms** for USB/HID devices and **200 ms** for DRAM, which is OpenRGB controller type 1.
+  - The paint tick is **500 ms** with no effect running and **33 ms** while one runs.
+  - A rescan runs every **5 s**, because OpenRGB 1.0rc3 doesn't reliably announce device-list changes.
+
+  Lights-off on a device in Direct mode therefore means refreshing black, not sending nothing. The idle-gated Aerox is the exception.
 - **Apex Pro keyboard** goes through OpenRGB: Direct only, 112 LEDs, the real matrix map from the zone's matrix.
 - **Aerox 9:** wired (`1038:1858`) through OpenRGB. Wireless (`1038:185A`) uses DeadWare's own 2.4 GHz dongle driver on HidSharp, ported from `aerox-wireless.ts`:
   - wireless opcodes are the wired opcode OR `0x40`, each with a readback
