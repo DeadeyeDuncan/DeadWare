@@ -47,7 +47,7 @@ internal sealed class PopoutWindow : Window
     {
         var root = new Grid();
         Content = root;
-        Title = $"Disk · {drive.Model}";
+        Title = $"Disk · {StoragePresenter.Name(drive)}";
         manager.Place(this, root, null, 420, 230, 300, 180);
         root.Children.Add(new GraphPopout(session, manager, this, "storage", drive.Id) { Margin = new Thickness(6) });
     }
@@ -232,7 +232,7 @@ internal sealed class GraphPopout : UserControl
             value.Text = "↓ " + HistoryChartModel.Bytes(current, true);
             second.Text = "↑ " + HistoryChartModel.Bytes(write, true);
             var drive = driveId is null ? null : data?.Storage.Drives.FirstOrDefault(candidate => candidate.Id == driveId);
-            details.Text = (driveId is null ? "All drives" : drive?.Model ?? "Drive not detected")
+            details.Text = (driveId is null ? "All drives" : drive is null ? "Drive not detected" : StoragePresenter.Name(drive))
                 + $"\n↓ Read: {Pattern("diskread")} line\n↑ Write: {Pattern("diskwrite", dashed: true)} line\nBoth directions share the same scale.";
             AutomationProperties.SetName(value, "Read " + HistoryChartModel.Bytes(current, true));
             AutomationProperties.SetName(second, "Write " + HistoryChartModel.Bytes(write, true));

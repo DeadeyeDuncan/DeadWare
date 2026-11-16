@@ -75,6 +75,13 @@ public class GpuCounterTests
     public void An_interval_outside_freshness_has_no_previous_collection(double dt){ R(10);var r=R(10+dt);Assert.Null(r.PreviousUtcTime);Assert.Null(r.IntervalSeconds);}   // 1 s polling: 4 s
     [Fact] public void A_slower_previous_interval_keeps_its_freshness_limit(){ R(0,interval:10);var r=R(10,interval:0.5);   // FreshnessSeconds(Math.Max(10,0.5)) = 13 s, as the tracker
         Assert.Equal(T(0),r.PreviousUtcTime);Assert.Equal(10,r.IntervalSeconds!.Value,6);Assert.Null(R(20,interval:0.5).IntervalSeconds);}   // then 0.5 s on both sides: 4 s
+    // The collector's idle cadence reads every 5 s at 0.5 s polling and passes that period, not the polling interval, as the bound.
+    [Fact] public void An_idle_period_passed_as_the_interval_lets_a_five_second_gap_form_a_rate(){ R(0,interval:5);var r=R(5.03,interval:5);
+        Assert.Equal(T(0),r.PreviousUtcTime);Assert.Equal(5.03,r.IntervalSeconds!.Value,6);
+        // Back to a page showing the values: the first faster read still pairs with the idle one, then 0.5 s on both sides is 4 s again.
+        Assert.Equal(4.97,R(10,interval:0.5).IntervalSeconds!.Value,6);Assert.Null(R(15,interval:0.5).IntervalSeconds);
+        // The polling interval as the bound would have dropped the idle gap's GPU time.
+        var fresh=new GpuCounterReader(new FakeGpuApi());fresh.Read(0,T(0),0.5);Assert.Null(fresh.Read(5.03,T(5.03),0.5).IntervalSeconds);}
     [Theory][InlineData(GpuPdhStatus.InvalidData)][InlineData(GpuPdhStatus.CStatusInvalidData)][InlineData(GpuPdhStatus.CalcNegativeDenominator)][InlineData(GpuPdhStatus.CalcNegativeValue)]
     public void A_benign_array_status_is_not_ready_and_fails_only_after_60_s(uint status){ api.Arrays[GpuCounterKind.Engine]=new(status,[]);
         foreach(double s in new[]{0,30,59.9}){var r=R(s);Assert.True(r.State.Available);Assert.False(r.EnginesReady);Assert.Equal(0,r.Skipped);}

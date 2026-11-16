@@ -95,7 +95,11 @@ internal sealed class ProcessesPage : Page
         resortNow.Invoked += (_, e) => { Refresh(resort: true); e.Handled = true; };
         KeyboardAccelerators.Add(find); KeyboardAccelerators.Add(resortNow);
 
-        this.WhileShowing(() => { loaded = true; session.Changed += OnChanged; Refresh(resort: true); }, () => { loaded = false; session.Changed -= OnChanged; });
+        // While the page is on screen the collector reads per-app GPU counters every poll; otherwise every 5 seconds is enough for history.
+        IDisposable? liveGpu = null;
+        this.WhileShowing(
+            () => { loaded = true; liveGpu ??= session.Collector.ShowLiveGpu(); session.Changed += OnChanged; Refresh(resort: true); },
+            () => { loaded = false; session.Changed -= OnChanged; liveGpu?.Dispose(); liveGpu = null; });
     }
 
     private static TextBlock Muted() => new() { TextWrapping = TextWrapping.Wrap, Opacity = 0.7, FontSize = 12 };

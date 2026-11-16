@@ -78,7 +78,8 @@ internal sealed class EtwNetwork : IAsyncDisposable
             if(terminalFailure)return;
             if(!attribution.Record(pid,timestamp.UtcTicks,send?0:bytes,send?bytes:0,out var identity))
             {connections.Record(null!,timestamp,bytes,send);return;}
-            connections.Record(NetworkAddress.FromEndpoints(identity!,source,sourcePort,destination,destinationPort,protocol,send),timestamp,bytes,send);
+            // The ledger finds a known peer by its raw endpoint, so an event builds no address strings or peer records.
+            connections.RecordEndpoint(identity!,source,sourcePort,destination,destinationPort,protocol,send,timestamp,bytes);
         }
     }
     internal void ObserveLoss(long cumulative)
@@ -103,7 +104,9 @@ internal sealed class EtwNetwork : IAsyncDisposable
         catch(Exception) {} // a session that is stopping or gone: the next snapshot reports that
     }
     public IReadOnlyList<ProcessTraffic> Take(double now)=>TakeSnapshot(DateTimeOffset.UtcNow,now).Processes;
-    internal NetworkCaptureSnapshot TakeSnapshot(DateTimeOffset timestamp,double now,bool available=true)
+    /// <param name="index">The poll's process scan by PID, when Per-process monitoring scanned: a tracked process the scan still lists with
+    /// the same Generation is kept without opening it, as the disk trace does; without a scan every tracked process is read natively.</param>
+    internal NetworkCaptureSnapshot TakeSnapshot(DateTimeOffset timestamp,double now,bool available=true,IReadOnlyDictionary<int,ProcessIdentity>? index=null)
     {
         lock(accountingGate)
         {
@@ -113,7 +116,11 @@ internal sealed class EtwNetwork : IAsyncDisposable
                 try {ObserveLoss(readLoss());}
                 catch(Exception e) {failure=DiagnosticFailure.Capture("Query event loss",e,captureDiagnostics);status=$"ETW status unavailable ({e.GetType().Name})";usable=false;}
             }
-            if(usable&&now-lastReconciliation>=5) {attribution.Reconcile();lastReconciliation=now;}
+            if(usable&&now-lastReconciliation>=5)
+            {
+                if(index is not null)attribution.Reconcile(pid=>index.GetValueOrDefault(pid));else attribution.Reconcile();
+                lastReconciliation=now;
+            }
             if(!usable)connections.Break();
             var sample=connections.Take(timestamp,now);
             if(!usable)sample=sample with {Available=false,Complete=false,CoverageFrom=null,Status=status};

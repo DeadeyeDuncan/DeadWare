@@ -88,7 +88,8 @@ public sealed class MonitorSession
         diagnostics?.Record("settings_loaded",new {Status=SettingsStatus,Settings.RestoreOpenWindows,OpenWindows=layout.Remembered,Settings.SelectedGpuId,Disk=LayoutDiagnostics.ReadSettingsState(settingsPath)});
         saveTimer.Tick+=async ()=>{saveTimer.Stop();await SaveAsync();};
         timer.Interval=TimeSpan.FromSeconds(Math.Min(1,Settings.PollingIntervalSeconds));
-        Collector=new(new CollectorOptions(ExtendedSensors:Settings.ExtendedSensors,PollingIntervalSeconds:Settings.PollingIntervalSeconds,StorageSensors:Settings.StorageSensors,ProcessMonitoring:Settings.ProcessMonitoring,ExcludeVirtualAdapters:Settings.ExcludeVirtualAdapters,ProcessDiskTracing:ProcessFeatures.DiskColumns&&Collector.IsElevated));
+        // IdleGpuCadence: per-app GPU counters run at full speed only while a page holds Collector.ShowLiveGpu().
+        Collector=new(new CollectorOptions(ExtendedSensors:Settings.ExtendedSensors,PollingIntervalSeconds:Settings.PollingIntervalSeconds,StorageSensors:Settings.StorageSensors,ProcessMonitoring:Settings.ProcessMonitoring,ProcessDiskTracing:ProcessFeatures.DiskColumns&&Collector.IsElevated,IdleGpuCadence:true,ExcludeVirtualAdapters:Settings.ExcludeVirtualAdapters));
         GraphHistory=new(Path.Combine(Path.GetDirectoryName(settingsPath)!,"live-graph-history.db"),Environment.MachineName,Collector.History);
         Collector.SampleAvailable+=GraphHistory.TryRecord;
         Cooling=new(Path.Combine(Path.GetDirectoryName(settingsPath)!,"cooling-history.db"),Environment.MachineName,Settings.CoolingConfigurationId);

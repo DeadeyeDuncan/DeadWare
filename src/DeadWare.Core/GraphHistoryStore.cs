@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.Globalization;
+using System.Text;
 using System.Text.Json;
 using Microsoft.Data.Sqlite;
 
@@ -20,6 +21,8 @@ public sealed class GraphHistoryStore
     private const string PollingIntervalKey = "$deadware-polling-interval-seconds";
     private const int MaximumPayloadLength = 32768;
     private const long MaximumJournalBytes = 8L * 1024 * 1024;
+    // What a row costs beyond its payload: its own header and its entries in the two indexes, session text included.
+    private const int RowOverheadBytes = 160;
     private readonly string path;
     private readonly long maximumDatabaseBytes;
     private bool initialized;
@@ -55,8 +58,10 @@ public sealed class GraphHistoryStore
         Checkpoint(db); initialized = true;
     }
 
-    public void Append(IReadOnlyList<GraphHistoryRecord> records, DateTimeOffset now)
+    /// <summary>Saves a batch. Returns true when the oldest rows were dropped to keep the file inside its size limit.</summary>
+    public bool Append(IReadOnlyList<GraphHistoryRecord> records, DateTimeOffset now)
     {
+        bool dropped = false;
         EnsureInitialized();
         if (records.Count > 120) throw new ArgumentException("Graph history batches cannot exceed 120 records.", nameof(records));
         // Validate and serialize the complete batch before beginning a transaction. Failed
@@ -75,6 +80,7 @@ public sealed class GraphHistoryStore
         using (var transaction = db.BeginTransaction())
         {
             Prune(db, transaction, cutoff, latest);
+            dropped = MakeRoom(db, transaction, prepared.Sum(item => Encoding.UTF8.GetByteCount(item.Payload) + RowOverheadBytes), prepared.Length);
             using var insert = Command(db, """
                 INSERT INTO graph_samples(session,monotonic,stamp,payload) VALUES($session,$monotonic,$stamp,$payload)
                 ON CONFLICT(session,monotonic) DO NOTHING
@@ -94,6 +100,7 @@ public sealed class GraphHistoryStore
             transaction.Commit();
         }
         Checkpoint(db);
+        return dropped;
     }
 
     public IReadOnlyList<GraphHistoryRecord> Read(DateTimeOffset now)
@@ -108,15 +115,26 @@ public sealed class GraphHistoryStore
             """, null, ("$cutoff", Cutoff(now)), ("$now", now.UtcTicks), ("$limit", MaximumRows));
         using var reader = command.ExecuteReader();
         var result = new List<GraphHistoryRecord>();
+        // Every row repeats the same few dozen keys of some 70 characters, and few session ids. Kept once each, a full read held
+        // for the restore is about a fifth of the size it was with fresh strings for every row.
+        var known = new Dictionary<string, string>(StringComparer.Ordinal);
+        string Intern(string text)
+        {
+            if (known.TryGetValue(text, out var kept)) return kept;
+            if (known.Count < 4096) known.Add(text, text);
+            return text;
+        }
         while (reader.Read())
         {
             try
             {
                 if (reader.GetInt64(4) > MaximumPayloadLength) throw new InvalidDataException("Graph cache contains an oversized record.");
-                var values = JsonSerializer.Deserialize<Dictionary<string, double?>>(reader.GetString(3))
+                var parsed = JsonSerializer.Deserialize<Dictionary<string, double?>>(reader.GetString(3))
                     ?? throw new InvalidDataException("Graph cache contains an empty record.");
-                double interval = values.Remove(PollingIntervalKey, out var storedInterval) ? storedInterval ?? double.NaN : 1;
-                var record = new GraphHistoryRecord(reader.GetString(0), new DateTimeOffset(reader.GetInt64(2), TimeSpan.Zero), reader.GetDouble(1),
+                double interval = parsed.Remove(PollingIntervalKey, out var storedInterval) ? storedInterval ?? double.NaN : 1;
+                var values = new Dictionary<string, double?>(parsed.Count, StringComparer.Ordinal);
+                foreach (var pair in parsed) values[Intern(pair.Key)] = pair.Value;
+                var record = new GraphHistoryRecord(Intern(reader.GetString(0)), new DateTimeOffset(reader.GetInt64(2), TimeSpan.Zero), reader.GetDouble(1),
                     new ReadOnlyDictionary<string, double?>(values)) { PollingIntervalSeconds = interval };
                 Validate(record); result.Add(record);
             }
@@ -140,6 +158,34 @@ public sealed class GraphHistoryStore
     {
         Execute(db, "DELETE FROM graph_samples WHERE stamp < $cutoff OR stamp > $now", transaction, ("$cutoff", cutoff), ("$now", now));
         Execute(db, "DELETE FROM graph_samples WHERE id IN (SELECT id FROM graph_samples ORDER BY stamp DESC,id DESC LIMIT -1 OFFSET $limit)", transaction, ("$limit", MaximumRows));
+    }
+    /// <summary>
+    /// Frees pages for a batch by deleting the oldest rows, inside the batch's transaction. The file may not grow past its
+    /// limit, and six hours of records do not always fit in it: 23 long-keyed values every half second fill 64 MiB in under
+    /// five hours. Without this the insert fails with "database or disk is full" and recording stops until a restart; with
+    /// it the file keeps the newest history that fits. A batch too large for an empty file still fails, and the
+    /// transaction's rollback then restores what was deleted here.
+    /// </summary>
+    private static bool MakeRoom(SqliteConnection db, SqliteTransaction transaction, long incomingBytes, int incomingRows)
+    {
+        long Pages(string pragma) => Convert.ToInt64(Scalar(db, "PRAGMA " + pragma, transaction), CultureInfo.InvariantCulture);
+        long pageSize = Pages("page_size"), limit = Pages("max_page_count");
+        // Rows do not pack pages fully and the two indexes grow with them, so ask for half as much again and a few spare.
+        long needed = (long)Math.Ceiling(incomingBytes * 1.5 / pageSize) + 4;
+        bool dropped = false;
+        for (int attempt = 0; attempt < 8; attempt++)
+        {
+            long used = Pages("page_count"), free = Pages("freelist_count"), available = limit - used + free;
+            if (available >= needed) break;
+            long rows = Convert.ToInt64(Scalar(db, "SELECT count(*) FROM graph_samples", transaction), CultureInfo.InvariantCulture);
+            if (rows == 0) break;
+            double bytesPerRow = Math.Max(64, (double)(used - free) * pageSize / rows);
+            // A quarter more than the shortfall, so a file at its limit drops rows every few batches, not every batch.
+            long drop = Math.Clamp((long)Math.Ceiling((needed - available) * pageSize / bytesPerRow * 1.25) + incomingRows, 1, rows);
+            Execute(db, "DELETE FROM graph_samples WHERE id IN (SELECT id FROM graph_samples ORDER BY stamp,id LIMIT $drop)", transaction, ("$drop", drop));
+            dropped = true;
+        }
+        return dropped;
     }
     private void EnsureInitialized()
     { if (!initialized) throw new InvalidOperationException("Graph history storage has not been initialized."); }
@@ -183,6 +229,6 @@ public sealed class GraphHistoryStore
     }
     private static int Execute(SqliteConnection db, string sql, SqliteTransaction? transaction = null, params (string Name, object Value)[] args)
     { using var command = Command(db, sql, transaction, args); return command.ExecuteNonQuery(); }
-    private static object? Scalar(SqliteConnection db, string sql)
-    { using var command = Command(db, sql); return command.ExecuteScalar(); }
+    private static object? Scalar(SqliteConnection db, string sql, SqliteTransaction? transaction = null)
+    { using var command = Command(db, sql, transaction); return command.ExecuteScalar(); }
 }

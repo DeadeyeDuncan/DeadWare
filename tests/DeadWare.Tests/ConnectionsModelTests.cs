@@ -62,6 +62,32 @@ public class ConnectionsModelTests
         Assert.Empty(Assert.Single(frame.Routes([point], null)).Samples);
     }
 
+    [Fact] public void A_route_s_arc_follows_its_place_and_its_size_its_traffic()
+    {
+        // The map keeps each location's arc while the traffic changes, which holds only if the arc ignores the bytes.
+        var frame = new MapFrame(420, 255, new MapCamera(-40, 30, 1.5, false), false);
+        var origin = new GeoPoint(40, -74);
+        ConnectionMapPoint[] before = [new("a", new GeoPoint(51.5, -0.1), 5000, 200, false), new("b", new GeoPoint(-33.9, 151.2), 10, 0, false), new("c", new GeoPoint(35.7, 139.7), 0, 0, false)];
+        ConnectionMapPoint[] after = [before[0] with { ReceivedBytes = 9 }, before[1] with { ReceivedBytes = 90_000, SentBytes = 7 }, before[2] with { Selected = true }];
+        var first = frame.Routes(before, origin); var second = frame.Routes(after, origin);
+        Assert.Equal(5200, MapFrame.Busiest(before));
+        for (int i = 0; i < before.Length; i++)
+        {
+            Assert.Equal(first[i].Samples, second[i].Samples);
+            Assert.Equal(first[i].Segments.Length, second[i].Segments.Length);
+            for (int s = 0; s < first[i].Segments.Length; s++) Assert.Equal(first[i].Segments[s], second[i].Segments[s]);
+            var (samples, segments) = frame.Path(before[i].Point, origin);
+            Assert.Equal(first[i].Samples, samples);
+            Assert.Equal(first[i].Segments.Length, segments.Length);
+            Assert.Equal((first[i].Radius, first[i].Width), MapFrame.Size(before[i], MapFrame.Busiest(before)));
+        }
+        Assert.Equal(6, first[0].Radius, 6);
+        Assert.Equal(6, second[1].Radius, 6);
+        Assert.True(second[0].Radius < first[0].Radius);
+        Assert.Equal((3d, .6), MapFrame.Size(before[2], 0));
+        Assert.Equal(0, MapFrame.Busiest([]));
+    }
+
     [Fact] public void An_offset_lane_runs_beside_its_arc()
     {
         PlotPoint[][] arc = [[new(0, 0), new(10, 0), new(20, 0)]];

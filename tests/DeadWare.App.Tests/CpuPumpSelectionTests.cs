@@ -29,6 +29,18 @@ public class CpuPumpSelectionTests
         Assert.Null(new CpuPumpSpeed().Read([Fan("pump","Pump Fan",2376)],0));
     }
 
+    [Fact]
+    public void The_chosen_header_names_its_hardware_and_multi_socket_hosts_choose_none()
+    {
+        // The collector keeps that hardware updating every poll while it slows the rest of the board down.
+        var source=new CpuPumpSpeed();Assert.Null(source.HardwareId);
+        source.Read([Fan("pump","Pump Fan",2376)],1);Assert.Equal("/lpc/nct6687d/0",source.HardwareId);
+        source.Read([Fan("pump","Pump Fan",null)],1);Assert.Equal("/lpc/nct6687d/0",source.HardwareId);
+        var aio=new CpuPumpSpeed();aio.Read([Fan("aio","Pump",2800) with {HardwareType="Cooler",HardwareId="/nzxt/kraken/0"}],1);Assert.Equal("/nzxt/kraken/0",aio.HardwareId);
+        var dual=new CpuPumpSpeed();dual.Read([Fan("pump","Pump Fan",2376)],2);Assert.Null(dual.HardwareId);
+        var none=new CpuPumpSpeed();none.Read([Fan("f1","Fan #1",1200)],1);Assert.Null(none.HardwareId);
+    }
+
     [Theory]
     [InlineData(0d,0d)][InlineData(2370d,2370d)][InlineData(-1d,null)]
     [InlineData(double.NaN,null)][InlineData(double.PositiveInfinity,null)]
