@@ -1,0 +1,264 @@
+[
+  {
+    "name": "Corsair Vengeance RGB DDR5",
+    "description": "Corsair DRAM RGB Device",
+    "serial": "SERIAL-1",
+    "location": "I2C: FAKE-1",
+    "type": 1,
+    "ledCount": 10,
+    "zones": [
+      {
+        "name": "Corsair DRAM",
+        "ledCount": 10
+      }
+    ],
+    "modes": [
+      "Direct",
+      "Custom",
+      "Color Shift",
+      "Color Pulse",
+      "Rainbow Wave",
+      "Color Wave",
+      "Visor",
+      "Rain",
+      "Marquee",
+      "Rainbow",
+      "Sequential"
+    ],
+    "activeMode": 0
+  },
+  {
+    "name": "Corsair Vengeance RGB DDR5",
+    "description": "Corsair DRAM RGB Device",
+    "serial": "SERIAL-2",
+    "location": "I2C: FAKE-2",
+    "type": 1,
+    "ledCount": 10,
+    "zones": [
+      {
+        "name": "Corsair DRAM",
+        "ledCount": 10
+      }
+    ],
+    "modes": [
+      "Direct",
+      "Custom",
+      "Color Shift",
+      "Color Pulse",
+      "Rainbow Wave",
+      "Color Wave",
+      "Visor",
+      "Rain",
+      "Marquee",
+      "Rainbow",
+      "Sequential"
+    ],
+    "activeMode": 0
+  },
+  {
+    "name": "Gigabyte Radeon RX 6800 XT GAMING OC",
+    "description": "Gigabyte RGB Fusion 2 GPU Device",
+    "serial": "SERIAL-3",
+    "location": "I2C: FAKE-3",
+    "type": 2,
+    "ledCount": 5,
+    "zones": [
+      {
+        "name": "GPU zone 1",
+        "ledCount": 1
+      },
+      {
+        "name": "GPU zone 2",
+        "ledCount": 1
+      },
+      {
+        "name": "GPU zone 3",
+        "ledCount": 1
+      },
+      {
+        "name": "GPU zone 4",
+        "ledCount": 1
+      },
+      {
+        "name": "GPU zone 5",
+        "ledCount": 1
+      }
+    ],
+    "modes": [
+      "Direct",
+      "Pulse",
+      "Flash",
+      "Double Flash",
+      "Color Cycle",
+      "Gradient",
+      "Wave",
+      "Color Shift",
+      "Tricolor"
+    ],
+    "activeMode": 0
+  },
+  {
+    "name": "SteelSeries Apex Pro",
+    "description": "SteelSeries Apex RGB Device",
+    "serial": "SERIAL-4",
+    "location": "HID: \\\\?\\HID#FAKE-1",
+    "type": 5,
+    "ledCount": 112,
+    "zones": [
+      {
+        "name": "Keyboard",
+        "ledCount": 112
+      }
+    ],
+    "modes": [
+      "Direct"
+    ],
+    "activeMode": 0
+  },
+  {
+    "name": "SteelSeries Aerox 9 Wireless Wired",
+    "description": "SteelSeries Mouse Device",
+    "serial": "SERIAL-5",
+    "location": "HID: \\\\?\\HID#FAKE-2",
+    "type": 6,
+    "ledCount": 4,
+    "zones": [
+      {
+        "name": "Front",
+        "ledCount": 1
+      },
+      {
+        "name": "Middle",
+        "ledCount": 1
+      },
+      {
+        "name": "Rear",
+        "ledCount": 1
+      },
+      {
+        "name": "Reactive",
+        "ledCount": 1
+      }
+    ],
+    "modes": [
+      "Direct",
+      "Rainbow Breathing"
+    ],
+    "activeMode": 0
+  },
+  {
+    "name": "Corsair iCUE Link System Hub",
+    "description": "iCUE Link Device",
+    "serial": "SERIAL-6",
+    "location": "HID: \\\\?\\HID#FAKE-3",
+    "type": 3,
+    "ledCount": 44,
+    "zones": [
+      {
+        "name": "iCUE LINK RX RGB",
+        "ledCount": 8
+      },
+      {
+        "name": "iCUE LINK RX RGB",
+        "ledCount": 8
+      },
+      {
+        "name": "iCUE LINK RX RGB",
+        "ledCount": 8
+      },
+      {
+        "name": "iCUE LINK TITAN 360",
+        "ledCount": 20
+      }
+    ],
+    "modes": [
+      "Direct"
+    ],
+    "activeMode": 0
+  },
+  {
+    "name": "Corsair Lighting Node Pro",
+    "description": "Corsair Lighting Node Device",
+    "serial": "SERIAL-7",
+    "location": "HID: \\\\?\\HID#FAKE-4",
+    "type": 4,
+    "ledCount": 48,
+    "zones": [
+      {
+        "name": "Corsair Channel 1",
+        "ledCount": 48
+      },
+      {
+        "name": "Corsair Channel 2",
+        "ledCount": 0
+      }
+    ],
+    "modes": [
+      "Direct",
+      "Rainbow Wave",
+      "Color Shift",
+      "Color Pulse",
+      "Color Wave",
+      "Static",
+      "Temperature",
+      "Visor",
+      "Marquee",
+      "Blink",
+      "Sequential",
+      "Rainbow"
+    ],
+    "activeMode": 0
+  },
+  {
+    "name": "MSI MAG B650M MORTAR WIFI (MS-7D76)",
+    "description": "MSI Mystic Light Device (185-byte)",
+    "serial": "SERIAL-8",
+    "location": "HID: \\\\?\\HID#FAKE-5",
+    "type": 0,
+    "ledCount": 2,
+    "zones": [
+      {
+        "name": "JRGB1",
+        "ledCount": 1
+      },
+      {
+        "name": "JRGB2",
+        "ledCount": 1
+      },
+      {
+        "name": "JRAINBOW1",
+        "ledCount": 0
+      },
+      {
+        "name": "JRAINBOW2",
+        "ledCount": 0
+      }
+    ],
+    "modes": [
+      "Direct",
+      "Static",
+      "Breathing",
+      "Flashing",
+      "Double flashing",
+      "Lightning",
+      "Meteor",
+      "Color ring",
+      "Planetary",
+      "Double meteor",
+      "Energy",
+      "Blink",
+      "Clock",
+      "Color pulse",
+      "Color shift",
+      "Color wave",
+      "Marquee",
+      "Rainbow wave",
+      "Visor",
+      "Rainbow flashing",
+      "Color ring double flashing",
+      "Stack",
+      "Fire"
+    ],
+    "activeMode": 0
+  }
+]
