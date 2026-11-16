@@ -1,6 +1,6 @@
 # Lighting: DeadLight merged into DeadWare (0.19.0)
 
-Status: proposed on 2026-11-15. Brainstormed with the user in the fan-control session. The user approved the scope, the desk view (plan A), the Lighting page mockup and the approach (a background device host), and chose to keep iCUE installed but disabled. An independent builder check was answered; this document awaits the user's approval. The version number is tentative, and releasing stays the user's call. Fan control, the request that started this session, follows as its own spec. It builds on the device host and the iCUE LINK hub driver defined here.
+Status: approved by the user on 2026-11-15. Brainstormed with the user in the fan-control session. The user approved the scope, the desk view (plan A), the Lighting page mockup and the approach (a background device host), and chose to keep iCUE installed but disabled. An independent builder check was answered; the user approved this document on 2026-11-15. The version number is tentative, and releasing stays the user's call. Fan control, the request that started this session, follows as its own spec. It builds on the device host and the iCUE LINK hub driver defined here.
 
 ## Intent
 
