@@ -53,8 +53,15 @@ internal sealed class OpenRgbSession : IOpenRgbSession
         for(var i=0;i<c.Length;i++) c[i]=new Color(colors[i].R,colors[i].G,colors[i].B);
         Client.UpdateLeds(index,c);
     }
+    // OpenRGB.NET throws unless a supplied colour list matches the mode's slot count exactly; null keeps the mode's own colours.
+    public static Rgb[]? ModeColors(IReadOnlyList<Rgb>? requested,int modeColorCount)
+        =>requested is not {Count:>0}||modeColorCount<=0?null:Enumerable.Repeat(requested[0],modeColorCount).ToArray();
     public void UpdateMode(int index,int modeIndex,IReadOnlyList<Rgb>? colors)
-        =>Client.UpdateMode(index,modeIndex,colors:colors?.Select(c=>new Color(c.R,c.G,c.B)).ToArray()??[]);
+    {
+        Rgb[]? shaped=null;
+        if(colors is {Count:>0}) shaped=ModeColors(colors,Client.GetControllerData(index).Modes[modeIndex].Colors.Length);
+        Client.UpdateMode(index,modeIndex,colors:shaped?.Select(c=>new Color(c.R,c.G,c.B)).ToArray());
+    }
     void Detach()
     {
         var c=client;client=null;

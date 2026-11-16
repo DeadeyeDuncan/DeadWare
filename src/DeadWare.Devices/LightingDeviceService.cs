@@ -57,7 +57,7 @@ internal sealed class LightingDeviceService
     // After an OpenRGB restart or reconnect the fresh process has received nothing: forget what was sent.
     public void Reset()
     {
-        lock(gate){lastSent.Clear();applied.Clear();directSet.Clear();}
+        lock(gate){lastSent.Clear();applied.Clear();directSet.Clear();activeMode.Clear();}
     }
 
     public void Paint(LightingSettings settings)

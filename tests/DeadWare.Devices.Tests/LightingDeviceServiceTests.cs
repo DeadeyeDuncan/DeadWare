@@ -129,4 +129,20 @@ public sealed class LightingDeviceServiceTests : IDisposable
         session.FailLeds=null;Ms(1);svc.Paint(s);
         Assert.Contains(session.Leds,l=>l.Index==bad);
     }
+    [Fact] public void Reset_without_rescan_reissues_direct_switch()
+    {
+        var s=new LightingSettings();var hid=IndexOf(Hid);
+        svc.Paint(s);
+        Assert.DoesNotContain(session.Modes,m=>m.Index==hid); // already Direct in the fixture
+        svc.Reset();Ms(1000);svc.Paint(s);
+        Assert.Equal(0,Assert.Single(session.Modes,m=>m.Index==hid).Mode);
+    }
+    [Fact] public void ModeColors_shapes_to_the_slot_count()
+    {
+        Rgb r=new(1,2,3),g=new(4,5,6);
+        Assert.Null(OpenRgbSession.ModeColors(null,3));
+        Assert.Null(OpenRgbSession.ModeColors([r],0));
+        Assert.Equal([r,r,r],OpenRgbSession.ModeColors([r],3)!);
+        Assert.Equal([r],OpenRgbSession.ModeColors([r,g],1)!);
+    }
 }
