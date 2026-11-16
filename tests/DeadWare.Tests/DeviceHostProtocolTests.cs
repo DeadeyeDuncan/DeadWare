@@ -68,8 +68,31 @@ public class DeviceHostProtocolTests
     }
     [Fact] public async Task Oversize_length_is_rejected_before_allocation()
     {
-        var ms=new MemoryStream(BitConverter.GetBytes(DeviceHostProtocol.MaxMessageBytes+1));
-        await Assert.ThrowsAsync<InvalidDataException>(()=>DeviceHostProtocol.ReadAsync(ms,default));
+        foreach(int len in new[]{DeviceHostProtocol.MaxMessageBytes+1,int.MaxValue})
+        {
+            var ms=new MemoryStream(BitConverter.GetBytes(len));
+            await Assert.ThrowsAsync<InvalidDataException>(()=>DeviceHostProtocol.ReadAsync(ms,default));
+        }
+    }
+    static Stream Frame(string json)
+    {
+        var b=System.Text.Encoding.UTF8.GetBytes(json);
+        return new MemoryStream([..BitConverter.GetBytes(b.Length),..b]);
+    }
+    [Theory]
+    [InlineData("""{"type":"bogus","version":1,"id":1}""")]
+    [InlineData("""{"version":1,"id":1}""")]
+    [InlineData("{not json")]
+    [InlineData("null")]
+    [InlineData("""{"type":"stop","id":1}""")]
+    public async Task Bad_json_bodies_throw(string json)
+    {
+        await Assert.ThrowsAsync<InvalidDataException>(()=>DeviceHostProtocol.ReadAsync(Frame(json),default));
+    }
+    [Theory] [InlineData(0)] [InlineData(-1)]
+    public async Task Zero_or_negative_length_throws(int len)
+    {
+        await Assert.ThrowsAsync<InvalidDataException>(()=>DeviceHostProtocol.ReadAsync(new MemoryStream(BitConverter.GetBytes(len)),default));
     }
     [Fact] public async Task Truncated_body_throws()
     {
@@ -101,7 +124,7 @@ public class DeviceHostProtocolTests
     [Fact] public void Names()
     {
         Assert.Equal("DeadWare.Devices.S-1",DeviceHostProtocol.PipeName("S-1"));
-        Assert.Contains("S-1",DeviceHostProtocol.InstanceName("S-1",2));
+        Assert.Equal(@"Local\DeadWare.Devices.S-1.2",DeviceHostProtocol.InstanceName("S-1",2));
     }
     sealed class OneByteStream(byte[] data):MemoryStream(data)
     {

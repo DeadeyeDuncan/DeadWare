@@ -19,7 +19,7 @@ public sealed record HostState(HostStatus Status,string Message,bool Elevated,IR
 [JsonDerivedType(typeof(StateEvent),"state")]
 public abstract record HostMessage
 {
-    public int Version { get; init; } = DeviceHostProtocol.Version;
+    [JsonRequired] public int Version { get; init; } = DeviceHostProtocol.Version;
     public long Id { get; init; }
 }
 public sealed record GetStateRequest : HostMessage;
@@ -39,7 +39,7 @@ public static class DeviceHostProtocol
 {
     public const int Version = 1, MaxMessageBytes = 1_048_576;
     public static string PipeName(string sid)=>"DeadWare.Devices."+sid;
-    public static string InstanceName(string sid,int session)=>$"DeadWare.Devices.{sid}.{session}";
+    public static string InstanceName(string sid,int session)=>$@"Local\DeadWare.Devices.{sid}.{session}";
     public static async Task WriteAsync(Stream stream,HostMessage message,CancellationToken token)
     {
         byte[] body=JsonSerializer.SerializeToUtf8Bytes(message,DeviceHostJsonContext.Default.HostMessage);
@@ -61,7 +61,7 @@ public static class DeviceHostProtocol
         var body=new byte[length];
         if(await ReadFullAsync(stream,body,token).ConfigureAwait(false)<length) throw new InvalidDataException("Truncated message body.");
         try { return JsonSerializer.Deserialize(body,DeviceHostJsonContext.Default.HostMessage) ?? throw new InvalidDataException("Empty message."); }
-        catch(JsonException e) { throw new InvalidDataException("Malformed message.",e); }
+        catch(Exception e) when(e is JsonException or NotSupportedException) { throw new InvalidDataException("Malformed message.",e); }
     }
     static async Task<int> ReadFullAsync(Stream stream,byte[] buffer,CancellationToken token)
     {
