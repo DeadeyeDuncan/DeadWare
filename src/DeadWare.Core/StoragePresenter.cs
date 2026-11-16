@@ -4,10 +4,35 @@ namespace DeadWare.Core;
 /// <summary>The Storage page's wording, with no user-interface framework: what each drive's lines and tables say.</summary>
 public static class StoragePresenter
 {
-    /// <summary>Model, bus and size, then why the drive's identity is weak and whether it is removable.</summary>
+    /// <summary>
+    /// A drive as the app names it wherever it shows one: its volumes' letters, then its model ("C: Samsung 990",
+    /// "D: E: WD Game Drive"), because people know their drives by letter. The letters keep the volumes' order, which
+    /// WindowsStorage sorts; a volume with no letter is left out, and a drive with no lettered volume is its model alone.
+    /// The model drops the ending Windows gives a drive behind a bridge or on USB ("WD P40 Game Drive SCSI Disk Device"),
+    /// which names the connection rather than the drive and would crowd the name out of a card's header.
+    /// </summary>
+    public static string Name(StorageDrive drive)=>
+        string.Join(" ",drive.Volumes.Select(v=>v.Letter).Where(letter=>!string.IsNullOrWhiteSpace(letter)).Select(letter=>letter+":").Append(ShortModel(drive.Model)));
+
+    // The generic endings Windows appends to a bridged, USB or ATA drive's model.
+    private static readonly string[] GenericEndings=[" SCSI Disk Device"," USB Device"," ATA Device"];
+
+    /// <summary>The model without a generic ending, matched at the very end in any case; a model that is nothing but the ending is kept whole.</summary>
+    private static string ShortModel(string model)
+    {
+        foreach(string ending in GenericEndings)
+        {
+            if(!model.EndsWith(ending,StringComparison.OrdinalIgnoreCase))continue;
+            string rest=model[..^ending.Length].TrimEnd();
+            return rest.Length>0?rest:model;
+        }
+        return model;
+    }
+
+    /// <summary>Name, bus and size, then why the drive's identity is weak and whether it is removable.</summary>
     public static string Title(StorageDrive drive)
     {
-        string title=$"{drive.Model} · {drive.BusType} · {HistoryChartModel.Bytes(drive.SizeBytes)}";
+        string title=$"{Name(drive)} · {drive.BusType} · {HistoryChartModel.Bytes(drive.SizeBytes)}";
         if(drive.IdentityNote.Length>0)title+=$" · {drive.IdentityNote}";
         if(drive.Removable)title+=" · removable";
         return title;

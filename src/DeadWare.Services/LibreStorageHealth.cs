@@ -56,7 +56,11 @@ internal sealed partial class LibreStorageHealth : IStorageHealthSource
     private bool opened,disposed;
     private readonly HardwareUpdates updates=new();
     private string status="";
+    private IReadOnlyList<SensorReading> sensors=[];
     public string Status=>Volatile.Read(ref status);
+    /// <summary>Each drive's sensor rows from the last read, as the main poll used to read them under Extended sensors; a drive whose
+    /// update timed out has none until it reads again.</summary>
+    public IReadOnlyList<SensorReading> Sensors=>Volatile.Read(ref sensors);
     public IReadOnlyList<(string? Serial,string Model,int? Index,SmartSummary Summary)> Read(TimeSpan perHardwareTimeout)
     {
         IHardware[] hardware;
@@ -67,6 +71,7 @@ internal sealed partial class LibreStorageHealth : IStorageHealthSource
             hardware=computer.Hardware.Where(h=>h.HardwareType==HardwareType.Storage).ToArray();
         }
         var result=new List<(string?,string,int?,SmartSummary)>(hardware.Length);
+        var rows=new List<SensorReading>();
         var errors=new List<string>();
         foreach(var h in hardware)
         {
@@ -81,7 +86,10 @@ internal sealed partial class LibreStorageHealth : IStorageHealthSource
             try {summary=Summary(h.Sensors,smart,outcome.Value);}
             catch(Exception e) {summary=Summary(h.Sensors,null,outcome.Value);errors.Add($"Storage health unavailable for {h.Name} ({e.GetType().Name})");}
             result.Add((serial,h.Name,index,summary));
+            // Only after the update has returned: a timed-out update may still be writing its sensors.
+            try {Collector.AddReadings(h,h.Identifier.ToString(),rows,lowLevelAvailable:false);} catch(Exception) {}
         }
+        Volatile.Write(ref sensors,rows);
         Volatile.Write(ref status,string.Join(" · ",errors.Distinct()));
         return result;
     }

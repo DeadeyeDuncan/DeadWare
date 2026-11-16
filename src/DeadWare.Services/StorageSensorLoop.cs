@@ -8,6 +8,8 @@ internal interface IStorageHealthSource : IDisposable
     IReadOnlyList<(string? Serial,string Model,int? Index,SmartSummary Summary)> Read(TimeSpan perHardwareTimeout);
     /// <summary>Per-hardware problems from the last read (exception type names); empty when every drive read.</summary>
     string Status=>"";
+    /// <summary>The last read's sensor rows of every drive that finished updating, for the Sensors page under Extended sensors.</summary>
+    IReadOnlyList<SensorReading> Sensors=>[];
 }
 
 /// <summary>Polls an <see cref="IStorageHealthSource"/> on its own task and publishes matched health; never blocks the collector.</summary>
@@ -24,12 +26,15 @@ internal sealed class StorageSensorLoop : IAsyncDisposable
     private Task? worker;
     private Task? pendingRead;
     private IReadOnlyList<(string? Serial,string Model,int? Index,SmartSummary Summary)> readings=[];
+    private IReadOnlyList<SensorReading> sensors=[];
     private string status="Storage health not read yet";
     public StorageSensorLoop(IStorageHealthSource source,TimeSpan period,Func<IReadOnlyList<StorageDrive>> drives)
     {this.source=source;this.period=period;this.drives=drives;}
     /// <summary>The last read, matched against the current drive list so drives discovered after the read still match.</summary>
     public IReadOnlyList<StorageHealth> Latest=>Match(Volatile.Read(ref readings),drives());
     public string Status=>Volatile.Read(ref status);
+    /// <summary>The drives' sensor rows from the last read, a new list per read; empty before the first and after a failed read.</summary>
+    public IReadOnlyList<SensorReading> Sensors=>Volatile.Read(ref sensors);
     public void Start()=>worker??=Task.Run(RunAsync);
     private async Task RunAsync()
     {
@@ -43,10 +48,11 @@ internal sealed class StorageSensorLoop : IAsyncDisposable
                     var read=Task.Run(()=>source.Read(PerHardwareTimeout));
                     Volatile.Write(ref pendingRead,read);
                     Volatile.Write(ref readings,await read.WaitAsync(token).ConfigureAwait(false));
+                    Volatile.Write(ref sensors,source.Sensors??[]);
                     Volatile.Write(ref status,source.Status??"");
                 }
                 catch(OperationCanceledException) when(token.IsCancellationRequested) {throw;}
-                catch(Exception e) {Volatile.Write(ref status,$"Storage health unavailable ({e.GetType().Name})");}
+                catch(Exception e) {Volatile.Write(ref sensors,[]);Volatile.Write(ref status,$"Storage health unavailable ({e.GetType().Name})");}
                 await Task.Delay(period,token).ConfigureAwait(false);
             }
         }

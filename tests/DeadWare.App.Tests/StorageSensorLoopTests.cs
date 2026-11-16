@@ -83,6 +83,26 @@ public class StorageSensorLoopTests
         Assert.True(sw.Elapsed<TimeSpan.FromSeconds(5.5),$"Dispose took {sw.Elapsed}");
     }
 
+    private sealed class RowSource(Func<IReadOnlyList<SensorReading>> rows) : IStorageHealthSource
+    {
+        public IReadOnlyList<(string? Serial,string Model,int? Index,SmartSummary Summary)> Read(TimeSpan perHardwareTimeout) {Sensors=rows();return [];}
+        public IReadOnlyList<SensorReading> Sensors {get;private set;}=[];
+        public void Dispose() {}
+    }
+    [Fact] public async Task Each_read_publishes_its_drive_rows_and_a_failed_read_clears_them()
+    {
+        int reads=0;var row=new SensorReading("/nvme/0/temperature/0","NVMe A","Temperature","°C",41,"/nvme/0","Storage","Temperature","Available");
+        await using var loop=new StorageSensorLoop(new RowSource(()=>Interlocked.Increment(ref reads)<=2?[row]:throw new IOException()),Period,()=>[]);
+        Assert.Empty(loop.Sensors);
+        loop.Start();
+        var sw=Stopwatch.StartNew();
+        while(loop.Sensors.Count==0&&sw.Elapsed<TimeSpan.FromSeconds(5))await Task.Delay(10);
+        Assert.Same(row,Assert.Single(loop.Sensors));
+        // Rows older than the last read are not shown as current.
+        while(Volatile.Read(ref reads)<=3&&sw.Elapsed<TimeSpan.FromSeconds(10))await Task.Delay(10);
+        Assert.Empty(loop.Sensors);Assert.StartsWith("Storage health unavailable (IOException)",loop.Status);
+    }
+
     [Fact] public void Each_drive_and_reading_match_at_most_once()
     {
         IReadOnlyList<StorageDrive> drives=[Drive("S1","A",0),Drive(null,"B",1)];

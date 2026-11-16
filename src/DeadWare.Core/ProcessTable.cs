@@ -9,9 +9,11 @@ public static class ProcessCopy
     /// <summary>The mark of an app in Don't record these apps on live pages: <see cref="NotRecordedSuffix"/> after its name, ", not recorded" in spoken text.</summary>
     public const string NotRecorded="not recorded";
     public const string NotRecordedSuffix=" · "+NotRecorded;
+    // Per-app GPU counters are read every poll only while a page shows them live (0.18.1).
+    private const string GpuReads="a GPU counter read every 5 seconds (every poll while Processes is open)";
     /// <summary>What turning on Per-process monitoring costs; <paramref name="history"/> adds what it saves while usage history is recorded (0.14.0).</summary>
     public static string ScanSentence(bool elevated,bool diskColumns,bool scanLoop,bool history=false)=>
-        "Turning it on adds one Windows process scan per poll"+(scanLoop?" (at most one a second)":"")+(elevated&&diskColumns?", one GPU counter read per poll and a disk trace":" and one GPU counter read per poll")+"."+
+        "Turning it on adds one Windows process scan per poll"+(scanLoop?" (at most one a second)":"")+(elevated&&diskColumns?", "+GpuReads+" and a disk trace":" and "+GpuReads)+"."+
         (history?" While usage history is recorded, it also keeps the busiest apps for 30 days.":"");
     /// <summary>The engine cell's tooltip: the adapter description, when there is one, and "&lt;type&gt; engine" ("engine" for an empty type).</summary>
     public static string EngineTip(GpuEngineUse engine)

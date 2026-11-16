@@ -14,12 +14,10 @@ internal sealed class StatusPage : Page
     private readonly MonitorSession session;
     private readonly Dictionary<string, TextBlock> values = [];
     private readonly TextBlock status = new() { TextWrapping = TextWrapping.Wrap, Opacity = 0.7 };
-    private readonly string backdrop;
 
-    public StatusPage(MonitorSession session, bool mica)
+    public StatusPage(MonitorSession session)
     {
         this.session = session;
-        backdrop = mica ? "Mica" : "solid";
         var grid = new Grid { ColumnSpacing = 24, RowSpacing = 8 };
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         grid.ColumnDefinitions.Add(new ColumnDefinition());
@@ -103,7 +101,7 @@ internal sealed class StatusPage : Page
         values["Memory in use"].Text = Percent(session.Value(session.MetricId("memory")));
         string readings = session.Current is null ? "Waiting for the first reading." : session.Stale ? "Readings are stale." : "Readings are current.";
         string administrator = Collector.IsElevated ? "Running as administrator." : "Not running as administrator, so some sensors and per-app capture are unavailable.";
-        status.Text = string.Join(" ", new[] { readings, administrator, session.SettingsStatus, $"Version {App.Version}, {backdrop} background." }.Where(text => text.Length > 0));
+        status.Text = string.Join(" ", new[] { readings, administrator, session.SettingsStatus, $"Version {App.Version}." }.Where(text => text.Length > 0));
     }
 }
 

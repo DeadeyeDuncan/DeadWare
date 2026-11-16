@@ -9,8 +9,6 @@ namespace DeadWare.WinUI;
 /// <summary>Start-up, single-instance handling, tray notifications and shutdown for the WinUI front end.</summary>
 public partial class App : Application
 {
-    /// <summary>True when <c>--no-mica</c> forces the solid background used where Mica is unavailable.</summary>
-    internal static bool NoMica { get; private set; }
     /// <summary>The dashboard window's handle, which file pickers need as their owner.</summary>
     internal static nint WindowHandle { get; set; }
     /// <summary>The path given after <c>--error-file</c>, or null.</summary>
@@ -45,8 +43,7 @@ public partial class App : Application
     {
         for (int i = 0; i < arguments.Length; i++)
         {
-            if (arguments[i] == "--no-mica") NoMica = true;
-            else if (arguments[i] == "--error-file" && i + 1 < arguments.Length) ErrorFile = arguments[++i];
+            if (arguments[i] == "--error-file" && i + 1 < arguments.Length) ErrorFile = arguments[++i];
             else if (arguments[i] == "--page" && i + 1 < arguments.Length) startPage = arguments[++i];
             else if (arguments[i] == "--theme" && i + 1 < arguments.Length) theme = arguments[++i];
             else if (arguments[i] == "--exit-after" && i + 1 < arguments.Length && int.TryParse(arguments[++i], out int seconds) && seconds > 0) exitAfter = seconds;

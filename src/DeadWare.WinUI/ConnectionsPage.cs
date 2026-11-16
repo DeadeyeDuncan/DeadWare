@@ -1,3 +1,4 @@
+using System.Collections.Frozen;
 using System.Diagnostics;
 using System.Globalization;
 using DeadWare.App;
@@ -232,37 +233,39 @@ internal sealed class ConnectionsPage : Page
             else if (e.Key == VirtualKey.F5) { destinations.Resort(); e.Handled = true; }
         };
         playback.Tick += AdvancePlayback;
-        this.WhileLoaded(() =>
+        // The page follows the session only while it is on screen. On another page, or with the window in the tray or minimised,
+        // nothing here refreshes, playback stops and History reads are cancelled; showing it again catches up and reads History again.
+        // The map lets go of its drawing surface by itself meanwhile (ConnectionMapView), and the visible-node list of its items.
+        this.WhileShowing(() =>
         {
             active = true;
             session.Changed += RefreshSession; session.HistoryClearChanged += HistoryClearChanged;
             RefreshSession(); ShowStripAgain();
-            if (IsHistory && !ReadOutstanding()) RequestHistory();
-            watchedRoot = XamlRoot; hostVisible = watchedRoot?.IsHostVisible ?? true;
-            if (watchedRoot is not null) watchedRoot.Changed += RootChanged;
+            if (IsHistory) { RefreshMappedConnections(); if (!ReadOutstanding()) RequestHistory(); }
         },
         () =>
         {
             active = false;
-            if (watchedRoot is not null) { watchedRoot.Changed -= RootChanged; watchedRoot = null; }
             session.Changed -= RefreshSession; session.HistoryClearChanged -= HistoryClearChanged;
-            CancelHistory(); pendingStrip = null; StopPlayback(); downloadCancellation?.Cancel(); destinations.ReleaseHolds();
+            CancelHistory(); pendingStrip = null; StopPlayback(); destinations.ReleaseHolds();
+            ReleaseMappedConnections(); shownLive = null;
         });
-        ShowTab(); RefreshSession();
+        // Leaving the page cancels a location download, as it always has; hiding the window to the tray lets it finish.
+        this.WhileLoaded(() => { }, () => downloadCancellation?.Cancel());
+        // Nothing is read until the page first shows: built at start-up with every other page, it may never be opened.
+        ShowTab(); destinations.SyncScope(ConnectionDestinations.ParseScope(session.Settings.ConnectionsDestinationScope)); UpdateMapAnimation();
     }
 
-    // The window this page sits in, watched so a return from the tray reads History again, as showing the page does.
-    private XamlRoot? watchedRoot;
-    private bool hostVisible = true;
+    // The Live view last shown, with the Don't record list and the location database it was shown with; a tick that brings the same
+    // three changes nothing on the page. Cleared when the page hides, so showing it again rebuilds.
+    private (ConnectionLiveView View, FrozenSet<string> Excluded, DateTimeOffset? Database)? shownLive;
 
-    private void RootChanged(XamlRoot sender, XamlRootChangedEventArgs args)
+    /// <summary>Lets go of the visible-node list's items while the page is off screen; <see cref="RefreshMappedConnections"/> makes them again.</summary>
+    private void ReleaseMappedConnections()
     {
-        bool visible = sender.IsHostVisible;
-        if (visible == hostVisible) return;
-        hostVisible = visible;
-        if (!visible || !active) return;
-        RefreshSession(); ShowStripAgain();
-        if (IsHistory && !ReadOutstanding()) RequestHistory();
+        syncing = true;
+        try { mappedConnections.Items.Clear(); mappedKeys.Clear(); }
+        finally { syncing = false; }
     }
 
     private static TextBlock Text(string text) => new() { Text = text, FontSize = 12, TextWrapping = TextWrapping.Wrap };
@@ -371,7 +374,8 @@ internal sealed class ConnectionsPage : Page
         storage.Text = (IsHistory ? historyStorage : "") + service.StorageStatus;
         database.Text = $"DB-IP Lite · {(service.DatabaseDate is { } date ? $"database {date:yyyy-MM-dd}" : "no location database")} · Download contacts download.db-ip.com · DB-IP.com (CC BY 4.0). {service.LookupStatus}";
         live = service.Live;
-        if (!IsHistory) ShowLiveView(live, false);
+        // A tick with no new capture (or the same stale one again) would rebuild exactly what is on screen.
+        if (!IsHistory && (live, session.ExcludedKeys, service.DatabaseDate) != shownLive) ShowLiveView(live, false);
         RefreshNotRecordedFilter();
     }
 
@@ -633,7 +637,7 @@ internal sealed class ConnectionsPage : Page
     /// <summary>Shows a Live view; <paramref name="resort"/>: a filter or mode change, so the Destinations table re-sorts at once.</summary>
     private void ShowLiveView(ConnectionLiveView view, bool resort)
     {
-        live = view;
+        live = view; shownLive = (view, session.ExcludedKeys, session.Connections.DatabaseDate);
         var filtered = view.Connections.Where(c => Matches(c.Traffic.Peer.Process, c.Traffic.Peer.RemoteAddress, c.Location, c.Traffic.ReceivedBytes, c.Traffic.SentBytes)).ToArray();
         var located = filtered.Where(c => c.Location?.Point is not null).ToArray();
         rows = located.Select(c => new PeerRow(ConnectionsPresenter.Key(c.Traffic.Peer), $"{Marked(c.Traffic.Peer.Process.Name)} / {c.Traffic.Peer.Process.Pid}",

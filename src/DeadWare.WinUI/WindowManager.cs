@@ -1,6 +1,5 @@
 using DeadWare.App;
 using DeadWare.Core;
-using Microsoft.UI.Composition.SystemBackdrops;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
@@ -69,25 +68,39 @@ internal sealed class WindowManager
     }
 
     /// <summary>
-    /// Gives a new window its icon, backdrop, minimum size and position. With a key, the saved rectangle and Always on top
-    /// choice are restored and every later move, resize or pin is saved under that key.
+    /// Gives a new window its icon, its solid background and title bar colours, its minimum size and its position. With a
+    /// key, the saved rectangle and Always on top choice are restored and every later move, resize or pin is saved under
+    /// that key.
     /// </summary>
     public void Place(Window window, Panel root, string? key, double width, double height, double minWidth, double minHeight)
     {
         nint handle = WinRT.Interop.WindowNative.GetWindowHandle(window);
-        if (!App.NoMica && MicaController.IsSupported()) window.SystemBackdrop = new MicaBackdrop();
-        else root.Background = (Brush)Application.Current.Resources["ApplicationPageBackgroundThemeBrush"];
         string icon = Path.Combine(AppContext.BaseDirectory, "deadware.ico");
         if (File.Exists(icon)) window.AppWindow.SetIcon(icon);
-        // A standard title bar is light unless the window asks otherwise, whatever the app theme: have it follow the content.
-        void MatchTitleBar()
+        // Every window has the solid page background, not Mica: Mica takes its tint from the wallpaper while the window has
+        // focus and turns solid when it loses it, so the windows changed colour as focus moved. The page background is the
+        // colour Mica showed without focus. The application resources resolve for the app theme (Windows', or --theme), which
+        // is every root's theme since nothing sets an element's own; a brush looked up in code keeps the theme it came from,
+        // so the background is looked up again whenever the theme changes, and the title bar follows it.
+        void MatchTheme()
         {
+            var background = (Brush)Application.Current.Resources["ApplicationPageBackgroundThemeBrush"];
+            root.Background = background;
+            // A standard title bar is light unless the window asks otherwise, whatever the app theme: have it follow the content.
             int dark = root.ActualTheme == ElementTheme.Dark ? 1 : 0;
             _ = DwmSetWindowAttribute(handle, 20 /* DWMWA_USE_IMMERSIVE_DARK_MODE */, ref dark, sizeof(int));
+            // It also changes colour with focus unless it is given one: the background's, as a COLORREF (0x00BBGGRR). Windows 10
+            // has no caption colour and fails the call, harmlessly. The dashboard's content covers its caption, so there this
+            // changes nothing.
+            if (background is SolidColorBrush { Color: var color })
+            {
+                int caption = color.R | color.G << 8 | color.B << 16;
+                _ = DwmSetWindowAttribute(handle, 35 /* DWMWA_CAPTION_COLOR */, ref caption, sizeof(int));
+            }
         }
-        root.ActualThemeChanged += (_, _) => MatchTitleBar();
-        root.Loaded += (_, _) => MatchTitleBar();
-        MatchTitleBar();
+        root.ActualThemeChanged += (_, _) => MatchTheme();
+        root.Loaded += (_, _) => MatchTheme();
+        MatchTheme();
 
         WindowPlacement? saved = key is not null && session.Settings.Windows.TryGetValue(key, out var found) ? found : null;
         var presenter = window.AppWindow.Presenter as OverlappedPresenter;

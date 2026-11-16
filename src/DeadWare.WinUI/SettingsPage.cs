@@ -4,7 +4,6 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
-using Windows.UI;
 
 namespace DeadWare.WinUI;
 
@@ -17,13 +16,6 @@ internal sealed class SettingsPage : Page
     private static readonly string[] Sections = ["Monitoring", "Appearance", "Widget", "Pop-outs", "Startup", "History and alerts"];
     private static readonly (string Key, string Label)[] WidgetGraphs =
         [("cpu", "CPU / GPU usage"), ("cputemp", "CPU / GPU temperature"), ("memory", "RAM usage"), ("network", "Network activity"), ("disk", "Disk activity")];
-    private static readonly (string Key, string Label)[] Lines =
-    [
-        ("cpu", "CPU usage"), ("cputemp", "CPU temperature"), ("cpupump", "CPU pump speed"), ("gpu", "GPU usage"), ("gputemp", "GPU temperature"),
-        ("gpufan", "GPU fan speed"), ("memory", "RAM usage"), ("download", "Download"), ("upload", "Upload"), ("diskread", "Disk read"), ("diskwrite", "Disk write"),
-    ];
-    private static readonly string[] Swatches = ["#68E0BD", "#52D6E8", "#82ADFF", "#B69CFF", "#EF8FE0", "#FF8899", "#F0B76C", "#F2D56B", "#A9DE7A", "#FFFFFF", "#A6B4C6", "#182A3B"];
-    private static readonly string[] Patterns = ["default", "solid", "dashed", "dotted"];
     private const int MaximumLength = 260;
     private const string ExcludedHelp = "These apps still show on live pages, marked \"not recorded\", but none of their history is saved: no Connections history, no per-app totals in Usage history and no alerts for them. In Application resources their CPU, memory, I/O and GPU count under Everything else, so device totals stay true. Application traffic budgets for them stop counting. History saved before you add an app is kept until you clear it. Processes that Windows saves as \"PID n\" can't be matched.";
     private const string KeptNote = "Saved history for this app is kept. Use Clear history… to remove it.";
@@ -44,13 +36,10 @@ internal sealed class SettingsPage : Page
     private readonly TextBlock elevateResult = Muted("");
     // Appearance
     private readonly CheckBox graphSmoothing = new() { Content = "Smooth long-range graphs (1, 3 and 6 hours)" }, gpuFanSpeed = new() { Content = "Show GPU fan speed on temperature graphs" }, cpuPumpSpeed = new() { Content = "Show CPU pump speed on CPU temperature graphs" };
-    private readonly ComboBox line = new() { MinWidth = 220 }, pattern = new() { MinWidth = 140 };
+    private readonly ComboBox line = new() { MinWidth = 220 };
     private readonly Border lineDot = new() { Width = 16, Height = 16, CornerRadius = new CornerRadius(8), VerticalAlignment = VerticalAlignment.Center };
-    private readonly TextBlock lineColor = Muted(""), thicknessLabel = new(), strengthLabel = new();
-    private readonly Slider thickness = new() { Minimum = 50, Maximum = 300, StepFrequency = 25, SmallChange = 25, LargeChange = 50, Width = 240, HorizontalAlignment = HorizontalAlignment.Left };
-    private readonly Slider strength = new() { Minimum = 0, Maximum = 300, StepFrequency = 10, SmallChange = 10, LargeChange = 50, Width = 240, HorizontalAlignment = HorizontalAlignment.Left };
-    private readonly CheckBox glow = new() { Content = "Neon glow" };
-    private readonly ColorPicker picker = new() { IsAlphaEnabled = false, IsAlphaSliderVisible = false, IsAlphaTextInputVisible = false, IsMoreButtonVisible = true };
+    private readonly TextBlock lineColor = Muted("");
+    private readonly LineStyleEditor editor;
     private readonly StackPanel coreActions = new() { Orientation = Orientation.Horizontal, Spacing = 8 };
     private string[] lineKeys = [];
     private int lineCores = -1;
@@ -83,6 +72,7 @@ internal sealed class SettingsPage : Page
         this.session = session;
         this.quit = quit;
         suggestions = new AppSuggestions(session);
+        editor = new LineStyleEditor(session);
         // The banner is a polite live region, so a screen reader reads a new status without moving focus.
         AutomationProperties.SetLiveSetting(status, Microsoft.UI.Xaml.Automation.Peers.AutomationLiveSetting.Polite);
         panels = [Monitoring(), Appearance(), Widget(), Popouts(), Startup(), History()];
@@ -196,61 +186,15 @@ internal sealed class SettingsPage : Page
         line.SelectionChanged += (_, _) => { if (!syncing) SyncLine(); };
         panel.Children.Add(new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12, Children = { line, lineDot, lineColor } });
 
-        var swatches = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4 };
-        foreach (string color in Swatches)
-        {
-            var swatch = new Button { Padding = new Thickness(4), Content = new Border { Width = 18, Height = 18, CornerRadius = new CornerRadius(9), Background = new SolidColorBrush(Parse(color)) } };
-            ToolTipService.SetToolTip(swatch, color);
-            AutomationProperties.SetName(swatch, $"Use {color}");
-            swatch.Click += (_, _) => { if (LineKey is { } key) session.SetGraphColor(key, color); };
-            swatches.Children.Add(swatch);
-        }
-        panel.Children.Add(new ScrollViewer { Content = swatches, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollMode = ScrollMode.Auto, VerticalScrollBarVisibility = ScrollBarVisibility.Disabled, VerticalScrollMode = ScrollMode.Disabled });
+        // The swatch row, More colours… and Default colour, then the pattern, thickness and glow: the same editor the colour
+        // dots on Overview cards open. Its two parts space their controls as this section does, so they sit as they always have.
+        panel.Children.Add(editor.ColourControls);
+        panel.Children.Add(editor.StyleControls);
 
-        var flyout = new Flyout();
-        var use = new Button { Content = "Use this colour", Style = (Style)Application.Current.Resources["AccentButtonStyle"] };
-        use.Click += (_, _) =>
-        {
-            var chosen = picker.Color;
-            if (LineKey is { } key) session.SetGraphColor(key, $"#{chosen.R:X2}{chosen.G:X2}{chosen.B:X2}");
-            flyout.Hide();
-        };
-        flyout.Content = new StackPanel { Spacing = 8, Children = { picker, use } };
-        flyout.Opening += (_, _) =>
-        {
-            if (LineKey is { } key && session.Settings.GraphColors.TryGetValue(key, out string? saved) && GraphColorSettings.IsColor(saved)) picker.Color = Parse(saved);
-        };
-        var more = new Button { Content = "More colours…", Flyout = flyout };
-        var automatic = Action("Default colour", () => { if (LineKey is { } key) session.SetGraphColor(key, null); });
-        panel.Children.Add(new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, Children = { more, automatic } });
-
-        foreach (string label in new[] { "Default", "Solid", "Dashed", "Dotted" }) pattern.Items.Add(label);
-        AutomationProperties.SetName(pattern, "Line pattern");
-        AutomationProperties.SetName(thickness, "Line thickness percent");
-        AutomationProperties.SetName(strength, "Neon glow strength percent");
-        ToolTipService.SetToolTip(thickness, "50–300% of the normal trace width; 100% keeps the original thickness");
-        ToolTipService.SetToolTip(strength, "0–300% glow brightness and spread; 100% keeps the original glow");
-        pattern.SelectionChanged += (_, _) => SaveStyle();
-        thickness.ValueChanged += (_, _) => SaveStyle();
-        strength.ValueChanged += (_, _) => SaveStyle();
-        glow.Checked += (_, _) => SaveStyle();
-        glow.Unchecked += (_, _) => SaveStyle();
-        panel.Children.Add(new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12, Children = { new TextBlock { Text = "Line pattern", VerticalAlignment = VerticalAlignment.Center }, pattern } });
-        panel.Children.Add(thicknessLabel); panel.Children.Add(thickness);
-        panel.Children.Add(glow);
-        panel.Children.Add(strengthLabel); panel.Children.Add(strength);
-
-        coreActions.Children.Add(Tipped(Action("Apply style to all cores", () => session.ApplyStyleToAllCores(lineCores, false)), "Copy the CPU line's pattern, thickness and glow to every core; colours keep their tints"));
-        coreActions.Children.Add(Tipped(Action("Make all cores the CPU colour", () => session.ApplyStyleToAllCores(lineCores, true)), "Copy the CPU line's style and give every core the same colour as the CPU line"));
-        coreActions.Children.Add(Tipped(Action("Reset all cores to auto", session.ResetCpuCoreStyles), "Drop every core's own colour and style"));
+        foreach (var action in LineStyleEditor.CoreActions(session, () => lineCores)) coreActions.Children.Add(action);
         panel.Children.Add(new ScrollViewer { Content = coreActions, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollMode = ScrollMode.Auto, VerticalScrollBarVisibility = ScrollBarVisibility.Disabled, VerticalScrollMode = ScrollMode.Disabled });
         return panel;
     }
-
-    private static Button Tipped(Button button, string tip) { ToolTipService.SetToolTip(button, tip); return button; }
-
-    private static Color Parse(string hex) =>
-        Color.FromArgb(255, Convert.ToByte(hex.Substring(1, 2), 16), Convert.ToByte(hex.Substring(3, 2), 16), Convert.ToByte(hex.Substring(5, 2), 16));
 
     private string? LineKey => line.SelectedIndex >= 0 && line.SelectedIndex < lineKeys.Length ? lineKeys[line.SelectedIndex] : null;
 
@@ -262,10 +206,10 @@ internal sealed class SettingsPage : Page
         {
             int selected = Math.Max(0, line.SelectedIndex);
             lineCores = cores;
-            var keys = Lines.Select(item => item.Key).ToList();
+            var keys = LineStyleEditor.Lines.Select(item => item.Key).ToList();
             line.Items.Clear();
-            foreach (var (_, label) in Lines) line.Items.Add(label);
-            for (int i = 0; i < cores; i++) { keys.Add(GraphColorSettings.CoreKey(i)); line.Items.Add($"CPU core {i + 1}"); }
+            foreach (var (_, label) in LineStyleEditor.Lines) line.Items.Add(label);
+            for (int i = 0; i < cores; i++) { string key = GraphColorSettings.CoreKey(i); keys.Add(key); line.Items.Add(LineStyleEditor.Label(key)); }
             lineKeys = [.. keys];
             line.SelectedIndex = Math.Min(selected, lineKeys.Length - 1);
             coreActions.Visibility = cores > 0 ? Visibility.Visible : Visibility.Collapsed;
@@ -273,40 +217,17 @@ internal sealed class SettingsPage : Page
         SyncLine();
     }
 
-    /// <summary>Reflects the selected trace's saved colour and style into the editor.</summary>
+    /// <summary>Shows the selected trace's saved colour beside the list and points the editor at that trace.</summary>
     private void SyncLine()
     {
         if (LineKey is not { } key) return;
-        bool was = syncing; syncing = true;
-        try
-        {
-            bool own = session.Settings.GraphColors.TryGetValue(key, out string? saved) && GraphColorSettings.IsColor(saved);
-            lineDot.Background = own ? new SolidColorBrush(Parse(saved!)) : null;
-            lineDot.Visibility = own ? Visibility.Visible : Visibility.Collapsed;
-            lineColor.Text = own ? saved! : GraphColorSettings.TryCoreIndex(key, out _) ? "Auto tint" : "Default colour";
-            var style = session.Settings.GraphStyles.GetValueOrDefault(key, new GraphLineStyle());
-            pattern.SelectedIndex = Math.Max(0, Array.IndexOf(Patterns, style.Pattern));
-            glow.IsChecked = style.Glow;
-            thickness.Value = style.Thickness * 100;
-            strength.Value = style.GlowStrength * 100;
-        }
-        finally { syncing = was; }
-        UpdateStyleLabels();
-    }
-
-    private void UpdateStyleLabels()
-    {
-        thicknessLabel.Text = $"Line thickness · {thickness.Value:0}%";
-        strengthLabel.Text = $"Glow strength · {strength.Value:0}%";
-        strength.IsEnabled = glow.IsChecked == true;
-        strengthLabel.Opacity = strength.IsEnabled ? 1 : 0.5;
-    }
-
-    private void SaveStyle()
-    {
-        UpdateStyleLabels();
-        if (syncing || LineKey is not { } key || pattern.SelectedIndex < 0) return;
-        session.SetGraphStyle(key, Patterns[pattern.SelectedIndex], glow.IsChecked == true, thickness.Value / 100, strength.Value / 100);
+        bool own = session.Settings.GraphColors.TryGetValue(key, out string? saved) && GraphColorSettings.IsColor(saved);
+        lineDot.Background = own ? new SolidColorBrush(LineStyleEditor.Parse(saved!)) : null;
+        lineDot.Visibility = own ? Visibility.Visible : Visibility.Collapsed;
+        lineColor.Text = own ? saved! : GraphColorSettings.TryCoreIndex(key, out _) ? "Auto tint" : "Default colour";
+        // The editor guards its own controls while it reads the saved style into them.
+        editor.Key = key;
+        editor.Sync();
     }
 
     private StackPanel Widget()

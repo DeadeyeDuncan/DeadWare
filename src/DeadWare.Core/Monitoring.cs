@@ -24,30 +24,57 @@ public static class HistoryRanges
 public sealed class SampleHistory
 {
     private readonly object gate=new();
-    // Time-ordered ring (capacity a power of two). Reads binary-search their window, so a one-minute chart
-    // costs the same after six hours as after six minutes.
-    private Snapshot[] ring=new Snapshot[256];
-    private int head,count;
-    private readonly Dictionary<string,string> keys=new(StringComparer.Ordinal);
+    // Columns, not a dictionary per poll. Samples sit in time order in chunks of 1,024. A chunk holds each sample's time, stamp,
+    // session, polling interval and breaks, and one float column for each metric with a value in it. A poll used to keep its own
+    // copy of every value, some 11 KB for 300 of them; a column costs 4 bytes a value, a metric missing from a whole chunk costs
+    // nothing there, and a chunk leaves whole once all its samples have aged out, so nothing is copied as the window moves.
+    // Reads binary-search their window, so a one-minute chart costs the same after six hours as after six minutes, and a chart
+    // line is a sequential scan of one column. Every read and write holds the gate; no scan is long enough to need a copy.
+    private const int Shift=10,Size=1<<Shift,Mask=Size-1;
+    // A cell holds a reading, a key present without a reading (null), or a key the sample did not have: two NaNs told apart by
+    // their payload. Restore must not fill a key that was present without a reading, and Read() hands back each sample's own
+    // keys. Only finite readings are stored and nothing computes with a cell before testing it, so neither NaN can be blurred.
+    private const int NullBits=0x7FC00000,AbsentBits=0x7FC00001;
+    // A sample's breaks, set from the sample before it as it is appended: another session, or longer than the cadence allows.
+    private const byte NewSession=1,AfterGap=2;
+    // Bounds however many ids appear: past them a new metric is not kept and a new session id is not interned.
+    private const int MaximumMetrics=8192,MaximumSessions=1024;
+    private sealed class Chunk(int metrics)
+    {
+        public readonly double[] Times=new double[Size],Intervals=new double[Size];
+        public readonly DateTimeOffset[] Stamps=new DateTimeOffset[Size];
+        public readonly string?[] Sessions=new string?[Size];
+        public readonly byte[] Breaks=new byte[Size];
+        public float[]?[] Columns=new float[]?[Math.Max(16,metrics)];
+        public float[]? Column(int metric)=>(uint)metric<(uint)Columns.Length?Columns[metric]:null;
+    }
+    private readonly List<Chunk> chunks=[];
+    // The oldest sample's slot in chunks[0], and how many samples there are.
+    private int first,count;
+    // Metric ids are interned once. holders counts the chunks with a column for each metric: a metric whose last column leaves
+    // with its chunk is forgotten and its index reused, so a drive unplugged six hours ago costs nothing.
+    private readonly Dictionary<string,int> metrics=new(StringComparer.Ordinal);
+    private readonly List<string?> names=[];
+    private readonly List<int> holders=[];
+    private readonly Stack<int> unused=new();
+    private readonly Dictionary<string,string> sessions=new(StringComparer.Ordinal);
     private double lastSeconds=double.NegativeInfinity;
     public int Count {get {lock(gate)return count;}}
-    private Snapshot At(int index)=>ring[(head+index)&(ring.Length-1)];
-    private void Enqueue(Snapshot sample)
-    {
-        if(count==ring.Length)
-        {
-            var grown=new Snapshot[ring.Length*2];
-            CopyTo(0,count,grown);ring=grown;head=0;
-        }
-        ring[(head+count)&(ring.Length-1)]=sample;count++;
-    }
-    private void Dequeue() {ring[head]=null!;head=(head+1)&(ring.Length-1);count--;}
-    private void Clear() {Array.Clear(ring);head=0;count=0;}
-    private void CopyTo(int start,int length,Snapshot[] destination)
-    {
-        int from=(head+start)&(ring.Length-1),first=Math.Min(length,ring.Length-from);
-        Array.Copy(ring,from,destination,0,first);Array.Copy(ring,0,destination,first,length-first);
-    }
+    /// <summary>
+    /// What history keeps: everything read back from it, which is the chart lines and every sensor (the Sensors page shows each
+    /// one's minimum, average and maximum over the range). Memory in bytes, and each drive's activity, temperature, life, used
+    /// share and volume free space, are only ever read from the newest reading; six hours of them would only cost memory.
+    /// </summary>
+    private static bool Keeps(string id)=>id is not ("memory/used" or "memory/total")&&!(id.StartsWith("storage/",StringComparison.Ordinal)&&
+        (id.EndsWith("/active",StringComparison.Ordinal)||id.EndsWith("/temperature",StringComparison.Ordinal)||id.EndsWith("/life",StringComparison.Ordinal)
+        ||id.EndsWith("/used",StringComparison.Ordinal)||id.EndsWith("/free",StringComparison.Ordinal)));
+    // A reading past the float range is clamped, not turned into an infinity, so a stored reading is always finite.
+    private static float Encode(double? value)=>value is { } number&&double.IsFinite(number)?(float)Math.Clamp(number,float.MinValue,float.MaxValue):BitConverter.Int32BitsToSingle(NullBits);
+    private static bool IsAbsent(float cell)=>BitConverter.SingleToInt32Bits(cell)==AbsentBits;
+    private static double? Decode(float cell)=>float.IsNaN(cell)?null:cell;
+    private Chunk Locate(int index,out int offset) {int position=first+index;offset=position&Mask;return chunks[position>>Shift];}
+    private double TimeAt(int index)=>Locate(index,out int offset).Times[offset];
+    private int Find(string id)=>metrics.TryGetValue(id,out int metric)?metric:-1;
     /// <summary>The index range [Start, End) of samples with now-seconds &lt;= time &lt;= now. Samples are strictly increasing in time.</summary>
     private (int Start,int End) Window(double now,double seconds)
     {
@@ -57,13 +84,13 @@ public sealed class SampleHistory
         if(!double.IsNaN(from))
         {
             int low=0,high=count;
-            while(low<high){int middle=(low+high)>>>1;if(At(middle).MonotonicSeconds<from)low=middle+1;else high=middle;}
+            while(low<high){int middle=(low+high)>>>1;if(TimeAt(middle)<from)low=middle+1;else high=middle;}
             start=low;
         }
         if(!double.IsNaN(now))
         {
             int low=start,high=count;
-            while(low<high){int middle=(low+high)>>>1;if(At(middle).MonotonicSeconds<=now)low=middle+1;else high=middle;}
+            while(low<high){int middle=(low+high)>>>1;if(TimeAt(middle)<=now)low=middle+1;else high=middle;}
             end=low;
         }
         return (start,end);
@@ -74,11 +101,76 @@ public sealed class SampleHistory
         lock(gate)
         {
             if(s.MonotonicSeconds<=lastSeconds) return;
-            Enqueue(Copy(s));
+            var (chunk,offset)=Append(s.MonotonicSeconds,s.Timestamp,s.SessionId,s.PollingIntervalSeconds);
+            Write(chunk,offset,s.Values,fill:false);
             lastSeconds=s.MonotonicSeconds;
-            while(count>HistoryRanges.MaximumSamples || (count>0 && At(0).MonotonicSeconds<s.MonotonicSeconds-HistoryRanges.MaximumSeconds)) Dequeue();
+            while(count>HistoryRanges.MaximumSamples || (count>0 && TimeAt(0)<s.MonotonicSeconds-HistoryRanges.MaximumSeconds)) Dequeue();
         }
     }
+    /// <summary>Appends a sample's own fields after the newest and returns where its values go.</summary>
+    private (Chunk Chunk,int Offset) Append(double time,DateTimeOffset stamp,string? session,double interval)
+    {
+        session=Intern(session);
+        byte breaks=0;
+        if(count>0)
+        {
+            var before=Locate(count-1,out int at);
+            if(!string.Equals(before.Sessions[at],session,StringComparison.Ordinal))breaks|=NewSession;
+            if(time-before.Times[at]>Math.Max(PollingPolicy.Normalize(before.Intervals[at]),PollingPolicy.Normalize(interval))+1.5)breaks|=AfterGap;
+        }
+        int position=first+count;
+        if((position>>Shift)==chunks.Count)chunks.Add(new Chunk(names.Count));
+        var chunk=chunks[position>>Shift];int offset=position&Mask;
+        chunk.Times[offset]=time;chunk.Stamps[offset]=stamp;chunk.Sessions[offset]=session;chunk.Intervals[offset]=interval;chunk.Breaks[offset]=breaks;
+        count++;
+        return (chunk,offset);
+    }
+    /// <summary>Stores a sample's values; with <paramref name="fill"/>, only those of keys it does not have yet.</summary>
+    private void Write(Chunk chunk,int offset,IReadOnlyDictionary<string,double?> values,bool fill)
+    {
+        foreach(var pair in values)
+        {
+            int metric=Metric(pair.Key);
+            if(metric<0)continue;
+            var column=ColumnFor(chunk,metric);
+            if(!fill||IsAbsent(column[offset]))column[offset]=Encode(pair.Value);
+        }
+    }
+    // Collection gate owns the bounded identifier tables.
+    private int Metric(string id)
+    {
+        if(metrics.TryGetValue(id,out int metric))return metric;
+        if(!Keeps(id)||metrics.Count>=MaximumMetrics)return -1;
+        if(unused.TryPop(out metric))names[metric]=id;
+        else {metric=names.Count;names.Add(id);holders.Add(0);}
+        metrics.Add(id,metric);
+        return metric;
+    }
+    private float[] ColumnFor(Chunk chunk,int metric)
+    {
+        if(metric>=chunk.Columns.Length)Array.Resize(ref chunk.Columns,Math.Max(metric+1,chunk.Columns.Length*2));
+        if(chunk.Columns[metric] is { } column)return column;
+        column=new float[Size];column.AsSpan().Fill(BitConverter.Int32BitsToSingle(AbsentBits));
+        holders[metric]++;
+        return chunk.Columns[metric]=column;
+    }
+    private string? Intern(string? session)
+    {
+        if(session is null)return null;
+        if(sessions.TryGetValue(session,out var known))return known;
+        if(sessions.Count<MaximumSessions)sessions.Add(session,session);
+        return session;
+    }
+    private void Dequeue()
+    {
+        first++;count--;
+        if(first<Size)return;
+        // The oldest chunk is spent. Its columns leave with it, and a metric left with no column anywhere is forgotten.
+        var spent=chunks[0];chunks.RemoveAt(0);first=0;
+        for(int metric=0;metric<spent.Columns.Length;metric++)
+            if(spent.Columns[metric] is not null&&--holders[metric]==0)Forget(metric);
+    }
+    private void Forget(int metric) {metrics.Remove(names[metric]!);names[metric]=null;unused.Push(metric);}
     public static double? Finite(double? value)=>value.HasValue && double.IsFinite(value.Value)?value:null;
     // Caller supplies timestamps rebased to this collector's monotonic timeline.
     // Existing live samples win; later hardware discovery may add metrics to the
@@ -89,173 +181,218 @@ public sealed class SampleHistory
         lock(gate)
         {
             double cutoff=Math.Max(now,lastSeconds)-HistoryRanges.MaximumSeconds;
-            var samples=new Snapshot[count];CopyTo(0,count,samples);
-            double firstLive=samples.FirstOrDefault(s=>s.SessionId is null)?.MonotonicSeconds??double.PositiveInfinity;
-            var merged=samples.ToDictionary(s=>s.MonotonicSeconds);
-            foreach(var sample in restored)
+            double firstLive=double.PositiveInfinity;
+            for(int index=0;index<count;index++){var chunk=Locate(index,out int at);if(chunk.Sessions[at] is null){firstLive=chunk.Times[at];break;}}
+            // The saved samples that may join, oldest first. At one time the first given stays first and later ones only add keys.
+            var accepted=new List<(double Time,int Order)>();
+            for(int i=0;i<restored.Count;i++)
             {
-                double time=sample.MonotonicSeconds;
-                if(string.IsNullOrEmpty(sample.SessionId)||!double.IsFinite(time)||time<cutoff||time>now||time>=firstLive)continue;
-                if(merged.TryGetValue(time,out var existing))
+                double time=restored[i].MonotonicSeconds;
+                if(string.IsNullOrEmpty(restored[i].SessionId)||!double.IsFinite(time)||time<cutoff||time>now||time>=firstLive)continue;
+                accepted.Add((time,i));
+            }
+            accepted.Sort();
+            // Merged by time into rows: each an existing sample or the first saved one at its time, with the saved samples at that
+            // time that may add the keys it lacks (those of its own session).
+            var plan=new List<Row>(count+accepted.Count);bool added=false;
+            for(int j=0,k=0;j<count||k<accepted.Count;)
+            {
+                double existing=j<count?TimeAt(j):double.PositiveInfinity,incoming=k<accepted.Count?accepted[k].Time:double.PositiveInfinity;
+                if(existing<incoming){plan.Add(new(j++,-1,0,0));continue;}
+                int from=k;
+                while(k<accepted.Count&&accepted[k].Time==incoming)k++;
+                if(existing==incoming)plan.Add(new(j++,-1,from,k));
+                else {plan.Add(new(-1,from,from+1,k));added=true;}
+            }
+            int skip=0;
+            while(skip<plan.Count&&(plan[skip].Kept>=0?TimeAt(plan[skip].Kept):accepted[plan[skip].Added].Time)<cutoff)skip++;
+            skip=Math.Max(skip,plan.Count-HistoryRanges.MaximumSamples);
+            void Merge(Row row,Chunk chunk,int offset)
+            {
+                for(int t=row.From;t<row.To;t++)
                 {
-                    if(existing.SessionId!=sample.SessionId)continue;
-                    var values=existing.Values.ToDictionary(p=>p.Key,p=>p.Value,StringComparer.Ordinal);
-                    foreach(var pair in sample.Values)values.TryAdd(pair.Key,pair.Value);
-                    merged[time]=Copy(existing with {Values=values});
+                    var sample=restored[accepted[t].Order];
+                    if(string.Equals(sample.SessionId,chunk.Sessions[offset],StringComparison.Ordinal))Write(chunk,offset,sample.Values,fill:true);
                 }
-                else merged[time]=Copy(sample);
             }
-            var ordered=merged.Values.Where(s=>s.MonotonicSeconds>=cutoff).OrderBy(s=>s.MonotonicSeconds).TakeLast(HistoryRanges.MaximumSamples).ToArray();
-            Clear();foreach(var sample in ordered)Enqueue(sample);
-            if(ordered.Length>0)lastSeconds=ordered[^1].MonotonicSeconds;
-        }
-    }
-    // Collection gate owns the bounded identifier cache.
-    private Snapshot Copy(Snapshot sample)
-    {
-        var values=new Dictionary<string,double?>(sample.Values.Count,StringComparer.Ordinal);
-        foreach(var pair in sample.Values)
-        {
-            if(!keys.TryGetValue(pair.Key,out var key))
+            if(!added)
             {
-                key=pair.Key;if(keys.Count<4096)keys.Add(key,key);
+                // Nothing to place between samples: saved keys join the samples where they stand.
+                for(int i=skip;i<plan.Count;i++)if(plan[i].From<plan[i].To){var chunk=Locate(plan[i].Kept,out int at);Merge(plan[i],chunk,at);}
+                for(int i=0;i<skip;i++)Dequeue();
             }
-            values.Add(key,Finite(pair.Value));
+            else
+            {
+                // Saved samples fall between existing ones, so the store is rebuilt in time order; the old chunks stay readable meanwhile.
+                var old=chunks.ToArray();int oldFirst=first;
+                chunks.Clear();first=count=0;
+                for(int metric=0;metric<holders.Count;metric++)holders[metric]=0;
+                for(int i=skip;i<plan.Count;i++)
+                {
+                    var row=plan[i];Chunk chunk;int offset;
+                    if(row.Kept>=0)
+                    {
+                        int position=oldFirst+row.Kept,at=position&Mask;var source=old[position>>Shift];
+                        (chunk,offset)=Append(source.Times[at],source.Stamps[at],source.Sessions[at],source.Intervals[at]);
+                        for(int metric=0;metric<source.Columns.Length;metric++)
+                            if(source.Columns[metric] is { } column&&!IsAbsent(column[at]))ColumnFor(chunk,metric)[offset]=column[at];
+                    }
+                    else
+                    {
+                        var sample=restored[accepted[row.Added].Order];
+                        (chunk,offset)=Append(sample.MonotonicSeconds,sample.Timestamp,sample.SessionId,sample.PollingIntervalSeconds);
+                        Write(chunk,offset,sample.Values,fill:false);
+                    }
+                    Merge(row,chunk,offset);
+                }
+                for(int metric=0;metric<holders.Count;metric++)if(holders[metric]==0&&names[metric] is not null)Forget(metric);
+            }
+            if(count>0)lastSeconds=TimeAt(count-1);
         }
-        return sample with {Values=new ReadOnlyDictionary<string,double?>(values)};
     }
-    public IReadOnlyList<Snapshot> Read() {lock(gate) {var all=new Snapshot[count];CopyTo(0,count,all);return all;}}
+    /// <summary>A row of a restore: the existing sample <paramref name="Kept"/>, or the saved sample <paramref name="Added"/>
+    /// (an index into the accepted list), and the accepted range [From, To) at its time that may add keys to it.</summary>
+    private readonly record struct Row(int Kept,int Added,int From,int To);
+    public IReadOnlyList<Snapshot> Read()
+    {
+        lock(gate)
+        {
+            var all=new Snapshot[count];
+            for(int index=0;index<count;index++)
+            {
+                var chunk=Locate(index,out int at);
+                var values=new Dictionary<string,double?>(StringComparer.Ordinal);
+                for(int metric=0;metric<chunk.Columns.Length;metric++)
+                    if(chunk.Columns[metric] is { } column&&!IsAbsent(column[at]))values.Add(names[metric]!,Decode(column[at]));
+                all[index]=new(chunk.Stamps[at],chunk.Times[at],new ReadOnlyDictionary<string,double?>(values)){SessionId=chunk.Sessions[at],PollingIntervalSeconds=chunk.Intervals[at]};
+            }
+            return all;
+        }
+    }
     public IReadOnlyList<SamplePoint> Series(string id,double now,int seconds)
     {
         lock(gate)
         {
-            var (start,end)=Window(now,seconds);
-            var points=new List<SamplePoint>(end-start);Snapshot? previous=null;
-            for(int index=start;index<end;index++)
-            {
-                var sample=At(index);
-                points.Add(new(sample.Timestamp,sample.MonotonicSeconds,sample.Values.GetValueOrDefault(id))
-                    {BreakBefore=previous is not null&&previous.SessionId!=sample.SessionId,
-                     PollingIntervalSeconds=PollingPolicy.Normalize(sample.PollingIntervalSeconds)});
-                previous=sample;
-            }
+            var (start,end)=Window(now,seconds);int metric=Find(id);
+            var points=new List<SamplePoint>(end-start);
+            for(int index=start;index<end;index++)points.Add(Point(index,start,metric));
             return points;
         }
     }
-    /// <summary>Several <see cref="Series"/> reads in one pass under the lock; a missing id yields null points.</summary>
+    /// <summary>Several <see cref="Series"/> reads under one lock; a missing id yields null points.</summary>
     public IReadOnlyDictionary<string,IReadOnlyList<SamplePoint>> SeriesMany(IReadOnlyList<string> ids,double now,int seconds)
     {
         lock(gate)
         {
-            var lists=new Dictionary<string,List<SamplePoint>>(StringComparer.Ordinal);
             var (start,end)=Window(now,seconds);
-            foreach(var id in ids)lists.TryAdd(id,new(end-start));
-            Snapshot? previous=null;
-            for(int index=start;index<end;index++)
+            var lists=new Dictionary<string,IReadOnlyList<SamplePoint>>(StringComparer.Ordinal);
+            foreach(var id in ids)
             {
-                var sample=At(index);
-                bool breakBefore=previous is not null&&previous.SessionId!=sample.SessionId;
-                double interval=PollingPolicy.Normalize(sample.PollingIntervalSeconds);
-                foreach(var pair in lists)
-                    pair.Value.Add(new(sample.Timestamp,sample.MonotonicSeconds,sample.Values.GetValueOrDefault(pair.Key)){BreakBefore=breakBefore,PollingIntervalSeconds=interval});
-                previous=sample;
+                if(lists.ContainsKey(id))continue;
+                int metric=Find(id);var points=new List<SamplePoint>(end-start);
+                for(int index=start;index<end;index++)points.Add(Point(index,start,metric));
+                lists[id]=points;
             }
-            return lists.ToDictionary(p=>p.Key,p=>(IReadOnlyList<SamplePoint>)p.Value,StringComparer.Ordinal);
+            return lists;
         }
     }
-    private Snapshot[] Capture(double now,int seconds)
+    /// <summary>The sample at <paramref name="index"/> as a point; it breaks the line when its session differs from the sample before it in the window.</summary>
+    private SamplePoint Point(int index,int start,int metric,bool reading=true)
     {
+        var chunk=Locate(index,out int at);
+        double? value=reading&&chunk.Column(metric) is { } column?Decode(column[at]):null;
+        return new(chunk.Stamps[at],chunk.Times[at],value){BreakBefore=index>start&&(chunk.Breaks[at]&NewSession)!=0,PollingIntervalSeconds=PollingPolicy.Normalize(chunk.Intervals[at])};
+    }
+    /// <summary>
+    /// <see cref="ReduceForChart"/> of <see cref="Series"/>, and the <see cref="Statistics"/> of that series, from one pass over the
+    /// metric's column and without a point for every sample: a six-hour line reads 43,201 values and keeps a few per pixel column.
+    /// </summary>
+    public ReducedSeries ReduceSeries(string id,double now,int seconds,int pixelWidth)
+    {
+        if(!double.IsFinite(now))throw new ArgumentOutOfRangeException(nameof(now));
+        if(seconds<=0)throw new ArgumentOutOfRangeException(nameof(seconds));
+        if(pixelWidth<=0)throw new ArgumentOutOfRangeException(nameof(pixelWidth));
         lock(gate)
         {
-            var (start,end)=Window(now,seconds);
-            var captured=new Snapshot[end-start];CopyTo(start,captured.Length,captured);return captured;
+            var (start,end)=Window(now,seconds);int metric=Find(id);
+            var result=new List<SamplePoint>();
+            int bucket=-1,firstAt=-1,lowAt=-1,highAt=-1,lastAt=-1,samples=0;
+            double low=0,high=0,minimum=0,maximum=0,total=0,from=now-seconds;
+            void Flush()
+            {
+                if(firstAt<0)return;
+                Span<int> kept=stackalloc int[]{firstAt,lowAt,highAt,lastAt};kept.Sort();
+                int added=-1;
+                foreach(int index in kept)if(index!=added){result.Add(Point(index,start,metric));added=index;}
+                firstAt=lowAt=highAt=lastAt=-1;bucket=-1;
+            }
+            void Gap(int index)
+            {
+                Flush();
+                if(result.Count==0||result[^1].Value.HasValue)result.Add(Point(index,start,metric,reading:false));
+            }
+            for(int index=start;index<end;)
+            {
+                var chunk=Locate(index,out int offset);
+                int length=Math.Min(Size-offset,end-index);var column=chunk.Column(metric);
+                for(int at=offset;at<offset+length;at++,index++)
+                {
+                    int breaks=index>start?chunk.Breaks[at]:0;
+                    if((breaks&NewSession)!=0)Gap(index);
+                    if(column is null||float.IsNaN(column[at])){Gap(index);continue;}
+                    double value=column[at];
+                    // The statistics keep the first of equal extremes, as Enumerable.Min and Max do.
+                    if(samples++==0)minimum=maximum=value;
+                    else {if(value<minimum)minimum=value;if(value>maximum)maximum=value;}
+                    total+=value;
+                    if((breaks&AfterGap)!=0)Gap(index);
+                    int pixel=(int)Math.Clamp((chunk.Times[at]-from)*pixelWidth/seconds,0,pixelWidth-1);
+                    if(pixel!=bucket){Flush();bucket=pixel;}
+                    if(firstAt<0){firstAt=lowAt=highAt=index;low=high=value;}
+                    else {if(value<low){lowAt=index;low=value;}if(value>high){highAt=index;high=value;}}
+                    lastAt=index;
+                }
+            }
+            Flush();
+            return new(result,samples==0?new(null,null,null):new(minimum,maximum,total/samples));
         }
     }
-    /// <summary>The window's references in a pooled buffer, so the six-hour chart passes run outside the lock without a new large array
-    /// every poll. The caller returns the buffer cleared.</summary>
-    private Snapshot[] Rent(double now,int seconds,out int length)
-    {
-        lock(gate)
-        {
-            var (start,end)=Window(now,seconds);length=end-start;
-            var buffer=System.Buffers.ArrayPool<Snapshot>.Shared.Rent(Math.Max(1,length));
-            CopyTo(start,length,buffer);return buffer;
-        }
-    }
-    /// <summary>Pixel-bucket averages and extrema from immutable snapshot references; gaps are never averaged across.</summary>
+    /// <summary>Pixel-bucket averages and extrema from one pass over the metric's column; gaps are never averaged across.</summary>
     public IReadOnlyList<ChartRangePoint> ChartRanges(string id,double now,int seconds,int pixelWidth)
     {
         if(!double.IsFinite(now)||seconds<=0||pixelWidth<=0)throw new ArgumentOutOfRangeException(nameof(now));
-        var captured=Rent(now,seconds,out int length);
-        var result=new List<ChartRangePoint>(Math.Min(pixelWidth,4096));
-        int count=0;double bucket=double.NaN,total=0,min=0,max=0,start=0,end=0;
-        double bucketSeconds=seconds/(double)pixelWidth;
-        Snapshot? previous=null;double previousInterval=1;
-        void Flush()
-        {
-            if(count==0)return;
-            result.Add(new(start,end,total/count,min,max,count));count=0;bucket=double.NaN;
-        }
-        void Gap(double time)
-        {
-            Flush();if(result.Count==0||result[^1].Average.HasValue)result.Add(new(time,time,null,null,null,0));
-        }
-        try
-        {
-        for(int index=0;index<length;index++)
-        {
-            var sample=captured[index];
-            double time=sample.MonotonicSeconds;
-            double interval=PollingPolicy.Normalize(sample.PollingIntervalSeconds);
-            if(previous is not null&&(sample.SessionId!=previous.SessionId||time-previous.MonotonicSeconds>Math.Max(previousInterval,interval)+1.5))Gap(time);
-            previous=sample;previousInterval=interval;
-            if(Finite(sample.Values.GetValueOrDefault(id)) is not { } value){Gap(time);continue;}
-            // Anchor buckets to the monotonic timeline, not the moving viewport.
-            // Completed historical averages then scroll without being re-binned on each poll.
-            // Floor also assigns restored negative timestamps to the correct interval.
-            double column=Math.Floor(time/bucketSeconds);
-            if(column!=bucket)Flush();
-            if(count==0){bucket=column;start=time;min=max=value;total=0;}
-            end=time;min=Math.Min(min,value);max=Math.Max(max,value);total+=value;count++;
-        }
-        }
-        finally {System.Buffers.ArrayPool<Snapshot>.Shared.Return(captured,clearArray:true);}
-        Flush();return result;
+        lock(gate)return Ranges(Find(id),now,seconds,pixelWidth);
     }
-    /// <summary>Several <see cref="ChartRanges"/> reads from one pass over the captured snapshots; results match per-id calls.</summary>
+    /// <summary>Several <see cref="ChartRanges"/> reads under one lock; results match per-id calls.</summary>
     public IReadOnlyDictionary<string,IReadOnlyList<ChartRangePoint>> ChartRangesMany(IReadOnlyList<string> ids,double now,int seconds,int pixelWidth)
     {
         if(!double.IsFinite(now)||seconds<=0||pixelWidth<=0)throw new ArgumentOutOfRangeException(nameof(now));
         ArgumentNullException.ThrowIfNull(ids);
-        var captured=Rent(now,seconds,out int length);
-        var states=new Dictionary<string,RangeState>(StringComparer.Ordinal);
-        foreach(var id in ids)states.TryAdd(id,new RangeState(Math.Min(pixelWidth,4096)));
-        var all=states.ToArray();
+        var result=new Dictionary<string,IReadOnlyList<ChartRangePoint>>(StringComparer.Ordinal);
+        lock(gate)foreach(var id in ids)if(!result.ContainsKey(id))result[id]=Ranges(Find(id),now,seconds,pixelWidth);
+        return result;
+    }
+    private List<ChartRangePoint> Ranges(int metric,double now,int seconds,int pixelWidth)
+    {
+        var (start,end)=Window(now,seconds);
+        var state=new RangeState(Math.Min(pixelWidth,4096));
         double bucketSeconds=seconds/(double)pixelWidth;
-        Snapshot? previous=null;double previousInterval=1;
-        try
+        for(int index=start;index<end;)
         {
-            for(int index=0;index<length;index++)
+            var chunk=Locate(index,out int offset);
+            int length=Math.Min(Size-offset,end-index);var column=chunk.Column(metric);
+            for(int at=offset;at<offset+length;at++,index++)
             {
-                var sample=captured[index];
-                double time=sample.MonotonicSeconds;
-                double interval=PollingPolicy.Normalize(sample.PollingIntervalSeconds);
-                bool gap=previous is not null&&(sample.SessionId!=previous.SessionId||time-previous.MonotonicSeconds>Math.Max(previousInterval,interval)+1.5);
-                previous=sample;previousInterval=interval;
-                double column=Math.Floor(time/bucketSeconds);
-                foreach(var pair in all)
-                {
-                    var state=pair.Value;
-                    if(gap)state.Gap(time);
-                    if(Finite(sample.Values.GetValueOrDefault(pair.Key)) is not { } value){state.Gap(time);continue;}
-                    state.Add(column,time,value);
-                }
+                double time=chunk.Times[at];
+                if(index>start&&chunk.Breaks[at]!=0)state.Gap(time);
+                if(column is null||float.IsNaN(column[at])){state.Gap(time);continue;}
+                // Anchor buckets to the monotonic timeline, not the moving viewport.
+                // Completed historical averages then scroll without being re-binned on each poll.
+                // Floor also assigns restored negative timestamps to the correct interval.
+                state.Add(Math.Floor(time/bucketSeconds),time,column[at]);
             }
         }
-        finally {System.Buffers.ArrayPool<Snapshot>.Shared.Return(captured,clearArray:true);}
-        var result=new Dictionary<string,IReadOnlyList<ChartRangePoint>>(StringComparer.Ordinal);
-        foreach(var pair in all){pair.Value.Flush();result[pair.Key]=pair.Value.Result;}
-        return result;
+        state.Flush();return state.Result;
     }
     private sealed class RangeState(int capacity)
     {
@@ -279,31 +416,34 @@ public sealed class SampleHistory
     }
     public Summary Summarize(string id,double now,int seconds)
     {
-        var summary=new Accumulator();
-        foreach(var sample in Capture(now,seconds))summary.Add(sample.Values.GetValueOrDefault(id));
-        return summary.Finish();
+        lock(gate){var (start,end)=Window(now,seconds);return SummaryOf(Find(id),start,end);}
     }
     public IReadOnlyDictionary<string,Summary> Summaries(IEnumerable<string> ids,double now,int seconds)
     {
-        var summaries=ids.Distinct(StringComparer.Ordinal).ToDictionary(id=>id,_=>new Accumulator(),StringComparer.Ordinal);
-        if(summaries.Count==0)return new Dictionary<string,Summary>();
-        // Capture references once and release the collection lock before walking all sensors.
-        // No per-reading SamplePoint objects or arrays are needed for table statistics.
-        foreach(var sample in Capture(now,seconds))
-            foreach(var pair in summaries)
-                if(sample.Values.TryGetValue(pair.Key,out var value))pair.Value.Add(value);
-        return summaries.ToDictionary(p=>p.Key,p=>p.Value.Finish(),StringComparer.Ordinal);
+        var distinct=ids.Distinct(StringComparer.Ordinal).ToArray();
+        var summaries=new Dictionary<string,Summary>(distinct.Length,StringComparer.Ordinal);
+        // One sequential scan of each sensor's column, with no per-reading points or arrays. The lock is taken per sensor, so a
+        // page of several hundred over six hours never holds the collector up for the whole table.
+        foreach(var id in distinct)
+            lock(gate){var (start,end)=Window(now,seconds);summaries[id]=SummaryOf(Find(id),start,end);}
+        return summaries;
     }
-    private sealed class Accumulator
+    private Summary SummaryOf(int metric,int start,int end)
     {
-        private int count;
-        private double minimum=double.PositiveInfinity,maximum=double.NegativeInfinity,total;
-        public void Add(double? value)
+        int samples=0;double minimum=double.PositiveInfinity,maximum=double.NegativeInfinity,total=0;
+        for(int index=start;index<end;)
         {
-            if(Finite(value) is not { } number)return;
-            minimum=Math.Min(minimum,number);maximum=Math.Max(maximum,number);total+=number;count++;
+            var chunk=Locate(index,out int offset);
+            int length=Math.Min(Size-offset,end-index);
+            if(chunk.Column(metric) is { } column)
+                foreach(float cell in column.AsSpan(offset,length))
+                {
+                    if(float.IsNaN(cell))continue;
+                    double value=cell;minimum=Math.Min(minimum,value);maximum=Math.Max(maximum,value);total+=value;samples++;
+                }
+            index+=length;
         }
-        public Summary Finish()=>count==0?new(null,null,null):new(minimum,maximum,total/count);
+        return samples==0?new(null,null,null):new(minimum,maximum,total/samples);
     }
     /// <summary>
     /// Keep each pixel column's first, minimum, maximum and last reading in time order.
@@ -357,6 +497,8 @@ public sealed class SampleHistory
         return v.Length==0?new(null,null,null):new(v.Min(),v.Max(),v.Average());
     }
 }
+/// <summary>A chart line kept to a few points for each pixel column, and the statistics of every reading it covers.</summary>
+public readonly record struct ReducedSeries(IReadOnlyList<SamplePoint> Points,Summary Statistics);
 public readonly record struct ChartRangePoint(double StartSeconds,double EndSeconds,double? Average,double? Minimum,double? Maximum,int Samples);
 public sealed class CounterRate
 {
