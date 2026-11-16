@@ -4,10 +4,18 @@ namespace DeadWare.Core;
 /// <summary>The Storage page's wording, with no user-interface framework: what each drive's lines and tables say.</summary>
 public static class StoragePresenter
 {
-    /// <summary>Model, bus and size, then why the drive's identity is weak and whether it is removable.</summary>
+    /// <summary>
+    /// A drive as the app names it wherever it shows one: its volumes' letters, then its model ("C: Samsung 990",
+    /// "D: E: WD Game Drive"), because people know their drives by letter. The letters keep the volumes' order, which
+    /// WindowsStorage sorts; a volume with no letter is left out, and a drive with no lettered volume is its model alone.
+    /// </summary>
+    public static string Name(StorageDrive drive)=>
+        string.Join(" ",drive.Volumes.Select(v=>v.Letter).Where(letter=>!string.IsNullOrWhiteSpace(letter)).Select(letter=>letter+":").Append(drive.Model));
+
+    /// <summary>Name, bus and size, then why the drive's identity is weak and whether it is removable.</summary>
     public static string Title(StorageDrive drive)
     {
-        string title=$"{drive.Model} · {drive.BusType} · {HistoryChartModel.Bytes(drive.SizeBytes)}";
+        string title=$"{Name(drive)} · {drive.BusType} · {HistoryChartModel.Bytes(drive.SizeBytes)}";
         if(drive.IdentityNote.Length>0)title+=$" · {drive.IdentityNote}";
         if(drive.Removable)title+=" · removable";
         return title;

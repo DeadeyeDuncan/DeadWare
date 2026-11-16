@@ -17,7 +17,7 @@ public sealed record HistoryChartRequest(SampleHistory History,string Kind,strin
 /// <param name="CpuPump">Show CPU pump speed: on a cputemp chart that does not compare devices, or does with <paramref name="PumpWithDevices"/>.</param>
 /// <param name="Cores">How many per-core lines a cpu chart carries; 0 for none. They replace the aggregate line.</param>
 /// <param name="Drives">Drive ids whose read rate a storage chart traces, in display order.</param>
-/// <param name="DriveNames">Drive id to model name, for the hover readout; an unlisted drive shows its id.</param>
+/// <param name="DriveNames">Drive id to the drive's name (<see cref="StoragePresenter.Name"/>), for the hover readout; an unlisted drive shows its id.</param>
 /// <param name="Smoothed">Graph smoothing: from an hour up, draw each column's average with a band from its lowest to its highest reading.</param>
 /// <param name="DriveId">Limits a storage chart to one drive: its read and write become the traces and the per-drive lines are off.</param>
 /// <param name="PumpWithDevices">Keeps the pump line on a device comparison (the widget).</param>
@@ -255,7 +255,7 @@ public static class HistoryChartModel
         {
             double? read=At(trace.Samples),write=At(trace.WriteSamples);
             if(read is null&&write is null)continue;
-            string name=names is not null&&names.TryGetValue(trace.DriveId!,out string? model)?model:trace.DriveId!;
+            string name=names is not null&&names.TryGetValue(trace.DriveId!,out string? known)?known:trace.DriveId!;
             driveLines.Add((new(trace.ColorKey,$"{name} · {Bytes(read,true)} ↓ {Bytes(write,true)} ↑",null,trace.Index),(read??0)+(write??0)));
         }
         lines.AddRange(driveLines.OrderByDescending(d=>d.Rate).Select(d=>d.Line));

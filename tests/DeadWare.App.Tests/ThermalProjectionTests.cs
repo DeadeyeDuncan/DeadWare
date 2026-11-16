@@ -120,6 +120,10 @@ public class ThermalProjectionTests
     [Fact] public void Same_model_drives_get_distinct_names(){
         var names=ThermalProjection.Project(ReadingWithStorage(("SN-AAAA1111","NVMe A",40.0,1.0),("SN-BBBB2222","NVMe A",41.0,1.0)),"run","m","c").Where(x=>x.Device.Kind=="Storage").Select(x=>x.Device.Name).ToArray();
         Assert.Equal(["NVMe A · 1111","NVMe A · 2222"],names);}
+    [Fact] public void Storage_device_names_lead_with_the_drive_letters(){
+        var r=ReadingWithStorage(("S1","NVMe A",42.0,1.0));
+        r=r with{Storage=r.Storage with{Drives=[r.Storage.Drives[0] with{Volumes=[new StorageVolume("C","OS",1000,400),new StorageVolume("D","Data",1000,400)]}]}};
+        Assert.Equal("C: D: NVMe A · S1",ThermalProjection.Project(r,"run","m","c").Single(x=>x.Device.Kind=="Storage").Device.Name);}
     [Fact] public void Live_only_drives_are_excluded()=>Assert.DoesNotContain(ThermalProjection.Project(ReadingWithStorage(("USB#1",null,40.0,0.0)),"r","m","c"),x=>x.Device.Kind=="Storage");
     [Fact] public void Sensors_off_keeps_device_with_unavailable_reason(){
         var r=ReadingWithStorage(("S1","NVMe A",null,5.0));

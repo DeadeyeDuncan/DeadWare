@@ -121,7 +121,7 @@ internal sealed class HistoryChartView : UserControl
             CpuPump: settings.ShowCpuPumpSpeed,
             Cores: settings.ShowCpuCoreUsage ? session.Current?.CpuCoreCount ?? 0 : 0,
             Drives: drives.Select(drive => drive.Id).ToList(),
-            DriveNames: drives.GroupBy(drive => drive.Id).ToDictionary(group => group.Key, group => group.First().Model),
+            DriveNames: drives.GroupBy(drive => drive.Id).ToDictionary(group => group.Key, group => StoragePresenter.Name(group.First())),
             PumpWithDevices: PumpAndCoresWithDevices,
             CoresWithDevices: PumpAndCoresWithDevices,
             Smoothed: settings.GraphSmoothing,

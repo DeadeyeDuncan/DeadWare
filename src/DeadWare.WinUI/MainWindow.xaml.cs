@@ -1,15 +1,16 @@
 using System.Runtime.InteropServices;
 using DeadWare.App;
 using DeadWare.Core;
-using Microsoft.UI.Composition.SystemBackdrops;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
-using Microsoft.UI.Xaml.Media;
 using Windows.Graphics;
 
 namespace DeadWare.WinUI;
 
-/// <summary>The dashboard window: Mica or a solid fallback, the twelve destinations, and hide-to-tray on close.</summary>
+/// <summary>
+/// The dashboard window: the twelve destinations and hide-to-tray on close. Its solid background and title bar colours
+/// come from <see cref="WindowManager.Place"/>, as every window's do.
+/// </summary>
 public sealed partial class MainWindow : Window
 {
     /// <summary>The WPF dashboard's destinations, in its order and with its labels.</summary>
@@ -40,10 +41,9 @@ public sealed partial class MainWindow : Window
         this.trayAvailable = trayAvailable;
         this.quit = quit;
         InitializeComponent();
-        bool mica = !App.NoMica && MicaController.IsSupported();
-        if (mica) SystemBackdrop = new MicaBackdrop();
-        else Root.Background = (Brush)Application.Current.Resources["ApplicationPageBackgroundThemeBrush"];
         Title = TitleText.Text = "DeadWare";
+        // WinUI makes the caption buttons' background transparent, active and inactive alike, when content extends into the
+        // title bar, so the solid page background shows behind them whether or not the window has focus.
         ExtendsContentIntoTitleBar = true;
         SetTitleBar(TitleBarArea);
 
@@ -136,8 +136,9 @@ public sealed partial class MainWindow : Window
     }
 
     /// <summary>
-    /// Puts the dashboard back where it was last left, keeps it from shrinking below the WPF dashboard's minimum and saves
-    /// its later moves, under the key the WPF dashboard uses so either app opens where the other left it.
+    /// Gives the dashboard its solid background, puts it back where it was last left, keeps it from shrinking below the WPF
+    /// dashboard's minimum and saves its later moves, under the key the WPF dashboard uses so either app opens where the
+    /// other left it.
     /// </summary>
     internal void RememberPlacement(WindowManager manager) => manager.Place(this, Root, "main", 1220, 900, 900, 640);
 

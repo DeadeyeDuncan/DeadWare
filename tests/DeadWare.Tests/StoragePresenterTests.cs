@@ -10,14 +10,31 @@ public class StoragePresenterTests
 
     static StorageDrive Drive(bool removable = false, string note = "", params StorageVolume[] volumes) =>
         new("d0", "SERIAL", "Samsung 990", 0, "NVMe", 2_000_000_000_000, removable, volumes) { IdentityNote = note };
-    static readonly StorageVolume C = new("C:", "System", 1_000_000_000_000, 250_000_000_000), D = new("D:", "Data", 500_000_000_000, 500_000_000_000);
+    // Letters are kept without the colon, as WindowsStorage stores them.
+    static readonly StorageVolume C = new("C", "System", 1_000_000_000_000, 250_000_000_000), D = new("D", "Data", 500_000_000_000, 500_000_000_000);
     static StorageHealth Health(string badge = "Healthy", double? temperature = 41.5, double? life = 97, double? hours = 1234.6, double? max = 60, string? unavailable = null) =>
         new("d0", badge, temperature, life, null, hours, max, unavailable);
 
-    [Fact] public void The_title_names_the_model_bus_and_size_and_notes_identity_and_removable()
+    [Fact] public void The_title_gives_the_name_bus_and_size_and_notes_identity_and_removable()
     {
         Assert.Equal("Samsung 990 · NVMe · 2.0 TB", StoragePresenter.Title(Drive()));
-        Assert.Equal("Samsung 990 · NVMe · 2.0 TB · no serial number · removable", StoragePresenter.Title(Drive(removable: true, note: "no serial number")));
+        Assert.Equal("C: Samsung 990 · NVMe · 2.0 TB", StoragePresenter.Title(Drive(volumes: [C])));
+        Assert.Equal("C: D: Samsung 990 · NVMe · 2.0 TB · no serial number · removable", StoragePresenter.Title(Drive(removable: true, note: "no serial number", volumes: [C, D])));
+    }
+
+    [Fact] public void A_drive_without_volumes_is_named_by_its_model() =>
+        Assert.Equal("Samsung 990", StoragePresenter.Name(Drive()));
+
+    [Fact] public void A_drive_with_one_volume_is_named_by_its_letter_then_its_model() =>
+        Assert.Equal("C: Samsung 990", StoragePresenter.Name(Drive(volumes: [C])));
+
+    [Fact] public void A_drive_with_several_volumes_gives_every_letter_in_order_before_its_model() =>
+        Assert.Equal("D: E: WD Game Drive", StoragePresenter.Name(Drive(volumes: [D, new("E", "Games", 1, 1)]) with { Model = "WD Game Drive" }));
+
+    [Fact] public void A_volume_with_a_blank_letter_is_left_out_of_the_name()
+    {
+        Assert.Equal("C: Samsung 990", StoragePresenter.Name(Drive(volumes: [new("", "Recovery", 1, 1), C, new(" ", "", 1, 1)])));
+        Assert.Equal("Samsung 990", StoragePresenter.Name(Drive(volumes: [new("", "Recovery", 1, 1)])));
     }
 
     [Fact] public void The_health_line_gives_temperature_badge_and_life_with_dashes_for_unknowns()
@@ -43,8 +60,8 @@ public class StoragePresenterTests
     [Fact] public void Volumes_list_letter_label_used_and_free()
     {
         var rows = StoragePresenter.Volumes(Drive(volumes: [C, D]));
-        Assert.Equal(["C:", "System", "750.0 GB", "250.0 GB"], rows[0].Cells);
-        Assert.Equal(["D:", "Data", "0.0 B", "500.0 GB"], rows[1].Cells);
+        Assert.Equal(["C", "System", "750.0 GB", "250.0 GB"], rows[0].Cells);
+        Assert.Equal(["D", "Data", "0.0 B", "500.0 GB"], rows[1].Cells);
         Assert.Empty(StoragePresenter.Volumes(Drive()));
     }
 
