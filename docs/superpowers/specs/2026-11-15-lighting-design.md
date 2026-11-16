@@ -1,6 +1,6 @@
 # Lighting: DeadLight merged into DeadWare (0.19.0)
 
-Status: proposed on 2026-11-15. Brainstormed with the user in the fan-control session. The user approved the scope, the desk view (plan A), the Lighting page mockup and the approach (a background device host); this document awaits their approval. The version number is tentative, and releasing stays the user's call. Fan control, the request that started this session, follows as its own spec. It builds on the device host and the iCUE LINK hub driver defined here.
+Status: proposed on 2026-11-15. Brainstormed with the user in the fan-control session. The user approved the scope, the desk view (plan A), the Lighting page mockup and the approach (a background device host), and chose to keep iCUE installed but disabled. An independent builder check was answered; this document awaits the user's approval. The version number is tentative, and releasing stays the user's call. Fan control, the request that started this session, follows as its own spec. It builds on the device host and the iCUE LINK hub driver defined here.
 
 ## Intent
 
@@ -17,7 +17,7 @@ Two programs owning the hub will always fight, so lighting and cooling need a si
 Success looks like this:
 
 - One app and one tray icon for monitoring, lighting and, later, fans.
-- DeadLight and iCUE retired.
+- DeadLight retired. iCUE stays installed but disabled: its Corsair Service no longer starts with Windows and its auto-start entry is off (the user's choice).
 - Nothing blinks, and lighting survives a crash of DeadWare's window.
 - Fan control can be added later without moving the hub driver.
 
@@ -115,6 +115,7 @@ Success looks like this:
   - **Enable lighting**, off by default for every install. It starts or stops the device host.
   - **OpenRGB location**, with Browse. It checks that `OpenRGB.exe` exists and reports its version; 1.0rc3 is expected. It also applies the protected-folder check from Constraints and warns when the folder is user-writable.
   - **DeadLight**, showing whether DeadLight or its startup task is present. A **Retire DeadLight** action disables DeadLight's startup task and stops it, only after the user confirms.
+  - **iCUE**, read only. It shows whether any Corsair process is running, whether the Corsair Service starts automatically, and whether iCUE's auto-start entry (`Corsair iCUE5 Software` in HKLM Run) is present. Each item that blocks the hub driver comes with plain instructions: Services for the service, Task Manager → Startup apps for the entry. DeadWare never changes another vendor's services or start-up entries; the user does that.
 - **Hidden window:** the desk canvas uses Win2D like the existing charts. Live colour preview frames flow only while the Lighting page is visible, using the `Lifetime.WhileShowing` pattern, so nothing animates or repaints while the page or window is hidden.
 
 ## Architecture
@@ -260,7 +261,7 @@ The device host is a separate executable, not a mode of `DeadWare.exe`. That giv
 2. **Desk:** layout (plan A, Edit layout, inside view, Not placed), the Wave, Breathing and Spectrum effects, and preview frames.
 3. **Device controls:** tuning (brightness, calibration), keyboard modes, per-key painting, and layers with key reactions.
 4. **Mouse and everyday:** the Aerox (wireless driver, battery, sleep timer, shared settings), Everyday (shortcut, idle, lock), the tray item, and sleep/resume handling.
-5. **The hub:** DeadWare's iCUE LINK driver (lighting plus read-only readings), OpenRGB's hub detector off, hub sensors and the coolant line, and the DeadLight retirement steps.
+5. **The hub:** DeadWare's iCUE LINK driver (lighting plus read-only readings), OpenRGB's hub detector off, hub sensors and the coolant line, and the DeadLight retirement steps. Before its hardware check, the user disables iCUE as Settings → Lighting describes: Corsair Service stopped and set to Manual, auto-start entry off. iCUE stays installed.
 
 Each step merges through the normal branch and PR flow in `docs/development.md` and `AGENTS.md`. Cutting a release is always the user's call.
 
@@ -317,3 +318,4 @@ Each step merges through the normal branch and PR flow in `docs/development.md` 
 - DeadLight's colour order is kept, so brightness applies last and caps everything.
 - OpenRGB's config is in `%ProgramData%\DeadWare\openrgb`, and an OpenRGB folder that ordinary users can modify gets a warning. Moving OpenRGB to `C:\Program Files\OpenRGB` is asked for before step 1's hardware check.
 - Reference material goes into the repository without personal data; the raw research and probe output stay in the private notes folder.
+- iCUE stays installed but disabled (the user's decision). DeadWare only detects and explains, and the user switches off the service and the auto-start entry.
