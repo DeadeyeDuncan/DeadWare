@@ -399,17 +399,17 @@ internal sealed class OverviewCard : UserControl
             var drives = data?.Storage.Drives ?? [];
             if (driveId is not null)
             {
-                // The model is the title, so the line below carries the bus, size and write rate.
+                // The drive's name (its letters, then its model) is the title, so the line below carries the bus, size and write rate.
                 var drive = drives.FirstOrDefault(candidate => candidate.Id == driveId);
-                title.Text = drive?.Model ?? "Disk";
+                title.Text = drive is null ? "Disk" : StoragePresenter.Name(drive);
                 ToolTipService.SetToolTip(title, title.Text);
                 subtitle.Text = OverviewPresenter.DriveSubtitle(drive, Live(StorageMetrics.Key(driveId, "write")));
             }
             else
             {
-                string? model = drives.Count == 0 ? null
-                    : busiest.Pick(drives, drive => (session.Value(StorageMetrics.Key(drive.Id, "read")) ?? 0) + (session.Value(StorageMetrics.Key(drive.Id, "write")) ?? 0)).Model;
-                subtitle.Text = OverviewPresenter.StorageSubtitle(data is not null, drives.Count, model);
+                string? name = drives.Count == 0 ? null
+                    : StoragePresenter.Name(busiest.Pick(drives, drive => (session.Value(StorageMetrics.Key(drive.Id, "read")) ?? 0) + (session.Value(StorageMetrics.Key(drive.Id, "write")) ?? 0)));
+                subtitle.Text = OverviewPresenter.StorageSubtitle(data is not null, drives.Count, name);
             }
         }
         else if (kind == "memory")

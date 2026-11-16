@@ -69,11 +69,11 @@ public static class OverviewPresenter
         return text;
     }
 
-    /// <summary>The all-drives Disk card's line: the busiest drive and how many there are.</summary>
-    public static string StorageSubtitle(bool discovered, int drives, string? busiestModel) =>
-        !discovered ? "Discovering drives…" : drives == 0 || busiestModel is null ? "No drives detected" : $"{busiestModel} · {drives} drive{(drives == 1 ? "" : "s")}";
+    /// <summary>The all-drives Disk card's line: the busiest drive's name and how many drives there are.</summary>
+    public static string StorageSubtitle(bool discovered, int drives, string? busiestName) =>
+        !discovered ? "Discovering drives…" : drives == 0 || busiestName is null ? "No drives detected" : $"{busiestName} · {drives} drive{(drives == 1 ? "" : "s")}";
 
-    /// <summary>A drive card's line; the model is its title.</summary>
+    /// <summary>A drive card's line; the drive's name is its title.</summary>
     public static string DriveSubtitle(StorageDrive? drive, double? writeRate) => drive is null ? "Drive not detected"
         : $"{drive.BusType} · {HistoryChartModel.Bytes(drive.SizeBytes)}{(drive.Removable ? " · removable" : "")} · ↑ {HistoryChartModel.Bytes(writeRate, true)} write";
 
