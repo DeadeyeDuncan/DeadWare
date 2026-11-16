@@ -13,6 +13,7 @@ public sealed class OpenRgbEngineTests : IDisposable
     readonly FakeRunner runner=new();
     readonly HostLog log;
     bool portUp=true;
+    int probes;
     public OpenRgbEngineTests(){Directory.CreateDirectory(dir);exe=Path.Combine(dir,"OpenRGB.exe");File.WriteAllText(exe,"");log=new HostLog(Path.Combine(dir,"logs"));}
     public void Dispose(){log.Dispose();try{Directory.Delete(dir,true);}catch{}}
 
@@ -36,7 +37,7 @@ public sealed class OpenRgbEngineTests : IDisposable
         public FakeProcess At(int i){lock(Started)return Started[i];}
     }
 
-    OpenRgbEngine Engine()=>new(exe,@"C:\cfg",runner,(_,_)=>Task.FromResult(portUp),time,log);
+    OpenRgbEngine Engine()=>new(exe,@"C:\cfg",runner,(_,_)=>{Interlocked.Increment(ref probes);return Task.FromResult(portUp);},time,log);
     static async Task Until(Func<bool> cond){for(int i=0;i<500&&!cond();i++) await Task.Delay(10);Assert.True(cond(),"condition not reached");}
     async Task Advance(TimeSpan total,TimeSpan step)
     {
@@ -73,7 +74,7 @@ public sealed class OpenRgbEngineTests : IDisposable
         portUp=false;
         await using var e=Engine();
         var start=e.StartAsync(CancellationToken.None);
-        await Until(()=>runner.Count==1);
+        await Until(()=>Volatile.Read(ref probes)>=1); // the 30 s deadline exists before the first probe runs
         await Advance(TimeSpan.FromSeconds(29),TimeSpan.FromMilliseconds(500));
         Assert.False(runner.At(0).Killed);
         await Advance(TimeSpan.FromSeconds(1),TimeSpan.FromMilliseconds(500));
@@ -134,5 +135,26 @@ public sealed class OpenRgbEngineTests : IDisposable
         Assert.Equal(EngineStatus.Stopped,e.Status);
         await Advance(TimeSpan.FromSeconds(30),TimeSpan.FromSeconds(1));
         Assert.Equal(1,runner.Count);
+    }
+
+    [Fact]
+    public async Task Concurrent_starts_spawn_exactly_one_process()
+    {
+        await using var e=Engine();
+        await Task.WhenAll(Enumerable.Range(0,8).Select(_=>Task.Run(()=>e.StartAsync(CancellationToken.None))));
+        await Task.Delay(50);
+        Assert.Equal(1,runner.Count);
+    }
+
+    [Fact]
+    public async Task Throwing_changed_handler_does_not_stop_restarts()
+    {
+        await using var e=Engine();
+        e.Changed+=()=>throw new InvalidOperationException("pipe broke");
+        await e.StartAsync(CancellationToken.None);
+        runner.At(0).Exit();
+        await Until(()=>e.Status==EngineStatus.Restarting);
+        await Advance(TimeSpan.FromSeconds(4),TimeSpan.FromMilliseconds(100));
+        await Until(()=>runner.Count==2&&e.Status==EngineStatus.Running);
     }
 }

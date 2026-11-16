@@ -24,6 +24,7 @@ internal sealed class OpenRgbEngine : IAsyncDisposable
     IRunningProcess? current;
     Task? supervisor;
     volatile bool quitting;
+    bool started;
     EngineStatus status=EngineStatus.Stopped;
     int? processId;
     string? failureReason;
@@ -38,9 +39,16 @@ internal sealed class OpenRgbEngine : IAsyncDisposable
     // Returns once the first launch attempt has resolved (Running, Restarting or Failed); supervision carries on in the background.
     public Task StartAsync(CancellationToken token)
     {
-        lock(gate){if(supervisor is not null) return firstAttempt.Task;}
-        if(!File.Exists(exePath)){Set(EngineStatus.Failed,$"OpenRGB.exe was not found at {exePath}.");firstAttempt.TrySetResult();return Task.CompletedTask;}
-        lock(gate){supervisor=Task.Run(()=>Supervise(cts.Token));}
+        string? pending=null;
+        lock(gate)
+        {
+            if(started) return firstAttempt.Task;
+            started=true;
+            if(!File.Exists(exePath)){SetLocked(EngineStatus.Failed,$"OpenRGB.exe was not found at {exePath}.",out pending);firstAttempt.TrySetResult();}
+            else supervisor=Task.Run(()=>Supervise(cts.Token));
+        }
+        Notify(pending);
+        if(pending is not null) return Task.CompletedTask;
         return firstAttempt.Task.WaitAsync(token);
     }
 
@@ -105,9 +113,24 @@ internal sealed class OpenRgbEngine : IAsyncDisposable
 
     void Set(EngineStatus next,string? reason)
     {
-        lock(gate){if(status==next&&failureReason==reason) return;status=next;failureReason=reason;}
-        log.Write("openrgb "+next+(reason is null?"":": "+reason));
-        Changed?.Invoke();
+        string? line;
+        lock(gate)SetLocked(next,reason,out line);
+        Notify(line);
+    }
+    // Records the change under the lock; the caller logs and raises Changed outside it.
+    void SetLocked(EngineStatus next,string? reason,out string? line)
+    {
+        line=null;
+        if(status==next&&failureReason==reason) return;
+        status=next;failureReason=reason;
+        line="openrgb "+next+(reason is null?"":": "+reason);
+    }
+    // A throwing Changed subscriber must never fault the supervisor: log it once and carry on.
+    void Notify(string? line)
+    {
+        if(line is null) return;
+        log.Write(line);
+        try{Changed?.Invoke();}catch(Exception e){log.Write("openrgb Changed handler failed: "+e.Message);}
     }
 
     public async Task StopAsync()
