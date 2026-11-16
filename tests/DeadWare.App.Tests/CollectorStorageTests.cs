@@ -105,6 +105,41 @@ public class CollectorStorageTests
         var partial=await FirstWithStatus(new FakeStorage([Drive],false),new PartialHealth(),"IOException");
         Assert.Contains("NVMe A",partial.Storage.Status);
     }
+    private static readonly SensorReading DriveTemperature=new("/nvme/0/temperature/0","NVMe A","Temperature","°C",41,"/nvme/0","Storage","Temperature","Available");
+    /// <summary>A health source whose read also gives a drive sensor row, in a new list per read as the real source gives them.</summary>
+    private sealed class RowHealth : IStorageHealthSource
+    {
+        public IReadOnlyList<(string? Serial,string Model,int? Index,SmartSummary Summary)> Read(TimeSpan perHardwareTimeout)
+        {
+            Sensors=[DriveTemperature];
+            return [("S1","NVMe A",0,new SmartSummary(true,false,null,41,70,0,0,0,10,55,false))];
+        }
+        public IReadOnlyList<SensorReading> Sensors {get;private set;}=[];
+        public void Dispose() {}
+    }
+    [Fact] public async Task Extended_sensors_show_drive_rows_from_the_health_loop_and_record_them_once_per_read()
+    {
+        // A health period far longer than the test, so only the loop's first read happens.
+        await using var collector=new Collector(new(HardwareEnabled:false,EtwEnabled:false,ExtendedSensors:true,PollingIntervalSeconds:0.5),new FakeStorage([Drive],false),new RowHealth(),TimeSpan.FromHours(1));
+        var readings=new List<Reading>();var three=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        collector.SampleAvailable+=r=>{lock(readings){if(readings.Count<3&&r.Sensors.Any(s=>s.Id==DriveTemperature.Id)){readings.Add(r);if(readings.Count==3)three.TrySetResult();}}};
+        collector.Start();
+        await three.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        // The poll that first sees the read records its value; the next polls show the row without repeating it in the history.
+        Assert.Equal(41,readings[0].Sample.Values[DriveTemperature.Id]);
+        Assert.All(readings.Skip(1),r=>Assert.False(r.Sample.Values.ContainsKey(DriveTemperature.Id)));
+        Assert.All(readings,r=>Assert.Equal(41,r.Sensors.Single(s=>s.Id==DriveTemperature.Id).Value));
+    }
+    [Fact] public async Task Without_extended_sensors_the_drive_rows_stay_off_the_sensors_list()
+    {
+        await using var collector=new Collector(new(HardwareEnabled:false,EtwEnabled:false,PollingIntervalSeconds:0.5),new FakeStorage([Drive],false),new RowHealth(),TimeSpan.FromMilliseconds(50));
+        var tcs=new TaskCompletionSource<Reading>(TaskCreationOptions.RunContinuationsAsynchronously);
+        collector.SampleAvailable+=r=>{if(r.Storage.Health.Count>0)tcs.TrySetResult(r);};
+        collector.Start();
+        var r=await tcs.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.DoesNotContain(r.Sensors,s=>s.HardwareType=="Storage");Assert.False(r.Sample.Values.ContainsKey(DriveTemperature.Id));
+        Assert.Equal(41,r.Sample.Values["storage/S1/temperature"]);
+    }
     [Fact] public async Task Nine_drive_note_is_in_storage_status()
     {
         var nine=Enumerable.Range(0,9).Select(i=>Drive with {Id="S"+i,Serial="S"+i,Index=i}).ToList();
