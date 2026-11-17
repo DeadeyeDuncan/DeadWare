@@ -18,8 +18,8 @@ internal sealed class OpenRgbEngine : IAsyncDisposable
     readonly TimeProvider time;
     readonly HostLog log;
     readonly RestartBackoff backoff=new();
-    readonly CancellationTokenSource cts=new();
-    readonly TaskCompletionSource firstAttempt=new(TaskCreationOptions.RunContinuationsAsynchronously);
+    CancellationTokenSource cts=new();
+    TaskCompletionSource firstAttempt=new(TaskCreationOptions.RunContinuationsAsynchronously);
     readonly object gate=new();
     IRunningProcess? current;
     Task? supervisor;
@@ -44,8 +44,9 @@ internal sealed class OpenRgbEngine : IAsyncDisposable
         {
             if(started) return firstAttempt.Task;
             started=true;
+            var ct=cts.Token;
             if(!File.Exists(exePath)){SetLocked(EngineStatus.Failed,$"OpenRGB.exe was not found at {exePath}.",out pending);firstAttempt.TrySetResult();}
-            else supervisor=Task.Run(()=>Supervise(cts.Token));
+            else supervisor=Task.Run(()=>Supervise(ct));
         }
         Notify(pending);
         if(pending is not null) return Task.CompletedTask;
@@ -142,9 +143,11 @@ internal sealed class OpenRgbEngine : IAsyncDisposable
         try{cts.Cancel();}catch(ObjectDisposedException){}
         try{proc?.KillTree();}catch{}
         if(sup is not null){try{await sup.ConfigureAwait(false);}catch{}}
+        // Re-arm so the host can start the engine again after a conflict clears; disposal cancels the fresh token below.
+        lock(gate){started=false;supervisor=null;cts.Dispose();cts=new();firstAttempt=new(TaskCreationOptions.RunContinuationsAsynchronously);backoff.Reset();quitting=false;}
         Set(EngineStatus.Stopped,null);
     }
-    public async ValueTask DisposeAsync(){await StopAsync().ConfigureAwait(false);cts.Dispose();}
+    public async ValueTask DisposeAsync(){await StopAsync().ConfigureAwait(false);lock(gate)cts.Dispose();}
 
     // Real port probe: one TCP connect to 127.0.0.1.
     public static async Task<bool> ProbePort(int port,CancellationToken token)

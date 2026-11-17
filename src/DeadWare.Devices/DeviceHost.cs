@@ -1,0 +1,321 @@
+using DeadWare.Core;
+
+namespace DeadWare.Devices;
+
+internal sealed record HostOptions(string OpenRgbPath,string ConfigDir,string LightingPath,string LogDir,bool Startup,string Sid,int Session);
+
+internal interface IConflictScanner { IReadOnlyList<LightingConflict> Scan(int? ownOpenRgbPid); }
+
+// Orchestrates the host: settings, conflict gate, OpenRGB engine, device painting and the window's requests.
+// Concurrency: ONE lock (gate) guards every touch of settings, the device service, the session flag and the status.
+// Callers are the run loop, pipe requests and engine events on the supervisor thread; all their work under the lock is short
+// and synchronous. Engine start/stop, conflict scans and StateChanged subscribers run OUTSIDE the lock, so the lock never nests
+// with the engine's own lock the wrong way round and a slow subscriber cannot stall painting.
+internal sealed class DeviceHost : IAsyncDisposable
+{
+    public static readonly TimeSpan Tick=TimeSpan.FromMilliseconds(500),SlowTick=TimeSpan.FromSeconds(5),StartupDelay=TimeSpan.FromSeconds(10);
+    public const string UnreadableNote="Your lighting settings file couldn't be read, so changes won't be saved until DeadWare restarts.";
+    public const string QuarantineNote="Your lighting settings file was damaged, so DeadWare set it aside and started with defaults.";
+    readonly HostOptions options;
+    readonly LightingStore store;
+    readonly OpenRgbEngine engine;
+    readonly IOpenRgbSession session;
+    readonly LightingDeviceService service;
+    readonly IConflictScanner scanner;
+    readonly TimeProvider time;
+    readonly HostLog log;
+    readonly string? startupFailure;
+    readonly CancellationTokenSource stopCts=new();
+    readonly object gate=new();
+    LightingSettings settings=new();
+    bool saveAllowed=true,engineActive,sessionOk,rescanPending,disposed;
+    string? note,lastConflictKey;
+    HostStatus status=HostStatus.Starting;
+    string message="";
+    IReadOnlyList<LightingConflict> conflicts=[];
+    public event Action<HostState>? StateChanged;
+
+    // startupFailure: set when the host could not prepare OpenRGB's config folder; it reports OpenRgbFailed and never starts OpenRGB.
+    public DeviceHost(HostOptions options,LightingStore store,OpenRgbEngine engine,Func<IOpenRgbSession> sessionFactory,IConflictScanner conflicts,TimeProvider time,HostLog log,string? startupFailure=null)
+    {
+        this.options=options;this.store=store;this.engine=engine;scanner=conflicts;this.time=time;this.log=log;this.startupFailure=startupFailure;
+        session=sessionFactory();
+        service=new(session,time,log);
+        session.DeviceListUpdated+=OnDeviceListUpdated;
+        engine.Changed+=OnEngineChanged;
+    }
+
+    public HostState State{get{lock(gate)return BuildLocked();}}
+    HostState BuildLocked()
+    {
+        var text=note is null?message:message.Length==0?note:message+" "+note;
+        return new(status,text,Environment.IsPrivilegedProcess,conflicts,service.Views(settings),Clone(settings));
+    }
+    static LightingSettings Clone(LightingSettings s)=>new()
+    {
+        Version=s.Version,LightsOn=s.LightsOn,Brightness=s.Brightness,DefaultColor=s.DefaultColor,
+        ZoneColors=(s.ZoneColors??new()).ToDictionary(e=>e.Key,e=>new ZoneColorEntry{Color=e.Value.Color,ZoneName=e.Value.ZoneName}),
+        HardwareModes=new(s.HardwareModes??new()),
+    };
+    void Raise()
+    {
+        HostState state;
+        lock(gate)state=BuildLocked();
+        try{StateChanged?.Invoke(state);}catch(Exception e){log.Write("StateChanged handler failed: "+e.Message);}
+    }
+
+    public async Task RunAsync(CancellationToken token)
+    {
+        using var linked=CancellationTokenSource.CreateLinkedTokenSource(token,stopCts.Token);
+        var ct=linked.Token;
+        log.Write($"host start (openrgb {options.OpenRgbPath}, startup {options.Startup})");
+        LoadSettings();
+        Raise();
+        try
+        {
+            if(startupFailure is not null)
+            {
+                lock(gate){status=HostStatus.OpenRgbFailed;message=startupFailure;}
+                log.Write("host cannot start openrgb: "+startupFailure);
+                Raise();
+                await Task.Delay(Timeout.InfiniteTimeSpan,ct).ConfigureAwait(false);
+                return;
+            }
+            if(options.Startup) await Task.Delay(StartupDelay,time,ct).ConfigureAwait(false);
+            var lastSlow=time.GetTimestamp();
+            await CheckConflictsAsync(ct).ConfigureAwait(false);
+            while(true)
+            {
+                await Task.Delay(Tick,time,ct).ConfigureAwait(false);
+                var now=time.GetTimestamp();
+                var slow=time.GetElapsedTime(lastSlow,now)>=SlowTick;
+                if(slow){lastSlow=now;await CheckConflictsAsync(ct).ConfigureAwait(false);}
+                TickWork(slow);
+            }
+        }
+        catch(OperationCanceledException){}
+        finally
+        {
+            lock(gate){status=HostStatus.Stopping;engineActive=false;}
+            log.Write("host stopping");
+            try{await engine.StopAsync().ConfigureAwait(false);}catch(Exception e){log.Write("engine stop failed: "+e.Message);}
+            log.Write("host stopped");
+        }
+    }
+
+    void LoadSettings()
+    {
+        lock(gate)
+        {
+            try
+            {
+                var read=store.Load();
+                settings=read.Settings;
+                if(read.Quarantine){note=QuarantineNote;log.Write("lighting.json was invalid and was set aside: "+read.Error);}
+            }
+            catch(Exception e)
+            {
+                settings=new();saveAllowed=false;note=UnreadableNote;
+                log.Write("lighting.json could not be read; saving disabled: "+e.Message);
+            }
+        }
+    }
+
+    // Ruling E: the engine must never run while a blocking conflict exists.
+    async Task CheckConflictsAsync(CancellationToken ct)
+    {
+        IReadOnlyList<LightingConflict> found;
+        try{found=scanner.Scan(engine.ProcessId);}
+        catch(Exception e){log.Write("conflict scan failed: "+e.Message);found=[];}
+        var blocking=found.Where(c=>c.BlocksLighting).ToList();
+        bool stop=false,start=false,changed=false;
+        lock(gate)
+        {
+            if(status==HostStatus.Stopping) return;
+            var key=string.Join("|",found.Select(c=>c.Description));
+            if(key!=lastConflictKey)
+            {
+                lastConflictKey=key;changed=true;
+                log.Write(found.Count==0?"conflicts cleared":"conflicts: "+string.Join(" ",found.Select(c=>c.Kind+(c.BlocksLighting?" (blocks)":""))));
+            }
+            conflicts=found;
+            if(blocking.Count>0)
+            {
+                var text=string.Join(" ",blocking.Select(c=>c.Description));
+                if(engineActive){engineActive=false;stop=true;sessionOk=false;}
+                if(status!=HostStatus.Blocked||message!=text){status=HostStatus.Blocked;message=text;changed=true;}
+            }
+            else if(!engineActive){engineActive=true;start=true;status=HostStatus.Starting;message="";changed=true;}
+        }
+        if(changed) Raise();
+        if(stop) await engine.StopAsync().ConfigureAwait(false);
+        if(start) await engine.StartAsync(ct).ConfigureAwait(false);
+    }
+
+    void TickWork(bool slow)
+    {
+        var changed=false;
+        lock(gate)
+        {
+            if(!engineActive||status is HostStatus.Blocked or HostStatus.Stopping||engine.Status!=EngineStatus.Running) return;
+            try
+            {
+                if(!sessionOk) changed=ConnectLocked();
+                else
+                {
+                    if(slow||rescanPending){rescanPending=false;changed=RescanLocked();}
+                    service.Paint(settings);
+                }
+            }
+            catch(Exception e)
+            {
+                sessionOk=false;status=HostStatus.Waiting;message="Lost the connection to OpenRGB; reconnecting.";changed=true;
+                log.Write("openrgb session error: "+e.Message);
+            }
+        }
+        if(changed) Raise();
+    }
+
+    // Ruling F: after OpenRGB (re)starts, forget what was sent, reconnect, rescan, then paint.
+    bool ConnectLocked()
+    {
+        service.Reset();
+        try
+        {
+            session.Connect();
+            sessionOk=true;
+            RescanLocked();
+            service.Paint(settings);
+            status=HostStatus.Running;message="";
+        }
+        catch(Exception e)
+        {
+            sessionOk=false;status=HostStatus.Waiting;message="Waiting for OpenRGB to accept connections.";
+            log.Write("openrgb connect failed: "+e.Message);
+        }
+        return true;
+    }
+
+    bool RescanLocked()
+    {
+        var changed=service.Rescan();
+        if(!changed) return false;
+        log.Write($"devices changed: {service.Devices.Count} device(s)");
+        if(LightingKeys.Remap(settings,service.Devices.Select(d=>d.Key).ToList())) SaveQuietly();
+        return true;
+    }
+
+    void SaveQuietly()
+    {
+        if(!saveAllowed) return;
+        try{store.Save(settings);}catch(Exception e){log.Write("saving lighting.json failed: "+e.Message);}
+    }
+
+    void OnDeviceListUpdated(){lock(gate)rescanPending=true;}
+
+    void OnEngineChanged()
+    {
+        var raise=true;
+        lock(gate)
+        {
+            if(!engineActive||status==HostStatus.Stopping) return;
+            switch(engine.Status)
+            {
+                case EngineStatus.Running:ConnectLocked();break;
+                case EngineStatus.Restarting:
+                    sessionOk=false;status=HostStatus.Waiting;message="OpenRGB is restarting. Lighting will resume in a moment.";break;
+                case EngineStatus.Failed:
+                    sessionOk=false;
+                    if(!File.Exists(options.OpenRgbPath)){status=HostStatus.OpenRgbMissing;message=engine.FailureReason??"OpenRGB.exe was not found.";}
+                    else{status=HostStatus.OpenRgbFailed;message=engine.FailureReason??"OpenRGB failed.";}
+                    break;
+                default:raise=false;break;
+            }
+        }
+        if(raise) Raise();
+    }
+
+    public Task<HostMessage> HandleAsync(HostMessage request)
+    {
+        HostMessage reply;
+        var raise=false;
+        lock(gate)reply=Apply(request,out raise);
+        if(raise) Raise();
+        if(request is StopRequest&&reply is Reply{Ok:true}) try{stopCts.Cancel();}catch(ObjectDisposedException){}
+        return Task.FromResult(reply);
+    }
+
+    HostMessage Apply(HostMessage request,out bool raise)
+    {
+        raise=false;
+        switch(request)
+        {
+            case GetStateRequest:return new StateEvent(BuildLocked()){Id=request.Id};
+            case StopRequest:
+                status=HostStatus.Stopping;message="";raise=true;
+                return Ok(request);
+            case RescanRequest:
+                if(!engineActive||!sessionOk||status!=HostStatus.Running) return Fail(request,"OpenRGB is not running.");
+                try{RescanLocked();service.Paint(settings);raise=true;return Ok(request);}
+                catch(Exception e){sessionOk=false;log.Write("rescan failed: "+e.Message);return Fail(request,"rescan failed");}
+            case SetLightsOnRequest r:return Mutate(request,s=>{s.LightsOn=r.On;return null;},out raise);
+            case SetBrightnessRequest r:return Mutate(request,s=>{if(r.Percent is<0 or>100) return "Brightness must be 0 to 100.";s.Brightness=r.Percent;return null;},out raise);
+            case SetAllColorsRequest r:
+                return Mutate(request,s=>{if(!Rgb.TryParse(r.Color,out _)) return "Colour must be #RRGGBB.";s.DefaultColor=r.Color;s.ZoneColors.Clear();return null;},out raise);
+            case SetZoneColorRequest r:return Mutate(request,s=>SetZone(s,r),out raise);
+            case ReplaceColorsRequest r:
+                return Mutate(request,s=>
+                {
+                    if(r.ZoneColors is null) return "ZoneColors is missing.";
+                    s.DefaultColor=r.DefaultColor;
+                    s.ZoneColors=r.ZoneColors.ToDictionary(e=>e.Key,e=>e.Value is null?null!:new ZoneColorEntry{Color=e.Value.Color,ZoneName=e.Value.ZoneName});
+                    return null;
+                },out raise);
+            default:return Fail(request,"unsupported");
+        }
+    }
+
+    string? SetZone(LightingSettings s,SetZoneColorRequest r)
+    {
+        if(r.Color is null){s.ZoneColors.Remove(r.ZoneKey);return null;}
+        if(!Rgb.TryParse(r.Color,out _)) return "Colour must be #RRGGBB.";
+        if(!LightingKeys.TrySplitZone(r.ZoneKey,out var deviceKey,out var index)) return "unknown zone";
+        var zone=service.Devices.FirstOrDefault(d=>d.Key==deviceKey)?.Zones.FirstOrDefault(z=>z.Index==index);
+        if(zone is null) return "unknown zone";
+        s.ZoneColors[r.ZoneKey]=new ZoneColorEntry{Color=r.Color,ZoneName=zone.Name};
+        return null;
+    }
+
+    // Edit a copy, validate, save, and only then adopt it: a rejected or unsavable change leaves the live settings untouched.
+    HostMessage Mutate(HostMessage request,Func<LightingSettings,string?> edit,out bool raise)
+    {
+        raise=false;
+        var candidate=Clone(settings);
+        var error=edit(candidate)??LightingSettingsCodec.Validate(candidate);
+        if(error is not null) return Fail(request,error);
+        if(saveAllowed)
+        {
+            try{store.Save(candidate);}
+            catch(Exception e){log.Write("saving lighting.json failed: "+e.Message);return Fail(request,"couldn't save settings");}
+        }
+        settings=candidate;
+        if(engineActive&&sessionOk&&status==HostStatus.Running)
+        {
+            try{service.Paint(settings);}catch(Exception e){sessionOk=false;log.Write("paint failed: "+e.Message);}
+        }
+        raise=true;
+        return Ok(request);
+    }
+    static Reply Ok(HostMessage r)=>new(true,null){Id=r.Id};
+    static Reply Fail(HostMessage r,string why)=>new(false,why){Id=r.Id};
+
+    public async ValueTask DisposeAsync()
+    {
+        lock(gate){if(disposed) return;disposed=true;}
+        try{stopCts.Cancel();}catch(ObjectDisposedException){}
+        engine.Changed-=OnEngineChanged;
+        session.DeviceListUpdated-=OnDeviceListUpdated;
+        await engine.DisposeAsync().ConfigureAwait(false);
+        session.Dispose();
+    }
+}

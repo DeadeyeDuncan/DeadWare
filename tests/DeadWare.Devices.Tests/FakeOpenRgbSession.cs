@@ -11,10 +11,11 @@ sealed class FakeOpenRgbSession:IOpenRgbSession
     public readonly List<(int Index,int Mode,Rgb[]? Colors)> Modes=new();
     public Func<int,bool>? FailLeds;
     public bool Connected{get;private set;}
+    public int Connects,Reads;
     public event Action? DeviceListUpdated;
-    public void Connect()=>Connected=true;
+    public void Connect(){Connects++;Connected=true;}
     public void RaiseUpdated()=>DeviceListUpdated?.Invoke();
-    public IReadOnlyList<OpenRgbController> ReadControllers()=>Controllers.ToList();
+    public IReadOnlyList<OpenRgbController> ReadControllers(){Reads++;return Controllers.ToList();}
     public void UpdateLeds(int index,ReadOnlySpan<Rgb> colors)
     {
         if(FailLeds?.Invoke(index)==true) throw new IOException("fake leds failure");
