@@ -1,4 +1,5 @@
 using System.IO.Pipes;
+using System.Runtime.InteropServices;
 using DeadWare.Core;
 using DeadWare.Devices;
 using Xunit;
@@ -96,11 +97,60 @@ public sealed class HostPipeServerTests : IDisposable
     [Fact]
     public void Sddl_denies_network_gives_user_read_write_and_admins_full()
     {
-        var plain=HostPipeServer.Sddl("S-1-5-21-1-2-3-1001",false);
+        var plain=HostPipeServer.Sddl("S-1-5-21-1-2-3-1001",null);
         Assert.Equal("D:(D;;GA;;;NU)(A;;GRGW;;;S-1-5-21-1-2-3-1001)(A;;GA;;;BA)",plain);
-        Assert.Equal(plain+"S:(ML;;NW;;;HI)",HostPipeServer.Sddl("S-1-5-21-1-2-3-1001",true));
-        var ps=new System.IO.Pipes.PipeSecurity();
-        ps.SetSecurityDescriptorSddlForm(HostPipeServer.Sddl("S-1-5-21-1-2-3-1001",false));
-        Assert.Contains("(D;;",ps.GetSecurityDescriptorSddlForm(System.Security.AccessControl.AccessControlSections.Access));
+        Assert.DoesNotContain("S:",plain); // no SACL when not elevated
+        Assert.Equal(plain+"S:(ML;;NWNR;;;HI)",HostPipeServer.Sddl("S-1-5-21-1-2-3-1001","HI"));
+    }
+
+    [DllImport("advapi32.dll",SetLastError=true)]
+    static extern uint GetSecurityInfo(SafeHandle handle,int objectType,int securityInfo,IntPtr owner,IntPtr group,IntPtr dacl,IntPtr sacl,out IntPtr sd);
+    [DllImport("advapi32.dll",SetLastError=true,CharSet=CharSet.Unicode)]
+    static extern bool ConvertSecurityDescriptorToStringSecurityDescriptorW(IntPtr sd,uint revision,uint securityInfo,out IntPtr str,out uint length);
+    [DllImport("kernel32.dll")] static extern IntPtr LocalFree(IntPtr memory);
+    static string KernelSddl(SafeHandle h,uint info)
+    {
+        Assert.Equal(0u,GetSecurityInfo(h,6,(int)info,IntPtr.Zero,IntPtr.Zero,IntPtr.Zero,IntPtr.Zero,out var sd));
+        try
+        {
+            Assert.True(ConvertSecurityDescriptorToStringSecurityDescriptorW(sd,1,info,out var str,out _));
+            try{return Marshal.PtrToStringUni(str)!;}finally{LocalFree(str);}
+        }
+        finally{LocalFree(sd);}
+    }
+
+    [Fact]
+    public async Task Created_pipe_carries_the_label_and_the_dacl()
+    {
+        // Non-elevated tests cannot set a High label, so the level is parameterised: Medium proves the SACL path is applied.
+        await using var server=new HostPipeServer(name,m=>Task.FromResult<HostMessage>(new Reply(true,null)),log,elevated:false,labelLevel:"ME");
+        server.Open();
+        var label=KernelSddl(server.PipeHandle!,0x10);
+        Assert.Contains("ML;;NWNR;;;ME",label);
+        var dacl=KernelSddl(server.PipeHandle!,0x4);
+        Assert.StartsWith("D:",dacl);
+        Assert.Contains("(D;;FA;;;NU)",dacl);
+        Assert.Contains(";;;BA)",dacl);
+    }
+
+    [Fact]
+    public async Task A_taken_pipe_name_fails_to_open()
+    {
+        await using var first=new HostPipeServer(name,m=>Task.FromResult<HostMessage>(new Reply(true,null)),log,elevated:false);
+        first.Open();
+        await using var second=new HostPipeServer(name,m=>Task.FromResult<HostMessage>(new Reply(true,null)),log,elevated:false);
+        Assert.ThrowsAny<Exception>(()=>second.Open());
+    }
+
+    [Fact]
+    public async Task Default_elevation_path_creates_a_working_pipe()
+    {
+        // On an elevated runner this applies the High label natively; non-elevated it applies none. Either way a same-process client connects.
+        await using var server=new HostPipeServer(name,m=>Task.FromResult<HostMessage>(new Reply(true,null){Id=m.Id}),log);
+        var run=server.RunAsync(cts.Token);
+        await using var client=await Connect();
+        await DeviceHostProtocol.WriteAsync(client,new GetStateRequest{Id=3},cts.Token);
+        Assert.Equal(3,(await DeviceHostProtocol.ReadAsync(client,cts.Token))!.Id);
+        if(Environment.IsPrivilegedProcess) Assert.Contains("ML;;NWNR;;;HI",KernelSddl(server.PipeHandle!,0x10));
     }
 }

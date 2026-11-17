@@ -57,9 +57,9 @@ public sealed class DeviceHostTests : IAsyncLifetime
 
     DeviceHost Build(bool startup=false,string? exePath=null)
     {
-        var engine=new OpenRgbEngine(exePath??exe,@"C:g",runner,(_,_)=>Task.FromResult(true),time,log);
+        var engine=new OpenRgbEngine(exePath??exe,@"C:\cfg",runner,(_,_)=>Task.FromResult(true),time,log);
         var scanner=new Scanner(_=>{Interlocked.Increment(ref scans);lock(conflicts)return conflicts.ToList();});
-        var options=new HostOptions(exePath??exe,@"C:g",lightingPath,Path.Combine(dir,"logs"),startup,"S-1-5-21-1",1);
+        var options=new HostOptions(exePath??exe,@"C:\cfg",lightingPath,Path.Combine(dir,"logs"),startup,"S-1-5-21-1",1);
         return host=new DeviceHost(options,new LightingStore(lightingPath),engine,()=>session,scanner,time,log);
     }
     void Start(DeviceHost h)=>run=h.RunAsync(CancellationToken.None);
@@ -186,7 +186,7 @@ public sealed class DeviceHostTests : IAsyncLifetime
         Assert.Equal("#FF0000",h.State.Settings.DefaultColor);
         var saved=new LightingStore(lightingPath).Load().Settings;
         Assert.Equal("#FF0000",saved.DefaultColor);Assert.Empty(saved.ZoneColors);
-        await Advance(TimeSpan.FromSeconds(1));
+        await AdvanceUntil(()=>{try{return LastLeds(0).All(c=>c==new Rgb(255,0,0));}catch(InvalidOperationException){return false;}});
         Assert.All(LastLeds(0),c=>Assert.Equal(new Rgb(255,0,0),c));
     }
 
@@ -287,8 +287,7 @@ public sealed class DeviceHostTests : IAsyncLifetime
         var h=Build();
         h.StateChanged+=s=>{lock(seen)seen.Add(s);};
         Start(h);
-        await Until(()=>h.State.Status==HostStatus.Waiting);
-        await Until(()=>session.Connects>=1);
+        await Until(()=>{lock(seen)return seen.Any(x=>x.Status==HostStatus.Waiting);}); // the one broadcast for this error
         var attempts=session.Connects;
         int events;lock(seen)events=seen.Count;
         for(var i=0;i<20;i++){time.Advance(TimeSpan.FromMilliseconds(500));await Task.Delay(5);}
@@ -304,8 +303,8 @@ public sealed class DeviceHostTests : IAsyncLifetime
     public async Task Failing_conflict_scan_fails_closed()
     {
         var failing=true;
-        var engine=new OpenRgbEngine(exe,@"C:g",runner,(_,_)=>Task.FromResult(true),time,log);
-        var options=new HostOptions(exe,@"C:g",lightingPath,Path.Combine(dir,"logs"),false,"S-1-5-21-1",1);
+        var engine=new OpenRgbEngine(exe,@"C:\cfg",runner,(_,_)=>Task.FromResult(true),time,log);
+        var options=new HostOptions(exe,@"C:\cfg",lightingPath,Path.Combine(dir,"logs"),false,"S-1-5-21-1",1);
         var h=host=new DeviceHost(options,new LightingStore(lightingPath),engine,()=>session,new Scanner(_=>failing?throw new InvalidOperationException("scan broke"):[]),time,log);
         Start(h);
         await Until(()=>h.State.Status==HostStatus.Blocked);

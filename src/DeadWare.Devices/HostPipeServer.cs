@@ -1,7 +1,9 @@
 using System.IO.Pipes;
+using System.Runtime.InteropServices;
 using System.Security.AccessControl;
 using System.Security.Principal;
 using DeadWare.Core;
+using Microsoft.Win32.SafeHandles;
 
 namespace DeadWare.Devices;
 
@@ -16,7 +18,7 @@ internal sealed class HostPipeServer : IAsyncDisposable
     readonly string pipeName;
     readonly Func<HostMessage,Task<HostMessage>> handle;
     readonly HostLog log;
-    readonly bool elevated;
+    readonly string? label;
     readonly TimeSpan writeTimeout;
     readonly SemaphoreSlim writeGate=new(1,1);
     readonly CancellationTokenSource cts=new();
@@ -27,29 +29,46 @@ internal sealed class HostPipeServer : IAsyncDisposable
     CancellationTokenSource? clientCts;
     HostMessage? pending;
     bool handling;
-    public HostPipeServer(string pipeName,Func<HostMessage,Task<HostMessage>> handle,HostLog log,bool? elevated=null,TimeSpan? writeTimeout=null)
-    {this.pipeName=pipeName;this.handle=handle;this.log=log;this.elevated=elevated??Environment.IsPrivilegedProcess;this.writeTimeout=writeTimeout??DefaultWriteTimeout;}
+    public HostPipeServer(string pipeName,Func<HostMessage,Task<HostMessage>> handle,HostLog log,bool? elevated=null,TimeSpan? writeTimeout=null,string? labelLevel=null)
+    {this.pipeName=pipeName;this.handle=handle;this.log=log;label=labelLevel??((elevated??Environment.IsPrivilegedProcess)?"HI":null);this.writeTimeout=writeTimeout??DefaultWriteTimeout;}
 
-    // Current user: read/write only (no ACL changes, no new instances). Administrators: full. Network logons: denied first, because the
-    // DACL is evaluated in order. An elevated host adds a High mandatory label with No-Write-Up so non-elevated clients are refused.
-    public static string Sddl(string userSid,bool elevated)=>$"D:(D;;GA;;;NU)(A;;GRGW;;;{userSid})(A;;GA;;;BA)"+(elevated?"S:(ML;;NW;;;HI)":"");
+    // Current user: GRGW (on a pipe this includes FILE_CREATE_PIPE_INSTANCE; the one-instance limit and FILE_FLAG_FIRST_PIPE_INSTANCE are
+    // what stop anyone creating extra instances, not the ACL). Administrators: full. Network logons: denied first, because the DACL is
+    // evaluated in order. An elevated host adds a mandatory label with No-Write-Up and No-Read-Up so a lower-integrity (non-elevated)
+    // process cannot even open the pipe. A non-elevated host has no SACL at all (the implicit label is Medium).
+    public static string Sddl(string userSid,string? labelLevel)=>$"D:(D;;GA;;;NU)(A;;GRGW;;;{userSid})(A;;GA;;;BA)"+(labelLevel is null?"":$"S:(ML;;NWNR;;;{labelLevel})");
 
-    PipeSecurity Security(bool withLabel)
-    {
-        var ps=new PipeSecurity();
-        ps.SetSecurityDescriptorSddlForm(Sddl(WindowsIdentity.GetCurrent().User!.Value,withLabel));
-        return ps;
-    }
+    [StructLayout(LayoutKind.Sequential)] struct SECURITY_ATTRIBUTES{public int nLength;public IntPtr lpSecurityDescriptor;public int bInheritHandle;}
+    [DllImport("advapi32.dll",SetLastError=true,CharSet=CharSet.Unicode)]
+    static extern bool ConvertStringSecurityDescriptorToSecurityDescriptorW(string sddl,uint revision,out IntPtr sd,out uint length);
+    [DllImport("kernel32.dll",SetLastError=true,CharSet=CharSet.Unicode)]
+    static extern SafePipeHandle CreateNamedPipeW(string name,uint openMode,uint pipeMode,uint maxInstances,uint outBuffer,uint inBuffer,uint timeout,ref SECURITY_ATTRIBUTES attributes);
+    [DllImport("kernel32.dll")] static extern IntPtr LocalFree(IntPtr memory);
+    const uint DuplexAccess=0x3,FirstInstance=0x00080000,Overlapped=0x40000000,TypeByte=0,ReadByte=0,Wait=0,RejectRemote=0x8;
+    const int AccessDenied=5;
 
+    // Created natively: PipeSecurity would carry an empty SACL, which needs SeSecurityPrivilege that an elevated token holds disabled,
+    // so it could not create the labelled pipe. A string-converted descriptor sets just the label. Never falls back to an unlabelled pipe.
     NamedPipeServerStream Create()
     {
-        if(elevated)
+        var sddl=Sddl(WindowsIdentity.GetCurrent().User!.Value,label);
+        if(!ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl,1,out var sd,out _))
+            throw new IOException("The pipe security descriptor could not be built (Win32 error "+Marshal.GetLastWin32Error()+").");
+        SafePipeHandle handle;
+        var error=0;
+        try
         {
-            try{return NamedPipeServerStreamAcl.Create(pipeName,PipeDirection.InOut,1,PipeTransmissionMode.Byte,PipeOptions.Asynchronous,BufferBytes,BufferBytes,Security(true));}
-            catch(Exception e) when(e is not IOException){log.Write("pipe integrity label not applied, using the access list only: "+e.Message);}
+            var attributes=new SECURITY_ATTRIBUTES{nLength=Marshal.SizeOf<SECURITY_ATTRIBUTES>(),lpSecurityDescriptor=sd};
+            handle=CreateNamedPipeW(@"\\.\pipe\"+pipeName,DuplexAccess|FirstInstance|Overlapped,TypeByte|ReadByte|Wait|RejectRemote,1,BufferBytes,BufferBytes,0,ref attributes);
+            if(handle.IsInvalid) error=Marshal.GetLastWin32Error();
         }
-        return NamedPipeServerStreamAcl.Create(pipeName,PipeDirection.InOut,1,PipeTransmissionMode.Byte,PipeOptions.Asynchronous,BufferBytes,BufferBytes,Security(false));
+        finally{LocalFree(sd);}
+        if(error==AccessDenied) throw new UnauthorizedAccessException("The pipe name is already taken.");
+        if(error!=0) throw new IOException("The pipe could not be created (Win32 error "+error+").");
+        return new NamedPipeServerStream(PipeDirection.InOut,true,false,handle);
     }
+
+    internal SafePipeHandle? PipeHandle{get{lock(sync)return server?.SafePipeHandle;}}
 
     // Creates the pipe now; throws if the name is already taken. RunAsync calls it if the caller did not.
     public void Open(){lock(sync)server??=Create();}
@@ -62,18 +81,26 @@ internal sealed class HostPipeServer : IAsyncDisposable
         while(!ct.IsCancellationRequested)
         {
             var failed=false;
+            CancellationTokenSource? client=null;
             try
             {
                 await server!.WaitForConnectionAsync(ct).ConfigureAwait(false);
-                using var client=CancellationTokenSource.CreateLinkedTokenSource(ct);
+                client=CancellationTokenSource.CreateLinkedTokenSource(ct);
                 lock(sync){clientCts=client;current=server;handling=false;pending=null;}
-                try{await ServeAsync(server,client.Token).ConfigureAwait(false);}
-                finally{lock(sync){current=null;clientCts=null;pending=null;handling=false;}}
+                await ServeAsync(server,client.Token).ConfigureAwait(false);
             }
             catch(OperationCanceledException) when(ct.IsCancellationRequested){break;}
             catch(Exception e){failed=true;log.Write("pipe client dropped: "+e.Message);}
-            try{server!.Disconnect();}
-            catch(Exception){lock(sync){try{server!.Dispose();}catch{}server=null;try{server=Create();}catch(Exception e){log.Write("pipe could not be recreated: "+e.Message);throw;}}}
+            // Teardown under the write gate: a broadcast picked just before the session ended can never reach the next client or cancel a disposed source.
+            await writeGate.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+            try
+            {
+                lock(sync){current=null;clientCts=null;pending=null;handling=false;}
+                try{client?.Dispose();}catch(ObjectDisposedException){}
+                try{server!.Disconnect();}
+                catch(Exception){lock(sync){try{server!.Dispose();}catch{}server=null;try{server=Create();}catch(Exception e){log.Write("pipe could not be recreated: "+e.Message);throw;}}}
+            }
+            finally{writeGate.Release();}
             if(failed){try{await Task.Delay(50,ct).ConfigureAwait(false);}catch(OperationCanceledException){break;}}
         }
         lock(sync){try{server?.Dispose();}catch{}server=null;}

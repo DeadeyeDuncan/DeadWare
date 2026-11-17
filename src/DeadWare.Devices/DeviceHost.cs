@@ -31,7 +31,8 @@ internal sealed class DeviceHost : IAsyncDisposable
     readonly object gate=new();
     LightingSettings settings=new();
     bool saveAllowed=true,engineActive,sessionOk,rescanPending,disposed,loaded;
-    string? note,lastConflictKey,lastSessionError;
+    string? note,lastConflictKey,lastSessionError,lastScanError;
+    readonly object raiseGate=new();
     long nextConnectAt;
     TimeSpan connectDelay=ConnectDelayMin;
     HostStatus status=HostStatus.Starting;
@@ -63,9 +64,13 @@ internal sealed class DeviceHost : IAsyncDisposable
     };
     void Raise()
     {
-        HostState state;
-        lock(gate)state=BuildLocked();
-        try{StateChanged?.Invoke(state);}catch(Exception e){log.Write("StateChanged handler failed: "+e.Message);}
+        // Build and deliver under one gate: concurrent raises reach subscribers in build order, so the last delivered state is the newest.
+        lock(raiseGate)
+        {
+            HostState state;
+            lock(gate)state=BuildLocked();
+            try{StateChanged?.Invoke(state);}catch(Exception e){log.Write("StateChanged handler failed: "+e.Message);}
+        }
     }
 
     public async Task RunAsync(CancellationToken token)
@@ -135,7 +140,8 @@ internal sealed class DeviceHost : IAsyncDisposable
         var scanFailed=false;
         var pidBefore=engine.ProcessId;
         try{found=scanner.Scan(pidBefore);}
-        catch(Exception e){log.Write("conflict scan failed: "+e.Message);found=[];scanFailed=true;}
+        catch(Exception e){if(lastScanError!=e.Message){lastScanError=e.Message;log.Write("conflict scan failed: "+e.Message);}found=[];scanFailed=true;}
+        if(!scanFailed) lastScanError=null;
         // OpenRGB relaunched during the scan: the result may call our own new process foreign. Discard it; the next tick scans again.
         if(!scanFailed&&engine.ProcessId!=pidBefore) return;
         var blocking=found.Where(c=>c.BlocksLighting).ToList();
@@ -176,7 +182,7 @@ internal sealed class DeviceHost : IAsyncDisposable
                     var now=time.GetTimestamp();
                     if(now<nextConnectAt) return;
                     changed=ConnectLocked();
-                    if(!sessionOk){nextConnectAt=now+(long)(connectDelay.TotalSeconds*time.TimestampFrequency);connectDelay=TimeSpan.FromTicks(Math.Min(connectDelay.Ticks*2,ConnectDelayMax.Ticks));}
+                    if(!sessionOk) ArmBackoff();
                 }
                 else
                 {
@@ -203,6 +209,12 @@ internal sealed class DeviceHost : IAsyncDisposable
             return true;
         }
         catch(Exception e){return FailSession("Waiting for OpenRGB to accept connections.",e);}
+    }
+
+    void ArmBackoff()
+    {
+        nextConnectAt=time.GetTimestamp()+(long)(connectDelay.TotalSeconds*time.TimestampFrequency);
+        connectDelay=TimeSpan.FromTicks(Math.Min(connectDelay.Ticks*2,ConnectDelayMax.Ticks));
     }
 
     // Logs and reports a session failure only when it is new, so a wedged OpenRGB cannot spam the log or the window.
@@ -240,7 +252,7 @@ internal sealed class DeviceHost : IAsyncDisposable
             if(!engineActive||status==HostStatus.Stopping) return;
             switch(engine.Status)
             {
-                case EngineStatus.Running:connectDelay=ConnectDelayMin;nextConnectAt=0;ConnectLocked();break;
+                case EngineStatus.Running:connectDelay=ConnectDelayMin;nextConnectAt=0;ConnectLocked();if(!sessionOk) ArmBackoff();break;
                 case EngineStatus.Restarting:
                     sessionOk=false;status=HostStatus.Waiting;message="OpenRGB is restarting. Lighting will resume in a moment.";break;
                 case EngineStatus.Failed:
