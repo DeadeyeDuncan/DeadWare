@@ -7,6 +7,14 @@ return await RunAsync(args);
 static ProcessIdentity Identity(Process process,string sid)=>new(process.Id,process.StartTime.ToUniversalTime().Ticks,process.SessionId,sid,
     process.MainModule?.FileName??throw new InvalidDataException("The process executable is unavailable."));
 
+static IReadOnlyList<int> DevicesRunning(string install)
+{
+    var found=new List<(int,string?)>();
+    foreach(var process in Process.GetProcessesByName("DeadWare.Devices"))
+        using(process){string? path;try{path=process.MainModule?.FileName;}catch{path=null;}found.Add((process.Id,path));}
+    return InstallProcesses.Running(install,found);
+}
+
 static void WriteResult(UpdatePaths paths,UpdateJob job,UpdateResult result)
 {SafeFiles.WriteJson(paths.ResultFile,result);SafeFiles.WriteJson(UpdateHandoff.JobFile(paths,job.Id,"complete.json"),result);}
 
@@ -52,6 +60,11 @@ static async Task<int> RunAsync(string[] args)
         }
         if(File.Exists(UpdateHandoff.JobFile(paths,id,"cancel")))throw new OperationCanceledException("Update cancelled before file replacement.");
         parentExited=true;
+        for(var hostDeadline=DateTime.UtcNow.AddSeconds(10);;await Task.Delay(100))
+        {
+            if(DevicesRunning(paths.Install).Count==0)break;
+            if(DateTime.UtcNow>=hostDeadline)throw new OperationCanceledException("The lighting helper did not stop. App files were not replaced.");
+        }
         UpdateHandoff.ValidateJob(paths,job);ProtectedRoot.Verify(paths);
         var transaction=new InstallTransaction(paths);
         if(File.Exists(paths.PendingFile))transaction.Recover();
