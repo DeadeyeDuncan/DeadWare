@@ -11,7 +11,7 @@ static IReadOnlyList<int> DevicesRunning(string install)
 {
     var found=new List<(int,string?)>();
     foreach(var process in Process.GetProcessesByName("DeadWare.Devices"))
-        using(process){string? path;try{path=process.MainModule?.FileName;}catch{path=null;}found.Add((process.Id,path));}
+        using(process)found.Add((process.Id,InstallProcesses.ImagePath(process.Id)));
     return InstallProcesses.Running(install,found);
 }
 
