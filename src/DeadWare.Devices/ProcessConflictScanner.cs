@@ -14,10 +14,12 @@ internal sealed class ProcessConflictScanner : IConflictScanner
             var list=new List<RunningProcess>(processes.Length);
             foreach(var p in processes)
             {
-                string? path=null;
-                try{path=p.MainModule?.FileName;}catch{}
                 string name;
                 try{name=p.ProcessName;}catch{continue;}
+                // Only electron (DeadLight's install path) and OpenRGB need a path; reading modules of every process is slow and often denied.
+                string? path=null;
+                if(name.Equals("electron",StringComparison.OrdinalIgnoreCase)||name.Equals("OpenRGB",StringComparison.OrdinalIgnoreCase))
+                    try{path=p.MainModule?.FileName;}catch{}
                 int id;
                 try{id=p.Id;}catch{continue;}
                 list.Add(new(id,name,path));

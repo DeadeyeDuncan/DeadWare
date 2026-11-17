@@ -14,6 +14,8 @@ internal interface IConflictScanner { IReadOnlyList<LightingConflict> Scan(int? 
 internal sealed class DeviceHost : IAsyncDisposable
 {
     public static readonly TimeSpan Tick=TimeSpan.FromMilliseconds(500),SlowTick=TimeSpan.FromSeconds(5),StartupDelay=TimeSpan.FromSeconds(10);
+    public static readonly TimeSpan ConnectDelayMin=TimeSpan.FromSeconds(2),ConnectDelayMax=TimeSpan.FromSeconds(30);
+    public const string ScanFailedText="DeadWare couldn't check for conflicting programs; it will try again shortly.";
     public const string UnreadableNote="Your lighting settings file couldn't be read, so changes won't be saved until DeadWare restarts.";
     public const string QuarantineNote="Your lighting settings file was damaged, so DeadWare set it aside and started with defaults.";
     readonly HostOptions options;
@@ -28,8 +30,10 @@ internal sealed class DeviceHost : IAsyncDisposable
     readonly CancellationTokenSource stopCts=new();
     readonly object gate=new();
     LightingSettings settings=new();
-    bool saveAllowed=true,engineActive,sessionOk,rescanPending,disposed;
-    string? note,lastConflictKey;
+    bool saveAllowed=true,engineActive,sessionOk,rescanPending,disposed,loaded;
+    string? note,lastConflictKey,lastSessionError;
+    long nextConnectAt;
+    TimeSpan connectDelay=ConnectDelayMin;
     HostStatus status=HostStatus.Starting;
     string message="";
     IReadOnlyList<LightingConflict> conflicts=[];
@@ -69,7 +73,7 @@ internal sealed class DeviceHost : IAsyncDisposable
         using var linked=CancellationTokenSource.CreateLinkedTokenSource(token,stopCts.Token);
         var ct=linked.Token;
         log.Write($"host start (openrgb {options.OpenRgbPath}, startup {options.Startup})");
-        LoadSettings();
+        Initialize();
         Raise();
         try
         {
@@ -103,10 +107,13 @@ internal sealed class DeviceHost : IAsyncDisposable
         }
     }
 
-    void LoadSettings()
+    // Loads lighting.json. Idempotent; Program calls it before the pipe accepts requests, so no request ever sees or overwrites unloaded defaults.
+    public void Initialize()
     {
         lock(gate)
         {
+            if(loaded) return;
+            loaded=true;
             try
             {
                 var read=store.Load();
@@ -125,23 +132,27 @@ internal sealed class DeviceHost : IAsyncDisposable
     async Task CheckConflictsAsync(CancellationToken ct)
     {
         IReadOnlyList<LightingConflict> found;
-        try{found=scanner.Scan(engine.ProcessId);}
-        catch(Exception e){log.Write("conflict scan failed: "+e.Message);found=[];}
+        var scanFailed=false;
+        var pidBefore=engine.ProcessId;
+        try{found=scanner.Scan(pidBefore);}
+        catch(Exception e){log.Write("conflict scan failed: "+e.Message);found=[];scanFailed=true;}
+        // OpenRGB relaunched during the scan: the result may call our own new process foreign. Discard it; the next tick scans again.
+        if(!scanFailed&&engine.ProcessId!=pidBefore) return;
         var blocking=found.Where(c=>c.BlocksLighting).ToList();
         bool stop=false,start=false,changed=false;
         lock(gate)
         {
             if(status==HostStatus.Stopping) return;
-            var key=string.Join("|",found.Select(c=>c.Description));
+            var key=scanFailed?"scan failed":string.Join("|",found.Select(c=>c.Description));
             if(key!=lastConflictKey)
             {
                 lastConflictKey=key;changed=true;
-                log.Write(found.Count==0?"conflicts cleared":"conflicts: "+string.Join(" ",found.Select(c=>c.Kind+(c.BlocksLighting?" (blocks)":""))));
+                log.Write(scanFailed?"conflict gate closed: scan failed":found.Count==0?"conflicts cleared":"conflicts: "+string.Join(" ",found.Select(c=>c.Kind+(c.BlocksLighting?" (blocks)":""))));
             }
             conflicts=found;
-            if(blocking.Count>0)
+            if(blocking.Count>0||scanFailed)
             {
-                var text=string.Join(" ",blocking.Select(c=>c.Description));
+                var text=scanFailed?ScanFailedText:string.Join(" ",blocking.Select(c=>c.Description));
                 if(engineActive){engineActive=false;stop=true;sessionOk=false;}
                 if(status!=HostStatus.Blocked||message!=text){status=HostStatus.Blocked;message=text;changed=true;}
             }
@@ -160,18 +171,20 @@ internal sealed class DeviceHost : IAsyncDisposable
             if(!engineActive||status is HostStatus.Blocked or HostStatus.Stopping||engine.Status!=EngineStatus.Running) return;
             try
             {
-                if(!sessionOk) changed=ConnectLocked();
+                if(!sessionOk)
+                {
+                    var now=time.GetTimestamp();
+                    if(now<nextConnectAt) return;
+                    changed=ConnectLocked();
+                    if(!sessionOk){nextConnectAt=now+(long)(connectDelay.TotalSeconds*time.TimestampFrequency);connectDelay=TimeSpan.FromTicks(Math.Min(connectDelay.Ticks*2,ConnectDelayMax.Ticks));}
+                }
                 else
                 {
                     if(slow||rescanPending){rescanPending=false;changed=RescanLocked();}
                     service.Paint(settings);
                 }
             }
-            catch(Exception e)
-            {
-                sessionOk=false;status=HostStatus.Waiting;message="Lost the connection to OpenRGB; reconnecting.";changed=true;
-                log.Write("openrgb session error: "+e.Message);
-            }
+            catch(Exception e){changed=FailSession("Lost the connection to OpenRGB; reconnecting.",e);}
         }
         if(changed) Raise();
     }
@@ -186,14 +199,20 @@ internal sealed class DeviceHost : IAsyncDisposable
             sessionOk=true;
             RescanLocked();
             service.Paint(settings);
-            status=HostStatus.Running;message="";
+            status=HostStatus.Running;message="";lastSessionError=null;connectDelay=ConnectDelayMin;nextConnectAt=0;
+            return true;
         }
-        catch(Exception e)
-        {
-            sessionOk=false;status=HostStatus.Waiting;message="Waiting for OpenRGB to accept connections.";
-            log.Write("openrgb connect failed: "+e.Message);
-        }
-        return true;
+        catch(Exception e){return FailSession("Waiting for OpenRGB to accept connections.",e);}
+    }
+
+    // Logs and reports a session failure only when it is new, so a wedged OpenRGB cannot spam the log or the window.
+    bool FailSession(string text,Exception e)
+    {
+        sessionOk=false;
+        var changed=status!=HostStatus.Waiting||message!=text;
+        status=HostStatus.Waiting;message=text;
+        if(lastSessionError!=e.Message){lastSessionError=e.Message;changed=true;log.Write("openrgb session error: "+e.Message);}
+        return changed;
     }
 
     bool RescanLocked()
@@ -221,7 +240,7 @@ internal sealed class DeviceHost : IAsyncDisposable
             if(!engineActive||status==HostStatus.Stopping) return;
             switch(engine.Status)
             {
-                case EngineStatus.Running:ConnectLocked();break;
+                case EngineStatus.Running:connectDelay=ConnectDelayMin;nextConnectAt=0;ConnectLocked();break;
                 case EngineStatus.Restarting:
                     sessionOk=false;status=HostStatus.Waiting;message="OpenRGB is restarting. Lighting will resume in a moment.";break;
                 case EngineStatus.Failed:
@@ -239,7 +258,7 @@ internal sealed class DeviceHost : IAsyncDisposable
     {
         HostMessage reply;
         var raise=false;
-        lock(gate)reply=Apply(request,out raise);
+        lock(gate)reply=loaded||request is StopRequest?Apply(request,out raise):new Reply(false,"starting"){Id=request.Id};
         if(raise) Raise();
         if(request is StopRequest&&reply is Reply{Ok:true}) try{stopCts.Cancel();}catch(ObjectDisposedException){}
         return Task.FromResult(reply);

@@ -13,7 +13,8 @@ sealed class FakeOpenRgbSession:IOpenRgbSession
     public bool Connected{get;private set;}
     public int Connects,Reads;
     public event Action? DeviceListUpdated;
-    public void Connect(){Connects++;Connected=true;}
+    public bool FailConnect;
+    public void Connect(){Connects++;if(FailConnect) throw new IOException("fake connect failure");Connected=true;}
     public void RaiseUpdated()=>DeviceListUpdated?.Invoke();
     public IReadOnlyList<OpenRgbController> ReadControllers(){Reads++;return Controllers.ToList();}
     public void UpdateLeds(int index,ReadOnlySpan<Rgb> colors)

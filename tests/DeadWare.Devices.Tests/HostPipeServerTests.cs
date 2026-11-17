@@ -75,4 +75,32 @@ public sealed class HostPipeServerTests : IDisposable
         }
         Assert.False(run.IsFaulted);
     }
+
+    [Fact]
+    public async Task A_client_that_never_reads_is_dropped_and_the_next_client_is_served()
+    {
+        var big=new Dictionary<string,ZoneColorEntry>();
+        for(var i=0;i<3000;i++) big[$"serial-{i}|location-{i}#0"]=new(){Color="#112233",ZoneName="Zone "+i};
+        var settings=new LightingSettings{ZoneColors=big};
+        await using var server=new HostPipeServer(name,m=>Task.FromResult<HostMessage>(m.Id==1?new StateEvent(new(HostStatus.Running,"",false,[],[],settings)){Id=1}:new Reply(true,null){Id=m.Id}),log,elevated:false,writeTimeout:TimeSpan.FromMilliseconds(300));
+        var run=server.RunAsync(cts.Token);
+        await using var stuck=await Connect();
+        await DeviceHostProtocol.WriteAsync(stuck,new GetStateRequest{Id=1},cts.Token); // the reply is larger than the pipe buffer and is never read
+        await Task.Delay(1000);
+        await using var second=await Connect();
+        await DeviceHostProtocol.WriteAsync(second,new GetStateRequest{Id=2},cts.Token);
+        Assert.Equal(2,(await DeviceHostProtocol.ReadAsync(second,cts.Token))!.Id);
+        Assert.False(run.IsCompleted);
+    }
+
+    [Fact]
+    public void Sddl_denies_network_gives_user_read_write_and_admins_full()
+    {
+        var plain=HostPipeServer.Sddl("S-1-5-21-1-2-3-1001",false);
+        Assert.Equal("D:(D;;GA;;;NU)(A;;GRGW;;;S-1-5-21-1-2-3-1001)(A;;GA;;;BA)",plain);
+        Assert.Equal(plain+"S:(ML;;NW;;;HI)",HostPipeServer.Sddl("S-1-5-21-1-2-3-1001",true));
+        var ps=new System.IO.Pipes.PipeSecurity();
+        ps.SetSecurityDescriptorSddlForm(HostPipeServer.Sddl("S-1-5-21-1-2-3-1001",false));
+        Assert.Contains("(D;;",ps.GetSecurityDescriptorSddlForm(System.Security.AccessControl.AccessControlSections.Access));
+    }
 }

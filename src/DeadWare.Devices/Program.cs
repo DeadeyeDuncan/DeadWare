@@ -6,7 +6,7 @@ namespace DeadWare.Devices;
 
 internal static class Program
 {
-    // Exit codes: 0 after Stop, 1 unexpected failure, 2 bad arguments, 3 another host already runs in this session.
+    // Exit codes: 0 after Stop, 1 unexpected failure, 2 bad arguments, 3 another host already runs in this session, 4 the pipe could not be created.
     private static async Task<int> Main(string[] args)
     {
         string? openRgb=null;var startup=false;
@@ -17,6 +17,9 @@ internal static class Program
             else return 2;
         }
         if(string.IsNullOrWhiteSpace(openRgb)) return 2;
+
+        string openRgbPath;
+        try{openRgbPath=Path.GetFullPath(openRgb);}catch(Exception){return 2;}
 
         var sid=WindowsIdentity.GetCurrent().User!.Value;
         var session=Process.GetCurrentProcess().SessionId;
@@ -32,16 +35,30 @@ internal static class Program
             var configDir="";string? failure=null;
             try{configDir=ProtectedFolders.OpenRgbConfigDirectory();}
             catch(Exception e){failure=e.Message;log.Write("openrgb config folder unavailable: "+e.Message);}
-            var options=new HostOptions(Path.GetFullPath(openRgb),configDir,lightingPath,logDir,startup,sid,session);
+            var options=new HostOptions(openRgbPath,configDir,lightingPath,logDir,startup,sid,session);
             var engine=new OpenRgbEngine(options.OpenRgbPath,configDir,new SystemProcessRunner(),OpenRgbEngine.ProbePort,TimeProvider.System,log);
             await using var host=new DeviceHost(options,new LightingStore(lightingPath),engine,()=>new OpenRgbSession(),new ProcessConflictScanner(),TimeProvider.System,log,failure);
             await using var server=new HostPipeServer(DeviceHostProtocol.PipeName(sid),host.HandleAsync,log);
+            host.Initialize(); // settings are loaded before the pipe accepts a single request
+            try{server.Open();}
+            catch(Exception e){log.Write("pipe could not be created: "+e.Message);return 4;}
             host.StateChanged+=state=>_=server.SendAsync(new StateEvent(state));
-            using var cts=new CancellationTokenSource();
-            var serving=server.RunAsync(cts.Token);
-            await host.RunAsync(CancellationToken.None).ConfigureAwait(false);
-            await Task.Delay(300).ConfigureAwait(false); // let the Stop reply reach the window before the pipe closes
-            cts.Cancel();
+            using var pipeCts=new CancellationTokenSource();
+            using var hostCts=new CancellationTokenSource();
+            var serving=server.RunAsync(pipeCts.Token);
+            var running=host.RunAsync(hostCts.Token);
+            var first=await Task.WhenAny(running,serving).ConfigureAwait(false);
+            if(first==serving&&!running.IsCompleted)
+            {
+                // The pipe died: the window can no longer reach us. Exit non-zero so its supervisor restarts the host.
+                log.Write("pipe server ended unexpectedly: "+(serving.Exception?.GetBaseException().Message??"no error"));
+                hostCts.Cancel();
+                try{await running.ConfigureAwait(false);}catch(OperationCanceledException){}
+                return 1;
+            }
+            await running.ConfigureAwait(false);
+            await server.WaitForStopReplyAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
+            pipeCts.Cancel();
             try{await serving.ConfigureAwait(false);}catch(OperationCanceledException){}
             return 0;
         }

@@ -57,9 +57,9 @@ public sealed class DeviceHostTests : IAsyncLifetime
 
     DeviceHost Build(bool startup=false,string? exePath=null)
     {
-        var engine=new OpenRgbEngine(exePath??exe,@"C:\cfg",runner,(_,_)=>Task.FromResult(true),time,log);
+        var engine=new OpenRgbEngine(exePath??exe,@"C:g",runner,(_,_)=>Task.FromResult(true),time,log);
         var scanner=new Scanner(_=>{Interlocked.Increment(ref scans);lock(conflicts)return conflicts.ToList();});
-        var options=new HostOptions(exePath??exe,@"C:\cfg",lightingPath,Path.Combine(dir,"logs"),startup,"S-1-5-21-1",1);
+        var options=new HostOptions(exePath??exe,@"C:g",lightingPath,Path.Combine(dir,"logs"),startup,"S-1-5-21-1",1);
         return host=new DeviceHost(options,new LightingStore(lightingPath),engine,()=>session,scanner,time,log);
     }
     void Start(DeviceHost h)=>run=h.RunAsync(CancellationToken.None);
@@ -68,6 +68,12 @@ public sealed class DeviceHostTests : IAsyncLifetime
     {
         var s=step??TimeSpan.FromMilliseconds(500);
         for(var t=TimeSpan.Zero;t<total;t+=s){time.Advance(s);await Task.Delay(5);}
+    }
+    // Steps fake time until the condition holds, rather than guessing how long the loop needs (real pauses only let the loop react).
+    async Task AdvanceUntil(Func<bool> cond,int maxSteps=60)
+    {
+        for(var i=0;i<maxSteps&&!cond();i++){time.Advance(TimeSpan.FromMilliseconds(500));for(var w=0;w<20&&!cond();w++) await Task.Delay(2);}
+        Assert.True(cond(),"condition not reached");
     }
     async Task<DeviceHost> Running()
     {
@@ -97,8 +103,7 @@ public sealed class DeviceHostTests : IAsyncLifetime
         var h=Build();Start(h);
         await Until(()=>h.State.Status==HostStatus.Blocked);
         lock(conflicts)conflicts.Clear();
-        await Advance(TimeSpan.FromSeconds(5));
-        await Until(()=>h.State.Status==HostStatus.Running);
+        await AdvanceUntil(()=>h.State.Status==HostStatus.Running);
         Assert.Equal(1,runner.Count);
     }
 
@@ -107,15 +112,13 @@ public sealed class DeviceHostTests : IAsyncLifetime
     {
         var h=await Running();
         lock(conflicts)conflicts.Add(DeadLight);
-        await Advance(TimeSpan.FromSeconds(5));
-        await Until(()=>h.State.Status==HostStatus.Blocked);
+        await AdvanceUntil(()=>h.State.Status==HostStatus.Blocked);
         Assert.True(runner.At(0).Killed);
         var leds=session.Leds.Count;
         await Advance(TimeSpan.FromSeconds(2));
         Assert.Equal(leds,session.Leds.Count); // nothing is painted while blocked
         lock(conflicts)conflicts.Clear();
-        await Advance(TimeSpan.FromSeconds(5));
-        await Until(()=>h.State.Status==HostStatus.Running);
+        await AdvanceUntil(()=>h.State.Status==HostStatus.Running);
         Assert.Equal(2,runner.Count);
     }
 
@@ -143,19 +146,19 @@ public sealed class DeviceHostTests : IAsyncLifetime
     [Fact]
     public async Task Engine_restart_resets_reconnects_rescans_and_repaints()
     {
+        session.Controllers[3]=session.Controllers[3] with{ActiveMode=2}; // not in Direct, so the host must switch it
         var h=await Running();
-        await Advance(TimeSpan.FromSeconds(1));
+        await AdvanceUntil(()=>session.Leds.Any(l=>l.Index==3));
         var connects=session.Connects;var reads=session.Reads;var leds=session.Leds.Count;
-        Assert.Equal(1,connects);
+        Assert.Equal(1,session.Modes.Count(m=>m.Index==3));
         runner.At(0).Exit();
         await Until(()=>h.State.Status==HostStatus.Waiting);
-        await Advance(TimeSpan.FromSeconds(5));
-        await Until(()=>h.State.Status==HostStatus.Running);
+        await AdvanceUntil(()=>h.State.Status==HostStatus.Running);
         Assert.Equal(2,runner.Count);
         Assert.Equal(connects+1,session.Connects);
         Assert.True(session.Reads>reads);
-        await Advance(TimeSpan.FromSeconds(1));
-        Assert.True(session.Leds.Count>leds); // Reset forgot what was sent, so the new process is painted afresh
+        await AdvanceUntil(()=>session.Leds.Count>leds);
+        Assert.Equal(2,session.Modes.Count(m=>m.Index==3)); // only a Reset makes the service issue Direct again for the new process
     }
 
     [Fact]
@@ -274,6 +277,75 @@ public sealed class DeviceHostTests : IAsyncLifetime
         }
         finally{hold.Dispose();}
         Assert.Equal("{\"Brightness\":10}",File.ReadAllText(lightingPath));
+    }
+
+    [Fact]
+    public async Task Failing_connect_logs_and_broadcasts_once_and_backs_off()
+    {
+        session.FailConnect=true;
+        var seen=new List<HostState>();
+        var h=Build();
+        h.StateChanged+=s=>{lock(seen)seen.Add(s);};
+        Start(h);
+        await Until(()=>h.State.Status==HostStatus.Waiting);
+        await Until(()=>session.Connects>=1);
+        var attempts=session.Connects;
+        int events;lock(seen)events=seen.Count;
+        for(var i=0;i<20;i++){time.Advance(TimeSpan.FromMilliseconds(500));await Task.Delay(5);}
+        Assert.InRange(session.Connects-attempts,1,6); // 10 s of ticks, backing off 2 s, 4 s, 8 s
+        lock(seen)Assert.Equal(events,seen.Count);
+        var text=File.ReadAllText(Path.Combine(dir,"logs","devices.log"));
+        Assert.Equal(1,text.Split("fake connect failure").Length-1);
+        session.FailConnect=false;
+        await AdvanceUntil(()=>h.State.Status==HostStatus.Running);
+    }
+
+    [Fact]
+    public async Task Failing_conflict_scan_fails_closed()
+    {
+        var failing=true;
+        var engine=new OpenRgbEngine(exe,@"C:g",runner,(_,_)=>Task.FromResult(true),time,log);
+        var options=new HostOptions(exe,@"C:g",lightingPath,Path.Combine(dir,"logs"),false,"S-1-5-21-1",1);
+        var h=host=new DeviceHost(options,new LightingStore(lightingPath),engine,()=>session,new Scanner(_=>failing?throw new InvalidOperationException("scan broke"):[]),time,log);
+        Start(h);
+        await Until(()=>h.State.Status==HostStatus.Blocked);
+        Assert.Equal(DeviceHost.ScanFailedText,h.State.Message);
+        Assert.Equal(0,runner.Count);
+        failing=false;
+        await AdvanceUntil(()=>h.State.Status==HostStatus.Running);
+        failing=true;
+        await AdvanceUntil(()=>h.State.Status==HostStatus.Blocked);
+        Assert.True(runner.At(0).Killed);
+    }
+
+    [Fact]
+    public async Task Requests_before_settings_are_loaded_are_refused()
+    {
+        var h=Build();
+        var early=await Send(h,new SetBrightnessRequest(10));
+        Assert.False(early.Ok);Assert.Equal("starting",early.Error);
+        Assert.False(File.Exists(lightingPath));
+        h.Initialize();
+        Assert.True((await Send(h,new SetBrightnessRequest(10))).Ok);
+    }
+
+    [Fact]
+    public async Task Reply_precedes_the_state_broadcast_over_a_real_pipe()
+    {
+        var h=await Running();
+        var pipe="DeadWare.Devices.Test."+Guid.NewGuid().ToString("N");
+        await using var server=new HostPipeServer(pipe,h.HandleAsync,log);
+        h.StateChanged+=st=>_=server.SendAsync(new StateEvent(st));
+        using var cts=new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        var serving=server.RunAsync(cts.Token);
+        await using var client=new System.IO.Pipes.NamedPipeClientStream(".",pipe,System.IO.Pipes.PipeDirection.InOut,System.IO.Pipes.PipeOptions.Asynchronous);
+        await client.ConnectAsync(5000,cts.Token);
+        await DeviceHostProtocol.WriteAsync(client,new SetBrightnessRequest(40){Id=5},cts.Token);
+        var first=Assert.IsType<Reply>(await DeviceHostProtocol.ReadAsync(client,cts.Token));
+        Assert.True(first.Ok);Assert.Equal(5,first.Id);
+        var second=Assert.IsType<StateEvent>(await DeviceHostProtocol.ReadAsync(client,cts.Token));
+        Assert.Equal(0,second.Id);Assert.Equal(40,second.State.Settings.Brightness);
+        cts.Cancel();
     }
 
     [Fact]
