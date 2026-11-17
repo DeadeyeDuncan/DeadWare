@@ -173,4 +173,29 @@ public sealed class GraphHistoryStoreTests(ITestOutputHelper output) : IDisposab
         Assert.Equal(0, Assert.Single(store.Read(Epoch.AddSeconds(120))).MonotonicSeconds);
         Assert.True(new FileInfo(Database).Length <= 65536);
     }
+
+    [Fact] public void A_full_file_drops_its_oldest_rows_and_keeps_recording()
+    {
+        // Six hours of long-keyed records at fast polling do not fit in the file's limit, and none of them is old
+        // enough to go by age. 1 MiB holds a few hundred of these rows; 1,200 arrive within twenty minutes.
+        const int cap = 1024 * 1024, total = 1200;
+        var store = Store(cap);
+        var values = Enumerable.Range(0, 20).ToDictionary(i => new string('k', 60) + i, _ => (double?)12.5);
+        bool dropped = false;
+        for (int first = 0; first < total; first += 10)
+            dropped |= store.Append(Enumerable.Range(first, 10).Select(i => Row(i) with { Values = values }).ToArray(), Epoch.AddSeconds(total));
+        Assert.True(dropped);
+        var rows = store.Read(Epoch.AddSeconds(total));
+        // The newest rows with none missing between them, and most of what the file can hold rather than the last batch alone.
+        Assert.InRange(rows.Count, 200, total - 1);
+        Assert.Equal(Enumerable.Range(total - rows.Count, rows.Count).Select(i => (double)i), rows.Select(row => row.MonotonicSeconds));
+        Assert.True(new FileInfo(Database).Length <= cap);
+    }
+
+    [Fact] public void A_batch_that_fits_reports_no_dropped_rows()
+    {
+        var store = Store();
+        Assert.False(store.Append([Row(0), Row(1)], Epoch.AddSeconds(10)));
+        Assert.Equal(2, store.Read(Epoch.AddSeconds(10)).Count);
+    }
 }

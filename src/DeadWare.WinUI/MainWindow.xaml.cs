@@ -1,15 +1,16 @@
 using System.Runtime.InteropServices;
 using DeadWare.App;
 using DeadWare.Core;
-using Microsoft.UI.Composition.SystemBackdrops;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
-using Microsoft.UI.Xaml.Media;
 using Windows.Graphics;
 
 namespace DeadWare.WinUI;
 
-/// <summary>The dashboard window: Mica or a solid fallback, the twelve destinations, and hide-to-tray on close.</summary>
+/// <summary>
+/// The dashboard window: the twelve destinations and hide-to-tray on close. Its solid background and title bar colours
+/// come from <see cref="WindowManager.Place"/>, as every window's do.
+/// </summary>
 public sealed partial class MainWindow : Window
 {
     /// <summary>The WPF dashboard's destinations, in its order and with its labels.</summary>
@@ -29,9 +30,11 @@ public sealed partial class MainWindow : Window
     private string current = "overview";
     private bool closingForExit, syncingRange;
     private readonly List<Microsoft.UI.Xaml.Controls.Primitives.ToggleButton> ranges = [];
+    // The current page's own control at the start of the header tools, if it has one.
+    private UIElement? pageTool;
 
     /// <summary>The pages whose graphs or statistics follow the shared history range, as in the WPF header.</summary>
-    private static bool FollowsRange(string key) => key is "network" or "storage" or "sensors" or "desktop";
+    private static bool FollowsRange(string key) => key is "overview" or "network" or "storage" or "sensors" or "desktop";
 
     public MainWindow(MonitorSession session, ApplicationLifetime lifetime, Func<bool> trayAvailable, Func<Task> quit)
     {
@@ -40,10 +43,9 @@ public sealed partial class MainWindow : Window
         this.trayAvailable = trayAvailable;
         this.quit = quit;
         InitializeComponent();
-        bool mica = !App.NoMica && MicaController.IsSupported();
-        if (mica) SystemBackdrop = new MicaBackdrop();
-        else Root.Background = (Brush)Application.Current.Resources["ApplicationPageBackgroundThemeBrush"];
         Title = TitleText.Text = "DeadWare";
+        // WinUI makes the caption buttons' background transparent, active and inactive alike, when content extends into the
+        // title bar, so the solid page background shows behind them whether or not the window has focus.
         ExtendsContentIntoTitleBar = true;
         SetTitleBar(TitleBarArea);
 
@@ -77,11 +79,12 @@ public sealed partial class MainWindow : Window
             Nav.MenuItems.Add(item);
         }
         Navigate("overview");
-        TrayNotice.Text = "Close hides to the system tray.\nQuit stops monitoring.";
+        // Two short lines, broken where the narrow pane would otherwise split "Quit stops monitoring".
+        TrayNotice.Text = "Close hides to the tray\nQuit stops monitoring";
         // Offered only where it would change anything, as in the WPF sidebar.
         ElevateButton.Visibility = Collector.IsElevated ? Visibility.Collapsed : Visibility.Visible;
         ToolTipService.SetToolTip(ElevateButton, "Some readings, such as low-level sensors and per-app network capture, need DeadWare to run as administrator. Restarting saves your workspace first.");
-        // The shared graph history range, one setting every chart follows, as on Overview.
+        // The shared graph history range, one setting every chart follows; Overview shows it here too, beside its graphics card choice.
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(RangeRow, "Graph history range");
         ToolTipService.SetToolTip(RangeRow, "Choose how much graph history to show");
         ToolTipService.SetToolTip(OpenWidget, "Open the Quick glance widget in its own window");
@@ -136,8 +139,9 @@ public sealed partial class MainWindow : Window
     }
 
     /// <summary>
-    /// Puts the dashboard back where it was last left, keeps it from shrinking below the WPF dashboard's minimum and saves
-    /// its later moves, under the key the WPF dashboard uses so either app opens where the other left it.
+    /// Gives the dashboard its solid background, puts it back where it was last left, keeps it from shrinking below the WPF
+    /// dashboard's minimum and saves its later moves, under the key the WPF dashboard uses so either app opens where the
+    /// other left it.
     /// </summary>
     internal void RememberPlacement(WindowManager manager) => manager.Place(this, Root, "main", 1220, 900, 900, 640);
 
@@ -148,7 +152,8 @@ public sealed partial class MainWindow : Window
     private void RefreshShell()
     {
         if (lifetime.IsEnding) return;
-        MonitoringInfo.Text = $"Local monitoring\n{session.Settings.PollingIntervalSeconds:0.#} s polling · 6 h saved graphs · usage history\nv{App.Version}";
+        // Broken by hand into two lines that each fit the pane, so none wraps a lone word onto a line of its own.
+        MonitoringInfo.Text = $"{session.Settings.PollingIntervalSeconds:0.#} s polling · 6 h graphs\nUsage history · v{App.Version}";
         var reading = session.Current;
         PageSubtitle.Text = reading is null ? "Discovering hardware and starting the shared collector…"
             : $"{reading.CpuName} · {session.GpuName} · {HistoryChartModel.Bytes(session.Value("memory/total"))} · last sample {Math.Max(0, (DateTimeOffset.Now - reading.Sample.Timestamp).TotalSeconds):0.0} s ago";
@@ -207,9 +212,12 @@ public sealed partial class MainWindow : Window
             PageTitle.Text = item.Content as string ?? "";
             ContentFrame.Content = destination.Page;
             current = key;
-            // Overview carries its own toolbar (with the GPU choice) and status card; the other pages get the shared ones.
-            HeaderTools.Visibility = key == "overview" ? Visibility.Collapsed : Visibility.Visible;
+            // A page's own control, such as Overview's graphics card choice, leads the shared tools while that page is shown.
+            if (pageTool is not null) HeaderTools.Children.Remove(pageTool);
+            pageTool = (destination.Page as IHeaderTool)?.HeaderTool;
+            if (pageTool is not null) HeaderTools.Children.Insert(0, pageTool);
             RangeRow.Visibility = FollowsRange(key) ? Visibility.Visible : Visibility.Collapsed;
+            // Overview carries its own status card; the other pages get the shared status lines.
             StatusLines.Visibility = key == "overview" ? Visibility.Collapsed : Visibility.Visible;
             RefreshUpdateNotice();
         }
@@ -217,4 +225,14 @@ public sealed partial class MainWindow : Window
 
     [DllImport("user32.dll")]
     private static extern uint GetDpiForWindow(nint window);
+}
+
+/// <summary>
+/// A page with a control of its own for the dashboard header. The window puts it at the start of the header's tools while the
+/// page is shown, beside the range buttons it goes with, so the page needs no toolbar row of its own.
+/// </summary>
+internal interface IHeaderTool
+{
+    /// <summary>The control. It may hide itself while it has nothing to offer.</summary>
+    UIElement HeaderTool { get; }
 }

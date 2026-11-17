@@ -5,7 +5,8 @@ namespace DeadWare.App;
 /// <summary>Per-process GPU counters, one read per call; one caller at a time.</summary>
 internal interface IGpuCounterSource
 {
-    /// <summary>Never throws.</summary>
+    /// <summary>Never throws. <paramref name="pollingIntervalSeconds"/> is how often this source is read (the polling interval, or the
+    /// loop's period): it sets how far apart two collections may be and still form a rate.</summary>
     GpuCounterRead Read(double monotonicSeconds,double pollingIntervalSeconds);
     /// <summary>True when the last <see cref="Read"/> opened the query.</summary>
     bool LastReadOpened {get;}

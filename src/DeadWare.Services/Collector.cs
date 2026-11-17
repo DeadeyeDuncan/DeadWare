@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Net.NetworkInformation;
 using System.Runtime.InteropServices;
 using System.Security.Principal;
 using DeadWare.Core;
@@ -52,6 +51,8 @@ public sealed class GpuFanSpeed
 public sealed class CpuPumpSpeed
 {
     private string? source;
+    /// <summary>The identifier of the hardware holding the chosen header, once one is chosen: the collector updates that hardware every poll.</summary>
+    public string? HardwareId {get;private set;}
     /// <summary>Board and AIO headers are machine-wide, so they describe the CPU cooler only on single-socket hosts.</summary>
     public static SensorReading? Select(IEnumerable<SensorReading> sensors)
     {
@@ -64,7 +65,7 @@ public sealed class CpuPumpSpeed
     public double? Read(IReadOnlyList<SensorReading> sensors,int cpuCount)
     {
         if(cpuCount!=1)return null;
-        source??=Select(sensors)?.Id;
+        if(source is null&&Select(sensors) is {} chosen){source=chosen.Id;HardwareId=chosen.HardwareId;}
         if(source is null)return null;
         double? value=sensors.FirstOrDefault(s=>s.Id==source)?.Value;
         return value is >=0&&double.IsFinite(value.Value)?value:null;
@@ -100,6 +101,20 @@ public sealed class Collector : IAsyncDisposable
     /// <summary>Read once at the start of each pass, so a change applies from the next poll.</summary>
     public bool ProcessMonitoring=>processMonitoring;
     public void SetProcessMonitoring(bool enabled)=>processMonitoring=enabled;
+    /// <summary>
+    /// Held by a page or window while it shows live per-app GPU values (the Processes page). With <see cref="CollectorOptions.IdleGpuCadence"/>
+    /// the GPU counters are read at the full cadence (every poll, or once a second in their own loop) only while one is held, and every
+    /// <see cref="GpuCounterLoop.IdlePeriodSeconds"/> otherwise: history still gets every GPU-second, in coarser steps. Dispose it when the
+    /// view hides; disposing twice is harmless. Safe from any thread; the next poll or loop step follows the change.
+    /// </summary>
+    public IDisposable ShowLiveGpu() {Interlocked.Increment(ref gpuViewers);return new GpuViewer(this);}
+    private sealed class GpuViewer(Collector owner) : IDisposable
+    {
+        private int disposed;
+        public void Dispose() {if(Interlocked.Exchange(ref disposed,1)==0)Interlocked.Decrement(ref owner.gpuViewers);}
+    }
+    /// <summary>Whether the GPU counters run at the full cadence.</summary>
+    internal bool GpuShown=>!options.IdleGpuCadence||Volatile.Read(ref gpuViewers)>0;
     private readonly IProcessSource processes;
     private long processSequence;
     // Null without ProcessDiskTracing, and in the shutdown fixtures built with GetUninitializedObject.
@@ -112,6 +127,11 @@ public sealed class Collector : IAsyncDisposable
     // in flight, so nothing else uses the source. Written only by the worker; disposal only reads them.
     private GpuCounterLoop? gpuLoop;
     private Task? gpuLoopStop;
+    // ShowLiveGpu leases held: pages showing live per-app GPU values.
+    private int gpuViewers;
+    // Every-poll placement's last read and when it ran, joined again for display between idle-cadence reads. Worker only.
+    private GpuCounterRead? pollGpuRead;
+    private double pollGpuReadAt;
     private readonly CancellationTokenSource cancellation=new();
     private readonly Stopwatch clock=Stopwatch.StartNew();
     private readonly WindowsCounters windows=new();
@@ -120,6 +140,12 @@ public sealed class Collector : IAsyncDisposable
     private int heldCores;
     private readonly GpuFanSpeed gpuFanSpeed=new();
     private readonly CpuPumpSpeed cpuPumpSpeed=new();
+    private readonly HardwareCadence hardwareCadence=new();
+    internal HardwareCadence Cadence=>hardwareCadence;
+    // Worker only: the health loop's rows last entered into the history, and the last poll's value count for presizing the next.
+    private IReadOnlyList<SensorReading>? storageRowsSeen;
+    private int valuesCapacity=64;
+    private readonly WindowsThermalZones thermalZones=new();
     private readonly EtwNetwork etw;
     private bool lowLevelAvailable;
     private Task? worker;
@@ -152,7 +178,9 @@ public sealed class Collector : IAsyncDisposable
                 stage="Opening hardware providers";initializationStarted=Stopwatch.GetTimestamp();
                 lowLevelAvailable=IsElevated&&WindowsCounters.CanAccessPawnIo();
                 var sources=options.Sources;
-                computer=new Computer {IsCpuEnabled=sources.Cpu,IsGpuEnabled=sources.Gpu,IsMemoryEnabled=sources.Memory,IsMotherboardEnabled=sources.Motherboard,IsControllerEnabled=sources.Controllers,IsStorageEnabled=sources.Storage,IsNetworkEnabled=false};
+                // Drives are never updated here: the storage health loop reads them every 30 s, and Extended sensors shows its rows. Updating
+                // them in this Computer as well read every drive (SMART included) twice, once every poll.
+                computer=new Computer {IsCpuEnabled=sources.Cpu,IsGpuEnabled=sources.Gpu,IsMemoryEnabled=sources.Memory,IsMotherboardEnabled=sources.Motherboard,IsControllerEnabled=sources.Controllers,IsStorageEnabled=false,IsNetworkEnabled=false};
                 try { computer.Open(); } catch(Exception e) { initialization=$"Hardware discovery failed ({e.GetType().Name}). Windows counters remain available."; }
                 hardwareOpenMilliseconds=Stopwatch.GetElapsedTime(initializationStarted).TotalMilliseconds;
             }
@@ -181,8 +209,12 @@ public sealed class Collector : IAsyncDisposable
                 try
                 {
                     Dictionary<string,double>? timings=options.DiagnosticTimings?new(){["open/hardware"]=hardwareOpenMilliseconds,["open/etw"]=etwOpenMilliseconds}:null;
-                    var values=new Dictionary<string,double?>();
+                    // Presized from the last poll, so the map is not regrown about eight times on the way to its few hundred entries.
+                    var values=new Dictionary<string,double?>(valuesCapacity);
+                    // Every row the Sensors page shows, and the rows read on this poll: only those enter the history, so slow hardware
+                    // and drives add one sample per update instead of repeating the same value every poll.
                     var sensors=new List<SensorReading>();
+                    var fresh=new List<SensorReading>();
                     var gpus=new List<Device>();
                     var errors=new List<string>();
                     string cpuName="Windows processor";
@@ -191,7 +223,7 @@ public sealed class Collector : IAsyncDisposable
                     {
                         stage=$"Polling {hardware.HardwareType}";
                         var hardwareSensors=new List<SensorReading>();
-                        ReadHardware(hardware,hardwareSensors,errors,lowLevelAvailable,timings);
+                        ReadHardware(hardware,hardwareSensors,fresh,errors,started,intervalSeconds,timings);
                         sensors.AddRange(hardwareSensors);
                         if(hardware.HardwareType==HardwareType.Cpu)
                         {
@@ -207,6 +239,27 @@ public sealed class Collector : IAsyncDisposable
                             values[id+"/fan"]=gpuFanSpeed.Read(id,hardwareSensors);
                         }
                     }
+                    // Extended sensors shows each drive's rows from the storage health loop's last read; they enter the history once per read.
+                    // (Diagnostic isolation runs no health loop.)
+                    if(options.ExtendedSensors&&Volatile.Read(ref healthLoop) is {} storageLoop)
+                    {
+                        var storageRows=storageLoop.Sensors;
+                        sensors.AddRange(storageRows);
+                        if(!ReferenceEquals(storageRows,storageRowsSeen)){fresh.AddRange(storageRows);storageRowsSeen=storageRows;}
+                    }
+                    var battery=WindowsBattery.Read();
+                    // No processor sensor gave a temperature: Windows' thermal zones may stand in on a laptop or tablet. Read only
+                    // then, so machines whose CPU sensors work pay nothing, and not in diagnostic isolation.
+                    ThermalZoneFallback? zoneTemp=null;
+                    if(cpuTemp is null&&options.HardwareEnabled)
+                    {
+                        stage="Reading thermal zones";
+                        var zones=thermalZones.Read(timings);
+                        var zoneRows=WindowsThermalZones.Sensors(zones).ToArray();
+                        sensors.AddRange(zoneRows);fresh.AddRange(zoneRows);
+                        zoneTemp=ThermalZones.CpuFallback(zones,ThermalZones.IsPortable(battery.PowerState));
+                        cpuTemp=zoneTemp?.Celsius;
+                    }
                     stage="Reading Windows counters";
                     long providerStarted=Stopwatch.GetTimestamp();var fallbackCpu=windows.Cpu();
                     if(timings is not null)timings["windows/cpu"]=Stopwatch.GetElapsedTime(providerStarted).TotalMilliseconds;
@@ -217,6 +270,8 @@ public sealed class Collector : IAsyncDisposable
                     PublishCores(values,cores);
                     values["cpu/temperature"]=cpuTemp;
                     values["cpu/pump"]=cpuPumpSpeed.Read(sensors,sensors.Where(s=>s.HardwareType=="Cpu"&&s.HardwareId.Length>0).Select(s=>s.HardwareId).Distinct(StringComparer.Ordinal).Count());
+                    // The chip the pump reading comes from keeps updating every poll, whatever else is slow.
+                    hardwareCadence.PumpHardwareId=cpuPumpSpeed.HardwareId;
                     providerStarted=Stopwatch.GetTimestamp();var memory=windows.Memory();values["memory/used"]=memory.Used;values["memory/total"]=memory.Total;
                     values["memory/usage"]=MemoryUsage.Percentage(memory.Used,memory.Total);
                     if(timings is not null)timings["windows/memory"]=Stopwatch.GetElapsedTime(providerStarted).TotalMilliseconds;
@@ -237,8 +292,7 @@ public sealed class Collector : IAsyncDisposable
                     Volatile.Write(ref storageDrives,drives);
                     bool beyondEight=drives.Count(d=>d.Persistable)>StorageMetrics.MaximumPersistedDrives;
                     var storageReading=new StorageReading(drives,StorageHealthFor(drives),StorageStatus(storageError,Volatile.Read(ref healthLoop)?.Status,beyondEight));
-                    var battery=WindowsBattery.Read();
-                    foreach(var sensor in sensors) values[sensor.Id]=sensor.Value;
+                    foreach(var sensor in fresh) values[sensor.Id]=sensor.Value;
                     foreach(var health in storageReading.Health)
                     {
                         if(!drives.Any(d=>d.Id==health.DriveId))continue;
@@ -247,7 +301,8 @@ public sealed class Collector : IAsyncDisposable
                         values[StorageMetrics.Key(health.DriveId,"used")]=health.UsedPercent;
                     }
                     string hardwareStatus=initialization.Length>0?initialization:!options.HardwareEnabled?"Hardware collection disabled for diagnostic isolation":$"{sensors.Count} sensors · {(IsElevated?"Administrator":"Standard user")} · {(options.ExtendedSensors?"Extended sensors enabled":"CPU/GPU sensors")}";
-                    if(cpuTemp is null) hardwareStatus+=" · CPU temperature unavailable (hardware support, elevation or PawnIO may be required).";
+                    // Diagnostic isolation reads no temperature at all, and its status already says so.
+                    if(options.HardwareEnabled&&(zoneTemp is not null||cpuTemp is null)) hardwareStatus+=ThermalZones.StatusNote(zoneTemp,lowLevelAvailable);
                     if(gpus.Count==0&&options.HardwareEnabled) hardwareStatus+=" · No supported GPU discovered.";
                     if(droppedCores>0) hardwareStatus+=$" · Showing the first {CpuCoreUsage.MaximumCores} of {CpuCoreUsage.MaximumCores+droppedCores} CPU cores.";
                     if(errors.Count>0) hardwareStatus+=" · "+string.Join("; ",errors.Distinct());
@@ -255,7 +310,7 @@ public sealed class Collector : IAsyncDisposable
                     if(beyondEight) hardwareStatus+=" · "+BeyondEightNote;
                     // Process block 1: a scan failure becomes the published activity and never fails the pass.
                     TrackedScan? tracked=null;string? processFailure=null;
-                    GpuCounterRead? gpuRead=null;double? gpuMilliseconds=null,gpuReturned=null;bool gpuOwnLoop=false;
+                    GpuCounterRead? gpuRead=null;double? gpuMilliseconds=null,gpuReturned=null;bool gpuOwnLoop=false;double gpuStaleAfter=0;
                     if(!monitoring)
                     {
                         tracker.Reset();
@@ -269,8 +324,11 @@ public sealed class Collector : IAsyncDisposable
                         stage="Reading GPU counters";
                         // Before the read: the poll on which the guard latches still reads on this thread, so it is an every-poll read.
                         gpuOwnLoop=gpuLoop is not null;
-                        try {gpuRead=ReadGpu(gpuGuard,intervalSeconds,out gpuMilliseconds,out gpuReturned);}
+                        double gpuPeriod=1;
+                        try {gpuRead=ReadGpu(gpuGuard,intervalSeconds,out gpuMilliseconds,out gpuReturned,out gpuPeriod);}
                         catch(Exception) {gpuRead=GpuCounterRead.Unavailable(GpuCounterStatus.Unavailable,clock.Elapsed.TotalSeconds,DateTimeOffset.UtcNow);gpuMilliseconds=null;gpuReturned=null;}
+                        // A loop read is stale two periods after it returned: the period it was read under, or the current one if longer.
+                        gpuStaleAfter=2*Math.Max(gpuPeriod,GpuCounterLoop.Period(intervalSeconds,GpuShown));
                         if(timings is not null&&gpuMilliseconds is {} gpuTime)timings["windows/gpucounters"]=gpuTime;
                         stage="Scanning processes";providerStarted=Stopwatch.GetTimestamp();
                         try
@@ -290,14 +348,15 @@ public sealed class Collector : IAsyncDisposable
                     {
                         providerStarted=Stopwatch.GetTimestamp();
                         var timestamp=DateTimeOffset.Now;var now=clock.Elapsed.TotalSeconds;
-                        var capture=etw.TakeSnapshot(timestamp,now,options.EtwEnabled);
+                        var capture=etw.TakeSnapshot(timestamp,now,options.EtwEnabled,tracked?.Index);
                         bool networkLossy=networkLoss.Lossy(capture.Connections.LostEvents);
                         // The local-network share comes from the per-app capture, so it joins the sample after the ETW snapshot.
                         var local=NetworkTrafficSplit.Local(capture.Connections,network.Down,network.Up);
                         values["network/download/local"]=local.Down;values["network/upload/local"]=local.Up;
                         if(timings is not null)timings["etw/snapshot"]=Stopwatch.GetElapsedTime(providerStarted).TotalMilliseconds;
-                        var processActivity=PublishProcesses(monitoring,tracked,processFailure,processorCount,capture,networkLossy,now,timings,gpuRead,gpuMilliseconds,gpuReturned,gpuOwnLoop);
+                        var processActivity=PublishProcesses(monitoring,tracked,processFailure,processorCount,capture,networkLossy,now,timings,gpuRead,gpuMilliseconds,gpuReturned,gpuOwnLoop,gpuStaleAfter);
                         var sample=new Snapshot(timestamp,now,new System.Collections.ObjectModel.ReadOnlyDictionary<string,double?>(values)) {PollingIntervalSeconds=intervalSeconds};
+                        valuesCapacity=values.Count;
                         if(timings is not null)timings["poll/total"]=(clock.Elapsed.TotalSeconds-started)*1000;
                         double elapsed=clock.Elapsed.TotalSeconds-started;
                         if(elapsed>=intervalSeconds)hardwareStatus+=$" · Slow sample ({elapsed:0.0}s); pausing before the next poll.";
@@ -337,7 +396,7 @@ public sealed class Collector : IAsyncDisposable
             {
                 // No GPU read starts after the worker ends: a running loop is cancelled without waiting, its read in flight returns on its own
                 // and the loop then closes the query. The finally never waits on a GPU read; disposal bounds that wait by HardwareStopBudget.
-                try {ReleaseGpu();}
+                try {thermalZones.Close();ReleaseGpu();windows.Dispose();}
                 finally {computer?.Close();}
             }
             finally {await Task.WhenAll(StopEtwAsync(),diskStop);}
@@ -351,29 +410,38 @@ public sealed class Collector : IAsyncDisposable
     /// Process block 1's GPU step (spec, Placement and cost). Every poll reads and times the source and feeds the guard, and starts the loop once the
     /// guard latches; that poll keeps its own read. In loop placement the poll takes the loop's latest read. While a disposed loop's read may still
     /// be in flight, the poll joins no read (null) and does not read, so one thread at a time uses the source. <paramref name="milliseconds"/> is
-    /// set only when a read ran on this poll or the take is fresh; <paramref name="returnedSeconds"/>, when the loop's read returned, only for a take.
+    /// set only when a read ran on this poll or the take is fresh; <paramref name="returnedSeconds"/>, when the loop's read returned, and
+    /// <paramref name="periodSeconds"/>, the loop period it was read under, only for a take. While nothing shows live per-app GPU values
+    /// (<see cref="GpuShown"/>), every-poll placement also reads only every idle period, and the polls between join its last read for
+    /// display only, without credit, as a loop placement's polls do.
     /// </summary>
-    private GpuCounterRead? ReadGpu(GpuPlacementGuard guard,double intervalSeconds,out double? milliseconds,out double? returnedSeconds)
+    private GpuCounterRead? ReadGpu(GpuPlacementGuard guard,double intervalSeconds,out double? milliseconds,out double? returnedSeconds,out double periodSeconds)
     {
-        milliseconds=null;returnedSeconds=null;
+        milliseconds=null;returnedSeconds=null;periodSeconds=1;
         if(gpu is null)return GpuCounterRead.Unavailable(GpuCounterStatus.Unavailable,clock.Elapsed.TotalSeconds,DateTimeOffset.UtcNow);
         if(gpuLoop is {} loop)
         {
             var take=loop.Take();
             if(take is {Fresh:true})milliseconds=take.ReadMilliseconds;
-            returnedSeconds=take?.ReturnedSeconds;
+            returnedSeconds=take?.ReturnedSeconds;periodSeconds=take?.PeriodSeconds??1;
             return take?.Read;
         }
         if(gpuLoopStop is {IsCompleted:false})return null;
+        bool shown=GpuShown;double now=clock.Elapsed.TotalSeconds;
+        double period=shown?intervalSeconds:GpuCounterLoop.Period(intervalSeconds,shown:false);
+        // Due half a poll early, so poll jitter cannot push each idle read a whole poll later.
+        if(!shown&&pollGpuRead is {} last&&now>=pollGpuReadAt&&now-pollGpuReadAt<period-intervalSeconds/2)return last with {Credit=false};
         long started=Stopwatch.GetTimestamp();
-        var read=gpu.Read(clock.Elapsed.TotalSeconds,intervalSeconds);
+        // The period is the read's freshness bound, so an idle read still forms a rate over its longer gap.
+        var read=gpu.Read(now,period);
         double elapsed=Stopwatch.GetElapsedTime(started).TotalMilliseconds;
         milliseconds=elapsed;
         guard.Record(elapsed,gpu.LastReadOpened);
+        pollGpuRead=read;pollGpuReadAt=now;
         if(guard.OwnLoop)
         {
-            var own=new GpuCounterLoop(gpu,()=>clock.Elapsed.TotalSeconds,()=>PollingIntervalSeconds,()=>processMonitoring);
-            Volatile.Write(ref gpuLoop,own);own.Start();
+            var own=new GpuCounterLoop(gpu,()=>clock.Elapsed.TotalSeconds,()=>PollingIntervalSeconds,()=>processMonitoring,()=>GpuShown);
+            Volatile.Write(ref gpuLoop,own);own.Start();pollGpuRead=null;
         }
         return read;
     }
@@ -384,6 +452,7 @@ public sealed class Collector : IAsyncDisposable
     /// </summary>
     private void ReleaseGpu()
     {
+        pollGpuRead=null;
         if(gpuLoop is {} loop)
         {
             _=loop.DisposeAsync().AsTask();
@@ -394,7 +463,7 @@ public sealed class Collector : IAsyncDisposable
         if(gpuLoopStop is not {IsCompleted:false})gpu?.Close();
     }
     /// <summary>Process block 2, inside the publication lock after the poll's only ETW snapshot: takes the disk trace and joins the scan to per-app traffic and disk. It never throws, so the reading is always published.</summary>
-    private ProcessActivity PublishProcesses(bool monitoring,TrackedScan? tracked,string? failure,int processorCount,NetworkCaptureSnapshot capture,bool networkLossy,double now,Dictionary<string,double>? timings,GpuCounterRead? gpuRead,double? gpuMilliseconds,double? gpuReturned,bool gpuOwnLoop)
+    private ProcessActivity PublishProcesses(bool monitoring,TrackedScan? tracked,string? failure,int processorCount,NetworkCaptureSnapshot capture,bool networkLossy,double now,Dictionary<string,double>? timings,GpuCounterRead? gpuRead,double? gpuMilliseconds,double? gpuReturned,bool gpuOwnLoop,double gpuStaleAfter)
     {
         if(!monitoring)return ProcessActivity.Off;
         if(failure is not null||tracked is null)return ProcessActivity.Unavailable(failure??ProcessScanUnavailable);
@@ -412,9 +481,9 @@ public sealed class Collector : IAsyncDisposable
             var network=ProcessJoins.Network(tracked.Processes,capture.Processes,capture.Connections.Available,EtwStatus,networkLossy);
             var joined=ProcessJoins.Disk(network.Processes,diskTake);
             var scan=tracked.Scan;
-            // Only a loop read can age: every poll joins its own read. Its age runs from when it returned, so a healthy loop whose reads take most
-            // of a period never shows "stale reading", while a stuck read turns stale two periods after the last one returned.
-            bool gpuStale=gpuOwnLoop&&gpuReturned is {} returned&&now-returned>2*GpuCounterLoop.Period(scan.PollingIntervalSeconds);
+            // Only a loop read can age: every-poll placement reads on the poll. Its age runs from when it returned, so a healthy loop whose reads
+            // take most of a period never shows "stale reading", while a stuck read turns stale two periods after the last one returned.
+            bool gpuStale=gpuOwnLoop&&gpuReturned is {} returned&&now-returned>gpuStaleAfter;
             var gpuSummary=options.DiagnosticTimings?new GpuCounterSummary(gpuRead?.Instances??0,gpuRead?.Skipped??0,gpuRead?.Adapters.Count??0,gpuMilliseconds,tracked.Gpu,
                 gpuOwnLoop?GpuCounterSummary.OwnLoop:GpuCounterSummary.EveryPoll):null;
             return new ProcessActivity(ProcessActivityKind.Available,++processSequence,scan.UtcTime,scan.MonotonicSeconds,scan.PollingIntervalSeconds,processorCount,joined.Processes,tracked.Omitted,tracked.TotalProcesses,tracked.DeltaSeconds)
@@ -447,28 +516,54 @@ public sealed class Collector : IAsyncDisposable
         if(unit=="°C") return sensors.FirstOrDefault(s=>s.Unit==unit&&s.Name.Contains("Core",StringComparison.OrdinalIgnoreCase)&&s.Value.HasValue)?.Value;
         return null;
     }
-    private static void ReadHardware(IHardware h,List<SensorReading> sensors,List<string> errors,bool lowLevelAvailable,Dictionary<string,double>? timings)
+    /// <summary>
+    /// Updates <paramref name="h"/> and its sub-hardware when <see cref="HardwareCadence"/> says so, adding their rows to
+    /// <paramref name="sensors"/> and the rows read on this poll to <paramref name="fresh"/>. Slow hardware between updates adds its last
+    /// rows and error again, so the Sensors page and the status keep showing them.
+    /// </summary>
+    internal void ReadHardware(IHardware h,List<SensorReading> sensors,List<SensorReading> fresh,List<string> errors,double now,double intervalSeconds,Dictionary<string,double>? timings)
     {
-        long started=Stopwatch.GetTimestamp();
-        try
+        string id=h.Identifier.ToString();
+        if(!hardwareCadence.Due(id,h.HardwareType,now,intervalSeconds)&&hardwareCadence.TryRecall(id,out var kept,out var keptError))
         {
-            h.Update();
-            foreach(var s in h.Sensors)
-            {
-                // LibreHardwareMonitor logs a day of values per sensor unless told not to; DeadWare keeps its own history and never reads that log.
-                if(s.ValuesTimeWindow!=TimeSpan.Zero)s.ValuesTimeWindow=TimeSpan.Zero;
-                bool lowLevel=h.HardwareType==HardwareType.Cpu && s.SensorType is SensorType.Temperature or SensorType.Power or SensorType.Voltage or SensorType.Clock;
-                double? v=SensorValidity.Normalize(s.Value,lowLevel,lowLevelAvailable);
-                if(s.SensorType==SensorType.Load && (v<0||v>100)) v=null;
-                sensors.Add(new(s.Identifier.ToString(),h.Name,s.Name,Unit(s.SensorType),v,
-                    h.Identifier.ToString(),h.HardwareType.ToString(),s.SensorType.ToString(),
-                    v.HasValue?"Available":lowLevel&&!lowLevelAvailable?"Low-level access unavailable":"Missing or invalid provider value"));
-            }
+            sensors.AddRange(kept);
+            if(keptError is not null)errors.Add(keptError);
         }
-        catch(Exception e) {errors.Add($"{h.Name}: {e.GetType().Name}");}
-        finally {if(timings is not null)timings["hardware"+h.Identifier]=Stopwatch.GetElapsedTime(started).TotalMilliseconds;}
-        foreach(var sub in h.SubHardware) ReadHardware(sub,sensors,errors,lowLevelAvailable,timings);
+        else
+        {
+            long started=Stopwatch.GetTimestamp();
+            var rows=new List<SensorReading>();string? error=null;
+            try {h.Update();AddReadings(h,id,rows,lowLevelAvailable);}
+            catch(Exception e) {error=$"{h.Name}: {e.GetType().Name}";}
+            finally {if(timings is not null)timings["hardware"+id]=Stopwatch.GetElapsedTime(started).TotalMilliseconds;}
+            hardwareCadence.Keep(id,rows,error);
+            sensors.AddRange(rows);fresh.AddRange(rows);
+            if(error is not null)errors.Add(error);
+        }
+        foreach(var sub in h.SubHardware) ReadHardware(sub,sensors,fresh,errors,now,intervalSeconds,timings);
     }
+    /// <summary>One row per sensor of <paramref name="h"/>, after its update; shared with the storage health loop's own Computer.</summary>
+    internal static void AddReadings(IHardware h,string hardwareId,List<SensorReading> into,bool lowLevelAvailable)
+    {
+        // Read once: the hardware builds a new array on every read of Sensors.
+        var all=h.Sensors;
+        into.EnsureCapacity(into.Count+all.Length);
+        foreach(var s in all)
+        {
+            // LibreHardwareMonitor logs a day of values per sensor unless told not to; DeadWare keeps its own history and never reads that log.
+            if(s.ValuesTimeWindow!=TimeSpan.Zero)s.ValuesTimeWindow=TimeSpan.Zero;
+            bool lowLevel=h.HardwareType==HardwareType.Cpu && s.SensorType is SensorType.Temperature or SensorType.Power or SensorType.Voltage or SensorType.Clock;
+            double? v=SensorValidity.Normalize(s.Value,lowLevel,lowLevelAvailable);
+            if(s.SensorType==SensorType.Load && (v<0||v>100)) v=null;
+            into.Add(new(SensorId(s),h.Name,s.Name,Unit(s.SensorType),v,
+                hardwareId,h.HardwareType.ToString(),s.SensorType.ToString(),
+                v.HasValue?"Available":lowLevel&&!lowLevelAvailable?"Low-level access unavailable":"Missing or invalid provider value"));
+        }
+    }
+    // A sensor's Identifier is built anew (with its lowercased type and index text) on every read of the property, so each sensor's id
+    // text is made once. Weak keys: a sensor a closed Computer drops takes its entry with it.
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<ISensor,string> sensorIds=new();
+    private static string SensorId(ISensor s)=>sensorIds.GetValue(s,static sensor=>sensor.Identifier.ToString());
     private static string Unit(SensorType t)=>t switch {SensorType.Load=>"%",SensorType.Temperature=>"°C",SensorType.Clock=>"MHz",SensorType.Fan=>"RPM",SensorType.Voltage=>"V",SensorType.Current=>"A",SensorType.Power=>"W",SensorType.Data=>"GB",SensorType.SmallData=>"MB",SensorType.Throughput=>"B/s",SensorType.Control=>"%",SensorType.Frequency=>"Hz",_=>t.ToString()};
     internal const string BeyondEightNote="Drives beyond eight are not recorded.";
     /// <summary>The fast-path error, else the health loop's status, plus the more-than-eight-drives note.</summary>
@@ -518,7 +613,8 @@ public sealed class Collector : IAsyncDisposable
             Task[] stops=new[]{healthStop,gpuStopping?.Stopped,Volatile.Read(ref gpuLoopStop)}.OfType<Task>().ToArray();
             try {await Task.WhenAll(stops).WaitAsync(HardwareStopBudget-Stopwatch.GetElapsedTime(stopStarted) is var left&&left>TimeSpan.Zero?left:TimeSpan.Zero).ConfigureAwait(false);}
             catch(TimeoutException) {}
-            finally {cancellation.Dispose();(storage as IDisposable)?.Dispose();}
+            // windows is null in the shutdown fixtures built with GetUninitializedObject.
+            finally {cancellation.Dispose();(storage as IDisposable)?.Dispose();windows?.Dispose();}
         }
     }
     /// <summary>Cancels collection and stops network capture (final drain, publication, disposal) without waiting for the hardware worker.</summary>
@@ -543,7 +639,7 @@ public sealed class Collector : IAsyncDisposable
     }
 }
 
-internal sealed class WindowsCounters
+internal sealed class WindowsCounters : IDisposable
 {
     public static bool CanAccessPawnIo()
     {
@@ -553,7 +649,7 @@ internal sealed class WindowsCounters
         return !handle.IsInvalid;
     }
     private ulong? idle,kernel,user;
-    private readonly Dictionary<string,(CounterRate Down,CounterRate Up)> adapters=new();
+    private readonly NetworkTotals network=new();
     public double? Cpu()
     {
         if(!GetSystemTimes(out var i,out var k,out var u)) return null;
@@ -570,30 +666,9 @@ internal sealed class WindowsCounters
         var state=new MemoryStatus {Length=(uint)Marshal.SizeOf<MemoryStatus>()};
         return GlobalMemoryStatusEx(ref state)?(state.TotalPhysical-state.AvailablePhysical,state.TotalPhysical):(null,null);
     }
-    public (double? Down,double? Up,string Status) Network(double now)
-    {
-        double down=0,up=0;bool valid=true;int count=0;
-        var active=new HashSet<string>();
-        try
-        {
-            // Windows also lists each adapter's filter layers (WFP, QoS Packet Scheduler) as interfaces of their own, repeating the
-            // adapter's byte counters; summing them counted the same traffic several times. Only an adapter itself holds an address.
-            foreach(var adapter in NetworkInterface.GetAllNetworkInterfaces().Where(n=>n.OperationalStatus==OperationalStatus.Up&&n.NetworkInterfaceType!=NetworkInterfaceType.Loopback&&n.GetIPProperties().UnicastAddresses.Count>0))
-            {
-                count++;active.Add(adapter.Id);
-                if(!adapters.TryGetValue(adapter.Id,out var rates)) adapters[adapter.Id]=rates=(new(),new());
-                try
-                {
-                    var stats=adapter.GetIPStatistics();var d=rates.Down.Update(stats.BytesReceived,now);var u=rates.Up.Update(stats.BytesSent,now);
-                    if(d is null || u is null) valid=false; else {down+=d.Value;up+=u.Value;}
-                }
-                catch(NetworkInformationException) {adapters.Remove(adapter.Id);valid=false;}
-            }
-            foreach(var id in adapters.Keys.Except(active).ToArray()) adapters.Remove(id);
-            return count==0?(null,null,"No active network interface"):(valid?down:null,valid?up:null,$"{count} active interface{(count==1?"":"s")} · totals include virtual adapters; VPN traffic can be counted twice{(!valid?" · waiting for counter baseline / reset":"")}");
-        }
-        catch(Exception e) {return (null,null,$"Interface counters unavailable ({e.GetType().Name})");}
-    }
+    public (double? Down,double? Up,string Status) Network(double now)=>network.Read(now);
+    /// <summary>Stops listening for address changes. Idempotent.</summary>
+    public void Dispose()=>network.Dispose();
     [DllImport("kernel32.dll",SetLastError=true)] [return:MarshalAs(UnmanagedType.Bool)] private static extern bool GetSystemTimes(out ulong idle,out ulong kernel,out ulong user);
     [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)] private static extern Microsoft.Win32.SafeHandles.SafeFileHandle CreateFile(string name,uint access,uint share,IntPtr security,uint disposition,uint flags,IntPtr template);
     [DllImport("kernel32.dll",SetLastError=true)] [return:MarshalAs(UnmanagedType.Bool)] private static extern bool GlobalMemoryStatusEx(ref MemoryStatus status);

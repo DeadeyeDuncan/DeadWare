@@ -207,17 +207,36 @@ public sealed class MapFrame
     /// <summary>One route per point, sized by the logarithm of its bytes against the busiest point. Without an origin a route has no arc.</summary>
     public IReadOnlyList<MapRoute> Routes(IReadOnlyList<ConnectionMapPoint> points, GeoPoint? origin)
     {
-        double maximum = points.Select(p => (double)p.ReceivedBytes + p.SentBytes).DefaultIfEmpty(0).Max();
+        double busiest = Busiest(points);
         var routes = new List<MapRoute>(points.Count);
         foreach (var point in points)
         {
-            double relative = maximum > 0 ? Math.Log(1 + (double)point.ReceivedBytes + point.SentBytes) / Math.Log(1 + maximum) : 0;
-            IReadOnlyList<GeoPoint> samples = origin is null ? [] : ConnectionProjection.GreatCircle(origin, point.Point);
-            routes.Add(new(point, samples.Select(p => ConnectionProjection.Project(p, Camera)).ToArray(),
-                ConnectionProjection.ProjectPath(samples, Camera).Select(s => s.Select(Pixel).ToArray()).ToArray(),
-                3 + relative * 3, .6 + Math.Round(relative * 4) * .15));
+            var (samples, segments) = Path(point.Point, origin);
+            var (radius, width) = Size(point, busiest);
+            routes.Add(new(point, samples, segments, radius, width));
         }
         return routes;
+    }
+
+    /// <summary>The most bytes, received and sent together, of any point: what <see cref="Size"/> measures against.</summary>
+    public static double Busiest(IEnumerable<ConnectionMapPoint> points) => points.Select(p => (double)p.ReceivedBytes + p.SentBytes).DefaultIfEmpty(0).Max();
+
+    /// <summary>A node's radius and its arc's width, by the logarithm of its bytes against the busiest point's.</summary>
+    public static (double Radius, double Width) Size(ConnectionMapPoint point, double busiest)
+    {
+        double relative = busiest > 0 ? Math.Log(1 + (double)point.ReceivedBytes + point.SentBytes) / Math.Log(1 + busiest) : 0;
+        return (3 + relative * 3, .6 + Math.Round(relative * 4) * .15);
+    }
+
+    /// <summary>
+    /// The great-circle samples from the origin to a location and their visible screen segments: the part of a route that depends only
+    /// on the origin, the location, the size and the camera, so a view can keep it while the traffic changes. Both are empty without an origin.
+    /// </summary>
+    public (MapCoordinate[] Samples, PlotPoint[][] Segments) Path(GeoPoint point, GeoPoint? origin)
+    {
+        IReadOnlyList<GeoPoint> samples = origin is null ? [] : ConnectionProjection.GreatCircle(origin, point);
+        return (samples.Select(p => ConnectionProjection.Project(p, Camera)).ToArray(),
+            ConnectionProjection.ProjectPath(samples, Camera).Select(s => s.Select(Pixel).ToArray()).ToArray());
     }
 
     /// <summary>A node's screen position, or null when it is on the far side or outside the bounds.</summary>
@@ -281,13 +300,6 @@ public sealed class MapFrame
         Longitude = start.Longitude - dx / Math.Max(1, Bounds.Width) * 360 / Camera.Zoom,
         Latitude = start.Latitude + dy / Math.Max(1, Bounds.Height) * 180 / Camera.Zoom,
     });
-
-    /// <summary>A stable per-route phase offset from the key, so particles on different arcs do not move in step.</summary>
-    public static double Seed(string key)
-    {
-        uint seed = 2166136261; foreach (char c in key) seed = unchecked((seed ^ c) * 16777619);
-        return seed % 1000 / 100d;
-    }
 
     /// <summary>The status line under the map.</summary>
     public static string StatusSummary(int locations, int overflow, bool hasOrigin, bool available, string status, string geographyStatus) =>

@@ -17,7 +17,7 @@ public class GpuCounterLoopTests : IAsyncLifetime
     private sealed class FakeGpuSource(bool block=false,int blockFrom=0,int throwAt=0) : IGpuCounterSource
     {
         private readonly object gate=new();
-        private readonly List<double> calls=[];
+        private readonly List<double> calls=[],hints=[];
         private readonly int firstBlocked=block?1:blockFrom;
         private readonly ManualResetEventSlim released=new();
         private readonly TaskCompletionSource entered=new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -36,6 +36,8 @@ public class GpuCounterLoopTests : IAsyncLifetime
         public Task Entered=>entered.Task;
         /// <summary>The gaps between the times passed to successive calls.</summary>
         public IReadOnlyList<double> CallGaps() {lock(gate)return calls.Zip(calls.Skip(1),(a,b)=>b-a).ToArray();}
+        /// <summary>The interval each call was given, its freshness bound.</summary>
+        public IReadOnlyList<double> Hints() {lock(gate)return hints.ToArray();}
         public void Release()=>released.Set();
         public async Task WaitForReads(int count)
         {
@@ -51,7 +53,7 @@ public class GpuCounterLoopTests : IAsyncLifetime
             int call;double? interval;bool opened;
             lock(gate)
             {
-                calls.Add(monotonicSeconds);call=calls.Count;
+                calls.Add(monotonicSeconds);call=calls.Count;hints.Add(pollingIntervalSeconds);
                 maxConcurrent=Math.Max(maxConcurrent,++inFlight);
                 opened=!open;open=true;
                 interval=opened?null:monotonicSeconds-previous;
@@ -189,5 +191,29 @@ public class GpuCounterLoopTests : IAsyncLifetime
     {
         var (loop,fake)=Loop();await fake.WaitForReads(1);Assert.NotNull(loop.Take());
         await loop.DisposeAsync();Assert.True(loop.Stopped.IsCompleted);Assert.Null(loop.Take());
+    }
+    [Fact] public void The_idle_period_is_five_seconds_unless_polling_is_slower()
+    {
+        Assert.Equal(1,GpuCounterLoop.Period(0.5));Assert.Equal(1,GpuCounterLoop.Period(0.5,shown:true));Assert.Equal(2,GpuCounterLoop.Period(2,shown:true));
+        Assert.Equal(5,GpuCounterLoop.Period(0.5,shown:false));Assert.Equal(5,GpuCounterLoop.Period(2,shown:false));Assert.Equal(10,GpuCounterLoop.Period(10,shown:false));
+        // Every period is an interval PollingPolicy knows, so it is a freshness bound the reader can use, and an idle gap stays inside it.
+        foreach(var interval in PollingPolicy.Intervals)foreach(var shown in new[]{true,false})
+            Assert.Equal(GpuCounterLoop.Period(interval,shown),PollingPolicy.Normalize(GpuCounterLoop.Period(interval,shown)));
+        Assert.True(PollingPolicy.FreshnessSeconds(GpuCounterLoop.Period(0.5,shown:false))>GpuCounterLoop.IdlePeriodSeconds+1);
+    }
+    [Fact] public async Task An_idle_loop_reads_every_idle_period_and_a_page_showing_the_values_brings_the_next_read_within_a_period()
+    {
+        bool shown=false;var fake=new FakeGpuSource();var clock=Stopwatch.StartNew();
+        var idle=new GpuCounterLoop(fake,()=>clock.Elapsed.TotalSeconds,()=>0.5,()=>true,()=>shown);started.Add((idle,fake));idle.Start();
+        await Task.Delay(3000);Assert.Equal(0,fake.Reads);
+        await fake.WaitForReads(1);
+        Assert.True(fake.LastReadAt>=GpuCounterLoop.IdlePeriodSeconds-0.05,$"first idle read at {fake.LastReadAt:0.00} s");
+        // The idle period is the read's freshness bound, and the take says which period it was read under.
+        Assert.Equal(GpuCounterLoop.IdlePeriodSeconds,fake.Hints()[^1]);
+        Assert.Equal(GpuCounterLoop.IdlePeriodSeconds,(await TakeWhere(idle,_=>true)).PeriodSeconds);
+        shown=true;var sw=Stopwatch.StartNew();
+        await fake.WaitForReads(2);
+        Assert.True(sw.Elapsed<TimeSpan.FromSeconds(1.7),$"next read {sw.Elapsed.TotalSeconds:0.00} s after the page showed");
+        Assert.Equal(1,fake.Hints()[^1]);
     }
 }

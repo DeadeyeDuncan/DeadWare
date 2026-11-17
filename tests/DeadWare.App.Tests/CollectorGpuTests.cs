@@ -24,8 +24,11 @@ public class CollectorGpuTests : IAsyncLifetime
         private double previous,lastReadAt=double.NaN;
         private int reads,closes,closesDuringRead,inFlight,maxConcurrent;
         private bool open,lastReadOpened,stalled;
+        private readonly List<double> hints=[];
         /// <summary>Reads that have started.</summary>
         public int Reads {get{lock(gate)return reads;}}
+        /// <summary>The interval each read was given: its freshness bound.</summary>
+        public IReadOnlyList<double> Hints {get{lock(gate)return hints.ToArray();}}
         public int Closes {get{lock(gate)return closes;}}
         /// <summary>Closes that arrived while a read was in flight.</summary>
         public int ClosesDuringRead {get{lock(gate)return closesDuringRead;}}
@@ -43,7 +46,7 @@ public class CollectorGpuTests : IAsyncLifetime
             bool opened,stall;double? interval;
             lock(gate)
             {
-                reads++;maxConcurrent=Math.Max(maxConcurrent,++inFlight);
+                reads++;maxConcurrent=Math.Max(maxConcurrent,++inFlight);hints.Add(pollingIntervalSeconds);
                 opened=!open;open=true;
                 interval=opened?null:monotonicSeconds-previous;
                 previous=monotonicSeconds;stall=stalled;
@@ -240,6 +243,81 @@ public class CollectorGpuTests : IAsyncLifetime
             Assert.Equal(1,fake.MaxConcurrent);Assert.Equal(0,fake.ClosesDuringRead);
         }
         finally {fake.Release();}
+    }
+    [Fact] public void Viewers_are_counted_and_a_second_dispose_of_one_is_ignored()
+    {
+        var c=Build(fake,new(ProcessMonitoring:true,IdleGpuCadence:true));
+        Assert.False(c.GpuShown);
+        var a=c.ShowLiveGpu();var b=c.ShowLiveGpu();Assert.True(c.GpuShown);
+        a.Dispose();a.Dispose();Assert.True(c.GpuShown);
+        b.Dispose();Assert.False(c.GpuShown);
+        // Without the idle cadence (diagnostics, the tests above) the counters always run at full speed.
+        Assert.True(Build(new FakeGpuCounters(),new(ProcessMonitoring:true)).GpuShown);
+    }
+    [Fact] public async Task Without_a_viewer_the_counters_are_read_every_idle_period_and_each_read_credits_its_whole_gap()
+    {
+        var c=Build(fake,new(ProcessMonitoring:true,DiagnosticTimings:true,IdleGpuCadence:true));
+        var readings=new List<Reading>();var done=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        c.SampleAvailable+=r=>{lock(readings){readings.Add(r);if(Keyed(r)&&readings.Count(Keyed)==3)done.TrySetResult();}};
+        c.Start();
+        await done.Task.WaitAsync(TimeSpan.FromSeconds(20));
+        Reading[] all;lock(readings)all=readings.ToArray();
+        var reads=all.Where(Keyed).Take(3).ToArray();
+        // Every idle read is given the idle period as its freshness bound, so the reader still forms a rate over the gap.
+        Assert.All(fake.Hints,hint=>Assert.Equal(GpuCounterLoop.IdlePeriodSeconds,hint));
+        foreach(var (before,after) in reads.Zip(reads.Skip(1)))
+        {
+            double gap=after.ProcessActivity.GpuIntervalSeconds!.Value;
+            Assert.InRange(after.Sample.MonotonicSeconds-before.Sample.MonotonicSeconds,4.6,5.7);Assert.InRange(gap,4.6,5.7);
+            // 25 % of the whole gap: the GPU time between reads is counted, in one step.
+            Assert.Equal(0.25*gap,after.ProcessActivity.Processes.Single(p=>p.Pid==100).Deltas!.GpuSeconds!.Value,6);
+        }
+        Reading[] Between(Reading from,Reading to)=>all.Where(r=>!Keyed(r)&&r.Sample.MonotonicSeconds>from.Sample.MonotonicSeconds&&r.Sample.MonotonicSeconds<to.Sample.MonotonicSeconds).ToArray();
+        // The first read only opened the counters, so until the second there is no rate to show, as in loop placement.
+        Assert.All(Between(reads[0],reads[1]),r=>Assert.Equal(ProcessGap.FirstSample,r.ProcessActivity.Processes.Single(p=>p.Pid==100).GpuGap));
+        // After it, the polls between reads show the last read's values and add no GPU time, so nothing is counted twice.
+        var between=Between(reads[1],reads[2]);
+        Assert.True(between.Length>=7,$"{between.Length} polls between reads");
+        Assert.All(between,r=>
+        {
+            Assert.Null(r.ProcessActivity.GpuIntervalSeconds);Assert.False(r.ProcessActivity.GpuStale);
+            Assert.Equal(25,r.ProcessActivity.Processes.Single(p=>p.Pid==100).GpuPercent);
+            Assert.All(r.ProcessActivity.Processes,p=>Assert.Null(p.Deltas?.GpuSeconds));
+        });
+        double credited=all.Where(r=>r.Sample.MonotonicSeconds<=reads[2].Sample.MonotonicSeconds).Sum(r=>r.ProcessActivity.Processes.SingleOrDefault(p=>p.Pid==100)?.Deltas?.GpuSeconds??0);
+        Assert.Equal(0.25*(reads[1].ProcessActivity.GpuIntervalSeconds!.Value+reads[2].ProcessActivity.GpuIntervalSeconds!.Value),credited,6);
+    }
+    [Fact] public async Task A_page_showing_the_values_brings_back_every_poll_reading_until_it_hides()
+    {
+        var c=Start(fake,new(ProcessMonitoring:true,DiagnosticTimings:true,IdleGpuCadence:true));
+        var first=await NextWhere(c,Keyed);
+        var viewer=c.ShowLiveGpu();
+        var a=await NextWhere(c,r=>Keyed(r)&&r.Sample.MonotonicSeconds>first.Sample.MonotonicSeconds);
+        var b=await NextReadingAfter(c,a);var d=await NextReadingAfter(c,b);
+        Assert.True(Keyed(b));Assert.True(Keyed(d));Assert.Equal(0.5,fake.Hints[^1]);
+        viewer.Dispose();viewer.Dispose();
+        // A poll already running may still read; after it, the idle cadence holds.
+        var settled=await NextReadingAfter(c,d);
+        int reads=fake.Reads;var next=settled;
+        for(int i=0;i<4;i++){next=await NextReadingAfter(c,next);Assert.False(Keyed(next));}
+        Assert.Equal(reads,fake.Reads);
+    }
+    [Fact] public async Task An_idle_loop_reads_every_idle_period_and_is_not_stale_between_its_reads()
+    {
+        var fake=new FakeGpuCounters(delay:TimeSpan.FromMilliseconds(30));var c=Build(fake,new(ProcessMonitoring:true,DiagnosticTimings:true,IdleGpuCadence:true));
+        // A page shows the values first, so the slow reads come every poll and the guard moves them to their own loop quickly.
+        var viewer=c.ShowLiveGpu();c.Start();
+        var looped=await NextWhere(c,r=>r.ProcessSummary?.Gpu?.Placement==GpuCounterSummary.OwnLoop);
+        var fresh=await NextWhere(c,r=>r.Sample.MonotonicSeconds>looped.Sample.MonotonicSeconds&&Keyed(r));
+        viewer.Dispose();
+        var between=new List<Reading>();var next=fresh;
+        do {next=await NextReadingAfter(c,next);between.Add(next);} while(!Keyed(next));
+        // The next loop read waits the idle period, and the polls before it, well past two 1 s periods, are not stale.
+        Assert.InRange(next.Sample.MonotonicSeconds-fresh.Sample.MonotonicSeconds,4.5,6.6);
+        Assert.Contains(between,r=>r.Sample.MonotonicSeconds-fresh.Sample.MonotonicSeconds>3);
+        Assert.All(between.SkipLast(1),r=>{Assert.False(r.ProcessActivity.GpuStale);Assert.Equal(25,r.ProcessActivity.Processes.Single(p=>p.Pid==100).GpuPercent);});
+        Assert.Equal(GpuCounterLoop.IdlePeriodSeconds,fake.Hints[^1]);
+        Assert.NotNull(next.ProcessActivity.GpuIntervalSeconds);
     }
     [Fact] public async Task Disposal_waits_for_the_loop_read_in_flight_and_its_close()
     {

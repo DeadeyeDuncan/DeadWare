@@ -17,19 +17,29 @@ namespace DeadWare.WinUI;
 /// <summary>
 /// A live history chart drawn with Win2D from <see cref="HistoryChartModel"/>. The value lines and their labels sit on
 /// one canvas; the traces and time labels sit on another that the compositor slides left between samples, so the
-/// chart scrolls smoothly while being redrawn only once per sample.
+/// chart scrolls smoothly while being redrawn only once per sample. On a long range, where a sample moves the chart less
+/// than half a pixel, it stands still instead and is built and drawn again once per pixel column.
 /// </summary>
 internal sealed class HistoryChartView : UserControl
 {
     /// <summary>Trace-layer draws since start-up, across all charts; reported by <c>--exit-after</c> for the smoke check.</summary>
     public static long FramesDrawn;
 
-    private const double Left = 8, Top = 14, Right = 8, Bottom = 22;
-    private static readonly CanvasTextFormat LabelFormat = new() { FontSize = 11 };
-    private static readonly CanvasTextFormat RightLabelFormat = new() { FontSize = 11, HorizontalAlignment = CanvasHorizontalAlignment.Right };
+    // The top value label sits inside the plot, under its line, so above the plot there is only room for a trace at the top of
+    // the scale to show its whole stroke; below it, room for one row of time labels.
+    private const double Left = 8, Top = 4, Right = 8, Bottom = 17;
+    private static readonly CanvasTextFormat LabelFormat = new() { FontSize = 10 };
+    private static readonly CanvasTextFormat RightLabelFormat = new() { FontSize = 10, HorizontalAlignment = CanvasHorizontalAlignment.Right };
     // Time labels slide with the traces, so they are placed where they belong and not on the nearest whole pixel: snapped,
     // each drawing lands them up to half a pixel off and they tremble against the trace.
-    private static readonly CanvasTextFormat TickFormat = new() { FontSize = 11, HorizontalAlignment = CanvasHorizontalAlignment.Center, Options = CanvasDrawTextOptions.NoPixelSnap };
+    private static readonly CanvasTextFormat TickFormat = new() { FontSize = 10, HorizontalAlignment = CanvasHorizontalAlignment.Center, Options = CanvasDrawTextOptions.NoPixelSnap };
+    // The hover chip keeps the larger size: it floats over the plot, so it takes the chart no room.
+    private static readonly CanvasTextFormat ReadoutFormat = new() { FontSize = 11 };
+    // A value label's text box starts this far above its line, which puts its digits a couple of pixels over the line. The top
+    // line's starts only a pixel above it: the room the font leaves above its digits then puts them a few pixels under the
+    // line, inside the plot. The time labels and "Now" start this far under the plot, which keeps their whole text height
+    // inside the bottom margin.
+    private const float LabelAbove = 13, TopLabelAbove = 1, UnderPlot = 3;
 
     /// <summary>Default trace colours by graph colour key; cpu and download default to the system accent. A colour saved in settings wins.</summary>
     private static readonly Dictionary<string, Color> Palette = new()
@@ -37,6 +47,9 @@ internal sealed class HistoryChartView : UserControl
         ["gpu"] = Color.FromArgb(255, 0x8E, 0x6C, 0xEF), ["cputemp"] = Color.FromArgb(255, 0xF2, 0x99, 0x4A), ["gputemp"] = Color.FromArgb(255, 0xEB, 0x57, 0x57),
         ["memory"] = Color.FromArgb(255, 0x27, 0xAE, 0x60), ["upload"] = Color.FromArgb(255, 0xF2, 0xC9, 0x4C),
         ["diskread"] = Color.FromArgb(255, 0x2D, 0x9C, 0xDB), ["diskwrite"] = Color.FromArgb(255, 0xBB, 0x6B, 0xD9),
+        // The WPF app's default theme draws the GPU fan amber and the CPU pump blue (its Warning and Download colours), as
+        // the Settings help says; without these both fell back to the accent colour.
+        ["gpufan"] = Color.FromArgb(255, 0xF2, 0xCD, 0x91), ["cpupump"] = Color.FromArgb(255, 0x82, 0xAD, 0xFF),
     };
 
     private readonly MonitorSession session;
@@ -53,9 +66,19 @@ internal sealed class HistoryChartView : UserControl
     // Where the sliding layers stand while the pointer holds them still, so the readout lands on what is under it.
     private float held;
     private HistoryChartFrame? frame;
-    private HistoryChartRequest? pending;
+    private (HistoryChartRequest Request, bool Slides)? pending;
     private bool building;
     private double frameNow, frameSeconds, frameWidth, frameLead;
+    // Whether the frame on screen slides between readings (see Slides).
+    private bool frameSlides;
+    // What the newest requested build was made from, which decides whether a refresh needs another (see NeedsBuild).
+    private ChartShape? requested;
+    private double requestedNow, requestedSample = double.NegativeInfinity;
+    // The drawing-only settings the traces were last drawn with, and whether the value axis was last drawn waiting for a sample.
+    private Dictionary<string, string>? drawnColors;
+    private Dictionary<string, GraphLineStyle>? drawnStyles;
+    private Color drawnAccent;
+    private bool drawnContrast, drawnWaiting;
     // The frame the trace layer last drew, which is what the slide has to follow until the next one is on screen.
     private bool drawnScrolls;
     private double drawnNow, drawnSeconds, drawnWidth, drawnLead;
@@ -91,6 +114,8 @@ internal sealed class HistoryChartView : UserControl
         MinHeight = 120;
         this.WhileShowing(() => { session.Changed += Refresh; Refresh(); }, () => session.Changed -= Refresh);
         SizeChanged += (_, _) => Refresh();
+        // The inks follow the theme, and a chart that stands still between readings is not otherwise drawn again soon.
+        ActualThemeChanged += (_, _) => { axes.Invalidate(); traces.Invalidate(); ticks.Invalidate(); readout.Invalidate(); };
     }
 
     /// <summary>Limits a storage chart to one drive's read and write; null for the totals with per-drive lines.</summary>
@@ -121,44 +146,110 @@ internal sealed class HistoryChartView : UserControl
             CpuPump: settings.ShowCpuPumpSpeed,
             Cores: settings.ShowCpuCoreUsage ? session.Current?.CpuCoreCount ?? 0 : 0,
             Drives: drives.Select(drive => drive.Id).ToList(),
-            DriveNames: drives.GroupBy(drive => drive.Id).ToDictionary(group => group.Key, group => group.First().Model),
+            DriveNames: drives.GroupBy(drive => drive.Id).ToDictionary(group => group.Key, group => StoragePresenter.Name(group.First())),
             PumpWithDevices: PumpAndCoresWithDevices,
             CoresWithDevices: PumpAndCoresWithDevices,
             Smoothed: settings.GraphSmoothing,
             DriveId: DriveId);
+        // A colour, line style, accent or contrast change needs a new drawing but no new frame.
+        if (DrawingChanged()) { traces.Invalidate(); if (pointer is not null) readout.Invalidate(); }
         // Six hours of per-core history is far too much to walk on the UI thread every second for every chart: that starves
         // input and the compositor alike. Build off-thread and keep only the newest request, as the WPF chart does.
-        pending = new HistoryChartRequest(session.Collector.History, kind, session.SelectedGpuId, compare,
+        var request = new HistoryChartRequest(session.Collector.History, kind, session.SelectedGpuId, compare,
             session.HistorySeconds, session.Collector.ElapsedSeconds, DateTimeOffset.Now, plot, TimeZoneInfo.Local, Options: options, Lead: lead);
+        bool slides = Slides(plot.Width, request.Seconds, settings.PollingIntervalSeconds);
+        var shape = new ChartShape(plot, request.Seconds, request.GpuId, lead, slides, options.GpuFan, options.CpuPump, options.Cores, options.Smoothed,
+            string.Join('|', drives.Select(drive => drive.Id + "=" + options.DriveNames!.GetValueOrDefault(drive.Id))), request.Zone?.Id);
+        double sample = session.Current?.Sample.MonotonicSeconds ?? double.NegativeInfinity;
+        if (!NeedsBuild(shape, request, sample)) return;
+        (requested, requestedNow, requestedSample) = (shape, request.Now, sample);
+        pending = (request, slides);
         if (!building) _ = BuildLatestAsync();
     }
+
+    /// <summary>Everything a frame is built from except the time. A change in any of it rebuilds at once.</summary>
+    private sealed record ChartShape(ChartPlot Plot, int Seconds, string? Gpu, double Lead, bool Slides, bool GpuFan, bool CpuPump, int Cores, bool Smoothed, string Drives, string? Zone);
+
+    /// <summary>
+    /// Whether a refresh needs a new frame. A change of size, range, GPU, options, drives or cadence rebuilds at once, and a sliding
+    /// chart rebuilds on every refresh as it always has. A chart that stands still between readings is rebuilt for a new reading
+    /// only once time has moved it by a pixel column (every 36 seconds at six hours on 600 pixels), or while it has nothing to
+    /// show yet: its picture changes no sooner, and six hours of samples are not walked again twice a second for nothing.
+    /// </summary>
+    private bool NeedsBuild(ChartShape shape, HistoryChartRequest request, double sample)
+    {
+        if (shape != requested || shape.Slides) return true;
+        if (!(sample > requestedSample)) return false;
+        return frame is not { HasReadings: true } || request.Now - requestedNow >= request.Seconds / request.Plot.Width;
+    }
+
+    /// <summary>
+    /// Whether drawings slide between readings: only while Windows animations are on and a reading moves the chart by half a pixel
+    /// or more. On a long range a reading moves it a sliver of a pixel (0.014 px at six hours on 600 pixels), and the slide only
+    /// kept the compositor drawing every frame; such a chart stands still and is drawn again in place a pixel column later.
+    /// </summary>
+    private static bool Slides(double width, int seconds, double pollingSeconds) =>
+        width > 0 && seconds > 0 && width / seconds * PollingPolicy.Normalize(pollingSeconds) >= 0.5 && uiSettings.AnimationsEnabled;
+    private static readonly Windows.UI.ViewManagement.UISettings uiSettings = new();
+
+    /// <summary>Whether the colours, line styles, system accent (the default CPU and download colour) or contrast mode the traces were last drawn with have changed.</summary>
+    private bool DrawingChanged()
+    {
+        var settings = session.Settings;
+        var accent = (Color)Application.Current.Resources["SystemAccentColor"];
+        if (drawnColors is not null && drawnStyles is not null && drawnContrast == HighContrast && drawnAccent == accent
+            && Same(drawnColors, settings.GraphColors) && Same(drawnStyles, settings.GraphStyles)) return false;
+        drawnColors = new Dictionary<string, string>(settings.GraphColors);
+        drawnStyles = new Dictionary<string, GraphLineStyle>(settings.GraphStyles);
+        (drawnContrast, drawnAccent) = (HighContrast, accent);
+        return true;
+
+        static bool Same<T>(Dictionary<string, T> drawn, Dictionary<string, T> now)
+        {
+            if (drawn.Count != now.Count) return false;
+            foreach (var (key, value) in now)
+                if (!drawn.TryGetValue(key, out var was) || !EqualityComparer<T>.Default.Equals(was, value)) return false;
+            return true;
+        }
+    }
+
+    /// <summary>Whether the value axis would be drawn as it is: the same lines and labels on the same plot, with or without readings.</summary>
+    private static bool SameAxes(HistoryChartFrame drawn, HistoryChartFrame built) =>
+        drawn.Request.Plot == built.Request.Plot && drawn.HasReadings == built.HasReadings && drawn.Lines.SequenceEqual(built.Lines) && drawn.RpmLines.SequenceEqual(built.RpmLines);
 
     private async Task BuildLatestAsync()
     {
         building = true;
         try
         {
-            while (pending is { } request)
+            while (pending is { } next)
             {
                 pending = null;
+                var request = next.Request;
                 HistoryChartFrame built;
                 try { built = await Task.Run(() => HistoryChartModel.Build(request)); }
-                catch (Exception error) { App.Note($"A {kind} chart could not be built: {error.Message}"); continue; }
+                // Forgetting the request lets the next refresh try again, as it did when every refresh rebuilt.
+                catch (Exception error) { App.Note($"A {kind} chart could not be built: {error.Message}"); requested = null; continue; }
+                var drawn = frame;
                 frame = built;
                 frameNow = request.Now;
                 frameSeconds = request.Seconds;
                 frameWidth = request.Plot.Width;
                 frameLead = request.Lead;
+                frameSlides = next.Slides;
                 StatisticsReady?.Invoke(built.Statistics);
                 // The clips keep the sliding traces inside the plot, and the time labels under it and short of "Now".
                 bool room = plot.Width > 0 && plot.Height > 0;
                 clip.Rect = room ? new Rect(plot.Left, 0, plot.Width, plot.Top + plot.Height + 1) : new Rect(0, 0, 0, 0);
                 double labels = plot.Width - NowWidth - 6;
                 tickClip.Rect = room && labels > 0 ? new Rect(plot.Left, plot.Top + plot.Height, labels, ActualHeight - plot.Top - plot.Height) : new Rect(0, 0, 0, 0);
-                axes.Invalidate();
+                // Only what changed is drawn again. The traces and time labels move with every frame; the value axis only when its
+                // lines, the plot or the waiting message change; the readout only under the pointer.
+                bool waiting = session.Current is null;
+                if (drawn is null || waiting != drawnWaiting || !SameAxes(drawn, built)) { drawnWaiting = waiting; axes.Invalidate(); }
                 traces.Invalidate();
                 ticks.Invalidate();
-                readout.Invalidate();
+                if (pointer is not null) readout.Invalidate();
             }
         }
         finally { building = false; }
@@ -177,7 +268,8 @@ internal sealed class HistoryChartView : UserControl
     /// reading is late. The run and the drawing are committed together, so the first frame that shows the new drawing shows
     /// it in the right place. An earlier version followed one clock that ran for the life of the app; the compositor stops
     /// that clock while the window is covered or hidden, and every chart then stood still between samples until restart.
-    /// Under the pointer the layer holds still, so the readout stays on its sample.
+    /// Under the pointer the layer holds still, so the readout stays on its sample. A drawing that does not slide (see
+    /// <see cref="Slides"/>) rests where it was drawn, and no animation runs for it.
     /// </summary>
     private void Scroll()
     {
@@ -206,7 +298,7 @@ internal sealed class HistoryChartView : UserControl
     /// Eases a change of the value axis. A network or disk chart's axis follows its highest reading, so it shifts a little
     /// with most samples; redrawn at the new scale in one step, the whole trace twitches. The new drawing instead starts
     /// stretched to the height the old one had and settles over a quarter of a second. A change of more than three times,
-    /// a different chart (range, device, drive) and a chart under the pointer are shown at once.
+    /// a different chart (range, device, drive), a chart under the pointer and Windows animations turned off are shown at once.
     /// </summary>
     private void Rescale(HistoryChartFrame current)
     {
@@ -217,7 +309,7 @@ internal sealed class HistoryChartView : UserControl
         var visual = ElementCompositionPreview.GetElementVisual(traces);
         visual.CenterPoint = new Vector3(0, (float)(plot.Top + plot.Height), 0);
         double ratio = before > 0 ? after / before : 1;
-        if (!same || pointer is not null || !current.HasReadings || !(after > 0) || Math.Abs(ratio - 1) < 0.002 || ratio > 3 || ratio < 1 / 3d)
+        if (!same || pointer is not null || !current.HasReadings || !(after > 0) || Math.Abs(ratio - 1) < 0.002 || ratio > 3 || ratio < 1 / 3d || !uiSettings.AnimationsEnabled)
         {
             visual.StopAnimation("Scale");
             visual.Scale = Vector3.One;
@@ -315,7 +407,7 @@ internal sealed class HistoryChartView : UserControl
         float width = 0;
         foreach (var row in rows)
         {
-            using var layout = new CanvasTextLayout(sender, row.Text, LabelFormat, 0, 0) { WordWrapping = CanvasWordWrapping.NoWrap };
+            using var layout = new CanvasTextLayout(sender, row.Text, ReadoutFormat, 0, 0) { WordWrapping = CanvasWordWrapping.NoWrap };
             width = Math.Max(width, (float)layout.LayoutBounds.Width);
         }
         // A chip taller than the chart (a CPU chart lists its busiest cores) would be cut off at the bottom: it then
@@ -333,7 +425,7 @@ internal sealed class HistoryChartView : UserControl
         drawing.FillRoundedRectangle(x, y, width, height, 4, 4, dark ? Color.FromArgb(240, 32, 32, 32) : Color.FromArgb(240, 252, 252, 252));
         drawing.DrawRoundedRectangle(x, y, width, height, 4, 4, line, 1);
         for (int i = 0; i < rows.Count; i++)
-            drawing.DrawText(rows[i].Text, x + padding + i / perColumn * column, y + padding + i % perColumn * rowHeight, rows[i].Color, LabelFormat);
+            drawing.DrawText(rows[i].Text, x + padding + i / perColumn * column, y + padding + i % perColumn * rowHeight, rows[i].Color, ReadoutFormat);
     }
 
     private void DrawAxes(CanvasControl sender, CanvasDrawEventArgs args)
@@ -345,14 +437,20 @@ internal sealed class HistoryChartView : UserControl
         foreach (var value in current.Lines)
         {
             session.DrawLine((float)plot.Left, (float)value.Y, (float)(plot.Left + plot.Width), (float)value.Y, line, 1);
-            session.DrawText(value.Label, (float)(plot.Left + plot.Width - 4), (float)value.Y - 14, ink, RightLabelFormat);
+            session.DrawText(value.Label, (float)(plot.Left + plot.Width - 4), LabelY(value.Y), ink, RightLabelFormat);
         }
         // Fan and pump lines read against RPM labels on the left of the same value lines.
-        foreach (var value in current.RpmLines) session.DrawText(value.Label, (float)plot.Left + 4, (float)value.Y - 14, ink, LabelFormat);
-        session.DrawText("Now", (float)(plot.Left + plot.Width), (float)(plot.Top + plot.Height + 4), ink, RightLabelFormat);
+        foreach (var value in current.RpmLines) session.DrawText(value.Label, (float)plot.Left + 4, LabelY(value.Y), ink, LabelFormat);
+        session.DrawText("Now", (float)(plot.Left + plot.Width), (float)(plot.Top + plot.Height) + UnderPlot, ink, RightLabelFormat);
         if (!current.HasReadings)
             session.DrawText(this.session.Current is null ? "Waiting for first sample…" : "No available readings in this range", (float)plot.Left + 15, (float)(plot.Top + plot.Height / 2 + 2), ink, LabelFormat);
     }
+
+    /// <summary>
+    /// Where a value label's text starts: just above its line, except the top line's, which goes just below it inside the plot,
+    /// so the chart keeps no strip above the plot for it.
+    /// </summary>
+    private float LabelY(double y) => (float)y - (y < plot.Top + 1 ? TopLabelAbove : LabelAbove);
 
     private static double TextWidth(Microsoft.Graphics.Canvas.ICanvasResourceCreator creator, string text, CanvasTextFormat format)
     {
@@ -372,7 +470,7 @@ internal sealed class HistoryChartView : UserControl
         foreach (var tick in current.Ticks)
         {
             if (slow && tick.X + TextWidth(sender, tick.Label, TickFormat) / 2 > limit) continue;
-            args.DrawingSession.DrawText(tick.Label, (float)tick.X, (float)(plot.Top + plot.Height) + 4, ink, TickFormat);
+            args.DrawingSession.DrawText(tick.Label, (float)tick.X, (float)(plot.Top + plot.Height) + UnderPlot, ink, TickFormat);
         }
     }
 
@@ -380,7 +478,7 @@ internal sealed class HistoryChartView : UserControl
     {
         Interlocked.Increment(ref FramesDrawn);
         if (frame is not { } current) return;
-        (drawnScrolls, drawnNow, drawnSeconds, drawnWidth, drawnLead) = (current.HasReadings, frameNow, frameSeconds, frameWidth, frameLead);
+        (drawnScrolls, drawnNow, drawnSeconds, drawnWidth, drawnLead) = (current.HasReadings && frameSlides, frameNow, frameSeconds, frameWidth, frameLead);
         Scroll();
         Rescale(current);
         var session = args.DrawingSession;
