@@ -620,6 +620,8 @@ public sealed class UserSettings
     public int HistorySeconds {get;set;}=60;
     public string? SelectedGpuId {get;set;}
     public Dictionary<string,WindowPlacement> Windows {get;set;}=new();
+    public bool LightingEnabled {get;set;}
+    public string? OpenRgbPath {get;set;}
 }
 public record SettingsRead(UserSettings Settings,string? Error);
 public static class SettingsCodec
@@ -642,6 +644,7 @@ public static class SettingsCodec
             s.WidgetGraphs=widgetGraphs;
             s.PollingIntervalSeconds=PollingPolicy.Normalize(s.PollingIntervalSeconds);
             if(!HistoryRanges.IsSupported(s.HistorySeconds)) s.HistorySeconds=60;
+            if(s.OpenRgbPath is {} openRgb&&(openRgb.Length>260||openRgb.Any(char.IsControl)||!openRgb.EndsWith("OpenRGB.exe",StringComparison.OrdinalIgnoreCase)))s.OpenRgbPath=null;
             s.Windows??=new();
             using var document=JsonDocument.Parse(json);
             // Retain the pin choice even when legacy coordinates must be discarded.

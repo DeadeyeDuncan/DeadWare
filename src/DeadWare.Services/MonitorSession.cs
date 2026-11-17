@@ -32,6 +32,9 @@ public sealed class MonitorSession
     public ConnectionService Connections {get;}
     public UpdateService Updates {get;}
     public UserSettings Settings {get;}
+    /// <summary>The lighting host's client; null while lighting is off or no OpenRGB path is set.</summary>
+    internal DeviceHostClient? Lighting {get;private set;}
+    private readonly SemaphoreSlim lightingGate=new(1,1);
     public string SettingsStatus {get;private set;}="";
     private readonly string settingsPath=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"DeadWare","settings.json");
     private readonly SettingsSnapshotWriter writer;
@@ -121,10 +124,40 @@ public sealed class MonitorSession
             Changed?.Invoke();
         };
     }
-    public void Start()
+    private DeviceHostClient NewLightingClient()=>new(Settings.OpenRgbPath!,new DeviceHostLauncher(),DeviceHostPipe.ConnectAsync,TimeProvider.System,Environment.IsPrivilegedProcess);
+    /// <param name="signIn">True when Windows launched DeadWare at sign-in; the lighting host then waits before touching devices.</param>
+    public void Start(bool signIn=false)
     {
+        if(Settings.LightingEnabled&&Settings.OpenRgbPath is not null)
+        {
+            var client=Lighting=NewLightingClient();
+            _=client.StartAsync(signIn,CancellationToken.None);
+        }
         GraphHistory.Start();Cooling.Start();Battery.Start();Usage.Start();ProcessHistory.Start();Alerts.Start();Connections.Start();_ = SaveAsync();Collector.Start();timer.Start();
     }
+    /// <summary>Saves the lighting choices and starts, restarts or stops the host client to match.</summary>
+    public async Task SetLightingAsync(bool enabled,string? openRgbPath)
+    {
+        await lightingGate.WaitAsync();
+        try
+        {
+            bool pathChanged=Settings.OpenRgbPath!=openRgbPath;
+            Settings.LightingEnabled=enabled;Settings.OpenRgbPath=openRgbPath;
+            await SaveAsync();
+            var current=Lighting;
+            if(enabled&&openRgbPath is not null)
+            {
+                if(current is not null&&!pathChanged&&current.Problem is null)return;
+                if(current is not null)await RetireLightingAsync(current);
+                var client=Lighting=NewLightingClient();
+                await client.StartAsync(false,CancellationToken.None);
+            }
+            else if(current is not null) {await RetireLightingAsync(current);Lighting=null;}
+            Changed?.Invoke();
+        }
+        finally {lightingGate.Release();}
+    }
+    private static async Task RetireLightingAsync(DeviceHostClient client) {await client.StopAsync();await client.DisposeAsync();}
     public void SetRange(int seconds) {Settings.HistorySeconds=seconds;Changed?.Invoke();_ = SaveAsync();}
     public void SetGpu(string? id) {Settings.SelectedGpuId=id;Changed?.Invoke();_ = SaveAsync();}
     public void SetTheme(string theme) {Settings.Theme=theme;Changed?.Invoke();_ = SaveAsync();}
@@ -491,7 +524,9 @@ public sealed class MonitorSession
     {
         diagnostics?.Record("shutdown_begin",new {OpenWindows=layout.Remembered});
         layout.BeginShutdown();timer.Stop();saveTimer.Stop();captureWindows?.Invoke();
-        try {await SaveAsync();}finally {await StopCollectorAsync(QuitDeadline,QuitDeadline,HistoryDeadline);}
+        // The lighting host stops alongside the collector, so quitting takes no longer than it did.
+        var lighting=Lighting is {} client?Task.Run(async ()=>{await client.StopAsync();await client.DisposeAsync();}):Task.CompletedTask;
+        try {await SaveAsync();}finally {await Task.WhenAll(StopCollectorAsync(QuitDeadline,QuitDeadline,HistoryDeadline),lighting);}
         diagnostics?.Record("shutdown_completed");
     }
     /// <summary>

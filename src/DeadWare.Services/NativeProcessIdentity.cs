@@ -30,6 +30,8 @@ internal static class NativeProcessIdentity
         string? path=query(PathCapacity,out int error);
         return path is null&&error==ErrorInsufficientBuffer?query(LongPathCapacity,out _):path;
     }
+    /// <summary>The image path of the process with this id; null when it cannot be opened or read.</summary>
+    internal static string? ImagePath(int pid){using var process=OpenProcess(0x1000,false,pid);return process.IsInvalid?null:ImagePath(process);}
     private static string? QueryImagePath(SafeProcessHandle process,int capacity,out int error)
     {
         var path=new StringBuilder(capacity);int size=capacity;

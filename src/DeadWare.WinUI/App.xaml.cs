@@ -92,7 +92,7 @@ public partial class App : Application
 
             bool windowsStartup = arguments.Contains("--startup") && !arguments.Contains("--restart-from");
             if (ApplicationLifetime.ShouldShowDashboardOnLaunch(windowsStartup, session.Settings.StartInTray, tray.Available)) window.Activate();
-            session.Start();
+            session.Start(windowsStartup);
             // Graphs and the widget from the previous session come back whether or not the dashboard is shown.
             Popouts.RestoreRemembered();
             // As the WPF app does: acknowledge an update that just restarted us, then look for a newer release once.
