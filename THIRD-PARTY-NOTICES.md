@@ -24,6 +24,12 @@ DeadWare's MIT license applies to original DeadWare code. Included dependencies 
 - **MaxMind.Db 5.2.0** — MaxMind and contributors, Apache License 2.0. Unmodified local database reader. Source revision `575c4b8517c91d99cf8071bd7a3f3327a64696d8`: https://github.com/maxmind/MaxMind-DB-Reader-dotnet. The upstream Apache license is preserved in `licenses/MAXMIND-DB-LICENSE.txt` and release `licenses/texts/`. No commercial MaxMind database is bundled.
 - **Natural Earth v5.1.2** — public-domain 1:110m land and country boundaries, 1:50m state/province boundaries, and 1:10m North American state/province boundaries and populated places, maintained by Nathaniel Vaughn Kelso, Tom Patterson and contributors. Embedded derivative coordinate/city JSON comes from pinned revision `f1890d9f152c896d250a77557a5751a93d494776`. Source URLs, SHA-256 hashes and reproducible transformations are in `assets/maps/README.md`. Terms: https://www.naturalearthdata.com/about/terms-of-use/. No upstream endorsement is implied.
 
+## Lighting
+
+- **OpenRGB.NET 3.1.1** — Diogo Trindade (diogotr7); MIT License. Copyright © 2020 Diogo Trindade. Unmodified client library for OpenRGB's network SDK, built into the lighting helper, `DeadWare.Devices.exe`. Source revision `442b448c2ee76c554923918723d47121b6256552`: https://github.com/diogotr7/OpenRGB.NET. Package: https://www.nuget.org/packages/OpenRGB.NET/3.1.1. Its manifest, which records the MIT license, is included in the release inventory.
+
+OpenRGB itself isn't distributed with DeadWare. DeadWare talks to a copy of OpenRGB that you install, over OpenRGB's network SDK.
+
 The restore dependency inventory may contain packages for non-Windows runtimes. This does not indicate DeadWare supports those operating systems or that all those assets are included in the Windows executable distribution.
 
 No upstream component is claimed to be authored by DeadWare. Library and vendor names are used only to identify dependencies and compatibility.
