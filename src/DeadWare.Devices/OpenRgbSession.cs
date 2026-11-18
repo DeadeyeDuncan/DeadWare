@@ -13,6 +13,8 @@ internal interface IOpenRgbSession : IDisposable
     IReadOnlyList<OpenRgbController> ReadControllers();
     void UpdateLeds(int index,ReadOnlySpan<Rgb> colors);
     void UpdateMode(int index,int modeIndex,IReadOnlyList<Rgb>? colors);
+    // Sets a resizable zone's LED count (OpenRGB's sizes.ors); OpenRGB sends no reply.
+    void ResizeZone(int index,int zoneIndex,int size);
     // Drops the connection from any thread, without the host's lock: a call waiting on OpenRGB fails at once. Safe to call again.
     void Abort();
     event Action? DeviceListUpdated;
@@ -69,6 +71,7 @@ internal sealed class OpenRgbSession : IOpenRgbSession
         if(colors is {Count:>0}) shaped=ModeColors(colors,c.GetControllerData(index).Modes[modeIndex].Colors.Length);
         c.UpdateMode(index,modeIndex,colors:shaped?.Select(x=>new Color(x.R,x.G,x.B)).ToArray());
     }
+    public void ResizeZone(int index,int zoneIndex,int size)=>Client.ResizeZone(index,zoneIndex,size);
     // Exactly one caller takes a client out, so each is disposed once; a second Dispose of OpenRGB.NET's connection would throw.
     public void Abort()
     {

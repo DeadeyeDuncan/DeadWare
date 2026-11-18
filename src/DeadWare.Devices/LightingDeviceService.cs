@@ -8,6 +8,12 @@ internal sealed class LightingDeviceService
 {
     public static readonly TimeSpan HidCap=TimeSpan.FromMilliseconds(33),DramCap=TimeSpan.FromMilliseconds(200),RefreshTtl=TimeSpan.FromMilliseconds(400);
     const int DramType=1;
+    // DeadLight's seedZones (electron/seed-zones.ts), ported exactly: the first device named Corsair Lighting Node Pro whose zone 0 (channel 1,
+    // the three LL fans, 3 x 16 LEDs) reports 0 LEDs is resized to 48, so its hardware effect has LEDs to run on. DeadWare's OpenRGB keeps
+    // its own settings, where no size was ever saved. Zone 1 (channel 2) is physically empty and is never touched: oversizing it strobed
+    // the chain under DeadLight.
+    public const string NodePro="Corsair Lighting Node Pro";
+    public const int NodeProZone=0,NodeProLeds=48;
     sealed record Sent(long At,Rgb[] Colors);
     readonly IOpenRgbSession session;
     readonly TimeProvider time;
@@ -20,6 +26,7 @@ internal sealed class LightingDeviceService
     readonly Dictionary<string,int> activeMode=new();
     readonly Dictionary<string,string> lastError=new();
     IReadOnlyList<LightingDevice> devices=[];
+    bool seeded; // once per connection, so an OpenRGB that never reflects the resize isn't resized on every rescan
     public IReadOnlyList<LightingDevice> Devices{get{lock(gate)return devices;}}
     public LightingDeviceService(IOpenRgbSession session,TimeProvider time,HostLog log){this.session=session;this.time=time;this.log=log;}
 
@@ -29,6 +36,16 @@ internal sealed class LightingDeviceService
     public bool Rescan()
     {
         var read=session.ReadControllers();
+        if(!Volatile.Read(ref seeded)&&read.FirstOrDefault(c=>c.Name==NodePro) is {} node&&node.Zones.FirstOrDefault(z=>z.Index==NodeProZone) is {LedCount:0} zone)
+        {
+            Volatile.Write(ref seeded,true);
+            session.ResizeZone(node.Index,NodeProZone,NodeProLeds);
+            log.Write($"sized {node.Name} {zone.Name} to {NodeProLeds} LEDs");
+            read=session.ReadControllers();
+            // Its hardware effect was set up for the old size: forget what was sent, so the next paint sends it again.
+            var key=LightingKeys.Device(node.Serial,node.Location);
+            lock(gate){applied.Remove(key);directSet.Remove(key);lastSent.Remove(key);}
+        }
         lock(gate)
         {
             var oldShape=Shape(devices.Select(d=>(d.Key,indexByKey[d.Key],d.Zones)));
@@ -57,7 +74,7 @@ internal sealed class LightingDeviceService
     // After an OpenRGB restart or reconnect the fresh process has received nothing: forget what was sent.
     public void Reset()
     {
-        lock(gate){lastSent.Clear();applied.Clear();directSet.Clear();activeMode.Clear();}
+        lock(gate){lastSent.Clear();applied.Clear();directSet.Clear();activeMode.Clear();seeded=false;}
     }
 
     public void Paint(LightingSettings settings)

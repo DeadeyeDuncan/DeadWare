@@ -137,6 +137,49 @@ public sealed class LightingDeviceServiceTests : IDisposable
         svc.Reset();Ms(1000);svc.Paint(s);
         Assert.Equal(0,Assert.Single(session.Modes,m=>m.Index==hid).Mode);
     }
+    // Ruling AQ, DeadLight's seedZones: DeadWare's OpenRGB keeps its own settings, where the Node Pro's resizable channels start with no LEDs,
+    // so its Rainbow Wave would run on none. Channel 1 (zone 0), which carries the three LL fans, is sized to 48 LEDs when it reports 0;
+    // channel 2 is physically empty and is never sized (oversizing it strobed the chain under DeadLight).
+    [Fact] public void Node_Pro_channel_1_with_no_LEDs_is_sized_to_48_and_channel_2_never()
+    {
+        var node=IndexOf(Node);
+        session.SizeZone(node,0,0);
+        svc.Rescan();
+        Assert.Equal([(node,0,48)],session.Resizes);
+        var nodePro=svc.Devices.Single(d=>d.Name=="Corsair Lighting Node Pro");
+        Assert.Equal(48,nodePro.Zones[0].LedCount); // rescanned after the resize
+        Assert.Equal(0,nodePro.Zones[1].LedCount);
+        Assert.Contains("Corsair Lighting Node Pro",File.ReadAllText(Path.Combine(dir,"devices.log")));
+    }
+    [Fact] public void Node_Pro_is_sized_once_per_connection()
+    {
+        var node=IndexOf(Node);
+        session.KeepResizes=false; // an OpenRGB that never reflects the resize must not be resized every rescan
+        session.SizeZone(node,0,0);
+        svc.Rescan();svc.Rescan();svc.Rescan();
+        Assert.Single(session.Resizes);
+        svc.Reset();svc.Rescan(); // a new OpenRGB process, or a reconnect
+        Assert.Equal(2,session.Resizes.Count);
+    }
+    [Fact] public void Only_the_Node_Pros_channel_1_is_ever_sized()
+    {
+        var node=IndexOf(Node);var board=IndexOf("SERIAL-8");
+        session.SizeZone(node,1,0);   // channel 2 empty, channel 1 sized: nothing to do
+        session.SizeZone(board,0,0);  // another device's empty first zone: not DeadLight's rule
+        svc.Rescan();
+        Assert.Empty(session.Resizes);
+    }
+    [Fact] public void Sizing_the_Node_Pro_resends_its_hardware_effect_for_the_new_size()
+    {
+        var s=new LightingSettings();var node=IndexOf(Node);
+        svc.Paint(s);
+        Assert.Single(session.Modes,m=>m.Index==node);
+        session.SizeZone(node,0,0);
+        svc.Rescan();
+        svc.Paint(s);
+        var calls=session.Calls.Where(c=>c.StartsWith("resize")||c.StartsWith($"mode {node}/")).ToList();
+        Assert.Equal(["mode "+node+"/1","resize "+node+"/0/48","mode "+node+"/1"],calls);
+    }
     [Fact] public void ModeColors_shapes_to_the_slot_count()
     {
         Rgb r=new(1,2,3),g=new(4,5,6);

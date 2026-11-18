@@ -192,6 +192,16 @@ public sealed class DeviceHostTests : IAsyncLifetime
         Assert.Equal(0,runner.Count);
     }
 
+    // Ruling AQ through the host: on connecting, the Node Pro's empty channel 1 is sized before its Rainbow Wave is first sent, so the
+    // effect has LEDs to run on from the start.
+    [Fact]
+    public async Task Node_Pro_is_sized_before_its_effect_is_first_sent()
+    {
+        session.SizeZone(6,0,0);
+        await Running();
+        Assert.Equal(["resize 6/0/48","mode 6/1"],session.Calls.Where(c=>c.StartsWith("resize")||c.StartsWith("mode 6/")).ToList());
+    }
+
     [Fact]
     public async Task Missing_openrgb_reports_OpenRgbMissing()
     {

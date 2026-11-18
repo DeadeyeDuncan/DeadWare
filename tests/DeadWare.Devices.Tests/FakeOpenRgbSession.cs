@@ -11,6 +11,8 @@ sealed class FakeOpenRgbSession:IOpenRgbSession
     readonly object sync=new();
     readonly List<(int Index,Rgb[] Colors)> leds=new();
     readonly List<(int Index,int Mode,Rgb[]? Colors)> modes=new();
+    readonly List<(int Index,int Zone,int Size)> resizes=new();
+    readonly List<string> calls=new();
     TaskCompletionSource? hang;
     int hanging,aborts;
     public List<OpenRgbController> Controllers=new();
@@ -24,6 +26,11 @@ sealed class FakeOpenRgbSession:IOpenRgbSession
     public volatile Func<string,bool>? HangWhen;
     public IReadOnlyList<(int Index,Rgb[] Colors)> Leds{get{lock(sync)return leds.ToList();}}
     public IReadOnlyList<(int Index,int Mode,Rgb[]? Colors)> Modes{get{lock(sync)return modes.ToList();}}
+    public IReadOnlyList<(int Index,int Zone,int Size)> Resizes{get{lock(sync)return resizes.ToList();}}
+    // Writes in the order OpenRGB received them: "resize 6/0/48", "mode 6/1".
+    public IReadOnlyList<string> Calls{get{lock(sync)return calls.ToList();}}
+    // OpenRGB applies a resize to the zone it reports, unless a test says it forgets it.
+    public bool KeepResizes=true;
     public int LedCount{get{lock(sync)return leds.Count;}}
     public void ClearLeds(){lock(sync)leds.Clear();}
     public bool Hanging=>Volatile.Read(ref hanging)>0;
@@ -38,7 +45,16 @@ sealed class FakeOpenRgbSession:IOpenRgbSession
         if(FailLeds?.Invoke(index)==true) throw new InvalidOperationException("fake leds failure"); // a device refusing a frame, not a broken connection
         lock(sync)leds.Add((index,copy));
     }
-    public void UpdateMode(int index,int modeIndex,IReadOnlyList<Rgb>? colors){Hang("UpdateMode");lock(sync)modes.Add((index,modeIndex,colors?.ToArray()));}
+    public void UpdateMode(int index,int modeIndex,IReadOnlyList<Rgb>? colors){Hang("UpdateMode");lock(sync){modes.Add((index,modeIndex,colors?.ToArray()));calls.Add($"mode {index}/{modeIndex}");}}
+    public void ResizeZone(int index,int zoneIndex,int size)
+    {
+        Hang("ResizeZone");
+        lock(sync){resizes.Add((index,zoneIndex,size));calls.Add($"resize {index}/{zoneIndex}/{size}");}
+        if(KeepResizes) Controllers[index]=Controllers[index] with{Zones=Controllers[index].Zones.Select(z=>z.Index==zoneIndex?z with{LedCount=size}:z).ToList()};
+    }
+    // Sets a zone's LED count as OpenRGB would report it.
+    public void SizeZone(int index,int zoneIndex,int leds)
+        =>Controllers[index]=Controllers[index] with{Zones=Controllers[index].Zones.Select(z=>z.Index==zoneIndex?z with{LedCount=leds}:z).ToList()};
     public void Abort()
     {
         Interlocked.Increment(ref aborts);
