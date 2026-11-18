@@ -72,10 +72,13 @@ internal sealed class SettingsPage : Page
     private const string ScanFailedText = "DeadWare couldn't check for conflicting programs.";
     private const string HostScanFailedText = "The lighting helper couldn't check for conflicting programs.";
     private const string HostNotRunningText = "Conflicts can't be checked until the lighting helper runs.";
+    // How long the first scan after lighting goes off waits to look again when it found another OpenRGB, which may have been the
+    // host's own on its way out.
+    private static readonly TimeSpan LookAgainDelay = TimeSpan.FromSeconds(2);
     // The same words on and off, as on the Lighting page, so the switch's visible label is always its name; MinWidth 0 keeps its
     // messages close beside it.
     private readonly ToggleSwitch lightingEnabled = new() { OnContent = "Enable lighting", OffContent = "Enable lighting", MinWidth = 0, VerticalAlignment = VerticalAlignment.Center };
-    private readonly TextBlock lightingReason = Muted("Choose OpenRGB.exe below first."), lightingProblem = Caution(), lightingError = Caution(), browseNote = Caution(), protectionWarning = Caution();
+    private readonly TextBlock lightingReason = Muted("Choose OpenRGB.exe below first."), lightingProblem = Caution(), openRgbProblem = Caution(), lightingError = Caution(), browseNote = Caution(), protectionWarning = Caution();
     private readonly TextBox openRgbLocation = new() { IsReadOnly = true, IsSpellCheckEnabled = false, HorizontalAlignment = HorizontalAlignment.Stretch, VerticalAlignment = VerticalAlignment.Center };
     private readonly Button browseOpenRgb = new() { Content = "Browse…", VerticalAlignment = VerticalAlignment.Center };
     // The note beside Browse… takes a share of its row only while it shows, so it wraps there instead of running off the row.
@@ -93,8 +96,9 @@ internal sealed class SettingsPage : Page
     private int shownSection, scanRun;
     // lightingBusy: a lighting change or Browse… is under way; browsing: Browse… started it. windowShowing: the dashboard is on
     // screen rather than in the tray. lightingOnScreen: the section was on screen at the last sync, so its coming back is seen.
-    // scanOwed: lighting is off and a scan is due; it waits until a change under way has returned.
-    private bool lightingBusy, browsing, windowShowing, lightingOnScreen, scanOwed, scanFailed;
+    // scanOwed: lighting is off and a scan is due; it waits until a change under way has returned. lookAgain: the scan due is the
+    // first since lighting went off, so it looks once more if it finds another OpenRGB.
+    private bool lightingBusy, browsing, windowShowing, lightingOnScreen, scanOwed, scanFailed, lookAgain;
 
     /// <summary>Asks the window to open another destination by its key ("usage", "alerts", "connections").</summary>
     public Action<string>? NavigateRequested { get; set; }
@@ -502,9 +506,9 @@ internal sealed class SettingsPage : Page
     }
 
     /// <summary>
-    /// Lighting: Enable lighting with the lighting client's problem beside it, the OpenRGB location with Browse…, the folder message,
-    /// and the programs that would fight DeadWare over the lights. Changes go through <see cref="MonitorSession.SetLightingAsync"/>,
-    /// which saves them and starts, restarts or stops the lighting client.
+    /// Lighting: Enable lighting with the lighting client's problem and the host's reason OpenRGB is missing or failing beside it,
+    /// the OpenRGB location with Browse…, the folder message, and the programs that would fight DeadWare over the lights. Changes go
+    /// through <see cref="MonitorSession.SetLightingAsync"/>, which saves them and starts, restarts or stops the lighting client.
     /// </summary>
     private StackPanel Lighting()
     {
@@ -518,8 +522,9 @@ internal sealed class SettingsPage : Page
             if (lightingBusy) { ShowLightingChoice(); return; }
             await ToggleLightingAsync();
         };
-        // Beside the switch: why it is disabled, the lighting client's problem, whose words say what to do here, and a failed change.
-        var toggleMessages = new StackPanel { Spacing = 4, VerticalAlignment = VerticalAlignment.Center, Children = { lightingReason, lightingProblem, lightingError } };
+        // Beside the switch: why it is disabled, the lighting client's problem, whose words say what to do here, the host's reason
+        // OpenRGB is missing or failing, which Browse… below can fix, and a failed change.
+        var toggleMessages = new StackPanel { Spacing = 4, VerticalAlignment = VerticalAlignment.Center, Children = { lightingReason, lightingProblem, openRgbProblem, lightingError } };
         var toggleRow = new Grid { ColumnSpacing = 12 };
         toggleRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         toggleRow.ColumnDefinitions.Add(new ColumnDefinition());
@@ -545,9 +550,9 @@ internal sealed class SettingsPage : Page
         panel.Children.Add(Heading("Conflicts"));
         panel.Children.Add(conflictLines);
 
-        // Polite live regions, so a screen reader reads a lighting problem, a failed change, a note beside Browse… or the folder
-        // message without moving focus.
-        foreach (var message in new[] { lightingProblem, lightingError, browseNote, protectionWarning })
+        // Polite live regions, so a screen reader reads a lighting problem, OpenRGB's, a failed change, a note beside Browse… or the
+        // folder message without moving focus.
+        foreach (var message in new[] { lightingProblem, openRgbProblem, lightingError, browseNote, protectionWarning })
         {
             AutomationProperties.SetLiveSetting(message, Microsoft.UI.Xaml.Automation.Peers.AutomationLiveSetting.Polite);
             message.Visibility = Visibility.Collapsed;
@@ -579,7 +584,10 @@ internal sealed class SettingsPage : Page
         lightingEnabled.IsEnabled = path is not null;
         Show(lightingReason, path is null);
         // The client's problem, such as a host that couldn't be started or stopped too often, shows for as long as it lasts.
-        Say(lightingProblem, session.Lighting?.Problem ?? "", announce: LightingShown);
+        var client = session.Lighting;
+        Say(lightingProblem, client?.Problem ?? "", announce: LightingShown);
+        // So does the host's reason OpenRGB is missing or failing, such as a wrong path, here where Browse… can fix it.
+        Say(openRgbProblem, client?.State is { Status: HostStatus.OpenRgbMissing or HostStatus.OpenRgbFailed } state ? state.Message ?? "" : "", announce: LightingShown);
         // Browse… waits while a change from the switch is under way. During its own change it stays enabled, so it keeps its focus,
         // and ignores clicks.
         browseOpenRgb.IsEnabled = !lightingBusy || browsing;
@@ -688,18 +696,18 @@ internal sealed class SettingsPage : Page
 
     /// <summary>
     /// The folder check in words: nothing when only administrators can change the folder, and the warning to move OpenRGB when other
-    /// programs can. A folder that is missing, unreadable, on a network drive or reached through a link can't be judged, so its
-    /// reason is shown instead of a warning about permissions that weren't the problem.
+    /// programs can, or when the folder is reached through a link or junction, which moving OpenRGB to C:\Program Files\OpenRGB also
+    /// fixes. A folder that is missing, unreadable or on a network drive can't be judged, so its reason is shown instead of a warning
+    /// about permissions that weren't the problem.
     /// </summary>
     private static string ProtectionText(LocationProtection protection)
     {
         if (protection.Protected) return "";
         string reason = protection.Reason ?? "";
-        // InstallLocation.Evaluate's reasons for an entry it couldn't judge. Its other reasons name an owner or a rule that lets other
-        // programs change the folder, and those, or a reason not known here, get the warning.
+        // InstallLocation.Evaluate's reasons for an entry it couldn't judge. Its other reasons, a link or junction, or an owner or a
+        // rule that lets other programs change the folder, and a reason not known here, get the warning.
         bool unjudged = (reason.StartsWith("Permissions for ", StringComparison.Ordinal) && reason.Contains(" could not be read: ", StringComparison.Ordinal))
-            || reason.EndsWith(" is not on a local drive.", StringComparison.Ordinal) || reason.EndsWith(" is a link or junction.", StringComparison.Ordinal)
-            || reason == "No folder permissions were checked.";
+            || reason.EndsWith(" is not on a local drive.", StringComparison.Ordinal) || reason == "No folder permissions were checked.";
         return unjudged ? CantCheckText(reason) : ProtectionWarningText;
     }
 
@@ -710,14 +718,17 @@ internal sealed class SettingsPage : Page
     /// which OpenRGB it started, and a local scan would call that one foreign. While lighting is off, the running programs are
     /// scanned here, off the UI thread, when <paramref name="rescan"/> asks (the section has come on screen) and when lighting has
     /// been turned off. Such a scan waits until a change under way has returned: turning lighting off returns once the host has
-    /// stopped, so a scan taken sooner could find its OpenRGB. Nothing scans on a timer.
+    /// stopped, so a scan taken sooner could find its OpenRGB. That OpenRGB can still be on its way out even then, so the first scan
+    /// after lighting goes off looks once more if it finds another OpenRGB. Nothing else scans after a delay or on a timer.
     /// </summary>
     private void FollowConflicts(bool rescan)
     {
         bool host = session.Lighting is not null;
         if (host != followingHost)
         {
-            // The other list no longer applies, and a scan still on its way began before the switch.
+            // The other list no longer applies, and a scan still on its way began before the switch. Only a switch from the host's
+            // list to a local one is lighting going off.
+            lookAgain = followingHost == true;
             followingHost = host;
             scanned = null;
             scanFailed = false;
@@ -729,12 +740,17 @@ internal sealed class SettingsPage : Page
         if (scanOwed && !host && !lightingBusy)
         {
             scanOwed = false;
-            _ = ScanConflictsAsync();
+            _ = ScanConflictsAsync(firstSinceOff: lookAgain);
+            lookAgain = false;
         }
         ShowConflicts();
     }
 
-    private async Task ScanConflictsAsync()
+    /// <summary>
+    /// Scans the running programs and shows what would fight DeadWare over the lights. In the first scan since lighting went off
+    /// (<paramref name="firstSinceOff"/>) another OpenRGB may be the host's own on its way out, so that scan looks once more.
+    /// </summary>
+    private async Task ScanConflictsAsync(bool firstSinceOff = false)
     {
         int run = ++scanRun;
         IReadOnlyList<LightingConflict>? found;
@@ -744,6 +760,20 @@ internal sealed class SettingsPage : Page
         scanned = found;
         scanFailed = found is null;
         ShowConflicts();
+        if (firstSinceOff && found is not null && found.Any(conflict => conflict.Kind == ConflictKind.ForeignOpenRgb)) await LookAgainAsync(run);
+    }
+
+    /// <summary>
+    /// One more scan, <see cref="LookAgainDelay"/> after the scan <paramref name="run"/>, whose answer replaces that one's: only while
+    /// that scan's answer is still the latest, the section is still shown and lighting is still off. A change under way holds it
+    /// until the change returns, as it holds any scan.
+    /// </summary>
+    private async Task LookAgainAsync(int run)
+    {
+        await Task.Delay(LookAgainDelay);
+        if (run != scanRun || !LightingShown || session.Lighting is not null) return;
+        if (lightingBusy) scanOwed = true;
+        else _ = ScanConflictsAsync();
     }
 
     /// <summary>The conflict lines, rebuilt only when they change.</summary>
@@ -758,10 +788,12 @@ internal sealed class SettingsPage : Page
 
     /// <summary>
     /// What to say about conflicts. With lighting off: the local scan's conflicts, or that nothing was found, that the scan is under
-    /// way or that it failed. With lighting on: the host's list. When it lists nothing, only a running host has found nothing, since
-    /// it runs only after a clean scan; a blocked host couldn't scan; and before it runs the host hasn't said. With no state the host
-    /// is connecting or relaunching, unless a problem has stopped the client, and then nothing checks until lighting is turned off
-    /// and on: a scan here could call the host's own OpenRGB foreign.
+    /// way or that it failed. With lighting on: the host's list, whatever its status. When it lists nothing, a running or waiting
+    /// host has found nothing, since it gets that far only after a clean scan; a blocked host couldn't scan; a host without a
+    /// working OpenRGB, or stopping, stays that way until something changes and may never have scanned, so it says conflicts can't
+    /// be checked until the host runs; and a starting host hasn't said yet. With no state the host is connecting or relaunching,
+    /// unless a problem has stopped the client, and then nothing checks until lighting is turned off and on: a scan here could call
+    /// the host's own OpenRGB foreign.
     /// </summary>
     private (string Text, bool Caution)[] ConflictLines()
     {
@@ -777,9 +809,12 @@ internal sealed class SettingsPage : Page
         if (listed.Length > 0) return listed;
         return state.Status switch
         {
-            HostStatus.Running => [(NoConflictsText, false)],
+            HostStatus.Running or HostStatus.Waiting => [(NoConflictsText, false)],
             HostStatus.Blocked => [(HostScanFailedText, true)],
-            // Starting, perhaps before its first scan; waiting for OpenRGB; without a working OpenRGB; or stopping.
+            // These last until something changes, so "Checking…" would never end, and the host may never have scanned (one that
+            // couldn't prepare OpenRGB's settings folder reports OpenRgbFailed and never does), so an empty list isn't an all-clear.
+            HostStatus.OpenRgbMissing or HostStatus.OpenRgbFailed or HostStatus.Stopping => [(HostNotRunningText, false)],
+            // Starting, perhaps before its first scan.
             _ => [(CheckingConflictsText, false)],
         };
     }
