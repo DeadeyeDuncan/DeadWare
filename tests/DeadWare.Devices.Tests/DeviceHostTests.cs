@@ -34,7 +34,8 @@ public sealed class DeviceHostTests : IAsyncLifetime
     public async Task DisposeAsync()
     {
         lock(holds)foreach(var hold in holds)hold.Release(); // nothing a test parked outlives it
-        if(host is not null){try{await host.HandleAsync(new StopRequest());if(run is not null)await run.WaitAsync(TimeSpan.FromSeconds(5));}catch{}await host.DisposeAsync();}
+        // Capped in real time: a stuck supervisor fails the test that left it instead of hanging the run until the CI job times out.
+        if(host is not null){try{await host.HandleAsync(new StopRequest());if(run is not null)await run.WaitAsync(TimeSpan.FromSeconds(5));}catch{}await host.DisposeAsync().AsTask().WaitAsync(RealTimeCap);}
         log.Dispose();try{Directory.Delete(dir,true);}catch{}
     }
 
@@ -55,6 +56,8 @@ public sealed class DeviceHostTests : IAsyncLifetime
         public IRunningProcess Start(ProcessStartInfo info){lock(Started){var p=new FakeProcess(100+Started.Count);Started.Add(p);return p;}}
         public int Count{get{lock(Started)return Started.Count;}}
         public FakeProcess At(int i){lock(Started)return Started[i];}
+        // The OpenRGB processes still running, as a real scan would list them.
+        public IReadOnlyList<RunningProcess> Live(){lock(Started)return Started.Where(p=>!p.HasExited).Select(p=>new RunningProcess(p.Id,"OpenRGB",null)).ToList();}
     }
     sealed class Scanner(Func<int?,IReadOnlyList<LightingConflict>> f):IConflictScanner{public IReadOnlyList<LightingConflict> Scan(int? pid)=>f(pid);}
     // Parks each thread that reaches it until the test releases it. A parked thread gives up after the real-time cap, so a failing test
@@ -71,13 +74,23 @@ public sealed class DeviceHostTests : IAsyncLifetime
     static readonly LightingConflict DeadLight=new(ConflictKind.DeadLight,"DeadLight is running.",true);
 
     // beforeHost gets the engine before the host subscribes to it, so a handler it adds runs ahead of the host's own.
-    DeviceHost Build(bool startup=false,string? exePath=null,Action<OpenRgbEngine>? beforeHost=null,Func<string,DeadWare.UpdateCore.LocationProtection>? folderCheck=null)
+    // The scanner sees the fake OpenRGB processes that are still running, through the real classification (F15): one whose id isn't the
+    // pid the host passes counts as another OpenRGB. So a host that stopped passing its own pid, or kept a scan that raced a relaunch,
+    // would block itself. The test's own conflicts are added after a park, which a test can hold the loop in.
+    DeviceHost Build(bool startup=false,string? exePath=null,Action<OpenRgbEngine>? beforeHost=null,Func<string,DeadWare.UpdateCore.LocationProtection>? folderCheck=null,string? startupFailure=null)
     {
         var engine=new OpenRgbEngine(exePath??exe,@"C:\cfg",runner,(_,_)=>Task.FromResult(true),time,log,folderCheck);
         beforeHost?.Invoke(engine);
-        var scanner=new Scanner(_=>{Interlocked.Increment(ref scans);Volatile.Read(ref scanHold)?.Park();lock(conflicts)return conflicts.ToList();});
+        var scanner=new Scanner(pid=>
+        {
+            Interlocked.Increment(ref scans);
+            Volatile.Read(ref scanHold)?.Park();
+            var found=LightingConflicts.Find(runner.Live(),pid).ToList();
+            lock(conflicts)found.AddRange(conflicts);
+            return found;
+        });
         var options=new HostOptions(exePath??exe,@"C:\cfg",lightingPath,Path.Combine(dir,"logs"),startup,"S-1-5-21-1",1);
-        return host=new DeviceHost(options,new LightingStore(lightingPath),engine,()=>session,scanner,time,log);
+        return host=new DeviceHost(options,new LightingStore(lightingPath),engine,()=>session,scanner,time,log,startupFailure);
     }
     void Start(DeviceHost h)=>run=h.RunAsync(CancellationToken.None);
     // Fake time AdvanceUntil may move without its condition before it fails, so a host cadence that slows down fails the test instead of
@@ -139,8 +152,10 @@ public sealed class DeviceHostTests : IAsyncLifetime
         var h=Build();Start(h);
         await Until(()=>h.State.Status==HostStatus.Blocked);
         Assert.Contains("DeadLight is running.",h.State.Message);
-        await Advance(TimeSpan.FromSeconds(6));
+        // Re-scans have run while DeadLight runs (a fixed advance could end before any did), and none started OpenRGB.
+        await AdvanceUntil(()=>Volatile.Read(ref scans)>=3);
         Assert.Equal(0,runner.Count);
+        Assert.Equal(HostStatus.Blocked,h.State.Status);
         Assert.Single(h.State.Conflicts);
     }
 
@@ -162,9 +177,10 @@ public sealed class DeviceHostTests : IAsyncLifetime
         lock(conflicts)conflicts.Add(DeadLight);
         await AdvanceUntil(()=>h.State.Status==HostStatus.Blocked);
         await Until(()=>runner.At(0).Killed); // the host publishes Blocked before it stops the engine
-        var leds=session.Leds.Count;
-        await Advance(TimeSpan.FromSeconds(2));
-        Assert.Equal(leds,session.Leds.Count); // nothing is painted while blocked
+        var leds=session.LedCount;
+        var scanned=Volatile.Read(ref scans);
+        await AdvanceUntil(()=>Volatile.Read(ref scans)>=scanned+2); // ticks and re-scans have run while blocked
+        Assert.Equal(leds,session.LedCount); // nothing is painted while blocked
         lock(conflicts)conflicts.Clear();
         await AdvanceUntil(()=>h.State.Status==HostStatus.Running);
         Assert.Equal(2,runner.Count);
@@ -415,7 +431,9 @@ public sealed class DeviceHostTests : IAsyncLifetime
         // cannot shift the window.
         for(var i=0;i<20;i++) await Elapse(DeviceHost.Tick);
         await Until(()=>time.Waiting(DeviceHost.Tick)); // the last tick's work is done
-        Assert.InRange(session.Connects-attempts,1,6); // 10 s of ticks, backing off 2 s, 4 s, 8 s
+        // Exactly 2 in these 10 s: retries at 2 s and 6 s, the backoff armed by the first failed connect (K(e)) and doubling. Without K(e)
+        // the first tick retries at once (3 attempts); without the doubling it retries every 2 s (5).
+        Assert.Equal(2,session.Connects-attempts);
         lock(seen)Assert.Equal(events,seen.Count);
         var text=File.ReadAllText(Path.Combine(dir,"logs","devices.log"));
         Assert.Equal(1,text.Split("fake connect failure").Length-1);
@@ -549,6 +567,85 @@ public sealed class DeviceHostTests : IAsyncLifetime
         lock(conflicts)conflicts.Add(DeadLight);
         await AdvanceUntil(()=>h.State.Status==HostStatus.Blocked);
         await Until(()=>runner.At(1).Killed&&session.Aborts>before);
+    }
+
+    // F15 / Ruling I: the host passes its own OpenRGB's pid to the scan, so its own OpenRGB is never a conflict: re-scans keep it running.
+    [Fact]
+    public async Task Own_openrgb_is_never_a_conflict()
+    {
+        var h=await Running();
+        var scanned=Volatile.Read(ref scans);
+        await AdvanceUntil(()=>Volatile.Read(ref scans)>=scanned+3);
+        Assert.Equal(HostStatus.Running,h.State.Status);
+        Assert.Empty(h.State.Conflicts);
+        Assert.Equal(1,runner.Count);
+        Assert.False(runner.At(0).Killed);
+    }
+
+    // F39 / Review Focus 3: a device-list change OpenRGB announces before the next tick, then a colour change. The change's immediate paint
+    // must reach each device at its new index, never a stale one.
+    [Fact]
+    public async Task Settings_change_after_a_device_list_change_paints_the_new_indexes()
+    {
+        var h=await Running();
+        await Until(()=>time.Waiting(DeviceHost.Tick));
+        time.Advance(TimeSpan.FromMilliseconds(100)); // past the HID frame cap, short of the next tick
+        session.Reorder(l=>{var x=l.ToList();var apex=x[3];x.RemoveAt(3);x.Insert(0,apex);return x;}); // the Apex (112 LEDs) moves to index 0
+        session.RaiseUpdated();
+        var before=session.LedCount;
+        Assert.True((await Send(h,new SetAllColorsRequest("#FF0000"))).Ok);
+        var written=session.Leds.Skip(before).ToList();
+        Assert.Contains(written,w=>w.Index==0&&w.Colors.Length==112);
+        // Every frame fits the controller now at its index.
+        Assert.All(written,w=>Assert.Equal(session.Controllers[w.Index].Zones.Sum(z=>z.LedCount),w.Colors.Length));
+    }
+
+    // Task 9: when an elevated host couldn't prepare OpenRGB's protected config folder, it reports why and never scans or starts OpenRGB,
+    // which would otherwise run elevated with a config and plugin folder other programs can change.
+    [Fact]
+    public async Task Startup_failure_reports_OpenRgbFailed_and_never_starts_openrgb()
+    {
+        var h=Build(startupFailure:"The folder isn't protected.");Start(h);
+        await Until(()=>h.State.Status==HostStatus.OpenRgbFailed);
+        Assert.Equal("The folder isn't protected.",h.State.Message);
+        await Advance(TimeSpan.FromSeconds(12));
+        Assert.Equal(0,runner.Count);
+        Assert.Equal(0,Volatile.Read(ref scans));
+        Assert.Equal(HostStatus.OpenRgbFailed,h.State.Status);
+    }
+
+    // Task 9 K(d): a scan that keeps failing the same way is logged once, not every 5 s.
+    [Fact]
+    public async Task Persistent_scan_failure_is_logged_once()
+    {
+        var engine=new OpenRgbEngine(exe,@"C:\cfg",runner,(_,_)=>Task.FromResult(true),time,log);
+        var options=new HostOptions(exe,@"C:\cfg",lightingPath,Path.Combine(dir,"logs"),false,"S-1-5-21-1",1);
+        var h=host=new DeviceHost(options,new LightingStore(lightingPath),engine,()=>session,new Scanner(_=>{Interlocked.Increment(ref scans);throw new InvalidOperationException("scan broke");}),time,log);
+        Start(h);
+        await Until(()=>h.State.Status==HostStatus.Blocked);
+        await AdvanceUntil(()=>Volatile.Read(ref scans)>=4);
+        var text=File.ReadAllText(Path.Combine(dir,"logs","devices.log"));
+        Assert.Equal(1,text.Split("conflict scan failed: scan broke").Length-1);
+    }
+
+    // Task 9 K(c): states are built and delivered in one order, so the last one a subscriber gets is the newest even when two changes race:
+    // a change made while an earlier state is still being delivered is delivered after it.
+    [Fact]
+    public async Task Racing_changes_deliver_their_states_in_order()
+    {
+        var h=await Running();
+        var first=NewHold();
+        var delivered=new List<int>();
+        var parked=0;
+        h.StateChanged+=s=>{if(s.Settings.Brightness==10&&Interlocked.Exchange(ref parked,1)==0) first.Park();lock(delivered)delivered.Add(s.Settings.Brightness);};
+        var ten=Task.Run(()=>h.HandleAsync(new SetBrightnessRequest(10)));
+        await Until(()=>first.Parked);
+        var twenty=Task.Run(()=>h.HandleAsync(new SetBrightnessRequest(20)));
+        await Task.Delay(200); // let the second change reach its delivery, if it isn't made to wait
+        first.Release();
+        await Task.WhenAll(ten,twenty).WaitAsync(RealTimeCap);
+        lock(delivered)Assert.Equal(20,delivered[^1]);
+        Assert.Equal(20,h.State.Settings.Brightness);
     }
 
     [Fact]

@@ -65,6 +65,52 @@ public class LightingSettingsCodecTests
         Assert.True(LightingSettingsCodec.Read(json).Quarantine);
     }
 
+    // Task 2 boundaries: the comparisons are pinned at the edge, since a slip would quarantine a user's valid file and reset it to defaults.
+    [Theory]
+    [InlineData(0)]
+    [InlineData(100)]
+    public void Brightness_at_either_end_is_accepted(int brightness)
+    {
+        var r = LightingSettingsCodec.Read($"{{\"Brightness\":{brightness}}}");
+        Assert.False(r.Quarantine);
+        Assert.Equal(brightness, r.Settings.Brightness);
+    }
+
+    [Fact]
+    public void Exactly_the_maximum_number_of_zone_entries_is_accepted()
+    {
+        var s = new LightingSettings();
+        for (int i = 0; i < LightingSettingsCodec.MaxZoneEntries; i++) s.ZoneColors["z" + i] = new ZoneColorEntry();
+        for (int i = 0; i < LightingSettingsCodec.MaxZoneEntries; i++) s.HardwareModes["d" + i] = "Rainbow Wave";
+        var r = LightingSettingsCodec.Read(System.Text.Json.JsonSerializer.Serialize(s));
+        Assert.False(r.Quarantine);
+        Assert.Equal(LightingSettingsCodec.MaxZoneEntries, r.Settings.ZoneColors.Count);
+        Assert.Equal(LightingSettingsCodec.MaxZoneEntries, r.Settings.HardwareModes.Count);
+    }
+
+    [Fact]
+    public void Keys_and_names_of_the_maximum_length_are_accepted()
+    {
+        var s = new LightingSettings();
+        var longest = new string('k', LightingSettingsCodec.MaxKeyLength);
+        s.ZoneColors[longest] = new ZoneColorEntry { ZoneName = new string('n', LightingSettingsCodec.MaxKeyLength) };
+        s.HardwareModes[longest] = new string('m', LightingSettingsCodec.MaxKeyLength);
+        Assert.False(LightingSettingsCodec.Read(System.Text.Json.JsonSerializer.Serialize(s)).Quarantine);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("#12345")]
+    [InlineData("#1234567")]
+    [InlineData("1234567")]
+    [InlineData("#12345G")]
+    public void Rgb_parse_refuses_anything_but_hash_and_six_hex_digits(string? text)
+    {
+        Assert.False(Rgb.TryParse(text, out var c));
+        Assert.Equal(default, c);
+    }
+
     [Fact]
     public void Write_refuses_invalid_settings() => Assert.Throws<InvalidDataException>(() => LightingSettingsCodec.Write(new LightingSettings { Brightness = -1 }));
 

@@ -6,7 +6,7 @@ using static DeadWare.Devices.Tests.Waits;
 
 namespace DeadWare.Devices.Tests;
 
-public sealed class OpenRgbEngineTests : IDisposable
+public sealed class OpenRgbEngineTests : IAsyncLifetime
 {
     readonly string dir=Path.Combine(Path.GetTempPath(),"dw-eng-"+Guid.NewGuid().ToString("N"));
     readonly string exe;
@@ -15,8 +15,16 @@ public sealed class OpenRgbEngineTests : IDisposable
     readonly HostLog log;
     bool portUp=true;
     int probes;
+    readonly List<OpenRgbEngine> engines=new();
     public OpenRgbEngineTests(){Directory.CreateDirectory(dir);exe=Path.Combine(dir,"OpenRGB.exe");File.WriteAllText(exe,"");log=new HostLog(Path.Combine(dir,"logs"));}
-    public void Dispose(){log.Dispose();try{Directory.Delete(dir,true);}catch{}}
+    public Task InitializeAsync()=>Task.CompletedTask;
+    // Every engine a test made is disposed here under a real-time cap, so a stuck supervisor fails that test instead of hanging the run.
+    public async Task DisposeAsync()
+    {
+        try{foreach(var e in engines) await e.DisposeAsync().AsTask().WaitAsync(RealTimeCap);}
+        finally{log.Dispose();try{Directory.Delete(dir,true);}catch{}}
+    }
+    OpenRgbEngine Track(OpenRgbEngine e){engines.Add(e);return e;}
 
     sealed class FakeProcess(int id):IRunningProcess
     {
@@ -38,7 +46,7 @@ public sealed class OpenRgbEngineTests : IDisposable
         public FakeProcess At(int i){lock(Started)return Started[i];}
     }
 
-    OpenRgbEngine Engine()=>new(exe,@"C:\cfg",runner,(_,_)=>{Interlocked.Increment(ref probes);return Task.FromResult(portUp);},time,log);
+    OpenRgbEngine Engine()=>Track(new(exe,@"C:\cfg",runner,(_,_)=>{Interlocked.Increment(ref probes);return Task.FromResult(portUp);},time,log));
     async Task Advance(TimeSpan total,TimeSpan step)
     {
         for(var t=TimeSpan.Zero;t<total;t+=step){time.Advance(step);await Task.Delay(5);}
@@ -53,7 +61,7 @@ public sealed class OpenRgbEngineTests : IDisposable
     public async Task Missing_exe_fails_without_starting()
     {
         var missing=Path.Combine(dir,"nope","OpenRGB.exe");
-        await using var e=new OpenRgbEngine(missing,@"C:\cfg",runner,(_,_)=>Task.FromResult(true),time,log);
+        var e=Track(new OpenRgbEngine(missing,@"C:\cfg",runner,(_,_)=>Task.FromResult(true),time,log));
         await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
         Assert.Equal(EngineStatus.Failed,e.Status);
         Assert.Equal($"OpenRGB.exe was not found at {missing}.",e.FailureReason);
@@ -63,7 +71,7 @@ public sealed class OpenRgbEngineTests : IDisposable
     [Fact]
     public async Task Start_runs_with_spec_arguments_and_reports_running()
     {
-        await using var e=Engine();
+        var e=Engine();
         await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
         Assert.Equal(EngineStatus.Running,e.Status);
         Assert.Equal(100,e.ProcessId);
@@ -74,7 +82,7 @@ public sealed class OpenRgbEngineTests : IDisposable
     public async Task Port_never_opening_within_thirty_seconds_kills_and_backs_off()
     {
         portUp=false;
-        await using var e=Engine();
+        var e=Engine();
         var start=e.StartAsync(CancellationToken.None);
         await Until(()=>Volatile.Read(ref probes)>=1); // the 30 s deadline exists before the first probe runs
         await Advance(TimeSpan.FromSeconds(29),TimeSpan.FromMilliseconds(500));
@@ -92,7 +100,7 @@ public sealed class OpenRgbEngineTests : IDisposable
     [Fact]
     public async Task Unexpected_exit_restarts_after_four_seconds_then_eight()
     {
-        await using var e=Engine();
+        var e=Engine();
         await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
         runner.At(0).Exit();
         await Until(()=>e.Status==EngineStatus.Restarting);
@@ -111,7 +119,7 @@ public sealed class OpenRgbEngineTests : IDisposable
     [Fact]
     public async Task Five_exits_in_ten_minutes_fail_with_reason()
     {
-        await using var e=Engine();
+        var e=Engine();
         await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
         for(int i=0;i<4;i++)
         {
@@ -130,7 +138,7 @@ public sealed class OpenRgbEngineTests : IDisposable
     [Fact]
     public async Task Stop_kills_tree_and_does_not_restart()
     {
-        await using var e=Engine();
+        var e=Engine();
         await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
         await e.StopAsync().WaitAsync(RealTimeCap);
         Assert.True(runner.At(0).Killed);
@@ -142,7 +150,7 @@ public sealed class OpenRgbEngineTests : IDisposable
     [Fact]
     public async Task Concurrent_starts_spawn_exactly_one_process()
     {
-        await using var e=Engine();
+        var e=Engine();
         await Task.WhenAll(Enumerable.Range(0,8).Select(_=>Task.Run(()=>e.StartAsync(CancellationToken.None)))).WaitAsync(RealTimeCap);
         await Task.Delay(50);
         Assert.Equal(1,runner.Count);
@@ -154,8 +162,8 @@ public sealed class OpenRgbEngineTests : IDisposable
     public async Task Refused_openrgb_folder_fails_without_starting_or_relaunching()
     {
         string? checkedPath=null;
-        await using var e=new OpenRgbEngine(exe,@"C:\cfg",runner,(_,_)=>Task.FromResult(true),time,log,
-            folderCheck:path=>{checkedPath=path;return new DeadWare.UpdateCore.LocationProtection(false,@"C:\Users\Public can be changed by S-1-5-32-545.");});
+        var e=Track(new OpenRgbEngine(exe,@"C:\cfg",runner,(_,_)=>Task.FromResult(true),time,log,
+            folderCheck:path=>{checkedPath=path;return new DeadWare.UpdateCore.LocationProtection(false,@"C:\Users\Public can be changed by S-1-5-32-545.");}));
         await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
         Assert.Equal(EngineStatus.Failed,e.Status);
         Assert.Equal(OpenRgbEngine.UnprotectedFolderText,e.FailureReason);
@@ -170,7 +178,7 @@ public sealed class OpenRgbEngineTests : IDisposable
     public async Task Protected_openrgb_folder_starts_as_before()
     {
         var checks=0;
-        await using var e=new OpenRgbEngine(exe,@"C:\cfg",runner,(_,_)=>Task.FromResult(true),time,log,folderCheck:_=>{checks++;return new DeadWare.UpdateCore.LocationProtection(true);});
+        var e=Track(new OpenRgbEngine(exe,@"C:\cfg",runner,(_,_)=>Task.FromResult(true),time,log,folderCheck:_=>{checks++;return new DeadWare.UpdateCore.LocationProtection(true);}));
         await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
         Assert.Equal(EngineStatus.Running,e.Status);
         Assert.Equal(1,runner.Count);
@@ -182,7 +190,7 @@ public sealed class OpenRgbEngineTests : IDisposable
     public async Task Config_is_prepared_before_every_start()
     {
         var prepared=new List<int>();
-        await using var e=new OpenRgbEngine(exe,@"C:\cfg",runner,(_,_)=>Task.FromResult(true),time,log,prepareConfig:d=>{Assert.Equal(@"C:\cfg",d);lock(prepared)prepared.Add(runner.Count);});
+        var e=Track(new OpenRgbEngine(exe,@"C:\cfg",runner,(_,_)=>Task.FromResult(true),time,log,prepareConfig:d=>{Assert.Equal(@"C:\cfg",d);lock(prepared)prepared.Add(runner.Count);}));
         await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
         runner.At(0).Exit();
         await Until(()=>e.Status==EngineStatus.Restarting);
@@ -195,7 +203,7 @@ public sealed class OpenRgbEngineTests : IDisposable
     [Fact]
     public async Task Config_that_cant_be_written_fails_without_starting()
     {
-        await using var e=new OpenRgbEngine(exe,@"C:\cfg",runner,(_,_)=>Task.FromResult(true),time,log,prepareConfig:_=>throw new UnauthorizedAccessException("denied"));
+        var e=Track(new OpenRgbEngine(exe,@"C:\cfg",runner,(_,_)=>Task.FromResult(true),time,log,prepareConfig:_=>throw new UnauthorizedAccessException("denied")));
         await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
         Assert.Equal(EngineStatus.Failed,e.Status);
         Assert.Equal(OpenRgbEngine.ConfigFailedText(@"C:\cfg"),e.FailureReason);
@@ -203,10 +211,65 @@ public sealed class OpenRgbEngineTests : IDisposable
         Assert.Equal(0,runner.Count);
     }
 
+    // Task 7: a Stop that lands in the relaunch delay (as the host's conflict stop can) cancels the relaunch: OpenRGB never starts beside
+    // the program that caused the stop.
+    [Fact]
+    public async Task Stop_during_the_restart_delay_cancels_the_relaunch()
+    {
+        var e=Engine();
+        await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
+        runner.At(0).Exit();
+        await Until(()=>e.Status==EngineStatus.Restarting);
+        await e.StopAsync().WaitAsync(RealTimeCap);
+        await Advance(TimeSpan.FromSeconds(40),TimeSpan.FromSeconds(1));
+        Assert.Equal(1,runner.Count);
+        Assert.Equal(EngineStatus.Stopped,e.Status);
+    }
+
+    [Fact]
+    public async Task Stop_during_the_port_wait_kills_it_and_relaunches_nothing()
+    {
+        portUp=false;
+        var e=Engine();
+        var start=e.StartAsync(CancellationToken.None);
+        await Until(()=>Volatile.Read(ref probes)>=1);
+        await e.StopAsync().WaitAsync(RealTimeCap);
+        await start.WaitAsync(RealTimeCap);
+        Assert.True(runner.At(0).Killed);
+        Assert.Equal(EngineStatus.Stopped,e.Status);
+        await Advance(TimeSpan.FromSeconds(60),TimeSpan.FromSeconds(1));
+        Assert.Equal(1,runner.Count);
+    }
+
+    [Fact]
+    public async Task Exit_during_the_port_wait_restarts_after_the_backoff()
+    {
+        portUp=false;
+        var e=Engine();
+        var start=e.StartAsync(CancellationToken.None);
+        await Until(()=>Volatile.Read(ref probes)>=1);
+        runner.At(0).Exit();
+        portUp=true; // the relaunched OpenRGB opens its port; the exited one is noticed before it is probed again
+        for(var i=0;i<120&&!(runner.Count==2&&e.Status==EngineStatus.Running);i++){time.Advance(TimeSpan.FromMilliseconds(500));await Task.Delay(5);}
+        Assert.Equal(2,runner.Count);
+        Assert.Equal(EngineStatus.Running,e.Status);
+        await start.WaitAsync(RealTimeCap);
+    }
+
+    [Fact]
+    public async Task Second_start_while_running_starts_nothing_more()
+    {
+        var e=Engine();
+        await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
+        await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
+        Assert.Equal(1,runner.Count);
+        Assert.Equal(EngineStatus.Running,e.Status);
+    }
+
     [Fact]
     public async Task Throwing_changed_handler_does_not_stop_restarts()
     {
-        await using var e=Engine();
+        var e=Engine();
         e.Changed+=()=>throw new InvalidOperationException("pipe broke");
         await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
         runner.At(0).Exit();

@@ -335,7 +335,7 @@ public class DeviceHostClientTests:IAsyncLifetime
         time.Advance(Tick);
         Assert.Equal("The lighting helper didn't answer.",(await send.WaitAsync(Bound)).Error);
         Assert.Equal(0,Volatile.Read(ref changed));
-        await host.Push(new StateEvent(Sample));
+        await host.Push(new StateEvent(Sample)).WaitAsync(Bound); // a client that stopped reading would otherwise hang the run
         await Until(()=>client.State is not null&&Volatile.Read(ref changed)==1);
     }
     [Fact] public async Task GetState_completes_when_its_state_event_arrives()

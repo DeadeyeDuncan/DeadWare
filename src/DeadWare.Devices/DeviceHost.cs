@@ -352,7 +352,14 @@ internal sealed class DeviceHost : IAsyncDisposable
         settings=candidate;
         if(engineActive&&sessionOk&&status==HostStatus.Running)
         {
-            try{service.Paint(settings);}catch(Exception e){FailSession(LostText,e);}
+            try
+            {
+                // OpenRGB announced a device-list change the next tick hasn't read yet (F39): read it first, so this paint reaches each device
+                // at its new index, never a stale one.
+                if(rescanPending){rescanPending=false;RescanLocked();}
+                service.Paint(settings);
+            }
+            catch(Exception e){FailSession(LostText,e);}
         }
         raise=true;
         return Ok(request);
