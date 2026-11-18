@@ -142,19 +142,6 @@ internal sealed class LightingDeviceService
 
     public IReadOnlyList<DeviceView> Views(LightingSettings settings)
     {
-        lock(gate)
-        {
-            return devices.Select(d=>
-            {
-                var p=LightingPaint.Paint(settings,d);
-                var zones=d.Zones.Select(z=>
-                {
-                    var zk=LightingKeys.Zone(d.Key,z.Index);
-                    var own=settings.ZoneColors.TryGetValue(zk,out var e)&&e.ZoneName==z.Name;
-                    return new ZoneView(zk,z.Index,z.Name,z.LedCount,LightingPaint.ZoneColor(settings,d,z).ToHex(),own);
-                }).ToList();
-                return new DeviceView(d.Key,d.Name,d.Type,p.Kind,p.Mode,p.StaysLitWhenOff,zones);
-            }).ToList();
-        }
+        lock(gate)return devices.Select(d=>LightingPaint.View(settings,d)).ToList();
     }
 }

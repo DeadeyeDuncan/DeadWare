@@ -26,6 +26,20 @@ public static class LightingPaint
         if(settings.ZoneColors.TryGetValue(LightingKeys.Zone(device.Key,zone.Index),out var e)&&e.ZoneName==zone.Name&&Rgb.TryParse(e.Color,out var c)) return c;
         return Rgb.TryParse(settings.DefaultColor,out var def)?def:new Rgb(0x46,0x82,0xB4);
     }
+    // The device as the window shows it (Ruling AB): Kind and Mode from the current paint, and its own effect and lights-off behaviour as
+    // capabilities that don't change with Lights on, so its card can say before the lights go off that it will stay lit.
+    public static DeviceView View(LightingSettings settings,LightingDevice device)
+    {
+        var p=Paint(settings,device);
+        var own=HardwareModeFor(settings,device);
+        var zones=device.Zones.Select(z=>
+        {
+            var zk=LightingKeys.Zone(device.Key,z.Index);
+            var own=settings.ZoneColors.TryGetValue(zk,out var e)&&e.ZoneName==z.Name;
+            return new ZoneView(zk,z.Index,z.Name,z.LedCount,ZoneColor(settings,device,z).ToHex(),own);
+        }).ToList();
+        return new DeviceView(device.Key,device.Name,device.Type,p.Kind,p.Mode,own,own is not null&&!device.Modes.Contains(StaticMode),zones);
+    }
     public static DevicePaint Paint(LightingSettings settings,LightingDevice device)
     {
         var mode=HardwareModeFor(settings,device);

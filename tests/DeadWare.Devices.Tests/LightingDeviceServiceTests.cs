@@ -120,6 +120,14 @@ public sealed class LightingDeviceServiceTests : IDisposable
         Assert.Equal("#4682B4",gpu.Zones[1].Color);Assert.False(gpu.Zones[1].OwnColor);
         Assert.Equal(PaintKind.Hardware,v[6].Kind);Assert.Equal("Rainbow Wave",v[6].Mode);
     }
+    // Ruling AB, on the captured Node Pro: with lights off its card still names its own effect, and it doesn't stay lit (it has Static).
+    [Fact] public void Views_name_the_Node_Pros_own_effect_with_lights_off()
+    {
+        var v=svc.Views(new LightingSettings{LightsOn=false})[6];
+        Assert.Equal("Rainbow Wave",v.OwnEffect);
+        Assert.False(v.StaysLitWhenOff);
+        Assert.Equal("Static",v.Mode);
+    }
     [Fact] public void One_device_failure_does_not_stop_others_and_is_retried()
     {
         var s=new LightingSettings();var bad=IndexOf(Hid);var other=IndexOf("SERIAL-5");

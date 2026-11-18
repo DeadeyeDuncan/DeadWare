@@ -4,7 +4,9 @@ using System.Text.Json.Serialization;
 namespace DeadWare.Core;
 public enum HostStatus { Starting, Waiting, Running, Blocked, OpenRgbMissing, OpenRgbFailed, Stopping }
 public sealed record ZoneView(string Key,int Index,string Name,int LedCount,string Color,bool OwnColor);
-public sealed record DeviceView(string Key,string Name,int Type,PaintKind Kind,string? Mode,bool StaysLitWhenOff,IReadOnlyList<ZoneView> Zones);
+// Mode: what the device is set to now (a hardware device shows Static while lights are off). OwnEffect: its own hardware effect, and
+// StaysLitWhenOff: whether it stays lit while lights are off (a hardware effect and no Static mode); both hold whatever Lights on is.
+public sealed record DeviceView(string Key,string Name,int Type,PaintKind Kind,string? Mode,string? OwnEffect,bool StaysLitWhenOff,IReadOnlyList<ZoneView> Zones);
 public sealed record HostState(HostStatus Status,string Message,bool Elevated,IReadOnlyList<LightingConflict> Conflicts,IReadOnlyList<DeviceView> Devices,LightingSettings Settings);
 [JsonPolymorphic(TypeDiscriminatorPropertyName="type")]
 [JsonDerivedType(typeof(GetStateRequest),"getState")]

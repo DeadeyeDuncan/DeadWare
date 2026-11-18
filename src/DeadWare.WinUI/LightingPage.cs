@@ -711,7 +711,9 @@ internal sealed class LightingPage : Page, IHeaderTool
         {
             title.Text = name;
             bool hardware = device.Kind == PaintKind.Hardware, unsupported = device.Kind == PaintKind.Unsupported;
-            effect.Text = device.Mode is { Length: > 0 } mode ? $"Own hardware effect: {mode}" : "Own hardware effect";
+            // The device's own effect and whether it stays lit with lights off don't change with Lights on (Ruling AB), so the card
+            // names the effect while the lights are off too, and warns before they go off that the device will stay lit.
+            effect.Text = device.OwnEffect is { Length: > 0 } own ? $"Own hardware effect: {own}" : "Own hardware effect";
             Show(effect, hardware);
             Show(staysLit, hardware && device.StaysLitWhenOff);
             // A device running its own effect keeps its zones' colours, but they don't show on it, so its swatches are disabled.

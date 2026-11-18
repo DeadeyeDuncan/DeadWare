@@ -101,6 +101,40 @@ public class LightingPaintTests
         Assert.True(p.StaysLitWhenOff);
     }
 
+    // Ruling AB: a device's view carries its own hardware effect and whether it stays lit while lights are off, both whatever Lights on
+    // is, so its card can say before the lights go off what will happen. Mode stays the current paint (Static black while lights are off).
+    [Fact]
+    public void View_reports_the_own_effect_and_the_lights_off_capability_whatever_lights_on_is()
+    {
+        var node=Dev("Corsair Lighting Node Pro","Direct","Rainbow Wave","Static");
+        foreach(var on in new[]{true,false})
+        {
+            var v=LightingPaint.View(new LightingSettings{LightsOn=on},node);
+            Assert.Equal(PaintKind.Hardware,v.Kind);
+            Assert.Equal("Rainbow Wave",v.OwnEffect);
+            Assert.False(v.StaysLitWhenOff); // it offers Static, so lights off turns it black
+            Assert.Equal(on?"Rainbow Wave":"Static",v.Mode);
+        }
+        foreach(var on in new[]{true,false})
+            Assert.True(LightingPaint.View(new LightingSettings{LightsOn=on},Dev("Corsair Lighting Node Pro","Direct","Rainbow Wave")).StaysLitWhenOff);
+        var painted=LightingPaint.View(new LightingSettings(),Dev());
+        Assert.Equal(PaintKind.Direct,painted.Kind);
+        Assert.Null(painted.OwnEffect);
+        Assert.False(painted.StaysLitWhenOff);
+    }
+
+    [Fact]
+    public void View_marks_own_and_shared_zone_colours()
+    {
+        var s=new LightingSettings();
+        s.ZoneColors["k|l#0"]=new ZoneColorEntry{Color="#112233",ZoneName="Keyboard"};
+        s.ZoneColors["k|l#1"]=new ZoneColorEntry{Color="#445566",ZoneName="Renamed"};
+        var v=LightingPaint.View(s,Dev());
+        Assert.Equal(["k|l#0","k|l#1"],v.Zones.Select(z=>z.Key));
+        Assert.True(v.Zones[0].OwnColor);Assert.Equal("#112233",v.Zones[0].Color);
+        Assert.False(v.Zones[1].OwnColor);Assert.Equal("#4682B4",v.Zones[1].Color);
+    }
+
     [Fact]
     public void Device_without_direct_or_default_is_unsupported()
     {

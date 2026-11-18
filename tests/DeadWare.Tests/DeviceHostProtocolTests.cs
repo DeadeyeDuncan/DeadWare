@@ -12,7 +12,7 @@ public class DeviceHostProtocolTests
         s.HardwareModes["k"]="Direct";
         return new HostState(HostStatus.Blocked,"msg",true,
             [new LightingConflict(ConflictKind.ICue,"iCUE is running.",true)],
-            [new DeviceView("k","Keys",5,PaintKind.Hardware,"Rainbow",true,[new ZoneView("k:0",0,"Keyboard",104,"#010203",true)])],s);
+            [new DeviceView("k","Keys",5,PaintKind.Hardware,"Static","Rainbow",true,[new ZoneView("k:0",0,"Keyboard",104,"#010203",true)])],s);
     }
     public static IEnumerable<object[]> Messages()
     {
@@ -57,7 +57,9 @@ public class DeviceHostProtocolTests
                 Assert.Equal(ConflictKind.ICue,Assert.Single(s.Conflicts).Kind);
                 var d=Assert.Single(s.Devices);
                 Assert.Equal(PaintKind.Hardware,d.Kind);
-                Assert.Equal("Rainbow",d.Mode);
+                Assert.Equal("Static",d.Mode);
+                Assert.Equal("Rainbow",d.OwnEffect);
+                Assert.True(d.StaysLitWhenOff);
                 Assert.Equal(104,Assert.Single(d.Zones).LedCount);
                 Assert.Equal(40,s.Settings.Brightness);
                 Assert.Equal("#010203",s.Settings.ZoneColors["k:0"].Color);
