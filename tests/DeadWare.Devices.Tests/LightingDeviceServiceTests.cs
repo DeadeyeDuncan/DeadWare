@@ -188,6 +188,19 @@ public sealed class LightingDeviceServiceTests : IDisposable
         var calls=session.Calls.Where(c=>c.StartsWith("resize")||c.StartsWith($"mode {node}/")).ToList();
         Assert.Equal(["mode "+node+"/1","resize "+node+"/0/48","mode "+node+"/1"],calls);
     }
+    // Task 8: a mode's colour slots come from the last controller read, so a mode change makes no extra controller-data round trip, and a
+    // mode or device that isn't in that read (OpenRGB's lists changed since) is refused plainly instead of indexing past the end.
+    [Fact] public void Mode_colours_are_shaped_from_the_last_read_and_a_changed_list_is_refused()
+    {
+        IReadOnlyList<IReadOnlyList<int>> slots=[[0,1,3]];
+        Rgb r=new(1,2,3);
+        Assert.Equal([r,r,r],OpenRgbSession.ShapeModeColors(slots,0,2,[r])!);
+        Assert.Null(OpenRgbSession.ShapeModeColors(slots,0,0,[r]));
+        Assert.Null(OpenRgbSession.ShapeModeColors(slots,0,2,null));
+        Assert.Throws<InvalidOperationException>(()=>OpenRgbSession.ShapeModeColors(slots,0,3,[r]));
+        Assert.Throws<InvalidOperationException>(()=>OpenRgbSession.ShapeModeColors(slots,1,0,[r]));
+        Assert.Throws<InvalidOperationException>(()=>OpenRgbSession.ShapeModeColors(slots,0,-1,[r]));
+    }
     [Fact] public void ModeColors_shapes_to_the_slot_count()
     {
         Rgb r=new(1,2,3),g=new(4,5,6);
