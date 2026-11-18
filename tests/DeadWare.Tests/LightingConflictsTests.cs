@@ -40,6 +40,8 @@ public class LightingConflictsTests
         var c=Assert.Single(Find(null,new RunningProcess(1,"Corsair.Service",@"C:\Program Files\Corsair\Corsair iCUE5 Software\clink\Corsair.Service.exe")));
         Assert.Equal(ConflictKind.LegacyCorsairService,c.Kind);
         Assert.False(c.BlocksLighting);
+        // It runs all the time on many PCs and so always shows in Settings: plain words, nothing about a driver this release doesn't have.
+        Assert.Equal("The Corsair service, Corsair.Service.exe, is running. It doesn't block lighting.",c.Description);
     }
     // Task 4: paths are read with limited query access (QueryFullProcessImageName), which works across elevation, unlike MainModule: a
     // DeadLight running as administrator is still recognised by a scan without administrator rights.

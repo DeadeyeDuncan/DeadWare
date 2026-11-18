@@ -154,7 +154,7 @@ public sealed class MonitorSession
             var current=Lighting;
             if(enabled&&openRgbPath is not null)
             {
-                if(current is not null&&!pathChanged&&current.Problem is null)return;
+                if(current is not null&&KeepsLightingClient(pathChanged,current.Problem,current.State?.Status))return;
                 // A retire that throws still lets go of the old client, so no later change re-awaits its failed stop.
                 if(current is not null)try {await RetireLightingAsync(current);} finally {Lighting=null;}
                 var client=Lighting=NewLightingClient();
@@ -165,6 +165,12 @@ public sealed class MonitorSession
         }
         finally {lightingGate.Release();}
     }
+    /// <summary>
+    /// Whether a lighting change on with the same path keeps the running client: not when the client has a problem, and not when its host
+    /// reports OpenRGB missing or failed, which last until the host restarts, so choosing the same OpenRGB.exe again is a retry.
+    /// </summary>
+    internal static bool KeepsLightingClient(bool pathChanged,string? problem,HostStatus? status)
+        =>!pathChanged&&problem is null&&status is not (HostStatus.OpenRgbMissing or HostStatus.OpenRgbFailed);
     private static async Task RetireLightingAsync(DeviceHostClient client) {try {await client.StopAsync();} finally {await client.DisposeAsync();}}
     /// <summary>Quit's lighting stop: closes lighting so a change that has not begun starts nothing, waits out the change in flight, then stops the current client.</summary>
     private async Task CloseLightingAsync()

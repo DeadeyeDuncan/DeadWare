@@ -66,12 +66,15 @@ internal sealed class SettingsPage : Page
     private readonly Button clearRetry = new() { Content = HistoryClearCopy.TryAgainButton, Visibility = Visibility.Collapsed };
     private HistoryClearLine[]? clearShown;
     // Lighting
-    private const string ProtectionWarningText = @"Programs running without administrator rights can change this OpenRGB folder. DeadWare runs OpenRGB as administrator, so copy OpenRGB to C:\Program Files\OpenRGB and choose it here.";
+    // True whether or not DeadWare runs as administrator: only an elevated DeadWare refuses the folder (Ruling AM), and copying OpenRGB is the fix either way.
+    private const string ProtectionWarningText = @"Programs running without administrator rights can change this OpenRGB folder, so while DeadWare runs as administrator it won't run OpenRGB from here. Copy OpenRGB to C:\Program Files\OpenRGB and choose it here.";
     private const string CheckingConflictsText = "Checking for programs that would fight DeadWare over the lights…";
     private const string NoConflictsText = "Nothing is running that would fight DeadWare over the lights.";
     private const string ScanFailedText = "DeadWare couldn't check for conflicting programs.";
     private const string HostScanFailedText = "The lighting helper couldn't check for conflicting programs.";
-    private const string HostNotRunningText = "Conflicts can't be checked until the lighting helper runs.";
+    // Also true while the helper runs but OpenRGB doesn't (missing or failed), the states it is mostly shown in.
+    private const string HostNotRunningText = "Conflicts can't be checked until OpenRGB is running.";
+    private const string HostUnreachableText = "Conflicts can't be checked while DeadWare can't reach the lighting helper.";
     // How long the first scan after lighting goes off waits to look again when it found another OpenRGB, which may have been the
     // host's own on its way out.
     private static readonly TimeSpan LookAgainDelay = TimeSpan.FromSeconds(2);
@@ -791,7 +794,7 @@ internal sealed class SettingsPage : Page
     /// way or that it failed. With lighting on: the host's list, whatever its status. When it lists nothing, a running or waiting
     /// host has found nothing, since it gets that far only after a clean scan; a blocked host couldn't scan; a host without a
     /// working OpenRGB, or stopping, stays that way until something changes and may never have scanned, so it says conflicts can't
-    /// be checked until the host runs; and a starting host hasn't said yet. With no state the host is connecting or relaunching,
+    /// be checked until OpenRGB runs; and a starting host hasn't said yet. With no state the host is connecting or relaunching,
     /// unless a problem has stopped the client, and then nothing checks until lighting is turned off and on: a scan here could call
     /// the host's own OpenRGB foreign.
     /// </summary>
@@ -804,7 +807,7 @@ internal sealed class SettingsPage : Page
             var found = Listed(scanned);
             return found.Length > 0 ? found : [(NoConflictsText, false)];
         }
-        if (client.State is not { } state) return [(client.Problem is { Length: > 0 } ? HostNotRunningText : CheckingConflictsText, false)];
+        if (client.State is not { } state) return [(client.Problem is { Length: > 0 } ? HostUnreachableText : CheckingConflictsText, false)];
         var listed = Listed(state.Conflicts);
         if (listed.Length > 0) return listed;
         return state.Status switch

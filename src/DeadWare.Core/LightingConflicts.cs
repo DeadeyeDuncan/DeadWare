@@ -67,7 +67,7 @@ public static class LightingConflicts
         if(Is(n,"OpenRGB")) return p.Id==ownOpenRgbPid?null:new(ConflictKind.ForeignOpenRgb,"Another OpenRGB is running. Quit it before turning on DeadWare lighting.",true);
         if(Is(n,"iCUE")||Is(n,"iCUE Launcher")) return new(ConflictKind.ICue,"iCUE is running. Quit it from its tray icon before turning on DeadWare lighting.",true);
         if(Is(n,"CorsairDeviceControlService")||Is(n,"CorsairDeviceListerService")) return new(ConflictKind.CorsairService,"A Corsair device service is running and would fight DeadWare over the lights. Stop it in Windows Services, or quit iCUE completely, before turning on DeadWare lighting.",true);
-        if(Is(n,"Corsair.Service")) return new(ConflictKind.LegacyCorsairService,"The Corsair service is running. It does not block lighting, but it can block the Corsair hub driver later.",false);
+        if(Is(n,"Corsair.Service")) return new(ConflictKind.LegacyCorsairService,"The Corsair service, Corsair.Service.exe, is running. It doesn't block lighting.",false);
         return null;
     }
 }
