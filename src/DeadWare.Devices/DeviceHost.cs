@@ -252,7 +252,8 @@ internal sealed class DeviceHost : IAsyncDisposable
             if(!engineActive||status==HostStatus.Stopping) return;
             switch(engine.Status)
             {
-                case EngineStatus.Running:connectDelay=ConnectDelayMin;nextConnectAt=0;ConnectLocked();if(!sessionOk) ArmBackoff();break;
+                // sessionOk is cleared whenever OpenRGB stops, so if it is set here a loop tick has already connected to this process: connect once.
+                case EngineStatus.Running:connectDelay=ConnectDelayMin;nextConnectAt=0;if(!sessionOk) ConnectLocked();if(!sessionOk) ArmBackoff();break;
                 case EngineStatus.Restarting:
                     sessionOk=false;status=HostStatus.Waiting;message="OpenRGB is restarting. Lighting will resume in a moment.";break;
                 case EngineStatus.Failed:

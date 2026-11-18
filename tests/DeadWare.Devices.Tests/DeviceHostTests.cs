@@ -2,8 +2,8 @@ using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using DeadWare.Core;
 using DeadWare.Devices;
-using Microsoft.Extensions.Time.Testing;
 using Xunit;
+using static DeadWare.Devices.Tests.Waits;
 
 namespace DeadWare.Devices.Tests;
 
@@ -11,12 +11,14 @@ public sealed class DeviceHostTests : IAsyncLifetime
 {
     readonly string dir=Path.Combine(Path.GetTempPath(),"dw-host-"+Guid.NewGuid().ToString("N"));
     readonly string exe,lightingPath;
-    readonly FakeTimeProvider time=new();
+    readonly Clock time=new();
     readonly FakeRunner runner=new();
     readonly FakeOpenRgbSession session=FakeOpenRgbSession.FromFixture();
     readonly HostLog log;
     readonly List<LightingConflict> conflicts=new();
+    readonly List<Hold> holds=new();
     int scans;
+    Hold? scanHold; // once set, conflict scans park the host loop in the scanner until it is released
     readonly string zoneKey=LightingKeys.Zone(LightingKeys.Device("SERIAL-1","I2C: FAKE-1"),0);
     DeviceHost? host;
     Task? run;
@@ -31,6 +33,7 @@ public sealed class DeviceHostTests : IAsyncLifetime
     public Task InitializeAsync()=>Task.CompletedTask;
     public async Task DisposeAsync()
     {
+        lock(holds)foreach(var hold in holds)hold.Release(); // nothing a test parked outlives it
         if(host is not null){try{await host.HandleAsync(new StopRequest());if(run is not null)await run.WaitAsync(TimeSpan.FromSeconds(5));}catch{}await host.DisposeAsync();}
         log.Dispose();try{Directory.Delete(dir,true);}catch{}
     }
@@ -54,49 +57,69 @@ public sealed class DeviceHostTests : IAsyncLifetime
         public FakeProcess At(int i){lock(Started)return Started[i];}
     }
     sealed class Scanner(Func<int?,IReadOnlyList<LightingConflict>> f):IConflictScanner{public IReadOnlyList<LightingConflict> Scan(int? pid)=>f(pid);}
+    // Parks each thread that reaches it until the test releases it. A parked thread gives up after the real-time cap, so a failing test
+    // cannot hang the run.
+    sealed class Hold
+    {
+        readonly ManualResetEventSlim open=new(false);
+        int parked;
+        public bool Parked=>Volatile.Read(ref parked)>0;
+        public void Park(){Interlocked.Increment(ref parked);open.Wait(RealTimeCap);}
+        public void Release()=>open.Set();
+    }
+    Hold NewHold(){var hold=new Hold();lock(holds)holds.Add(hold);return hold;}
     static readonly LightingConflict DeadLight=new(ConflictKind.DeadLight,"DeadLight is running.",true);
 
-    DeviceHost Build(bool startup=false,string? exePath=null)
+    // beforeHost gets the engine before the host subscribes to it, so a handler it adds runs ahead of the host's own.
+    DeviceHost Build(bool startup=false,string? exePath=null,Action<OpenRgbEngine>? beforeHost=null)
     {
         var engine=new OpenRgbEngine(exePath??exe,@"C:\cfg",runner,(_,_)=>Task.FromResult(true),time,log);
-        var scanner=new Scanner(_=>{Interlocked.Increment(ref scans);lock(conflicts)return conflicts.ToList();});
+        beforeHost?.Invoke(engine);
+        var scanner=new Scanner(_=>{Interlocked.Increment(ref scans);Volatile.Read(ref scanHold)?.Park();lock(conflicts)return conflicts.ToList();});
         var options=new HostOptions(exePath??exe,@"C:\cfg",lightingPath,Path.Combine(dir,"logs"),startup,"S-1-5-21-1",1);
         return host=new DeviceHost(options,new LightingStore(lightingPath),engine,()=>session,scanner,time,log);
     }
     void Start(DeviceHost h)=>run=h.RunAsync(CancellationToken.None);
-    // Real time any wait below may take before it fails the test. Every product deadline here runs on fake time, so this only has to
-    // cover thread-pool hops; it is generous because a loaded machine stretches those to seconds.
-    static readonly TimeSpan RealTimeCap=TimeSpan.FromSeconds(15);
-    static async Task Until(Func<bool> cond,[CallerArgumentExpression(nameof(cond))] string what="")
-    {
-        var clock=Stopwatch.StartNew();
-        while(!cond())
-        {
-            if(clock.Elapsed>RealTimeCap) Assert.Fail($"condition not reached within {RealTimeCap.TotalSeconds:0} s: {what}");
-            await Task.Delay(10);
-        }
-    }
+    // Fake time AdvanceUntil may move without its condition before it fails, so a host cadence that slows down fails the test instead of
+    // being stepped past. A caller that expects a longer wait raises it.
+    static readonly TimeSpan FakeTimeLimit=TimeSpan.FromSeconds(30);
     // Moves fake time by exactly total, for checks that something has NOT happened yet. Waiting for an effect after it is only safe when
     // the timer behind that effect was armed before the advance began: the host and engine arm most timers on thread-pool continuations,
-    // so on a loaded machine a fixed advance can finish before the timer exists, and then nothing ever fires it. Use AdvanceUntil.
+    // so on a loaded machine a fixed advance can finish before the timer exists, and then nothing ever fires it. Use Elapse or AdvanceUntil.
     async Task Advance(TimeSpan total,TimeSpan? step=null)
     {
         var s=step??TimeSpan.FromMilliseconds(500);
         for(var t=TimeSpan.Zero;t<total;t+=s){time.Advance(s);await Task.Delay(5);}
     }
-    // Steps fake time until the condition holds, pausing in real time after each step so the host's continuations run (and arm their
-    // timers) before the clock moves on. limit stops the stepping, leaving only the wait, where moving the clock further would cross a
-    // window the test relies on; pass it only once the timer that leads to the condition is known to be armed. Returns the fake time moved.
+    // Moves fake time by exactly delay once the host waits on a timer due that far ahead, so that timer fires and nothing is skipped.
+    async Task Elapse(TimeSpan delay)
+    {
+        var clock=Stopwatch.StartNew();
+        while(!time.Waiting(delay))
+        {
+            if(clock.Elapsed>RealTimeCap) Assert.Fail($"nothing waited {delay.TotalSeconds:0.#} s within {RealTimeCap.TotalSeconds:0} s");
+            await Task.Delay(1);
+        }
+        time.Advance(delay);
+    }
+    // Steps fake time until the condition holds. The clock moves one step (at least a tick) at a time and only while the host loop waits on
+    // its next tick, so the loop has done each tick's work, and armed what comes next, before the clock moves on, however late the thread
+    // pool runs it. Fails once limit (FakeTimeLimit unless raised) of fake time has passed without the condition and work still queued has
+    // had RealTimeCap to finish, or after RealTimeCap of real time in which the loop never waited on its tick. Returns the fake time moved.
     async Task<TimeSpan> AdvanceUntil(Func<bool> cond,TimeSpan? step=null,TimeSpan? limit=null,[CallerArgumentExpression(nameof(cond))] string what="")
     {
-        var s=step??TimeSpan.FromMilliseconds(500);
+        var s=step??DeviceHost.Tick;
+        var max=limit??FakeTimeLimit;
         var moved=TimeSpan.Zero;
-        var clock=Stopwatch.StartNew();
+        var idle=Stopwatch.StartNew();
         while(!cond())
         {
-            if(clock.Elapsed>RealTimeCap) Assert.Fail($"condition not reached after {moved.TotalSeconds:0.#} s of fake time ({RealTimeCap.TotalSeconds:0} s real): {what}");
-            if(limit is null||moved<limit){time.Advance(s);moved+=s;}
-            await Task.Delay(5);
+            if(moved<max&&time.Waiting(DeviceHost.Tick)){time.Advance(s);moved+=s;idle.Restart();}
+            else if(idle.Elapsed>RealTimeCap)
+                Assert.Fail(moved>=max
+                    ?$"condition not reached within the {max.TotalSeconds:0.#} s fake-time limit: {what}"
+                    :$"the host loop did not wait on its tick for {RealTimeCap.TotalSeconds:0} s (after {moved.TotalSeconds:0.#} s of fake time): {what}");
+            await Task.Delay(1);
         }
         return moved;
     }
@@ -168,17 +191,49 @@ public sealed class DeviceHostTests : IAsyncLifetime
         Assert.Equal(0,runner.Count);
     }
 
+    // Ruling F after a crash: the host resets, connects once, rescans and repaints for the relaunched OpenRGB. It can connect two ways:
+    // its handler for the engine's Running event, or a loop tick that finds the engine Running while the session is down. Each test holds
+    // one of them still so the other goes first, and either way there is exactly one connect.
     [Fact]
-    public async Task Engine_restart_resets_reconnects_rescans_and_repaints()
+    public Task Engine_restart_resets_reconnects_rescans_and_repaints()=>Relaunch(loopFirst:false);
+
+    [Fact]
+    public Task Engine_restart_connects_once_when_the_loop_reconnects_first()=>Relaunch(loopFirst:true);
+
+    async Task Relaunch(bool loopFirst)
     {
         session.Controllers[3]=session.Controllers[3] with{ActiveMode=2}; // not in Direct, so the host must switch it
-        var h=await Running();
+        OpenRgbEngine engine=null!;
+        bool Relaunched()=>runner.Count==2&&engine.Status==EngineStatus.Running;
+        var hearing=NewHold();
+        var heard=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        // Runs ahead of the host's handler on the engine's supervisor thread: parked, it keeps the host from hearing the relaunch is Running.
+        var h=Build(beforeHost:e=>{engine=e;e.Changed+=()=>{if(loopFirst&&Relaunched()) hearing.Park();};});
+        engine.Changed+=()=>{if(Relaunched()) heard.TrySetResult();}; // runs after the host's handler: the host has heard
+        Start(h);
+        await Until(()=>h.State.Status==HostStatus.Running);
         await AdvanceUntil(()=>session.Leds.Any(l=>l.Index==3));
         var connects=session.Connects;var reads=session.Reads;var leds=session.Leds.Count;
         Assert.Equal(1,session.Modes.Count(m=>m.Index==3));
+        var loop=NewHold();
+        if(!loopFirst){Volatile.Write(ref scanHold,loop);await AdvanceUntil(()=>loop.Parked);} // the loop parks in its next conflict scan
         runner.At(0).Exit();
-        await Until(()=>h.State.Status==HostStatus.Waiting);
-        await AdvanceUntil(()=>h.State.Status==HostStatus.Running);
+        await Until(()=>h.State.Status==HostStatus.Waiting); // the engine arms its relaunch delay before it reports Restarting
+        if(loopFirst)
+        {
+            await AdvanceUntil(()=>hearing.Parked);                    // OpenRGB is back but the host has not heard,
+            await AdvanceUntil(()=>h.State.Status==HostStatus.Running); // so a loop tick connects
+            hearing.Release();
+        }
+        else await Elapse(RestartBackoff.Base);                         // the loop is parked, so the host's handler connects
+        await heard.Task.WaitAsync(RealTimeCap);
+        if(!loopFirst)
+        {
+            var before=session.Reads;
+            loop.Release();                        // the loop drops the scan it began before the relaunch,
+            await Until(()=>session.Reads>before); // then its tick finds the session up and only rescans
+        }
+        Assert.Equal(HostStatus.Running,h.State.Status);
         Assert.Equal(2,runner.Count);
         Assert.Equal(connects+1,session.Connects);
         Assert.True(session.Reads>reads);
@@ -190,13 +245,14 @@ public sealed class DeviceHostTests : IAsyncLifetime
     public async Task Engine_failure_reports_OpenRgbFailed_with_reason()
     {
         var h=await Running();
-        // Each crash but the last is relaunched after the backoff; the last one inside the 10-minute window fails the engine.
+        // Crashes 65 s apart, like a slow crash loop: the fifth comes 260 s after the first, so it fails the engine only because all five
+        // fall inside the 10-minute window. Each crash but the last is relaunched after the 4/8/16/32 s backoff.
         for(var i=0;i<RestartBackoff.MaxFailures-1;i++)
         {
             runner.At(i).Exit();
             await Until(()=>h.State.Status==HostStatus.Waiting); // the engine arms its relaunch delay before it reports Restarting
-            // At most 65 s of fake time per crash, so a relaunch that runs late cannot push the crashes out of the window.
-            await AdvanceUntil(()=>runner.Count>i+1&&h.State.Status==HostStatus.Running,TimeSpan.FromSeconds(1),TimeSpan.FromSeconds(65));
+            var moved=await AdvanceUntil(()=>runner.Count>i+1&&h.State.Status==HostStatus.Running,TimeSpan.FromSeconds(1),TimeSpan.FromSeconds(65));
+            await Advance(TimeSpan.FromSeconds(65)-moved,TimeSpan.FromSeconds(1));
         }
         runner.At(RestartBackoff.MaxFailures-1).Exit();
         await Until(()=>h.State.Status==HostStatus.OpenRgbFailed);
@@ -318,11 +374,11 @@ public sealed class DeviceHostTests : IAsyncLifetime
         await Until(()=>{lock(seen)return seen.Any(x=>x.Status==HostStatus.Waiting);}); // the one broadcast for this error
         var attempts=session.Connects;
         int events;lock(seen)events=seen.Count;
-        // 10 s of ticks, backing off 2 s, 4 s, 8 s. The loop arms its first tick on the thread pool after that broadcast, so a fixed
-        // advance can finish before then and see no retry: step until the first retry, then make up the rest of the 10 s.
-        var moved=await AdvanceUntil(()=>session.Connects>attempts);
-        await Advance(TimeSpan.FromSeconds(10)-moved);
-        Assert.InRange(session.Connects-attempts,1,6);
+        // Exactly 10 s, a tick at a time: each step waits until the loop waits on its tick, so a loop that arms its first tick late
+        // cannot shift the window.
+        for(var i=0;i<20;i++) await Elapse(DeviceHost.Tick);
+        await Until(()=>time.Waiting(DeviceHost.Tick)); // the last tick's work is done
+        Assert.InRange(session.Connects-attempts,1,6); // 10 s of ticks, backing off 2 s, 4 s, 8 s
         lock(seen)Assert.Equal(events,seen.Count);
         var text=File.ReadAllText(Path.Combine(dir,"logs","devices.log"));
         Assert.Equal(1,text.Split("fake connect failure").Length-1);
@@ -362,7 +418,13 @@ public sealed class DeviceHostTests : IAsyncLifetime
     [Fact]
     public async Task Reply_precedes_the_state_broadcast_over_a_real_pipe()
     {
-        var h=await Running();
+        var h=Build();
+        // Recorded from the start: the host raises its Running broadcast just after it sets the status, so waiting for the broadcast itself
+        // means no startup broadcast is still on its way to the pipe handler added below, to be written ahead of the reply.
+        var states=new List<HostState>();
+        h.StateChanged+=s=>{lock(states)states.Add(s);};
+        Start(h);
+        await Until(()=>{lock(states)return states.Any(s=>s.Status==HostStatus.Running);});
         var pipe="DeadWare.Devices.Test."+Guid.NewGuid().ToString("N");
         await using var server=new HostPipeServer(pipe,h.HandleAsync,log);
         h.StateChanged+=st=>_=server.SendAsync(new StateEvent(st));
@@ -384,7 +446,7 @@ public sealed class DeviceHostTests : IAsyncLifetime
         var h=await Running();
         var reply=await Send(h,new StopRequest{Id=3});
         Assert.True(reply.Ok);Assert.Equal(3,reply.Id);
-        await run!.WaitAsync(TimeSpan.FromSeconds(5));
+        await run!.WaitAsync(RealTimeCap); // no fake time involved: Stop cancels the loop's tick and RunAsync then stops the engine
         Assert.True(runner.At(0).Killed);
     }
 }

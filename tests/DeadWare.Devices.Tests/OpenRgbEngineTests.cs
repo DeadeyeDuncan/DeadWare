@@ -2,6 +2,7 @@ using System.Diagnostics;
 using DeadWare.Devices;
 using Microsoft.Extensions.Time.Testing;
 using Xunit;
+using static DeadWare.Devices.Tests.Waits;
 
 namespace DeadWare.Devices.Tests;
 
@@ -38,7 +39,6 @@ public sealed class OpenRgbEngineTests : IDisposable
     }
 
     OpenRgbEngine Engine()=>new(exe,@"C:\cfg",runner,(_,_)=>{Interlocked.Increment(ref probes);return Task.FromResult(portUp);},time,log);
-    static async Task Until(Func<bool> cond){for(int i=0;i<500&&!cond();i++) await Task.Delay(10);Assert.True(cond(),"condition not reached");}
     async Task Advance(TimeSpan total,TimeSpan step)
     {
         for(var t=TimeSpan.Zero;t<total;t+=step){time.Advance(step);await Task.Delay(5);}
@@ -52,7 +52,7 @@ public sealed class OpenRgbEngineTests : IDisposable
     {
         var missing=Path.Combine(dir,"nope","OpenRGB.exe");
         await using var e=new OpenRgbEngine(missing,@"C:\cfg",runner,(_,_)=>Task.FromResult(true),time,log);
-        await e.StartAsync(CancellationToken.None);
+        await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
         Assert.Equal(EngineStatus.Failed,e.Status);
         Assert.Equal($"OpenRGB.exe was not found at {missing}.",e.FailureReason);
         Assert.Equal(0,runner.Count);
@@ -62,7 +62,7 @@ public sealed class OpenRgbEngineTests : IDisposable
     public async Task Start_runs_with_spec_arguments_and_reports_running()
     {
         await using var e=Engine();
-        await e.StartAsync(CancellationToken.None);
+        await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
         Assert.Equal(EngineStatus.Running,e.Status);
         Assert.Equal(100,e.ProcessId);
         Assert.Equal(OpenRgbEngine.Arguments(@"C:\cfg"),runner.Info!.ArgumentList.ToArray());
@@ -80,7 +80,7 @@ public sealed class OpenRgbEngineTests : IDisposable
         await Advance(TimeSpan.FromSeconds(1),TimeSpan.FromMilliseconds(500));
         await Until(()=>e.Status==EngineStatus.Restarting);
         Assert.True(runner.At(0).Killed);
-        await start;
+        await start.WaitAsync(RealTimeCap);
         await Advance(TimeSpan.FromMilliseconds(3500),TimeSpan.FromMilliseconds(100));
         Assert.Equal(1,runner.Count);
         await Advance(TimeSpan.FromMilliseconds(600),TimeSpan.FromMilliseconds(100));
@@ -91,7 +91,7 @@ public sealed class OpenRgbEngineTests : IDisposable
     public async Task Unexpected_exit_restarts_after_four_seconds_then_eight()
     {
         await using var e=Engine();
-        await e.StartAsync(CancellationToken.None);
+        await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
         runner.At(0).Exit();
         await Until(()=>e.Status==EngineStatus.Restarting);
         await Advance(TimeSpan.FromMilliseconds(3900),TimeSpan.FromMilliseconds(100));
@@ -110,7 +110,7 @@ public sealed class OpenRgbEngineTests : IDisposable
     public async Task Five_exits_in_ten_minutes_fail_with_reason()
     {
         await using var e=Engine();
-        await e.StartAsync(CancellationToken.None);
+        await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
         for(int i=0;i<4;i++)
         {
             await Until(()=>runner.Count==i+1&&e.Status==EngineStatus.Running);
@@ -129,8 +129,8 @@ public sealed class OpenRgbEngineTests : IDisposable
     public async Task Stop_kills_tree_and_does_not_restart()
     {
         await using var e=Engine();
-        await e.StartAsync(CancellationToken.None);
-        await e.StopAsync();
+        await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
+        await e.StopAsync().WaitAsync(RealTimeCap);
         Assert.True(runner.At(0).Killed);
         Assert.Equal(EngineStatus.Stopped,e.Status);
         await Advance(TimeSpan.FromSeconds(30),TimeSpan.FromSeconds(1));
@@ -141,7 +141,7 @@ public sealed class OpenRgbEngineTests : IDisposable
     public async Task Concurrent_starts_spawn_exactly_one_process()
     {
         await using var e=Engine();
-        await Task.WhenAll(Enumerable.Range(0,8).Select(_=>Task.Run(()=>e.StartAsync(CancellationToken.None))));
+        await Task.WhenAll(Enumerable.Range(0,8).Select(_=>Task.Run(()=>e.StartAsync(CancellationToken.None)))).WaitAsync(RealTimeCap);
         await Task.Delay(50);
         Assert.Equal(1,runner.Count);
     }
@@ -151,7 +151,7 @@ public sealed class OpenRgbEngineTests : IDisposable
     {
         await using var e=Engine();
         e.Changed+=()=>throw new InvalidOperationException("pipe broke");
-        await e.StartAsync(CancellationToken.None);
+        await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
         runner.At(0).Exit();
         await Until(()=>e.Status==EngineStatus.Restarting);
         await Advance(TimeSpan.FromSeconds(4),TimeSpan.FromMilliseconds(100));
