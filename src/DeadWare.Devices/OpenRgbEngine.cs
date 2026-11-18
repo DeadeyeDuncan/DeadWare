@@ -32,8 +32,11 @@ internal sealed class OpenRgbEngine : IAsyncDisposable
     public const string UnprotectedFolderText=@"The OpenRGB folder can be changed by programs without administrator rights, so DeadWare won't run it as administrator. Copy OpenRGB to C:\Program Files\OpenRGB and choose it in Settings → Lighting.";
     readonly Func<string,LocationProtection>? folderCheck;
     // folderCheck: an elevated host's check of OpenRGB's folder (Ruling AM), run before every launch; null when the host isn't elevated.
-    public OpenRgbEngine(string exePath,string configDir,IProcessRunner runner,Func<int,CancellationToken,Task<bool>> portOpen,TimeProvider time,HostLog log,Func<string,LocationProtection>? folderCheck=null)
-    {this.exePath=exePath;this.configDir=configDir;this.runner=runner;this.portOpen=portOpen;this.time=time;this.log=log;this.folderCheck=folderCheck;}
+    public static string ConfigFailedText(string configDir)=>$"DeadWare couldn't update OpenRGB's settings file in {configDir}, so it didn't start OpenRGB. Turn lighting off and on in Settings to try again.";
+    readonly Action<string>? prepareConfig;
+    // prepareConfig: writes OpenRGB's settings before every launch (Ruling AR); a launch whose settings can't be written doesn't happen.
+    public OpenRgbEngine(string exePath,string configDir,IProcessRunner runner,Func<int,CancellationToken,Task<bool>> portOpen,TimeProvider time,HostLog log,Func<string,LocationProtection>? folderCheck=null,Action<string>? prepareConfig=null)
+    {this.exePath=exePath;this.configDir=configDir;this.runner=runner;this.portOpen=portOpen;this.time=time;this.log=log;this.folderCheck=folderCheck;this.prepareConfig=prepareConfig;}
     // --server-host 127.0.0.1 (Ruling AN): OpenRGB 1.0rc3 otherwise serves its unauthenticated SDK on every network interface. The literal
     // address, not "localhost", which can resolve to ::1 first, while the session and the port probe use IPv4 loopback.
     public const string Host="127.0.0.1";
@@ -70,6 +73,7 @@ internal sealed class OpenRgbEngine : IAsyncDisposable
                 // Outside the lock: the check walks OpenRGB's whole folder. A refusal is final for this engine and isn't a crash, so it
                 // is neither retried nor counted in the backoff.
                 if(Refused()){Set(EngineStatus.Failed,UnprotectedFolderText);return;}
+                if(!Prepared()){Set(EngineStatus.Failed,ConfigFailedText(configDir));return;}
                 IRunningProcess? proc=null;
                 try
                 {
@@ -104,6 +108,13 @@ internal sealed class OpenRgbEngine : IAsyncDisposable
         }
         catch(OperationCanceledException){}
         finally{firstAttempt.TrySetResult();}
+    }
+
+    bool Prepared()
+    {
+        if(prepareConfig is null) return true;
+        try{prepareConfig(configDir);return true;}
+        catch(Exception e){log.Write("openrgb settings couldn't be written: "+e.Message);return false;}
     }
 
     bool Refused()

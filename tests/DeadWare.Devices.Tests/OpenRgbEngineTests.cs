@@ -177,6 +177,32 @@ public sealed class OpenRgbEngineTests : IDisposable
         Assert.Equal(1,checks);
     }
 
+    // Ruling AR: OpenRGB's settings are prepared before every start, the first and each relaunch.
+    [Fact]
+    public async Task Config_is_prepared_before_every_start()
+    {
+        var prepared=new List<int>();
+        await using var e=new OpenRgbEngine(exe,@"C:\cfg",runner,(_,_)=>Task.FromResult(true),time,log,prepareConfig:d=>{Assert.Equal(@"C:\cfg",d);lock(prepared)prepared.Add(runner.Count);});
+        await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
+        runner.At(0).Exit();
+        await Until(()=>e.Status==EngineStatus.Restarting);
+        await Advance(TimeSpan.FromSeconds(4),TimeSpan.FromMilliseconds(100));
+        await Until(()=>runner.Count==2&&e.Status==EngineStatus.Running);
+        lock(prepared)Assert.Equal([0,1],prepared); // each time before the process started
+    }
+
+    // A settings file that can't be written means OpenRGB isn't started: a plain, final reason, not five crash restarts.
+    [Fact]
+    public async Task Config_that_cant_be_written_fails_without_starting()
+    {
+        await using var e=new OpenRgbEngine(exe,@"C:\cfg",runner,(_,_)=>Task.FromResult(true),time,log,prepareConfig:_=>throw new UnauthorizedAccessException("denied"));
+        await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
+        Assert.Equal(EngineStatus.Failed,e.Status);
+        Assert.Equal(OpenRgbEngine.ConfigFailedText(@"C:\cfg"),e.FailureReason);
+        await Advance(TimeSpan.FromSeconds(60),TimeSpan.FromSeconds(1));
+        Assert.Equal(0,runner.Count);
+    }
+
     [Fact]
     public async Task Throwing_changed_handler_does_not_stop_restarts()
     {
