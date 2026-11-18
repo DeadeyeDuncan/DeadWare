@@ -65,6 +65,22 @@ public class LightingPaintTests
         Assert.Null(LightingPaint.HardwareModeFor(s,Dev("Kb","Direct")));
     }
 
+    // Task 3: the explicit "Direct" choice (how step 3 will record "DeadWare effects") is no hardware mode, so the device is painted, even
+    // one with a hardware default such as the Node Pro. It must never come back as a hardware mode, which would switch the device to Direct
+    // and then send it no frames.
+    [Fact]
+    public void Explicit_Direct_is_no_hardware_mode_so_the_device_is_painted()
+    {
+        var s=new LightingSettings{DefaultColor="#FF0000"};
+        s.HardwareModes["k|l"]="Direct";
+        var d=Dev("Corsair Lighting Node Pro","Direct","Rainbow Wave");
+        Assert.Null(LightingPaint.HardwareModeFor(s,d));
+        var p=LightingPaint.Paint(s,d);
+        Assert.Equal(PaintKind.Direct,p.Kind);
+        Assert.Equal(4,p.Colors.Length);
+        Assert.All(p.Colors,c=>Assert.Equal(new Rgb(255,0,0),c));
+    }
+
     [Fact]
     public void Hardware_device_lights_off_uses_static_black_when_offered()
     {

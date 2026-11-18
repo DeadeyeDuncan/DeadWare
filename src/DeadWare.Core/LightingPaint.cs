@@ -9,9 +9,15 @@ public static class LightingPaint
 {
     public const string DirectMode="Direct",StaticMode="Static";
     public static IReadOnlyDictionary<string,string> HardwareModeDefaults{get;}=new Dictionary<string,string>{["Corsair Lighting Node Pro"]="Rainbow Wave"};
+    // The device's own hardware effect: a saved choice the device offers, else its default by name. A saved "Direct" is the explicit choice
+    // of DeadWare's colours (Task 3), so it means no hardware mode and the device is painted; it is never returned as a hardware mode.
     public static string? HardwareModeFor(LightingSettings settings,LightingDevice device)
     {
-        if(settings.HardwareModes.TryGetValue(device.Key,out var m)&&device.Modes.Contains(m)) return m;
+        if(settings.HardwareModes.TryGetValue(device.Key,out var m))
+        {
+            if(m==DirectMode) return null;
+            if(device.Modes.Contains(m)) return m;
+        }
         return HardwareModeDefaults.TryGetValue(device.Name,out var d)&&device.Modes.Contains(d)?d:null;
     }
     // Unscaled zone colour: the stored entry when its zone name still matches, else the default colour.
