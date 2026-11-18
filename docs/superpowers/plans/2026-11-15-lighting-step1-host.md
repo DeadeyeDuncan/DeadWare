@@ -14,7 +14,7 @@
 
 - **Start from `main` after 0.18.1 has merged** (PR #132 and its polish follow-up). This step touches `MainWindow.xaml.cs`, `SettingsPage.cs` and `Monitoring.cs`, which 0.18.1 also edits. Work in the `claude/lighting-merge` worktree and rebase it onto that main first.
 - **Executable name:** `DeadWare.Devices.exe`. Nothing new may be called "helper"; the updater already copies itself as `helper.exe`.
-- **OpenRGB launch:** `OpenRGB.exe --server --server-port 6744 --noautoconnect --config %ProgramData%\DeadWare\openrgb`. Stop it by killing the process tree, as DeadLight does with `taskkill /T /F`.
+- **OpenRGB launch:** `OpenRGB.exe --server --server-host 127.0.0.1 --server-port 6744 --noautoconnect --config %ProgramData%\DeadWare\openrgb`. `--server-host 127.0.0.1` keeps OpenRGB's unauthenticated SDK server on this PC; without it OpenRGB 1.0rc3 listens on every network interface (Ruling AN, final review 2026-11-18). Stop it by killing the process tree, as DeadLight does with `taskkill /T /F`.
 - **Restart pacing**, for both the host and OpenRGB: delays of 4 s, 8 s, 16 s and 32 s, capped at 60 s. Give up after 5 unexpected exits within 10 minutes. Never restart sooner than 4 s.
 - **Sign-in:** with `--startup`, the host waits 10 s before its conflict scan and OpenRGB start.
 - **Quit:** the window sends Stop, waits at most 5 s for the host to exit, then kills it.

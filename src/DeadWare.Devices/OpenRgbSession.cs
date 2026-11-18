@@ -27,7 +27,7 @@ internal sealed class OpenRgbSession : IOpenRgbSession
     public void Connect()
     {
         Detach();
-        var c=new OpenRgbClient("127.0.0.1",Port,ClientName,autoConnect:false);
+        var c=new OpenRgbClient(OpenRgbEngine.Host,Port,ClientName,autoConnect:false);
         c.DeviceListUpdated+=OnUpdated;
         client=c;
         c.Connect();

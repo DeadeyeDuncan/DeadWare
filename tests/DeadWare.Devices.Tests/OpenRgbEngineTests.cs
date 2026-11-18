@@ -44,8 +44,10 @@ public sealed class OpenRgbEngineTests : IDisposable
         for(var t=TimeSpan.Zero;t<total;t+=step){time.Advance(step);await Task.Delay(5);}
     }
 
+    // Ruling AN: the SDK server listens on this PC only. OpenRGB 1.0rc3 binds 0.0.0.0 (every network interface) unless told otherwise,
+    // and its SDK has no authentication; the client and the port probe both use 127.0.0.1.
     [Fact]
-    public void Arguments_match_spec()=>Assert.Equal(["--server","--server-port","6744","--noautoconnect","--config",@"C:\cfg"],OpenRgbEngine.Arguments(@"C:\cfg"));
+    public void Arguments_match_spec()=>Assert.Equal(["--server","--server-host","127.0.0.1","--server-port","6744","--noautoconnect","--config",@"C:\cfg"],OpenRgbEngine.Arguments(@"C:\cfg"));
 
     [Fact]
     public async Task Missing_exe_fails_without_starting()
