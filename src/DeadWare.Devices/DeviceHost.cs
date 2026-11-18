@@ -21,6 +21,7 @@ internal sealed class DeviceHost : IAsyncDisposable
     public const string UnreadableNote="Your lighting settings file couldn't be read, so changes won't be saved until DeadWare restarts.";
     public const string QuarantineNote="Your lighting settings file was damaged, so DeadWare set it aside and started with defaults.";
     public const string LostText="Lost the connection to OpenRGB; reconnecting.";
+    public const string NewerNote="Your lighting settings were saved by a newer DeadWare, so this version won't save changes to them.";
     readonly HostOptions options;
     readonly LightingStore store;
     readonly OpenRgbEngine engine;
@@ -129,6 +130,12 @@ internal sealed class DeviceHost : IAsyncDisposable
                 var read=store.Load();
                 settings=read.Settings;
                 if(read.Quarantine){note=QuarantineNote;log.Write("lighting.json was invalid and was set aside: "+read.Error);}
+                // Ruling AS: a later DeadWare's file is never rewritten, so its settings survive this build; changes last until DeadWare restarts.
+                else if(read.Newer)
+                {
+                    saveAllowed=false;note=NewerNote;
+                    log.Write("lighting.json comes from a newer DeadWare; it won't be saved"+(read.Error is null?"":" (using defaults: "+read.Error+")"));
+                }
             }
             catch(Exception e)
             {

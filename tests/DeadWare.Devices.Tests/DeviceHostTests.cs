@@ -373,6 +373,23 @@ public sealed class DeviceHostTests : IAsyncLifetime
         Assert.Equal("{\"Brightness\":10}",File.ReadAllText(lightingPath));
     }
 
+    // Ruling AS: lighting.json from a newer DeadWare (after a rollback, say) is used as far as this build understands it, but never
+    // rewritten, so the newer build's settings survive; the page says why changes don't stick.
+    [Fact]
+    public async Task Newer_lighting_json_is_used_but_never_saved()
+    {
+        const string json="{\"Version\":2,\"Brightness\":40,\"DefaultColor\":\"#112233\",\"Layout\":{\"Desk\":\"L\"}}";
+        File.WriteAllText(lightingPath,json);
+        var h=await Running();
+        Assert.Equal(40,h.State.Settings.Brightness);
+        Assert.Contains(DeviceHost.NewerNote,h.State.Message);
+        Assert.True((await Send(h,new SetBrightnessRequest(30))).Ok);
+        Assert.Equal(30,h.State.Settings.Brightness);
+        Assert.Equal(json,File.ReadAllText(lightingPath));
+        Assert.False(File.Exists(lightingPath+".tmp"));
+        Assert.Empty(Directory.GetFiles(dir,"lighting.corrupt-*.json"));
+    }
+
     [Fact]
     public async Task Failing_connect_logs_and_broadcasts_once_and_backs_off()
     {

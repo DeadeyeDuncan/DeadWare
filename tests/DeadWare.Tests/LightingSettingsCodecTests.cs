@@ -68,6 +68,39 @@ public class LightingSettingsCodecTests
     [Fact]
     public void Write_refuses_invalid_settings() => Assert.Throws<InvalidDataException>(() => LightingSettingsCodec.Write(new LightingSettings { Brightness = -1 }));
 
+    // Ruling AS / Task 2: Version 1 is this build's format. 0 or less is invalid and is quarantined; a newer file is a later DeadWare's,
+    // read as far as this build understands it but never rewritten or set aside.
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public void Version_below_one_asks_for_quarantine(int version) => Assert.True(LightingSettingsCodec.Read($"{{\"Version\":{version}}}").Quarantine);
+
+    [Fact]
+    public void Newer_version_loads_what_it_can_without_quarantine()
+    {
+        var r = LightingSettingsCodec.Read("{\"Version\":2,\"Brightness\":40,\"Effect\":{\"Name\":\"Wave\"}}");
+        Assert.True(r.Newer);
+        Assert.False(r.Quarantine);
+        Assert.Equal(40, r.Settings.Brightness);
+        Assert.Equal(2, r.Settings.Version);
+    }
+
+    [Fact]
+    public void Newer_version_this_build_cannot_validate_loads_defaults_and_is_not_quarantined()
+    {
+        var r = LightingSettingsCodec.Read("{\"Version\":2,\"Brightness\":150}");
+        Assert.True(r.Newer);
+        Assert.False(r.Quarantine);
+        Assert.Equal(100, r.Settings.Brightness);
+        Assert.NotNull(r.Error);
+    }
+
+    [Fact]
+    public void Current_version_is_not_newer() => Assert.False(LightingSettingsCodec.Read("{\"Version\":1}").Newer);
+
+    [Fact]
+    public void Write_refuses_a_newer_version() => Assert.Throws<InvalidDataException>(() => LightingSettingsCodec.Write(new LightingSettings { Version = LightingSettings.CurrentVersion + 1 }));
+
     [Fact]
     public void Rgb_scale_rounds()
     {

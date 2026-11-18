@@ -48,6 +48,16 @@ public sealed class LightingStoreTests:IDisposable
         Assert.Equal(55,store.Load().Settings.Brightness);
         Assert.Equal(new[]{"lighting.json"},Directory.GetFiles(dir).Select(Path.GetFileName));
     }
+    // Ruling AS: a later DeadWare's file is read, never set aside.
+    [Fact] public void Newer_file_is_read_and_left_in_place()
+    {
+        const string json="{\"Version\":2,\"Brightness\":40}";
+        File.WriteAllText(P,json);
+        var r=new LightingStore(P).Load();
+        Assert.True(r.Newer);Assert.False(r.Quarantine);Assert.Equal(40,r.Settings.Brightness);
+        Assert.Equal(json,File.ReadAllText(P));
+        Assert.Empty(Directory.GetFiles(dir,"lighting.corrupt-*.json"));
+    }
     [Fact] public void Save_refuses_invalid_settings()
     {
         var store=new LightingStore(P);

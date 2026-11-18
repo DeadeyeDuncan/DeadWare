@@ -21,6 +21,8 @@ public sealed class ZoneColorEntry
 }
 public sealed class LightingSettings
 {
+    // The lighting.json format this build writes. A file with a higher Version comes from a later DeadWare (after a rollback, say).
+    public const int CurrentVersion=1;
     public int Version {get;set;}=1;
     public bool LightsOn {get;set;}=true;
     public int Brightness {get;set;}=100;
@@ -28,4 +30,5 @@ public sealed class LightingSettings
     public Dictionary<string,ZoneColorEntry> ZoneColors {get;set;}=new();
     public Dictionary<string,string> HardwareModes {get;set;}=new();
 }
-public sealed record LightingRead(LightingSettings Settings,string? Error,bool Quarantine);
+// Newer: the file came from a later DeadWare. It is used as far as this build understands it, never quarantined and never rewritten.
+public sealed record LightingRead(LightingSettings Settings,string? Error,bool Quarantine,bool Newer=false);
