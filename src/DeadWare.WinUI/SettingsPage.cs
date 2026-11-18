@@ -70,24 +70,31 @@ internal sealed class SettingsPage : Page
     private const string CheckingConflictsText = "Checking for programs that would fight DeadWare over the lights…";
     private const string NoConflictsText = "Nothing is running that would fight DeadWare over the lights.";
     private const string ScanFailedText = "DeadWare couldn't check for conflicting programs.";
-    // The same words on and off, as on the Lighting page, so the switch's visible label is always its name; MinWidth 0 keeps the
-    // reason close beside it.
+    private const string HostScanFailedText = "The lighting helper couldn't check for conflicting programs.";
+    private const string HostNotRunningText = "Conflicts can't be checked until the lighting helper runs.";
+    // The same words on and off, as on the Lighting page, so the switch's visible label is always its name; MinWidth 0 keeps its
+    // messages close beside it.
     private readonly ToggleSwitch lightingEnabled = new() { OnContent = "Enable lighting", OffContent = "Enable lighting", MinWidth = 0, VerticalAlignment = VerticalAlignment.Center };
-    private readonly TextBlock lightingReason = Muted("Choose OpenRGB.exe below first."), lightingError = Caution(), browseNote = Caution(), protectionWarning = Caution(ProtectionWarningText);
-    private readonly TextBox openRgbLocation = new() { IsReadOnly = true, IsSpellCheckEnabled = false, Width = 420 };
-    private readonly Button browseOpenRgb = new() { Content = "Browse…" };
+    private readonly TextBlock lightingReason = Muted("Choose OpenRGB.exe below first."), lightingProblem = Caution(), lightingError = Caution(), browseNote = Caution(), protectionWarning = Caution();
+    private readonly TextBox openRgbLocation = new() { IsReadOnly = true, IsSpellCheckEnabled = false, HorizontalAlignment = HorizontalAlignment.Stretch, VerticalAlignment = VerticalAlignment.Center };
+    private readonly Button browseOpenRgb = new() { Content = "Browse…", VerticalAlignment = VerticalAlignment.Center };
+    // The note beside Browse… takes a share of its row only while it shows, so it wraps there instead of running off the row.
+    private readonly ColumnDefinition browseNoteColumn = new() { Width = GridLength.Auto };
     private readonly StackPanel conflictLines = new() { Spacing = 4 };
     private (string Text, bool Caution)[]? conflictsShown;
     // scanned: the last local scan's conflicts, kept while lighting is off. followingHost: whether the section last showed the
-    // host's list rather than a local scan's; null until it has shown either. protectionFor: the path the folder warning is for.
+    // host's list rather than a local scan's; null until it has shown either. protectionFor: the path the folder message is for.
+    // protectionChecks: the paths whose folder check is still running.
     private IReadOnlyList<LightingConflict>? scanned;
     private bool? followingHost;
     private string? protectionFor;
-    // Each run is bumped when a newer scan or folder check, or lighting turning on, makes a result still on its way out of date.
-    private int shownSection, scanRun, protectionRun;
-    // lightingBusy: a lighting change or Browse… is under way. lightingDue: the section has just come on screen, so the folder
-    // check and, with lighting off, the scan run afresh.
-    private bool lightingBusy, lightingDue, scanFailed;
+    private readonly HashSet<string> protectionChecks = new(StringComparer.Ordinal);
+    // scanRun is bumped when a newer scan, or lighting turning on, makes a scan still on its way out of date.
+    private int shownSection, scanRun;
+    // lightingBusy: a lighting change or Browse… is under way; browsing: Browse… started it. windowShowing: the dashboard is on
+    // screen rather than in the tray. lightingOnScreen: the section was on screen at the last sync, so its coming back is seen.
+    // scanOwed: lighting is off and a scan is due; it waits until a change under way has returned.
+    private bool lightingBusy, browsing, windowShowing, lightingOnScreen, scanOwed, scanFailed;
 
     /// <summary>Asks the window to open another destination by its key ("usage", "alerts", "connections").</summary>
     public Action<string>? NavigateRequested { get; set; }
@@ -117,8 +124,6 @@ internal sealed class SettingsPage : Page
         this.WhileLoaded(() =>
         {
             loaded = true;
-            // Coming back to the page shows the Lighting section afresh when it is the one selected.
-            lightingDue = true;
             session.Changed += Sync; session.HistoryClearChanged += ClearChanged; suggestions.Changed += OfferExcluded;
             Sync();
             _ = RefreshStartupAsync(); _ = RefreshSuggestionsAsync();
@@ -128,6 +133,9 @@ internal sealed class SettingsPage : Page
             loaded = false;
             session.Changed -= Sync; session.HistoryClearChanged -= ClearChanged; suggestions.Changed -= OfferExcluded;
         });
+        // The page stays loaded while the dashboard is in the tray, so the Lighting section also follows the window: it is checked
+        // afresh when the dashboard comes back, as when the page or the section opens.
+        this.WhileShowing(() => { windowShowing = true; SyncLighting(); }, () => { windowShowing = false; SyncLighting(); });
         Sync();
     }
 
@@ -138,13 +146,13 @@ internal sealed class SettingsPage : Page
 
     private static void Show(UIElement element, bool visible) => element.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
 
-    /// <summary>Shows a message, hidden while it is empty; a screen reader hears it when it appears.</summary>
-    private static void Say(TextBlock block, string text)
+    /// <summary>Shows a message, hidden while it is empty; a screen reader hears it when it appears, unless <paramref name="announce"/> is false.</summary>
+    private static void Say(TextBlock block, string text, bool announce = true)
     {
         if (block.Text == text) return;
         block.Text = text;
         Show(block, text.Length > 0);
-        if (text.Length > 0) Announce(block);
+        if (announce && text.Length > 0) Announce(block);
     }
 
     private static void Announce(UIElement element) =>
@@ -174,8 +182,7 @@ internal sealed class SettingsPage : Page
     {
         for (int i = 0; i < panels.Length; i++) panels[i].Visibility = i == index ? Visibility.Visible : Visibility.Collapsed;
         shownSection = index;
-        if (index != LightingSection) return;
-        lightingDue = true;
+        // The Lighting section is checked afresh as it comes on screen, and leaving it lets its next showing do the same.
         SyncLighting();
     }
 
@@ -495,32 +502,52 @@ internal sealed class SettingsPage : Page
     }
 
     /// <summary>
-    /// Lighting: Enable lighting, the OpenRGB location with Browse…, the folder warning, and the programs that would fight DeadWare
-    /// over the lights. Changes go through <see cref="MonitorSession.SetLightingAsync"/>, which saves them and starts, restarts or
-    /// stops the lighting client.
+    /// Lighting: Enable lighting with the lighting client's problem beside it, the OpenRGB location with Browse…, the folder message,
+    /// and the programs that would fight DeadWare over the lights. Changes go through <see cref="MonitorSession.SetLightingAsync"/>,
+    /// which saves them and starts, restarts or stops the lighting client.
     /// </summary>
     private StackPanel Lighting()
     {
         var panel = Section();
         AutomationProperties.SetName(lightingEnabled, "Enable lighting");
-        lightingEnabled.Toggled += async (_, _) => { if (!syncing && !lightingBusy) await ToggleLightingAsync(); };
-        lightingReason.VerticalAlignment = VerticalAlignment.Center;
-        panel.Children.Add(new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12, Children = { lightingEnabled, lightingReason } });
-        panel.Children.Add(lightingError);
+        lightingEnabled.Toggled += async (_, _) =>
+        {
+            if (syncing) return;
+            // A change under way takes no other. Disabling the switch meanwhile would take its focus, so it stays enabled and goes
+            // back to the choice being applied.
+            if (lightingBusy) { ShowLightingChoice(); return; }
+            await ToggleLightingAsync();
+        };
+        // Beside the switch: why it is disabled, the lighting client's problem, whose words say what to do here, and a failed change.
+        var toggleMessages = new StackPanel { Spacing = 4, VerticalAlignment = VerticalAlignment.Center, Children = { lightingReason, lightingProblem, lightingError } };
+        var toggleRow = new Grid { ColumnSpacing = 12 };
+        toggleRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        toggleRow.ColumnDefinitions.Add(new ColumnDefinition());
+        Grid.SetColumn(toggleMessages, 1);
+        toggleRow.Children.Add(lightingEnabled); toggleRow.Children.Add(toggleMessages);
+        panel.Children.Add(toggleRow);
 
         panel.Children.Add(Heading("OpenRGB location"));
         AutomationProperties.SetName(openRgbLocation, "OpenRGB location");
         browseOpenRgb.Click += async (_, _) => await BrowseOpenRgbAsync();
         browseNote.VerticalAlignment = VerticalAlignment.Center;
-        panel.Children.Add(new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, Children = { openRgbLocation, browseOpenRgb, browseNote } });
+        // The box is 420 wide at most and gives up width to a note beside Browse…, which wraps in the row rather than running off it.
+        var location = new Grid { ColumnSpacing = 8 };
+        location.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star), MaxWidth = 420 });
+        location.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        location.ColumnDefinitions.Add(browseNoteColumn);
+        Grid.SetColumn(browseOpenRgb, 1); Grid.SetColumn(browseNote, 2);
+        location.Children.Add(openRgbLocation); location.Children.Add(browseOpenRgb); location.Children.Add(browseNote);
+        panel.Children.Add(location);
         panel.Children.Add(Muted("DeadWare is tested with OpenRGB 1.0rc3."));
         panel.Children.Add(protectionWarning);
 
         panel.Children.Add(Heading("Conflicts"));
         panel.Children.Add(conflictLines);
 
-        // Polite live regions, so a screen reader reads a failed change, a refused pick or the folder warning without moving focus.
-        foreach (var message in new[] { lightingError, browseNote, protectionWarning })
+        // Polite live regions, so a screen reader reads a lighting problem, a failed change, a note beside Browse… or the folder
+        // message without moving focus.
+        foreach (var message in new[] { lightingProblem, lightingError, browseNote, protectionWarning })
         {
             AutomationProperties.SetLiveSetting(message, Microsoft.UI.Xaml.Automation.Peers.AutomationLiveSetting.Polite);
             message.Visibility = Visibility.Collapsed;
@@ -528,46 +555,63 @@ internal sealed class SettingsPage : Page
         return panel;
     }
 
-    private bool LightingShown => loaded && shownSection == LightingSection;
+    private bool LightingShown => loaded && windowShowing && shownSection == LightingSection;
 
     /// <summary>
     /// Reflects the lighting choices into the section. While it is on screen it also follows the conflicts and checks the folder
-    /// again when the path changes; just after it comes on screen, it checks the folder again and, with lighting off, rescans.
+    /// again when the path changes. As it comes on screen (the section is chosen, the page opens or the dashboard comes back from
+    /// the tray), it checks the folder again and, with lighting off, rescans.
     /// </summary>
     private void SyncLighting()
     {
         SyncLightingControls();
-        if (!LightingShown) return;
-        bool shown = lightingDue;
-        lightingDue = false;
-        RefreshProtection(force: shown);
-        FollowConflicts(rescan: shown);
+        bool onScreen = LightingShown, cameOn = onScreen && !lightingOnScreen;
+        lightingOnScreen = onScreen;
+        if (!onScreen) return;
+        RefreshProtection(force: cameOn);
+        FollowConflicts(rescan: cameOn);
     }
 
-    /// <summary>The toggle, its reason, the location and Browse… as the saved choices and a change under way leave them.</summary>
+    /// <summary>The switch and its messages, the location and Browse… as the saved choices, the lighting client and a change under way leave them.</summary>
     private void SyncLightingControls()
     {
         string? path = session.Settings.OpenRgbPath;
-        lightingEnabled.IsEnabled = path is not null && !lightingBusy;
+        lightingEnabled.IsEnabled = path is not null;
         Show(lightingReason, path is null);
-        browseOpenRgb.IsEnabled = !lightingBusy;
+        // The client's problem, such as a host that couldn't be started or stopped too often, shows for as long as it lasts.
+        Say(lightingProblem, session.Lighting?.Problem ?? "", announce: LightingShown);
+        // Browse… waits while a change from the switch is under way. During its own change it stays enabled, so it keeps its focus,
+        // and ignores clicks.
+        browseOpenRgb.IsEnabled = !lightingBusy || browsing;
         if (openRgbLocation.Text == (path ?? "")) return;
         openRgbLocation.Text = path ?? "";
         ToolTipService.SetToolTip(openRgbLocation, path);
     }
 
-    private void SetLightingBusy(bool busy)
+    private void SetLightingBusy(bool busy, bool browse = false)
     {
         lightingBusy = busy;
+        browsing = busy && browse;
         SyncLightingControls();
     }
 
-    /// <summary>Saves the toggle's choice, which starts or stops lighting. The toggle stays disabled until the change returns.</summary>
+    /// <summary>Puts the switch back to the saved choice without saving it again: the guard skips the change this raises.</summary>
+    private void ShowLightingChoice()
+    {
+        syncing = true;
+        try { lightingEnabled.IsOn = session.Settings.LightingEnabled; }
+        finally { syncing = false; }
+    }
+
+    /// <summary>
+    /// Saves the switch's choice, which starts or stops lighting. Until the change returns the switch takes no other choice, and a
+    /// scan due because lighting went off waits, since the host may still be stopping.
+    /// </summary>
     private async Task ToggleLightingAsync()
     {
         bool enabled = lightingEnabled.IsOn;
         SetLightingBusy(true);
-        Say(lightingError, ""); Say(browseNote, "");
+        Say(lightingError, ""); SayBesideBrowse("");
         try { await session.SetLightingAsync(enabled, session.Settings.OpenRgbPath); }
         catch (Exception error) { Say(lightingError, $"Lighting couldn't be changed: {error.Message}"); }
         finally { SetLightingBusy(false); Sync(); }
@@ -575,72 +619,98 @@ internal sealed class SettingsPage : Page
 
     /// <summary>
     /// Browse…: takes only an OpenRGB.exe whose path the settings file would keep, and saves it with the current choice to enable
-    /// lighting, which restarts lighting on the new path when it is on. Any other file changes nothing.
+    /// lighting, which restarts lighting on the new path when it is on. Any other file changes nothing. A refused file, a picker
+    /// that fails and a change that fails are all reported beside the button.
     /// </summary>
     private async Task BrowseOpenRgbAsync()
     {
         if (lightingBusy) return;
-        SetLightingBusy(true);
-        Say(lightingError, ""); Say(browseNote, "");
+        SetLightingBusy(true, browse: true);
+        Say(lightingError, ""); SayBesideBrowse("");
         try
         {
-            Windows.Storage.StorageFile? file;
+            string? path;
             try
             {
-                var picker = new Windows.Storage.Pickers.FileOpenPicker();
+                // The Windows App SDK's picker, which also works while DeadWare runs as administrator, as lighting often needs.
+                var picker = new Microsoft.Windows.Storage.Pickers.FileOpenPicker(Microsoft.UI.Win32Interop.GetWindowIdFromWindow(App.WindowHandle));
                 picker.FileTypeFilter.Add(".exe");
-                WinRT.Interop.InitializeWithWindow.Initialize(picker, App.WindowHandle);
-                file = await picker.PickSingleFileAsync();
+                path = (await picker.PickSingleFileAsync())?.Path;
             }
-            catch (Exception error) { Say(lightingError, $"The file picker couldn't open: {error.Message}"); return; }
-            if (file is null) return;
-            string path = file.Path;
+            catch (Exception error) { SayBesideBrowse($"The file picker couldn't open: {error.Message}"); return; }
+            if (path is null) return;
             if (!string.Equals(Path.GetFileName(path), "OpenRGB.exe", StringComparison.OrdinalIgnoreCase) || !SettingsCodec.IsSafeOpenRgbPath(path))
             {
-                Say(browseNote, "Choose OpenRGB.exe.");
+                SayBesideBrowse("Choose OpenRGB.exe.");
                 return;
             }
             string? before = session.Settings.OpenRgbPath;
             try { await session.SetLightingAsync(session.Settings.LightingEnabled, path); }
-            catch (Exception error) { Say(lightingError, $"Lighting couldn't be changed: {error.Message}"); }
+            catch (Exception error) { SayBesideBrowse($"Lighting couldn't be changed: {error.Message}"); }
             // A new path is checked as soon as it is saved; picking the same path again checks its folder again too.
             RefreshProtection(force: session.Settings.OpenRgbPath == before);
         }
         finally { SetLightingBusy(false); Sync(); }
     }
 
+    /// <summary>A message beside Browse…, hidden while empty. While one shows, its column shares the row with the location box, so it wraps.</summary>
+    private void SayBesideBrowse(string text)
+    {
+        browseNoteColumn.Width = text.Length > 0 ? new GridLength(1, GridUnitType.Star) : GridLength.Auto;
+        Say(browseNote, text);
+    }
+
     /// <summary>
     /// Checks, off the UI thread, whether programs without administrator rights can change the chosen OpenRGB folder: when
-    /// <paramref name="force"/> asks, and whenever the path has changed since the last check.
+    /// <paramref name="force"/> asks, and whenever the path has changed since the last check. Each check walks the whole tree and
+    /// can't be stopped, so while one for the same path is still running, its answer is awaited rather than another started.
     /// </summary>
     private void RefreshProtection(bool force)
     {
         string? path = session.Settings.OpenRgbPath;
         if (!force && path == protectionFor) return;
-        // Another path's warning doesn't apply to this one. The same path's stays until the new check replaces it.
-        if (path != protectionFor) Show(protectionWarning, false);
+        // Another path's message doesn't apply to this one. The same path's stays until the new check replaces it.
+        if (path != protectionFor) Say(protectionWarning, "");
         protectionFor = path;
-        int run = ++protectionRun;
-        if (path is not null) _ = CheckProtectionAsync(path, run);
+        if (path is not null && protectionChecks.Add(path)) _ = CheckProtectionAsync(path);
     }
 
-    private async Task CheckProtectionAsync(string path, int run)
+    private async Task CheckProtectionAsync(string path)
     {
-        bool exposed;
+        string text;
         // It reads the permissions of the folder, everything in it and every parent, so it stays off the UI thread.
-        try { exposed = !(await Task.Run(() => InstallLocation.Check(Path.GetDirectoryName(Path.GetFullPath(path))!))).Protected; }
-        // A check that fails can't show that the folder is safe.
-        catch (Exception) { exposed = true; }
-        if (run != protectionRun || (protectionWarning.Visibility == Visibility.Visible) == exposed) return;
-        Show(protectionWarning, exposed);
-        if (exposed) Announce(protectionWarning);
+        try { text = ProtectionText(await Task.Run(() => InstallLocation.Check(Path.GetDirectoryName(Path.GetFullPath(path))!))); }
+        catch (Exception error) { text = CantCheckText(error.Message); }
+        finally { protectionChecks.Remove(path); }
+        // The answer counts only while its path is still the chosen one.
+        if (path == protectionFor) Say(protectionWarning, text);
     }
+
+    /// <summary>
+    /// The folder check in words: nothing when only administrators can change the folder, and the warning to move OpenRGB when other
+    /// programs can. A folder that is missing, unreadable, on a network drive or reached through a link can't be judged, so its
+    /// reason is shown instead of a warning about permissions that weren't the problem.
+    /// </summary>
+    private static string ProtectionText(LocationProtection protection)
+    {
+        if (protection.Protected) return "";
+        string reason = protection.Reason ?? "";
+        // InstallLocation.Evaluate's reasons for an entry it couldn't judge. Its other reasons name an owner or a rule that lets other
+        // programs change the folder, and those, or a reason not known here, get the warning.
+        bool unjudged = (reason.StartsWith("Permissions for ", StringComparison.Ordinal) && reason.Contains(" could not be read: ", StringComparison.Ordinal))
+            || reason.EndsWith(" is not on a local drive.", StringComparison.Ordinal) || reason.EndsWith(" is a link or junction.", StringComparison.Ordinal)
+            || reason == "No folder permissions were checked.";
+        return unjudged ? CantCheckText(reason) : ProtectionWarningText;
+    }
+
+    private static string CantCheckText(string reason) => $"DeadWare can't check this OpenRGB folder: {reason}";
 
     /// <summary>
     /// Follows what would fight DeadWare over the lights. While lighting is on that is the host's own list: only the host knows
     /// which OpenRGB it started, and a local scan would call that one foreign. While lighting is off, the running programs are
     /// scanned here, off the UI thread, when <paramref name="rescan"/> asks (the section has come on screen) and when lighting has
-    /// just been turned off. Nothing scans on a timer.
+    /// been turned off. Such a scan waits until a change under way has returned: turning lighting off returns once the host has
+    /// stopped, so a scan taken sooner could find its OpenRGB. Nothing scans on a timer.
     /// </summary>
     private void FollowConflicts(bool rescan)
     {
@@ -651,10 +721,16 @@ internal sealed class SettingsPage : Page
             followingHost = host;
             scanned = null;
             scanFailed = false;
+            scanOwed = false;
             scanRun++;
             rescan = true;
         }
-        if (rescan && !host) _ = ScanConflictsAsync();
+        if (rescan && !host) scanOwed = true;
+        if (scanOwed && !host && !lightingBusy)
+        {
+            scanOwed = false;
+            _ = ScanConflictsAsync();
+        }
         ShowConflicts();
     }
 
@@ -670,28 +746,50 @@ internal sealed class SettingsPage : Page
         ShowConflicts();
     }
 
-    /// <summary>
-    /// The conflicts, blocking ones first in the caution colour and then the rest, whose descriptions say they don't block lighting;
-    /// otherwise that nothing was found, that the check is under way, or that it failed. Rebuilt only when the lines change.
-    /// </summary>
+    /// <summary>The conflict lines, rebuilt only when they change.</summary>
     private void ShowConflicts()
     {
-        var client = session.Lighting;
-        // The host's list once it has sent a state; null while it connects or relaunches, or before the first local scan returns.
-        IReadOnlyList<LightingConflict>? list = client is null ? scanned : client.State is { } state ? state.Conflicts ?? [] : null;
-        (string Text, bool Caution)[] lines;
-        if (client is null && scanFailed) lines = [(ScanFailedText, true)];
-        else if (list is null) lines = [(CheckingConflictsText, false)];
-        else
-        {
-            var found = list.Where(conflict => conflict is { Description.Length: > 0 }).OrderByDescending(conflict => conflict.BlocksLighting).ToArray();
-            lines = found.Length == 0 ? [(NoConflictsText, false)] : [.. found.Select(conflict => (conflict.Description, conflict.BlocksLighting))];
-        }
+        var lines = ConflictLines();
         if (conflictsShown is not null && conflictsShown.SequenceEqual(lines)) return;
         conflictsShown = lines;
         conflictLines.Children.Clear();
         foreach (var (text, caution) in lines) conflictLines.Children.Add(caution ? Caution(text) : Muted(text));
     }
+
+    /// <summary>
+    /// What to say about conflicts. With lighting off: the local scan's conflicts, or that nothing was found, that the scan is under
+    /// way or that it failed. With lighting on: the host's list. When it lists nothing, only a running host has found nothing, since
+    /// it runs only after a clean scan; a blocked host couldn't scan; and before it runs the host hasn't said. With no state the host
+    /// is connecting or relaunching, unless a problem has stopped the client, and then nothing checks until lighting is turned off
+    /// and on: a scan here could call the host's own OpenRGB foreign.
+    /// </summary>
+    private (string Text, bool Caution)[] ConflictLines()
+    {
+        if (session.Lighting is not { } client)
+        {
+            if (scanFailed) return [(ScanFailedText, true)];
+            if (scanned is null) return [(CheckingConflictsText, false)];
+            var found = Listed(scanned);
+            return found.Length > 0 ? found : [(NoConflictsText, false)];
+        }
+        if (client.State is not { } state) return [(client.Problem is { Length: > 0 } ? HostNotRunningText : CheckingConflictsText, false)];
+        var listed = Listed(state.Conflicts);
+        if (listed.Length > 0) return listed;
+        return state.Status switch
+        {
+            HostStatus.Running => [(NoConflictsText, false)],
+            HostStatus.Blocked => [(HostScanFailedText, true)],
+            // Starting, perhaps before its first scan; waiting for OpenRGB; without a working OpenRGB; or stopping.
+            _ => [(CheckingConflictsText, false)],
+        };
+    }
+
+    /// <summary>
+    /// The conflicts that have a description, blocking ones first in the caution colour, then the rest, whose descriptions say they
+    /// don't block lighting.
+    /// </summary>
+    private static (string Text, bool Caution)[] Listed(IReadOnlyList<LightingConflict>? conflicts) =>
+        [.. (conflicts ?? []).Where(conflict => conflict is { Description.Length: > 0 }).OrderByDescending(conflict => conflict.BlocksLighting).Select(conflict => (conflict.Description, conflict.BlocksLighting))];
 
     /// <summary>The banner above the sections: a startup result or failure, and a running or failed clear.</summary>
     private void UpdateStatus()
