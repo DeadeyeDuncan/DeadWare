@@ -94,8 +94,9 @@ jobs:
           } finally { if (-not $process.HasExited) { $process.Kill($true); $process.WaitForExit(15000) | Out-Null } }
 
           # 3. The ported pages open and quit cleanly on the real collector, and Sensors fills its table. Process monitoring is off
-          #    by default and Network needs per-app capture, so those two tables may be empty on a fresh runner.
-          foreach ($page in 'sensors', 'processes', 'network', 'storage', 'battery', 'updates', 'alerts', 'cooling', 'desktop', 'usage', 'connections') {
+          #    by default and Network needs per-app capture, so those two tables may be empty on a fresh runner. Lighting is off
+          #    there too, so its page opens in its off state and starts no DeadWare.Devices.exe.
+          foreach ($page in 'sensors', 'processes', 'network', 'storage', 'battery', 'updates', 'alerts', 'cooling', 'lighting', 'desktop', 'usage', 'connections') {
             $process = Start-Shell @('--page', $page, '--exit-after', '15')
             try {
               if (-not $process.WaitForExit(90000)) { throw "The shell did not quit within 90 s of --page $page --exit-after 15." }

@@ -8,18 +8,22 @@ using Windows.Graphics;
 namespace DeadWare.WinUI;
 
 /// <summary>
-/// The dashboard window: the twelve destinations and hide-to-tray on close. Its solid background and title bar colours
+/// The dashboard window: the thirteen destinations and hide-to-tray on close. Its solid background and title bar colours
 /// come from <see cref="WindowManager.Place"/>, as every window's do.
 /// </summary>
 public sealed partial class MainWindow : Window
 {
-    /// <summary>The WPF dashboard's destinations, in its order and with its labels.</summary>
-    private static readonly (string Key, string Label, Symbol Icon)[] Destinations =
+    /// <summary>
+    /// The WPF dashboard's destinations, in its order and with its labels, and Lighting after Cooling Health. A glyph, where an
+    /// entry has one, is a Segoe Fluent Icons character shown instead of the symbol: the Symbol set has no light bulb.
+    /// </summary>
+    private static readonly (string Key, string Label, Symbol Icon, string? Glyph)[] Destinations =
     [
-        ("overview", "Overview", Symbol.Home), ("network", "Network", Symbol.World), ("storage", "Storage", Symbol.SaveLocal),
-        ("processes", "Processes", Symbol.AllApps), ("connections", "Connections", Symbol.Globe), ("battery", "Battery history", Symbol.Clock),
-        ("usage", "Usage history", Symbol.Calendar), ("alerts", "Alerts", Symbol.Important), ("sensors", "Sensors", Symbol.List),
-        ("cooling", "Cooling Health", Symbol.Repair), ("desktop", "Settings", Symbol.Setting), ("updates", "Updates", Symbol.Sync),
+        ("overview", "Overview", Symbol.Home, null), ("network", "Network", Symbol.World, null), ("storage", "Storage", Symbol.SaveLocal, null),
+        ("processes", "Processes", Symbol.AllApps, null), ("connections", "Connections", Symbol.Globe, null), ("battery", "Battery history", Symbol.Clock, null),
+        ("usage", "Usage history", Symbol.Calendar, null), ("alerts", "Alerts", Symbol.Important, null), ("sensors", "Sensors", Symbol.List, null),
+        ("cooling", "Cooling Health", Symbol.Repair, null), ("lighting", "Lighting", default, "\uE82F"), ("desktop", "Settings", Symbol.Setting, null),
+        ("updates", "Updates", Symbol.Sync, null),
     ];
 
     private readonly Dictionary<string, (NavigationViewItem Item, Page Page)> pages = [];
@@ -56,9 +60,9 @@ public sealed partial class MainWindow : Window
         string icon = Path.Combine(AppContext.BaseDirectory, "deadware.ico");
         if (File.Exists(icon)) AppWindow.SetIcon(icon);
 
-        foreach (var (key, label, symbol) in Destinations)
+        foreach (var (key, label, symbol, glyph) in Destinations)
         {
-            var item = new NavigationViewItem { Content = label, Icon = new SymbolIcon(symbol), Tag = key };
+            var item = new NavigationViewItem { Content = label, Icon = glyph is null ? new SymbolIcon(symbol) : new FontIcon { Glyph = glyph }, Tag = key };
             Page page = key switch
             {
                 "overview" => new OverviewPage(session),
@@ -69,6 +73,7 @@ public sealed partial class MainWindow : Window
                 "updates" => new UpdatesPage(session, quit),
                 "alerts" => new AlertsPage(session),
                 "cooling" => new CoolingPage(session),
+                "lighting" => new LightingPage(session) { NavigateRequested = Navigate },
                 "usage" => new UsagePage(session),
                 "connections" => new ConnectionsPage(session),
                 "desktop" => new SettingsPage(session, quit) { NavigateRequested = Navigate },
