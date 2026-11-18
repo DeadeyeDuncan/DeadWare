@@ -1,4 +1,7 @@
 using System.Diagnostics;
+using System.Runtime.InteropServices;
+using System.Text;
+using Microsoft.Win32.SafeHandles;
 namespace DeadWare.Core;
 public sealed record RunningProcess(int Id,string Name,string? Path);
 public enum ConflictKind{DeadLight,ForeignOpenRgb,ICue,CorsairService,LegacyCorsairService}
@@ -15,7 +18,7 @@ public static class LightingConflicts
         }
         return found;
     }
-    // The running processes for Find: the lighting host's scan and Settings' check while lighting is off. A process that exits while it is listed is left out; a protected one refuses MainModule, so its path is just unknown.
+    // The running processes for Find: the lighting host's scan and Settings' check while lighting is off. A process that exits while it is listed is left out; one whose path can't be read has a null path.
     public static IReadOnlyList<RunningProcess> RunningProcesses()
     {
         var processes=Process.GetProcesses();
@@ -26,18 +29,35 @@ public static class LightingConflicts
             {
                 string name;
                 try{name=p.ProcessName;}catch{continue;}
-                // Only electron (DeadLight's install path) and OpenRGB need a path; reading modules of every process is slow and often denied.
-                string? path=null;
-                if(name.Equals("electron",StringComparison.OrdinalIgnoreCase)||name.Equals("OpenRGB",StringComparison.OrdinalIgnoreCase))
-                    try{path=p.MainModule?.FileName;}catch{}
                 int id;
                 try{id=p.Id;}catch{continue;}
+                // Only electron (DeadLight's install path) and OpenRGB need a path. It is read with limited query access, which works across
+                // elevation (Task 4): MainModule needs VM read access, so a DeadLight running as administrator was invisible to a scan without it.
+                string? path=null;
+                if(name.Equals("electron",StringComparison.OrdinalIgnoreCase)||name.Equals("OpenRGB",StringComparison.OrdinalIgnoreCase)) path=ImagePath(id);
                 list.Add(new(id,name,path));
             }
             return list;
         }
         finally{foreach(var p in processes) p.Dispose();}
     }
+    // A process's image path (QueryFullProcessImageName with PROCESS_QUERY_LIMITED_INFORMATION, as UpdateCore's InstallProcesses reads
+    // it), or null when the process is gone or can't be opened.
+    public static string? ImagePath(int pid)
+    {
+        using var process=OpenProcess(0x1000,false,pid);
+        if(process.IsInvalid) return null;
+        string? path=Query(process,1024,out int error);
+        return path is null&&error==122?Query(process,32_768,out _):path;
+    }
+    static string? Query(SafeProcessHandle process,int capacity,out int error)
+    {
+        var path=new StringBuilder(capacity);int size=capacity;
+        if(QueryFullProcessImageName(process,0,path,ref size)){error=0;return path.ToString();}
+        error=Marshal.GetLastWin32Error();return null;
+    }
+    [DllImport("kernel32.dll",SetLastError=true)] static extern SafeProcessHandle OpenProcess(uint access,[MarshalAs(UnmanagedType.Bool)]bool inherit,int pid);
+    [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true,EntryPoint="QueryFullProcessImageNameW")] [return:MarshalAs(UnmanagedType.Bool)] static extern bool QueryFullProcessImageName(SafeProcessHandle process,uint flags,StringBuilder name,ref int size);
     static string Bare(string name)=>name.EndsWith(".exe",StringComparison.OrdinalIgnoreCase)?name[..^4]:name;
     static bool Is(string name,string expected)=>string.Equals(name,expected,StringComparison.OrdinalIgnoreCase);
     static LightingConflict? Classify(RunningProcess p,int? ownOpenRgbPid)

@@ -41,6 +41,12 @@ public class LightingConflictsTests
         Assert.Equal(ConflictKind.LegacyCorsairService,c.Kind);
         Assert.False(c.BlocksLighting);
     }
+    // Task 4: paths are read with limited query access (QueryFullProcessImageName), which works across elevation, unlike MainModule: a
+    // DeadLight running as administrator is still recognised by a scan without administrator rights.
+    [Fact] public void Image_path_reader_reads_this_process()
+        =>Assert.Equal(Environment.ProcessPath,LightingConflicts.ImagePath(Environment.ProcessId),ignoreCase:true);
+    [Fact] public void Image_path_reader_gives_null_for_a_process_that_is_gone()
+        =>Assert.Null(LightingConflicts.ImagePath(int.MaxValue-1));
     [Fact] public void Running_processes_list_this_process_by_id_and_name_and_read_no_path_for_it()
     {
         using var self=Process.GetCurrentProcess();
