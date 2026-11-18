@@ -34,9 +34,9 @@ internal static class Program
         {
             var configDir="";string? failure=null;
             try{configDir=ProtectedFolders.OpenRgbConfigDirectory();}
-            catch(Exception e){failure=e.Message;log.Write("openrgb config folder unavailable: "+e.Message);}
+            catch(Exception e){failure=e.Message;log.Write("openrgb config folder unavailable: "+e.Message+(e is UnprotectedFolderException{Reason:{} why}?" ("+why+")":""));}
             var options=new HostOptions(openRgbPath,configDir,lightingPath,logDir,startup,sid,session);
-            var engine=new OpenRgbEngine(options.OpenRgbPath,configDir,new SystemProcessRunner(),OpenRgbEngine.ProbePort,TimeProvider.System,log);
+            var engine=new OpenRgbEngine(options.OpenRgbPath,configDir,new SystemProcessRunner(),OpenRgbEngine.ProbePort,TimeProvider.System,log,ProtectedFolders.OpenRgbFolderCheck(Environment.IsPrivilegedProcess));
             await using var host=new DeviceHost(options,new LightingStore(lightingPath),engine,()=>new OpenRgbSession(),new ProcessConflictScanner(),TimeProvider.System,log,failure);
             await using var server=new HostPipeServer(DeviceHostProtocol.PipeName(sid),host.HandleAsync,log);
             host.Initialize(); // settings are loaded before the pipe accepts a single request

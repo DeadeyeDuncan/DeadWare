@@ -71,9 +71,9 @@ public sealed class DeviceHostTests : IAsyncLifetime
     static readonly LightingConflict DeadLight=new(ConflictKind.DeadLight,"DeadLight is running.",true);
 
     // beforeHost gets the engine before the host subscribes to it, so a handler it adds runs ahead of the host's own.
-    DeviceHost Build(bool startup=false,string? exePath=null,Action<OpenRgbEngine>? beforeHost=null)
+    DeviceHost Build(bool startup=false,string? exePath=null,Action<OpenRgbEngine>? beforeHost=null,Func<string,DeadWare.UpdateCore.LocationProtection>? folderCheck=null)
     {
-        var engine=new OpenRgbEngine(exePath??exe,@"C:\cfg",runner,(_,_)=>Task.FromResult(true),time,log);
+        var engine=new OpenRgbEngine(exePath??exe,@"C:\cfg",runner,(_,_)=>Task.FromResult(true),time,log,folderCheck);
         beforeHost?.Invoke(engine);
         var scanner=new Scanner(_=>{Interlocked.Increment(ref scans);Volatile.Read(ref scanHold)?.Park();lock(conflicts)return conflicts.ToList();});
         var options=new HostOptions(exePath??exe,@"C:\cfg",lightingPath,Path.Combine(dir,"logs"),startup,"S-1-5-21-1",1);
@@ -180,6 +180,16 @@ public sealed class DeviceHostTests : IAsyncLifetime
         await Advance(TimeSpan.FromSeconds(1));
         await Until(()=>Volatile.Read(ref scans)>0);
         await Until(()=>h.State.Status==HostStatus.Running);
+    }
+
+    // Ruling AM through the host: an elevated host whose OpenRGB folder is refused reports OpenRgbFailed with the remedy, never starting it.
+    [Fact]
+    public async Task Refused_openrgb_folder_reports_OpenRgbFailed_with_the_remedy()
+    {
+        var h=Build(folderCheck:_=>new DeadWare.UpdateCore.LocationProtection(false,"writable"));Start(h);
+        await Until(()=>h.State.Status==HostStatus.OpenRgbFailed);
+        Assert.Equal(OpenRgbEngine.UnprotectedFolderText,h.State.Message);
+        Assert.Equal(0,runner.Count);
     }
 
     [Fact]

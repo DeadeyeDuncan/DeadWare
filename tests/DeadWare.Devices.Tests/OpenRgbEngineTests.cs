@@ -146,6 +146,35 @@ public sealed class OpenRgbEngineTests : IDisposable
         Assert.Equal(1,runner.Count);
     }
 
+    // Ruling AM: an elevated host never runs an OpenRGB.exe whose folder programs without administrator rights can change. The refusal is
+    // final for this engine (no relaunch, not counted as a crash) and gives the plain remedy.
+    [Fact]
+    public async Task Refused_openrgb_folder_fails_without_starting_or_relaunching()
+    {
+        string? checkedPath=null;
+        await using var e=new OpenRgbEngine(exe,@"C:\cfg",runner,(_,_)=>Task.FromResult(true),time,log,
+            folderCheck:path=>{checkedPath=path;return new DeadWare.UpdateCore.LocationProtection(false,@"C:\Users\Public can be changed by S-1-5-32-545.");});
+        await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
+        Assert.Equal(EngineStatus.Failed,e.Status);
+        Assert.Equal(OpenRgbEngine.UnprotectedFolderText,e.FailureReason);
+        Assert.Equal(exe,checkedPath);
+        await Advance(TimeSpan.FromSeconds(60),TimeSpan.FromSeconds(1));
+        Assert.Equal(0,runner.Count);
+        Assert.Equal(EngineStatus.Failed,e.Status);
+    }
+
+    // The non-elevated path: no check at all, or a folder that passes it, starts OpenRGB as before.
+    [Fact]
+    public async Task Protected_openrgb_folder_starts_as_before()
+    {
+        var checks=0;
+        await using var e=new OpenRgbEngine(exe,@"C:\cfg",runner,(_,_)=>Task.FromResult(true),time,log,folderCheck:_=>{checks++;return new DeadWare.UpdateCore.LocationProtection(true);});
+        await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
+        Assert.Equal(EngineStatus.Running,e.Status);
+        Assert.Equal(1,runner.Count);
+        Assert.Equal(1,checks);
+    }
+
     [Fact]
     public async Task Throwing_changed_handler_does_not_stop_restarts()
     {

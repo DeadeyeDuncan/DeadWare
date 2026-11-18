@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Net.Sockets;
 using DeadWare.Core;
+using DeadWare.UpdateCore;
 
 namespace DeadWare.Devices;
 
@@ -28,8 +29,11 @@ internal sealed class OpenRgbEngine : IAsyncDisposable
     EngineStatus status=EngineStatus.Stopped;
     int? processId;
     string? failureReason;
-    public OpenRgbEngine(string exePath,string configDir,IProcessRunner runner,Func<int,CancellationToken,Task<bool>> portOpen,TimeProvider time,HostLog log)
-    {this.exePath=exePath;this.configDir=configDir;this.runner=runner;this.portOpen=portOpen;this.time=time;this.log=log;}
+    public const string UnprotectedFolderText=@"The OpenRGB folder can be changed by programs without administrator rights, so DeadWare won't run it as administrator. Copy OpenRGB to C:\Program Files\OpenRGB and choose it in Settings → Lighting.";
+    readonly Func<string,LocationProtection>? folderCheck;
+    // folderCheck: an elevated host's check of OpenRGB's folder (Ruling AM), run before every launch; null when the host isn't elevated.
+    public OpenRgbEngine(string exePath,string configDir,IProcessRunner runner,Func<int,CancellationToken,Task<bool>> portOpen,TimeProvider time,HostLog log,Func<string,LocationProtection>? folderCheck=null)
+    {this.exePath=exePath;this.configDir=configDir;this.runner=runner;this.portOpen=portOpen;this.time=time;this.log=log;this.folderCheck=folderCheck;}
     public static IReadOnlyList<string> Arguments(string configDir)=>["--server","--server-port",Port.ToString(CultureInfo.InvariantCulture),"--noautoconnect","--config",configDir];
     public int? ProcessId{get{lock(gate)return processId;}}
     public EngineStatus Status{get{lock(gate)return status;}}
@@ -60,6 +64,9 @@ internal sealed class OpenRgbEngine : IAsyncDisposable
             while(!quitting)
             {
                 Set(EngineStatus.Starting,null);
+                // Outside the lock: the check walks OpenRGB's whole folder. A refusal is final for this engine and isn't a crash, so it
+                // is neither retried nor counted in the backoff.
+                if(Refused()){Set(EngineStatus.Failed,UnprotectedFolderText);return;}
                 IRunningProcess? proc=null;
                 try
                 {
@@ -94,6 +101,16 @@ internal sealed class OpenRgbEngine : IAsyncDisposable
         }
         catch(OperationCanceledException){}
         finally{firstAttempt.TrySetResult();}
+    }
+
+    bool Refused()
+    {
+        if(folderCheck is null) return false;
+        LocationProtection verdict;
+        try{verdict=folderCheck(exePath);}catch(Exception e){verdict=new(false,e.Message);}
+        if(verdict.Protected) return false;
+        log.Write("openrgb folder refused: "+verdict.Reason);
+        return true;
     }
 
     async Task<bool> WaitForPort(IRunningProcess proc,CancellationToken ct)
