@@ -450,6 +450,80 @@ public sealed class DeviceHostTests : IAsyncLifetime
         cts.Cancel();
     }
 
+    // Ruling AO: OpenRGB.NET waits for every reply with no timeout, and the host calls it under its one lock. A call that never returns is
+    // cut off at BoundedSession.CallBound (real time) and the session is dropped, so the host answers again within that bound: here a
+    // request that queued behind the hung call on the lock.
+    [Fact]
+    public async Task Hung_OpenRGB_call_cannot_freeze_the_host()
+    {
+        var h=await Running();
+        session.HangWhen=call=>call=="ReadControllers";
+        await AdvanceUntil(()=>session.Hanging); // the next slow tick's rescan hangs while it holds the lock
+        var state=Assert.IsType<StateEvent>(await Task.Run(()=>h.HandleAsync(new GetStateRequest{Id=4})).WaitAsync(RealTimeCap));
+        Assert.Equal(HostStatus.Waiting,state.State.Status);
+        Assert.Contains("reconnecting",state.State.Message);
+        Assert.True(session.Aborts>=1);
+        session.HangWhen=null;
+        await AdvanceUntil(()=>h.State.Status==HostStatus.Running); // the next tick reconnects
+    }
+
+    [Fact]
+    public async Task Stop_is_answered_while_an_OpenRGB_call_hangs()
+    {
+        var h=await Running();
+        session.HangWhen=call=>call=="UpdateLeds";
+        await AdvanceUntil(()=>session.Hanging); // the next refresh hangs in its first LED write
+        var reply=Assert.IsType<Reply>(await Task.Run(()=>h.HandleAsync(new StopRequest{Id=3})).WaitAsync(RealTimeCap));
+        Assert.True(reply.Ok);
+        await run!.WaitAsync(RealTimeCap);
+        Assert.True(runner.At(0).Killed);
+    }
+
+    [Fact]
+    public async Task Conflict_gate_closes_after_a_hung_OpenRGB_call()
+    {
+        var h=await Running();
+        session.HangWhen=call=>call=="ReadControllers";
+        await AdvanceUntil(()=>session.Hanging);
+        lock(conflicts)conflicts.Add(DeadLight);
+        await Until(()=>!session.Hanging); // cut off at the bound
+        session.HangWhen=null;
+        await AdvanceUntil(()=>h.State.Status==HostStatus.Blocked);
+        await Until(()=>runner.At(0).Killed);
+    }
+
+    // An OpenRGB that dies while a call waits on it releases that call at once and is relaunched: supervision never waits on the lock behind it.
+    [Fact]
+    public async Task OpenRGB_exit_releases_a_hung_call_and_is_relaunched()
+    {
+        var h=await Running();
+        session.HangWhen=call=>call=="ReadControllers";
+        await AdvanceUntil(()=>session.Hanging);
+        runner.At(0).Exit();
+        await Until(()=>!session.Hanging);
+        session.HangWhen=null;
+        await Until(()=>h.State.Status==HostStatus.Waiting);
+        await Elapse(RestartBackoff.Base);
+        await AdvanceUntil(()=>runner.Count==2&&h.State.Status==HostStatus.Running);
+    }
+
+    // Ruling AO: the OpenRGB.NET client is dropped whenever OpenRGB restarts or stops, so its read loop can't spin on a closed socket.
+    [Fact]
+    public async Task OpenRGB_restarting_or_stopping_drops_the_client()
+    {
+        var h=await Running();
+        var before=session.Aborts;
+        runner.At(0).Exit();
+        await Until(()=>h.State.Status==HostStatus.Waiting);
+        Assert.True(session.Aborts>before);
+        await Elapse(RestartBackoff.Base);
+        await AdvanceUntil(()=>runner.Count==2&&h.State.Status==HostStatus.Running);
+        before=session.Aborts;
+        lock(conflicts)conflicts.Add(DeadLight);
+        await AdvanceUntil(()=>h.State.Status==HostStatus.Blocked);
+        await Until(()=>runner.At(1).Killed&&session.Aborts>before);
+    }
+
     [Fact]
     public async Task Stop_kills_engine_and_ends_RunAsync()
     {

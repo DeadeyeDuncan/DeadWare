@@ -90,7 +90,7 @@ public sealed class LightingDeviceServiceTests : IDisposable
         session.Reorder(l=>{var x=l.ToList();var d=x[3];x.RemoveAt(3);x.Insert(0,d);return x;});
         Assert.True(svc.Rescan());
         Assert.Equal(0,IndexOf(Hid));
-        session.Leds.Clear();Ms(1000);svc.Paint(s);
+        session.ClearLeds();Ms(1000);svc.Paint(s);
         var w=Assert.Single(session.Leds,l=>l.Colors.Length==112);
         Assert.Equal(0,w.Index);
     }

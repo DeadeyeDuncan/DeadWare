@@ -13,27 +13,33 @@ internal interface IOpenRgbSession : IDisposable
     IReadOnlyList<OpenRgbController> ReadControllers();
     void UpdateLeds(int index,ReadOnlySpan<Rgb> colors);
     void UpdateMode(int index,int modeIndex,IReadOnlyList<Rgb>? colors);
+    // Drops the connection from any thread, without the host's lock: a call waiting on OpenRGB fails at once. Safe to call again.
+    void Abort();
     event Action? DeviceListUpdated;
 }
 
 // Thin OpenRGB.NET adapter. OpenRGB.NET 3.1.1 reads all controllers from OpenRGB 1.0rc3 at protocol V4.
+// Its requests wait for OpenRGB's reply with no timeout, so the host bounds every call (BoundedSession) and Abort ends one that waits:
+// disposing the client cancels the wait and closes the socket, which also ends a blocked send. Each call works on the client it started
+// with, so a call abandoned by a timeout never reaches the client of a later connection.
 internal sealed class OpenRgbSession : IOpenRgbSession
 {
     public const int Port=6744;
     public const string ClientName="DeadWare";
     OpenRgbClient? client;
     public event Action? DeviceListUpdated;
-    public bool Connected=>client?.Connected==true;
+    public bool Connected=>Volatile.Read(ref client)?.Connected==true;
     public void Connect()
     {
-        Detach();
+        Abort();
         var c=new OpenRgbClient(OpenRgbEngine.Host,Port,ClientName,autoConnect:false);
         c.DeviceListUpdated+=OnUpdated;
-        client=c;
+        Volatile.Write(ref client,c);
         c.Connect();
     }
     void OnUpdated(object? s,EventArgs e)=>DeviceListUpdated?.Invoke();
-    OpenRgbClient Client=>client??throw new InvalidOperationException("OpenRGB session is not connected");
+    // Gone after an Abort: reported as a disposed connection, so the caller treats it as the session ending, not as one device failing.
+    OpenRgbClient Client=>Volatile.Read(ref client)??throw new ObjectDisposedException(nameof(OpenRgbSession),"The OpenRGB session is not connected.");
     public IReadOnlyList<OpenRgbController> ReadControllers()
     {
         var all=Client.GetAllControllerData();
@@ -58,16 +64,18 @@ internal sealed class OpenRgbSession : IOpenRgbSession
         =>requested is not {Count:>0}||modeColorCount<=0?null:Enumerable.Repeat(requested[0],modeColorCount).ToArray();
     public void UpdateMode(int index,int modeIndex,IReadOnlyList<Rgb>? colors)
     {
+        var c=Client;
         Rgb[]? shaped=null;
-        if(colors is {Count:>0}) shaped=ModeColors(colors,Client.GetControllerData(index).Modes[modeIndex].Colors.Length);
-        Client.UpdateMode(index,modeIndex,colors:shaped?.Select(c=>new Color(c.R,c.G,c.B)).ToArray());
+        if(colors is {Count:>0}) shaped=ModeColors(colors,c.GetControllerData(index).Modes[modeIndex].Colors.Length);
+        c.UpdateMode(index,modeIndex,colors:shaped?.Select(x=>new Color(x.R,x.G,x.B)).ToArray());
     }
-    void Detach()
+    // Exactly one caller takes a client out, so each is disposed once; a second Dispose of OpenRGB.NET's connection would throw.
+    public void Abort()
     {
-        var c=client;client=null;
+        var c=Interlocked.Exchange(ref client,null);
         if(c is null) return;
         c.DeviceListUpdated-=OnUpdated;
-        c.Dispose();
+        try{c.Dispose();}catch(Exception){}
     }
-    public void Dispose()=>Detach();
+    public void Dispose()=>Abort();
 }

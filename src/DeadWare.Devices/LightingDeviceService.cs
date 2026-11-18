@@ -67,6 +67,8 @@ internal sealed class LightingDeviceService
             foreach(var d in devices)
             {
                 try{PaintDevice(settings,d);lastError.Remove(d.Key);}
+                // The connection is gone, not this device: the caller drops the session and every device is repainted after it reconnects.
+                catch(OpenRgbSessionLostException){throw;}
                 catch(Exception e)
                 {
                     lastSent.Remove(d.Key);applied.Remove(d.Key);directSet.Remove(d.Key);

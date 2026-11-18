@@ -8,9 +8,11 @@ internal interface IConflictScanner { IReadOnlyList<LightingConflict> Scan(int? 
 
 // Orchestrates the host: settings, conflict gate, OpenRGB engine, device painting and the window's requests.
 // Concurrency: ONE lock (gate) guards every touch of settings, the device service, the session flag and the status.
-// Callers are the run loop, pipe requests and engine events on the supervisor thread; all their work under the lock is short
-// and synchronous. Engine start/stop, conflict scans and StateChanged subscribers run OUTSIDE the lock, so the lock never nests
-// with the engine's own lock the wrong way round and a slow subscriber cannot stall painting.
+// Callers are the run loop, pipe requests and engine events on the supervisor thread. Their work under the lock is synchronous and
+// includes OpenRGB SDK calls, which OpenRGB.NET leaves unbounded: BoundedSession cuts each one off at BoundedSession.CallBound and drops
+// the session, so no one waits on the lock longer than that (Ruling AO). The session is also dropped, outside the lock, whenever
+// OpenRGB stops, so a call waiting on a dead OpenRGB fails at once. Engine start/stop, conflict scans and StateChanged subscribers run
+// OUTSIDE the lock, so the lock never nests with the engine's own lock the wrong way round and a slow subscriber cannot stall painting.
 internal sealed class DeviceHost : IAsyncDisposable
 {
     public static readonly TimeSpan Tick=TimeSpan.FromMilliseconds(500),SlowTick=TimeSpan.FromSeconds(5),StartupDelay=TimeSpan.FromSeconds(10);
@@ -18,6 +20,7 @@ internal sealed class DeviceHost : IAsyncDisposable
     public const string ScanFailedText="DeadWare couldn't check for conflicting programs; it will try again shortly.";
     public const string UnreadableNote="Your lighting settings file couldn't be read, so changes won't be saved until DeadWare restarts.";
     public const string QuarantineNote="Your lighting settings file was damaged, so DeadWare set it aside and started with defaults.";
+    public const string LostText="Lost the connection to OpenRGB; reconnecting.";
     readonly HostOptions options;
     readonly LightingStore store;
     readonly OpenRgbEngine engine;
@@ -41,10 +44,11 @@ internal sealed class DeviceHost : IAsyncDisposable
     public event Action<HostState>? StateChanged;
 
     // startupFailure: set when the host could not prepare OpenRGB's config folder; it reports OpenRgbFailed and never starts OpenRGB.
-    public DeviceHost(HostOptions options,LightingStore store,OpenRgbEngine engine,Func<IOpenRgbSession> sessionFactory,IConflictScanner conflicts,TimeProvider time,HostLog log,string? startupFailure=null)
+    // callClock: the clock of the bound on OpenRGB calls; real time unless a test supplies one.
+    public DeviceHost(HostOptions options,LightingStore store,OpenRgbEngine engine,Func<IOpenRgbSession> sessionFactory,IConflictScanner conflicts,TimeProvider time,HostLog log,string? startupFailure=null,TimeProvider? callClock=null)
     {
         this.options=options;this.store=store;this.engine=engine;scanner=conflicts;this.time=time;this.log=log;this.startupFailure=startupFailure;
-        session=sessionFactory();
+        session=new BoundedSession(sessionFactory(),callClock);
         service=new(session,time,log);
         session.DeviceListUpdated+=OnDeviceListUpdated;
         engine.Changed+=OnEngineChanged;
@@ -107,6 +111,7 @@ internal sealed class DeviceHost : IAsyncDisposable
         {
             lock(gate){status=HostStatus.Stopping;engineActive=false;}
             log.Write("host stopping");
+            session.Abort();
             try{await engine.StopAsync().ConfigureAwait(false);}catch(Exception e){log.Write("engine stop failed: "+e.Message);}
             log.Write("host stopped");
         }
@@ -165,7 +170,8 @@ internal sealed class DeviceHost : IAsyncDisposable
             else if(!engineActive){engineActive=true;start=true;status=HostStatus.Starting;message="";changed=true;}
         }
         if(changed) Raise();
-        if(stop) await engine.StopAsync().ConfigureAwait(false);
+        // The client goes before the OpenRGB it talks to, so nothing waits on a process being killed.
+        if(stop){session.Abort();await engine.StopAsync().ConfigureAwait(false);}
         if(start) await engine.StartAsync(ct).ConfigureAwait(false);
     }
 
@@ -190,7 +196,7 @@ internal sealed class DeviceHost : IAsyncDisposable
                     service.Paint(settings);
                 }
             }
-            catch(Exception e){changed=FailSession("Lost the connection to OpenRGB; reconnecting.",e);}
+            catch(Exception e){changed=FailSession(LostText,e);}
         }
         if(changed) Raise();
     }
@@ -217,10 +223,12 @@ internal sealed class DeviceHost : IAsyncDisposable
         connectDelay=TimeSpan.FromTicks(Math.Min(connectDelay.Ticks*2,ConnectDelayMax.Ticks));
     }
 
-    // Logs and reports a session failure only when it is new, so a wedged OpenRGB cannot spam the log or the window.
+    // Logs and reports a session failure only when it is new, so a wedged OpenRGB cannot spam the log or the window. The connection is
+    // dropped too (Ruling AO): the next tick reconnects with a fresh one, and a dead client's read loop never lingers.
     bool FailSession(string text,Exception e)
     {
         sessionOk=false;
+        session.Abort();
         var changed=status!=HostStatus.Waiting||message!=text;
         status=HostStatus.Waiting;message=text;
         if(lastSessionError!=e.Message){lastSessionError=e.Message;changed=true;log.Write("openrgb session error: "+e.Message);}
@@ -247,12 +255,16 @@ internal sealed class DeviceHost : IAsyncDisposable
     void OnEngineChanged()
     {
         var raise=true;
+        // Not running any more (or not yet): drop the client before taking the lock, so a call waiting on that OpenRGB fails now and frees
+        // the lock, and a dead client's read loop can't spin on a closed socket (Ruling AO).
+        if(engine.Status!=EngineStatus.Running) session.Abort();
         lock(gate)
         {
             if(!engineActive||status==HostStatus.Stopping) return;
             switch(engine.Status)
             {
-                // sessionOk is cleared whenever OpenRGB stops, so if it is set here a loop tick has already connected to this process: connect once.
+                // sessionOk is cleared whenever OpenRGB stops, so if it is set here a loop tick has already connected to this process: connect
+                // once. The connect is bounded like every OpenRGB call, so the supervisor waits here at most a few seconds.
                 case EngineStatus.Running:connectDelay=ConnectDelayMin;nextConnectAt=0;if(!sessionOk) ConnectLocked();if(!sessionOk) ArmBackoff();break;
                 case EngineStatus.Restarting:
                     sessionOk=false;status=HostStatus.Waiting;message="OpenRGB is restarting. Lighting will resume in a moment.";break;
@@ -289,7 +301,7 @@ internal sealed class DeviceHost : IAsyncDisposable
             case RescanRequest:
                 if(!engineActive||!sessionOk||status!=HostStatus.Running) return Fail(request,"OpenRGB is not running.");
                 try{RescanLocked();service.Paint(settings);raise=true;return Ok(request);}
-                catch(Exception e){sessionOk=false;log.Write("rescan failed: "+e.Message);return Fail(request,"rescan failed");}
+                catch(Exception e){FailSession(LostText,e);raise=true;return Fail(request,"rescan failed");}
             case SetLightsOnRequest r:return Mutate(request,s=>{s.LightsOn=r.On;return null;},out raise);
             case SetBrightnessRequest r:return Mutate(request,s=>{if(r.Percent is<0 or>100) return "Brightness must be 0 to 100.";s.Brightness=r.Percent;return null;},out raise);
             case SetAllColorsRequest r:
@@ -333,7 +345,7 @@ internal sealed class DeviceHost : IAsyncDisposable
         settings=candidate;
         if(engineActive&&sessionOk&&status==HostStatus.Running)
         {
-            try{service.Paint(settings);}catch(Exception e){sessionOk=false;log.Write("paint failed: "+e.Message);}
+            try{service.Paint(settings);}catch(Exception e){FailSession(LostText,e);}
         }
         raise=true;
         return Ok(request);
