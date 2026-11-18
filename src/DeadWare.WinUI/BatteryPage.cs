@@ -261,20 +261,26 @@ internal sealed class BatteryPage : Page
     private async Task ExportAsync()
     {
         int days = Days;
-        var picker = new Windows.Storage.Pickers.FileSavePicker { SuggestedFileName = $"DeadWare-battery-{DateTime.Now:yyyyMMdd-HHmmss}" };
-        picker.FileTypeChoices.Add("CSV files", [".csv"]);
-        WinRT.Interop.InitializeWithWindow.Initialize(picker, App.WindowHandle);
-        var file = await picker.PickSaveFileAsync();
-        if (file is null) return;
+        string? path;
+        try
+        {
+            // The Windows App SDK's picker, which also works while DeadWare runs as administrator. It adds no extension unless given a default one.
+            var picker = new Microsoft.Windows.Storage.Pickers.FileSavePicker(Microsoft.UI.Win32Interop.GetWindowIdFromWindow(App.WindowHandle))
+                { SuggestedFileName = $"DeadWare-battery-{DateTime.Now:yyyyMMdd-HHmmss}", DefaultFileExtension = ".csv" };
+            picker.FileTypeChoices.Add("CSV files", [".csv"]);
+            path = (await picker.PickSaveFileAsync())?.Path;
+        }
+        catch (Exception error) { actionStatus.Text = "The save dialog could not be opened. " + error.Message; return; }
+        if (path is null) return;
         export.IsEnabled = false;
         actionStatus.Text = "Exporting saved observations…";
         try
         {
-            // The picker leaves an empty file at a new name, and the export only writes to a name that does not exist yet.
+            // The export only writes to a name that does not exist yet, so an empty file already at the chosen name is removed first.
             // An existing file with content is left alone, so the export refuses it as the WPF app does.
-            if (new FileInfo(file.Path) is { Exists: true, Length: 0 }) File.Delete(file.Path);
-            await session.Battery.ExportCsvAsync(file.Path, days);
-            actionStatus.Text = "Export saved: " + file.Path;
+            if (new FileInfo(path) is { Exists: true, Length: 0 }) File.Delete(path);
+            await session.Battery.ExportCsvAsync(path, days);
+            actionStatus.Text = "Export saved: " + path;
         }
         catch (Exception error) { actionStatus.Text = "Export could not be saved. Choose a new file name. " + error.Message; }
         finally { export.IsEnabled = true; }

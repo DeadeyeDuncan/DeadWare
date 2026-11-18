@@ -457,24 +457,25 @@ internal sealed class CoolingPage : Page
     private async Task ExportAsync()
     {
         if (SelectedDevice is not { } selected || operationBusy) return;
-        Windows.Storage.StorageFile? file;
+        string? path;
         try
         {
-            var picker = new Windows.Storage.Pickers.FileSavePicker { SuggestedFileName = $"DeadWare-{DateTime.Now:yyyy-MM-dd-HHmmss}-thermal" };
+            // The Windows App SDK's picker, which also works while DeadWare runs as administrator. It adds no extension unless given a default one.
+            var picker = new Microsoft.Windows.Storage.Pickers.FileSavePicker(Microsoft.UI.Win32Interop.GetWindowIdFromWindow(App.WindowHandle))
+                { SuggestedFileName = $"DeadWare-{DateTime.Now:yyyy-MM-dd-HHmmss}-thermal", DefaultFileExtension = ".csv" };
             picker.FileTypeChoices.Add("CSV files", [".csv"]);
-            WinRT.Interop.InitializeWithWindow.Initialize(picker, App.WindowHandle);
-            file = await picker.PickSaveFileAsync();
+            path = (await picker.PickSaveFileAsync())?.Path;
         }
         catch (Exception error) { ShowAction(error.Message); return; }
-        if (file is null) return;
+        if (path is null) return;
         await RunOperationAsync(async () =>
         {
-            // The picker leaves an empty file at a new name, and the store only writes to a name that does not exist yet.
+            // The store only writes to a name that does not exist yet, so an empty file already at the chosen name is removed first.
             // An existing file with content is kept unchanged, as in the WPF app.
-            if (new FileInfo(file.Path) is { Exists: true, Length: 0 }) File.Delete(file.Path);
-            if (File.Exists(file.Path)) throw new InvalidOperationException("That file already exists. Export again with a new file name; existing files are kept unchanged.");
-            int count = await session.Cooling.ExportAsync(selected, displayedFrom, displayedTo, file.Path);
-            return $"Exported {count:N0} history windows to {file.Path}.";
+            if (new FileInfo(path) is { Exists: true, Length: 0 }) File.Delete(path);
+            if (File.Exists(path)) throw new InvalidOperationException("That file already exists. Export again with a new file name; existing files are kept unchanged.");
+            int count = await session.Cooling.ExportAsync(selected, displayedFrom, displayedTo, path);
+            return $"Exported {count:N0} history windows to {path}.";
         });
     }
 
