@@ -35,6 +35,8 @@ public sealed class MonitorSession
     /// <summary>The lighting host's client; null while lighting is off or no OpenRGB path is set.</summary>
     internal DeviceHostClient? Lighting {get;private set;}
     private readonly SemaphoreSlim lightingGate=new(1,1);
+    // Shared by every lighting client, so a host is never launched within 4 s of the previous one's exit, even across a toggle or a new path.
+    private readonly HostLaunchPacer lightingPacer=new(TimeProvider.System);
     // Set when Quit begins: a lighting change that gets the gate afterwards starts nothing.
     private volatile bool lightingClosed;
     public string SettingsStatus {get;private set;}="";
@@ -126,7 +128,7 @@ public sealed class MonitorSession
             Changed?.Invoke();
         };
     }
-    private DeviceHostClient NewLightingClient()=>new(Settings.OpenRgbPath!,new DeviceHostLauncher(),DeviceHostPipe.ConnectAsync,TimeProvider.System,Environment.IsPrivilegedProcess);
+    private DeviceHostClient NewLightingClient()=>new(Settings.OpenRgbPath!,new DeviceHostLauncher(),DeviceHostPipe.ConnectAsync,TimeProvider.System,Environment.IsPrivilegedProcess,lightingPacer);
     /// <param name="signIn">True when Windows launched DeadWare at sign-in; the lighting host then waits before touching devices.</param>
     public void Start(bool signIn=false)
     {

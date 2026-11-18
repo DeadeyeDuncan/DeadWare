@@ -107,8 +107,8 @@ public class DeviceHostClientTests:IAsyncLifetime
         public void Close() {lock(pipes)foreach(var pipe in pipes)pipe.Dispose();}
     }
     readonly Clock time=new();readonly FakeLauncher launcher=new();readonly FakeHost host=new();readonly List<DeviceHostClient> clients=new();
-    DeviceHostClient Make(Func<CancellationToken,Task<Stream>>? connect=null,bool elevated=false)
-    {var client=new DeviceHostClient(Exe,launcher,connect??host.Connect,time,elevated);clients.Add(client);return client;}
+    DeviceHostClient Make(Func<CancellationToken,Task<Stream>>? connect=null,bool elevated=false,HostLaunchPacer? pacer=null)
+    {var client=new DeviceHostClient(Exe,launcher,connect??host.Connect,time,elevated,pacer);clients.Add(client);return client;}
     public Task InitializeAsync()=>Task.CompletedTask;
     /// <summary>Disposes every client within <see cref="Bound"/>, so a teardown stuck on the fake clock fails its test instead of hanging the run.</summary>
     public async Task DisposeAsync() {try {foreach(var client in clients)await client.DisposeAsync().AsTask().WaitAsync(Bound);} finally {host.Close();}}
@@ -233,6 +233,41 @@ public class DeviceHostClientTests:IAsyncLifetime
         Assert.False(stop.IsFaulted);
         await client.StopAsync().WaitAsync(Bound);
         await client.DisposeAsync().AsTask().WaitAsync(Bound);
+    }
+    /// <summary>
+    /// Ruling AP: turning lighting off and on, or choosing another OpenRGB, retires one client and starts another. The new client never
+    /// launches a host sooner than 4 s after the old host exited, since OpenRGB restarted faster than USB handles are released can detect
+    /// devices but not write to them.
+    /// </summary>
+    [Fact] public async Task A_new_client_launches_no_sooner_than_four_seconds_after_the_last_host_exited()
+    {
+        var pacer=new HostLaunchPacer(time);
+        var process=new FakeProcess();launcher.Running=process;
+        host.Answer=m=>{if(m is StopRequest)process.Exit();return m is GetStateRequest?FakeHost.Answers(m):[new Reply(true,null){Id=m.Id}];};
+        var first=Make(pacer:pacer);
+        await first.StartAsync(false,CancellationToken.None);
+        await Until(()=>first.State is not null);
+        await first.StopAsync().WaitAsync(Bound);
+        await first.DisposeAsync().AsTask().WaitAsync(Bound);
+        Assert.False(process.Killed);
+        launcher.Running=null;
+        var second=Make(_=>Task.FromException<Stream>(new IOException("no pipe")),pacer:pacer);
+        await second.StartAsync(false,CancellationToken.None);
+        await Until(()=>time.Waiting(RestartBackoff.Base),"the launch pacing");
+        time.Advance(RestartBackoff.Base-Tick);await Settle();
+        Assert.Equal(0,launcher.Launched);
+        time.Advance(Tick);
+        await Until(()=>launcher.Launched==1);
+    }
+    [Fact] public async Task Stop_during_the_launch_pacing_launches_nothing()
+    {
+        var pacer=new HostLaunchPacer(time);pacer.HostExited();
+        var client=Make(_=>Task.FromException<Stream>(new IOException("no pipe")),pacer:pacer);
+        await client.StartAsync(false,CancellationToken.None);
+        await Until(()=>time.Waiting(RestartBackoff.Base),"the launch pacing");
+        await client.StopAsync().WaitAsync(Bound);
+        time.Advance(TimeSpan.FromMinutes(1));await Settle();
+        Assert.Equal(0,launcher.Launched);
     }
     [Fact] public async Task Stop_does_not_kill_a_host_that_exits()
     {

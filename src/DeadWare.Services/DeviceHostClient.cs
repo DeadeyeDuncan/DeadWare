@@ -27,14 +27,15 @@ internal sealed class DeviceHostClient : IAsyncDisposable
     static readonly TimeSpan RetryDelay=TimeSpan.FromMilliseconds(500),ReplyTimeout=TimeSpan.FromSeconds(5),ExitTimeout=TimeSpan.FromSeconds(5);
     static readonly Reply NotConnected=new(false,"The lighting helper isn't connected."),NoAnswer=new(false,"The lighting helper didn't answer.");
     sealed class Conn(Stream stream) {public readonly Stream Stream=stream;public readonly SemaphoreSlim Write=new(1,1);public readonly Dictionary<long,TaskCompletionSource<Reply>> Pending=new();public bool Dead,Checked;}
-    readonly string openRgbPath;readonly IDeviceHostLauncher launcher;readonly Func<CancellationToken,Task<Stream>> connect;readonly TimeProvider time;readonly bool windowElevated;
+    readonly string openRgbPath;readonly IDeviceHostLauncher launcher;readonly Func<CancellationToken,Task<Stream>> connect;readonly TimeProvider time;readonly bool windowElevated;readonly HostLaunchPacer pacer;
     readonly object gate=new();readonly RestartBackoff backoff=new();
     readonly CancellationTokenSource lifetime=new();readonly CancellationTokenSource pacing;readonly TaskCompletionSource disposed=new(TaskCreationOptions.RunContinuationsAsynchronously);
     CancellationTokenRegistration startToken;
     // stopWindow: the running stop's 5 s window; stopSent: its one StopRequest has been claimed, by the stop or by a connection registered after it began.
     IDeviceHostProcess? process;Conn? conn;HostState? state;string? problem;Task? loop,stopTask;CancellationTokenSource? stopWindow;bool stopping,stopSent,disposing,startupPending;long nextId;
-    public DeviceHostClient(string openRgbPath,IDeviceHostLauncher launcher,Func<CancellationToken,Task<Stream>> connect,TimeProvider time,bool windowElevated=false)
-    {this.windowElevated=windowElevated;this.openRgbPath=openRgbPath;this.launcher=launcher;this.connect=connect;this.time=time;pacing=CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);}
+    /// <param name="pacer">Shared by the session's clients so that no launch follows a host's exit within 4 s; a client of its own by default.</param>
+    public DeviceHostClient(string openRgbPath,IDeviceHostLauncher launcher,Func<CancellationToken,Task<Stream>> connect,TimeProvider time,bool windowElevated=false,HostLaunchPacer? pacer=null)
+    {this.pacer=pacer??new(time);this.windowElevated=windowElevated;this.openRgbPath=openRgbPath;this.launcher=launcher;this.connect=connect;this.time=time;pacing=CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);}
     public HostState? State {get {lock(gate)return state;}}
     public string? Problem {get {lock(gate)return problem;}}
     public event Action? Changed;
@@ -88,7 +89,8 @@ internal sealed class DeviceHostClient : IAsyncDisposable
                     // Deliberate restart, not a crash: not counted in the backoff, but never faster than its base delay.
                     IDeviceHostProcess? old;lock(gate){old=process;process=null;}
                     old?.Dispose();
-                    if(!await Pause(RestartBackoff.Base,ct).ConfigureAwait(false)||!Launch(false))return;
+                    pacer.HostExited();
+                    if(!await PacedLaunchAsync(false,ct).ConfigureAwait(false))return;
                     continue;
                 }
                 if(CurrentProcess is {HasExited:true}) {if(!await ExitedAsync(ct).ConfigureAwait(false))return;continue;}
@@ -107,7 +109,7 @@ internal sealed class DeviceHostClient : IAsyncDisposable
         {
             bool startup;lock(gate){startup=startupPending;startupPending=false;}
             if(launcher.FindRunning() is {} found) {if(!Adopt(found))return false;}
-            else if(!Launch(startup))return false;
+            else if(!await PacedLaunchAsync(startup,ct).ConfigureAwait(false))return false;
         }
         return await Pause(RetryDelay,ct).ConfigureAwait(false);
     }
@@ -116,8 +118,16 @@ internal sealed class DeviceHostClient : IAsyncDisposable
     {
         IDeviceHostProcess? old;lock(gate){old=process;process=null;}
         old?.Dispose();
+        pacer.HostExited();
         if(backoff.RecordFailure(time.GetUtcNow()) is not {} delay) {SetProblem(GaveUpProblem);return false;}
-        return await Pause(delay,ct).ConfigureAwait(false)&&Launch(false);
+        return await Pause(delay,ct).ConfigureAwait(false)&&await PacedLaunchAsync(false,ct).ConfigureAwait(false);
+    }
+    /// <summary>Launches once <see cref="pacer"/> allows it; a stop during the wait launches nothing.</summary>
+    async Task<bool> PacedLaunchAsync(bool startup,CancellationToken ct)
+    {
+        var left=pacer.Remaining();
+        if(left>TimeSpan.Zero&&!await Pause(left,ct).ConfigureAwait(false))return false;
+        return Launch(startup);
     }
     bool Launch(bool startup)
     {
@@ -277,6 +287,8 @@ internal sealed class DeviceHostClient : IAsyncDisposable
             if(running is not null)try {await running.WaitAsync(limit.Token).ConfigureAwait(false);} catch(Exception) {}
             var waited=CurrentProcess;
             await KillAfterAsync(waited,limit.Token).ConfigureAwait(false);
+            // The host has exited or been killed (or never answered on a pipe whose process we couldn't find): the next client waits out the floor.
+            if(waited is not null||send)pacer.HostExited();
             lifetime.Cancel();
             if(running is not null)try {await running.ConfigureAwait(false);} catch(Exception) {}
             // A host adopted after that wait, when the window closed while the loop still ran, would outlive the client.
@@ -306,6 +318,29 @@ internal sealed class DeviceHostClient : IAsyncDisposable
             startToken.Dispose();pacing.Dispose();lifetime.Dispose();
         }
         finally {disposed.TrySetResult();}
+    }
+}
+/// <summary>
+/// Ruling AP: the window never launches a lighting host sooner than <see cref="RestartBackoff.Base"/> after the previous host exited, so
+/// OpenRGB is never restarted faster than USB handles are released (an OpenRGB started too soon detects devices but can't write to them).
+/// One pacer is shared by every client of a session, so the floor also holds across a deliberate stop and start: lighting turned off and
+/// on, another OpenRGB chosen, or the elevation restart.
+/// </summary>
+internal sealed class HostLaunchPacer(TimeProvider time)
+{
+    readonly object gate=new();
+    long? exitedAt;
+    /// <summary>A host this session ran has exited, or has just been stopped or killed.</summary>
+    public void HostExited() {lock(gate)exitedAt=time.GetTimestamp();}
+    /// <summary>How long a launch must still wait; zero when no host has exited within the floor.</summary>
+    public TimeSpan Remaining()
+    {
+        lock(gate)
+        {
+            if(exitedAt is not {} at)return TimeSpan.Zero;
+            var left=RestartBackoff.Base-time.GetElapsedTime(at);
+            return left>TimeSpan.Zero?left:TimeSpan.Zero;
+        }
     }
 }
 /// <summary>Starts and finds the real DeadWare.Devices.exe beside this program.</summary>
