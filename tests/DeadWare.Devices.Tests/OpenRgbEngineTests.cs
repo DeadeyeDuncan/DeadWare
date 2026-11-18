@@ -226,6 +226,29 @@ public sealed class OpenRgbEngineTests : IAsyncLifetime
         Assert.Equal(EngineStatus.Stopped,e.Status);
     }
 
+    // B5: a Stop that lands while the engine checks OpenRGB's folder or writes its settings, the work just before a launch, starts nothing:
+    // the engine looks at the stop again after them, so OpenRGB never runs, even for a moment, beside the program that caused the stop.
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Stop_during_the_checks_before_a_launch_starts_nothing(bool duringFolderCheck)
+    {
+        using var inside=new SemaphoreSlim(0);
+        using var release=new ManualResetEventSlim(false);
+        void Park(){inside.Release();release.Wait(RealTimeCap);}
+        var e=Track(new OpenRgbEngine(exe,@"C:\cfg",runner,(_,_)=>Task.FromResult(true),time,log,
+            folderCheck:_=>{if(duringFolderCheck) Park();return new DeadWare.UpdateCore.LocationProtection(true);},
+            prepareConfig:_=>{if(!duringFolderCheck) Park();}));
+        var start=e.StartAsync(CancellationToken.None);
+        Assert.True(await inside.WaitAsync(RealTimeCap));
+        var stop=e.StopAsync(); // marks the stop at once, then waits for the supervisor still inside the check
+        release.Set();
+        await stop.WaitAsync(RealTimeCap);
+        await start.WaitAsync(RealTimeCap);
+        Assert.Equal(0,runner.Count);
+        Assert.Equal(EngineStatus.Stopped,e.Status);
+    }
+
     [Fact]
     public async Task Stop_during_the_port_wait_kills_it_and_relaunches_nothing()
     {

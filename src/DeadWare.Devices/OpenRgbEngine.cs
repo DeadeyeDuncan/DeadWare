@@ -74,6 +74,8 @@ internal sealed class OpenRgbEngine : IAsyncDisposable
                 // is neither retried nor counted in the backoff.
                 if(Refused()){Set(EngineStatus.Failed,UnprotectedFolderText);return;}
                 if(!Prepared()){Set(EngineStatus.Failed,ConfigFailedText(configDir));return;}
+                // B5: the check and the settings write take a while, and a Stop (a conflict's, say) that lands during them starts nothing.
+                if(quitting||ct.IsCancellationRequested) break;
                 IRunningProcess? proc=null;
                 try
                 {
