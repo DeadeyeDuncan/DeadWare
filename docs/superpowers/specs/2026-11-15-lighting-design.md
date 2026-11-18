@@ -128,7 +128,7 @@ Success looks like this:
 | `DeadWare.Devices.exe` (**new**, headless, no window) | The **device host**. Owns the OpenRGB child process and SDK client, the painter and effects loop, the iCUE LINK hub driver, the Aerox wireless driver, the low-level keyboard hook, the global hotkey, idle and lock watchers, power notifications, and `lighting.json`. |
 | `OpenRGB.exe` (child of the device host) | Drives every lit device except the iCUE LINK hub once phase 5 lands. Started with `--server --server-port 6744 --noautoconnect --config %ProgramData%\DeadWare\openrgb`, the protected folder from Constraints. DeadLight uses port 6742; DeadWare's own config folder keeps the two apart. |
 
-The device host is a separate executable, not a mode of `DeadWare.exe`. That gives a distinct name in Task Manager, simple process detection, and no WinUI start-up in a headless process. It is published self-contained into the same folder as `DeadWare.exe` and shares its runtime files. The package check must still pass.
+The device host is a separate executable, not a mode of `DeadWare.exe`. That gives a distinct name in Task Manager, simple process detection, and no WinUI start-up in a headless process. It is published as one self-contained file, as the updater is, and ships in the same folder as `DeadWare.exe`. It carries its own copy of the .NET runtime inside that file rather than sharing `DeadWare.exe`'s runtime files. The package check must still pass.
 
 ### Lifecycle and supervision
 

@@ -34,11 +34,19 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Updater publish failed. No package produced.' }
     Copy-Item -LiteralPath (Join-Path $helperStage 'DeadWare.Updater.exe') -Destination $stage
     # The lighting device host, published as the updater is: one self-contained file beside DeadWare.exe, which starts it.
-    # Only the executable ships. Its publish also leaves SQLite's native library beside it (a DeadWare.Core dependency the
-    # host never loads); the app's publish has already put the same library in the package.
+    # Only the executable ships. Any other file its publish leaves must already be in the package, byte for byte: today that
+    # is SQLite's native library (a DeadWare.Core dependency the host never loads), which the app's publish staged. Anything
+    # else, such as a native library a new host dependency brings, stops the script rather than being left out unnoticed.
     $devicesStage = Join-Path $artifacts "devices-$buildId"
     & $Dotnet publish 'src/DeadWare.Devices/DeadWare.Devices.csproj' -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true -p:PublishTrimmed=false "-p:Version=$Version" -p:DebugType=None -o $devicesStage --nologo
     if ($LASTEXITCODE -ne 0) { throw 'Lighting host publish failed. No package produced.' }
+    foreach ($file in (Get-ChildItem -LiteralPath $devicesStage -File -Recurse)) {
+        $relative = Get-PathBelow $devicesStage $file.FullName
+        if ($relative -eq 'DeadWare.Devices.exe') { continue }
+        $staged = Join-Path $stage $relative
+        $same = (Test-Path -LiteralPath $staged -PathType Leaf) -and ((Get-FileHash -LiteralPath $staged -Algorithm SHA256).Hash -eq (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash)
+        if (-not $same) { throw "The lighting host's publish also produced $relative, which the package doesn't already hold unchanged. Only DeadWare.Devices.exe is copied from it, so the host would ship without that file. No package produced." }
+    }
     Copy-Item -LiteralPath (Join-Path $devicesStage 'DeadWare.Devices.exe') -Destination $stage
     foreach ($name in @('LICENSE','THIRD-PARTY-NOTICES.md','README.md','CHANGELOG.md')) {
         Copy-Item -LiteralPath (Join-Path $repo $name) -Destination $stage

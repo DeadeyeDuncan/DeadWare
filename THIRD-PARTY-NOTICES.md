@@ -12,9 +12,9 @@ DeadWare's MIT license applies to original DeadWare code. Included dependencies 
 
 - **Windows App SDK 2.6.5** (WinUI 3, `Microsoft.WindowsAppSDK` and its component packages) — Microsoft Corporation; Microsoft Software License Terms. Redistributed unmodified as the app's self-contained interface runtime. The package's `license.txt` and `NOTICE.txt` are included in the release inventory.
 - **Win2D 1.4.0** (`Microsoft.Graphics.Win2D`) — Microsoft Corporation. Redistributed unmodified for drawing the graphs and the map; its license terms are at the address recorded in the bundled package manifest.
-- **Microsoft.Data.Sqlite 10.0.14** — Microsoft and contributors, MIT. **SQLitePCLRaw.bundle_e_sqlite3 3.0.5** and its managed/native dependencies retain their upstream license notices; exact versions, manifests and supplied notices are included in the release inventory. SQLite is public-domain software; see the native package's attribution and bundled license material.
+- **Microsoft.Data.Sqlite 10.0.14** — Microsoft and contributors, MIT. The MIT license text for it and `Microsoft.Data.Sqlite.Core`, whose packages carry no license file, is in `licenses/MICROSOFT-PACKAGES-MIT-LICENSE.txt` and release `licenses/texts/`. **SQLitePCLRaw.bundle_e_sqlite3 3.0.5** and its managed/native dependencies retain their upstream license notices; exact versions, manifests and supplied notices are included in the release inventory. SQLite is public-domain software; see the native package's attribution and bundled license material.
 
-- **Microsoft.Diagnostics.Tracing.TraceEvent**, **Microsoft.Diagnostics.NETCore.Client**, Microsoft.Extensions and System packages — Microsoft Corporation, MIT license. Individual package versions, copyright statements, repositories and notices are preserved in the release inventory and package manifests.
+- **Microsoft.Diagnostics.Tracing.TraceEvent**, **Microsoft.Diagnostics.NETCore.Client**, Microsoft.Extensions and System packages — Microsoft Corporation, MIT license. Individual package versions, copyright statements, repositories and notices are preserved in the release inventory and package manifests. The MIT license text for every Microsoft package in the inventory that carries no license file of its own, among them TraceEvent, NETCore.Client and most System packages, is in `licenses/MICROSOFT-PACKAGES-MIT-LICENSE.txt` and release `licenses/texts/`, which lists them.
 - **.NET runtime** — Microsoft and contributors; MIT and third-party licenses. See `licenses/texts/DOTNET-LICENSE.txt` and `DOTNET-THIRD-PARTY-NOTICES.txt` in a release archive.
 - **Mono.Posix.NETStandard** is a transitive dependency resolved by NuGet. Its manifest and available notices are preserved even where its platform-specific assets are not used on Windows.
 
@@ -26,7 +26,7 @@ DeadWare's MIT license applies to original DeadWare code. Included dependencies 
 
 ## Lighting
 
-- **OpenRGB.NET 3.1.1** — Diogo Trindade (diogotr7); MIT License. Copyright © 2020 Diogo Trindade. Unmodified client library for OpenRGB's network SDK, built into the lighting helper, `DeadWare.Devices.exe`. Source revision `442b448c2ee76c554923918723d47121b6256552`: https://github.com/diogotr7/OpenRGB.NET. Package: https://www.nuget.org/packages/OpenRGB.NET/3.1.1. Its manifest, which records the MIT license, is included in the release inventory.
+- **OpenRGB.NET 3.1.1** — Diogo Trindade (diogotr7); MIT License. Copyright © 2020 Diogo Trindade. Unmodified client library for OpenRGB's network SDK, built into the lighting helper, `DeadWare.Devices.exe`. Source revision `442b448c2ee76c554923918723d47121b6256552`: https://github.com/diogotr7/OpenRGB.NET. Package: https://www.nuget.org/packages/OpenRGB.NET/3.1.1. The package carries no license file, so the MIT license text, with that copyright line, is in `licenses/OPENRGB-NET-LICENSE.txt` and release `licenses/texts/`. Its manifest is included in the release inventory.
 
 OpenRGB itself isn't distributed with DeadWare. DeadWare talks to a copy of OpenRGB that you install, over OpenRGB's network SDK.
 
