@@ -22,7 +22,7 @@
 - **Pipe:** `\\.\pipe\DeadWare.Devices.<sid>`. Access is limited to the current user's SID and BUILTIN\Administrators. Messages are length-prefixed JSON of at most 1 MiB, each carrying protocol version 1.
 - **`%LOCALAPPDATA%\DeadWare\lighting.json`:** written only by the host. Writes go to a temp file that then replaces the original. On every read and write, invalid content is quarantined as `lighting.corrupt-<UTC yyyyMMddTHHmmssZ>.json`. Defaults are lights on, brightness 100 and colour `#4682B4`, DeadLight's steel blue.
 - **`settings.json` (window-owned)** gains only `LightingEnabled` (default `false`) and `OpenRgbPath` (default `null`).
-- **Log:** `%LOCALAPPDATA%\DeadWare\logs\devices.log`, rotating at 2 MiB through 3 files. Write changes only, never a line per tick.
+- **Log:** `%LOCALAPPDATA%\DeadWare\logs\devices.log`, rotating at 2 MiB through 3 files; an elevated host logs to protected `%ProgramData%\DeadWare\logs` instead (Ruling AT, final review). Write changes only, never a line per tick.
 - **Paint pacing**, from DeadLight:
   - refresh time-to-live 400 ms
   - per-device cap of 33 ms, or 200 ms for OpenRGB controller type 1 (DRAM)
@@ -36,8 +36,8 @@
   - `CorsairDeviceControlService.exe` or `CorsairDeviceListerService.exe`
 
   `Corsair.Service.exe` is reported but blocks only the hub driver (step 5). Match by process path where one is available.
-- **Not in step 1:** no hub HID driver (OpenRGB's iCUE Link detector stays enabled), no desk effects, no Aerox driver, no tray item.
-- **Protected folder:** create `%ProgramData%\DeadWare\openrgb` with `ProtectedRoot.Security()`. Check the OpenRGB folder with `InstallLocation.Check` and warn when it isn't protected.
+- **Not in step 1:** no hub HID driver (OpenRGB's iCUE Link detector stays enabled), no desk effects, no Aerox driver, no tray item. OpenRGB's "SteelSeries Aerox 9 Wireless" detector is switched off in its `OpenRGB.json` before every start, as DeadLight does (Ruling AR, final review).
+- **Protected folder:** create `%ProgramData%\DeadWare\openrgb` with `ProtectedRoot.Security()` and check it with `InstallLocation.Check(dir, 1)`, as UpdateCore checks the sibling updates folder (Ruling AL, final review). Check the OpenRGB folder with `InstallLocation.Check` and warn when it isn't protected; an elevated host refuses to run OpenRGB from it (Ruling AM, final review).
 - **Code style:** follow the repository's dense one-line style in Core and Services, and the WinUI pages' code-only construction (no XAML for new pages).
 - **Commits** end with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`. Push the branch after every task. Never tag.
 - **Hardware:** no on-screen automation while the user is gaming. Never launch DeadLight or OpenRGB from a Claude shell, because those shells run inside the Claude app's MSIX container and see shadow copies of AppData.
@@ -461,7 +461,7 @@
 
 - [ ] **Step 1: Build the section:**
   - **Enable lighting** (ToggleSwitch), calling `SetLightingAsync`. It is disabled until an OpenRGB path is set, and the reason is shown beside it.
-  - **OpenRGB location:** a read-only text box and `Browse…`, a `FileOpenPicker` filtered to `OpenRGB.exe` and initialised with the window handle like the other pickers. Below it, the version from `FileVersionInfo.GetVersionInfo(path).ProductVersion`, with a note when it isn't 1.0rc3. Then the protection warning when `InstallLocation.Check(folder).Protected` is false: "Programs running without administrator rights can change this OpenRGB folder. DeadWare runs OpenRGB as administrator, so copy OpenRGB to C:\Program Files\OpenRGB and choose it here."
+  - **OpenRGB location:** a read-only text box and `Browse…`, a `FileOpenPicker` filtered to `OpenRGB.exe` and initialised with the window handle like the other pickers. Below it, the version from `FileVersionInfo.GetVersionInfo(path).ProductVersion`, with a note when it isn't 1.0rc3. Then the protection warning when `InstallLocation.Check(folder).Protected` is false: "Programs running without administrator rights can change this OpenRGB folder. DeadWare runs OpenRGB as administrator, so copy OpenRGB to C:\Program Files\OpenRGB and choose it here." (Reworded in the final fix wave, since an elevated host now refuses such a folder: "Programs running without administrator rights can change this OpenRGB folder, so while DeadWare runs as administrator it won't run OpenRGB from here. Copy OpenRGB to C:\Program Files\OpenRGB and choose it here.")
   - **Conflicts**, read only: `LightingConflicts.Find` over the current process list. Each blocking conflict's description is shown, refreshed when the section is shown. Step 5 adds the DeadLight startup-task status, the Corsair Service start type and iCUE's Run entry; step 1 shows running processes only.
 - [ ] **Step 2: Build:** `dotnet build src/DeadWare.WinUI -c Release`.
 - [ ] **Step 3: Smoke-check through CI.** The existing `desktop` entry in the `winui.yml` page smoke list covers the Settings page; there is no local run.
