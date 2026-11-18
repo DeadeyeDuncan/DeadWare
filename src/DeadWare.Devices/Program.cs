@@ -6,6 +6,10 @@ namespace DeadWare.Devices;
 
 internal static class Program
 {
+    // The host's kill-on-close job (Ruling Z), held in a static field for the life of the process and never disposed: Windows closes the
+    // handle when the host ends, however it ends, and that ends OpenRGB with it.
+    static ProcessJob? job;
+
     // Exit codes: 0 after Stop, 1 unexpected failure, 2 bad arguments, 3 another host already runs in this session, 4 the pipe could not be created.
     private static async Task<int> Main(string[] args)
     {
@@ -35,8 +39,10 @@ internal static class Program
             var configDir="";string? failure=null;
             try{configDir=ProtectedFolders.OpenRgbConfigDirectory();}
             catch(Exception e){failure=e.Message;log.Write("openrgb config folder unavailable: "+e.Message+(e is UnprotectedFolderException{Reason:{} why}?" ("+why+")":""));}
+            try{job=ProcessJob.Create();}
+            catch(Exception e){log.Write("no job object, so OpenRGB may outlive a host that crashes: "+e.Message);}
             var options=new HostOptions(openRgbPath,configDir,lightingPath,logDir,startup,sid,session);
-            var engine=new OpenRgbEngine(options.OpenRgbPath,configDir,new SystemProcessRunner(),OpenRgbEngine.ProbePort,TimeProvider.System,log,ProtectedFolders.OpenRgbFolderCheck(Environment.IsPrivilegedProcess));
+            var engine=new OpenRgbEngine(options.OpenRgbPath,configDir,new SystemProcessRunner(job,log),OpenRgbEngine.ProbePort,TimeProvider.System,log,ProtectedFolders.OpenRgbFolderCheck(Environment.IsPrivilegedProcess));
             await using var host=new DeviceHost(options,new LightingStore(lightingPath),engine,()=>new OpenRgbSession(),new ProcessConflictScanner(),TimeProvider.System,log,failure);
             await using var server=new HostPipeServer(DeviceHostProtocol.PipeName(sid),host.HandleAsync,log);
             host.Initialize(); // settings are loaded before the pipe accepts a single request

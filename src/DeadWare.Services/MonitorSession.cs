@@ -153,16 +153,17 @@ public sealed class MonitorSession
             if(enabled&&openRgbPath is not null)
             {
                 if(current is not null&&!pathChanged&&current.Problem is null)return;
-                if(current is not null)await RetireLightingAsync(current);
+                // A retire that throws still lets go of the old client, so no later change re-awaits its failed stop.
+                if(current is not null)try {await RetireLightingAsync(current);} finally {Lighting=null;}
                 var client=Lighting=NewLightingClient();
                 await client.StartAsync(false,CancellationToken.None);
             }
-            else if(current is not null) {await RetireLightingAsync(current);Lighting=null;}
+            else if(current is not null)try {await RetireLightingAsync(current);} finally {Lighting=null;}
             Changed?.Invoke();
         }
         finally {lightingGate.Release();}
     }
-    private static async Task RetireLightingAsync(DeviceHostClient client) {await client.StopAsync();await client.DisposeAsync();}
+    private static async Task RetireLightingAsync(DeviceHostClient client) {try {await client.StopAsync();} finally {await client.DisposeAsync();}}
     /// <summary>Quit's lighting stop: closes lighting so a change that has not begun starts nothing, waits out the change in flight, then stops the current client.</summary>
     private async Task CloseLightingAsync()
     {

@@ -134,7 +134,8 @@ internal sealed class DeviceHostClient : IAsyncDisposable
         if(track)return true;
         Kill(started);started.Dispose();return false;
     }
-    static void Kill(IDeviceHostProcess p) {try {p.Kill();} catch(Exception e) when(e is Win32Exception or InvalidOperationException) {}}
+    /// <summary>Best effort: a tree kill that fails part-way throws AggregateException, which must never cut a stop or quit short.</summary>
+    static void Kill(IDeviceHostProcess p) {try {p.Kill();} catch(Exception e) when(e is Win32Exception or InvalidOperationException or AggregateException) {}}
     /// <summary>Reads until the pipe closes, the tracked process exits or the client ends. A host that runs without the window's elevation is stopped here, before the pipe closes.</summary>
     async Task<ServeEnd> ServeAsync(Stream stream,CancellationToken ct)
     {
@@ -282,7 +283,12 @@ internal sealed class DeviceHostClient : IAsyncDisposable
             IDeviceHostProcess? late;bool keep;lock(gate){late=process;keep=disposing;}
             if(!keep&&late is not null&&late!=waited&&!late.HasExited)Kill(late);
         }
-        finally {lock(gate)stopWindow=null;window.Dispose();}
+        finally
+        {
+            // Whatever cut the stop short, the connection loop ends with it.
+            try {lifetime.Cancel();} catch(ObjectDisposedException) {}
+            lock(gate)stopWindow=null;window.Dispose();
+        }
     }
     /// <summary>Tears everything down without asking the host to stop; callers wanting the host gone call <see cref="StopAsync"/> first. Safe to call again: a later call waits for the first.</summary>
     public async ValueTask DisposeAsync()
@@ -312,7 +318,8 @@ internal sealed class DeviceHostLauncher : IDeviceHostLauncher
         public bool HasExited {get {try {return process.HasExited;} catch(Exception e) when(e is InvalidOperationException or Win32Exception) {return true;}}}
         public Task WaitForExitAsync(CancellationToken token)=>process.WaitForExitAsync(token);
         // The whole tree: a killed host never ran its own shutdown, so the OpenRGB it started would keep the devices and block the next host.
-        public void Kill() {try {process.Kill(entireProcessTree:true);} catch(Exception e) when(e is InvalidOperationException or Win32Exception) {}}
+        // AggregateException: part of the tree couldn't be ended, such as an OpenRGB the host's job is already ending.
+        public void Kill() {try {process.Kill(entireProcessTree:true);} catch(Exception e) when(e is InvalidOperationException or Win32Exception or AggregateException) {}}
         public void Dispose()=>process.Dispose();
     }
     public IDeviceHostProcess Start(string openRgbPath,bool startup)

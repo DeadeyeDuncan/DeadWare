@@ -17,9 +17,11 @@ public class DeviceHostClientTests:IAsyncLifetime
     {
         readonly TaskCompletionSource exit=new(TaskCreationOptions.RunContinuationsAsynchronously);
         public int Id {get;init;}=1;public volatile bool Killed;
+        /// <summary>The tree kill fails part-way, as .NET reports it: an AggregateException, and the process keeps running.</summary>
+        public bool KillFails {get;init;}
         public bool HasExited=>exit.Task.IsCompleted;
         public Task WaitForExitAsync(CancellationToken token)=>exit.Task.WaitAsync(token);
-        public void Kill() {Killed=true;exit.TrySetResult();}
+        public void Kill() {Killed=true;if(KillFails)throw new AggregateException("Not all processes in the process tree could be terminated.",new System.ComponentModel.Win32Exception(5));exit.TrySetResult();}
         public void Exit()=>exit.TrySetResult();
         public void Dispose() {}
     }
@@ -211,6 +213,26 @@ public class DeviceHostClientTests:IAsyncLifetime
         Assert.True(process.Killed);
         await client.StopAsync().WaitAsync(Bound);
         Assert.Equal(1,host.Count<StopRequest>());
+    }
+    /// <summary>
+    /// A hung host whose tree kill fails part-way, as when the host's job is already ending its OpenRGB: Process.Kill(entireProcessTree:true)
+    /// throws AggregateException. The stop still completes, its cached task never faults, and the client can be disposed.
+    /// </summary>
+    [Fact] public async Task Stop_completes_when_the_tree_kill_fails_part_way()
+    {
+        var process=new FakeProcess{KillFails=true};launcher.Running=process;
+        host.Answer=m=>m is StopRequest?[]:FakeHost.Answers(m);
+        var client=Make();
+        await client.StartAsync(false,CancellationToken.None);
+        await Until(()=>client.State is not null);
+        var stop=client.StopAsync();
+        await Until(()=>host.Saw<StopRequest>());
+        time.Advance(Window);
+        await stop.WaitAsync(Bound);
+        Assert.True(process.Killed);
+        Assert.False(stop.IsFaulted);
+        await client.StopAsync().WaitAsync(Bound);
+        await client.DisposeAsync().AsTask().WaitAsync(Bound);
     }
     [Fact] public async Task Stop_does_not_kill_a_host_that_exits()
     {
