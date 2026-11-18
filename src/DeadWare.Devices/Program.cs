@@ -31,8 +31,10 @@ internal static class Program
         if(!created) return 3;
 
         var root=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"DeadWare");
-        var logDir=Path.Combine(root,"logs");
         var lightingPath=Path.Combine(root,"lighting.json");
+        // Ruling AT: elevated, the log lives in protected %ProgramData%\DeadWare\logs, or nowhere if that folder can't be prepared.
+        string? logDir;
+        try{logDir=ProtectedFolders.LogDirectory();}catch(Exception){logDir=null;}
         using var log=new HostLog(logDir);
         try
         {
@@ -41,9 +43,9 @@ internal static class Program
             catch(Exception e){failure=e.Message;log.Write("openrgb config folder unavailable: "+e.Message+(e is UnprotectedFolderException{Reason:{} why}?" ("+why+")":""));}
             try{job=ProcessJob.Create();}
             catch(Exception e){log.Write("no job object, so OpenRGB may outlive a host that crashes: "+e.Message);}
-            var options=new HostOptions(openRgbPath,configDir,lightingPath,logDir,startup,sid,session);
+            var options=new HostOptions(openRgbPath,configDir,lightingPath,logDir??"",startup,sid,session);
             var engine=new OpenRgbEngine(options.OpenRgbPath,configDir,new SystemProcessRunner(job,log),OpenRgbEngine.ProbePort,TimeProvider.System,log,ProtectedFolders.OpenRgbFolderCheck(Environment.IsPrivilegedProcess));
-            await using var host=new DeviceHost(options,new LightingStore(lightingPath),engine,()=>new OpenRgbSession(),new ProcessConflictScanner(),TimeProvider.System,log,failure);
+            await using var host=new DeviceHost(options,new LightingStore(lightingPath,guardLinks:Environment.IsPrivilegedProcess),engine,()=>new OpenRgbSession(),new ProcessConflictScanner(),TimeProvider.System,log,failure);
             await using var server=new HostPipeServer(DeviceHostProtocol.PipeName(sid),host.HandleAsync,log);
             host.Initialize(); // settings are loaded before the pipe accepts a single request
             try{server.Open();}

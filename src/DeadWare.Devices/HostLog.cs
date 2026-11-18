@@ -3,20 +3,22 @@ using System.Text;
 
 namespace DeadWare.Devices;
 
-// Size-capped rolling log (devices.log, .1, .2): the old lighting app once grew a 23 GB log. Write never throws.
+// Size-capped rolling log (devices.log, .1, .2): the old lighting app once grew a 23 GB log. Write never throws. A null folder logs nowhere:
+// an elevated host whose protected log folder couldn't be prepared never falls back to a folder other programs can change.
 internal sealed class HostLog : IDisposable
 {
     public const long MaxBytes=2_097_152;
     public const int Files=3;
-    readonly string dir;
+    readonly string? dir;
     readonly Func<DateTimeOffset> clock;
     readonly object gate=new();
     long size=-1;
     bool disposed;
-    public HostLog(string directory,Func<DateTimeOffset>? clock=null){dir=directory;this.clock=clock??(()=>DateTimeOffset.UtcNow);}
-    string PathOf(int n)=>Path.Combine(dir,n==0?"devices.log":$"devices.{n}.log");
+    public HostLog(string? directory,Func<DateTimeOffset>? clock=null){dir=directory;this.clock=clock??(()=>DateTimeOffset.UtcNow);}
+    string PathOf(int n)=>Path.Combine(dir!,n==0?"devices.log":$"devices.{n}.log");
     public void Write(string line)
     {
+        if(dir is null) return;
         try
         {
             lock(gate)

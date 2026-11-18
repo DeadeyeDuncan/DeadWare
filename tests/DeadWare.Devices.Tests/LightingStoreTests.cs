@@ -58,6 +58,38 @@ public sealed class LightingStoreTests:IDisposable
         Assert.Equal(json,File.ReadAllText(P));
         Assert.Empty(Directory.GetFiles(dir,"lighting.corrupt-*.json"));
     }
+    // A fresh temporary name per save, as SafeFiles writes update metadata: a planted lighting.json.tmp (here a folder) neither blocks a
+    // save nor receives it.
+    [Fact] public void Save_ignores_a_planted_temporary_file()
+    {
+        Directory.CreateDirectory(P+".tmp");
+        new LightingStore(P).Save(new LightingSettings{Brightness=40});
+        Assert.Equal(40,new LightingStore(P).Load().Settings.Brightness);
+        Assert.Empty(Directory.GetFileSystemEntries(P+".tmp"));
+    }
+    // Ruling AT: an elevated host refuses lighting.json reached through a link or junction (SafeFiles.NoLinks, the updater's defence for
+    // its own %LOCALAPPDATA%\DeadWare writes), so a program without administrator rights can't steer its writes elsewhere.
+    [Fact] public void Guarded_store_refuses_a_path_through_a_junction()
+    {
+        var target=Path.Combine(dir,"target");Directory.CreateDirectory(target);
+        var link=Path.Combine(dir,"link");
+        using(var mklink=System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("cmd.exe"){ArgumentList={"/c","mklink","/J",link,target},CreateNoWindow=true,UseShellExecute=false,RedirectStandardOutput=true})!)
+        {mklink.StandardOutput.ReadToEnd();mklink.WaitForExit();Assert.Equal(0,mklink.ExitCode);}
+        try
+        {
+            var through=Path.Combine(link,"lighting.json");
+            var guarded=new LightingStore(through,guardLinks:true);
+            Assert.ThrowsAny<IOException>(()=>guarded.Save(new LightingSettings{Brightness=40}));
+            Assert.Empty(Directory.GetFileSystemEntries(target));
+            File.WriteAllText(Path.Combine(target,"lighting.json"),"{ not json");
+            Assert.ThrowsAny<IOException>(()=>guarded.Load());
+            Assert.Equal("{ not json",File.ReadAllText(Path.Combine(target,"lighting.json")));
+            // Without the guard (a host without administrator rights) the user's own junction is followed as before.
+            new LightingStore(through).Save(new LightingSettings{Brightness=55});
+            Assert.Equal(55,new LightingStore(through).Load().Settings.Brightness);
+        }
+        finally{Directory.Delete(link);}
+    }
     [Fact] public void Save_refuses_invalid_settings()
     {
         var store=new LightingStore(P);

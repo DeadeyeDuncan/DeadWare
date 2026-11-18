@@ -71,6 +71,37 @@ public sealed class ProtectedFoldersTests
         finally{if(Directory.Exists(standIn)) Directory.Delete(standIn,true);}
     }
 
+    // Ruling AT: a host without administrator rights logs where it always did; only an elevated one moves its log to %ProgramData%.
+    [Fact]
+    public void Unelevated_log_folder_is_local_app_data()
+    {
+        var root=Path.Combine(Path.GetTempPath(),"dw-pf-"+Guid.NewGuid().ToString("N"));
+        try
+        {
+            Assert.Equal(Path.Combine(root,"local","DeadWare","logs"),ProtectedFolders.LogDirectory(false,Path.Combine(root,"pd"),Path.Combine(root,"local")));
+            Assert.False(Directory.Exists(Path.Combine(root,"pd")));
+        }
+        finally{if(Directory.Exists(root)) Directory.Delete(root,true);}
+    }
+
+    // Ruling AT: an elevated host's log goes to %ProgramData%\DeadWare\logs, created protected like the openrgb folder, so a program
+    // without administrator rights can't redirect the host's log writes and rotations through a junction.
+    [ElevatedFact]
+    public void Elevated_log_folder_is_prepared_protected_under_ProgramData()
+    {
+        var standIn=@"C:\dw-pd-"+Guid.NewGuid().ToString("N");
+        var acl=new DirectoryInfo(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData)).GetAccessControl(AccessControlSections.Access);
+        new DirectoryInfo(standIn).Create(acl);
+        try
+        {
+            var dir=ProtectedFolders.LogDirectory(true,standIn,Path.Combine(standIn,"local"));
+            Assert.Equal(Path.Combine(standIn,"DeadWare","logs"),dir);
+            var verdict=InstallLocation.Check(dir,ProtectedFolders.StrictParents);
+            Assert.True(verdict.Protected,verdict.Reason);
+        }
+        finally{if(Directory.Exists(standIn)) Directory.Delete(standIn,true);}
+    }
+
     // Ruling AM: only an elevated host refuses an OpenRGB folder that programs without administrator rights can change.
     [Fact]
     public void Only_an_elevated_host_checks_the_openrgb_folder()

@@ -50,6 +50,16 @@ internal static class ProtectedFolders
     }
     static void Require(LocationProtection verdict,string refusal){if(!verdict.Protected) throw new UnprotectedFolderException(refusal,verdict.Reason);}
 
+    public const string LogRefusal=@"The lighting helper's log folder %ProgramData%\DeadWare\logs isn't restricted to administrators.";
+
+    public static string LogDirectory()=>LogDirectory(Environment.IsPrivilegedProcess,Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData));
+
+    // Ruling AT: an elevated host appends to and rotates its log by fixed names; in user-writable %LOCALAPPDATA% a program without
+    // administrator rights could turn the folder into a junction and have those moves land anywhere, as administrator. So an elevated host
+    // logs to %ProgramData%\DeadWare\logs, created and checked like the openrgb folder. Without administrator rights it logs where it did.
+    internal static string LogDirectory(bool elevated,string commonAppData,string localAppData)
+        =>elevated?Protected(commonAppData,"logs",LogRefusal):Path.Combine(localAppData,"DeadWare","logs");
+
     // The folder holding OpenRGB.exe must not be writable either, or a planted DLL there runs elevated.
     public static LocationProtection CheckOpenRgbFolder(string exePath)=>InstallLocation.Check(Path.GetDirectoryName(Path.GetFullPath(exePath))!);
 

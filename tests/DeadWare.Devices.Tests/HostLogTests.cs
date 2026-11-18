@@ -34,6 +34,13 @@ public sealed class HostLogTests:IDisposable
         using var log2=new HostLog(locked);
         log2.Write("nope");
     }
+    // An elevated host whose protected log folder couldn't be prepared logs nowhere rather than somewhere unprotected.
+    [Fact] public void Log_without_a_folder_writes_nothing_and_never_throws()
+    {
+        using var log=new HostLog(null);
+        log.Write("nowhere");
+        Assert.Empty(Directory.GetFileSystemEntries(dir));
+    }
     [Fact] public void Concurrent_writes_do_not_throw_or_lose_lines()
     {
         using var log=new HostLog(dir);

@@ -177,7 +177,7 @@ The device host is a separate executable, not a mode of `DeadWare.exe`. That giv
   - everyday settings
   - the Aerox settings
 - DeadWare's `settings.json`, written by the window, gains only `LightingEnabled` and `OpenRgbPath`, which the window needs before any host exists.
-- The host keeps a rolling, size-capped log: `%LOCALAPPDATA%\DeadWare\logs\devices.log`, about 2 MB × 3 files, recording changes only. Never a line per frame or per poll.
+- The host keeps a rolling, size-capped log: `devices.log`, 2 MiB × 3 files, recording changes only. Never a line per frame or per poll. A host without administrator rights logs to `%LOCALAPPDATA%\DeadWare\logs`; an elevated host logs to `%ProgramData%\DeadWare\logs`, created with the protected DACL like the openrgb folder, because its fixed-name appends and rotations in a user-writable folder could be redirected through a junction (Ruling AT, final review 2026-11-18). An elevated host also refuses a `lighting.json` path through a link or junction (`SafeFiles.NoLinks`).
 
 ### Devices
 
