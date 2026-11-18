@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using DeadWare.Core;
 using Xunit;
 namespace DeadWare.Tests;
@@ -39,5 +40,13 @@ public class LightingConflictsTests
         var c=Assert.Single(Find(null,new RunningProcess(1,"Corsair.Service",@"C:\Program Files\Corsair\Corsair iCUE5 Software\clink\Corsair.Service.exe")));
         Assert.Equal(ConflictKind.LegacyCorsairService,c.Kind);
         Assert.False(c.BlocksLighting);
+    }
+    [Fact] public void Running_processes_list_this_process_by_id_and_name_and_read_no_path_for_it()
+    {
+        using var self=Process.GetCurrentProcess();
+        var listed=Assert.Single(LightingConflicts.RunningProcesses(),p=>p.Id==Environment.ProcessId);
+        Assert.Equal(self.ProcessName,listed.Name);
+        // Only electron and OpenRGB get a path: reading every process's modules is slow and often denied.
+        Assert.Null(listed.Path);
     }
 }
