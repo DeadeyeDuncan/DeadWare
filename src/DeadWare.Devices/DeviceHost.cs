@@ -290,7 +290,7 @@ internal sealed class DeviceHost : IAsyncDisposable
     {
         HostMessage reply;
         var raise=false;
-        lock(gate)reply=loaded||request is StopRequest?Apply(request,out raise):new Reply(false,"starting"){Id=request.Id};
+        lock(gate)reply=loaded||request is StopRequest?Apply(request,out raise):new Reply(false,HostReplyCodes.Starting){Id=request.Id};
         if(raise) Raise();
         if(request is StopRequest&&reply is Reply{Ok:true}) try{stopCts.Cancel();}catch(ObjectDisposedException){}
         return Task.FromResult(reply);
@@ -308,7 +308,7 @@ internal sealed class DeviceHost : IAsyncDisposable
             case RescanRequest:
                 if(!engineActive||!sessionOk||status!=HostStatus.Running) return Fail(request,"OpenRGB is not running.");
                 try{RescanLocked();service.Paint(settings);raise=true;return Ok(request);}
-                catch(Exception e){FailSession(LostText,e);raise=true;return Fail(request,"rescan failed");}
+                catch(Exception e){FailSession(LostText,e);raise=true;return Fail(request,HostReplyCodes.RescanFailed);}
             case SetLightsOnRequest r:return Mutate(request,s=>{s.LightsOn=r.On;return null;},out raise);
             case SetBrightnessRequest r:return Mutate(request,s=>{if(r.Percent is<0 or>100) return "Brightness must be 0 to 100.";s.Brightness=r.Percent;return null;},out raise);
             case SetAllColorsRequest r:
@@ -322,7 +322,7 @@ internal sealed class DeviceHost : IAsyncDisposable
                     s.ZoneColors=r.ZoneColors.ToDictionary(e=>e.Key,e=>e.Value is null?null!:new ZoneColorEntry{Color=e.Value.Color,ZoneName=e.Value.ZoneName});
                     return null;
                 },out raise);
-            default:return Fail(request,"unsupported");
+            default:return Fail(request,HostReplyCodes.Unsupported);
         }
     }
 
@@ -330,9 +330,9 @@ internal sealed class DeviceHost : IAsyncDisposable
     {
         if(r.Color is null){s.ZoneColors.Remove(r.ZoneKey);return null;}
         if(!Rgb.TryParse(r.Color,out _)) return "Colour must be #RRGGBB.";
-        if(!LightingKeys.TrySplitZone(r.ZoneKey,out var deviceKey,out var index)) return "unknown zone";
+        if(!LightingKeys.TrySplitZone(r.ZoneKey,out var deviceKey,out var index)) return HostReplyCodes.UnknownZone;
         var zone=service.Devices.FirstOrDefault(d=>d.Key==deviceKey)?.Zones.FirstOrDefault(z=>z.Index==index);
-        if(zone is null) return "unknown zone";
+        if(zone is null) return HostReplyCodes.UnknownZone;
         s.ZoneColors[r.ZoneKey]=new ZoneColorEntry{Color=r.Color,ZoneName=zone.Name};
         return null;
     }
@@ -347,7 +347,7 @@ internal sealed class DeviceHost : IAsyncDisposable
         if(saveAllowed)
         {
             try{store.Save(candidate);}
-            catch(Exception e){log.Write("saving lighting.json failed: "+e.Message);return Fail(request,"couldn't save settings");}
+            catch(Exception e){log.Write("saving lighting.json failed: "+e.Message);return Fail(request,HostReplyCodes.CouldntSave);}
         }
         settings=candidate;
         if(engineActive&&sessionOk&&status==HostStatus.Running)

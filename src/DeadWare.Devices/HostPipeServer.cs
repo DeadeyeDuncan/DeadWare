@@ -116,11 +116,11 @@ internal sealed class HostPipeServer : IAsyncDisposable
             try
             {
                 HostMessage reply;
-                if(request.Version!=DeviceHostProtocol.Version) reply=new Reply(false,"version"){Id=request.Id};
+                if(request.Version!=DeviceHostProtocol.Version) reply=new Reply(false,HostReplyCodes.Version){Id=request.Id};
                 else
                 {
                     try{reply=await handle(request).ConfigureAwait(false);}
-                    catch(Exception e){log.Write("request failed: "+e.Message);reply=new Reply(false,"internal error"){Id=request.Id};}
+                    catch(Exception e){log.Write("request failed: "+e.Message);reply=new Reply(false,HostReplyCodes.InternalError){Id=request.Id};}
                 }
                 await writeGate.WaitAsync(ct).ConfigureAwait(false);
                 try{await WriteAsync(stream,reply,ct).ConfigureAwait(false);}

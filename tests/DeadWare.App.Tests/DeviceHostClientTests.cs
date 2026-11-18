@@ -269,6 +269,14 @@ public class DeviceHostClientTests:IAsyncLifetime
         time.Advance(TimeSpan.FromMinutes(1));await Settle();
         Assert.Equal(0,launcher.Launched);
     }
+    /// <summary>The status line's words for a failed change: a short host code in plain words, and an unanswered change as one whose outcome is unknown.</summary>
+    [Fact] public void Failed_change_text_explains_codes_and_an_unanswered_change()
+    {
+        Assert.Equal("The last change didn't apply: That zone isn't listed any more. Its device may have been unplugged.",DeviceHostClient.FailedChangeText("unknown zone"));
+        Assert.Equal("The lighting helper didn't answer, so the last change may not have applied.",DeviceHostClient.FailedChangeText("The lighting helper didn't answer."));
+        Assert.Equal("The last change didn't apply.",DeviceHostClient.FailedChangeText(null));
+        Assert.Equal("The last change didn't apply: Colour must be #RRGGBB.",DeviceHostClient.FailedChangeText("Colour must be #RRGGBB."));
+    }
     [Fact] public async Task Stop_does_not_kill_a_host_that_exits()
     {
         var process=new FakeProcess();launcher.Running=process;

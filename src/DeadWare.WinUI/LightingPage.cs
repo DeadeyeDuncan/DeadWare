@@ -615,18 +615,11 @@ internal sealed class LightingPage : Page, IHeaderTool
         }
         if (sent != generation) return;
         done?.Invoke(reply);
-        string? error = reply.Ok ? null : reply.Error is { Length: > 0 } why ? $"The last change didn't apply: {Explain(why)}" : "The last change didn't apply.";
+        string? error = reply.Ok ? null : DeviceHostClient.FailedChangeText(reply.Error);
         if (error == sendError) return;
         sendError = error;
         ShowStatus();
     }
-
-    /// <summary>A host's reason for refusing a change in plain words: its short codes are explained, anything else is shown as it came.</summary>
-    private static string Explain(string why) => why switch
-    {
-        "starting" => "The lighting helper is still starting. Try again in a moment.",
-        _ => why,
-    };
 
     /// <summary>
     /// Sends one target's changes at most once per 100 ms. The first goes at once; later ones within the interval wait for its end,

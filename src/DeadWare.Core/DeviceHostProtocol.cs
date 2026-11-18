@@ -37,6 +37,22 @@ public sealed record StateEvent(HostState State) : HostMessage;
 [JsonSourceGenerationOptions(UseStringEnumConverter=true)]
 [JsonSerializable(typeof(HostMessage))]
 internal sealed partial class DeviceHostJsonContext : JsonSerializerContext;
+// The short codes a failed Reply can carry (the host's own sentences, such as a validation message, are shown as they are), and their plain words.
+public static class HostReplyCodes
+{
+    public const string Starting="starting",Unsupported="unsupported",RescanFailed="rescan failed",UnknownZone="unknown zone",CouldntSave="couldn't save settings",Version="version",InternalError="internal error";
+    public static string Explain(string why)=>why switch
+    {
+        Starting=>"The lighting helper is still starting. Try again in a moment.",
+        UnknownZone=>"That zone isn't listed any more. Its device may have been unplugged.",
+        CouldntSave=>"DeadWare couldn't save your lighting settings, so the change wasn't made.",
+        InternalError=>"The lighting helper hit an error. Details are in its log, devices.log.",
+        RescanFailed=>"The lighting helper lost its connection to OpenRGB and is reconnecting.",
+        Unsupported=>"The lighting helper didn't recognise the change. Restart DeadWare.",
+        Version=>"The lighting helper is a different version. Restart DeadWare.",
+        _=>why,
+    };
+}
 public static class DeviceHostProtocol
 {
     public const int Version = 1, MaxMessageBytes = 1_048_576;

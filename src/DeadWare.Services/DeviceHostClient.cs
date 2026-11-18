@@ -25,7 +25,15 @@ internal sealed class DeviceHostClient : IAsyncDisposable
         LaunchProblem="The lighting helper couldn't be started.",
         FailedProblem="The lighting helper connection failed.";
     static readonly TimeSpan RetryDelay=TimeSpan.FromMilliseconds(500),ReplyTimeout=TimeSpan.FromSeconds(5),ExitTimeout=TimeSpan.FromSeconds(5);
-    static readonly Reply NotConnected=new(false,"The lighting helper isn't connected."),NoAnswer=new(false,"The lighting helper didn't answer.");
+    internal const string NoAnswerText="The lighting helper didn't answer.";
+    static readonly Reply NotConnected=new(false,"The lighting helper isn't connected."),NoAnswer=new(false,NoAnswerText);
+    /// <summary>The status line's words for a change that failed: the host's short codes in plain words, and a change the host never answered as one whose outcome isn't known.</summary>
+    internal static string FailedChangeText(string? why)=>why switch
+    {
+        null or ""=>"The last change didn't apply.",
+        NoAnswerText=>"The lighting helper didn't answer, so the last change may not have applied.",
+        _=>$"The last change didn't apply: {HostReplyCodes.Explain(why)}",
+    };
     sealed class Conn(Stream stream) {public readonly Stream Stream=stream;public readonly SemaphoreSlim Write=new(1,1);public readonly Dictionary<long,TaskCompletionSource<Reply>> Pending=new();public bool Dead,Checked;}
     readonly string openRgbPath;readonly IDeviceHostLauncher launcher;readonly Func<CancellationToken,Task<Stream>> connect;readonly TimeProvider time;readonly bool windowElevated;readonly HostLaunchPacer pacer;
     readonly object gate=new();readonly RestartBackoff backoff=new();
