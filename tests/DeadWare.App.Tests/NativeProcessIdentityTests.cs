@@ -42,4 +42,6 @@ public class NativeProcessIdentityTests
         Assert.Null(NativeProcessIdentity.ImagePath(q.Query));
         Assert.Equal(new[]{1024},q.Capacities);
     }
+    [Fact] public void The_pid_overload_reads_this_process_image_path()=>
+        Assert.Equal(Environment.ProcessPath,NativeProcessIdentity.ImagePath(Environment.ProcessId),ignoreCase:true);
 }

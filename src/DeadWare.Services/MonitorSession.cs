@@ -35,6 +35,8 @@ public sealed class MonitorSession
     /// <summary>The lighting host's client; null while lighting is off or no OpenRGB path is set.</summary>
     internal DeviceHostClient? Lighting {get;private set;}
     private readonly SemaphoreSlim lightingGate=new(1,1);
+    // Set when Quit begins: a lighting change that gets the gate afterwards starts nothing.
+    private volatile bool lightingClosed;
     public string SettingsStatus {get;private set;}="";
     private readonly string settingsPath=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"DeadWare","settings.json");
     private readonly SettingsSnapshotWriter writer;
@@ -138,9 +140,12 @@ public sealed class MonitorSession
     /// <summary>Saves the lighting choices and starts, restarts or stops the host client to match.</summary>
     public async Task SetLightingAsync(bool enabled,string? openRgbPath)
     {
+        // A path the settings file would drop is no path: it could only launch a host that exits at once and is relaunched in a loop.
+        if(!SettingsCodec.IsSafeOpenRgbPath(openRgbPath))openRgbPath=null;
         await lightingGate.WaitAsync();
         try
         {
+            if(lightingClosed)return;
             bool pathChanged=Settings.OpenRgbPath!=openRgbPath;
             Settings.LightingEnabled=enabled;Settings.OpenRgbPath=openRgbPath;
             await SaveAsync();
@@ -158,6 +163,16 @@ public sealed class MonitorSession
         finally {lightingGate.Release();}
     }
     private static async Task RetireLightingAsync(DeviceHostClient client) {await client.StopAsync();await client.DisposeAsync();}
+    /// <summary>Quit's lighting stop: closes lighting so a change that has not begun starts nothing, waits out the change in flight, then stops the current client.</summary>
+    private async Task CloseLightingAsync()
+    {
+        lightingClosed=true;
+        DeviceHostClient? client;
+        await lightingGate.WaitAsync().ConfigureAwait(false);
+        try {client=Lighting;Lighting=null;}
+        finally {lightingGate.Release();}
+        if(client is not null)await RetireLightingAsync(client).ConfigureAwait(false);
+    }
     public void SetRange(int seconds) {Settings.HistorySeconds=seconds;Changed?.Invoke();_ = SaveAsync();}
     public void SetGpu(string? id) {Settings.SelectedGpuId=id;Changed?.Invoke();_ = SaveAsync();}
     public void SetTheme(string theme) {Settings.Theme=theme;Changed?.Invoke();_ = SaveAsync();}
@@ -524,8 +539,8 @@ public sealed class MonitorSession
     {
         diagnostics?.Record("shutdown_begin",new {OpenWindows=layout.Remembered});
         layout.BeginShutdown();timer.Stop();saveTimer.Stop();captureWindows?.Invoke();
-        // The lighting host stops alongside the collector, so quitting takes no longer than it did.
-        var lighting=Lighting is {} client?Task.Run(async ()=>{await client.StopAsync();await client.DisposeAsync();}):Task.CompletedTask;
+        // The lighting host stops alongside the collector, so quitting takes no longer than it did, plus any lighting change in flight.
+        var lighting=Task.Run(CloseLightingAsync);
         try {await SaveAsync();}finally {await Task.WhenAll(StopCollectorAsync(QuitDeadline,QuitDeadline,HistoryDeadline),lighting);}
         diagnostics?.Record("shutdown_completed");
     }
