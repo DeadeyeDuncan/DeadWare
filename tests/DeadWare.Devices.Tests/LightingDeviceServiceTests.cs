@@ -201,6 +201,33 @@ public sealed class LightingDeviceServiceTests : IDisposable
         Assert.Equal(1,Count(text,"sized Corsair Lighting Node Pro Corsair Channel 1 to 48 LEDs"));
         Assert.Equal(1,Count(text,"didn't hold"));
     }
+    // Polish round 2, item 9: the read straight after the resize still shows 0, and the next rescan's shows 48, either because OpenRGB
+    // applied that resize late or because the retry held. The effect is sent again for the new size, success is logged once (after the one
+    // failure line), and the sizing latches: a later 0 isn't sized again on this connection.
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void A_Node_Pro_size_that_shows_a_rescan_late_resends_its_effect_and_is_logged_once(bool resizedAgain)
+    {
+        var s=new LightingSettings();var node=IndexOf(Node);
+        svc.Paint(s);
+        session.KeepResizes=false;
+        session.SizeZone(node,0,0);
+        svc.Rescan();svc.Paint(s);
+        if(resizedAgain) session.KeepResizes=true; // the retry at the next rescan holds at once
+        else session.SizeZone(node,0,48);           // the first resize shows late, before the next rescan reads
+        svc.Rescan();svc.Paint(s);
+        svc.Rescan();svc.Paint(s);
+        var calls=session.Calls.Where(c=>c.StartsWith("resize")||c.StartsWith($"mode {node}/")).ToList();
+        string[] resizes=resizedAgain?["resize "+node+"/0/48","resize "+node+"/0/48"]:["resize "+node+"/0/48"];
+        Assert.Equal(["mode "+node+"/1",..resizes,"mode "+node+"/1"],calls);
+        var text=File.ReadAllText(Path.Combine(dir,"devices.log"));
+        Assert.Equal(1,Count(text,"sized Corsair Lighting Node Pro Corsair Channel 1 to 48 LEDs"));
+        Assert.Equal(1,Count(text,"didn't hold"));
+        session.SizeZone(node,0,0);
+        svc.Rescan();
+        Assert.Equal(resizes.Length,session.Resizes.Count);
+    }
     // A resize that didn't hold changed no LEDs, so the hardware effect isn't sent again for it: a retry every rescan doesn't restart the wave.
     [Fact] public void A_Node_Pro_sizing_that_does_not_hold_leaves_its_effect_alone()
     {
