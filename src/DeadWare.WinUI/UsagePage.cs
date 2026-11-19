@@ -526,12 +526,15 @@ internal sealed class UsagePage : Page
     private async Task ExportAsync(bool applicationsCsv)
     {
         var (from, to) = Period();
-        // The Windows App SDK's picker, which also works while DeadWare runs as administrator. It adds no extension unless given a default one.
-        var picker = new Microsoft.Windows.Storage.Pickers.FileSavePicker(Microsoft.UI.Win32Interop.GetWindowIdFromWindow(App.WindowHandle))
-            { SuggestedFileName = $"DeadWare-usage-{(applicationsCsv ? "applications" : "device")}-{DateTime.Now:yyyyMMdd-HHmmss}", DefaultFileExtension = ".csv" };
-        picker.FileTypeChoices.Add("CSV files", [".csv"]);
         string? path;
-        try { path = (await picker.PickSaveFileAsync())?.Path; }
+        try
+        {
+            // The Windows App SDK's picker, which also works while DeadWare runs as administrator. It adds no extension unless given a default one.
+            var picker = new Microsoft.Windows.Storage.Pickers.FileSavePicker(Microsoft.UI.Win32Interop.GetWindowIdFromWindow(App.WindowHandle))
+                { SuggestedFileName = $"DeadWare-usage-{(applicationsCsv ? "applications" : "device")}-{DateTime.Now:yyyyMMdd-HHmmss}", DefaultFileExtension = ".csv" };
+            picker.FileTypeChoices.Add("CSV files", [".csv"]);
+            path = (await picker.PickSaveFileAsync())?.Path;
+        }
         catch (Exception error) { SetActionStatus("The save dialog could not be opened. " + error.Message); return; }
         if (path is null) return;
         exportMetrics.IsEnabled = exportApplications.IsEnabled = false; SetActionStatus("Exporting saved history…");
