@@ -720,10 +720,19 @@ internal sealed class SettingsPage : Page
     private static string ProtectionText(LocationProtection protection)
     {
         if (protection.Protected) return "";
-        return OpenRgbFolderRefusal.CantCheck(protection.Reason) ? CantCheckText(protection.Reason ?? "its permissions couldn't be read.") : ProtectionWarningText;
+        return OpenRgbFolderRefusal.CantCheck(protection.Reason) ? CantCheckText(protection.Reason) : ProtectionWarningText;
     }
 
-    private static string CantCheckText(string reason) => $"DeadWare can't check this OpenRGB folder: {reason}";
+    /// <summary>
+    /// A folder the check couldn't judge, or a check that failed: the reason, then, like <see cref="ProtectionWarningText"/>, what DeadWare
+    /// does about the folder while it runs as administrator and the same remedy (polish round 3, item 2). The reason reads as a sentence
+    /// whether or not it ends with a full stop.
+    /// </summary>
+    private static string CantCheckText(string? reason)
+    {
+        string said = reason?.TrimEnd() is { Length: > 0 } given ? (given.EndsWith('.') ? given : given + ".") : "its permissions couldn't be read.";
+        return $@"DeadWare can't check this OpenRGB folder: {said} While DeadWare runs as administrator, it won't run OpenRGB from here. Copy OpenRGB to C:\Program Files\OpenRGB and choose it here.";
+    }
 
     /// <summary>
     /// Follows what would fight DeadWare over the lights. While lighting is on that is the host's own list: only the host knows
