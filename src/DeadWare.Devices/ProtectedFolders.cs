@@ -26,14 +26,13 @@ internal static class ProtectedFolders
 
     // Polish item 7 and round 2 item 2 (B4/B13/B18): a refusal names the path InstallLocation's reason names, which can be the folder being
     // prepared, something inside it or a folder above it, says what is wrong with it in words that fit the reason, and gives a remedy that
-    // works there. One that programs without administrator rights can change: give only administrators write access to it. One another
-    // account owns: make Administrators its owner and give only administrators write access to it (round 3, item 5). Restricting write
-    // access alone never passes that, and a new owner alone usually meets a second refusal, since a folder made under %ProgramData% without
-    // administrator rights also lets its creator, and Users, write to it. Inside %ProgramData%\DeadWare, DeadWare itself included, removing
-    // it is the alternative, which needs administrator rights; DeadWare makes its own folders again, protected, though a file removed
-    // under updates isn't made again, and Roll back refuses a snapshot that lost one. %ProgramData% and the folders above it are
-    // never to be removed: they get their standard permissions back. A path the check couldn't judge gets the can't-check words with the
-    // reason, never a claim that it isn't restricted.
+    // works there. Inside %ProgramData%\DeadWare, DeadWare itself included, the one remedy is removing it, which needs administrator rights
+    // (whole-branch review D1): what programs without administrator rights could change, or another account owns, may already have been
+    // changed, and OpenRGB runs as administrator and loads plugin DLLs from its config folder, so a new owner or new permissions would keep
+    // those bytes and the check would then pass. DeadWare makes its own folders again, protected, though a file removed under updates isn't
+    // made again, and Roll back refuses a snapshot that lost one. %ProgramData% and the folders above it are never to be removed: they get
+    // their standard permissions back. A path the check couldn't judge gets the can't-check words with the reason, never a claim that it
+    // isn't restricted.
     internal static string Refusal(string deadWare,string folder,string? reason)=>Explain(deadWare,folder,reason,"DeadWare won't start OpenRGB","it won't start OpenRGB");
     internal static string LogRefusal(string deadWare,string folder,string? reason)
         =>Explain(deadWare,folder,reason,"the lighting helper running as administrator keeps no log","the lighting helper running as administrator keeps no log");
@@ -44,18 +43,18 @@ internal static class ProtectedFolders
         var entry=named??folder;
         var root=Path.TrimEndingDirectorySeparator(Path.GetFullPath(deadWare));
         var inside=entry.Equals(root,StringComparison.OrdinalIgnoreCase)||entry.StartsWith(root+Path.DirectorySeparatorChar,StringComparison.OrdinalIgnoreCase);
-        const string Remove="or remove it, which needs administrator rights. Then turn lighting off and on.";
+        const string Remove="Remove it, which needs administrator rights, then turn lighting off and on.";
         const string Restore="Restore its standard permissions, then turn lighting off and on.";
         // InstallLocation's sentence opens the message: it names the path first. One in no form it uses follows the folder being prepared.
         var opening=named is null?$"{folder} ({reason?.TrimEnd('.')})":reason!.TrimEnd('.');
         var said=reason is not {Length:>0}?"its permissions couldn't be read.":reason.EndsWith('.')?reason:reason+".";
         return fault switch
         {
-            LocationFault.Writable=>$"{opening}, so programs without administrator rights can change it and {outcome}. "+(inside?"Give only administrators write access to it, "+Remove:Restore),
-            LocationFault.NotOwned=>$"{opening}, so {outcome}. "+(inside?"Make Administrators its owner and give only administrators write access to it, "+Remove:Restore),
+            LocationFault.Writable=>$"{opening}, so programs without administrator rights can change it and {outcome}. "+(inside?Remove:Restore),
+            LocationFault.NotOwned=>$"{opening}, so {outcome}. "+(inside?Remove:Restore),
             // Inside DeadWare's folder, removing the path clears any of these: what DeadWare needs there it makes again, protected. Above
             // it, only an unreadable folder has a fix of its own: a link or a network drive there is how this PC is set up.
-            _=>$"DeadWare can't check {entry}, so {cantCheckOutcome}: {said}"+(named is null?"":inside?" Remove it, which needs administrator rights, then turn lighting off and on.":fault==LocationFault.Unreadable?" "+Restore:""),
+            _=>$"DeadWare can't check {entry}, so {cantCheckOutcome}: {said}"+(named is null?"":inside?" "+Remove:fault==LocationFault.Unreadable?" "+Restore:""),
         };
     }
 
