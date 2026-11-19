@@ -331,8 +331,9 @@ internal sealed class DeviceHostClient : IAsyncDisposable
 /// <summary>
 /// Ruling AP: the window never launches a lighting host sooner than <see cref="RestartBackoff.Base"/> after the previous host exited, so
 /// OpenRGB is never restarted faster than USB handles are released (an OpenRGB started too soon detects devices but can't write to them).
-/// One pacer is shared by every client of a session, so the floor also holds across a deliberate stop and start: lighting turned off and
-/// on, another OpenRGB chosen, or the elevation restart.
+/// One pacer is shared by every client of a session, so the floor also holds across a deliberate stop and start within this window process:
+/// lighting turned off and on, another OpenRGB chosen, or a client replacing a host that lacks the window's elevation. It lives in this
+/// process, so a new DeadWare process (Restart as administrator, Update &amp; restart) has no exit on record and its first launch isn't paced.
 /// </summary>
 internal sealed class HostLaunchPacer(TimeProvider time)
 {
