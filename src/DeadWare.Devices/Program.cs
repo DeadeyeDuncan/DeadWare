@@ -32,15 +32,22 @@ internal static class Program
 
         var root=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"DeadWare");
         var lightingPath=Path.Combine(root,"lighting.json");
-        // Ruling AT: elevated, the log lives in protected %ProgramData%\DeadWare\logs, or nowhere if that folder can't be prepared.
+        // Ruling AT and B1/B20: elevated, the log lives in protected %ProgramData%\DeadWare\logs\<user SID>, which only this user and
+        // administrators can read, or nowhere if that folder can't be prepared; the host then runs on without a log (polish item 7).
         string? logDir;
-        try{logDir=ProtectedFolders.LogDirectory();}catch(Exception){logDir=null;}
+        try{logDir=ProtectedFolders.LogDirectory(sid);}catch(Exception){logDir=null;}
         using var log=new HostLog(logDir);
         try
         {
+            // A refused folder's message names the folder at fault, InstallLocation's reason and the remedy, and reaches the window as the
+            // host's state, so the reason is shown even when the same refusal left the host without a log (polish item 7).
             var configDir="";string? failure=null;
             try{configDir=ProtectedFolders.OpenRgbConfigDirectory();}
-            catch(Exception e){failure=e.Message;log.Write("openrgb config folder unavailable: "+e.Message+(e is UnprotectedFolderException{Reason:{} why}?" ("+why+")":""));}
+            catch(Exception e)
+            {
+                failure=e is UnprotectedFolderException?e.Message:$"DeadWare couldn't prepare OpenRGB's settings folder, so it won't start OpenRGB: {e.Message}";
+                log.Write("openrgb config folder unavailable: "+e.Message);
+            }
             try{job=ProcessJob.Create();}
             catch(Exception e){log.Write("no job object, so OpenRGB may outlive a host that crashes: "+e.Message);}
             var options=new HostOptions(openRgbPath,configDir,lightingPath,logDir??"",startup,sid,session);

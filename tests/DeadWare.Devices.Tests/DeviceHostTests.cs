@@ -77,8 +77,9 @@ public sealed class DeviceHostTests : IAsyncLifetime
     // The scanner sees the fake OpenRGB processes that are still running, through the real classification (F15): one whose id isn't the
     // pid the host passes counts as another OpenRGB. So a host that stopped passing its own pid, or kept a scan that raced a relaunch,
     // would block itself. The test's own conflicts are added after a park, which a test can hold the loop in.
-    DeviceHost Build(bool startup=false,string? exePath=null,Action<OpenRgbEngine>? beforeHost=null,Func<string,DeadWare.UpdateCore.LocationProtection>? folderCheck=null,string? startupFailure=null)
+    DeviceHost Build(bool startup=false,string? exePath=null,Action<OpenRgbEngine>? beforeHost=null,Func<string,DeadWare.UpdateCore.LocationProtection>? folderCheck=null,string? startupFailure=null,LightingStore? store=null,HostLog? hostLog=null)
     {
+        var log=hostLog??this.log;
         var engine=new OpenRgbEngine(exePath??exe,@"C:\cfg",runner,(_,_)=>Task.FromResult(true),time,log,folderCheck);
         beforeHost?.Invoke(engine);
         var scanner=new Scanner(pid=>
@@ -90,7 +91,7 @@ public sealed class DeviceHostTests : IAsyncLifetime
             return found;
         });
         var options=new HostOptions(exePath??exe,@"C:\cfg",lightingPath,Path.Combine(dir,"logs"),startup,"S-1-5-21-1",1);
-        return host=new DeviceHost(options,new LightingStore(lightingPath),engine,()=>session,scanner,time,log,startupFailure);
+        return host=new DeviceHost(options,store??new LightingStore(lightingPath),engine,()=>session,scanner,time,log,startupFailure);
     }
     void Start(DeviceHost h)=>run=h.RunAsync(CancellationToken.None);
     // Fake time AdvanceUntil may move without its condition before it fails, so a host cadence that slows down fails the test instead of
@@ -612,6 +613,22 @@ public sealed class DeviceHostTests : IAsyncLifetime
         Assert.Equal(0,runner.Count);
         Assert.Equal(0,Volatile.Read(ref scans));
         Assert.Equal(HostStatus.OpenRgbFailed,h.State.Status);
+    }
+
+    // Polish item 7: an elevated host whose %ProgramData%\DeadWare was refused has no log either, since the log lives there. It still
+    // reports the refusal with its reason and answers the window: nothing else depends on the log.
+    [Fact]
+    public async Task Host_without_a_log_still_reports_a_refused_folder_and_answers()
+    {
+        using var nowhere=new HostLog(null);
+        const string refusal=@"C:\ProgramData\DeadWare isn't restricted to administrators (C:\ProgramData\DeadWare can be changed by S-1-5-32-545), so DeadWare won't start OpenRGB. Remove that folder, or give only administrators write access to it, then turn lighting off and on.";
+        var h=Build(startupFailure:refusal,hostLog:nowhere);Start(h);
+        await Until(()=>h.State.Status==HostStatus.OpenRgbFailed);
+        Assert.Equal(refusal,h.State.Message);
+        Assert.True((await Send(h,new SetBrightnessRequest(30))).Ok);
+        Assert.Equal(30,new LightingStore(lightingPath).Load().Settings.Brightness);
+        Assert.IsType<StateEvent>(await h.HandleAsync(new GetStateRequest{Id=4}));
+        Assert.False(Directory.Exists(Path.Combine(dir,"logs"))); // nothing was logged anywhere
     }
 
     // Task 9 K(d): a scan that keeps failing the same way is logged once, not every 5 s.
