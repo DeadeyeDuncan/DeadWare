@@ -511,9 +511,12 @@ public sealed class DeviceHostTests : IAsyncLifetime
         Start(h);
         await Until(()=>h.State.Status==HostStatus.Blocked);
         Assert.Equal(DeviceHost.ScanFailedText,h.State.Message);
+        // Whole-branch review D5: no scan has completed yet, so the empty list is no all-clear; the first scan that completes marks it.
+        Assert.False(h.State.ConflictsChecked);
         Assert.Equal(0,runner.Count);
         failing=false;
         await AdvanceUntil(()=>h.State.Status==HostStatus.Running);
+        Assert.True(h.State.ConflictsChecked);
         failing=true;
         await AdvanceUntil(()=>h.State.Status==HostStatus.Blocked);
         await Until(()=>runner.At(0).Killed); // the host publishes Blocked before it stops the engine

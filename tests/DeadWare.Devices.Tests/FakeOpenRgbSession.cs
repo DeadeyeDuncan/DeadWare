@@ -29,8 +29,10 @@ sealed class FakeOpenRgbSession:IOpenRgbSession
     public IReadOnlyList<(int Index,int Zone,int Size)> Resizes{get{lock(sync)return resizes.ToList();}}
     // Writes in the order OpenRGB received them: "resize 6/0/48", "mode 6/1".
     public IReadOnlyList<string> Calls{get{lock(sync)return calls.ToList();}}
-    // OpenRGB applies a resize to the zone it reports, unless a test says it forgets it.
+    // OpenRGB applies a resize to the zone it reports, unless a test says it forgets it, or stands in what it does with it instead
+    // (index, zone, size).
     public bool KeepResizes=true;
+    public Action<int,int,int>? ResizeInstead;
     public int LedCount{get{lock(sync)return leds.Count;}}
     public void ClearLeds(){lock(sync)leds.Clear();}
     public bool Hanging=>Volatile.Read(ref hanging)>0;
@@ -50,7 +52,8 @@ sealed class FakeOpenRgbSession:IOpenRgbSession
     {
         Hang("ResizeZone");
         lock(sync){resizes.Add((index,zoneIndex,size));calls.Add($"resize {index}/{zoneIndex}/{size}");}
-        if(KeepResizes) Controllers[index]=Controllers[index] with{Zones=Controllers[index].Zones.Select(z=>z.Index==zoneIndex?z with{LedCount=size}:z).ToList()};
+        if(ResizeInstead is {} instead) instead(index,zoneIndex,size);
+        else if(KeepResizes) Controllers[index]=Controllers[index] with{Zones=Controllers[index].Zones.Select(z=>z.Index==zoneIndex?z with{LedCount=size}:z).ToList()};
     }
     // Sets a zone's LED count as OpenRGB would report it.
     public void SizeZone(int index,int zoneIndex,int leds)

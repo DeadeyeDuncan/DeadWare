@@ -239,6 +239,49 @@ public sealed class LightingDeviceServiceTests : IDisposable
         Assert.Equal(2,session.Resizes.Count);
         Assert.Single(session.Modes,m=>m.Index==node);
     }
+    // Whole-branch review D6: a resize after which channel 1 reads another size than it had (OpenRGB clamped it, say) changed its LEDs,
+    // so the hardware effect, set up for the old size, is sent again.
+    [Fact] public void A_Node_Pro_resize_that_leaves_another_size_resends_its_effect()
+    {
+        var s=new LightingSettings();var node=IndexOf(Node);
+        svc.Paint(s);
+        session.SizeZone(node,0,0);
+        session.ResizeInstead=(i,z,_)=>session.SizeZone(i,z,16);
+        svc.Rescan();svc.Paint(s);
+        var calls=session.Calls.Where(c=>c.StartsWith("resize")||c.StartsWith($"mode {node}/")).ToList();
+        Assert.Equal(["mode "+node+"/1","resize "+node+"/0/48","mode "+node+"/1"],calls);
+        Assert.Equal(1,Count(File.ReadAllText(Path.Combine(dir,"devices.log")),"didn't hold: OpenRGB reports 16 LEDs"));
+    }
+    // D6: a resize after which the read shows no channel 1 at all gets its one failure line, and the line says so.
+    [Fact] public void A_Node_Pro_channel_gone_after_a_resize_is_logged_as_no_such_zone()
+    {
+        var node=IndexOf(Node);
+        session.SizeZone(node,0,0);
+        session.ResizeInstead=(i,z,_)=>session.Controllers[i]=session.Controllers[i] with{Zones=session.Controllers[i].Zones.Where(x=>x.Index!=z).ToList()};
+        svc.Rescan();
+        var text=File.ReadAllText(Path.Combine(dir,"devices.log"));
+        Assert.Equal(1,Count(text,"sizing Corsair Lighting Node Pro Corsair Channel 1 to 48 LEDs didn't hold: OpenRGB reports no such zone; trying again at each rescan"));
+    }
+    // D6: Reset starts a connection's sizing afresh, the failure latch included, as DeviceHost.ConnectLocked's Reset and Rescan do on a
+    // reconnect. After a resize that didn't hold, a reconnect whose first read already shows 48 sized nothing on that connection, so it
+    // logs no success; and a resize that then fails on it is logged again.
+    [Fact] public void Reset_clears_the_Node_Pro_sizing_failure_latch()
+    {
+        var node=IndexOf(Node);
+        session.KeepResizes=false;
+        session.SizeZone(node,0,0);
+        svc.Rescan();
+        session.SizeZone(node,0,48);
+        svc.Reset();svc.Rescan();
+        var text=File.ReadAllText(Path.Combine(dir,"devices.log"));
+        Assert.Equal(0,Count(text,"sized Corsair Lighting Node Pro"));
+        Assert.Equal(1,Count(text,"didn't hold"));
+        session.SizeZone(node,0,0);
+        svc.Rescan();
+        text=File.ReadAllText(Path.Combine(dir,"devices.log"));
+        Assert.Equal(2,session.Resizes.Count);
+        Assert.Equal(2,Count(text,"didn't hold"));
+    }
     static int Count(string text,string what)=>text.Split(what).Length-1;
     [Fact] public void Only_the_Node_Pros_channel_1_is_ever_sized()
     {

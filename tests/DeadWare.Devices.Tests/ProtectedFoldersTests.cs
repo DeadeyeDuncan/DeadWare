@@ -107,8 +107,16 @@ public sealed class ProtectedFoldersTests
         Assert.Equal(Sorted(UserSid,SystemSid,AdministratorsSid),Sids(rules.Where(r=>(r.InheritanceFlags&InheritanceFlags.ObjectInherit)!=0&&(r.FileSystemRights&FileSystemRights.ReadData)!=0)));
         // The rules that let anything be changed.
         Assert.Equal(Sorted(SystemSid,AdministratorsSid),Sids(rules.Where(r=>((int)r.FileSystemRights&InstallLocation.DirectoryRights)!=0)));
+        // Users may list the folder and read attributes and permissions, and no more.
         Assert.All(rules.Where(r=>r.IdentityReference.Value==UsersSid),r=>Assert.Equal(0,(int)(r.FileSystemRights&~(FileSystemRights.ListDirectory|FileSystemRights.ReadAttributes|FileSystemRights.ReadPermissions|FileSystemRights.Synchronize))));
         Assert.All(rules.Where(r=>r.IdentityReference.Value==UsersSid&&(r.FileSystemRights&FileSystemRights.ListDirectory)!=0),r=>Assert.Equal(InheritanceFlags.None,r.InheritanceFlags));
+        // And no less (whole-branch review D16): the updater's audit of %ProgramData%\DeadWare, in a DeadWare without administrator rights,
+        // lists the folder and reads the attributes and permissions of the folder and of every log file in it, and refuses what it can't
+        // read. A rule applies to the folder unless it is inherit-only, and to the files when it is object-inherited.
+        const FileSystemRights audit=FileSystemRights.ReadAttributes|FileSystemRights.ReadPermissions;
+        FileSystemRights Users(Func<FileSystemAccessRule,bool> applies)=>rules.Where(r=>r.IdentityReference.Value==UsersSid&&applies(r)).Aggregate((FileSystemRights)0,(all,r)=>all|r.FileSystemRights);
+        Assert.Equal(audit|FileSystemRights.ListDirectory,Users(r=>(r.PropagationFlags&PropagationFlags.InheritOnly)==0)&(audit|FileSystemRights.ListDirectory));
+        Assert.Equal(audit,Users(r=>(r.InheritanceFlags&InheritanceFlags.ObjectInherit)!=0)&audit);
         var verdict=InstallLocation.Evaluate([InstallLocation.Describe(@"C:\ProgramData\DeadWare\logs\"+UserSid,PathKind.Directory,security)]);
         Assert.True(verdict.Protected,verdict.Reason);
     }
