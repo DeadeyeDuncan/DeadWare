@@ -843,18 +843,18 @@ internal sealed class ConnectionsPage : Page
         && (string.IsNullOrWhiteSpace(country.Text) || string.Equals(location?.CountryCode, country.Text.Trim(), StringComparison.OrdinalIgnoreCase))
         && direction.SelectedIndex switch { 1 => received > 0, 2 => sent > 0, _ => true };
 
-    /// <summary>Asks for a new CSV file. The picker leaves an empty file at a new name, which is removed so the export, which only ever
-    /// writes a new file, can create it; a file with content is refused as the export itself would refuse it.</summary>
+    /// <summary>Asks for a new CSV file. The export only ever writes a new file, so an empty file already at the chosen name is removed
+    /// for it to create; a file with content is refused as the export itself would refuse it.</summary>
     private async Task<string?> PickCsvAsync(string name)
     {
-        var picker = new Windows.Storage.Pickers.FileSavePicker { SuggestedFileName = $"{name}-{DateTime.Now:yyyyMMdd-HHmmss}" };
+        // The Windows App SDK's picker, which also works while DeadWare runs as administrator. It adds no extension unless given a default one.
+        var picker = new Microsoft.Windows.Storage.Pickers.FileSavePicker(Microsoft.UI.Win32Interop.GetWindowIdFromWindow(App.WindowHandle))
+            { SuggestedFileName = $"{name}-{DateTime.Now:yyyyMMdd-HHmmss}", DefaultFileExtension = ".csv" };
         picker.FileTypeChoices.Add("CSV files", [".csv"]);
-        WinRT.Interop.InitializeWithWindow.Initialize(picker, App.WindowHandle);
-        var file = await picker.PickSaveFileAsync();
-        if (file is null) return null;
-        if (new FileInfo(file.Path) is { Exists: true, Length: 0 }) File.Delete(file.Path);
-        if (File.Exists(file.Path)) { SetActionStatus(ConnectionsPresenter.ExportExists); return null; }
-        return file.Path;
+        if ((await picker.PickSaveFileAsync())?.Path is not { } path) return null;
+        if (new FileInfo(path) is { Exists: true, Length: 0 }) File.Delete(path);
+        if (File.Exists(path)) { SetActionStatus(ConnectionsPresenter.ExportExists); return null; }
+        return path;
     }
 
     private async Task ExportAsync()
