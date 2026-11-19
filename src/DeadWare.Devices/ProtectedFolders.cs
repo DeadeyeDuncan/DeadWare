@@ -27,10 +27,13 @@ internal static class ProtectedFolders
     // Polish item 7 and round 2 item 2 (B4/B13/B18): a refusal names the path InstallLocation's reason names, which can be the folder being
     // prepared, something inside it or a folder above it, says what is wrong with it in words that fit the reason, and gives a remedy that
     // works there. One that programs without administrator rights can change: give only administrators write access to it. One another
-    // account owns: make Administrators its owner (restricting write access never passes that). Inside %ProgramData%\DeadWare, DeadWare
-    // itself included, removing it is the alternative, which needs administrator rights; DeadWare makes its own folders again, protected.
-    // %ProgramData% and the folders above it are never to be removed: they get their standard permissions back. A path the check couldn't
-    // judge gets the can't-check words with the reason, never a claim that it isn't restricted.
+    // account owns: make Administrators its owner and give only administrators write access to it (round 3, item 5). Restricting write
+    // access alone never passes that, and a new owner alone usually meets a second refusal, since a folder made under %ProgramData% without
+    // administrator rights also lets its creator, and Users, write to it. Inside %ProgramData%\DeadWare, DeadWare itself included, removing
+    // it is the alternative, which needs administrator rights; DeadWare makes its own folders again, protected, though a file removed
+    // under updates isn't made again, and Roll back refuses a snapshot that lost one. %ProgramData% and the folders above it are
+    // never to be removed: they get their standard permissions back. A path the check couldn't judge gets the can't-check words with the
+    // reason, never a claim that it isn't restricted.
     internal static string Refusal(string deadWare,string folder,string? reason)=>Explain(deadWare,folder,reason,"DeadWare won't start OpenRGB","it won't start OpenRGB");
     internal static string LogRefusal(string deadWare,string folder,string? reason)
         =>Explain(deadWare,folder,reason,"the lighting helper running as administrator keeps no log","the lighting helper running as administrator keeps no log");
@@ -49,7 +52,7 @@ internal static class ProtectedFolders
         return fault switch
         {
             LocationFault.Writable=>$"{opening}, so programs without administrator rights can change it and {outcome}. "+(inside?"Give only administrators write access to it, "+Remove:Restore),
-            LocationFault.NotOwned=>$"{opening}, so {outcome}. "+(inside?"Make Administrators its owner, "+Remove:Restore),
+            LocationFault.NotOwned=>$"{opening}, so {outcome}. "+(inside?"Make Administrators its owner and give only administrators write access to it, "+Remove:Restore),
             // Inside DeadWare's folder, removing the path clears any of these: what DeadWare needs there it makes again, protected. Above
             // it, only an unreadable folder has a fix of its own: a link or a network drive there is how this PC is set up.
             _=>$"DeadWare can't check {entry}, so {cantCheckOutcome}: {said}"+(named is null?"":inside?" Remove it, which needs administrator rights, then turn lighting off and on.":fault==LocationFault.Unreadable?" "+Restore:""),
