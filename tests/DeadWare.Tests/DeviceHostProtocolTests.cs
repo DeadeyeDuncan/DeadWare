@@ -68,6 +68,19 @@ public class DeviceHostProtocolTests
             default: Assert.Equal(m,back); break;
         }
     }
+    // Polish item 2: ConflictsChecked travels with the state, and a state without it reads false, so an empty list from a host that never
+    // said it scanned is no all-clear.
+    [Fact] public async Task Conflicts_checked_round_trips_and_reads_false_when_absent()
+    {
+        var checkedState=State() with{ConflictsChecked=true};
+        Assert.True(Assert.IsType<StateEvent>(await RoundTrip(new StateEvent(checkedState){Id=12})).State.ConflictsChecked);
+        Assert.False(Assert.IsType<StateEvent>(await RoundTrip(new StateEvent(State()){Id=13})).State.ConflictsChecked);
+        var ms=new MemoryStream();
+        await DeviceHostProtocol.WriteAsync(ms,new StateEvent(checkedState){Id=14},default);
+        var node=System.Text.Json.Nodes.JsonNode.Parse(ms.ToArray().AsSpan(4))!;
+        Assert.True(node["State"]!.AsObject().Remove("ConflictsChecked"));
+        Assert.False(Assert.IsType<StateEvent>(await DeviceHostProtocol.ReadAsync(Frame(node.ToJsonString()),default)).State.ConflictsChecked);
+    }
     [Fact] public async Task Oversize_length_is_rejected_before_allocation()
     {
         foreach(int len in new[]{DeviceHostProtocol.MaxMessageBytes+1,int.MaxValue})

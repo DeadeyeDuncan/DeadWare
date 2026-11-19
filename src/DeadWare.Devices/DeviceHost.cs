@@ -38,7 +38,8 @@ internal sealed class DeviceHost : IAsyncDisposable
     readonly CancellationTokenSource stopCts=new();
     readonly object gate=new();
     LightingSettings settings=new();
-    bool saveAllowed=true,engineActive,sessionOk,rescanPending,disposed,loaded;
+    // conflictsChecked: a conflict scan has completed since the host started (polish item 2); it stays set.
+    bool saveAllowed=true,engineActive,sessionOk,rescanPending,disposed,loaded,conflictsChecked;
     string? note,lastConflictKey,lastSessionError,lastScanError;
     readonly object raiseGate=new();
     long nextConnectAt;
@@ -63,7 +64,7 @@ internal sealed class DeviceHost : IAsyncDisposable
     HostState BuildLocked()
     {
         var text=note is null?message:message.Length==0?note:message+" "+note;
-        return new(status,text,Environment.IsPrivilegedProcess,conflicts,service.Views(settings),Clone(settings));
+        return new(status,text,Environment.IsPrivilegedProcess,conflicts,service.Views(settings),Clone(settings),conflictsChecked);
     }
     static LightingSettings Clone(LightingSettings s)=>new()
     {
@@ -178,6 +179,7 @@ internal sealed class DeviceHost : IAsyncDisposable
                 log.Write(scanFailed?"conflict gate closed: scan failed":found.Count==0?"conflicts cleared":"conflicts: "+string.Join(" ",found.Select(c=>c.Kind+(c.BlocksLighting?" (blocks)":""))));
             }
             conflicts=found;
+            if(!scanFailed&&!conflictsChecked){conflictsChecked=true;changed=true;}
             if(blocking.Count>0||scanFailed)
             {
                 var text=scanFailed?ScanFailedText:string.Join(" ",blocking.Select(c=>c.Description));

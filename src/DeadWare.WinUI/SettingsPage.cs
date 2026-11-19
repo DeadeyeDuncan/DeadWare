@@ -72,7 +72,8 @@ internal sealed class SettingsPage : Page
     private const string NoConflictsText = "Nothing is running that would fight DeadWare over the lights.";
     private const string ScanFailedText = "DeadWare couldn't check for conflicting programs.";
     private const string HostScanFailedText = "The lighting helper couldn't check for conflicting programs.";
-    // Also true while the helper runs but OpenRGB doesn't (missing or failed), the states it is mostly shown in.
+    // Shown only while the helper hasn't completed a conflict scan, as when its OpenRGB settings folder was refused: it then never starts
+    // OpenRGB and never scans.
     private const string HostNotRunningText = "Conflicts can't be checked until OpenRGB is running.";
     private const string HostUnreachableText = "Conflicts can't be checked while DeadWare can't reach the lighting helper.";
     // How long the first scan after lighting goes off waits to look again when it found another OpenRGB, which may have been the
@@ -791,12 +792,12 @@ internal sealed class SettingsPage : Page
 
     /// <summary>
     /// What to say about conflicts. With lighting off: the local scan's conflicts, or that nothing was found, that the scan is under
-    /// way or that it failed. With lighting on: the host's list, whatever its status. When it lists nothing, a running or waiting
-    /// host has found nothing, since it gets that far only after a clean scan; a blocked host couldn't scan; a host without a
-    /// working OpenRGB, or stopping, stays that way until something changes and may never have scanned, so it says conflicts can't
-    /// be checked until OpenRGB runs; and a starting host hasn't said yet. With no state the host is connecting or relaunching,
-    /// unless a problem has stopped the client, and then nothing checks until lighting is turned off and on: a scan here could call
-    /// the host's own OpenRGB foreign.
+    /// way or that it failed. With lighting on: the host's list, whatever its status. When it lists nothing, a blocked host's latest
+    /// scan failed; a host that has completed a scan (<see cref="HostState.ConflictsChecked"/>) found nothing, whether or not its
+    /// OpenRGB runs (polish item 2); one that hasn't, without a working OpenRGB or stopping, may never scan (one whose OpenRGB settings
+    /// folder was refused never does), so it says conflicts can't be checked until OpenRGB runs; and a starting host hasn't said yet.
+    /// With no state the host is connecting or relaunching, unless a problem has stopped the client, and then nothing checks until
+    /// lighting is turned off and on: a scan here could call the host's own OpenRGB foreign.
     /// </summary>
     private (string Text, bool Caution)[] ConflictLines()
     {
@@ -810,14 +811,15 @@ internal sealed class SettingsPage : Page
         if (client.State is not { } state) return [(client.Problem is { Length: > 0 } ? HostUnreachableText : CheckingConflictsText, false)];
         var listed = Listed(state.Conflicts);
         if (listed.Length > 0) return listed;
+        // Blocked with nothing listed: its latest scan failed, whatever an earlier one found.
+        if (state.Status == HostStatus.Blocked) return [(HostScanFailedText, true)];
+        if (state.ConflictsChecked) return [(NoConflictsText, false)];
         return state.Status switch
         {
-            HostStatus.Running or HostStatus.Waiting => [(NoConflictsText, false)],
-            HostStatus.Blocked => [(HostScanFailedText, true)],
-            // These last until something changes, so "Checking…" would never end, and the host may never have scanned (one that
-            // couldn't prepare OpenRGB's settings folder reports OpenRgbFailed and never does), so an empty list isn't an all-clear.
+            // These last until something changes, so "Checking…" would never end, and the host may never scan, so an empty list isn't an
+            // all-clear.
             HostStatus.OpenRgbMissing or HostStatus.OpenRgbFailed or HostStatus.Stopping => [(HostNotRunningText, false)],
-            // Starting, perhaps before its first scan.
+            // Starting, before its first scan.
             _ => [(CheckingConflictsText, false)],
         };
     }

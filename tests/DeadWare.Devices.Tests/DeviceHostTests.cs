@@ -652,6 +652,7 @@ public sealed class DeviceHostTests : IAsyncLifetime
         Assert.Equal(0,runner.Count);
         Assert.Equal(0,Volatile.Read(ref scans));
         Assert.Equal(HostStatus.OpenRgbFailed,h.State.Status);
+        Assert.False(h.State.ConflictsChecked); // it never scanned, so its empty list is no all-clear (polish item 2)
     }
 
     // Polish item 7: an elevated host whose %ProgramData%\DeadWare was refused has no log either, since the log lives there. It still
@@ -668,6 +669,25 @@ public sealed class DeviceHostTests : IAsyncLifetime
         Assert.Equal(30,new LightingStore(lightingPath).Load().Settings.Brightness);
         Assert.IsType<StateEvent>(await h.HandleAsync(new GetStateRequest{Id=4}));
         Assert.False(Directory.Exists(Path.Combine(dir,"logs"))); // nothing was logged anywhere
+    }
+
+    // Polish item 2 (Ruling AV, T10): the host's first completed conflict scan marks the state checked, and it stays checked, so Settings can
+    // tell an empty list from one that was never looked for.
+    [Fact]
+    public async Task Conflicts_are_marked_checked_by_the_first_scan_and_stay_checked()
+    {
+        var failing=false;
+        var engine=new OpenRgbEngine(exe,@"C:\cfg",runner,(_,_)=>Task.FromResult(true),time,log);
+        var options=new HostOptions(exe,@"C:\cfg",lightingPath,Path.Combine(dir,"logs"),false,"S-1-5-21-1",1);
+        var h=host=new DeviceHost(options,new LightingStore(lightingPath),engine,()=>session,new Scanner(_=>Volatile.Read(ref failing)?throw new InvalidOperationException("scan broke"):[]),time,log);
+        h.Initialize();
+        Assert.False(h.State.ConflictsChecked);
+        Start(h);
+        await Until(()=>h.State.Status==HostStatus.Running);
+        Assert.True(h.State.ConflictsChecked);
+        Volatile.Write(ref failing,true);
+        await AdvanceUntil(()=>h.State.Status==HostStatus.Blocked);
+        Assert.True(h.State.ConflictsChecked);
     }
 
     // Task 9 K(d): a scan that keeps failing the same way is logged once, not every 5 s.

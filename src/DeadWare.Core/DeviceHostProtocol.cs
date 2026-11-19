@@ -7,7 +7,10 @@ public sealed record ZoneView(string Key,int Index,string Name,int LedCount,stri
 // Mode: what the device is set to now (a hardware device shows Static while lights are off). OwnEffect: its own hardware effect, and
 // StaysLitWhenOff: whether it stays lit while lights are off (a hardware effect and no Static mode); both hold whatever Lights on is.
 public sealed record DeviceView(string Key,string Name,int Type,PaintKind Kind,string? Mode,string? OwnEffect,bool StaysLitWhenOff,IReadOnlyList<ZoneView> Zones);
-public sealed record HostState(HostStatus Status,string Message,bool Elevated,IReadOnlyList<LightingConflict> Conflicts,IReadOnlyList<DeviceView> Devices,LightingSettings Settings);
+// ConflictsChecked: the host has completed a conflict scan since it started, so an empty Conflicts list means nothing was found (polish
+// item 2). One that never scans, such as one whose OpenRGB settings folder was refused, leaves it false. Optional on the wire, and false
+// when absent, so the protocol stays version 1.
+public sealed record HostState(HostStatus Status,string Message,bool Elevated,IReadOnlyList<LightingConflict> Conflicts,IReadOnlyList<DeviceView> Devices,LightingSettings Settings,bool ConflictsChecked=false);
 [JsonPolymorphic(TypeDiscriminatorPropertyName="type")]
 [JsonDerivedType(typeof(GetStateRequest),"getState")]
 [JsonDerivedType(typeof(SetLightsOnRequest),"setLightsOn")]
