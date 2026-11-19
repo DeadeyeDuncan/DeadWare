@@ -10,8 +10,9 @@ using Microsoft.Win32.SafeHandles;
 
 namespace DeadWare.Devices;
 
-// lighting.json's path goes through a link or junction, or leads to another file than the one it names, which an elevated host refuses
-// (Ruling AT). A type of its own, so the host can say why it runs on defaults: a restart doesn't change it (B3/B14/B17/B24).
+// lighting.json's path goes through a link or junction, is redirected, so that the file opened has another final path than the one asked
+// for, or ends at a file whose final path Windows can't give: an elevated host refuses all three (Ruling AT, F2 item 1). A type of its own,
+// so the host can say why it runs on defaults: a restart doesn't change it (B3/B14/B17/B24).
 internal sealed class LinkedPathException(string message,Exception? inner=null):IOException(message,inner);
 
 // Owns lighting.json. Only content that was read and found invalid is quarantined; IO errors propagate and leave the file alone. Each
@@ -20,8 +21,9 @@ internal sealed class LinkedPathException(string message,Exception? inner=null):
 // file to lighting.json; Load reads the open file and sets a damaged one aside by renaming that same file. guardLinks (an elevated host,
 // Ruling AT): before the open, SafeFiles.NoLinks refuses a path through a link or junction, the check before use the updater makes for its
 // own writes under %LOCALAPPDATA%\DeadWare; after it, the open file's final path must be the path asked for, so a link put in place
-// between the check and the open is refused too. What an elevated host reads, renames or replaces is then the file it checked, never one
-// a program without administrator rights pointed the name at.
+// between the check and the open is refused too, as is any other redirection and a final path Windows can't give (F2 item 1). What an
+// elevated host reads, renames or replaces is then the file it checked, never one a program without administrator rights pointed the
+// name at.
 // place: renames the written temporary file, through its handle, to lighting.json; a test can stand in a failing one. write: writes the
 // settings' JSON to the open temporary file; a StreamWriter unless a test stands in a failing one. race: a test seam, called with "checked"
 // once Guard has passed and before the file is opened, and with "read" once Load has read a file it will set aside; a test acts there as a
@@ -84,25 +86,29 @@ internal sealed class LightingStore(string path,bool guardLinks=false,Action<Saf
     }
 
     // guardLinks: the file a handle has open must be the one asked for. Its final path is where the open ended up, with any link or junction
-    // on the way followed, so a folder swapped for a junction after Guard shows there, as does any other redirection.
-    void RequireOpened(SafeFileHandle file,string expected)
+    // on the way followed, so a folder swapped for a junction after Guard shows there, as does any other redirection. A final path Windows
+    // can't give is refused too, since the host then can't confirm which file it opened (F2 item 1): GetFinalPathNameByHandleW gives none in
+    // DOS form on a drive the Mount Manager didn't create, for one. Internal for a test, which hands it a handle with no such path.
+    internal void RequireOpened(SafeFileHandle file,string expected)
     {
         if(!guardLinks) return;
-        var final=FinalPath(file);
+        var final=FinalPath(file,out var error);
+        if(final is null)
+            throw new LinkedPathException($"Windows couldn't give the final path of the file opened for lighting.json (error {error}: {new Win32Exception(error).Message.TrimEnd('.')}), so the lighting helper running as administrator won't use it.");
         if(!string.Equals(final,expected,StringComparison.OrdinalIgnoreCase))
             throw new LinkedPathException($"lighting.json's path led to {final}, so the lighting helper running as administrator won't use it.");
     }
 
-    // GetFinalPathNameByHandleW with 0, FILE_NAME_NORMALIZED and VOLUME_NAME_DOS: long names and the drive letter. A buffer too small gets
-    // back the size needed, its terminating null included.
-    internal static string FinalPath(SafeFileHandle file)
+    // GetFinalPathNameByHandleW with 0, FILE_NAME_NORMALIZED and VOLUME_NAME_DOS: long names and the drive letter; null, with the Windows
+    // error, when it can't give that path. A buffer too small gets back the size needed, its terminating null included.
+    internal static string? FinalPath(SafeFileHandle file,out int error)
     {
         var buffer=new char[260];
         while(true)
         {
             var length=GetFinalPathNameByHandleW(file,buffer,(uint)buffer.Length,0);
-            if(length==0) throw new IOException("lighting.json's final path couldn't be read: "+new Win32Exception(Marshal.GetLastPInvokeError()).Message);
-            if(length<buffer.Length) return DosPath(new string(buffer,0,(int)length));
+            if(length==0){error=Marshal.GetLastPInvokeError();return null;}
+            if(length<buffer.Length){error=0;return DosPath(new string(buffer,0,(int)length));}
             buffer=new char[length];
         }
     }

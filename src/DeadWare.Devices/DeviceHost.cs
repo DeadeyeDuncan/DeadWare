@@ -27,9 +27,11 @@ internal sealed class DeviceHost : IAsyncDisposable
     // that stopped. A restart of DeadWare's window alone leaves a running host as it is, and the file may fail again, so the note promises
     // no fix.
     public const string UnreadableNote="Your lighting settings file couldn't be read, so lighting uses its defaults and DeadWare won't save lighting changes. It tries the file again when the lighting helper next starts, such as when you turn lighting off and on.";
-    // B3/B14/B17/B24: an elevated host refuses lighting.json behind a link on every start, so this note promises no fix from a restart. The
-    // file itself being the link is refused too (SafeFiles.NoLinks checks it with its folders), so the note names both (round 2, item 7).
-    public const string LinkedNote="Your lighting settings file or its folder goes through a link, so DeadWare won't save lighting changes while it runs as administrator. Lighting uses its defaults.";
+    // B3/B14/B17/B24 and F2 item 1: an elevated host refuses lighting.json when its path goes through a link or junction (SafeFiles.NoLinks
+    // checks the file with its folders, so "the file's path" names both: round 2, item 7), when the file it opened has another final path,
+    // as any other redirection gives, and when Windows can't give that final path. A restart changes none of them, so the note promises no
+    // fix from one.
+    public const string LinkedNote="Your lighting settings file's path goes through a link, or leads somewhere DeadWare can't confirm, so DeadWare won't save lighting changes while it runs as administrator. Lighting uses its defaults.";
     public const string QuarantineNote="Your lighting settings file was damaged, so DeadWare set it aside and started with defaults.";
     public const string LostText="Lost the connection to OpenRGB; reconnecting.";
     public const string NewerNote="Your lighting settings were saved by a newer DeadWare, so this version won't save changes to them.";
@@ -156,7 +158,7 @@ internal sealed class DeviceHost : IAsyncDisposable
             catch(LinkedPathException e)
             {
                 settings=new();saveAllowed=false;note=LinkedNote;
-                log.Write("lighting.json's path goes through a link; using defaults and saving nothing: "+e.Message);
+                log.Write("lighting.json's path goes through a link, is redirected or has a final path Windows can't give; using defaults and saving nothing: "+e.Message);
             }
             catch(Exception e)
             {

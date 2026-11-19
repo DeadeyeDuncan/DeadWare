@@ -1,6 +1,9 @@
+using System.ComponentModel;
 using System.Globalization;
+using System.IO.Pipes;
 using System.Runtime.InteropServices;
 using System.Security.AccessControl;
+using Microsoft.Win32.SafeHandles;
 using Xunit;
 using DeadWare.Core;
 using DeadWare.Devices;
@@ -102,7 +105,8 @@ public sealed class LightingStoreTests:IDisposable
         string? decoy=null;
         var store=new LightingStore(P,guardLinks:true,place:(file,_)=>
         {
-            decoy=LightingStore.FinalPath(file);
+            decoy=LightingStore.FinalPath(file,out int _);
+            Assert.NotNull(decoy);
             Assert.Equal(0,LightingStore.Rename(file,Path.GetFileName(away),replace:false));
             File.WriteAllText(decoy,"decoy");
             throw new IOException("putting it in place failed");
@@ -251,7 +255,26 @@ public sealed class LightingStoreTests:IDisposable
         Assert.Equal(@"\\server\share\DeadWare\lighting.json",LightingStore.DosPath(@"\\?\UNC\server\share\DeadWare\lighting.json"));
         var path=Path.GetFullPath(Path.Combine(dir,"x.json"));
         using var file=File.OpenHandle(path,FileMode.CreateNew,FileAccess.Write);
-        Assert.Equal(path,LightingStore.FinalPath(file),StringComparer.OrdinalIgnoreCase);
+        Assert.Equal(path,LightingStore.FinalPath(file,out _),StringComparer.OrdinalIgnoreCase);
+    }
+
+    // F2 item 1: a file whose final path Windows can't give is refused like one whose path leads elsewhere, since a host that can't confirm
+    // which file it opened mustn't use it. On a drive the Mount Manager didn't create, GetFinalPathNameByHandleW gives no path in DOS form;
+    // a pipe's handle stands in for a file there, as the named-pipe file system has no Mount Manager volume either. Load and Save run this
+    // check on the file they opened, so Load's refusal reaches DeviceHost's linked-path note and Save's deletes its temporary file through
+    // its handle, as for a junction. Without the guard, as in a host without administrator rights, nothing is checked.
+    [Fact]
+    public void A_guarded_check_refuses_a_file_whose_final_path_Windows_cant_give()
+    {
+        using var server=new AnonymousPipeServerStream(PipeDirection.Out);
+        using var pipe=new SafeFileHandle(server.SafePipeHandle.DangerousGetHandle(),ownsHandle:false);
+        var length=GetFinalPathNameByHandleW(pipe,new char[1024],1024,0); // flags 0, as the check asks: FILE_NAME_NORMALIZED and VOLUME_NAME_DOS
+        var error=Marshal.GetLastPInvokeError();
+        Assert.Equal(0u,length);
+        var refused=Assert.Throws<LinkedPathException>(()=>new LightingStore(P,guardLinks:true).RequireOpened(pipe,P));
+        Assert.Contains($"(error {error}: {new Win32Exception(error).Message.TrimEnd('.')})",refused.Message);
+        Assert.EndsWith(", so the lighting helper running as administrator won't use it.",refused.Message);
+        Assert.Null(Record.Exception(()=>new LightingStore(P).RequireOpened(pipe,P)));
     }
 
     // Moves folder aside and puts a junction to target in its place, as a program without administrator rights can in its own folders.
@@ -268,4 +291,5 @@ public sealed class LightingStoreTests:IDisposable
         return length is 0 or >=1024?path:new string(buffer,0,(int)length);
     }
     [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern uint GetShortPathNameW(string longPath,[Out] char[] shortPath,uint length);
+    [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern uint GetFinalPathNameByHandleW(SafeFileHandle file,[Out] char[] path,uint length,uint flags);
 }
