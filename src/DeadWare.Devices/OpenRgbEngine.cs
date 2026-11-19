@@ -29,10 +29,15 @@ internal sealed class OpenRgbEngine : IAsyncDisposable
     EngineStatus status=EngineStatus.Stopped;
     int? processId;
     string? failureReason;
-    public const string UnprotectedFolderText=@"The OpenRGB folder can be changed by programs without administrator rights, so DeadWare won't run it as administrator. Copy OpenRGB to C:\Program Files\OpenRGB and choose it in Settings → Lighting.";
+    // The refusal of a folder programs without administrator rights can change; one the check couldn't judge gets
+    // OpenRgbFolderRefusal's can't-check text with the reason instead (polish item 8).
+    public const string UnprotectedFolderText=OpenRgbFolderRefusal.WritableText;
     readonly Func<string,LocationProtection>? folderCheck;
     // folderCheck: an elevated host's check of OpenRGB's folder (Ruling AM), run before every launch; null when the host isn't elevated.
     public static string ConfigFailedText(string configDir)=>$"DeadWare couldn't update OpenRGB's settings file in {configDir}, so it didn't start OpenRGB. Turn lighting off and on in Settings to try again.";
+    // The final reasons name their remedy (O16): choosing the same OpenRGB.exe again in Settings retries, as turning lighting off and on does.
+    public static string MissingText(string exePath)=>$"OpenRGB.exe was not found at {exePath}. Choose OpenRGB.exe in Settings → Lighting.";
+    public static readonly string GaveUpText=$"OpenRGB stopped {RestartBackoff.MaxFailures} times in {(int)RestartBackoff.Window.TotalMinutes} minutes. Turn lighting off and on in Settings to try again.";
     readonly Action<string>? prepareConfig;
     // prepareConfig: writes OpenRGB's settings before every launch (Ruling AR); a launch whose settings can't be written doesn't happen.
     public OpenRgbEngine(string exePath,string configDir,IProcessRunner runner,Func<int,CancellationToken,Task<bool>> portOpen,TimeProvider time,HostLog log,Func<string,LocationProtection>? folderCheck=null,Action<string>? prepareConfig=null)
@@ -55,7 +60,7 @@ internal sealed class OpenRgbEngine : IAsyncDisposable
             if(started) return firstAttempt.Task;
             started=true;
             var ct=cts.Token;
-            if(!File.Exists(exePath)){SetLocked(EngineStatus.Failed,$"OpenRGB.exe was not found at {exePath}.",out pending);firstAttempt.TrySetResult();}
+            if(!File.Exists(exePath)){SetLocked(EngineStatus.Failed,MissingText(exePath),out pending);firstAttempt.TrySetResult();}
             else supervisor=Task.Run(()=>Supervise(ct));
         }
         Notify(pending);
@@ -72,7 +77,7 @@ internal sealed class OpenRgbEngine : IAsyncDisposable
                 Set(EngineStatus.Starting,null);
                 // Outside the lock: the check walks OpenRGB's whole folder. A refusal is final for this engine and isn't a crash, so it
                 // is neither retried nor counted in the backoff.
-                if(Refused()){Set(EngineStatus.Failed,UnprotectedFolderText);return;}
+                if(Refusal() is {} refusal){Set(EngineStatus.Failed,refusal);return;}
                 if(!Prepared()){Set(EngineStatus.Failed,ConfigFailedText(configDir));return;}
                 // B5: the check and the settings write take a while, and a Stop (a conflict's, say) that lands during them starts nothing.
                 if(quitting||ct.IsCancellationRequested) break;
@@ -101,7 +106,7 @@ internal sealed class OpenRgbEngine : IAsyncDisposable
                 }
                 if(quitting) break;
                 var delay=backoff.RecordFailure(time.GetUtcNow());
-                if(delay is null){Set(EngineStatus.Failed,$"OpenRGB stopped {RestartBackoff.MaxFailures} times in {(int)RestartBackoff.Window.TotalMinutes} minutes.");return;}
+                if(delay is null){Set(EngineStatus.Failed,GaveUpText);return;}
                 var wait=Task.Delay(delay.Value,time,ct); // registered before the status change so a clock advance can't miss it
                 Set(EngineStatus.Restarting,null);
                 firstAttempt.TrySetResult();
@@ -119,14 +124,17 @@ internal sealed class OpenRgbEngine : IAsyncDisposable
         catch(Exception e){log.Write("openrgb settings couldn't be written: "+e.Message);return false;}
     }
 
-    bool Refused()
+    // The words for a refused OpenRGB folder, or null when it may be used. They fit the reason (polish item 8): only a folder the check
+    // found other programs can change is called changeable, and one it couldn't judge, a check that failed included, is reported as such.
+    string? Refusal()
     {
-        if(folderCheck is null) return false;
+        if(folderCheck is null) return null;
         LocationProtection verdict;
-        try{verdict=folderCheck(exePath);}catch(Exception e){verdict=new(false,e.Message);}
-        if(verdict.Protected) return false;
+        try{verdict=folderCheck(exePath);}
+        catch(Exception e){log.Write("openrgb folder couldn't be checked: "+e.Message);return OpenRgbFolderRefusal.CantCheckText(e.Message);}
+        if(verdict.Protected) return null;
         log.Write("openrgb folder refused: "+verdict.Reason);
-        return true;
+        return OpenRgbFolderRefusal.Text(verdict.Reason);
     }
 
     async Task<bool> WaitForPort(IRunningProcess proc,CancellationToken ct)

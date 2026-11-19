@@ -90,11 +90,12 @@ internal sealed class SettingsPage : Page
     private readonly StackPanel conflictLines = new() { Spacing = 4 };
     private (string Text, bool Caution)[]? conflictsShown;
     // scanned: the last local scan's conflicts, kept while lighting is off. followingHost: whether the section last showed the
-    // host's list rather than a local scan's; null until it has shown either. protectionFor: the path the folder message is for.
-    // protectionChecks: the paths whose folder check is still running.
+    // host's list rather than a local scan's; null until it has shown either. protectionFor: the path the folder message is for, and
+    // protectionText: that message. protectionChecks: the paths whose folder check is still running.
     private IReadOnlyList<LightingConflict>? scanned;
     private bool? followingHost;
     private string? protectionFor;
+    private string protectionText = "";
     private readonly HashSet<string> protectionChecks = new(StringComparer.Ordinal);
     // scanRun is bumped when a newer scan, or lighting turning on, makes a scan still on its way out of date.
     private int shownSection, scanRun;
@@ -592,6 +593,7 @@ internal sealed class SettingsPage : Page
         Say(lightingProblem, client?.Problem ?? "", announce: LightingShown);
         // So does the host's reason OpenRGB is missing or failing, such as a wrong path, here where Browse… can fix it.
         Say(openRgbProblem, client?.State is { Status: HostStatus.OpenRgbMissing or HostStatus.OpenRgbFailed } state ? state.Message ?? "" : "", announce: LightingShown);
+        ShowProtection(announce: LightingShown);
         // Browse… waits while a change from the switch is under way. During its own change it stays enabled, so it keeps its focus,
         // and ignores clicks.
         browseOpenRgb.IsEnabled = !lightingBusy || browsing;
@@ -682,7 +684,7 @@ internal sealed class SettingsPage : Page
         string? path = session.Settings.OpenRgbPath;
         if (!force && path == protectionFor) return;
         // Another path's message doesn't apply to this one. The same path's stays until the new check replaces it.
-        if (path != protectionFor) Say(protectionWarning, "");
+        if (path != protectionFor) { protectionText = ""; ShowProtection(); }
         protectionFor = path;
         if (path is not null && protectionChecks.Add(path)) _ = CheckProtectionAsync(path);
     }
@@ -695,7 +697,17 @@ internal sealed class SettingsPage : Page
         catch (Exception error) { text = CantCheckText(error.Message); }
         finally { protectionChecks.Remove(path); }
         // The answer counts only while its path is still the chosen one.
-        if (path == protectionFor) Say(protectionWarning, text);
+        if (path == protectionFor) { protectionText = text; ShowProtection(); }
+    }
+
+    /// <summary>
+    /// The folder message under the location, except while the lighting helper itself refuses that OpenRGB folder: its message beside the
+    /// switch says so with the helper's own reason, so the refusal shows once (polish item 8).
+    /// </summary>
+    private void ShowProtection(bool announce = true)
+    {
+        bool hostRefuses = session.Lighting?.State is { Status: HostStatus.OpenRgbFailed } state && OpenRgbFolderRefusal.Is(state.Message);
+        Say(protectionWarning, hostRefuses ? "" : protectionText, announce);
     }
 
     /// <summary>

@@ -64,7 +64,7 @@ public sealed class OpenRgbEngineTests : IAsyncLifetime
         var e=Track(new OpenRgbEngine(missing,@"C:\cfg",runner,(_,_)=>Task.FromResult(true),time,log));
         await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
         Assert.Equal(EngineStatus.Failed,e.Status);
-        Assert.Equal($"OpenRGB.exe was not found at {missing}.",e.FailureReason);
+        Assert.Equal($"OpenRGB.exe was not found at {missing}. Choose OpenRGB.exe in Settings → Lighting.",e.FailureReason);
         Assert.Equal(0,runner.Count);
     }
 
@@ -131,7 +131,7 @@ public sealed class OpenRgbEngineTests : IAsyncLifetime
         await Until(()=>runner.Count==5&&e.Status==EngineStatus.Running);
         runner.At(4).Exit();
         await Until(()=>e.Status==EngineStatus.Failed);
-        Assert.Equal("OpenRGB stopped 5 times in 10 minutes.",e.FailureReason);
+        Assert.Equal("OpenRGB stopped 5 times in 10 minutes. Turn lighting off and on in Settings to try again.",e.FailureReason);
         Assert.Equal(5,runner.Count);
     }
 
@@ -171,6 +171,30 @@ public sealed class OpenRgbEngineTests : IAsyncLifetime
         await Advance(TimeSpan.FromSeconds(60),TimeSpan.FromSeconds(1));
         Assert.Equal(0,runner.Count);
         Assert.Equal(EngineStatus.Failed,e.Status);
+    }
+
+    // Polish item 8 (B12): a folder the check couldn't judge (here a link) isn't called changeable: the refusal says it can't be checked,
+    // gives the reason and keeps the remedy.
+    [Fact]
+    public async Task Unjudged_openrgb_folder_is_refused_with_the_cant_check_text()
+    {
+        const string reason=@"C:\Tools\OpenRGB is a link or junction.";
+        var e=Track(new OpenRgbEngine(exe,@"C:\cfg",runner,(_,_)=>Task.FromResult(true),time,log,folderCheck:_=>new DeadWare.UpdateCore.LocationProtection(false,reason)));
+        await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
+        Assert.Equal(EngineStatus.Failed,e.Status);
+        Assert.Equal(@"DeadWare can't check the OpenRGB folder, so it won't run OpenRGB as administrator: C:\Tools\OpenRGB is a link or junction. Copy OpenRGB to C:\Program Files\OpenRGB and choose it in Settings → Lighting.",e.FailureReason);
+        Assert.Equal(0,runner.Count);
+    }
+
+    // A check that throws couldn't judge the folder either.
+    [Fact]
+    public async Task Failing_folder_check_is_refused_with_the_cant_check_text()
+    {
+        var e=Track(new OpenRgbEngine(exe,@"C:\cfg",runner,(_,_)=>Task.FromResult(true),time,log,folderCheck:_=>throw new UnauthorizedAccessException("Access is denied.")));
+        await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
+        Assert.Equal(EngineStatus.Failed,e.Status);
+        Assert.StartsWith("DeadWare can't check the OpenRGB folder, so it won't run OpenRGB as administrator: Access is denied.",e.FailureReason);
+        Assert.Equal(0,runner.Count);
     }
 
     // The non-elevated path: no check at all, or a folder that passes it, starts OpenRGB as before.
