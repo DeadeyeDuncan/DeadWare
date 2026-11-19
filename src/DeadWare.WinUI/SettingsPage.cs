@@ -711,20 +711,16 @@ internal sealed class SettingsPage : Page
     }
 
     /// <summary>
-    /// The folder check in words: nothing when only administrators can change the folder, and the warning to move OpenRGB when other
-    /// programs can, or when the folder is reached through a link or junction, which moving OpenRGB to C:\Program Files\OpenRGB also
-    /// fixes. A folder that is missing, unreadable or on a network drive can't be judged, so its reason is shown instead of a warning
-    /// about permissions that weren't the problem.
+    /// The folder check in words, read the way the lighting helper reads it for its own refusal (<see cref="OpenRgbFolderRefusal.CantCheck"/>,
+    /// polish round 2, item 3), so the two agree: nothing when only administrators can change the folder, and the warning to move OpenRGB
+    /// when other programs can, through a rule that lets them write or an owner that isn't an administrator account. A folder the check
+    /// couldn't judge, one that is reached through a link or junction, on a network drive, unreadable or missing, gets its reason instead
+    /// of a warning about permissions that weren't the problem.
     /// </summary>
     private static string ProtectionText(LocationProtection protection)
     {
         if (protection.Protected) return "";
-        string reason = protection.Reason ?? "";
-        // InstallLocation.Evaluate's reasons for an entry it couldn't judge. Its other reasons, a link or junction, or an owner or a
-        // rule that lets other programs change the folder, and a reason not known here, get the warning.
-        bool unjudged = (reason.StartsWith("Permissions for ", StringComparison.Ordinal) && reason.Contains(" could not be read: ", StringComparison.Ordinal))
-            || reason.EndsWith(" is not on a local drive.", StringComparison.Ordinal) || reason == "No folder permissions were checked.";
-        return unjudged ? CantCheckText(reason) : ProtectionWarningText;
+        return OpenRgbFolderRefusal.CantCheck(protection.Reason) ? CantCheckText(protection.Reason ?? "its permissions couldn't be read.") : ProtectionWarningText;
     }
 
     private static string CantCheckText(string reason) => $"DeadWare can't check this OpenRGB folder: {reason}";
