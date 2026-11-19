@@ -252,15 +252,22 @@ public sealed class LightingDeviceServiceTests : IDisposable
         Assert.Equal(["mode "+node+"/1","resize "+node+"/0/48","mode "+node+"/1"],calls);
         Assert.Equal(1,Count(File.ReadAllText(Path.Combine(dir,"devices.log")),"didn't hold: OpenRGB reports 16 LEDs"));
     }
-    // D6: a resize after which the read shows no channel 1 at all gets its one failure line, and the line says so.
-    [Fact] public void A_Node_Pro_channel_gone_after_a_resize_is_logged_as_no_such_zone()
+    // D6: a resize after which the read shows no channel 1 at all gets its one failure line, and the line says so. F2 item 5: channel 1's
+    // LEDs changed as well, since it has none now, so the hardware effect is forgotten and the next paint sends it again. The Node Pro
+    // itself is still there, so Rescan's own cleanup, which drops only what was sent to devices that are gone, isn't what forgets it.
+    [Fact] public void A_Node_Pro_channel_gone_after_a_resize_is_logged_as_no_such_zone_and_resends_its_effect()
     {
-        var node=IndexOf(Node);
+        var s=new LightingSettings();var node=IndexOf(Node);
+        svc.Paint(s);
         session.SizeZone(node,0,0);
         session.ResizeInstead=(i,z,_)=>session.Controllers[i]=session.Controllers[i] with{Zones=session.Controllers[i].Zones.Where(x=>x.Index!=z).ToList()};
-        svc.Rescan();
+        svc.Rescan();svc.Paint(s);
         var text=File.ReadAllText(Path.Combine(dir,"devices.log"));
         Assert.Equal(1,Count(text,"sizing Corsair Lighting Node Pro Corsair Channel 1 to 48 LEDs didn't hold: OpenRGB reports no such zone; trying again at each rescan"));
+        var nodePro=Assert.Single(svc.Devices,d=>d.Name==LightingDeviceService.NodePro);
+        Assert.DoesNotContain(nodePro.Zones,z=>z.Index==LightingDeviceService.NodeProZone);
+        var calls=session.Calls.Where(c=>c.StartsWith("resize")||c.StartsWith($"mode {node}/")).ToList();
+        Assert.Equal(["mode "+node+"/1","resize "+node+"/0/48","mode "+node+"/1"],calls);
     }
     // D6: Reset starts a connection's sizing afresh, the failure latch included, as DeviceHost.ConnectLocked's Reset and Rescan do on a
     // reconnect. After a resize that didn't hold, a reconnect whose first read already shows 48 sized nothing on that connection, so it
