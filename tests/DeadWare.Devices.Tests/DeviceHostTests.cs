@@ -381,8 +381,8 @@ public sealed class DeviceHostTests : IAsyncLifetime
         lock(seen){Assert.Contains(seen,s=>!s.Settings.LightsOn);}
     }
 
-    // Polish round 2, item 8: the note says what happens and promises no fix. The helper runs on defaults and saves nothing, and only a
-    // helper that starts later reads the file again (lighting turned off and on, say); one that keeps running never does.
+    // Polish round 2, item 8: the note says what happens and promises no fix. The host runs on defaults and saves nothing, and only a host
+    // that starts later reads the file again (lighting turned off and on, say); one that keeps running never does.
     [Fact]
     public async Task Unreadable_lighting_json_runs_with_defaults_but_never_saves()
     {
@@ -404,11 +404,11 @@ public sealed class DeviceHostTests : IAsyncLifetime
             Assert.False(File.Exists(lightingPath+".tmp"));
         }
         finally{hold.Dispose();}
-        // Readable now, but this helper read it when it started; it keeps its defaults and still saves nothing.
+        // Readable now, but this host read it when it started; it keeps its defaults and still saves nothing.
         Assert.True((await Send(h,new SetBrightnessRequest(40))).Ok);
         Assert.Contains(DeviceHost.UnreadableNote,h.State.Message);
         Assert.Equal("{\"Brightness\":10}",File.ReadAllText(lightingPath));
-        // The next helper to start reads it.
+        // The next host to start reads it.
         Assert.True((await Send(h,new StopRequest())).Ok);
         await run!.WaitAsync(RealTimeCap);
         await h.DisposeAsync();
