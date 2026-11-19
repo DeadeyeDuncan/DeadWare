@@ -46,6 +46,16 @@ internal sealed class OpenRgbEngine : IAsyncDisposable
     // address, not "localhost", which can resolve to ::1 first, while the session and the port probe use IPv4 loopback.
     public const string Host="127.0.0.1";
     public static IReadOnlyList<string> Arguments(string configDir)=>["--server","--server-host",Host,"--server-port",Port.ToString(CultureInfo.InvariantCulture),"--noautoconnect","--config",configDir];
+    // F4 item 1 (whole-branch review D14): OpenRGB 1.0rc3 is built before it reads --config, and while it is built it uses <APPDATA>\OpenRGB:
+    // it loads OpenRGB.json there and configures its log from that file's LogManager section (ResourceManager.cpp:136-148), which takes an
+    // absolute log path, makes the log's folder, deletes old logs of that name and opens the log (LogManager.cpp:65-160). --config later
+    // swaps the settings but never moves the log (ResourceManager.cpp:710-717). So OpenRGB starts with APPDATA set to the config folder's
+    // parent, whose OpenRGB folder is the config folder itself, since Windows names ignore case: all of that happens in DeadWare's folder,
+    // the protected one for an elevated host. Null for a config folder of another name, whose parent's OpenRGB folder would be another
+    // folder, so the engine refuses to start (Program always names it openrgb).
+    public static string? AppData(string configDir)
+        =>string.Equals(Path.GetFileName(configDir),"openrgb",StringComparison.OrdinalIgnoreCase)&&Path.GetDirectoryName(configDir) is {Length:>0} parent?parent:null;
+    public static string FolderNameText(string configDir)=>$"OpenRGB's settings folder for DeadWare, {configDir}, isn't named openrgb, so DeadWare didn't start OpenRGB: OpenRGB would read settings and keep its log in another folder.";
     public int? ProcessId{get{lock(gate)return processId;}}
     public EngineStatus Status{get{lock(gate)return status;}}
     public string? FailureReason{get{lock(gate)return failureReason;}}
@@ -60,7 +70,8 @@ internal sealed class OpenRgbEngine : IAsyncDisposable
             if(started) return firstAttempt.Task;
             started=true;
             var ct=cts.Token;
-            if(!File.Exists(exePath)){SetLocked(EngineStatus.Failed,MissingText(exePath),out pending);firstAttempt.TrySetResult();}
+            if(AppData(configDir) is null){SetLocked(EngineStatus.Failed,FolderNameText(configDir),out pending);firstAttempt.TrySetResult();}
+            else if(!File.Exists(exePath)){SetLocked(EngineStatus.Failed,MissingText(exePath),out pending);firstAttempt.TrySetResult();}
             else supervisor=Task.Run(()=>Supervise(ct));
         }
         Notify(pending);
@@ -86,6 +97,7 @@ internal sealed class OpenRgbEngine : IAsyncDisposable
                 {
                     var info=new ProcessStartInfo(exePath){WorkingDirectory=Path.GetDirectoryName(exePath)??""};
                     foreach(var a in Arguments(configDir)) info.ArgumentList.Add(a);
+                    info.Environment["APPDATA"]=AppData(configDir); // StartAsync refused a folder for which this is null
                     proc=runner.Start(info);
                     lock(gate){current=proc;processId=proc.Id;}
                     if(await WaitForPort(proc,ct).ConfigureAwait(false))

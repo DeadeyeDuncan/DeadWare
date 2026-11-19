@@ -47,7 +47,7 @@ public sealed class OpenRgbEngineTests : IAsyncLifetime
         public FakeProcess At(int i){lock(Started)return Started[i];}
     }
 
-    OpenRgbEngine Engine()=>Track(new(exe,@"C:\cfg",runner,(_,_)=>{Interlocked.Increment(ref probes);return Task.FromResult(portUp);},time,log));
+    OpenRgbEngine Engine()=>Track(new(exe,@"C:\cfg\openrgb",runner,(_,_)=>{Interlocked.Increment(ref probes);return Task.FromResult(portUp);},time,log));
     async Task Advance(TimeSpan total,TimeSpan step)
     {
         for(var t=TimeSpan.Zero;t<total;t+=step){time.Advance(step);await Task.Delay(5);}
@@ -56,13 +56,13 @@ public sealed class OpenRgbEngineTests : IAsyncLifetime
     // Ruling AN: the SDK server listens on this PC only. OpenRGB 1.0rc3 binds 0.0.0.0 (every network interface) unless told otherwise,
     // and its SDK has no authentication; the client and the port probe both use 127.0.0.1.
     [Fact]
-    public void Arguments_match_spec()=>Assert.Equal(["--server","--server-host","127.0.0.1","--server-port","6744","--noautoconnect","--config",@"C:\cfg"],OpenRgbEngine.Arguments(@"C:\cfg"));
+    public void Arguments_match_spec()=>Assert.Equal(["--server","--server-host","127.0.0.1","--server-port","6744","--noautoconnect","--config",@"C:\cfg\openrgb"],OpenRgbEngine.Arguments(@"C:\cfg\openrgb"));
 
     [Fact]
     public async Task Missing_exe_fails_without_starting()
     {
         var missing=Path.Combine(dir,"nope","OpenRGB.exe");
-        var e=Track(new OpenRgbEngine(missing,@"C:\cfg",runner,(_,_)=>Task.FromResult(true),time,log));
+        var e=Track(new OpenRgbEngine(missing,@"C:\cfg\openrgb",runner,(_,_)=>Task.FromResult(true),time,log));
         await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
         Assert.Equal(EngineStatus.Failed,e.Status);
         Assert.Equal($"OpenRGB.exe was not found at {missing}. Choose OpenRGB.exe in Settings → Lighting.",e.FailureReason);
@@ -76,7 +76,33 @@ public sealed class OpenRgbEngineTests : IAsyncLifetime
         await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
         Assert.Equal(EngineStatus.Running,e.Status);
         Assert.Equal(100,e.ProcessId);
-        Assert.Equal(OpenRgbEngine.Arguments(@"C:\cfg"),runner.Info!.ArgumentList.ToArray());
+        Assert.Equal(OpenRgbEngine.Arguments(@"C:\cfg\openrgb"),runner.Info!.ArgumentList.ToArray());
+    }
+
+    // F4 item 1 (whole-branch review D14): OpenRGB 1.0rc3 uses <APPDATA>\OpenRGB before it reads --config. It loads OpenRGB.json from there
+    // and makes, rotates and opens its log where that file says. So OpenRGB starts with APPDATA set to the config folder's parent, whose
+    // OpenRGB folder is the config folder itself, since Windows names ignore case.
+    [Fact]
+    public async Task OpenRGB_starts_with_APPDATA_at_the_config_folders_parent()
+    {
+        var e=Engine();
+        await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
+        var appData=runner.Info!.Environment["APPDATA"];
+        Assert.Equal(@"C:\cfg",appData);
+        Assert.Equal(@"C:\cfg\openrgb",Path.Combine(appData!,"OpenRGB"),ignoreCase:true);
+    }
+
+    // Its guard: for a config folder of any other name, <APPDATA>\OpenRGB would be another folder, so OpenRGB isn't started, and the reason
+    // says why.
+    [Fact]
+    public async Task A_config_folder_not_named_openrgb_is_refused_without_starting()
+    {
+        var e=Track(new OpenRgbEngine(exe,@"C:\cfg\settings",runner,(_,_)=>Task.FromResult(true),time,log));
+        await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
+        Assert.Equal(EngineStatus.Failed,e.Status);
+        Assert.Equal(@"OpenRGB's settings folder for DeadWare, C:\cfg\settings, isn't named openrgb, so DeadWare didn't start OpenRGB: OpenRGB would read settings and keep its log in another folder.",e.FailureReason);
+        await Advance(TimeSpan.FromSeconds(60),TimeSpan.FromSeconds(1));
+        Assert.Equal(0,runner.Count);
     }
 
     [Fact]
@@ -163,7 +189,7 @@ public sealed class OpenRgbEngineTests : IAsyncLifetime
     public async Task Refused_openrgb_folder_fails_without_starting_or_relaunching()
     {
         string? checkedPath=null;
-        var e=Track(new OpenRgbEngine(exe,@"C:\cfg",runner,(_,_)=>Task.FromResult(true),time,log,
+        var e=Track(new OpenRgbEngine(exe,@"C:\cfg\openrgb",runner,(_,_)=>Task.FromResult(true),time,log,
             folderCheck:path=>{checkedPath=path;return new DeadWare.UpdateCore.LocationProtection(false,@"C:\Users\Public can be changed by S-1-5-32-545.");}));
         await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
         Assert.Equal(EngineStatus.Failed,e.Status);
@@ -180,7 +206,7 @@ public sealed class OpenRgbEngineTests : IAsyncLifetime
     public async Task Unjudged_openrgb_folder_is_refused_with_the_cant_check_text()
     {
         const string reason=@"C:\Tools\OpenRGB is a link or junction.";
-        var e=Track(new OpenRgbEngine(exe,@"C:\cfg",runner,(_,_)=>Task.FromResult(true),time,log,folderCheck:_=>new DeadWare.UpdateCore.LocationProtection(false,reason)));
+        var e=Track(new OpenRgbEngine(exe,@"C:\cfg\openrgb",runner,(_,_)=>Task.FromResult(true),time,log,folderCheck:_=>new DeadWare.UpdateCore.LocationProtection(false,reason)));
         await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
         Assert.Equal(EngineStatus.Failed,e.Status);
         Assert.Equal(@"DeadWare can't check the OpenRGB folder, so it won't run OpenRGB as administrator: C:\Tools\OpenRGB is a link or junction. Copy OpenRGB to C:\Program Files\OpenRGB and choose it in Settings → Lighting.",e.FailureReason);
@@ -191,7 +217,7 @@ public sealed class OpenRgbEngineTests : IAsyncLifetime
     [Fact]
     public async Task Failing_folder_check_is_refused_with_the_cant_check_text()
     {
-        var e=Track(new OpenRgbEngine(exe,@"C:\cfg",runner,(_,_)=>Task.FromResult(true),time,log,folderCheck:_=>throw new UnauthorizedAccessException("Access is denied.")));
+        var e=Track(new OpenRgbEngine(exe,@"C:\cfg\openrgb",runner,(_,_)=>Task.FromResult(true),time,log,folderCheck:_=>throw new UnauthorizedAccessException("Access is denied.")));
         await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
         Assert.Equal(EngineStatus.Failed,e.Status);
         Assert.StartsWith("DeadWare can't check the OpenRGB folder, so it won't run OpenRGB as administrator: Access is denied.",e.FailureReason);
@@ -203,7 +229,7 @@ public sealed class OpenRgbEngineTests : IAsyncLifetime
     public async Task Protected_openrgb_folder_starts_as_before()
     {
         var checks=0;
-        var e=Track(new OpenRgbEngine(exe,@"C:\cfg",runner,(_,_)=>Task.FromResult(true),time,log,folderCheck:_=>{checks++;return new DeadWare.UpdateCore.LocationProtection(true);}));
+        var e=Track(new OpenRgbEngine(exe,@"C:\cfg\openrgb",runner,(_,_)=>Task.FromResult(true),time,log,folderCheck:_=>{checks++;return new DeadWare.UpdateCore.LocationProtection(true);}));
         await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
         Assert.Equal(EngineStatus.Running,e.Status);
         Assert.Equal(1,runner.Count);
@@ -215,7 +241,7 @@ public sealed class OpenRgbEngineTests : IAsyncLifetime
     public async Task Config_is_prepared_before_every_start()
     {
         var prepared=new List<int>();
-        var e=Track(new OpenRgbEngine(exe,@"C:\cfg",runner,(_,_)=>Task.FromResult(true),time,log,prepareConfig:d=>{Assert.Equal(@"C:\cfg",d);lock(prepared)prepared.Add(runner.Count);}));
+        var e=Track(new OpenRgbEngine(exe,@"C:\cfg\openrgb",runner,(_,_)=>Task.FromResult(true),time,log,prepareConfig:d=>{Assert.Equal(@"C:\cfg\openrgb",d);lock(prepared)prepared.Add(runner.Count);}));
         await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
         runner.At(0).Exit();
         await Until(()=>e.Status==EngineStatus.Restarting);
@@ -228,10 +254,10 @@ public sealed class OpenRgbEngineTests : IAsyncLifetime
     [Fact]
     public async Task Config_that_cant_be_written_fails_without_starting()
     {
-        var e=Track(new OpenRgbEngine(exe,@"C:\cfg",runner,(_,_)=>Task.FromResult(true),time,log,prepareConfig:_=>throw new UnauthorizedAccessException("denied")));
+        var e=Track(new OpenRgbEngine(exe,@"C:\cfg\openrgb",runner,(_,_)=>Task.FromResult(true),time,log,prepareConfig:_=>throw new UnauthorizedAccessException("denied")));
         await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
         Assert.Equal(EngineStatus.Failed,e.Status);
-        Assert.Equal(OpenRgbEngine.ConfigFailedText(@"C:\cfg"),e.FailureReason);
+        Assert.Equal(OpenRgbEngine.ConfigFailedText(@"C:\cfg\openrgb"),e.FailureReason);
         await Advance(TimeSpan.FromSeconds(60),TimeSpan.FromSeconds(1));
         Assert.Equal(0,runner.Count);
     }
@@ -261,7 +287,7 @@ public sealed class OpenRgbEngineTests : IAsyncLifetime
         using var inside=new SemaphoreSlim(0);
         using var release=new ManualResetEventSlim(false);
         void Park(){inside.Release();release.Wait(RealTimeCap);}
-        var e=Track(new OpenRgbEngine(exe,@"C:\cfg",runner,(_,_)=>Task.FromResult(true),time,log,
+        var e=Track(new OpenRgbEngine(exe,@"C:\cfg\openrgb",runner,(_,_)=>Task.FromResult(true),time,log,
             folderCheck:_=>{if(duringFolderCheck) Park();return new DeadWare.UpdateCore.LocationProtection(true);},
             prepareConfig:_=>{if(!duringFolderCheck) Park();}));
         var start=e.StartAsync(CancellationToken.None);
@@ -298,7 +324,7 @@ public sealed class OpenRgbEngineTests : IAsyncLifetime
         var clock=new Clock();
         var up=false;var probed=0;
         var seen=new List<EngineStatus>();
-        var e=Track(new OpenRgbEngine(exe,@"C:\cfg",runner,(_,_)=>{Interlocked.Increment(ref probed);return Task.FromResult(Volatile.Read(ref up));},clock,log));
+        var e=Track(new OpenRgbEngine(exe,@"C:\cfg\openrgb",runner,(_,_)=>{Interlocked.Increment(ref probed);return Task.FromResult(Volatile.Read(ref up));},clock,log));
         e.Changed+=()=>{lock(seen)seen.Add(e.Status);};
         var start=e.StartAsync(CancellationToken.None);
         await Until(()=>clock.Waiting(OpenRgbEngine.PortProbe)); // the first probe found the port shut; the next waits a probe interval
@@ -324,7 +350,7 @@ public sealed class OpenRgbEngineTests : IAsyncLifetime
     public async Task Second_start_while_running_starts_nothing_more()
     {
         var prepared=0;
-        var e=Track(new OpenRgbEngine(exe,@"C:\cfg",runner,(_,_)=>Task.FromResult(true),time,log,prepareConfig:_=>Interlocked.Increment(ref prepared)));
+        var e=Track(new OpenRgbEngine(exe,@"C:\cfg\openrgb",runner,(_,_)=>Task.FromResult(true),time,log,prepareConfig:_=>Interlocked.Increment(ref prepared)));
         await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
         await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
         await Task.Delay(100);
