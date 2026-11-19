@@ -1,12 +1,14 @@
 using System.Runtime.Versioning;
 using System.Security.AccessControl;
 using System.Security.Principal;
+using DeadWare.Core;
 using DeadWare.UpdateCore;
 
 namespace DeadWare.Devices;
 
-// A folder the policy refused. Message is plain words for the window: the folder at fault, InstallLocation's reason and the remedy
-// (polish item 7). Folder is that folder, and Reason is InstallLocation's account of why.
+// A folder the policy refused. Message is plain words for the window: the path at fault, which InstallLocation's reason names, what is
+// wrong with it and the remedy (polish item 7, round 2 item 2). Folder is the folder being prepared, and Reason is InstallLocation's
+// account of why.
 internal sealed class UnprotectedFolderException(string folder,string? reason,string message):Exception(message)
 {
     public string Folder{get;}=folder;
@@ -22,13 +24,37 @@ internal static class ProtectedFolders
     // %ProgramData% itself lets Users create folders, so a depth of 2 would refuse every stock Windows installation.
     internal const int StrictParents=1;
 
-    // Polish item 7 (B4/B13/B18): the folder that failed, which is %ProgramData%\DeadWare itself when that is at fault, so the remedy works.
-    internal static string Refusal(string folder,string? reason)
-        =>$"{folder} isn't restricted to administrators ({Clause(reason)}), so DeadWare won't start OpenRGB. Remove that folder, or give only administrators write access to it, then turn lighting off and on.";
-    internal static string LogRefusal(string folder,string? reason)
-        =>$"{folder} isn't restricted to administrators ({Clause(reason)}), so the lighting helper running as administrator keeps no log.";
-    // InstallLocation's reasons are sentences; inside the parentheses they lose the full stop.
-    static string Clause(string? reason)=>reason is {Length:>0}?reason.TrimEnd('.'):"its permissions couldn't be checked";
+    // Polish item 7 and round 2 item 2 (B4/B13/B18): a refusal names the path InstallLocation's reason names, which can be the folder being
+    // prepared, something inside it or a folder above it, says what is wrong with it in words that fit the reason, and gives a remedy that
+    // works there. One that programs without administrator rights can change: give only administrators write access to it. One another
+    // account owns: make Administrators its owner (restricting write access never passes that). Inside %ProgramData%\DeadWare, DeadWare
+    // itself included, removing it is the alternative, which needs administrator rights; DeadWare makes its own folders again, protected.
+    // %ProgramData% and the folders above it are never to be removed: they get their standard permissions back. A path the check couldn't
+    // judge gets the can't-check words with the reason, never a claim that it isn't restricted.
+    internal static string Refusal(string deadWare,string folder,string? reason)=>Explain(deadWare,folder,reason,"DeadWare won't start OpenRGB","it won't start OpenRGB");
+    internal static string LogRefusal(string deadWare,string folder,string? reason)
+        =>Explain(deadWare,folder,reason,"the lighting helper running as administrator keeps no log","the lighting helper running as administrator keeps no log");
+
+    static string Explain(string deadWare,string folder,string? reason,string outcome,string cantCheckOutcome)
+    {
+        var (fault,named)=LocationReason.Read(reason);
+        var entry=named??folder;
+        var root=Path.TrimEndingDirectorySeparator(Path.GetFullPath(deadWare));
+        var inside=entry.Equals(root,StringComparison.OrdinalIgnoreCase)||entry.StartsWith(root+Path.DirectorySeparatorChar,StringComparison.OrdinalIgnoreCase);
+        const string Remove="or remove it, which needs administrator rights. Then turn lighting off and on.";
+        const string Restore="Restore its standard permissions, then turn lighting off and on.";
+        // InstallLocation's sentence opens the message: it names the path first. One in no form it uses follows the folder being prepared.
+        var opening=named is null?$"{folder} ({reason?.TrimEnd('.')})":reason!.TrimEnd('.');
+        var said=reason is not {Length:>0}?"its permissions couldn't be read.":reason.EndsWith('.')?reason:reason+".";
+        return fault switch
+        {
+            LocationFault.Writable=>$"{opening}, so programs without administrator rights can change it and {outcome}. "+(inside?"Give only administrators write access to it, "+Remove:Restore),
+            LocationFault.NotOwned=>$"{opening}, so {outcome}. "+(inside?"Make Administrators its owner, "+Remove:Restore),
+            // Inside DeadWare's folder, removing the path clears any of these: what DeadWare needs there it makes again, protected. Above
+            // it, only an unreadable folder has a fix of its own: a link or a network drive there is how this PC is set up.
+            _=>$"DeadWare can't check {entry}, so {cantCheckOutcome}: {said}"+(named is null?"":inside?" Remove it, which needs administrator rights, then turn lighting off and on.":fault==LocationFault.Unreadable?" "+Restore:""),
+        };
+    }
 
     public static string OpenRgbConfigDirectory()=>OpenRgbConfigDirectory(Environment.IsPrivilegedProcess,Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData));
 
@@ -47,23 +73,24 @@ internal static class ProtectedFolders
     // %ProgramData%\DeadWare\<name>, created the way ProtectedRoot.Prepare creates the updates folder: a missing DeadWare folder is created
     // with the protected DACL, an existing one is verified before anything is created beneath it, and the folder itself must then pass.
     // DeadWare's own entry is judged before the folder, so a refusal of DeadWare names DeadWare, not the folder beneath it.
-    internal static string Protected(string commonAppData,string name,Func<string,string?,string> refusal)
+    // refusal: the message for (%ProgramData%\DeadWare, the folder being prepared, InstallLocation's reason).
+    internal static string Protected(string commonAppData,string name,Func<string,string,string?,string> refusal)
     {
         var deadWare=Path.Combine(commonAppData,"DeadWare");
         var dir=Path.Combine(deadWare,name);
         if(!Directory.Exists(dir))
         {
             if(!Directory.Exists(deadWare)) new DirectoryInfo(deadWare).Create(ProtectedRoot.Security());
-            Require(deadWare,InstallLocation.Check(deadWare),refusal);
+            Require(deadWare,deadWare,InstallLocation.Check(deadWare),refusal);
             new DirectoryInfo(dir).Create(ProtectedRoot.Security());
         }
-        Require(deadWare,InstallLocation.Evaluate([InstallLocation.ReadEntry(deadWare,PathKind.Directory)]),refusal);
-        Require(dir,InstallLocation.Check(dir,StrictParents),refusal);
+        Require(deadWare,deadWare,InstallLocation.Evaluate([InstallLocation.ReadEntry(deadWare,PathKind.Directory)]),refusal);
+        Require(deadWare,dir,InstallLocation.Check(dir,StrictParents),refusal);
         return dir;
     }
-    static void Require(string folder,LocationProtection verdict,Func<string,string?,string> refusal)
+    static void Require(string deadWare,string folder,LocationProtection verdict,Func<string,string,string?,string> refusal)
     {
-        if(!verdict.Protected) throw new UnprotectedFolderException(folder,verdict.Reason,refusal(folder,verdict.Reason));
+        if(!verdict.Protected) throw new UnprotectedFolderException(folder,verdict.Reason,refusal(deadWare,folder,verdict.Reason));
     }
 
     public static string LogDirectory(string sid)=>LogDirectory(Environment.IsPrivilegedProcess,Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),sid);
@@ -79,7 +106,7 @@ internal static class ProtectedFolders
         var user=new SecurityIdentifier(sid); // a SID or nothing: it names a folder
         var dir=Path.Combine(Protected(commonAppData,"logs",LogRefusal),user.Value);
         if(!Directory.Exists(dir)) new DirectoryInfo(dir).Create(UserLogSecurity(user));
-        Require(dir,InstallLocation.Check(dir,StrictParents+1),LogRefusal);
+        Require(Path.Combine(commonAppData,"DeadWare"),dir,InstallLocation.Check(dir,StrictParents+1),LogRefusal);
         return dir;
     }
 

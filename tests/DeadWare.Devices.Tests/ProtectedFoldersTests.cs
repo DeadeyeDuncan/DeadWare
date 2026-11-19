@@ -153,7 +153,9 @@ public sealed class ProtectedFoldersTests
     }
 
     // Polish item 7 (B4/B13/B18): when %ProgramData%\DeadWare itself fails the check, the refusal names that folder, not openrgb beneath it,
-    // gives InstallLocation's reason, and points the remedy at it: deleting openrgb alone would change nothing.
+    // gives InstallLocation's reason, and points the remedy at it: deleting openrgb alone would change nothing. Made without administrator
+    // rights, it is owned by this user, so the remedy is a new owner (round 2, item 2), never write access alone; made by an elevated test
+    // run (CI's), Administrators own it but this user can change it. Removing it is the alternative either way.
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -161,20 +163,83 @@ public sealed class ProtectedFoldersTests
     {
         var root=Path.Combine(Path.GetTempPath(),"dw-pf-"+Guid.NewGuid().ToString("N"));
         string programData=Path.Combine(root,"pd"),deadWare=Path.Combine(programData,"DeadWare");
-        // Made without administrator rights, so owned by this user and open to programs running as them.
         Directory.CreateDirectory(openRgbExists?Path.Combine(deadWare,"openrgb"):deadWare);
         try
         {
             var refusal=Assert.Throws<UnprotectedFolderException>(()=>ProtectedFolders.OpenRgbConfigDirectory(true,programData,Path.Combine(root,"local")));
             Assert.NotNull(refusal.Reason);
             Assert.StartsWith(deadWare+" ",refusal.Reason);
-            Assert.StartsWith($"{deadWare} isn't restricted to administrators (",refusal.Message);
-            Assert.Contains(refusal.Reason!.TrimEnd('.'),refusal.Message);
-            Assert.EndsWith("Remove that folder, or give only administrators write access to it, then turn lighting off and on.",refusal.Message);
-            Assert.DoesNotContain(Path.Combine(deadWare,"openrgb"),refusal.Message,StringComparison.OrdinalIgnoreCase);
+            var owned=refusal.Reason!.EndsWith(" is not owned by SYSTEM, Administrators or TrustedInstaller.",StringComparison.Ordinal);
+            Assert.True(owned||refusal.Reason.StartsWith(deadWare+" can be changed by ",StringComparison.Ordinal),refusal.Reason);
+            Assert.Equal(refusal.Reason.TrimEnd('.')+(owned?", so DeadWare won't start OpenRGB. Make Administrators its owner, "
+                :", so programs without administrator rights can change it and DeadWare won't start OpenRGB. Give only administrators write access to it, ")
+                +"or remove it, which needs administrator rights. Then turn lighting off and on.",refusal.Message);
             Assert.Equal(deadWare,refusal.Folder);
         }
         finally{Directory.Delete(root,true);}
+    }
+
+    // Polish round 2, item 2: a refusal names the path InstallLocation's reason names and fits its words and remedy to the fault and to where
+    // that path is: DeadWare's folder or something deeper inside it may be removed, %ProgramData% and the drive above it never; a path the
+    // check couldn't judge is one DeadWare can't check, never one that isn't restricted. The reasons are InstallLocation's own.
+    const string ProgramDataDir=@"C:\ProgramData",DeadWareDir=@"C:\ProgramData\DeadWare",OpenRgbDir=@"C:\ProgramData\DeadWare\openrgb",
+        Deeper=@"C:\ProgramData\DeadWare\updates\0.19.0\DeadWare.dll";
+    static string Reason(string path,PathKind kind,string? owner=AdministratorsSid,AclRule[]? rules=null,bool link=false,string? error=null,bool network=false)
+        =>InstallLocation.Evaluate([new PathSecurity(path,kind,owner,rules??[],link,error,network)]).Reason!;
+    const string Denied="Access to the path is denied.",Drive=@"C:\",Inside=" Remove it, which needs administrator rights, then turn lighting off and on.",
+        Restore=" Restore its standard permissions, then turn lighting off and on.",OrRemove="or remove it, which needs administrator rights. Then turn lighting off and on.";
+    public static TheoryData<string,string> Refusals=>new()
+    {
+        // Programs without administrator rights can change it.
+        {Reason(Deeper,PathKind.File,rules:[new(UsersSid,0x2,true,false)]),
+            $"{Deeper} can be changed by {UsersSid}, so programs without administrator rights can change it and DeadWare won't start OpenRGB. Give only administrators write access to it, {OrRemove}"},
+        {Reason(DeadWareDir,PathKind.Directory,rules:[new(UsersSid,0x2,true,false)]),
+            $"{DeadWareDir} can be changed by {UsersSid}, so programs without administrator rights can change it and DeadWare won't start OpenRGB. Give only administrators write access to it, {OrRemove}"},
+        {Reason(ProgramDataDir,PathKind.Ancestor,rules:[new(UsersSid,0x10000,true,false)]),
+            $"{ProgramDataDir} can be changed by {UsersSid}, so programs without administrator rights can change it and DeadWare won't start OpenRGB.{Restore}"},
+        {Reason(Drive,PathKind.Ancestor,rules:[new("S-1-5-11",0x40000,true,false)]),
+            $"{Drive} can be changed by S-1-5-11, so programs without administrator rights can change it and DeadWare won't start OpenRGB.{Restore}"},
+        // Another account owns it.
+        {Reason(OpenRgbDir,PathKind.Directory,owner:"S-1-5-21-1-2-3-1001"),
+            $"{OpenRgbDir} is not owned by SYSTEM, Administrators or TrustedInstaller, so DeadWare won't start OpenRGB. Make Administrators its owner, {OrRemove}"},
+        {Reason(ProgramDataDir,PathKind.Ancestor,owner:"S-1-5-21-1-2-3-1001"),
+            $"{ProgramDataDir} is not owned by SYSTEM, Administrators or TrustedInstaller, so DeadWare won't start OpenRGB.{Restore}"},
+        // The check couldn't judge it.
+        {Reason(OpenRgbDir,PathKind.Directory,link:true),
+            $"DeadWare can't check {OpenRgbDir}, so it won't start OpenRGB: {OpenRgbDir} is a link or junction.{Inside}"},
+        {Reason(Deeper,PathKind.File,owner:null,error:Denied),
+            $"DeadWare can't check {Deeper}, so it won't start OpenRGB: Permissions for {Deeper} could not be read: {Denied}{Inside}"},
+        {Reason(ProgramDataDir,PathKind.Ancestor,owner:null,error:Denied),
+            $"DeadWare can't check {ProgramDataDir}, so it won't start OpenRGB: Permissions for {ProgramDataDir} could not be read: {Denied}{Restore}"},
+        {Reason(ProgramDataDir,PathKind.Ancestor,link:true),
+            $"DeadWare can't check {ProgramDataDir}, so it won't start OpenRGB: {ProgramDataDir} is a link or junction."},
+        {Reason(ProgramDataDir,PathKind.Ancestor,owner:null,network:true),
+            $"DeadWare can't check {ProgramDataDir}, so it won't start OpenRGB: {ProgramDataDir} is not on a local drive."},
+        {InstallLocation.Evaluate([]).Reason!,
+            $"DeadWare can't check {OpenRgbDir}, so it won't start OpenRGB: No folder permissions were checked."},
+    };
+
+    [Theory]
+    [MemberData(nameof(Refusals))]
+    public void A_refusal_names_the_path_at_fault_with_words_and_a_remedy_that_fit(string reason,string expected)
+    {
+        var message=ProtectedFolders.Refusal(DeadWareDir,OpenRgbDir,reason);
+        Assert.Equal(expected,message);
+        Assert.DoesNotContain("isn't restricted",message);
+        // Never a folder above DeadWare's own to be removed, and never write access alone for a path another account owns.
+        if(!message.Contains(DeadWareDir,StringComparison.OrdinalIgnoreCase)) Assert.DoesNotContain("remove",message,StringComparison.OrdinalIgnoreCase);
+        if(reason.Contains(" is not owned by ",StringComparison.Ordinal)) Assert.DoesNotContain("write access",message);
+    }
+
+    // The log folder's refusal matches the OpenRGB folder's: only the outcome differs.
+    [Fact]
+    public void The_log_folders_refusal_fits_its_reason_the_same_way()
+    {
+        const string logs=@"C:\ProgramData\DeadWare\logs";
+        Assert.Equal($"{logs} can be changed by {UsersSid}, so programs without administrator rights can change it and the lighting helper running as administrator keeps no log. Give only administrators write access to it, {OrRemove}",
+            ProtectedFolders.LogRefusal(DeadWareDir,logs+@"\"+UserSid,Reason(logs,PathKind.Directory,rules:[new(UsersSid,0x2,true,false)])));
+        Assert.Equal($"DeadWare can't check {logs}, so the lighting helper running as administrator keeps no log: {logs} is a link or junction.{Inside}",
+            ProtectedFolders.LogRefusal(DeadWareDir,logs+@"\"+UserSid,Reason(logs,PathKind.Directory,link:true)));
     }
 
     // Ruling AM: only an elevated host refuses an OpenRGB folder that programs without administrator rights can change.

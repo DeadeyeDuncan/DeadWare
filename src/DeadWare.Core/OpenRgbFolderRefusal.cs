@@ -21,11 +21,9 @@ public static class OpenRgbFolderRefusal
     /// <summary>
     /// InstallLocation.Evaluate's reasons for a folder it couldn't judge: a missing or unreadable entry, one on a network drive, a link or
     /// junction, or nothing checked. Its other reasons, an owner or a rule that lets other programs change the folder, establish that it
-    /// can be changed.
+    /// can be changed. Read by <see cref="LocationReason"/>, as the refusals of DeadWare's own folders are.
     /// </summary>
-    public static bool CantCheck(string? reason)=>reason is null||reason=="No folder permissions were checked."
-        ||reason.StartsWith("Permissions for ",StringComparison.Ordinal)&&reason.Contains(" could not be read: ",StringComparison.Ordinal)
-        ||reason.EndsWith(" is not on a local drive.",StringComparison.Ordinal)||reason.EndsWith(" is a link or junction.",StringComparison.Ordinal);
+    public static bool CantCheck(string? reason)=>LocationReason.CantCheck(LocationReason.Read(reason).Fault);
 
     /// <summary>The host's status message reports a folder refusal; a lighting.json note may follow it.</summary>
     public static bool Is(string? message)=>message is not null&&(message.StartsWith(WritableText,StringComparison.Ordinal)||message.StartsWith(CantCheckStart,StringComparison.Ordinal));

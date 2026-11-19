@@ -661,7 +661,7 @@ public sealed class DeviceHostTests : IAsyncLifetime
     public async Task Host_without_a_log_still_reports_a_refused_folder_and_answers()
     {
         using var nowhere=new HostLog(null);
-        const string refusal=@"C:\ProgramData\DeadWare isn't restricted to administrators (C:\ProgramData\DeadWare can be changed by S-1-5-32-545), so DeadWare won't start OpenRGB. Remove that folder, or give only administrators write access to it, then turn lighting off and on.";
+        var refusal=ProtectedFolders.Refusal(@"C:\ProgramData\DeadWare",@"C:\ProgramData\DeadWare\openrgb",@"C:\ProgramData\DeadWare can be changed by S-1-5-32-545.");
         var h=Build(startupFailure:refusal,hostLog:nowhere);Start(h);
         await Until(()=>h.State.Status==HostStatus.OpenRgbFailed);
         Assert.Equal(refusal,h.State.Message);
