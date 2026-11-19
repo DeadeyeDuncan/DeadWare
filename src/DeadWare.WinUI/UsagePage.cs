@@ -530,7 +530,7 @@ internal sealed class UsagePage : Page
         try
         {
             // The Windows App SDK's picker, which also works while DeadWare runs as administrator. It adds no extension unless given a default one.
-            var picker = new Microsoft.Windows.Storage.Pickers.FileSavePicker(Microsoft.UI.Win32Interop.GetWindowIdFromWindow(App.WindowHandle))
+            var picker = new Microsoft.Windows.Storage.Pickers.FileSavePicker(Pages.DialogOwner(this))
                 { SuggestedFileName = $"DeadWare-usage-{(applicationsCsv ? "applications" : "device")}-{DateTime.Now:yyyyMMdd-HHmmss}", DefaultFileExtension = ".csv" };
             picker.FileTypeChoices.Add("CSV files", [".csv"]);
             path = (await picker.PickSaveFileAsync())?.Path;
