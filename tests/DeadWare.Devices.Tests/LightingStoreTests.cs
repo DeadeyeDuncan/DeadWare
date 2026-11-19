@@ -277,6 +277,87 @@ public sealed class LightingStoreTests:IDisposable
         Assert.Null(Record.Exception(()=>new LightingStore(P).RequireOpened(pipe,P)));
     }
 
+    // F3 item 2 (whole-branch review D1): the final-path check ignores letter case, as Windows does in a path. A path that differs from the
+    // folder's spelling on disk only in case names the same file, so a guarded store saves and loads through it.
+    [Fact] public void A_guarded_store_accepts_its_path_in_another_letter_case()
+    {
+        var upper=Path.Combine(Path.GetDirectoryName(dir)!,Path.GetFileName(dir).ToUpperInvariant());
+        Assert.NotEqual(dir,upper);
+        var store=new LightingStore(Path.Combine(upper,"lighting.json"),guardLinks:true);
+        store.Save(new LightingSettings{Brightness=40});
+        Assert.Equal(40,store.Load().Settings.Brightness);
+        Assert.Equal(new[]{"lighting.json"},Directory.GetFileSystemEntries(dir).Select(Path.GetFileName));
+    }
+
+    // F3 item 2 (D1): a final path longer than the 260 characters FinalPath first makes room for is read in full, into a buffer of the
+    // size GetFinalPathNameByHandleW asks for, so a guarded store saves and loads a lighting.json that deep.
+    [Fact] public void A_guarded_store_accepts_a_path_longer_than_260_characters()
+    {
+        var deep=Path.Combine(dir,new string('a',60),new string('b',60),new string('c',60),new string('d',60));
+        Directory.CreateDirectory(deep);
+        var path=Path.Combine(deep,"lighting.json");
+        Assert.True(path.Length>260);
+        var store=new LightingStore(path,guardLinks:true);
+        store.Save(new LightingSettings{Brightness=40});
+        Assert.Equal(40,store.Load().Settings.Brightness);
+        Assert.Equal(new[]{"lighting.json"},Directory.GetFileSystemEntries(deep).Select(Path.GetFileName));
+    }
+
+    // F3 item 3 (D4): Load reads the open file in 4096-byte pieces until there is no more, so a lighting.json past 8 KiB, three pieces or
+    // more, loads whole, every zone entry intact.
+    [Fact] public void A_guarded_load_reads_a_file_longer_than_two_of_its_reads()
+    {
+        var settings=new LightingSettings{Brightness=40};
+        for(var i=0;i<150;i++) settings.ZoneColors[$"serial-{i}|location-{i}#0"]=new ZoneColorEntry{Color=$"#{i:X2}2233",ZoneName="Zone "+i};
+        File.WriteAllText(P,LightingSettingsCodec.Write(settings));
+        Assert.True(new FileInfo(P).Length>2*4096);
+        var r=new LightingStore(P,guardLinks:true).Load();
+        Assert.Null(r.Error);Assert.False(r.Quarantine);
+        Assert.Equal(40,r.Settings.Brightness);
+        Assert.Equal(settings.ZoneColors.Count,r.Settings.ZoneColors.Count);
+        Assert.All(settings.ZoneColors,e=>{Assert.Equal(e.Value.Color,r.Settings.ZoneColors[e.Key].Color);Assert.Equal(e.Value.ZoneName,r.Settings.ZoneColors[e.Key].ZoneName);});
+    }
+
+    // F3 item 3 (D4): as File.ReadAllText does, Load decodes by the byte order mark when there is one, so a lighting.json an editor saved
+    // as UTF-16 loads.
+    [Fact] public void Load_reads_a_file_saved_as_UTF_16_with_its_byte_order_mark()
+    {
+        File.WriteAllText(P,"{\"Brightness\":40,\"DefaultColor\":\"#112233\"}",new System.Text.UnicodeEncoding(bigEndian:false,byteOrderMark:true));
+        Assert.Equal(new byte[]{0xFF,0xFE},File.ReadAllBytes(P)[..2]);
+        var r=new LightingStore(P).Load();
+        Assert.Null(r.Error);Assert.False(r.Quarantine);
+        Assert.Equal(40,r.Settings.Brightness);Assert.Equal("#112233",r.Settings.DefaultColor);
+    }
+
+    // F3 item 4 (D5): a lighting.json whose folder doesn't exist yet, as on a profile where DeadWare never wrote it, loads defaults with no
+    // error, guarded or not, and Load makes no folder.
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Load_from_a_folder_that_does_not_exist_gives_defaults_without_error(bool guarded)
+    {
+        var missing=Path.Combine(dir,"missing");
+        var r=new LightingStore(Path.Combine(missing,"lighting.json"),guardLinks:guarded).Load();
+        Assert.Null(r.Error);Assert.False(r.Quarantine);
+        Assert.Equal(100,r.Settings.Brightness);
+        Assert.False(Directory.Exists(missing));
+    }
+
+    // F3 item 5 (D6): a guarded Load checks the path before it opens the file, so a folder that is a junction is refused even when there's
+    // no lighting.json behind it, rather than read as a missing file and given defaults with no note.
+    [Fact] public void A_guarded_load_refuses_a_junction_with_no_lighting_json_behind_it()
+    {
+        var folder=Path.Combine(dir,"DeadWare");Directory.CreateDirectory(folder);
+        var elsewhere=Path.Combine(dir,"elsewhere");Directory.CreateDirectory(elsewhere);
+        SwapForJunction(folder,elsewhere);
+        try
+        {
+            Assert.Throws<LinkedPathException>(()=>new LightingStore(Path.Combine(folder,"lighting.json"),guardLinks:true).Load());
+            Assert.Empty(Directory.GetFileSystemEntries(elsewhere));
+        }
+        finally{Directory.Delete(folder);} // the junction only
+    }
+
     // Moves folder aside and puts a junction to target in its place, as a program without administrator rights can in its own folders.
     static void SwapForJunction(string folder,string target)
     {
