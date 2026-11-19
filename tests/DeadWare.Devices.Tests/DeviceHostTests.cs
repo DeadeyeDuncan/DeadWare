@@ -381,23 +381,41 @@ public sealed class DeviceHostTests : IAsyncLifetime
         lock(seen){Assert.Contains(seen,s=>!s.Settings.LightsOn);}
     }
 
+    // Polish round 2, item 8: the note says what happens and promises no fix. The helper runs on defaults and saves nothing, and only a
+    // helper that starts later reads the file again (lighting turned off and on, say); one that keeps running never does.
     [Fact]
     public async Task Unreadable_lighting_json_runs_with_defaults_but_never_saves()
     {
         File.WriteAllText(lightingPath,"{\"Brightness\":10}");
         var hold=new FileStream(lightingPath,FileMode.Open,FileAccess.Read,FileShare.None);
+        var h=Build();
         try
         {
-            var h=Build();Start(h);
+            Start(h);
             await Until(()=>h.State.Status==HostStatus.Running);
-            Assert.Contains("couldn't be read, so changes won't be saved until DeadWare restarts.",h.State.Message);
+            Assert.Contains(DeviceHost.UnreadableNote,h.State.Message);
+            Assert.Contains("defaults",DeviceHost.UnreadableNote);
+            Assert.Contains("won't save",DeviceHost.UnreadableNote);
+            Assert.Contains("when the lighting helper next starts",DeviceHost.UnreadableNote);
+            Assert.DoesNotContain("restart",DeviceHost.UnreadableNote,StringComparison.OrdinalIgnoreCase);
             Assert.Equal(100,h.State.Settings.Brightness);
             Assert.True((await Send(h,new SetBrightnessRequest(30))).Ok);
             Assert.Equal(30,h.State.Settings.Brightness);
             Assert.False(File.Exists(lightingPath+".tmp"));
         }
         finally{hold.Dispose();}
+        // Readable now, but this helper read it when it started; it keeps its defaults and still saves nothing.
+        Assert.True((await Send(h,new SetBrightnessRequest(40))).Ok);
+        Assert.Contains(DeviceHost.UnreadableNote,h.State.Message);
         Assert.Equal("{\"Brightness\":10}",File.ReadAllText(lightingPath));
+        // The next helper to start reads it.
+        Assert.True((await Send(h,new StopRequest())).Ok);
+        await run!.WaitAsync(RealTimeCap);
+        await h.DisposeAsync();
+        var next=Build();
+        next.Initialize();
+        Assert.Equal(10,next.State.Settings.Brightness);
+        Assert.DoesNotContain(DeviceHost.UnreadableNote,next.State.Message);
     }
 
     // Ruling AS: lighting.json from a newer DeadWare (after a rollback, say) is used as far as this build understands it, but never
@@ -434,7 +452,8 @@ public sealed class DeviceHostTests : IAsyncLifetime
     }
 
     // B3/B14/B17/B24: an elevated host refuses lighting.json behind a link on every start, so its note says why and promises nothing from
-    // a restart: it runs on defaults and saves nothing.
+    // a restart: it runs on defaults and saves nothing. The note names the file as well as its folder (polish round 2, item 7), since
+    // SafeFiles.NoLinks refuses a lighting.json that is itself a link too.
     [Fact]
     public async Task Linked_lighting_json_runs_on_defaults_and_says_why()
     {
@@ -448,6 +467,7 @@ public sealed class DeviceHostTests : IAsyncLifetime
             var h=Build(store:new LightingStore(Path.Combine(link,"lighting.json"),guardLinks:true));Start(h);
             await Until(()=>h.State.Status==HostStatus.Running);
             Assert.Contains(DeviceHost.LinkedNote,h.State.Message);
+            Assert.StartsWith("Your lighting settings file or its folder goes through a link, ",DeviceHost.LinkedNote);
             Assert.DoesNotContain("restart",h.State.Message,StringComparison.OrdinalIgnoreCase);
             Assert.Equal(100,h.State.Settings.Brightness);
             Assert.True((await Send(h,new SetBrightnessRequest(30))).Ok);

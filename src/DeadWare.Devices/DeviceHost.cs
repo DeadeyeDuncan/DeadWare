@@ -22,9 +22,13 @@ internal sealed class DeviceHost : IAsyncDisposable
     public static readonly TimeSpan Tick=TimeSpan.FromMilliseconds(500),SlowTick=TimeSpan.FromSeconds(5),StartupDelay=TimeSpan.FromSeconds(10);
     public static readonly TimeSpan ConnectDelayMin=TimeSpan.FromSeconds(2),ConnectDelayMax=TimeSpan.FromSeconds(30);
     public const string ScanFailedText="DeadWare couldn't check for conflicting programs; it will try again shortly.";
-    public const string UnreadableNote="Your lighting settings file couldn't be read, so changes won't be saved until DeadWare restarts.";
-    // B3/B14/B17/B24: an elevated host refuses lighting.json behind a link on every start, so this note promises no fix from a restart.
-    public const string LinkedNote="Your lighting settings folder goes through a link, so DeadWare won't save lighting changes while it runs as administrator. Lighting uses its defaults.";
+    // Polish round 2, item 8: the host runs on defaults and saves nothing, and reads the file again only when a helper starts (Initialize
+    // runs once per host process): after lighting is turned off and on, after Quit and a new start, or after a helper restart. A restart
+    // of DeadWare's window alone leaves a running helper as it is, and the file may fail again, so the note promises no fix.
+    public const string UnreadableNote="Your lighting settings file couldn't be read, so lighting uses its defaults and DeadWare won't save lighting changes. It tries the file again when the lighting helper next starts, such as when you turn lighting off and on.";
+    // B3/B14/B17/B24: an elevated host refuses lighting.json behind a link on every start, so this note promises no fix from a restart. The
+    // file itself being the link is refused too (SafeFiles.NoLinks checks it with its folders), so the note names both (round 2, item 7).
+    public const string LinkedNote="Your lighting settings file or its folder goes through a link, so DeadWare won't save lighting changes while it runs as administrator. Lighting uses its defaults.";
     public const string QuarantineNote="Your lighting settings file was damaged, so DeadWare set it aside and started with defaults.";
     public const string LostText="Lost the connection to OpenRGB; reconnecting.";
     public const string NewerNote="Your lighting settings were saved by a newer DeadWare, so this version won't save changes to them.";
