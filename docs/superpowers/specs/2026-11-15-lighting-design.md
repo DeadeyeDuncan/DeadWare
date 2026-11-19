@@ -81,7 +81,7 @@ Success looks like this:
    - Fan control drops into the same process with the crash isolation it needs.
    - The cost is more work now: the pipe contract, supervision, update and quit integration, and more tests.
 2. **Inside DeadWare's main process.** Cheaper and with no updater changes, but the lights freeze when the window crashes, and fan control would force the hub driver to move out later.
-3. **Rejected: keep DeadLight's TypeScript engine as a sidecar.** It ships a second runtime that likely breaks the updater limits, and it splits the hub across two codebases.
+3. **Rejected: keep DeadLight's TypeScript engine as a sidecar.** DeadLight's Electron runtime, about 143 MiB compressed, would push the download past the updater's 256 MiB limit: the 0.18.0 package is already 132 MiB, though the expanded size and the entry count would stay within their limits. A plain Node runtime, about 32 MiB, would fit, but it still means a second runtime, and it splits the hub across two codebases.
 4. **Rejected: native drivers for every device instead of OpenRGB.** A large effort for no gain.
 
 ## Proposed experience
@@ -114,8 +114,8 @@ Success looks like this:
 - **Settings:** a new **Lighting** category:
   - **Enable lighting**, off by default for every install. It starts or stops the device host.
   - **OpenRGB location**, with Browse. It accepts only a file named `OpenRGB.exe`, and a fixed line below it says "DeadWare is tested with OpenRGB 1.0rc3."; Settings doesn't read the chosen file's version, which is a follow-up. It also applies the protected-folder check from Constraints and warns when the folder is user-writable, which an elevated host refuses to run OpenRGB from; a folder the check can't judge, a link or junction included, gets its reason instead, read the way the host reads it for its own refusal (polish round 2), followed by the same consequence and recommendation as the warning (polish round 3).
-  - **DeadLight**, showing whether DeadLight or its startup task is present. A **Retire DeadLight** action disables DeadLight's startup task and stops it, only after the user confirms.
-  - **iCUE**, read only. It shows whether any Corsair process is running, whether the Corsair Service starts automatically, and whether iCUE's auto-start entry (`Corsair iCUE5 Software` in HKLM Run) is present. Each item that blocks the hub driver comes with plain instructions: Services for the service, Task Manager → Startup apps for the entry. DeadWare never changes another vendor's services or start-up entries; the user does that.
+  - **DeadLight**, showing whether DeadLight or its startup task is present. A **Retire DeadLight** action disables DeadLight's startup task and stops it, only after the user confirms. The startup-task status and **Retire DeadLight** come in step 5; step 1 shows only a running DeadLight, in the list of running conflicts.
+  - **iCUE**, read only. It shows whether any Corsair process is running, whether the Corsair Service starts automatically, and whether iCUE's auto-start entry (`Corsair iCUE5 Software` in HKLM Run) is present. The service's start type and the auto-start entry come in step 5; step 1 shows only the running conflicts. Each item that blocks the hub driver comes with plain instructions: Services for the service, Task Manager → Startup apps for the entry. DeadWare never changes another vendor's services or start-up entries; the user does that.
 - **Hidden window:** the desk canvas uses Win2D like the existing charts. Live colour preview frames flow only while the Lighting page is visible, using the `Lifetime.WhileShowing` pattern, so nothing animates or repaints while the page or window is hidden.
 
 ## Architecture
@@ -145,6 +145,8 @@ The device host is a separate executable, not a mode of `DeadWare.exe`. That giv
   - an `OpenRGB.exe` it didn't start
   - iCUE: `iCUE.exe` or `iCUE Launcher.exe`
   - a Corsair service executable: `C:\Program Files\Corsair\Corsair Device Control Service\bin\CorsairDeviceControlService.exe`, `CorsairDeviceListerService.exe`, or the legacy `…\Corsair iCUE5 Software\clink\Corsair.Service.exe`. Whether the legacy one touches the hub is unconfirmed, so it is treated as a conflict for the hub driver.
+
+  Step 1 matches iCUE, iCUE Launcher and the two Corsair device services by process name, as it does the legacy service it only reports, and an `OpenRGB.exe` it didn't start by name and process id: that can over-block but never misses one, and matching them by path is a follow-up.
 
   Launchers that run briefly at sign-in are rechecked before the hub driver takes the hub.
 
@@ -181,7 +183,8 @@ The device host is a separate executable, not a mode of `DeadWare.exe`. That giv
 - An elevated host also refuses a `lighting.json` path through a link or junction, and one that leads somewhere it can't confirm: it checks the path before use (`SafeFiles.NoLinks`), then checks that the file it opened has the final path it asked for, and from then on works on that open file, never on the name (whole-branch review D13/D14). A final path Windows can't give is refused like one that leads elsewhere, because the host then can't confirm which file it opened: `GetFinalPathNameByHandleW` gives none in DOS form on a drive the Mount Manager didn't create (F2). The note on the Lighting page says that the path goes through a link or leads somewhere DeadWare can't confirm. What follows depends on which check catches it:
   - **A link or junction on the path when the host starts:** defaults, no saves and the note. `SafeFiles.NoLinks` sees it even when `lighting.json` doesn't exist yet.
   - **A redirection only the final-path check catches,** such as a drive letter or network path that leads elsewhere, or a junction put in place after the check; a final path Windows can't give counts too. It is found only when a file is opened. If `lighting.json` is there when the host starts, the result is the same as for a link. If there's none, the host starts normally, and each change fails with "couldn't save", since each save is refused in turn.
-  - **Either kind appearing while the host runs:** each change after it fails with "couldn't save". At the next start, a link gives defaults with the note, and so does any of the others if `lighting.json` exists then.
+  - **Either kind appearing while the host runs:** each change after it fails with "couldn't save". At the next start, a link gives defaults with the note, and so does any of the others if `lighting.json` exists then. A save creates its temporary file by name before the final-path check, so if the host ends at that moment, or the delete-on-close request fails, an empty `lighting.json.<guid>.tmp` can be left where a swapped-in junction led; nothing is written into it.
+  - **Outside what these checks cover:** the host takes `%LOCALAPPDATA%` from the user's known-folder setting in HKCU, which a program without administrator rights can change with no link involved. The path then leads to another folder, yet both checks pass, because the path asked for comes from that same setting. Not trusting that setting in an elevated host is a follow-up (whole-branch review D11).
 
 ### Devices
 
@@ -210,10 +213,10 @@ The device host is a separate executable, not a mode of `DeadWare.exe`. That giv
   - battery is polled only while the mouse is in use, and replies are matched to battery requests by opcode
   - there is a sleep-timer command
   - writes are gated when idle, so effect frames and keepalives never reset the mouse's idle timer
-- **iCUE LINK System Hub** (VID `1B1C`, PID `0C3F`, interface MI_00; never MI_01) gets DeadWare's own HidSharp driver in **phase 5**, written from `research-corsair.md` §3 and the 2026-11-15 read:
-  - firmware 4.1.656
-  - channels 1–3: RX RGB fans (type `0x0F`, 8 LEDs each)
-  - channel 13: TITAN 360 pump (type `0x11`, model `0x02`, 20 LEDs)
+- **iCUE LINK System Hub** (VID `1B1C`, PID `0C3F`, interface MI_00; never MI_01) gets DeadWare's own HidSharp driver in **phase 5**, written from `research-corsair.md` §3 and the 2026-11-15 read. The firmware, the channels, the type codes and the pump's model are what the hub reported in that read. The LED counts aren't in it: they come from the device-type table in `2026-11-15-corsair-icue-link-notes.md`, which agrees with OpenRGB's view of the hub recorded in `research-corsair.md` §0.
+  - firmware 4.1.656 (the read)
+  - channels 1–3: RX RGB fans (type `0x0F`, the read; 8 LEDs each, the notes)
+  - channel 13: TITAN 360 pump (type `0x11`, model `0x02`, the read; 20 LEDs, the notes)
   - find devices by type code, never by position or name
 
   It works like this:

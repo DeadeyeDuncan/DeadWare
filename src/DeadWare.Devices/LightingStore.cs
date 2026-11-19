@@ -23,7 +23,10 @@ internal sealed class LinkedPathException(string message,Exception? inner=null):
 // own writes under %LOCALAPPDATA%\DeadWare; after it, the open file's final path must be the path asked for, so a link put in place
 // between the check and the open is refused too, as is any other redirection and a final path Windows can't give (F2 item 1). What an
 // elevated host reads, renames or replaces is then the file it checked, never one a program without administrator rights pointed the
-// name at.
+// name at through a link, a junction or another redirection on the way. One route is outside what these checks cover (whole-branch review
+// D11): the path is built from %LOCALAPPDATA%, which the host takes from the user's known-folder setting in HKCU, and such a program can
+// change that setting with no link involved. The path then leads to another folder, yet both checks pass, since the path asked for comes
+// from that same setting. Not trusting it in an elevated host is a follow-up.
 // place: renames the written temporary file, through its handle, to lighting.json; a test can stand in a failing one. write: writes the
 // settings' JSON to the open temporary file; a StreamWriter unless a test stands in a failing one. race: a test seam, called with "checked"
 // once Guard has passed and before the file is opened, and with "read" once Load has read a file it will set aside; a test acts there as a
