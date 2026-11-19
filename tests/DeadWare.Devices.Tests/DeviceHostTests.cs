@@ -417,6 +417,45 @@ public sealed class DeviceHostTests : IAsyncLifetime
         Assert.Empty(Directory.GetFiles(dir,"lighting.corrupt-*.json"));
     }
 
+    // B7: a newer file whose values this build can't accept is left alone and defaults are painted, and the page says both.
+    [Fact]
+    public async Task Newer_lighting_json_this_build_cannot_use_runs_on_defaults_and_says_so()
+    {
+        const string json="{\"Version\":2,\"Brightness\":500,\"DefaultColor\":\"#112233\"}";
+        File.WriteAllText(lightingPath,json);
+        var h=await Running();
+        Assert.Contains(DeviceHost.NewerDefaultsNote,h.State.Message);
+        Assert.DoesNotContain(DeviceHost.NewerNote,h.State.Message);
+        Assert.Equal(100,h.State.Settings.Brightness);
+        Assert.Equal("#4682B4",h.State.Settings.DefaultColor);
+        Assert.True((await Send(h,new SetBrightnessRequest(30))).Ok);
+        Assert.Equal(json,File.ReadAllText(lightingPath));
+        Assert.Empty(Directory.GetFiles(dir,"lighting.corrupt-*.json"));
+    }
+
+    // B3/B14/B17/B24: an elevated host refuses lighting.json behind a link on every start, so its note says why and promises nothing from
+    // a restart: it runs on defaults and saves nothing.
+    [Fact]
+    public async Task Linked_lighting_json_runs_on_defaults_and_says_why()
+    {
+        var target=Path.Combine(dir,"target");Directory.CreateDirectory(target);
+        var link=Path.Combine(dir,"link");
+        using(var mklink=Process.Start(new ProcessStartInfo("cmd.exe"){ArgumentList={"/c","mklink","/J",link,target},CreateNoWindow=true,UseShellExecute=false,RedirectStandardOutput=true})!)
+        {mklink.StandardOutput.ReadToEnd();mklink.WaitForExit();Assert.Equal(0,mklink.ExitCode);}
+        try
+        {
+            File.WriteAllText(Path.Combine(target,"lighting.json"),"{\"Brightness\":10}");
+            var h=Build(store:new LightingStore(Path.Combine(link,"lighting.json"),guardLinks:true));Start(h);
+            await Until(()=>h.State.Status==HostStatus.Running);
+            Assert.Contains(DeviceHost.LinkedNote,h.State.Message);
+            Assert.DoesNotContain("restart",h.State.Message,StringComparison.OrdinalIgnoreCase);
+            Assert.Equal(100,h.State.Settings.Brightness);
+            Assert.True((await Send(h,new SetBrightnessRequest(30))).Ok);
+            Assert.Equal("{\"Brightness\":10}",File.ReadAllText(Path.Combine(target,"lighting.json")));
+        }
+        finally{Directory.Delete(link);}
+    }
+
     [Fact]
     public async Task Failing_connect_logs_and_broadcasts_once_and_backs_off()
     {

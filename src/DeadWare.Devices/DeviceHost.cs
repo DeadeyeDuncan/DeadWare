@@ -19,9 +19,13 @@ internal sealed class DeviceHost : IAsyncDisposable
     public static readonly TimeSpan ConnectDelayMin=TimeSpan.FromSeconds(2),ConnectDelayMax=TimeSpan.FromSeconds(30);
     public const string ScanFailedText="DeadWare couldn't check for conflicting programs; it will try again shortly.";
     public const string UnreadableNote="Your lighting settings file couldn't be read, so changes won't be saved until DeadWare restarts.";
+    // B3/B14/B17/B24: an elevated host refuses lighting.json behind a link on every start, so this note promises no fix from a restart.
+    public const string LinkedNote="Your lighting settings folder goes through a link, so DeadWare won't save lighting changes while it runs as administrator. Lighting uses its defaults.";
     public const string QuarantineNote="Your lighting settings file was damaged, so DeadWare set it aside and started with defaults.";
     public const string LostText="Lost the connection to OpenRGB; reconnecting.";
     public const string NewerNote="Your lighting settings were saved by a newer DeadWare, so this version won't save changes to them.";
+    // B7: a newer file whose values this build can't accept: its defaults are painted, and the file is left for the build that wrote it.
+    public const string NewerDefaultsNote="Your lighting settings were saved by a newer DeadWare and this version can't use them, so it uses its defaults and won't change the file.";
     readonly HostOptions options;
     readonly LightingStore store;
     readonly OpenRgbEngine engine;
@@ -131,11 +135,17 @@ internal sealed class DeviceHost : IAsyncDisposable
                 settings=read.Settings;
                 if(read.Quarantine){note=QuarantineNote;log.Write("lighting.json was invalid and was set aside: "+read.Error);}
                 // Ruling AS: a later DeadWare's file is never rewritten, so its settings survive this build; changes last until DeadWare restarts.
+                // One whose values this build can't accept gives defaults (B7), and its note says so.
                 else if(read.Newer)
                 {
-                    saveAllowed=false;note=NewerNote;
+                    saveAllowed=false;note=read.Error is null?NewerNote:NewerDefaultsNote;
                     log.Write("lighting.json comes from a newer DeadWare; it won't be saved"+(read.Error is null?"":" (using defaults: "+read.Error+")"));
                 }
+            }
+            catch(LinkedPathException e)
+            {
+                settings=new();saveAllowed=false;note=LinkedNote;
+                log.Write("lighting.json's path goes through a link; using defaults and saving nothing: "+e.Message);
             }
             catch(Exception e)
             {

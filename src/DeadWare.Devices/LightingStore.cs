@@ -7,6 +7,10 @@ using Microsoft.Win32.SafeHandles;
 
 namespace DeadWare.Devices;
 
+// lighting.json's path goes through a link or junction, which an elevated host refuses (Ruling AT). A type of its own, so the host can say
+// why it runs on defaults: a restart doesn't change it (B3/B14/B17/B24).
+internal sealed class LinkedPathException(string message,Exception inner):IOException(message,inner);
+
 // Owns lighting.json. Only content that was read and found invalid is quarantined; IO errors propagate and leave the file alone.
 // Saves go through a fresh temporary name, as SafeFiles writes the updater's metadata, so a planted lighting.json.tmp can neither block
 // nor receive one. guardLinks (an elevated host, Ruling AT): every read, save and quarantine first refuses a path through a link or
@@ -73,6 +77,6 @@ internal sealed class LightingStore(string path,bool guardLinks=false,Action<str
     {
         if(!guardLinks) return;
         try{SafeFiles.NoLinks(target);}
-        catch(InvalidDataException e){throw new IOException("lighting.json's path goes through a link or junction, so the lighting helper running as administrator won't use it.",e);}
+        catch(InvalidDataException e){throw new LinkedPathException("lighting.json's path goes through a link or junction, so the lighting helper running as administrator won't use it.",e);}
     }
 }
