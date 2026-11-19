@@ -8,11 +8,18 @@ namespace DeadWare.Devices;
 // mouse, and the wireless mouse belongs to DeadWare's own driver later; the wired detector ("... Wireless Wired") stays on. The file is
 // parsed and merged, keeping every other key (OpenRGB stores its whole detector list there), written to a temporary file and renamed
 // into place. A file that can't be read as a JSON object is replaced with the minimal object and logged. A failure to write throws.
+// F4 item 6: the same pass caps OpenRGB's own logs, one a start in <config>\logs, at LogLimit files, keeping every other LogManager key.
+// OpenRGB 1.0rc3 reads LogManager.file_count_limit, as an integer only, from the OpenRGB.json it loads while it is built, which is this
+// folder's since the engine sets APPDATA (F4 item 1), and before opening the new log removes the oldest files whose names match the log
+// name's template, OpenRGB_<timestamp>.log by default (LogManager.cpp:65-160, rotate_logs at :405-510). Its count of files to remove is
+// computed unsigned (size - limit + 1, capped at size), so while fewer than LogLimit - 1 logs are there it removes them all: from an empty
+// folder only the log of the run in progress is kept, and LogLimit is an upper bound.
 internal static class OpenRgbConfig
 {
     public const string FileName="OpenRGB.json",AeroxDetector="SteelSeries Aerox 9 Wireless";
+    public const int LogLimit=10;
 
-    public static void DisableAeroxDetector(string configDir,HostLog log)
+    public static void Prepare(string configDir,HostLog log)
     {
         Directory.CreateDirectory(configDir);
         var target=Path.Combine(configDir,FileName);
@@ -21,13 +28,15 @@ internal static class OpenRgbConfig
         catch(Exception e) when(e is FileNotFoundException or DirectoryNotFoundException){root=new();}
         catch(Exception e) when(e is JsonException or IOException or UnauthorizedAccessException)
         {
-            log.Write("OpenRGB.json couldn't be read as JSON, so it was replaced with DeadWare's detector setting: "+e.Message);
+            log.Write("OpenRGB.json couldn't be read as JSON, so it was replaced with DeadWare's own settings: "+e.Message);
             root=new();
         }
         // Nested objects, as OpenRGB reads them: a flat "Detectors.<name>" key is ignored (found under DeadLight).
         if(root["Detectors"] is not JsonObject section) root["Detectors"]=section=new JsonObject();
         if(section["detectors"] is not JsonObject detectors) section["detectors"]=detectors=new JsonObject();
         detectors[AeroxDetector]=false;
+        if(root["LogManager"] is not JsonObject logs) root["LogManager"]=logs=new JsonObject();
+        logs["file_count_limit"]=LogLimit;
         var tmp=target+"."+Guid.NewGuid().ToString("N")+".tmp";
         try
         {
