@@ -33,10 +33,11 @@ internal static class Program
         var root=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"DeadWare");
         var lightingPath=Path.Combine(root,"lighting.json");
         // Ruling AT and B1/B20: elevated, the log lives in protected %ProgramData%\DeadWare\logs\<user SID>, which only this user and
-        // administrators can read, or nowhere if that folder can't be prepared; the host then runs on without a log (polish item 7).
+        // administrators can read, or nowhere if that folder can't be prepared; the host then runs on without a log (polish item 7). That
+        // folder is made only here, privately: the log never makes it again (polish round 2, item 6).
         string? logDir;
         try{logDir=ProtectedFolders.LogDirectory(sid);}catch(Exception){logDir=null;}
-        using var log=new HostLog(logDir);
+        using var log=new HostLog(logDir,createFolder:!Environment.IsPrivilegedProcess);
         try
         {
             // A refused folder's message names the folder at fault, InstallLocation's reason and the remedy, and reaches the window as the

@@ -107,6 +107,10 @@ internal static class ProtectedFolders
         var dir=Path.Combine(Protected(commonAppData,"logs",LogRefusal),user.Value);
         if(!Directory.Exists(dir)) new DirectoryInfo(dir).Create(UserLogSecurity(user));
         Require(Path.Combine(commonAppData,"DeadWare"),dir,InstallLocation.Check(dir,StrictParents+1),LogRefusal);
+        // Polish round 2, item 6: once it passes, it gets its private rights again however it was made, so one made again with the logs
+        // folder's inherited rights, which let every user read, is private from this start on; Windows passes the rights on to the log
+        // files in it. Only after the check: only administrators can change it then, and it is no link whose target would take the rights.
+        new DirectoryInfo(dir).SetAccessControl(UserLogSecurity(user));
         return dir;
     }
 

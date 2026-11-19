@@ -41,6 +41,32 @@ public sealed class HostLogTests:IDisposable
         log.Write("nowhere");
         Assert.Empty(Directory.GetFileSystemEntries(dir));
     }
+    // Polish round 2, item 6: an elevated host's log folder, %ProgramData%\DeadWare\logs\<user SID>, is made private by
+    // ProtectedFolders.LogDirectory at start. Made again here, it would take the logs folder's rights, which let every user read, so the
+    // log writes nothing more once it goes missing, even if it comes back, until the next start makes it again.
+    [Fact] public void Log_that_must_not_create_its_folder_stops_once_the_folder_goes_missing()
+    {
+        var own=Path.Combine(dir,"S-1-5-21-1");Directory.CreateDirectory(own);
+        using var log=new HostLog(own,createFolder:false);
+        log.Write("first");
+        Assert.Contains("first",File.ReadAllText(Path.Combine(own,"devices.log")));
+        Directory.Delete(own,true);
+        log.Write("second");
+        Assert.False(Directory.Exists(own));
+        Directory.CreateDirectory(own);
+        log.Write("third");
+        Assert.Empty(Directory.GetFileSystemEntries(own));
+    }
+    // A host without administrator rights logs in %LOCALAPPDATA%\DeadWare\logs, which it makes again if it goes missing, as before.
+    [Fact] public void Log_makes_its_folder_again_by_default()
+    {
+        var local=Path.Combine(dir,"logs");
+        using var log=new HostLog(local);
+        log.Write("first");
+        Directory.Delete(local,true);
+        log.Write("second");
+        Assert.Contains("second",File.ReadAllText(Path.Combine(local,"devices.log")));
+    }
     [Fact] public void Concurrent_writes_do_not_throw_or_lose_lines()
     {
         using var log=new HostLog(dir);

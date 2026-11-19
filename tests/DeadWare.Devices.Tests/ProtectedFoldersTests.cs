@@ -152,6 +152,35 @@ public sealed class ProtectedFoldersTests
         finally{if(Directory.Exists(standIn)) Directory.Delete(standIn,true);}
     }
 
+    // Polish round 2, item 6: logs\<user SID> made again with the logs folder's inherited rights (an administrator deleted it while a host
+    // ran, say) still passes the check, since only administrators can change it, but lets every user read the log. The next start makes the
+    // folder, and the log files in it, private again.
+    [ElevatedFact]
+    public void Elevated_log_folder_made_again_with_inherited_rights_is_private_again_at_the_next_start()
+    {
+        var standIn=@"C:\dw-pd-"+Guid.NewGuid().ToString("N");
+        var acl=new DirectoryInfo(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData)).GetAccessControl(AccessControlSections.Access);
+        new DirectoryInfo(standIn).Create(acl);
+        try
+        {
+            var dir=ProtectedFolders.LogDirectory(true,standIn,Path.Combine(standIn,"local"),UserSid);
+            Directory.Delete(dir,true);
+            Directory.CreateDirectory(dir);
+            var file=Path.Combine(dir,"devices.log");
+            File.WriteAllText(file,"written");
+            Assert.Contains(UsersSid,Readers(file)); // the logs folder's rights: every user can read
+            Assert.Equal(dir,ProtectedFolders.LogDirectory(true,standIn,Path.Combine(standIn,"local"),UserSid));
+            Assert.True(new DirectoryInfo(dir).GetAccessControl().AreAccessRulesProtected);
+            Assert.Equal(new[]{UserSid,SystemSid,AdministratorsSid}.Distinct().Order(StringComparer.Ordinal),Readers(file));
+            var verdict=InstallLocation.Check(dir,ProtectedFolders.StrictParents+1);
+            Assert.True(verdict.Protected,verdict.Reason);
+        }
+        finally{if(Directory.Exists(standIn)) Directory.Delete(standIn,true);}
+    }
+    // The accounts an Allow rule lets read the file's contents.
+    static string[] Readers(string file)=>[..new FileInfo(file).GetAccessControl().GetAccessRules(true,true,typeof(SecurityIdentifier)).Cast<FileSystemAccessRule>()
+        .Where(r=>r.AccessControlType==AccessControlType.Allow&&(r.FileSystemRights&FileSystemRights.ReadData)!=0).Select(r=>r.IdentityReference.Value).Distinct().Order(StringComparer.Ordinal)];
+
     // Polish item 7 (B4/B13/B18): when %ProgramData%\DeadWare itself fails the check, the refusal names that folder, not openrgb beneath it,
     // gives InstallLocation's reason, and points the remedy at it: deleting openrgb alone would change nothing. Made without administrator
     // rights, it is owned by this user, so the remedy is a new owner (round 2, item 2), never write access alone; made by an elevated test
