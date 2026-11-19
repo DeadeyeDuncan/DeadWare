@@ -358,6 +358,32 @@ public sealed class LightingStoreTests:IDisposable
         finally{Directory.Delete(folder);} // the junction only
     }
 
+    // F3 item 7 (whole-branch review D2): a lighting.json is a few KB, so one over 1 MiB counts as damaged without being read, even when its
+    // JSON is valid: it is set aside through the handle it was opened with, like any invalid file, and defaults load. One of exactly 1 MiB
+    // loads as usual.
+    [Fact] public void A_file_of_exactly_1_MiB_loads()
+    {
+        File.WriteAllText(P,Padded("{\"Brightness\":40}",1_048_576));
+        Assert.Equal(1_048_576,new FileInfo(P).Length);
+        var r=new LightingStore(P).Load();
+        Assert.Null(r.Error);Assert.False(r.Quarantine);
+        Assert.Equal(40,r.Settings.Brightness);
+        Assert.True(File.Exists(P));
+    }
+    [Fact] public void A_guarded_load_sets_aside_a_file_over_1_MiB_unread()
+    {
+        File.WriteAllText(P,Padded("{\"Brightness\":40}",1_048_577));
+        var r=new LightingStore(P,guardLinks:true).Load();
+        Assert.True(r.Quarantine);
+        Assert.Equal("Lighting settings are larger than 1 MiB (1048577 bytes).",r.Error);
+        Assert.Equal(100,r.Settings.Brightness);
+        Assert.False(File.Exists(P));
+        var q=Assert.Single(Directory.GetFiles(dir,"lighting.corrupt-*.json"));
+        Assert.Equal(1_048_577,new FileInfo(q).Length);
+    }
+    // Valid JSON padded with spaces to exactly bytes bytes of UTF-8.
+    static string Padded(string json,int bytes)=>json+new string(' ',bytes-json.Length);
+
     // Moves folder aside and puts a junction to target in its place, as a program without administrator rights can in its own folders.
     static void SwapForJunction(string folder,string target)
     {

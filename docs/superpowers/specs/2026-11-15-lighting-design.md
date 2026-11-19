@@ -171,7 +171,7 @@ The device host is a separate executable, not a mode of `DeadWare.exe`. That giv
 
 ### Persistence
 
-- `%LOCALAPPDATA%\DeadWare\lighting.json` is written **only by the host**. Writes go to a temporary file that is then renamed into place, and the data is validated on every read and write. An invalid file is quarantined, not overwritten, as DeadLight's stores do. One that can't be read is left alone: the host runs on defaults and saves nothing, and only a host that starts later reads it again (polish round 2). The file holds:
+- `%LOCALAPPDATA%\DeadWare\lighting.json` is written **only by the host**. Writes go to a temporary file that is then renamed into place, and the data is validated on every read and write; a file over 1 MiB counts as damaged and isn't read. An invalid file is quarantined, not overwritten, as DeadLight's stores do. One that can't be read is left alone: the host runs on defaults and saves nothing, and only a host that starts later reads it again (polish round 2). The file holds:
   - the zone static colours
   - the effect and its settings
   - per-device settings: brightness, calibration, keyboard mode, per-key paint, layers

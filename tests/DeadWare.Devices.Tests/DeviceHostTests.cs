@@ -477,6 +477,22 @@ public sealed class DeviceHostTests : IAsyncLifetime
         finally{Directory.Delete(link);}
     }
 
+    // F3 item 7 (whole-branch review D2): a lighting.json over 1 MiB is set aside unread, as damaged, so the host starts on defaults with the
+    // damaged-file note and saves the next change, exactly as for invalid JSON, and its log line says the file was larger than 1 MiB.
+    [Fact]
+    public async Task A_lighting_json_over_1_MiB_is_set_aside_and_the_next_change_is_saved()
+    {
+        const string json="{\"Brightness\":40}";
+        File.WriteAllText(lightingPath,json+new string(' ',1_048_577-json.Length));
+        var h=await Running();
+        Assert.Equal(100,h.State.Settings.Brightness);
+        Assert.Contains(DeviceHost.QuarantineNote,h.State.Message);
+        Assert.Contains("lighting.json was invalid and was set aside: Lighting settings are larger than 1 MiB (1048577 bytes).",File.ReadAllText(Path.Combine(dir,"logs","devices.log")));
+        Assert.Single(Directory.GetFiles(dir,"lighting.corrupt-*.json"));
+        Assert.True((await Send(h,new SetBrightnessRequest(30))).Ok);
+        Assert.Equal(30,new LightingStore(lightingPath).Load().Settings.Brightness);
+    }
+
     // F3 item 6 (whole-branch review D3): a host that may save, since lighting.json wasn't there when it started, but whose save then fails
     // replies "couldn't save" to a change and doesn't make it: the settings it reports, and the colours it paints, stay as they were. The
     // store stands in a write that fails, as a full disk makes it fail, and a put-in-place refused as a linked path, as a junction swapped

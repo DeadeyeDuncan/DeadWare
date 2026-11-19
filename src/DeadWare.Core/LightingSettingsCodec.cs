@@ -18,6 +18,10 @@ public static class LightingSettingsCodec
         if(s.Version>LightingSettings.CurrentVersion) return new(error is null?s:new(),error,false,true);
         return error is null?new(s,null,false):new(new(),error,true);
     }
+    // A lighting.json is a few KB, so one longer than MaxFileBytes is damaged and isn't read at all (F3 item 7): it would make every start
+    // slow and memory-hungry, and set aside it costs one start only. The caller quarantines it as it does any invalid file.
+    public const long MaxFileBytes=1_048_576;
+    public static LightingRead TooLarge(long length)=>new(new(),$"Lighting settings are larger than 1 MiB ({length} bytes).",true);
     public static string Write(LightingSettings settings)
     {
         var error=Validate(settings);

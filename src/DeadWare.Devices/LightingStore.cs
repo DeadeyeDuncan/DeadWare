@@ -15,8 +15,9 @@ namespace DeadWare.Devices;
 // so the host can say why it runs on defaults: a restart doesn't change it (B3/B14/B17/B24).
 internal sealed class LinkedPathException(string message,Exception? inner=null):IOException(message,inner);
 
-// Owns lighting.json. Only content that was read and found invalid is quarantined; IO errors propagate and leave the file alone. Each
-// operation opens its file once and from then on works on that open file, never on a name looked up again (whole-branch review D13/D14):
+// Owns lighting.json. Only content that was read and found invalid is quarantined, and a file over 1 MiB, which isn't read (F3 item 7); IO
+// errors propagate and leave the file alone. Each operation opens its file once and from then on works on that open file, never on a name
+// looked up again (whole-branch review D13/D14):
 // Save writes lighting.json.<guid>.tmp, a fresh name, so a planted lighting.json.tmp can neither block nor receive it, and renames that open
 // file to lighting.json; Load reads the open file and sets a damaged one aside by renaming that same file. guardLinks (an elevated host,
 // Ruling AT): before the open, SafeFiles.NoLinks refuses a path through a link or junction, the check before use the updater makes for its
@@ -52,7 +53,8 @@ internal sealed class LightingStore(string path,bool guardLinks=false,Action<Saf
         using(file)
         {
             RequireOpened(file,full);
-            read=LightingSettingsCodec.Read(ReadText(file));
+            var length=RandomAccess.GetLength(file);
+            read=length>LightingSettingsCodec.MaxFileBytes?LightingSettingsCodec.TooLarge(length):LightingSettingsCodec.Read(ReadText(file));
             if(read.Quarantine){race?.Invoke("read");aside=Reopen(file);}
         }
         if(aside is not null) using(aside) Quarantine(aside);
