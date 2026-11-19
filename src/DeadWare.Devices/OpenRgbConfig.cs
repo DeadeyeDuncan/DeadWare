@@ -11,13 +11,14 @@ namespace DeadWare.Devices;
 // F4 item 6: the same pass caps OpenRGB's own logs, one a start in <config>\logs, at LogLimit files, keeping every other LogManager key.
 // OpenRGB 1.0rc3 reads LogManager.file_count_limit, as an integer only, from the OpenRGB.json it loads while it is built, which is this
 // folder's since the engine sets APPDATA (F4 item 1), and before opening the new log removes the oldest files whose names match the log
-// name's template, OpenRGB_<timestamp>.log by default (LogManager.cpp:65-160, rotate_logs at :405-510). Its count of files to remove is
-// computed unsigned (size - limit + 1, capped at size), so while fewer than LogLimit - 1 logs are there it removes them all: from an empty
-// folder only the log of the run in progress is kept, and LogLimit is an upper bound.
+// name's template, OpenRGB_<timestamp>.log by default (LogManager.cpp:65-160, rotate_logs at :405-510).
 internal static class OpenRgbConfig
 {
     public const string FileName="OpenRGB.json",AeroxDetector="SteelSeries Aerox 9 Wireless";
-    public const int LogLimit=10;
+    // 2, the largest limit 1.0rc3 keeps from an empty folder (LogManager.cpp:487-491): it counts the files to remove as size - limit + 1 in
+    // unsigned arithmetic and caps that at size, so while fewer than limit - 1 logs are there it removes them all. 10 would keep only the
+    // log of the run in progress; 2 keeps that one and the one before it, which a crash leaves, until the next start.
+    public const int LogLimit=2;
 
     public static void Prepare(string configDir,HostLog log)
     {

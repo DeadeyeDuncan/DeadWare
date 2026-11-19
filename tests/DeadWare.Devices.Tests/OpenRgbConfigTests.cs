@@ -16,16 +16,16 @@ public sealed class OpenRgbConfigTests:IDisposable
     public void Dispose(){log.Dispose();try{Directory.Delete(dir,true);}catch{}}
     JsonNode Saved()=>JsonNode.Parse(File.ReadAllText(File_))!;
 
-    // F4 item 6: the same pass caps OpenRGB's own logs at 10 files (LogManager.file_count_limit, which LogManager::configure reads only as
+    // F4 item 6: the same pass caps OpenRGB's own logs at 2 files, the run in progress and the one before it (LogManager.file_count_limit, which LogManager::configure reads only as
     // an integer), whether there is no file, a file without a LogManager section or one with other LogManager keys.
-    const string Minimal="{\"Detectors\":{\"detectors\":{\"SteelSeries Aerox 9 Wireless\":false}},\"LogManager\":{\"file_count_limit\":10}}";
+    const string Minimal="{\"Detectors\":{\"detectors\":{\"SteelSeries Aerox 9 Wireless\":false}},\"LogManager\":{\"file_count_limit\":2}}";
     int LogLimit()=>Saved()["LogManager"]!["file_count_limit"]!.GetValue<int>();
 
     [Fact] public void Fresh_folder_gets_only_the_disabled_detector_and_the_log_cap()
     {
         OpenRgbConfig.Prepare(dir,log);
         Assert.True(JsonNode.DeepEquals(JsonNode.Parse(Minimal),Saved()));
-        Assert.Equal(10,LogLimit());
+        Assert.Equal(2,LogLimit());
     }
 
     [Fact] public void Every_other_key_and_detector_survives()
@@ -40,7 +40,7 @@ public sealed class OpenRgbConfigTests:IDisposable
         Assert.False((bool)detectors["SteelSeries Aerox 9 Wireless"]!);
         Assert.True((bool)detectors["SteelSeries Aerox 9 Wireless Wired"]!);
         Assert.True((bool)detectors["Corsair Lighting Node Pro"]!);
-        Assert.Equal(10,LogLimit()); // a file without a LogManager section gets one
+        Assert.Equal(2,LogLimit()); // a file without a LogManager section gets one
         Assert.Empty(Directory.GetFiles(dir,"*.tmp"));
     }
 
@@ -55,7 +55,7 @@ public sealed class OpenRgbConfigTests:IDisposable
         Assert.True((bool)logs["log_file"]!);
         Assert.Equal(6,(int)logs["loglevel"]!);
         Assert.False((bool)logs["log_console"]!);
-        Assert.Equal(10,LogLimit());
+        Assert.Equal(2,LogLimit());
         Assert.False((bool)saved["Detectors"]!["detectors"]!["SteelSeries Aerox 9 Wireless"]!);
     }
 
