@@ -1,3 +1,6 @@
+using System.Globalization;
+using System.Runtime.InteropServices;
+using System.Security.AccessControl;
 using Xunit;
 using DeadWare.Core;
 using DeadWare.Devices;
@@ -90,17 +93,23 @@ public sealed class LightingStoreTests:IDisposable
         }
         finally{Directory.Delete(link);}
     }
-    // B2: a save whose move fails deletes its temporary file through the handle it wrote it with, never by looking the name up again, so a
-    // program without administrator rights that changed what the name leads to meanwhile can't turn the cleanup into a delete of its
-    // choosing. The failing move stands in for that program: it moves the temporary file away and leaves a decoy under its name.
+    // B2: a save whose put-in-place fails deletes its temporary file through the handle it wrote it with, never by looking the name up
+    // again, so what the name leads to by then can't turn the cleanup into a delete of something else. The failing put-in-place stands in
+    // for that: it renames the temporary file away through its handle and leaves a decoy under its old name.
     [Fact] public void Failed_save_deletes_its_own_temporary_file_never_what_its_name_leads_to_later()
     {
         var away=Path.Combine(dir,"moved-away");
         string? decoy=null;
-        var store=new LightingStore(P,guardLinks:true,move:(from,_)=>{File.Move(from,away);decoy=from;File.WriteAllText(from,"decoy");throw new IOException("the move failed");});
+        var store=new LightingStore(P,guardLinks:true,place:(file,_)=>
+        {
+            decoy=LightingStore.FinalPath(file);
+            Assert.Equal(0,LightingStore.Rename(file,Path.GetFileName(away),replace:false));
+            File.WriteAllText(decoy,"decoy");
+            throw new IOException("putting it in place failed");
+        });
         Assert.Throws<IOException>(()=>store.Save(new LightingSettings{Brightness=40}));
         Assert.Equal("decoy",File.ReadAllText(decoy!));
-        Assert.False(File.Exists(away)); // the file the save wrote is gone, wherever it was moved
+        Assert.False(File.Exists(away)); // the file the save wrote is gone, wherever it was renamed
         Assert.False(File.Exists(P));
     }
     // Polish round 2, item 1: a write that fails leaves no temporary file behind, and its own exception is the one that surfaces. Nothing
@@ -133,4 +142,130 @@ public sealed class LightingStoreTests:IDisposable
         Assert.Throws<InvalidDataException>(()=>store.Save(new LightingSettings{Brightness=500}));
         Assert.False(File.Exists(P));Assert.False(File.Exists(P+".tmp"));
     }
+
+    // Whole-branch review D13: while a save writes its temporary file, no other program can open it, to read it or to delete or rename it,
+    // so it stays where the save created it until the save renames it into place. Each attempt meets a sharing violation.
+    [Fact] public void Save_holds_its_temporary_file_alone_until_it_is_in_place()
+    {
+        const int SharingViolation=unchecked((int)0x80070020);
+        string? tmp=null;
+        var store=new LightingStore(P,guardLinks:true,write:(stream,json)=>
+        {
+            tmp=Assert.Single(Directory.GetFiles(dir,"lighting.json.*.tmp"));
+            Assert.Equal(SharingViolation,Assert.ThrowsAny<IOException>(()=>new FileStream(tmp,FileMode.Open,FileAccess.Read,FileShare.ReadWrite|FileShare.Delete).Dispose()).HResult);
+            Assert.Equal(SharingViolation,Assert.ThrowsAny<IOException>(()=>new FileInfo(tmp).Create(FileMode.Open,FileSystemRights.Delete,FileShare.ReadWrite|FileShare.Delete,4096,FileOptions.None,null).Dispose()).HResult);
+            Assert.Equal(SharingViolation,Assert.ThrowsAny<IOException>(()=>File.Move(tmp,Path.Combine(dir,"moved-away"))).HResult);
+            using var writer=new StreamWriter(stream,leaveOpen:true);writer.Write(json);
+        });
+        store.Save(new LightingSettings{Brightness=40});
+        Assert.NotNull(tmp);
+        Assert.Equal(40,new LightingStore(P).Load().Settings.Brightness);
+        Assert.Equal(new[]{"lighting.json"},Directory.GetFileSystemEntries(dir).Select(Path.GetFileName));
+    }
+
+    // D13: a folder swapped for a junction after the check before use, here as soon as Guard has passed, is caught once the file is open:
+    // its final path isn't the one asked for. The save is refused as a linked path, the file it made through the junction is deleted
+    // through its handle, and nothing is left where the junction leads.
+    [Fact] public void A_guarded_save_refuses_a_folder_swapped_for_a_junction_after_its_check()
+    {
+        var folder=Path.Combine(dir,"DeadWare");Directory.CreateDirectory(folder);
+        var elsewhere=Path.Combine(dir,"elsewhere");Directory.CreateDirectory(elsewhere);
+        var store=new LightingStore(Path.Combine(folder,"lighting.json"),guardLinks:true,race:step=>{if(step=="checked") SwapForJunction(folder,elsewhere);});
+        try
+        {
+            Assert.Throws<LinkedPathException>(()=>store.Save(new LightingSettings{Brightness=40}));
+            Assert.Empty(Directory.GetFileSystemEntries(elsewhere));
+        }
+        finally{if(Directory.Exists(folder)) Directory.Delete(folder);} // the junction only
+    }
+
+    // D14: the same for a read. The file opened through the junction is refused before any of it is used: it is neither read into the
+    // settings nor set aside, valid or damaged.
+    [Theory]
+    [InlineData("{\"Brightness\":10}")]
+    [InlineData("{ not json")]
+    public void A_guarded_load_refuses_a_folder_swapped_for_a_junction_after_its_check(string json)
+    {
+        var folder=Path.Combine(dir,"DeadWare");Directory.CreateDirectory(folder);
+        var elsewhere=Path.Combine(dir,"elsewhere");Directory.CreateDirectory(elsewhere);
+        File.WriteAllText(Path.Combine(elsewhere,"lighting.json"),json);
+        var store=new LightingStore(Path.Combine(folder,"lighting.json"),guardLinks:true,race:step=>{if(step=="checked") SwapForJunction(folder,elsewhere);});
+        try
+        {
+            Assert.Throws<LinkedPathException>(()=>store.Load());
+            Assert.Equal(new[]{"lighting.json"},Directory.GetFileSystemEntries(elsewhere).Select(Path.GetFileName));
+            Assert.Equal(json,File.ReadAllText(Path.Combine(elsewhere,"lighting.json")));
+        }
+        finally{if(Directory.Exists(folder)) Directory.Delete(folder);} // the junction only
+    }
+
+    // D14: setting a damaged file aside renames the file Load read, through a handle to it, never what lighting.json's name leads to by
+    // then. The seam stands in for a program without administrator rights that, once the file was read, moves it into another folder and
+    // puts a file of its own under its name: that file is left alone, and the damaged one is renamed in the folder it was moved to.
+    [Fact] public void Quarantine_sets_aside_the_file_it_read_never_what_its_name_leads_to_by_then()
+    {
+        File.WriteAllText(P,"{ not json");
+        var other=Path.Combine(dir,"other");Directory.CreateDirectory(other);
+        var moved=Path.Combine(other,"moved.json");
+        var store=new LightingStore(P,guardLinks:true,race:step=>{if(step=="read"){File.Move(P,moved);File.WriteAllText(P,"{\"Brightness\":10}");}});
+        Assert.True(store.Load().Quarantine);
+        Assert.Equal("{\"Brightness\":10}",File.ReadAllText(P));
+        Assert.Empty(Directory.GetFiles(dir,"lighting.corrupt-*.json"));
+        Assert.False(File.Exists(moved));
+        var q=Assert.Single(Directory.GetFiles(other,"lighting.corrupt-*.json"));
+        Assert.Equal("{ not json",File.ReadAllText(q));
+    }
+
+    // A damaged file is renamed in place, its content intact, and a name already taken isn't replaced: the next one is used. Every name
+    // the stamp could give during the test is taken first, so the rename has to move on to -1.
+    [Fact] public void Quarantine_moves_on_to_the_next_name_when_one_is_taken()
+    {
+        var start=DateTime.UtcNow;
+        var taken=Enumerable.Range(-2,33).Select(s=>Path.Combine(dir,"lighting.corrupt-"+start.AddSeconds(s).ToString("yyyyMMdd'T'HHmmss'Z'",CultureInfo.InvariantCulture)+".json")).ToList();
+        foreach(var name in taken) File.WriteAllText(name,"taken");
+        File.WriteAllText(P,"{ not json");
+        Assert.True(new LightingStore(P,guardLinks:true).Load().Quarantine);
+        Assert.False(File.Exists(P));
+        Assert.All(taken,name=>Assert.Equal("taken",File.ReadAllText(name)));
+        var q=Assert.Single(Directory.GetFiles(dir,"lighting.corrupt-*-1.json"));
+        Assert.Equal("{ not json",File.ReadAllText(q));
+    }
+
+    // The final-path check compares the long form of the path: one given with 8.3 short names, as %TEMP% is on some PCs, names the same
+    // file and isn't refused. Path.GetFullPath expands short names that exist, and the final path has long ones. Where the volume makes no
+    // short names, both forms are the same.
+    [Fact] public void A_guarded_store_accepts_its_path_in_short_form()
+    {
+        var longDir=Path.Combine(dir,"a folder with a long name");Directory.CreateDirectory(longDir);
+        var store=new LightingStore(Path.Combine(ShortPath(longDir),"lighting.json"),guardLinks:true);
+        store.Save(new LightingSettings{Brightness=40});
+        Assert.Equal(40,store.Load().Settings.Brightness);
+        Assert.Equal(new[]{"lighting.json"},Directory.GetFileSystemEntries(longDir).Select(Path.GetFileName));
+    }
+
+    // GetFinalPathNameByHandleW gives a path with a drive letter as \\?\C:\…, and a network path as \\?\UNC\server\share\…; the check
+    // compares them as a path is usually written.
+    [Fact] public void A_final_path_is_compared_as_a_path_is_usually_written()
+    {
+        Assert.Equal(@"C:\Users\me\AppData\Local\DeadWare\lighting.json",LightingStore.DosPath(@"\\?\C:\Users\me\AppData\Local\DeadWare\lighting.json"));
+        Assert.Equal(@"\\server\share\DeadWare\lighting.json",LightingStore.DosPath(@"\\?\UNC\server\share\DeadWare\lighting.json"));
+        var path=Path.GetFullPath(Path.Combine(dir,"x.json"));
+        using var file=File.OpenHandle(path,FileMode.CreateNew,FileAccess.Write);
+        Assert.Equal(path,LightingStore.FinalPath(file),StringComparer.OrdinalIgnoreCase);
+    }
+
+    // Moves folder aside and puts a junction to target in its place, as a program without administrator rights can in its own folders.
+    static void SwapForJunction(string folder,string target)
+    {
+        Directory.Move(folder,folder+".old");
+        using var mklink=System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("cmd.exe"){ArgumentList={"/c","mklink","/J",folder,target},CreateNoWindow=true,UseShellExecute=false,RedirectStandardOutput=true})!;
+        mklink.StandardOutput.ReadToEnd();mklink.WaitForExit();Assert.Equal(0,mklink.ExitCode);
+    }
+    static string ShortPath(string path)
+    {
+        var buffer=new char[1024];
+        var length=GetShortPathNameW(path,buffer,(uint)buffer.Length);
+        return length is 0 or >=1024?path:new string(buffer,0,(int)length);
+    }
+    [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern uint GetShortPathNameW(string longPath,[Out] char[] shortPath,uint length);
 }
