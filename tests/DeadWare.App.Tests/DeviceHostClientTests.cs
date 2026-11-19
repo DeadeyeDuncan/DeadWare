@@ -118,7 +118,12 @@ public class DeviceHostClientTests:IAsyncLifetime
         var waited=Stopwatch.StartNew();
         while(!condition()){Assert.True(waited.Elapsed<Bound,$"{what} not reached within {Bound.TotalSeconds} s");await Task.Delay(1);}
     }
-    /// <summary>Waits until the client waits on a timer due exactly <paramref name="delay"/> from now, then moves the clock by that much so the timer fires.</summary>
+    /// <summary>
+    /// Waits until the client waits on a timer due exactly <paramref name="delay"/> from now, then moves the clock by that much so the timer fires.
+    /// The client may still be reacting when this returns: until a test first yields, xUnit's AsyncTestSyncContext is current, and the client's
+    /// continuation then runs on the thread pool instead of inside Advance. So a test changes what the client reads next only once the client
+    /// waits again (polish round 3, item 1).
+    /// </summary>
     async Task Elapse(TimeSpan delay) {await Until(()=>time.Waiting(delay),$"a {delay} wait");time.Advance(delay);}
     /// <summary>Gives anything a timer fired too early would have run the chance to show before a test asserts that nothing happened.</summary>
     static Task Settle()=>Task.Delay(50);
@@ -149,6 +154,8 @@ public class DeviceHostClientTests:IAsyncLifetime
         var found=new FakeProcess{Id=7};launcher.Running=found;bool up=false;var client=Make(NoPipeUntil(()=>up));
         await client.StartAsync(false,CancellationToken.None);
         await Elapse(Retry);await Elapse(Retry);
+        // Waiting to retry again proves the second retry's connect found no pipe, so the pipe comes up only for the third.
+        await Until(()=>time.Waiting(Retry),"the third retry's wait");
         Assert.Equal(1,launcher.Searches);Assert.Equal(0,launcher.Launched);
         up=true;await Elapse(Retry);
         await Until(()=>client.State is not null);
@@ -185,6 +192,9 @@ public class DeviceHostClientTests:IAsyncLifetime
         for(int i=0;i<5;i++)
         {
             await Until(()=>launcher.Launched==i+1);
+            // Waiting to retry proves the client found the host it launched running: a relaunched host that exits before that check
+            // counts as exited at once, with no retry to elapse.
+            await Until(()=>time.Waiting(Retry),"the retry wait after the launch");
             launcher.Process(i).Exit();
             await Elapse(Retry);
             if(i<4)await Elapse(backoff[i]);
