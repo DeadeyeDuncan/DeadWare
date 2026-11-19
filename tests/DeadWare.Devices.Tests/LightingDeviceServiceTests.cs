@@ -251,7 +251,11 @@ public sealed class LightingDeviceServiceTests : IDisposable
         svc.Rescan();svc.Paint(s);
         var calls=session.Calls.Where(c=>c.StartsWith("resize")||c.StartsWith($"mode {node}/")).ToList();
         Assert.Equal(["mode "+node+"/1","resize "+node+"/0/48","mode "+node+"/1"],calls);
+        var sent=session.Calls;var colours=session.LedCount;
         svc.Rescan();svc.Paint(s); // channel 1 still reads 16: nothing is sent
+        // F4 item 4d (whole-branch review D5): nothing of any kind, no resize, no mode and no colours.
+        Assert.Equal(sent,session.Calls);
+        Assert.Equal(colours,session.LedCount);
         Assert.Single(session.Resizes);
         Assert.Equal("sizing Corsair Lighting Node Pro Corsair Channel 1 to 48 LEDs didn't hold: OpenRGB reports 16 LEDs; not trying again unless it reads 0 LEDs",Assert.Single(Lines(File.ReadAllText(Path.Combine(dir,"devices.log")),"didn't hold")));
     }

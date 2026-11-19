@@ -667,6 +667,11 @@ public sealed class DeviceHostTests : IAsyncLifetime
         time.Advance(TimeSpan.FromMilliseconds(250)); // the rest of the way to the tick the loop was waiting on
         await AdvanceUntil(()=>session.LedCount>written); // the next paint
         Assert.All(LastLeds(0),c=>Assert.Equal(steelBlue,c));
+        // F4 item 4b (whole-branch review D3): each change fails in turn, since each save is refused, so the second does too.
+        var second=await Send(h,new SetBrightnessRequest(30){Id=8});
+        Assert.False(second.Ok);Assert.Equal(HostReplyCodes.CouldntSave,second.Error);Assert.Equal(8,second.Id);
+        Assert.Equal(100,h.State.Settings.Brightness);
+        Assert.Equal("#4682B4",h.State.Settings.DefaultColor);
         Assert.False(File.Exists(lightingPath));
         Assert.Empty(Directory.GetFiles(dir,"lighting.json.*.tmp"));
         Assert.Contains("saving lighting.json failed: "+(linked?"lighting.json's path led elsewhere":"the disk is full"),File.ReadAllText(Path.Combine(dir,"logs","devices.log")));

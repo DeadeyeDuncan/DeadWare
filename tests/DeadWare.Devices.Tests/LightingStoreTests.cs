@@ -184,12 +184,15 @@ public sealed class LightingStoreTests:IDisposable
     }
 
     // D14: the same for a read. The file opened through the junction is refused before any of it is used: it is neither read into the
-    // settings nor set aside, valid or damaged.
+    // settings nor set aside, valid or damaged. F4 item 4c (whole-branch review D4): nor when it is over 1 MiB, which would be set aside
+    // without being read, so the final-path check comes before the size check too.
     [Theory]
-    [InlineData("{\"Brightness\":10}")]
-    [InlineData("{ not json")]
-    public void A_guarded_load_refuses_a_folder_swapped_for_a_junction_after_its_check(string json)
+    [InlineData("{\"Brightness\":10}",0)]
+    [InlineData("{ not json",0)]
+    [InlineData("{\"Brightness\":10}",1_048_577)]
+    public void A_guarded_load_refuses_a_folder_swapped_for_a_junction_after_its_check(string valid,int bytes)
     {
+        var json=bytes>0?Padded(valid,bytes):valid;
         var folder=Path.Combine(dir,"DeadWare");Directory.CreateDirectory(folder);
         var elsewhere=Path.Combine(dir,"elsewhere");Directory.CreateDirectory(elsewhere);
         File.WriteAllText(Path.Combine(elsewhere,"lighting.json"),json);
@@ -377,6 +380,24 @@ public sealed class LightingStoreTests:IDisposable
         Assert.True(r.Quarantine);
         Assert.Equal("Lighting settings are larger than 1 MiB (1048577 bytes).",r.Error);
         Assert.Equal(100,r.Settings.Brightness);
+        Assert.False(File.Exists(P));
+        var q=Assert.Single(Directory.GetFiles(dir,"lighting.corrupt-*.json"));
+        Assert.Equal(1_048_577,new FileInfo(q).Length);
+    }
+    // F4 item 4a (whole-branch review D2): a file over 1 MiB isn't read at all. Another handle locks every byte of it, so any read of the
+    // file fails, while its size and its rename through the handle don't need one: the load sets it aside all the same.
+    [Fact] public void A_file_over_1_MiB_is_set_aside_without_a_single_read()
+    {
+        File.WriteAllText(P,Padded("{\"Brightness\":40}",1_048_577));
+        LightingRead r;
+        using(var locker=new FileStream(P,FileMode.Open,FileAccess.Read,FileShare.ReadWrite|FileShare.Delete))
+        {
+            locker.Lock(0,locker.Length);
+            Assert.Throws<IOException>(()=>File.ReadAllBytes(P)); // a read now fails
+            r=new LightingStore(P,guardLinks:true).Load();
+        }
+        Assert.True(r.Quarantine);
+        Assert.Equal("Lighting settings are larger than 1 MiB (1048577 bytes).",r.Error);
         Assert.False(File.Exists(P));
         var q=Assert.Single(Directory.GetFiles(dir,"lighting.corrupt-*.json"));
         Assert.Equal(1_048_577,new FileInfo(q).Length);
