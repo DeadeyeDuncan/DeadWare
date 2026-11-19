@@ -103,6 +103,23 @@ public sealed class LightingStoreTests:IDisposable
         Assert.False(File.Exists(away)); // the file the save wrote is gone, wherever it was moved
         Assert.False(File.Exists(P));
     }
+    // Polish round 2, item 1: a write that fails leaves no temporary file behind, and its own exception is the one that surfaces. Nothing
+    // the cleanup does may write the failed bytes again: a retry would throw in its place and stop the temporary file being deleted.
+    [Fact] public void Failed_write_leaves_no_temporary_file_and_surfaces_its_own_exception()
+    {
+        Exception? failed=null;
+        var store=new LightingStore(P,guardLinks:true,write:(stream,json)=>
+        {
+            // Past anything a disk can hold, so the file stream's own write of the settings fails, as a full disk makes it fail.
+            stream.Position=1L<<60;
+            try{using(var writer=new StreamWriter(stream,leaveOpen:true)) writer.Write(json);stream.Flush();}
+            catch(Exception e){failed=e;throw;}
+        });
+        var thrown=Assert.ThrowsAny<Exception>(()=>store.Save(new LightingSettings{Brightness=40}));
+        Assert.Empty(Directory.GetFileSystemEntries(dir));
+        Assert.NotNull(failed);
+        Assert.Same(failed,thrown);
+    }
     // A real move that fails (lighting.json is a folder here) leaves no temporary file behind.
     [Fact] public void Failed_save_leaves_no_temporary_file()
     {

@@ -16,10 +16,12 @@ internal sealed class LinkedPathException(string message,Exception inner):IOExce
 // nor receive one. guardLinks (an elevated host, Ruling AT): every read, save and quarantine first refuses a path through a link or
 // junction with SafeFiles.NoLinks, the defence the updater uses for its own writes under %LOCALAPPDATA%\DeadWare, so a program without
 // administrator rights can't steer the host's file operations elsewhere. Like the updater's, it is a check before use.
-// move: puts a written temporary file in place; File.Move unless a test stands in a failing one.
-internal sealed class LightingStore(string path,bool guardLinks=false,Action<string,string>? move=null)
+// move: puts a written temporary file in place; File.Move unless a test stands in a failing one. write: writes the settings' JSON to the
+// open temporary file; a StreamWriter unless a test stands in a failing one.
+internal sealed class LightingStore(string path,bool guardLinks=false,Action<string,string>? move=null,Action<Stream,string>? write=null)
 {
     readonly Action<string,string> moveFile=move??(static (from,to)=>File.Move(from,to,overwrite:true));
+    readonly Action<Stream,string> writeFile=write??(static (stream,json)=>{using var writer=new StreamWriter(stream,leaveOpen:true);writer.Write(json);});
     public LightingRead Load()
     {
         Guard(path);
@@ -39,22 +41,27 @@ internal sealed class LightingStore(string path,bool guardLinks=false,Action<str
         // B2: the temporary file stays open, with delete access, until it is in place. If the move fails it is deleted through that handle,
         // never looked up again by name, so a program that changed what the name leads to meanwhile (a link in place of the folder, say)
         // can't turn the cleanup into a delete of its choosing, as administrator. Sharing delete lets the move rename it while it is open.
-        using var stream=new FileInfo(tmp).Create(FileMode.CreateNew,FileSystemRights.Write|FileSystemRights.Delete,FileShare.Delete,4096,FileOptions.None,null);
+        // Polish round 2, item 1: the stream buffers nothing (a buffer size of 1), and the handle is taken while it is new. A buffering
+        // stream writes what it holds whenever its handle is asked for and when it closes, so after a write that failed it would write the
+        // same bytes again, throw in place of the write's own exception and skip the delete.
+        using var stream=new FileInfo(tmp).Create(FileMode.CreateNew,FileSystemRights.Write|FileSystemRights.Delete,FileShare.Delete,1,FileOptions.None,null);
+        var handle=stream.SafeFileHandle;
         var moved=false;
         try
         {
-            using(var writer=new StreamWriter(stream,leaveOpen:true)) writer.Write(json);
+            writeFile(stream,json);
             stream.Flush(true);
             moveFile(tmp,path);
             moved=true;
         }
-        finally{if(!moved) DeleteOnClose(stream.SafeFileHandle);}
+        finally{if(!moved) DeleteOnClose(handle);}
     }
-    // Marks the file this handle has open for deletion once the handle closes. A failure leaves a stray temporary file, which is harmless.
+    // Marks the file this handle has open for deletion once the handle closes. It never throws, so the exception that ended the save is the
+    // one that surfaces; a failure leaves a stray temporary file, which is harmless.
     static void DeleteOnClose(SafeFileHandle file)
     {
         byte delete=1;
-        SetFileInformationByHandle(file,FileDispositionInfo,ref delete,sizeof(byte));
+        try{SetFileInformationByHandle(file,FileDispositionInfo,ref delete,sizeof(byte));}catch(Exception){}
     }
     const int FileDispositionInfo=4; // FILE_DISPOSITION_INFO, whose one member is the BOOLEAN DeleteFile
     [DllImport("kernel32.dll",SetLastError=true)] [return:MarshalAs(UnmanagedType.Bool)]
