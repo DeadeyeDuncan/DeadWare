@@ -42,6 +42,8 @@ internal sealed class OpenRgbSession : IOpenRgbSession
         Volatile.Write(ref client,c);
         c.Connect();
     }
+    // OpenRGB.NET 3.1.1's client gives its connection the event's handlers when it is constructed, before anyone can subscribe, so this
+    // never runs against a real OpenRGB (O21, read in its IL); the host's 5 s rescan finds device-list changes.
     void OnUpdated(object? s,EventArgs e)=>DeviceListUpdated?.Invoke();
     // Gone after an Abort: reported as a disposed connection, so the caller treats it as the session ending, not as one device failing.
     OpenRgbClient Client=>Volatile.Read(ref client)??throw new ObjectDisposedException(nameof(OpenRgbSession),"The OpenRGB session is not connected.");
@@ -70,11 +72,13 @@ internal sealed class OpenRgbSession : IOpenRgbSession
     // OpenRGB.NET throws unless a supplied colour list matches the mode's slot count exactly; null keeps the mode's own colours.
     public static Rgb[]? ModeColors(IReadOnlyList<Rgb>? requested,int modeColorCount)
         =>requested is not {Count:>0}||modeColorCount<=0?null:Enumerable.Repeat(requested[0],modeColorCount).ToArray();
-    // A mode's colours shaped to its slot count from the last read. A device or mode that read doesn't have means OpenRGB's lists changed
-    // since: refused plainly (the caller treats it as one device's failure, and the next rescan refreshes the counts).
+    // A mode's colours shaped to its slot count from the last read. A device or mode index that read doesn't have is refused plainly (the
+    // caller treats it as one device's failure). The device service takes its indexes from that same read, so this can't see a change
+    // OpenRGB made after it: such a change reaches OpenRGB.NET's own fetch inside UpdateMode, which throws once an index no longer fits,
+    // and an index that still fits lands on whichever device or mode now holds it.
     public static Rgb[]? ShapeModeColors(IReadOnlyList<IReadOnlyList<int>> slots,int index,int modeIndex,IReadOnlyList<Rgb>? requested)
     {
-        if((uint)index>=(uint)slots.Count||(uint)modeIndex>=(uint)slots[index].Count) throw new InvalidOperationException("OpenRGB's device or mode list changed since the last rescan.");
+        if((uint)index>=(uint)slots.Count||(uint)modeIndex>=(uint)slots[index].Count) throw new InvalidOperationException("That device or mode isn't in OpenRGB's last device list.");
         return ModeColors(requested,slots[index][modeIndex]);
     }
     public void UpdateMode(int index,int modeIndex,IReadOnlyList<Rgb>? colors)

@@ -9,10 +9,14 @@ internal interface IConflictScanner { IReadOnlyList<LightingConflict> Scan(int? 
 // Orchestrates the host: settings, conflict gate, OpenRGB engine, device painting and the window's requests.
 // Concurrency: ONE lock (gate) guards every touch of settings, the device service, the session flag and the status.
 // Callers are the run loop, pipe requests and engine events on the supervisor thread. Their work under the lock is synchronous and
-// includes OpenRGB SDK calls, which OpenRGB.NET leaves unbounded: BoundedSession cuts each one off at BoundedSession.CallBound and drops
-// the session, so no one waits on the lock longer than that (Ruling AO). The session is also dropped, outside the lock, whenever
-// OpenRGB stops, so a call waiting on a dead OpenRGB fails at once. Engine start/stop, conflict scans and StateChanged subscribers run
-// OUTSIDE the lock, so the lock never nests with the engine's own lock the wrong way round and a slow subscriber cannot stall painting.
+// includes OpenRGB SDK calls, which OpenRGB.NET leaves unbounded: BoundedSession cuts each one off at BoundedSession.CallBound (3 s) and
+// drops the session (Ruling AO). One hold of the lock can chain several such calls, each with its own bound: a connect is Connect,
+// ReadControllers, for a Node Pro a resize and a second read, then a paint of one or more writes per device. So an OpenRGB that answers
+// slowly but within the bound can keep the lock for several bounds in a row; a dead one costs one bound, after which every call fails at
+// once until a connect succeeds. RunAsync's finally and the conflict stop take the lock before they drop the session, so they wait out a
+// call that hangs until its bound. The session is also dropped, outside the lock, whenever OpenRGB stops, so a call waiting on a dead
+// OpenRGB fails at once. Engine start/stop, conflict scans and StateChanged subscribers run OUTSIDE the lock, so the lock never nests
+// with the engine's own lock the wrong way round and a slow subscriber cannot stall painting.
 internal sealed class DeviceHost : IAsyncDisposable
 {
     public static readonly TimeSpan Tick=TimeSpan.FromMilliseconds(500),SlowTick=TimeSpan.FromSeconds(5),StartupDelay=TimeSpan.FromSeconds(10);
@@ -367,7 +371,8 @@ internal sealed class DeviceHost : IAsyncDisposable
             try
             {
                 // OpenRGB announced a device-list change the next tick hasn't read yet (F39): read it first, so this paint reaches each device
-                // at its new index, never a stale one.
+                // at its new index, never a stale one. OpenRGB.NET 3.1.1 never raises that event (O21), so with it the 5 s rescan is what
+                // finds a change, and a change made in between still meets the old indexes.
                 if(rescanPending){rescanPending=false;RescanLocked();}
                 service.Paint(settings);
             }

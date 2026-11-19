@@ -233,8 +233,8 @@ public sealed class LightingDeviceServiceTests : IDisposable
         Assert.Equal(["mode "+node+"/1","resize "+node+"/0/48","mode "+node+"/1"],calls);
     }
     // Task 8: a mode's colour slots come from the last controller read, so a mode change makes no extra controller-data round trip, and a
-    // mode or device that isn't in that read (OpenRGB's lists changed since) is refused plainly instead of indexing past the end.
-    [Fact] public void Mode_colours_are_shaped_from_the_last_read_and_a_changed_list_is_refused()
+    // mode or device index that read doesn't have is refused plainly instead of indexing past the end.
+    [Fact] public void Mode_colours_are_shaped_from_the_last_read_and_an_index_it_lacks_is_refused()
     {
         IReadOnlyList<IReadOnlyList<int>> slots=[[0,1,3]];
         Rgb r=new(1,2,3);

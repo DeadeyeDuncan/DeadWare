@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using DeadWare.Core;
 using DeadWare.Devices;
 using Microsoft.Extensions.Time.Testing;
 using Xunit;
@@ -288,27 +289,46 @@ public sealed class OpenRgbEngineTests : IAsyncLifetime
         Assert.Equal(1,runner.Count);
     }
 
+    // B11: an OpenRGB that exits while its port is awaited is noticed when the probe interval ends, before any further probe, so it is
+    // never reported Running; the relaunch waits exactly the 4 s backoff, armed before Restarting is reported. The clock knows its timers,
+    // so each step moves it only once the engine waits on the timer meant.
     [Fact]
     public async Task Exit_during_the_port_wait_restarts_after_the_backoff()
     {
-        portUp=false;
-        var e=Engine();
+        var clock=new Clock();
+        var up=false;var probed=0;
+        var seen=new List<EngineStatus>();
+        var e=Track(new OpenRgbEngine(exe,@"C:\cfg",runner,(_,_)=>{Interlocked.Increment(ref probed);return Task.FromResult(Volatile.Read(ref up));},clock,log));
+        e.Changed+=()=>{lock(seen)seen.Add(e.Status);};
         var start=e.StartAsync(CancellationToken.None);
-        await Until(()=>Volatile.Read(ref probes)>=1);
+        await Until(()=>clock.Waiting(OpenRgbEngine.PortProbe)); // the first probe found the port shut; the next waits a probe interval
         runner.At(0).Exit();
-        portUp=true; // the relaunched OpenRGB opens its port; the exited one is noticed before it is probed again
-        for(var i=0;i<120&&!(runner.Count==2&&e.Status==EngineStatus.Running);i++){time.Advance(TimeSpan.FromMilliseconds(500));await Task.Delay(5);}
-        Assert.Equal(2,runner.Count);
-        Assert.Equal(EngineStatus.Running,e.Status);
-        await start.WaitAsync(RealTimeCap);
+        Volatile.Write(ref up,true); // a probe of the exited process would now call it running
+        var probes=Volatile.Read(ref probed);
+        clock.Advance(OpenRgbEngine.PortProbe);
+        await Until(()=>e.Status==EngineStatus.Restarting);
+        await start.WaitAsync(RealTimeCap); // the first attempt resolved as a restart
+        Assert.Equal(probes,Volatile.Read(ref probed)); // the exited process was not probed again
+        lock(seen)Assert.DoesNotContain(EngineStatus.Running,seen);
+        Assert.True(clock.Waiting(RestartBackoff.Base)); // the relaunch waits on a timer of exactly the backoff
+        clock.Advance(RestartBackoff.Base-TimeSpan.FromTicks(1));
+        await Task.Delay(100);
+        Assert.Equal(1,runner.Count);
+        clock.Advance(TimeSpan.FromTicks(1));
+        await Until(()=>runner.Count==2&&e.Status==EngineStatus.Running);
     }
 
+    // B11: a second Start while one runs starts no second supervisor. One would be queued to the thread pool, so the check waits a settle
+    // before it counts launches and settings writes (a second supervisor writes the settings before it starts anything).
     [Fact]
     public async Task Second_start_while_running_starts_nothing_more()
     {
-        var e=Engine();
+        var prepared=0;
+        var e=Track(new OpenRgbEngine(exe,@"C:\cfg",runner,(_,_)=>Task.FromResult(true),time,log,prepareConfig:_=>Interlocked.Increment(ref prepared)));
         await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
         await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
+        await Task.Delay(100);
+        Assert.Equal(1,Volatile.Read(ref prepared));
         Assert.Equal(1,runner.Count);
         Assert.Equal(EngineStatus.Running,e.Status);
     }
