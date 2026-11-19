@@ -15,7 +15,8 @@ namespace DeadWare.WinUI;
 
 /// <summary>
 /// Lighting: Lights on and Brightness, which the window shows in its header beside the page title as on the approved mockup; a
-/// status line; the Static card's Set all colours with Undo; and a card per device with a colour swatch for each zone. Everything
+/// status line; the Static card's Set all colours with Undo; and a card per device, with a colour swatch for each zone of a device
+/// DeadWare paints (one running its own effect shows that effect instead of colours). Everything
 /// goes to the lighting host through the session's client (<see cref="MonitorSession.Lighting"/>), which the page follows only
 /// while it is shown, so a hidden page does no work. Every change makes the host broadcast a new state, so the cards and zone rows
 /// are kept by device and zone key and updated in place: a colour flyout stays open while states arrive. Colours go only to a
@@ -709,13 +710,15 @@ internal sealed class LightingPage : Page, IHeaderTool
             effect.Text = device.OwnEffect is { Length: > 0 } own ? $"Own hardware effect: {own}" : "Own hardware effect";
             Show(effect, hardware);
             Show(staysLit, hardware && device.StaysLitWhenOff);
-            // A device running its own effect keeps its zones' colours, but they don't show on it, so its swatches are disabled.
             Show(ownEffect, hardware);
             Show(cannotDrive, unsupported);
-            var list = (device.Zones ?? []).Where(zone => zone is { Key: not null }).DistinctBy(zone => zone.Key, StringComparer.Ordinal).ToArray();
-            // A device DeadWare can't drive takes no colours, so it lists no zones to colour.
-            Show(zones, !unsupported);
-            Show(noZones, !unsupported && list.Length == 0);
+            // Only a device DeadWare paints lists its zones. One running its own effect keeps its zones' colours, but they don't show on it,
+            // so it shows none (polish item 1: a Node Pro's swatches in the shared colour read as its fans' colour); Set all colours still
+            // sets the shared colour. One DeadWare can't drive takes no colours. Neither keeps rows, so a zone flyout open on one closes.
+            bool paints = device.Kind == PaintKind.Direct;
+            var list = paints ? (device.Zones ?? []).Where(zone => zone is { Key: not null }).DistinctBy(zone => zone.Key, StringComparer.Ordinal).ToArray() : [];
+            Show(zones, paints);
+            Show(noZones, paints && list.Length == 0);
             if (!list.Select(zone => zone.Key).SequenceEqual(zoneKeys))
             {
                 zoneKeys = [.. list.Select(zone => zone.Key)];
@@ -728,8 +731,7 @@ internal sealed class LightingPage : Page, IHeaderTool
                     zones.Children.Add(row.Root);
                 }
             }
-            bool paints = live && device.Kind == PaintKind.Direct;
-            foreach (var zone in list) rows[zone.Key].Update(name, zone, paints);
+            foreach (var zone in list) rows[zone.Key].Update(name, zone, live);
         }
 
         /// <summary>Disables the swatches while the host isn't running, leaving the card as it was.</summary>
