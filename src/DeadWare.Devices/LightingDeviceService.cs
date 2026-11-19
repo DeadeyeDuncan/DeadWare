@@ -8,9 +8,9 @@ internal sealed class LightingDeviceService
 {
     public static readonly TimeSpan HidCap=TimeSpan.FromMilliseconds(33),DramCap=TimeSpan.FromMilliseconds(200),RefreshTtl=TimeSpan.FromMilliseconds(400);
     const int DramType=1;
-    // DeadLight's seedZones (electron/seed-zones.ts), ported exactly: the first device named Corsair Lighting Node Pro whose zone 0 (channel 1,
-    // the three LL fans, 3 x 16 LEDs) reports 0 LEDs is resized to 48, so its hardware effect has LEDs to run on. DeadWare's OpenRGB keeps
-    // its own settings, where no size was ever saved. Zone 1 (channel 2) is physically empty and is never touched: oversizing it strobed
+    // DeadLight's seedZones (electron/seed-zones.ts), ported with its rule, though not how often it runs (see Rescan): the first device
+    // named Corsair Lighting Node Pro whose zone 0 (channel 1, the three LL fans, 3 x 16 LEDs) reports 0 LEDs is resized to 48, so its
+    // hardware effect has LEDs to run on. DeadWare's OpenRGB keeps its own settings, where no size was ever saved. Zone 1 (channel 2) is physically empty and is never touched: oversizing it strobed
     // the chain under DeadLight.
     public const string NodePro="Corsair Lighting Node Pro";
     public const int NodeProZone=0,NodeProLeds=48;
@@ -47,9 +47,12 @@ internal sealed class LightingDeviceService
                 session.ResizeZone(node.Index,NodeProZone,NodeProLeds);
                 read=session.ReadControllers();
                 // B9: OpenRGB sends no reply to a resize and ignores one outside the zone's limits, so only a read says whether it held. One
-                // that this read doesn't show is logged once. It is tried again only at a rescan where channel 1 reads 0 LEDs, as DeadLight
-                // re-runs its seed only while the zone reads 0 (F3 item 1). So after a read that still shows 0, or no channel 1, each rescan
-                // that reads 0 tries again; after one that shows another size, nothing is sent while channel 1 keeps it. The line says which.
+                // that this read doesn't show is logged once. It is tried again only at a rescan where channel 1 reads 0 LEDs (F3 item 1), the
+                // rule of DeadLight's seed. DeadLight runs that seed on every pass of its paint loop (onDevices in electron/main.ts at 0497cd3):
+                // each tick, 500 ms or 33 ms while an effect runs, and after each rescan, for as long as it runs, not only when its engine starts,
+                // and it never stops after a sizing holds. DeadWare checks at each rescan, every 5 s, and stops on a connection once one holds.
+                // So after a read that still shows 0, or no channel 1, each rescan that reads 0 tries again; after one that shows another size,
+                // nothing is sent while channel 1 keeps it. The line says which.
                 var now=read.FirstOrDefault(c=>LightingKeys.Device(c.Serial,c.Location)==key)?.Zones.FirstOrDefault(z=>z.Index==NodeProZone)?.LedCount;
                 if(now==NodeProLeds) Sized(node,zone,key);
                 else
