@@ -154,7 +154,7 @@ The device host is a separate executable, not a mode of `DeadWare.exe`. That giv
 
 ### Pipe contract
 
-- Named pipe `\\.\pipe\DeadWare.Devices.<sid>`, restricted to the current user and Administrators. Messages are length-prefixed JSON, using source-generated `System.Text.Json`. Each request has an id and gets a response; the host also sends events.
+- Named pipe `\\.\pipe\DeadWare.Devices.<sid>`, restricted to the current user and Administrators. Messages are length-prefixed JSON, using source-generated `System.Text.Json`, of at most 4 MiB each. A state message carries the whole settings with the device list. The settings take at most 1 MiB, since `lighting.json`'s cap is on their written form, which escapes non-ASCII text just as the pipe's compact form does, up to six bytes a character, and only adds indentation; the rest is room for a large device list (F4, whole-branch review D12). Each request has an id and gets a response; the host also sends events.
 - Every message carries a protocol version. The window and host come from the same build; on a mismatch the window restarts the host.
 - **Requests:**
   - state: `GetState`, `Rescan`, `Stop`
@@ -171,7 +171,7 @@ The device host is a separate executable, not a mode of `DeadWare.exe`. That giv
 
 ### Persistence
 
-- `%LOCALAPPDATA%\DeadWare\lighting.json` is written **only by the host**. Writes go to a temporary file that is then renamed into place, and the data is validated on every read and write; a file over 1 MiB counts as damaged and isn't read. An invalid file is quarantined, not overwritten, as DeadLight's stores do. One that can't be read is left alone: the host runs on defaults and saves nothing, and only a host that starts later reads it again (polish round 2). The file holds:
+- `%LOCALAPPDATA%\DeadWare\lighting.json` is written **only by the host**. Writes go to a temporary file that is then renamed into place, and the data is validated on every read and write; a file over 1 MiB counts as damaged and isn't read. Settings whose written form, the indented JSON in UTF-8, would be over 1 MiB are invalid as well (F4, whole-branch review D1): a change that would make the file larger is refused with an error reply and the live settings stay as they were, and a file holding such settings, as compact JSON under 1 MiB say, counts as damaged at load. An invalid file is quarantined, not overwritten, as DeadLight's stores do. One that can't be read is left alone: the host runs on defaults and saves nothing, and only a host that starts later reads it again (polish round 2). The file holds:
   - the zone static colours
   - the effect and its settings
   - per-device settings: brightness, calibration, keyboard mode, per-key paint, layers

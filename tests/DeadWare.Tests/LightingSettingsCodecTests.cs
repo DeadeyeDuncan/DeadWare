@@ -163,4 +163,64 @@ public class LightingSettingsCodecTests
         Assert.Equal("#4682B4", c.ToHex());
         Assert.False(Rgb.TryParse("4682B4", out _));
     }
+
+    // F4 item 2 (whole-branch review D1, D12 and the false premise P76): settings whose written form, Write's indented JSON in UTF-8, would
+    // be longer than MaxFileBytes are invalid, on every read and every write, so the host never saves a lighting.json that its next start
+    // would set aside unread. Both sides of the boundary, to the byte.
+    const string TooLargeError = "Lighting settings would be larger than 1 MiB when saved.";
+
+    // The written form as Write makes it, measured in UTF-8.
+    static long Written(LightingSettings s) => System.Text.Encoding.UTF8.GetByteCount(System.Text.Json.JsonSerializer.Serialize(s, new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
+
+    // Valid settings whose written form is exactly bytes long: zone entries with names of the longest length, then names shortened by the
+    // bytes left over, one character (and so one byte) at a time.
+    static LightingSettings OfWrittenSize(long bytes)
+    {
+        static LightingSettings With(int count)
+        {
+            var s = new LightingSettings();
+            for (int i = 0; i < count; i++) s.ZoneColors[$"zone-{i:D5}"] = new ZoneColorEntry { Color = "#FF0000", ZoneName = new string('n', LightingSettingsCodec.MaxKeyLength) };
+            return s;
+        }
+        long one = Written(With(1)), each = Written(With(2)) - one;
+        var settings = With((int)Math.Ceiling((bytes - (one - each)) / (double)each));
+        var over = Written(settings) - bytes;
+        foreach (var entry in settings.ZoneColors.Values)
+        {
+            var cut = (int)Math.Min(over, entry.ZoneName.Length);
+            entry.ZoneName = entry.ZoneName[cut..];
+            if ((over -= cut) == 0) break;
+        }
+        Assert.Equal(bytes, Written(settings));
+        Assert.True(settings.ZoneColors.Count <= LightingSettingsCodec.MaxZoneEntries);
+        return settings;
+    }
+
+    [Fact]
+    public void Settings_written_at_exactly_1_MiB_are_valid()
+    {
+        var s = OfWrittenSize(LightingSettingsCodec.MaxFileBytes);
+        Assert.Null(LightingSettingsCodec.Validate(s));
+        var json = LightingSettingsCodec.Write(s);
+        Assert.Equal(LightingSettingsCodec.MaxFileBytes, System.Text.Encoding.UTF8.GetByteCount(json));
+        var r = LightingSettingsCodec.Read(json);
+        Assert.False(r.Quarantine);
+        Assert.Equal(s.ZoneColors.Count, r.Settings.ZoneColors.Count);
+    }
+
+    [Fact]
+    public void Settings_written_one_byte_over_1_MiB_are_refused_on_write_and_set_aside_on_read()
+    {
+        var s = OfWrittenSize(LightingSettingsCodec.MaxFileBytes + 1);
+        Assert.Equal(TooLargeError, LightingSettingsCodec.Validate(s));
+        Assert.Equal(TooLargeError, Assert.Throws<InvalidDataException>(() => LightingSettingsCodec.Write(s)).Message);
+        // The same settings as compact JSON, as a hand-edited file might hold them, are under 1 MiB, yet they count as invalid at load,
+        // since every read validates and the next change would write them over the cap.
+        var compact = System.Text.Json.JsonSerializer.Serialize(s);
+        Assert.True(compact.Length < LightingSettingsCodec.MaxFileBytes);
+        var r = LightingSettingsCodec.Read(compact);
+        Assert.True(r.Quarantine);
+        Assert.Equal(TooLargeError, r.Error);
+        Assert.Empty(r.Settings.ZoneColors);
+    }
 }

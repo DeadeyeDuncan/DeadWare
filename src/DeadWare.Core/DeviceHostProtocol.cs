@@ -58,7 +58,10 @@ public static class HostReplyCodes
 }
 public static class DeviceHostProtocol
 {
-    public const int Version = 1, MaxMessageBytes = 1_048_576;
+    // 4 MiB (F4 item 2, whole-branch review D12): a state message carries the whole settings with the device list. The settings take at
+    // most 1 MiB, since lighting.json's cap is on their written form, which escapes non-ASCII text just as this compact form does (up to six
+    // bytes a character) and only adds indentation; the rest is room for a large device list. Window and host come from the same build.
+    public const int Version = 1, MaxMessageBytes = 4 * 1_048_576;
     public static string PipeName(string sid)=>"DeadWare.Devices."+sid;
     public static string InstanceName(string sid,int session)=>$@"Local\DeadWare.Devices.{sid}.{session}";
     public static async Task WriteAsync(Stream stream,HostMessage message,CancellationToken token)

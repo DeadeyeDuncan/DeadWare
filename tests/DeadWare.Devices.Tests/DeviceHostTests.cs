@@ -493,6 +493,79 @@ public sealed class DeviceHostTests : IAsyncLifetime
         Assert.Equal(30,new LightingStore(lightingPath).Load().Settings.Brightness);
     }
 
+    // The settings' written form, as Write makes it for lighting.json, measured in UTF-8.
+    static long Written(LightingSettings s)=>System.Text.Encoding.UTF8.GetByteCount(System.Text.Json.JsonSerializer.Serialize(s,new System.Text.Json.JsonSerializerOptions{WriteIndented=true}));
+    static async Task<HostMessage?> RoundTrip(HostMessage m)
+    {
+        var ms=new MemoryStream();
+        await DeviceHostProtocol.WriteAsync(ms,m,default);
+        ms.Position=0;
+        return await DeviceHostProtocol.ReadAsync(ms,default);
+    }
+
+    // F4 item 2 (whole-branch review D1): a change whose saved form would pass 1 MiB is refused with a plain error reply, as any invalid
+    // change is, so the host never writes a lighting.json that its next start would set aside unread: the live settings stay as they were,
+    // and the file too. Here a ReplaceColors of 2,100 entries, each valid, with names of 512 characters: about 1.2 MB written out.
+    [Fact]
+    public async Task A_change_that_would_save_over_1_MiB_is_refused_and_nothing_is_saved()
+    {
+        var h=await Running();
+        Assert.True((await Send(h,new SetBrightnessRequest(40))).Ok);
+        var saved=File.ReadAllText(lightingPath);
+        var colors=Enumerable.Range(0,2100).ToDictionary(i=>$"zone-{i:D5}",_=>new ZoneColorEntry{Color="#FF0000",ZoneName=new string('n',LightingSettingsCodec.MaxKeyLength)});
+        Assert.True(Written(new LightingSettings{Brightness=40,DefaultColor="#123456",ZoneColors=colors})>LightingSettingsCodec.MaxFileBytes);
+        var reply=await Send(h,new ReplaceColorsRequest("#123456",colors){Id=8});
+        Assert.False(reply.Ok);Assert.Equal(8,reply.Id);
+        Assert.Equal("Lighting settings would be larger than 1 MiB when saved.",reply.Error);
+        Assert.Equal("#4682B4",h.State.Settings.DefaultColor);
+        Assert.Empty(h.State.Settings.ZoneColors);
+        Assert.Equal(40,h.State.Settings.Brightness);
+        Assert.Equal(saved,File.ReadAllText(lightingPath));
+        Assert.Empty(Directory.GetFiles(dir,"lighting.json.*.tmp"));
+    }
+
+    // F4 item 2 (whole-branch review D12): a state message carries the whole settings with the device list, so the pipe takes 4 MiB. The
+    // largest settings lighting.json may hold travel in one state message with a large device list: the fixture's devices plus 40 more of
+    // 16 zones each. Names here are non-ASCII, which grows six-fold once escaped; lighting.json's cap counts that already, since the file
+    // escapes them just as the pipe does, so the settings' compact form is never longer than the file. The window's ReplaceColors that puts
+    // them back (its Undo) travels too.
+    [Fact]
+    public async Task The_largest_settings_and_a_large_device_list_fit_one_state_message()
+    {
+        for(var i=0;i<40;i++)
+            session.Controllers.Add(new OpenRgbController(session.Controllers.Count,"Gerät "+new string('ä',58),0,$"SERIAL-X{i}",$"HID: Ö{i}",
+                Enumerable.Range(0,16).Select(z=>new LightingZone(z,"Zone "+new string('ö',59),1)).ToList(),["Direct"],0));
+        var h=await Running();
+        // Entries with non-ASCII keys and names of the longest length, then entries with ASCII names taking up the rest, to just under the cap.
+        var colors=new Dictionary<string,ZoneColorEntry>();
+        long Size()=>Written(new LightingSettings{DefaultColor="#123456",ZoneColors=colors});
+        string Key(int i)=>$"zone-{i:D5}-"+new string('ß',LightingSettingsCodec.MaxKeyLength-11);
+        var full=new ZoneColorEntry{Color="#FF0000",ZoneName=new string('ü',LightingSettingsCodec.MaxKeyLength)};
+        colors[Key(0)]=full;var one=Size();colors[Key(1)]=full;var each=Size()-one;
+        for(var i=2;Size()+each<=LightingSettingsCodec.MaxFileBytes;i++) colors[Key(i)]=full;
+        for(var i=colors.Count;;i++)
+        {
+            colors[$"fill-{i:D5}"]=new ZoneColorEntry{Color="#FF0000",ZoneName=""};
+            var left=LightingSettingsCodec.MaxFileBytes-Size();
+            if(left<0){colors.Remove($"fill-{i:D5}");break;}
+            colors[$"fill-{i:D5}"].ZoneName=new string('n',(int)Math.Min(left,LightingSettingsCodec.MaxKeyLength));
+        }
+        Assert.InRange(Size(),LightingSettingsCodec.MaxFileBytes-200,LightingSettingsCodec.MaxFileBytes);
+        var undo=Assert.IsType<ReplaceColorsRequest>(await RoundTrip(new ReplaceColorsRequest("#123456",colors){Id=8}));
+        Assert.True((await Send(h,undo)).Ok);
+        Assert.Equal(Size(),new FileInfo(lightingPath).Length); // as saved
+        var state=Assert.IsType<StateEvent>(await h.HandleAsync(new GetStateRequest{Id=9}));
+        var ms=new MemoryStream();
+        await DeviceHostProtocol.WriteAsync(ms,state,default);
+        Assert.InRange(ms.Length-4,1_048_577,DeviceHostProtocol.MaxMessageBytes); // over 1 MiB, which the pipe once took
+        ms.Position=0;
+        var back=Assert.IsType<StateEvent>(await DeviceHostProtocol.ReadAsync(ms,default)).State;
+        Assert.True(System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(back.Settings).Length<=new FileInfo(lightingPath).Length); // compact, escaped alike
+        Assert.Equal(48,back.Devices.Count);
+        Assert.Equal(colors.Count,back.Settings.ZoneColors.Count);
+        Assert.All(colors,e=>Assert.Equal(e.Value.ZoneName,back.Settings.ZoneColors[e.Key].ZoneName));
+    }
+
     // F3 item 6 (whole-branch review D3): a host that may save, since lighting.json wasn't there when it started, but whose save then fails
     // replies "couldn't save" to a change and doesn't make it: the settings it reports, and the colours it paints, stay as they were. The
     // store stands in a write that fails, as a full disk makes it fail, and a put-in-place refused as a linked path, as a junction swapped

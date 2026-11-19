@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 
 namespace DeadWare.Core;
@@ -22,14 +23,22 @@ public static class LightingSettingsCodec
     // slow and memory-hungry, and set aside it costs one start only. The caller quarantines it as it does any invalid file.
     public const long MaxFileBytes=1_048_576;
     public static LightingRead TooLarge(long length)=>new(new(),$"Lighting settings are larger than 1 MiB ({length} bytes).",true);
+    // F4 item 2 (whole-branch review D1, D12): settings whose written form, Write's indented JSON in UTF-8, would be longer than MaxFileBytes
+    // are invalid too, on every read and every write, so a change that would make lighting.json larger is refused and the host never writes
+    // a file its next start would set aside unread. Write serialises once and measures that; Validate serialises once to measure.
+    const string WrittenTooLarge="Lighting settings would be larger than 1 MiB when saved.";
+    static readonly JsonSerializerOptions Indented=new(){WriteIndented=true};
+    static bool TooLong(string json)=>Encoding.UTF8.GetByteCount(json)>MaxFileBytes;
     public static string Write(LightingSettings settings)
     {
-        var error=Validate(settings);
+        var error=Values(settings);
         if(error is null&&settings.Version>LightingSettings.CurrentVersion) error="These lighting settings were saved by a newer DeadWare.";
         if(error is not null) throw new InvalidDataException(error);
-        return JsonSerializer.Serialize(settings,new JsonSerializerOptions{WriteIndented=true});
+        var json=JsonSerializer.Serialize(settings,Indented);
+        return TooLong(json)?throw new InvalidDataException(WrittenTooLarge):json;
     }
-    public static string? Validate(LightingSettings settings)
+    public static string? Validate(LightingSettings settings)=>Values(settings)??(TooLong(JsonSerializer.Serialize(settings,Indented))?WrittenTooLarge:null);
+    static string? Values(LightingSettings settings)
     {
         if(settings.Version<1) return "Version must be 1 or more.";
         if(settings.Brightness is<0 or>100) return "Brightness must be 0 to 100.";
