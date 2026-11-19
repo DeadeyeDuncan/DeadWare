@@ -201,8 +201,10 @@ internal sealed class DeviceHost : IAsyncDisposable
             else if(!engineActive){engineActive=true;start=true;status=HostStatus.Starting;message="";changed=true;}
         }
         if(changed) Raise();
-        // The client goes before the OpenRGB it talks to, so nothing waits on a process being killed.
-        if(stop){session.Abort();await engine.StopAsync().ConfigureAwait(false);}
+        // The client goes before the OpenRGB it talks to, so nothing waits on a process being killed. The stop keeps OpenRGB's restart
+        // history (F4 item 3, whole-branch review D8, D9): it counts towards the give-up, the start once the gate opens again waits out the
+        // backoff from the stop, and after a give-up only lighting turned off and on starts OpenRGB again.
+        if(stop){session.Abort();await engine.StopAsync(keepHistory:true).ConfigureAwait(false);}
         if(start) await engine.StartAsync(ct).ConfigureAwait(false);
     }
 

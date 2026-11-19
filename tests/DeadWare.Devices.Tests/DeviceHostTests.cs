@@ -12,7 +12,7 @@ public sealed class DeviceHostTests : IAsyncLifetime
     readonly string dir=Path.Combine(Path.GetTempPath(),"dw-host-"+Guid.NewGuid().ToString("N"));
     readonly string exe,lightingPath;
     readonly Clock time=new();
-    readonly FakeRunner runner=new();
+    readonly FakeRunner runner;
     readonly FakeOpenRgbSession session=FakeOpenRgbSession.FromFixture();
     readonly HostLog log;
     readonly List<LightingConflict> conflicts=new();
@@ -25,6 +25,7 @@ public sealed class DeviceHostTests : IAsyncLifetime
 
     public DeviceHostTests()
     {
+        runner=new(time);
         Directory.CreateDirectory(dir);
         exe=Path.Combine(dir,"OpenRGB.exe");File.WriteAllText(exe,"");
         lightingPath=Path.Combine(dir,"lighting.json");
@@ -50,12 +51,15 @@ public sealed class DeviceHostTests : IAsyncLifetime
         public void Exit()=>exit.TrySetResult();
         public void Dispose(){}
     }
-    sealed class FakeRunner:IProcessRunner
+    // Records when, in fake time, each OpenRGB was started.
+    sealed class FakeRunner(TimeProvider time):IProcessRunner
     {
         public readonly List<FakeProcess> Started=new();
-        public IRunningProcess Start(ProcessStartInfo info){lock(Started){var p=new FakeProcess(100+Started.Count);Started.Add(p);return p;}}
+        readonly List<DateTimeOffset> startedAt=new();
+        public IRunningProcess Start(ProcessStartInfo info){lock(Started){var p=new FakeProcess(100+Started.Count);Started.Add(p);startedAt.Add(time.GetUtcNow());return p;}}
         public int Count{get{lock(Started)return Started.Count;}}
         public FakeProcess At(int i){lock(Started)return Started[i];}
+        public DateTimeOffset StartedAt(int i){lock(Started)return startedAt[i];}
         // The OpenRGB processes still running, as a real scan would list them.
         public IReadOnlyList<RunningProcess> Live(){lock(Started)return Started.Where(p=>!p.HasExited).Select(p=>new RunningProcess(p.Id,"OpenRGB",null)).ToList();}
     }
@@ -185,6 +189,75 @@ public sealed class DeviceHostTests : IAsyncLifetime
         lock(conflicts)conflicts.Clear();
         await AdvanceUntil(()=>h.State.Status==HostStatus.Running);
         Assert.Equal(2,runner.Count);
+    }
+
+    // F4 item 3 (whole-branch review D8): a program that comes and goes can't cycle OpenRGB without bound. Each conflict stop counts as an
+    // exit, the relaunch once the conflict clears waits out the backoff, and the fifth stop within 10 minutes gives up, which the clean
+    // scans that follow don't undo.
+    [Fact]
+    public async Task A_conflict_that_comes_and_goes_reaches_the_give_up_and_stops_relaunching()
+    {
+        var h=await Running();
+        for(var i=0;i<RestartBackoff.MaxFailures;i++)
+        {
+            lock(conflicts)conflicts.Add(DeadLight);
+            await AdvanceUntil(()=>runner.At(i).Killed);
+            lock(conflicts)conflicts.Clear();
+            if(i<RestartBackoff.MaxFailures-1) await AdvanceUntil(()=>runner.Count==i+2&&h.State.Status==HostStatus.Running,limit:TimeSpan.FromSeconds(60));
+        }
+        await AdvanceUntil(()=>h.State.Status==HostStatus.OpenRgbFailed);
+        Assert.Equal(OpenRgbEngine.GaveUpText,h.State.Message);
+        var scanned=Volatile.Read(ref scans);
+        await AdvanceUntil(()=>Volatile.Read(ref scans)>=scanned+6); // half a minute of clean scans
+        Assert.Equal(RestartBackoff.MaxFailures,runner.Count);
+        Assert.Equal(HostStatus.OpenRgbFailed,h.State.Status);
+    }
+
+    // F4 item 3 (whole-branch review D9): the relaunch after a conflict stop waits the backoff counted from the stop itself, so it never comes
+    // sooner than 4 s after the stop, nor so after the previous start, however long the scan or a wait for the lock held the stop up. Here the
+    // scan that finds the conflict takes 4.5 s of fake time, so the next scan, timed from the start of that one, comes 0.5 s after the stop.
+    [Fact]
+    public async Task A_relaunch_after_a_conflict_stop_comes_no_sooner_than_4_s_after_it()
+    {
+        var h=await Running();
+        var scan=NewHold();
+        Volatile.Write(ref scanHold,scan);
+        await AdvanceUntil(()=>scan.Parked); // the next scan is held in the scanner
+        Volatile.Write(ref scanHold,null);
+        lock(conflicts)conflicts.Add(DeadLight);
+        time.Advance(TimeSpan.FromMilliseconds(4500));
+        scan.Release();
+        await Until(()=>runner.At(0).Killed);
+        var stopped=time.GetUtcNow();
+        lock(conflicts)conflicts.Clear();
+        await AdvanceUntil(()=>runner.Count==2&&h.State.Status==HostStatus.Running);
+        Assert.InRange(runner.StartedAt(1)-stopped,RestartBackoff.Base,RestartBackoff.Base+DeviceHost.SlowTick);
+        Assert.True(runner.StartedAt(1)-runner.StartedAt(0)>=RestartBackoff.Base);
+    }
+
+    // F4 item 3 (whole-branch review D8): after the engine gives up, here on five crashes, a conflict that comes and goes doesn't relaunch
+    // OpenRGB: only turning lighting off and on does, as the give-up text says.
+    [Fact]
+    public async Task A_give_up_is_not_undone_by_a_conflict_that_clears()
+    {
+        var h=await Running();
+        for(var i=0;i<RestartBackoff.MaxFailures-1;i++)
+        {
+            runner.At(i).Exit();
+            await Until(()=>h.State.Status==HostStatus.Waiting); // the engine arms its relaunch delay before it reports Restarting
+            await AdvanceUntil(()=>runner.Count==i+2&&h.State.Status==HostStatus.Running,TimeSpan.FromSeconds(1),TimeSpan.FromSeconds(65));
+        }
+        runner.At(RestartBackoff.MaxFailures-1).Exit();
+        await Until(()=>h.State.Status==HostStatus.OpenRgbFailed);
+        lock(conflicts)conflicts.Add(DeadLight);
+        await AdvanceUntil(()=>h.State.Status==HostStatus.Blocked);
+        lock(conflicts)conflicts.Clear();
+        await AdvanceUntil(()=>h.State.Status==HostStatus.OpenRgbFailed);
+        Assert.Equal(OpenRgbEngine.GaveUpText,h.State.Message);
+        var scanned=Volatile.Read(ref scans);
+        await AdvanceUntil(()=>Volatile.Read(ref scans)>=scanned+4);
+        Assert.Equal(RestartBackoff.MaxFailures,runner.Count);
+        Assert.Equal(HostStatus.OpenRgbFailed,h.State.Status);
     }
 
     [Fact]

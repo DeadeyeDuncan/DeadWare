@@ -158,8 +158,56 @@ public sealed class OpenRgbEngineTests : IAsyncLifetime
         await Until(()=>runner.Count==5&&e.Status==EngineStatus.Running);
         runner.At(4).Exit();
         await Until(()=>e.Status==EngineStatus.Failed);
-        Assert.Equal("OpenRGB stopped 5 times in 10 minutes. Turn lighting off and on in Settings to try again.",e.FailureReason);
+        Assert.Equal("OpenRGB stopped 5 times in 10 minutes, counting the times DeadWare stopped it for a program that blocks lighting. Turn lighting off and on in Settings to try again.",e.FailureReason);
         Assert.Equal(5,runner.Count);
+    }
+
+    // F4 item 3 (whole-branch review D8): each OpenRGB a conflict stop ends counts towards the give-up, which holds across further conflict
+    // stops; the full stop of lighting turned off and on, or Quit, clears it, and the next start launches at once.
+    [Fact]
+    public async Task Conflict_stops_reach_the_give_up_which_only_a_full_stop_clears()
+    {
+        var e=Engine();
+        for(var i=0;i<RestartBackoff.MaxFailures;i++)
+        {
+            await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
+            Assert.Equal(EngineStatus.Running,e.Status);
+            await e.StopAsync(keepHistory:true).WaitAsync(RealTimeCap);
+            Assert.True(runner.At(i).Killed);
+            await Advance(TimeSpan.FromSeconds(61),TimeSpan.FromSeconds(1)); // past each delay, 4 s doubling to 32 s
+        }
+        await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
+        Assert.Equal(EngineStatus.Failed,e.Status);
+        Assert.Equal(OpenRgbEngine.GaveUpText,e.FailureReason);
+        await e.StopAsync(keepHistory:true).WaitAsync(RealTimeCap); // the next conflict, then a clean scan
+        await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
+        Assert.Equal(EngineStatus.Failed,e.Status);
+        Assert.Equal(RestartBackoff.MaxFailures,runner.Count);
+        await e.StopAsync().WaitAsync(RealTimeCap); // lighting turned off and on
+        await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
+        Assert.Equal(EngineStatus.Running,e.Status);
+        Assert.Equal(RestartBackoff.MaxFailures+1,runner.Count);
+    }
+
+    // F4 item 3 (whole-branch review D9): a start after a conflict stop waits out the backoff counted from the stop, as a crash restart
+    // counts it from the exit, and resolves at once as a restart so the host goes on scanning meanwhile.
+    [Fact]
+    public async Task A_start_after_a_conflict_stop_waits_out_the_backoff_from_the_stop()
+    {
+        var clock=new Clock();
+        var e=Track(new OpenRgbEngine(exe,@"C:\cfg\openrgb",runner,(_,_)=>Task.FromResult(true),clock,log));
+        await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
+        await e.StopAsync(keepHistory:true).WaitAsync(RealTimeCap);
+        clock.Advance(TimeSpan.FromSeconds(1));
+        await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
+        Assert.Equal(EngineStatus.Restarting,e.Status);
+        var left=RestartBackoff.Base-TimeSpan.FromSeconds(1);
+        Assert.True(clock.Waiting(left));
+        clock.Advance(left-TimeSpan.FromTicks(1));
+        await Task.Delay(100);
+        Assert.Equal(1,runner.Count);
+        clock.Advance(TimeSpan.FromTicks(1));
+        await Until(()=>runner.Count==2&&e.Status==EngineStatus.Running);
     }
 
     [Fact]

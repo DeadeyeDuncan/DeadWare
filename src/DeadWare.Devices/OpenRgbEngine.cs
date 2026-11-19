@@ -26,6 +26,10 @@ internal sealed class OpenRgbEngine : IAsyncDisposable
     Task? supervisor;
     volatile bool quitting;
     bool started;
+    // F4 item 3 (whole-branch review D8, D9): the restart history a conflict stop keeps and a full stop clears, with the backoff's count.
+    // resumeAt: the earliest the next launch may start, armed with each restart delay. gaveUp: the backoff gave up, so a start fails at once.
+    DateTimeOffset? resumeAt;
+    bool gaveUp;
     EngineStatus status=EngineStatus.Stopped;
     int? processId;
     string? failureReason;
@@ -37,7 +41,8 @@ internal sealed class OpenRgbEngine : IAsyncDisposable
     public static string ConfigFailedText(string configDir)=>$"DeadWare couldn't update OpenRGB's settings file in {configDir}, so it didn't start OpenRGB. Turn lighting off and on in Settings to try again.";
     // The final reasons name their remedy (O16): choosing the same OpenRGB.exe again in Settings retries, as turning lighting off and on does.
     public static string MissingText(string exePath)=>$"OpenRGB.exe was not found at {exePath}. Choose OpenRGB.exe in Settings → Lighting.";
-    public static readonly string GaveUpText=$"OpenRGB stopped {RestartBackoff.MaxFailures} times in {(int)RestartBackoff.Window.TotalMinutes} minutes. Turn lighting off and on in Settings to try again.";
+    // F4 item 3: a conflict stop counts towards the give-up as well, and the text says so.
+    public static readonly string GaveUpText=$"OpenRGB stopped {RestartBackoff.MaxFailures} times in {(int)RestartBackoff.Window.TotalMinutes} minutes, counting the times DeadWare stopped it for a program that blocks lighting. Turn lighting off and on in Settings to try again.";
     readonly Action<string>? prepareConfig;
     // prepareConfig: writes OpenRGB's settings before every launch (Ruling AR); a launch whose settings can't be written doesn't happen.
     public OpenRgbEngine(string exePath,string configDir,IProcessRunner runner,Func<int,CancellationToken,Task<bool>> portOpen,TimeProvider time,HostLog log,Func<string,LocationProtection>? folderCheck=null,Action<string>? prepareConfig=null)
@@ -71,6 +76,8 @@ internal sealed class OpenRgbEngine : IAsyncDisposable
             started=true;
             var ct=cts.Token;
             if(AppData(configDir) is null){SetLocked(EngineStatus.Failed,FolderNameText(configDir),out pending);firstAttempt.TrySetResult();}
+            // F4 item 3: a give-up holds across conflict stops; only a full stop, lighting turned off and on or Quit, clears it.
+            else if(gaveUp){SetLocked(EngineStatus.Failed,GaveUpText,out pending);firstAttempt.TrySetResult();}
             else if(!File.Exists(exePath)){SetLocked(EngineStatus.Failed,MissingText(exePath),out pending);firstAttempt.TrySetResult();}
             else supervisor=Task.Run(()=>Supervise(ct));
         }
@@ -83,6 +90,18 @@ internal sealed class OpenRgbEngine : IAsyncDisposable
     {
         try
         {
+            // F4 item 3 (whole-branch review D9): a start after a conflict stop waits out what is left of the delay that stop armed, as a crash
+            // restart waits out its own, so OpenRGB is never relaunched sooner than 4 s after it was stopped. The first attempt resolves as a
+            // restart, so the host's loop carries on scanning meanwhile, and a stop in the wait cancels the launch.
+            DateTimeOffset? at;
+            lock(gate)at=resumeAt;
+            if(at-time.GetUtcNow() is {Ticks:>0} left)
+            {
+                var pause=Task.Delay(left,time,ct); // registered before the status change so a clock advance can't miss it
+                Set(EngineStatus.Restarting,null);
+                firstAttempt.TrySetResult();
+                await pause.ConfigureAwait(false);
+            }
             while(!quitting)
             {
                 Set(EngineStatus.Starting,null);
@@ -116,8 +135,13 @@ internal sealed class OpenRgbEngine : IAsyncDisposable
                     if(proc is not null){try{proc.KillTree();}catch{}try{proc.Dispose();}catch{}}
                     lock(gate){current=null;processId=null;}
                 }
+                // F4 item 3 (whole-branch review D8): every OpenRGB that was launched and ended counts, one a stop ended included, so a program
+                // that comes and goes can't cycle OpenRGB faster or longer than crashes can. A full stop clears the count after it.
+                if(quitting&&proc is null) break;
+                var now=time.GetUtcNow();
+                var delay=backoff.RecordFailure(now);
+                lock(gate){if(delay is null) gaveUp=true;else resumeAt=now+delay.Value;}
                 if(quitting) break;
-                var delay=backoff.RecordFailure(time.GetUtcNow());
                 if(delay is null){Set(EngineStatus.Failed,GaveUpText);return;}
                 var wait=Task.Delay(delay.Value,time,ct); // registered before the status change so a clock advance can't miss it
                 Set(EngineStatus.Restarting,null);
@@ -187,7 +211,10 @@ internal sealed class OpenRgbEngine : IAsyncDisposable
         try{Changed?.Invoke();}catch(Exception e){log.Write("openrgb Changed handler failed: "+e.Message);}
     }
 
-    public async Task StopAsync()
+    // keepHistory: a conflict stop (F4 item 3, whole-branch review D8): the OpenRGB it ends counts towards the give-up, and the next start
+    // waits out the delay that armed and fails at once after a give-up. A full stop, the host stopping for lighting turned off or Quit,
+    // clears all of that.
+    public async Task StopAsync(bool keepHistory=false)
     {
         quitting=true;
         Task? sup;
@@ -197,7 +224,11 @@ internal sealed class OpenRgbEngine : IAsyncDisposable
         try{proc?.KillTree();}catch{}
         if(sup is not null){try{await sup.ConfigureAwait(false);}catch{}}
         // Re-arm so the host can start the engine again after a conflict clears; disposal cancels the fresh token below.
-        lock(gate){started=false;supervisor=null;cts.Dispose();cts=new();firstAttempt=new(TaskCreationOptions.RunContinuationsAsynchronously);backoff.Reset();quitting=false;}
+        lock(gate)
+        {
+            started=false;supervisor=null;cts.Dispose();cts=new();firstAttempt=new(TaskCreationOptions.RunContinuationsAsynchronously);quitting=false;
+            if(!keepHistory){backoff.Reset();resumeAt=null;gaveUp=false;}
+        }
         Set(EngineStatus.Stopped,null);
     }
     public async ValueTask DisposeAsync(){await StopAsync().ConfigureAwait(false);lock(gate)cts.Dispose();}
