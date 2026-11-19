@@ -192,7 +192,7 @@ public sealed class LightingDeviceServiceTests : IDisposable
         Assert.Equal(3,session.Resizes.Count);
         var text=File.ReadAllText(Path.Combine(dir,"devices.log"));
         Assert.Equal(0,Count(text,"sized Corsair Lighting Node Pro"));
-        Assert.Equal(1,Count(text,"sizing Corsair Lighting Node Pro Corsair Channel 1 to 48 LEDs didn't hold"));
+        Assert.Equal("sizing Corsair Lighting Node Pro Corsair Channel 1 to 48 LEDs didn't hold: OpenRGB reports 0 LEDs; trying again at each rescan where it reads 0 LEDs",Assert.Single(Lines(text,"didn't hold")));
         session.KeepResizes=true;
         svc.Rescan(); // the fourth try holds
         svc.Rescan(); // and channel 1 now reads 48, so nothing more is sent
@@ -240,7 +240,8 @@ public sealed class LightingDeviceServiceTests : IDisposable
         Assert.Single(session.Modes,m=>m.Index==node);
     }
     // Whole-branch review D6: a resize after which channel 1 reads another size than it had (OpenRGB clamped it, say) changed its LEDs,
-    // so the hardware effect, set up for the old size, is sent again.
+    // so the hardware effect, set up for the old size, is sent again. F3 item 1: that size is never sized again, since DeadWare sizes
+    // channel 1 only when it reads 0 LEDs, as DeadLight does, and its one log line says so.
     [Fact] public void A_Node_Pro_resize_that_leaves_another_size_resends_its_effect()
     {
         var s=new LightingSettings();var node=IndexOf(Node);
@@ -250,24 +251,34 @@ public sealed class LightingDeviceServiceTests : IDisposable
         svc.Rescan();svc.Paint(s);
         var calls=session.Calls.Where(c=>c.StartsWith("resize")||c.StartsWith($"mode {node}/")).ToList();
         Assert.Equal(["mode "+node+"/1","resize "+node+"/0/48","mode "+node+"/1"],calls);
-        Assert.Equal(1,Count(File.ReadAllText(Path.Combine(dir,"devices.log")),"didn't hold: OpenRGB reports 16 LEDs"));
+        svc.Rescan();svc.Paint(s); // channel 1 still reads 16: nothing is sent
+        Assert.Single(session.Resizes);
+        Assert.Equal("sizing Corsair Lighting Node Pro Corsair Channel 1 to 48 LEDs didn't hold: OpenRGB reports 16 LEDs; not trying again unless it reads 0 LEDs",Assert.Single(Lines(File.ReadAllText(Path.Combine(dir,"devices.log")),"didn't hold")));
     }
     // D6: a resize after which the read shows no channel 1 at all gets its one failure line, and the line says so. F2 item 5: channel 1's
     // LEDs changed as well, since it has none now, so the hardware effect is forgotten and the next paint sends it again. The Node Pro
     // itself is still there, so Rescan's own cleanup, which drops only what was sent to devices that are gone, isn't what forgets it.
+    // F3 item 1: it is sized again only at a rescan where channel 1 is back and reads 0 LEDs, as the line says.
     [Fact] public void A_Node_Pro_channel_gone_after_a_resize_is_logged_as_no_such_zone_and_resends_its_effect()
     {
         var s=new LightingSettings();var node=IndexOf(Node);
         svc.Paint(s);
         session.SizeZone(node,0,0);
+        var channel1=session.Controllers[node].Zones.Single(z=>z.Index==LightingDeviceService.NodeProZone);
         session.ResizeInstead=(i,z,_)=>session.Controllers[i]=session.Controllers[i] with{Zones=session.Controllers[i].Zones.Where(x=>x.Index!=z).ToList()};
         svc.Rescan();svc.Paint(s);
         var text=File.ReadAllText(Path.Combine(dir,"devices.log"));
-        Assert.Equal(1,Count(text,"sizing Corsair Lighting Node Pro Corsair Channel 1 to 48 LEDs didn't hold: OpenRGB reports no such zone; trying again at each rescan"));
+        Assert.Equal("sizing Corsair Lighting Node Pro Corsair Channel 1 to 48 LEDs didn't hold: OpenRGB reports no such zone; trying again at each rescan where it reads 0 LEDs",Assert.Single(Lines(text,"didn't hold")));
         var nodePro=Assert.Single(svc.Devices,d=>d.Name==LightingDeviceService.NodePro);
         Assert.DoesNotContain(nodePro.Zones,z=>z.Index==LightingDeviceService.NodeProZone);
         var calls=session.Calls.Where(c=>c.StartsWith("resize")||c.StartsWith($"mode {node}/")).ToList();
         Assert.Equal(["mode "+node+"/1","resize "+node+"/0/48","mode "+node+"/1"],calls);
+        svc.Rescan(); // still no channel 1: nothing to size
+        Assert.Single(session.Resizes);
+        session.ResizeInstead=null;
+        session.Controllers[node]=session.Controllers[node] with{Zones=[channel1 with{LedCount=0},..session.Controllers[node].Zones]};
+        svc.Rescan(); // back with 0 LEDs: sized again
+        Assert.Equal(2,session.Resizes.Count);
     }
     // D6: Reset starts a connection's sizing afresh, the failure latch included, as DeviceHost.ConnectLocked's Reset and Rescan do on a
     // reconnect. After a resize that didn't hold, a reconnect whose first read already shows 48 sized nothing on that connection, so it
@@ -290,6 +301,8 @@ public sealed class LightingDeviceServiceTests : IDisposable
         Assert.Equal(2,Count(text,"didn't hold"));
     }
     static int Count(string text,string what)=>text.Split(what).Length-1;
+    // The log's lines that contain what, each without the time stamp it starts with.
+    static string[] Lines(string text,string what)=>text.Split('\n').Where(l=>l.Contains(what)).Select(l=>l[(l.IndexOf(' ')+1)..]).ToArray();
     [Fact] public void Only_the_Node_Pros_channel_1_is_ever_sized()
     {
         var node=IndexOf(Node);var board=IndexOf("SERIAL-8");

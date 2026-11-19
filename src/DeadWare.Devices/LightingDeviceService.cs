@@ -47,8 +47,9 @@ internal sealed class LightingDeviceService
                 session.ResizeZone(node.Index,NodeProZone,NodeProLeds);
                 read=session.ReadControllers();
                 // B9: OpenRGB sends no reply to a resize and ignores one outside the zone's limits, so only a read says whether it held. One
-                // that this read doesn't show is logged once and tried again at the next rescan, as DeadLight re-runs its seed while the zone
-                // reads 0.
+                // that this read doesn't show is logged once. It is tried again only at a rescan where channel 1 reads 0 LEDs, as DeadLight
+                // re-runs its seed only while the zone reads 0 (F3 item 1). So after a read that still shows 0, or no channel 1, each rescan
+                // that reads 0 tries again; after one that shows another size, nothing is sent while channel 1 keeps it. The line says which.
                 var now=read.FirstOrDefault(c=>LightingKeys.Device(c.Serial,c.Location)==key)?.Zones.FirstOrDefault(z=>z.Index==NodeProZone)?.LedCount;
                 if(now==NodeProLeds) Sized(node,zone,key);
                 else
@@ -56,7 +57,8 @@ internal sealed class LightingDeviceService
                     if(!seedFailureLogged)
                     {
                         seedFailureLogged=true;
-                        log.Write($"sizing {node.Name} {zone.Name} to {NodeProLeds} LEDs didn't hold: OpenRGB reports {(now is {} leds?leds+" LEDs":"no such zone")}; trying again at each rescan");
+                        var retry=now is >0?"not trying again unless it reads 0 LEDs":"trying again at each rescan where it reads 0 LEDs";
+                        log.Write($"sizing {node.Name} {zone.Name} to {NodeProLeds} LEDs didn't hold: OpenRGB reports {(now is {} leds?leds+" LEDs":"no such zone")}; {retry}");
                     }
                     // Its hardware effect was set up for the old size: once the size changed, forget what was sent, so the next paint sends it again.
                     if(now!=zone.LedCount) Forget(key);
