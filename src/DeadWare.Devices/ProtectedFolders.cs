@@ -26,13 +26,16 @@ internal static class ProtectedFolders
 
     // Polish item 7 and round 2 item 2 (B4/B13/B18): a refusal names the path InstallLocation's reason names, which can be the folder being
     // prepared, something inside it or a folder above it, says what is wrong with it in words that fit the reason, and gives a remedy that
-    // works there. Inside %ProgramData%\DeadWare, DeadWare itself included, the one remedy is removing it, which needs administrator rights
+    // works there. Inside %ProgramData%\DeadWare, DeadWare itself included, the one remedy is removal, which needs administrator rights
     // (whole-branch review D1): what programs without administrator rights could change, or another account owns, may already have been
     // changed, and OpenRGB runs as administrator and loads plugin DLLs from its config folder, so a new owner or new permissions would keep
-    // those bytes and the check would then pass. DeadWare makes its own folders again, protected, though a file removed under updates isn't
-    // made again, and Roll back refuses a snapshot that lost one. %ProgramData% and the folders above it are never to be removed: they get
-    // their standard permissions back. A path the check couldn't judge gets the can't-check words with the reason, never a claim that it
-    // isn't restricted.
+    // those bytes and the check would then pass. What is to be removed is the path at fault, except for UpdateCore's updates folder and
+    // anything in it, where it is the whole updates folder (F2 item 3): a snapshot of the earlier version there that lost one file fails
+    // validation, which stops both Update & restart and Roll back & restart until the updates folder goes, and reinstalling DeadWare doesn't
+    // clear it. The updater's own refusal, ProtectedRoot.Refusal, names the whole folder too. DeadWare makes its own folders again,
+    // protected, but not what was in them, so removing updates takes the earlier version with it. %ProgramData% and the folders above it
+    // are never to be removed: they get their standard permissions back. A path the check couldn't judge gets the can't-check words with the
+    // reason, never a claim that it isn't restricted.
     internal static string Refusal(string deadWare,string folder,string? reason)=>Explain(deadWare,folder,reason,"DeadWare won't start OpenRGB","it won't start OpenRGB");
     internal static string LogRefusal(string deadWare,string folder,string? reason)
         =>Explain(deadWare,folder,reason,"the lighting helper running as administrator keeps no log","the lighting helper running as administrator keeps no log");
@@ -42,21 +45,29 @@ internal static class ProtectedFolders
         var (fault,named)=LocationReason.Read(reason);
         var entry=named??folder;
         var root=Path.TrimEndingDirectorySeparator(Path.GetFullPath(deadWare));
-        var inside=entry.Equals(root,StringComparison.OrdinalIgnoreCase)||entry.StartsWith(root+Path.DirectorySeparatorChar,StringComparison.OrdinalIgnoreCase);
-        const string Remove="Remove it, which needs administrator rights, then turn lighting off and on.";
+        var inside=Within(entry,root);
+        // F2 item 3: for the updates folder or anything in it, the whole updates folder is to be removed.
+        var updates=Path.Combine(root,UpdatesFolder);
+        var remove=Within(entry,updates)?$"Remove {updates}, which needs administrator rights, then turn lighting off and on.":"Remove it, which needs administrator rights, then turn lighting off and on.";
         const string Restore="Restore its standard permissions, then turn lighting off and on.";
         // InstallLocation's sentence opens the message: it names the path first. One in no form it uses follows the folder being prepared.
         var opening=named is null?$"{folder} ({reason?.TrimEnd('.')})":reason!.TrimEnd('.');
         var said=reason is not {Length:>0}?"its permissions couldn't be read.":reason.EndsWith('.')?reason:reason+".";
         return fault switch
         {
-            LocationFault.Writable=>$"{opening}, so programs without administrator rights can change it and {outcome}. "+(inside?Remove:Restore),
-            LocationFault.NotOwned=>$"{opening}, so {outcome}. "+(inside?Remove:Restore),
-            // Inside DeadWare's folder, removing the path clears any of these: what DeadWare needs there it makes again, protected. Above
-            // it, only an unreadable folder has a fix of its own: a link or a network drive there is how this PC is set up.
-            _=>$"DeadWare can't check {entry}, so {cantCheckOutcome}: {said}"+(named is null?"":inside?" "+Remove:fault==LocationFault.Unreadable?" "+Restore:""),
+            LocationFault.Writable=>$"{opening}, so programs without administrator rights can change it and {outcome}. "+(inside?remove:Restore),
+            LocationFault.NotOwned=>$"{opening}, so {outcome}. "+(inside?remove:Restore),
+            // Inside DeadWare's folder, removing the path, or the updates folder it is in, clears any of these: what DeadWare needs there it
+            // makes again, protected. Above it, only an unreadable folder has a fix of its own: a link or a network drive there is how this PC
+            // is set up.
+            _=>$"DeadWare can't check {entry}, so {cantCheckOutcome}: {said}"+(named is null?"":inside?" "+remove:fault==LocationFault.Unreadable?" "+Restore:""),
         };
     }
+    // UpdateCore's updates folder, %ProgramData%\DeadWare\updates (UpdatePaths.ProtectedCacheBase).
+    const string UpdatesFolder="updates";
+    // path is folder or lies beneath it, compared by whole path segments.
+    static bool Within(string path,string folder)
+        =>path.Equals(folder,StringComparison.OrdinalIgnoreCase)||path.StartsWith(folder+Path.DirectorySeparatorChar,StringComparison.OrdinalIgnoreCase);
 
     public static string OpenRgbConfigDirectory()=>OpenRgbConfigDirectory(Environment.IsPrivilegedProcess,Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData));
 

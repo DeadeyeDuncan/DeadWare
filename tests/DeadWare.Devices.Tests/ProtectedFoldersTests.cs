@@ -218,13 +218,19 @@ public sealed class ProtectedFoldersTests
 
     // Polish round 2, item 2: a refusal names the path InstallLocation's reason names and fits its words and remedy to the fault and to where
     // that path is: DeadWare's folder or something deeper inside it is to be removed, %ProgramData% and the drive above it never; a path the
-    // check couldn't judge is one DeadWare can't check, never one that isn't restricted. The reasons are InstallLocation's own.
+    // check couldn't judge is one DeadWare can't check, never one that isn't restricted. The reasons are InstallLocation's own. F2 item 3:
+    // for the updates folder or anything in it, what is to be removed is the whole updates folder. UpdatesDir is UpdateCore's updates folder,
+    // InUpdates a file of the earlier version it keeps for Roll back & restart (updates\<installation key>\previous\<update id>\…), and
+    // NotUpdates a folder whose name only starts the same way.
     const string ProgramDataDir=@"C:\ProgramData",DeadWareDir=@"C:\ProgramData\DeadWare",OpenRgbDir=@"C:\ProgramData\DeadWare\openrgb",
-        Deeper=@"C:\ProgramData\DeadWare\updates\0.19.0\DeadWare.dll";
+        Deeper=@"C:\ProgramData\DeadWare\openrgb\plugins\OpenRGBEffectsPlugin.dll",UpdatesDir=@"C:\ProgramData\DeadWare\updates",
+        InUpdates=UpdatesDir+@"\3c9f0e2ab47d5e8f61a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708\previous\5d41402abc4b2a76b9719d911017c592\DeadWare.dll",
+        NotUpdates=@"C:\ProgramData\DeadWare\updates.old\DeadWare.dll",Account="S-1-5-21-1-2-3-1001";
     static string Reason(string path,PathKind kind,string? owner=AdministratorsSid,AclRule[]? rules=null,bool link=false,string? error=null,bool network=false)
         =>InstallLocation.Evaluate([new PathSecurity(path,kind,owner,rules??[],link,error,network)]).Reason!;
     const string Denied="Access to the path is denied.",Drive=@"C:\",Inside=" Remove it, which needs administrator rights, then turn lighting off and on.",
-        Restore=" Restore its standard permissions, then turn lighting off and on.";
+        Restore=" Restore its standard permissions, then turn lighting off and on.",
+        RemoveUpdates=" Remove "+UpdatesDir+", which needs administrator rights, then turn lighting off and on.";
     public static TheoryData<string,string> Refusals=>new()
     {
         // Programs without administrator rights can change it.
@@ -237,10 +243,30 @@ public sealed class ProtectedFoldersTests
         {Reason(Drive,PathKind.Ancestor,rules:[new("S-1-5-11",0x40000,true,false)]),
             $"{Drive} can be changed by S-1-5-11, so programs without administrator rights can change it and DeadWare won't start OpenRGB.{Restore}"},
         // Another account owns it.
-        {Reason(OpenRgbDir,PathKind.Directory,owner:"S-1-5-21-1-2-3-1001"),
+        {Reason(DeadWareDir,PathKind.Directory,owner:Account),
+            $"{DeadWareDir} is not owned by SYSTEM, Administrators or TrustedInstaller, so DeadWare won't start OpenRGB.{Inside}"},
+        {Reason(OpenRgbDir,PathKind.Directory,owner:Account),
             $"{OpenRgbDir} is not owned by SYSTEM, Administrators or TrustedInstaller, so DeadWare won't start OpenRGB.{Inside}"},
-        {Reason(ProgramDataDir,PathKind.Ancestor,owner:"S-1-5-21-1-2-3-1001"),
+        {Reason(Deeper,PathKind.File,owner:Account),
+            $"{Deeper} is not owned by SYSTEM, Administrators or TrustedInstaller, so DeadWare won't start OpenRGB.{Inside}"},
+        {Reason(ProgramDataDir,PathKind.Ancestor,owner:Account),
             $"{ProgramDataDir} is not owned by SYSTEM, Administrators or TrustedInstaller, so DeadWare won't start OpenRGB.{Restore}"},
+        // The updates folder and anything in it, whatever the fault: the whole updates folder is to be removed.
+        {Reason(UpdatesDir,PathKind.Directory,rules:[new(UsersSid,0x2,true,false)]),
+            $"{UpdatesDir} can be changed by {UsersSid}, so programs without administrator rights can change it and DeadWare won't start OpenRGB.{RemoveUpdates}"},
+        {Reason(InUpdates,PathKind.File,rules:[new(UsersSid,0x2,true,false)]),
+            $"{InUpdates} can be changed by {UsersSid}, so programs without administrator rights can change it and DeadWare won't start OpenRGB.{RemoveUpdates}"},
+        {Reason(UpdatesDir,PathKind.Directory,owner:Account),
+            $"{UpdatesDir} is not owned by SYSTEM, Administrators or TrustedInstaller, so DeadWare won't start OpenRGB.{RemoveUpdates}"},
+        {Reason(InUpdates,PathKind.File,owner:Account),
+            $"{InUpdates} is not owned by SYSTEM, Administrators or TrustedInstaller, so DeadWare won't start OpenRGB.{RemoveUpdates}"},
+        {Reason(UpdatesDir,PathKind.Directory,link:true),
+            $"DeadWare can't check {UpdatesDir}, so it won't start OpenRGB: {UpdatesDir} is a link or junction.{RemoveUpdates}"},
+        {Reason(InUpdates,PathKind.File,owner:null,error:Denied),
+            $"DeadWare can't check {InUpdates}, so it won't start OpenRGB: Permissions for {InUpdates} could not be read: {Denied}{RemoveUpdates}"},
+        // Only the folder's whole name counts: a folder whose name merely starts with "updates" keeps the remedy for the entry itself.
+        {Reason(NotUpdates,PathKind.File,rules:[new(UsersSid,0x2,true,false)]),
+            $"{NotUpdates} can be changed by {UsersSid}, so programs without administrator rights can change it and DeadWare won't start OpenRGB.{Inside}"},
         // The check couldn't judge it.
         {Reason(OpenRgbDir,PathKind.Directory,link:true),
             $"DeadWare can't check {OpenRgbDir}, so it won't start OpenRGB: {OpenRgbDir} is a link or junction.{Inside}"},
