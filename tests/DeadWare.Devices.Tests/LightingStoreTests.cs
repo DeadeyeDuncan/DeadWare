@@ -90,6 +90,26 @@ public sealed class LightingStoreTests:IDisposable
         }
         finally{Directory.Delete(link);}
     }
+    // B2: a save whose move fails deletes its temporary file through the handle it wrote it with, never by looking the name up again, so a
+    // program without administrator rights that changed what the name leads to meanwhile can't turn the cleanup into a delete of its
+    // choosing. The failing move stands in for that program: it moves the temporary file away and leaves a decoy under its name.
+    [Fact] public void Failed_save_deletes_its_own_temporary_file_never_what_its_name_leads_to_later()
+    {
+        var away=Path.Combine(dir,"moved-away");
+        string? decoy=null;
+        var store=new LightingStore(P,guardLinks:true,move:(from,_)=>{File.Move(from,away);decoy=from;File.WriteAllText(from,"decoy");throw new IOException("the move failed");});
+        Assert.Throws<IOException>(()=>store.Save(new LightingSettings{Brightness=40}));
+        Assert.Equal("decoy",File.ReadAllText(decoy!));
+        Assert.False(File.Exists(away)); // the file the save wrote is gone, wherever it was moved
+        Assert.False(File.Exists(P));
+    }
+    // A real move that fails (lighting.json is a folder here) leaves no temporary file behind.
+    [Fact] public void Failed_save_leaves_no_temporary_file()
+    {
+        Directory.CreateDirectory(P);
+        Assert.ThrowsAny<Exception>(()=>new LightingStore(P).Save(new LightingSettings{Brightness=40}));
+        Assert.Equal(new[]{"lighting.json"},Directory.GetFileSystemEntries(dir).Select(Path.GetFileName));
+    }
     [Fact] public void Save_refuses_invalid_settings()
     {
         var store=new LightingStore(P);
