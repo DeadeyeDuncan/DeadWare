@@ -192,8 +192,8 @@ public class DeviceHostClientTests:IAsyncLifetime
         for(int i=0;i<5;i++)
         {
             await Until(()=>launcher.Launched==i+1);
-            // Waiting to retry proves the client found the host it launched running: a relaunched host that exits before that check
-            // counts as exited at once, with no retry to elapse.
+            // Waiting to retry proves the launch has finished and, for a relaunch, that the client found the new host running: one that
+            // exits before that check counts as exited at once, with no retry to elapse.
             await Until(()=>time.Waiting(Retry),"the retry wait after the launch");
             launcher.Process(i).Exit();
             await Elapse(Retry);

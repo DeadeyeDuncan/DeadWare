@@ -431,7 +431,7 @@ public sealed class DeviceHostTests : IAsyncLifetime
         Assert.True((await Send(h,new SetBrightnessRequest(30))).Ok);
         Assert.Equal(30,h.State.Settings.Brightness);
         Assert.Equal(json,File.ReadAllText(lightingPath));
-        Assert.False(File.Exists(lightingPath+".tmp"));
+        Assert.Empty(Directory.GetFiles(dir,Path.GetFileName(lightingPath)+".*.tmp"));
         Assert.Empty(Directory.GetFiles(dir,"lighting.corrupt-*.json"));
     }
 
