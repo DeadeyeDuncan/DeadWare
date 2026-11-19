@@ -457,7 +457,9 @@ internal sealed class CoolingPage : Page
     private async Task ExportAsync()
     {
         if (SelectedDevice is not { } selected || operationBusy) return;
-        string? path;
+        // Busy from the click: the save dialog appears a moment after it, and a second click in that moment would open a second dialog.
+        operationBusy = true; UpdateButtons(); RenderWarnings();
+        string? path = null;
         try
         {
             // The Windows App SDK's picker, which also works while DeadWare runs as administrator. It adds no extension unless given a default one.
@@ -466,7 +468,9 @@ internal sealed class CoolingPage : Page
             picker.FileTypeChoices.Add("CSV files", [".csv"]);
             path = (await picker.PickSaveFileAsync())?.Path;
         }
-        catch (Exception error) { ShowAction(error.Message); return; }
+        catch (Exception error) { ShowAction(error.Message); }
+        // RunOperationAsync below marks the page busy again at once; nothing else runs on the UI thread in between.
+        finally { operationBusy = false; UpdateButtons(); RenderWarnings(); }
         if (path is null) return;
         await RunOperationAsync(async () =>
         {

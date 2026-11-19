@@ -145,7 +145,7 @@ internal sealed class BatteryPage : Page
     private readonly BatteryChartView chart = new() { Height = 360 };
     private readonly DispatcherQueueTimer timer;
     private int revision;
-    private bool refreshing, refreshAgain, syncing;
+    private bool refreshing, refreshAgain, syncing, exportInProgress;
 
     private int Days => range.SelectedIndex >= 0 ? Ranges[range.SelectedIndex].Days : 1;
 
@@ -260,22 +260,25 @@ internal sealed class BatteryPage : Page
 
     private async Task ExportAsync()
     {
+        if (exportInProgress) return;
         int days = Days;
-        string? path;
+        // Disabled from the click until the export ends: the save dialog appears a moment after the click, and a second click in
+        // that moment would open a second dialog.
+        exportInProgress = true; export.IsEnabled = false;
         try
         {
-            // The Windows App SDK's picker, which also works while DeadWare runs as administrator. It adds no extension unless given a default one.
-            var picker = new Microsoft.Windows.Storage.Pickers.FileSavePicker(Pages.DialogOwner(this))
-                { SuggestedFileName = $"DeadWare-battery-{DateTime.Now:yyyyMMdd-HHmmss}", DefaultFileExtension = ".csv" };
-            picker.FileTypeChoices.Add("CSV files", [".csv"]);
-            path = (await picker.PickSaveFileAsync())?.Path;
-        }
-        catch (Exception error) { actionStatus.Text = "The save dialog could not be opened. " + error.Message; return; }
-        if (path is null) return;
-        export.IsEnabled = false;
-        actionStatus.Text = "Exporting saved observations…";
-        try
-        {
+            string? path;
+            try
+            {
+                // The Windows App SDK's picker, which also works while DeadWare runs as administrator. It adds no extension unless given a default one.
+                var picker = new Microsoft.Windows.Storage.Pickers.FileSavePicker(Pages.DialogOwner(this))
+                    { SuggestedFileName = $"DeadWare-battery-{DateTime.Now:yyyyMMdd-HHmmss}", DefaultFileExtension = ".csv" };
+                picker.FileTypeChoices.Add("CSV files", [".csv"]);
+                path = (await picker.PickSaveFileAsync())?.Path;
+            }
+            catch (Exception error) { actionStatus.Text = "The save dialog could not be opened. " + error.Message; return; }
+            if (path is null) return;
+            actionStatus.Text = "Exporting saved observations…";
             // The export only writes to a name that does not exist yet, so an empty file already at the chosen name is removed first.
             // An existing file with content is left alone, so the export refuses it as the WPF app does.
             if (new FileInfo(path) is { Exists: true, Length: 0 }) File.Delete(path);
@@ -283,6 +286,6 @@ internal sealed class BatteryPage : Page
             actionStatus.Text = "Export saved: " + path;
         }
         catch (Exception error) { actionStatus.Text = "Export could not be saved. Choose a new file name. " + error.Message; }
-        finally { export.IsEnabled = true; }
+        finally { exportInProgress = false; export.IsEnabled = true; }
     }
 }
