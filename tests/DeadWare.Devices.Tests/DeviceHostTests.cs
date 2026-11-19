@@ -477,6 +477,62 @@ public sealed class DeviceHostTests : IAsyncLifetime
         finally{Directory.Delete(link);}
     }
 
+    // F3 item 6 (whole-branch review D3): a host that may save, since lighting.json wasn't there when it started, but whose save then fails
+    // replies "couldn't save" to a change and doesn't make it: the settings it reports, and the colours it paints, stay as they were. The
+    // store stands in a write that fails, as a full disk makes it fail, and a put-in-place refused as a linked path, as a junction swapped
+    // in while the host runs makes the final-path check refuse it.
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task A_change_whose_save_fails_replies_couldnt_save_and_is_not_made(bool linked)
+    {
+        var store=linked
+            ?new LightingStore(lightingPath,place:(_,_)=>throw new LinkedPathException("lighting.json's path led elsewhere"))
+            :new LightingStore(lightingPath,write:(_,_)=>throw new IOException("the disk is full"));
+        var h=Build(store:store);Start(h);
+        await Until(()=>h.State.Status==HostStatus.Running);
+        Assert.Equal("",h.State.Message); // it started normally, with no note
+        var steelBlue=new Rgb(0x46,0x82,0xB4);
+        Assert.All(LastLeds(0),c=>Assert.Equal(steelBlue,c));
+        await Until(()=>time.Waiting(DeviceHost.Tick));
+        time.Advance(TimeSpan.FromMilliseconds(250)); // past the RAM's frame cap, short of the next tick, so a change made now would be painted at once
+        var reply=await Send(h,new SetAllColorsRequest("#FF0000"){Id=7});
+        Assert.False(reply.Ok);Assert.Equal(HostReplyCodes.CouldntSave,reply.Error);Assert.Equal(7,reply.Id);
+        Assert.Equal("#4682B4",h.State.Settings.DefaultColor);
+        Assert.Equal("#4682B4",h.State.Devices[0].Zones[0].Color);
+        Assert.All(LastLeds(0),c=>Assert.Equal(steelBlue,c)); // nothing of the change was painted
+        var written=session.LedCount;
+        time.Advance(TimeSpan.FromMilliseconds(250)); // the rest of the way to the tick the loop was waiting on
+        await AdvanceUntil(()=>session.LedCount>written); // the next paint
+        Assert.All(LastLeds(0),c=>Assert.Equal(steelBlue,c));
+        Assert.False(File.Exists(lightingPath));
+        Assert.Empty(Directory.GetFiles(dir,"lighting.json.*.tmp"));
+        Assert.Contains("saving lighting.json failed: "+(linked?"lighting.json's path led elsewhere":"the disk is full"),File.ReadAllText(Path.Combine(dir,"logs","devices.log")));
+    }
+
+    // F3 item 10 (spec, "Hardware modes and the Lighting Node Pro"): "Direct" is never written into a hardware-defaulted device's saved
+    // settings, since that would defeat the fallback by mode name, as DeadLight's comment warns. Colour changes that reach the Node Pro, one
+    // for every zone and one for a zone of its own, save no hardware mode for it, and it is never switched to Direct.
+    [Fact]
+    public async Task Colour_changes_never_save_Direct_for_the_Node_Pro()
+    {
+        var h=await Running();
+        var nodePro=Assert.Single(h.State.Devices,d=>d.Name==LightingDeviceService.NodePro);
+        Assert.Equal("Rainbow Wave",nodePro.OwnEffect);
+        var channel1=LightingKeys.Zone(nodePro.Key,LightingDeviceService.NodeProZone);
+        Assert.True((await Send(h,new SetAllColorsRequest("#FF0000"))).Ok);
+        Assert.True((await Send(h,new SetZoneColorRequest(channel1,"#00FF00"))).Ok);
+        var saved=new LightingStore(lightingPath).Load().Settings;
+        Assert.Equal("#FF0000",saved.DefaultColor);Assert.Equal("#00FF00",saved.ZoneColors[channel1].Color); // both changes were saved
+        Assert.Empty(saved.HardwareModes);
+        Assert.DoesNotContain("Direct",File.ReadAllText(lightingPath));
+        Assert.Empty(h.State.Settings.HardwareModes);
+        var node=session.Controllers.FindIndex(c=>c.Name==LightingDeviceService.NodePro);
+        var direct=session.Controllers[node].Modes.ToList().IndexOf(LightingPaint.DirectMode);
+        Assert.DoesNotContain($"mode {node}/{direct}",session.Calls);
+        Assert.Equal("Rainbow Wave",Assert.Single(h.State.Devices,d=>d.Name==LightingDeviceService.NodePro).Mode);
+    }
+
     [Fact]
     public async Task Failing_connect_logs_and_broadcasts_once_and_backs_off()
     {
