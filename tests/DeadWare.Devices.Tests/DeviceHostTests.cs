@@ -401,7 +401,7 @@ public sealed class DeviceHostTests : IAsyncLifetime
             Assert.Equal(100,h.State.Settings.Brightness);
             Assert.True((await Send(h,new SetBrightnessRequest(30))).Ok);
             Assert.Equal(30,h.State.Settings.Brightness);
-            Assert.False(File.Exists(lightingPath+".tmp"));
+            Assert.Empty(Directory.GetFiles(Path.GetDirectoryName(lightingPath)!,Path.GetFileName(lightingPath)+".*.tmp"));
         }
         finally{hold.Dispose();}
         // Readable now, but this host read it when it started; it keeps its defaults and still saves nothing.

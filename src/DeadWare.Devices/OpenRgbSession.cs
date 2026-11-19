@@ -77,8 +77,11 @@ internal sealed class OpenRgbSession : IOpenRgbSession
     // OpenRGB made after it; such a change reaches OpenRGB.NET 3.1.1's UpdateMode, which first fetches the device's data again (read in
     // its IL). That fetch refuses only a negative device index: for one past the end it asks OpenRGB and waits for the reply with no limit,
     // and OpenRGB 1.0rc3 sends none for a device it doesn't have (NetworkServer::SendReply_ControllerData), so BoundedSession's 3 s bound
-    // drops the session and the host reconnects. Only a mode index past the end throws there: ArgumentException above the mode count,
-    // IndexOutOfRangeException at it. An index that still fits lands on whichever device or mode now holds it.
+    // drops the session and the host reconnects. Against the data it fetched, UpdateMode throws for a mode index past the end
+    // (ArgumentException above the mode count, IndexOutOfRangeException at it) and for colours, when any are supplied, whose count isn't
+    // that mode's slot count (InvalidOperationException, "Incorrect number of colors supplied"). So an index that still fits either lands
+    // on whichever device or mode now holds it or, when colours go with it and that mode's slot count isn't the one the last read gave,
+    // throws, which fails that one device's paint (LightingDeviceService.Paint).
     public static Rgb[]? ShapeModeColors(IReadOnlyList<IReadOnlyList<int>> slots,int index,int modeIndex,IReadOnlyList<Rgb>? requested)
     {
         if((uint)index>=(uint)slots.Count||(uint)modeIndex>=(uint)slots[index].Count) throw new InvalidOperationException("That device or mode isn't in OpenRGB's last device list.");

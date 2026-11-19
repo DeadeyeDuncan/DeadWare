@@ -144,7 +144,8 @@ internal sealed class DeviceHost : IAsyncDisposable
                 var read=store.Load();
                 settings=read.Settings;
                 if(read.Quarantine){note=QuarantineNote;log.Write("lighting.json was invalid and was set aside: "+read.Error);}
-                // Ruling AS: a later DeadWare's file is never rewritten, so its settings survive this build; changes last until DeadWare restarts.
+                // Ruling AS: a later DeadWare's file is never rewritten, so its settings survive this build; changes last only while this host
+                // process runs, since only a new host process reads the file again (polish round 2, item 8).
                 // One whose values this build can't accept gives defaults (B7), and its note says so.
                 else if(read.Newer)
                 {
