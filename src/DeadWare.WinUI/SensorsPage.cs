@@ -107,7 +107,7 @@ internal sealed class NetworkPage : Page
     }
 }
 
-/// <summary>Layout shared by the ported pages.</summary>
+/// <summary>Layout and helpers shared by the ported pages.</summary>
 internal static class Pages
 {
     /// <summary>A card around one element.</summary>
@@ -152,4 +152,13 @@ internal static class Pages
         page.SizeChanged += (_, _) => Fit();
         stack.SizeChanged += (_, _) => Fit();
     }
+
+    /// <summary>
+    /// The window to own a dialog opened from <paramref name="element"/>: the window the element is in, which may be a
+    /// pop-out, or the dashboard when that cannot be told. A dialog opens in front of its owner and blocks it until closed.
+    /// </summary>
+    public static Microsoft.UI.WindowId DialogOwner(UIElement element) =>
+        element.XamlRoot?.ContentIslandEnvironment is { } environment && environment.AppWindowId.Value != 0
+            ? environment.AppWindowId
+            : Microsoft.UI.Win32Interop.GetWindowIdFromWindow(App.WindowHandle);
 }
