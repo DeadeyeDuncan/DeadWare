@@ -159,16 +159,60 @@ public sealed class LightingDeviceServiceTests : IDisposable
         Assert.Equal(0,nodePro.Zones[1].LedCount);
         Assert.Contains("Corsair Lighting Node Pro",File.ReadAllText(Path.Combine(dir,"devices.log")));
     }
+    // A resize that held isn't repeated on this connection, even if channel 1 reads 0 again; a new OpenRGB process, or a reconnect, sizes it again.
     [Fact] public void Node_Pro_is_sized_once_per_connection()
     {
         var node=IndexOf(Node);
-        session.KeepResizes=false; // an OpenRGB that never reflects the resize must not be resized every rescan
         session.SizeZone(node,0,0);
-        svc.Rescan();svc.Rescan();svc.Rescan();
+        svc.Rescan();svc.Rescan();
         Assert.Single(session.Resizes);
-        svc.Reset();svc.Rescan(); // a new OpenRGB process, or a reconnect
+        session.SizeZone(node,0,0);
+        svc.Rescan();
+        Assert.Single(session.Resizes);
+        svc.Reset();svc.Rescan();
         Assert.Equal(2,session.Resizes.Count);
     }
+    // B9: OpenRGB sends no reply to a resize and ignores one outside the zone's limits, so the success line waits for a read that shows 48.
+    [Fact] public void Node_Pro_sizing_is_logged_once_a_read_shows_48()
+    {
+        var node=IndexOf(Node);
+        session.SizeZone(node,0,0);
+        svc.Rescan();
+        var text=File.ReadAllText(Path.Combine(dir,"devices.log"));
+        Assert.Equal(1,Count(text,"sized Corsair Lighting Node Pro Corsair Channel 1 to 48 LEDs"));
+        Assert.Equal(0,Count(text,"didn't hold"));
+    }
+    // B9: a resize OpenRGB ignored gets one failure line and no success line, and is tried again at each rescan, quietly, until it holds.
+    [Fact] public void Node_Pro_sizing_that_does_not_hold_is_logged_once_and_retried_at_each_rescan()
+    {
+        var node=IndexOf(Node);
+        session.KeepResizes=false;
+        session.SizeZone(node,0,0);
+        svc.Rescan();svc.Rescan();svc.Rescan();
+        Assert.Equal(3,session.Resizes.Count);
+        var text=File.ReadAllText(Path.Combine(dir,"devices.log"));
+        Assert.Equal(0,Count(text,"sized Corsair Lighting Node Pro"));
+        Assert.Equal(1,Count(text,"sizing Corsair Lighting Node Pro Corsair Channel 1 to 48 LEDs didn't hold"));
+        session.KeepResizes=true;
+        svc.Rescan(); // the fourth try holds
+        svc.Rescan(); // and channel 1 now reads 48, so nothing more is sent
+        Assert.Equal(4,session.Resizes.Count);
+        text=File.ReadAllText(Path.Combine(dir,"devices.log"));
+        Assert.Equal(1,Count(text,"sized Corsair Lighting Node Pro Corsair Channel 1 to 48 LEDs"));
+        Assert.Equal(1,Count(text,"didn't hold"));
+    }
+    // A resize that didn't hold changed no LEDs, so the hardware effect isn't sent again for it: a retry every rescan doesn't restart the wave.
+    [Fact] public void A_Node_Pro_sizing_that_does_not_hold_leaves_its_effect_alone()
+    {
+        var s=new LightingSettings();var node=IndexOf(Node);
+        svc.Paint(s);
+        session.KeepResizes=false;
+        session.SizeZone(node,0,0);
+        svc.Rescan();svc.Paint(s);svc.Rescan();svc.Paint(s);
+        Assert.Equal(2,session.Resizes.Count);
+        Assert.Single(session.Modes,m=>m.Index==node);
+    }
+    static int Count(string text,string what)=>text.Split(what).Length-1;
     [Fact] public void Only_the_Node_Pros_channel_1_is_ever_sized()
     {
         var node=IndexOf(Node);var board=IndexOf("SERIAL-8");

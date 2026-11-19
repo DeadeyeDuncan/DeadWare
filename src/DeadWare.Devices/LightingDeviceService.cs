@@ -26,7 +26,9 @@ internal sealed class LightingDeviceService
     readonly Dictionary<string,int> activeMode=new();
     readonly Dictionary<string,string> lastError=new();
     IReadOnlyList<LightingDevice> devices=[];
-    bool seeded; // once per connection, so an OpenRGB that never reflects the resize isn't resized on every rescan
+    // seeded: a resize held on this connection, so channel 1 isn't sized again until OpenRGB restarts or reconnects. seedFailureLogged: a
+    // resize that didn't hold has been logged on this connection; the retries at later rescans add no further line (B9).
+    bool seeded,seedFailureLogged;
     public IReadOnlyList<LightingDevice> Devices{get{lock(gate)return devices;}}
     public LightingDeviceService(IOpenRgbSession session,TimeProvider time,HostLog log){this.session=session;this.time=time;this.log=log;}
 
@@ -38,13 +40,20 @@ internal sealed class LightingDeviceService
         var read=session.ReadControllers();
         if(!Volatile.Read(ref seeded)&&read.FirstOrDefault(c=>c.Name==NodePro) is {} node&&node.Zones.FirstOrDefault(z=>z.Index==NodeProZone) is {LedCount:0} zone)
         {
-            Volatile.Write(ref seeded,true);
             session.ResizeZone(node.Index,NodeProZone,NodeProLeds);
-            log.Write($"sized {node.Name} {zone.Name} to {NodeProLeds} LEDs");
             read=session.ReadControllers();
-            // Its hardware effect was set up for the old size: forget what was sent, so the next paint sends it again.
+            // B9: OpenRGB sends no reply to a resize and ignores one outside the zone's limits, so only this read says whether it held. One
+            // that didn't is logged once and tried again at the next rescan, as DeadLight re-runs its seed while the zone reads 0.
             var key=LightingKeys.Device(node.Serial,node.Location);
-            lock(gate){applied.Remove(key);directSet.Remove(key);lastSent.Remove(key);}
+            var now=read.FirstOrDefault(c=>LightingKeys.Device(c.Serial,c.Location)==key)?.Zones.FirstOrDefault(z=>z.Index==NodeProZone)?.LedCount;
+            if(now==NodeProLeds){Volatile.Write(ref seeded,true);log.Write($"sized {node.Name} {zone.Name} to {NodeProLeds} LEDs");}
+            else if(!seedFailureLogged)
+            {
+                seedFailureLogged=true;
+                log.Write($"sizing {node.Name} {zone.Name} to {NodeProLeds} LEDs didn't hold: OpenRGB reports {(now is {} leds?leds+" LEDs":"no such zone")}; trying again at each rescan");
+            }
+            // Its hardware effect was set up for the old size: once the size changed, forget what was sent, so the next paint sends it again.
+            if(now!=zone.LedCount) lock(gate){applied.Remove(key);directSet.Remove(key);lastSent.Remove(key);}
         }
         lock(gate)
         {
@@ -74,7 +83,7 @@ internal sealed class LightingDeviceService
     // After an OpenRGB restart or reconnect the fresh process has received nothing: forget what was sent.
     public void Reset()
     {
-        lock(gate){lastSent.Clear();applied.Clear();directSet.Clear();activeMode.Clear();seeded=false;}
+        lock(gate){lastSent.Clear();applied.Clear();directSet.Clear();activeMode.Clear();seeded=false;seedFailureLogged=false;}
     }
 
     public void Paint(LightingSettings settings)
