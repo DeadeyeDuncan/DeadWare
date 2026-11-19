@@ -69,7 +69,7 @@ internal sealed class UsagePage : Page
     // The moment the CPU, RAM and GPU hairlines mark: the listed slot's middle, or the bucket Left or Right moved to since; null for none.
     private DateTimeOffset? marked;
     private int revision, offset, columns;
-    private bool loaded, refreshing, refreshAgain, syncing;
+    private bool loaded, refreshing, refreshAgain, syncing, exportInProgress;
 
     public UsagePage(MonitorSession session)
     {
@@ -525,21 +525,25 @@ internal sealed class UsagePage : Page
 
     private async Task ExportAsync(bool applicationsCsv)
     {
+        if (exportInProgress) return;
         var (from, to) = Period();
-        string? path;
+        // Both buttons are disabled from the click until the export ends: the save dialog appears a moment after the click, and a
+        // second click in that moment would open a second dialog.
+        exportInProgress = true; exportMetrics.IsEnabled = exportApplications.IsEnabled = false;
         try
         {
-            // The Windows App SDK's picker, which also works while DeadWare runs as administrator. It adds no extension unless given a default one.
-            var picker = new Microsoft.Windows.Storage.Pickers.FileSavePicker(Pages.DialogOwner(this))
-                { SuggestedFileName = $"DeadWare-usage-{(applicationsCsv ? "applications" : "device")}-{DateTime.Now:yyyyMMdd-HHmmss}", DefaultFileExtension = ".csv" };
-            picker.FileTypeChoices.Add("CSV files", [".csv"]);
-            path = (await picker.PickSaveFileAsync())?.Path;
-        }
-        catch (Exception error) { SetActionStatus("The save dialog could not be opened. " + error.Message); return; }
-        if (path is null) return;
-        exportMetrics.IsEnabled = exportApplications.IsEnabled = false; SetActionStatus("Exporting saved history…");
-        try
-        {
+            string? path;
+            try
+            {
+                // The Windows App SDK's picker, which also works while DeadWare runs as administrator. It adds no extension unless given a default one.
+                var picker = new Microsoft.Windows.Storage.Pickers.FileSavePicker(Pages.DialogOwner(this))
+                    { SuggestedFileName = $"DeadWare-usage-{(applicationsCsv ? "applications" : "device")}-{DateTime.Now:yyyyMMdd-HHmmss}", DefaultFileExtension = ".csv" };
+                picker.FileTypeChoices.Add("CSV files", [".csv"]);
+                path = (await picker.PickSaveFileAsync())?.Path;
+            }
+            catch (Exception error) { SetActionStatus("The save dialog could not be opened. " + error.Message); return; }
+            if (path is null) return;
+            SetActionStatus("Exporting saved history…");
             // The export only writes to a name that does not exist yet, so an empty file already at the chosen name is removed first.
             // An existing file with content is left alone, so the export refuses it as the WPF app does.
             if (new FileInfo(path) is { Exists: true, Length: 0 }) File.Delete(path);
@@ -547,6 +551,6 @@ internal sealed class UsagePage : Page
             SetActionStatus("Export saved: " + path);
         }
         catch (Exception error) { SetActionStatus("Export could not be saved. Choose a new file name. " + error.Message); }
-        finally { exportMetrics.IsEnabled = exportApplications.IsEnabled = true; }
+        finally { exportInProgress = false; exportMetrics.IsEnabled = exportApplications.IsEnabled = true; }
     }
 }
