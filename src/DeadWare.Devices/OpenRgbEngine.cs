@@ -14,6 +14,8 @@ internal sealed class OpenRgbEngine : IAsyncDisposable
 {
     public const int Port=6744;
     public static readonly TimeSpan PortWait=TimeSpan.FromSeconds(30),PortProbe=TimeSpan.FromMilliseconds(500);
+    // F6 item 9 (Ruling BH): how long the supervisor waits for an OpenRGB it killed to exit before it finishes.
+    public static readonly TimeSpan ExitWait=TimeSpan.FromSeconds(5);
     readonly string exePath,configDir;
     readonly IProcessRunner runner;
     readonly Func<int,CancellationToken,Task<bool>> portOpen;
@@ -163,7 +165,7 @@ internal sealed class OpenRgbEngine : IAsyncDisposable
                 catch(Exception e) when(e is not OperationCanceledException){log.Write("openrgb launch failed: "+e.Message);}
                 finally
                 {
-                    if(proc is not null){try{proc.KillTree();}catch{}try{proc.Dispose();}catch{}}
+                    if(proc is not null){try{proc.KillTree();}catch{}await Exited(proc).ConfigureAwait(false);try{proc.Dispose();}catch{}}
                     lock(gate){current=null;processId=null;}
                 }
                 // F4 item 3 (whole-branch review D8): every OpenRGB that was launched and ended counts, one a stop ended included, so a program
@@ -189,6 +191,19 @@ internal sealed class OpenRgbEngine : IAsyncDisposable
     {
         var left=time.GetElapsedTime(time.GetTimestamp(),due);
         return left>RestartBackoff.Cap?RestartBackoff.Cap:left;
+    }
+
+    // F6 item 9 (Ruling BH): after a kill, on a stop, a give-up or a failed launch, the supervisor waits for that OpenRGB to exit, at most
+    // ExitWait, so StopAsync returns only once it is gone and the next start's self-check never meets it still listening on the port.
+    // One that hasn't exited by then is logged and left; the self-check then refuses honestly. The wait has a token of its own: a stop
+    // has already cancelled the supervisor's.
+    async Task Exited(IRunningProcess proc)
+    {
+        if(proc.HasExited) return;
+        using var bound=new CancellationTokenSource(ExitWait,time);
+        try{await proc.WaitForExitAsync(bound.Token).ConfigureAwait(false);}
+        catch(OperationCanceledException){log.Write($"openrgb hadn't exited {(int)ExitWait.TotalSeconds} s after it was ended");}
+        catch(Exception e){log.Write("openrgb exit couldn't be awaited: "+e.Message);}
     }
 
     bool Prepared()

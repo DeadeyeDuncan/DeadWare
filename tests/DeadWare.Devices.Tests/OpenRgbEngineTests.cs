@@ -27,14 +27,15 @@ public sealed class OpenRgbEngineTests : IAsyncLifetime
     }
     OpenRgbEngine Track(OpenRgbEngine e){engines.Add(e);return e;}
 
-    sealed class FakeProcess(int id):IRunningProcess
+    // exitsOnKill false: a kill ends nothing until the test calls Exit, as an OpenRGB that takes a while to die (or never does).
+    sealed class FakeProcess(int id,bool exitsOnKill=true):IRunningProcess
     {
         readonly TaskCompletionSource exit=new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public bool Killed;
+        public volatile bool Killed;
         public int Id=>id;
         public bool HasExited=>exit.Task.IsCompleted;
         public Task WaitForExitAsync(CancellationToken token)=>exit.Task.WaitAsync(token);
-        public void KillTree(){Killed=true;exit.TrySetResult();}
+        public void KillTree(){Killed=true;if(exitsOnKill)exit.TrySetResult();}
         public void Exit()=>exit.TrySetResult();
         public void Dispose(){}
     }
@@ -42,7 +43,8 @@ public sealed class OpenRgbEngineTests : IAsyncLifetime
     {
         public readonly List<FakeProcess> Started=new();
         public ProcessStartInfo? Info;
-        public IRunningProcess Start(ProcessStartInfo info){lock(Started){Info=info;var p=new FakeProcess(100+Started.Count);Started.Add(p);return p;}}
+        public bool SlowToDie;
+        public IRunningProcess Start(ProcessStartInfo info){lock(Started){Info=info;var p=new FakeProcess(100+Started.Count,!SlowToDie);Started.Add(p);return p;}}
         public int Count{get{lock(Started)return Started.Count;}}
         public FakeProcess At(int i){lock(Started)return Started[i];}
     }
@@ -432,6 +434,46 @@ public sealed class OpenRgbEngineTests : IAsyncLifetime
             await Until(()=>e.Status==EngineStatus.Failed);
             Assert.Equal(OpenRgbEngine.GaveUpText,e.FailureReason);
         }
+    }
+
+    // F6 item 9 (Ruling BH): a stop returns only once the OpenRGB it killed has exited, so the next start's self-check never meets the
+    // old OpenRGB still listening on the port.
+    [Fact]
+    public async Task A_stop_returns_only_once_the_killed_OpenRGB_has_exited()
+    {
+        runner.SlowToDie=true;
+        var clock=new Clock();
+        var e=Track(new OpenRgbEngine(exe,@"C:\cfg\openrgb",runner,(_,_)=>Task.FromResult(true),clock,log));
+        await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
+        var stop=e.StopAsync();
+        await Until(()=>runner.At(0).Killed);
+        await Task.Delay(100);
+        Assert.False(stop.IsCompleted);
+        runner.At(0).Exit();
+        await stop.WaitAsync(RealTimeCap);
+        Assert.Equal(EngineStatus.Stopped,e.Status);
+    }
+
+    // The wait is bounded: for an OpenRGB that never exits, the stop returns 5 s after the kill, not sooner, and the log says so.
+    [Fact]
+    public async Task A_stop_waits_at_most_five_seconds_for_an_OpenRGB_that_never_exits()
+    {
+        runner.SlowToDie=true;
+        var clock=new Clock();
+        var e=Track(new OpenRgbEngine(exe,@"C:\cfg\openrgb",runner,(_,_)=>Task.FromResult(true),clock,log));
+        await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
+        var stop=e.StopAsync();
+        await Until(()=>clock.Waiting(OpenRgbEngine.ExitWait));
+        Assert.Equal(TimeSpan.FromSeconds(5),OpenRgbEngine.ExitWait);
+        clock.Advance(OpenRgbEngine.ExitWait-TimeSpan.FromTicks(1));
+        await Task.Delay(100);
+        Assert.False(stop.IsCompleted);
+        clock.Advance(TimeSpan.FromTicks(1));
+        await stop.WaitAsync(RealTimeCap);
+        Assert.Equal(EngineStatus.Stopped,e.Status);
+        Assert.False(runner.At(0).HasExited);
+        var logged=string.Join("\n",Directory.GetFiles(Path.Combine(dir,"logs")).Select(f=>{using var r=new StreamReader(new FileStream(f,FileMode.Open,FileAccess.Read,FileShare.ReadWrite));return r.ReadToEnd();}));
+        Assert.Contains("openrgb hadn't exited 5 s after it was ended",logged);
     }
 
     [Fact]
