@@ -620,6 +620,8 @@ public sealed class UserSettings
     public int HistorySeconds {get;set;}=60;
     public string? SelectedGpuId {get;set;}
     public Dictionary<string,WindowPlacement> Windows {get;set;}=new();
+    public bool LightingEnabled {get;set;}
+    public string? OpenRgbPath {get;set;}
 }
 public record SettingsRead(UserSettings Settings,string? Error);
 public static class SettingsCodec
@@ -642,6 +644,7 @@ public static class SettingsCodec
             s.WidgetGraphs=widgetGraphs;
             s.PollingIntervalSeconds=PollingPolicy.Normalize(s.PollingIntervalSeconds);
             if(!HistoryRanges.IsSupported(s.HistorySeconds)) s.HistorySeconds=60;
+            if(!IsSafeOpenRgbPath(s.OpenRgbPath))s.OpenRgbPath=null;
             s.Windows??=new();
             using var document=JsonDocument.Parse(json);
             // Retain the pin choice even when legacy coordinates must be discarded.
@@ -674,6 +677,8 @@ public static class SettingsCodec
         catch(JsonException) {return new(new(),"Settings could not be read; defaults restored.");}
     }
     public static string Write(UserSettings settings)=>JsonSerializer.Serialize(settings,new JsonSerializerOptions{WriteIndented=true});
+    /// <summary>The OpenRGB path rule: at most 260 characters, no control characters, ending in OpenRGB.exe (any case). Null, blank and anything else fail; <see cref="Read"/> drops such a path.</summary>
+    public static bool IsSafeOpenRgbPath(string? path)=>path is not null&&path.Length<=260&&!path.Any(char.IsControl)&&path.EndsWith("OpenRGB.exe",StringComparison.OrdinalIgnoreCase);
 }
 
 

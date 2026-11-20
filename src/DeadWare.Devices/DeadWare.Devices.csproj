@@ -1,0 +1,5 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- The background device host: runs OpenRGB and owns lighting.json. Headless; publishing passes -r win-x64. -->
+  <PropertyGroup><OutputType>WinExe</OutputType><TargetFramework>net10.0-windows</TargetFramework><Platforms>AnyCPU;x64</Platforms><AssemblyName>DeadWare.Devices</AssemblyName><RootNamespace>DeadWare.Devices</RootNamespace><StartupHookSupport>false</StartupHookSupport><ApplicationIcon>../../assets/deadware.ico</ApplicationIcon></PropertyGroup>
+  <ItemGroup><ProjectReference Include="../DeadWare.Core/DeadWare.Core.csproj"/><ProjectReference Include="../DeadWare.UpdateCore/DeadWare.UpdateCore.csproj"/><PackageReference Include="OpenRGB.NET" Version="3.1.1"/></ItemGroup>
+</Project>

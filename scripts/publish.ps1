@@ -33,6 +33,21 @@ try {
     & $Dotnet publish 'src/DeadWare.Updater/DeadWare.Updater.csproj' -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true -p:PublishTrimmed=false "-p:Version=$Version" -p:DebugType=None -o $helperStage --nologo
     if ($LASTEXITCODE -ne 0) { throw 'Updater publish failed. No package produced.' }
     Copy-Item -LiteralPath (Join-Path $helperStage 'DeadWare.Updater.exe') -Destination $stage
+    # The lighting device host, published as the updater is: one self-contained file beside DeadWare.exe, which starts it.
+    # Only the executable ships. Any other file its publish leaves must already be in the package, byte for byte: today that
+    # is SQLite's native library (a DeadWare.Core dependency the host never loads), which the app's publish staged. Anything
+    # else, such as a native library a new host dependency brings, stops the script rather than being left out unnoticed.
+    $devicesStage = Join-Path $artifacts "devices-$buildId"
+    & $Dotnet publish 'src/DeadWare.Devices/DeadWare.Devices.csproj' -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true -p:PublishTrimmed=false "-p:Version=$Version" -p:DebugType=None -o $devicesStage --nologo
+    if ($LASTEXITCODE -ne 0) { throw 'Lighting host publish failed. No package produced.' }
+    foreach ($file in (Get-ChildItem -LiteralPath $devicesStage -File -Recurse)) {
+        $relative = Get-PathBelow $devicesStage $file.FullName
+        if ($relative -eq 'DeadWare.Devices.exe') { continue }
+        $staged = Join-Path $stage $relative
+        $same = (Test-Path -LiteralPath $staged -PathType Leaf) -and ((Get-FileHash -LiteralPath $staged -Algorithm SHA256).Hash -eq (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash)
+        if (-not $same) { throw "The lighting host's publish also produced $relative, which the package doesn't already hold unchanged. Only DeadWare.Devices.exe is copied from it, so the host would ship without that file. No package produced." }
+    }
+    Copy-Item -LiteralPath (Join-Path $devicesStage 'DeadWare.Devices.exe') -Destination $stage
     foreach ($name in @('LICENSE','THIRD-PARTY-NOTICES.md','README.md','CHANGELOG.md')) {
         Copy-Item -LiteralPath (Join-Path $repo $name) -Destination $stage
     }
@@ -41,21 +56,31 @@ try {
     $licenseDir = Join-Path $stage 'licenses'
     [IO.Directory]::CreateDirectory($licenseDir) | Out-Null
     Copy-Item -LiteralPath (Join-Path $repo 'licenses') -Destination (Join-Path $licenseDir 'texts') -Recurse
-    $assets = Get-Content -LiteralPath 'src/DeadWare.WinUI/obj/project.assets.json' -Raw | ConvertFrom-Json
-    $inventory = foreach ($entry in $assets.libraries.PSObject.Properties) {
-        if ($entry.Value.type -ne 'package') { continue }
+    # The packages of what ships: the app's and the lighting host's (the updater uses none). A package both use is listed
+    # once; one used in two versions gets an entry for each, since entries are keyed by name/version.
+    $packages = [ordered]@{}
+    foreach ($assetsFile in @('src/DeadWare.WinUI/obj/project.assets.json', 'src/DeadWare.Devices/obj/project.assets.json')) {
+        $assets = Get-Content -LiteralPath $assetsFile -Raw | ConvertFrom-Json
+        $folders = @($assets.packageFolders.PSObject.Properties.Name)
+        foreach ($entry in $assets.libraries.PSObject.Properties) {
+            if ($entry.Value.type -ne 'package' -or $packages.Contains($entry.Name)) { continue }
+            $packages[$entry.Name] = [pscustomobject]@{ Path=$entry.Value.path; Folders=$folders }
+        }
+    }
+    $inventory = foreach ($name in $packages.Keys) {
+        $package = $packages[$name]
         $packagePath = $null
-        foreach ($folder in $assets.packageFolders.PSObject.Properties.Name) {
-            $candidate = Join-Path $folder $entry.Value.path
+        foreach ($folder in $package.Folders) {
+            $candidate = Join-Path $folder $package.Path
             if (Test-Path -LiteralPath $candidate) { $packagePath = $candidate; break }
         }
-        if (-not $packagePath) { throw "Dependency package is missing: $($entry.Name)" }
+        if (-not $packagePath) { throw "Dependency package is missing: $name" }
         $manifest = Get-ChildItem -LiteralPath $packagePath -Filter '*.nuspec' -File | Select-Object -First 1
         [xml]$metadata = Get-Content -LiteralPath $manifest.FullName -Raw
         $licenseNode = $metadata.SelectSingleNode('//*[local-name()="metadata"]/*[local-name()="license"]')
         $copyrightNode = $metadata.SelectSingleNode('//*[local-name()="metadata"]/*[local-name()="copyright"]')
         $projectNode = $metadata.SelectSingleNode('//*[local-name()="metadata"]/*[local-name()="projectUrl"]')
-        $dest = Join-Path $licenseDir ($entry.Name.Replace('/','-'))
+        $dest = Join-Path $licenseDir ($name.Replace('/','-'))
         [IO.Directory]::CreateDirectory($dest) | Out-Null
         Copy-Item -LiteralPath $manifest.FullName -Destination $dest
         foreach ($file in (Get-ChildItem -LiteralPath $packagePath -File -Recurse | Where-Object { $_.Name -match '(?i)license|notice|copying' -and $_.Extension -notin @('.dll','.xml','.json','.nupkg','.p7s') })) {
@@ -64,7 +89,7 @@ try {
             [IO.Directory]::CreateDirectory((Split-Path $licenseTarget -Parent)) | Out-Null
             Copy-Item -LiteralPath $file.FullName -Destination $licenseTarget
         }
-        [pscustomobject]@{ Package=$entry.Name; License=if($licenseNode){$licenseNode.InnerText}else{'See package manifest'}; Copyright=if($copyrightNode){$copyrightNode.InnerText}else{''}; Project=if($projectNode){$projectNode.InnerText}else{''} }
+        [pscustomobject]@{ Package=$name; License=if($licenseNode){$licenseNode.InnerText}else{'See package manifest'}; Copyright=if($copyrightNode){$copyrightNode.InnerText}else{''}; Project=if($projectNode){$projectNode.InnerText}else{''} }
     }
     $inventory | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $licenseDir 'dependencies.json') -Encoding utf8
     $packageFiles = [ordered]@{}

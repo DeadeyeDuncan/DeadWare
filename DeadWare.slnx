@@ -4,4 +4,5 @@
     <Project Path="src/DeadWare.Services/DeadWare.Services.csproj" />
     <Project Path="src/DeadWare.UpdateCore/DeadWare.UpdateCore.csproj" />
     <Project Path="src/DeadWare.Updater/DeadWare.Updater.csproj" />
-  </Folder><Project Path="src/DeadWare.Core/DeadWare.Core.csproj" /><Project Path="tests/DeadWare.Tests/DeadWare.Tests.csproj" /><Project Path="tests/DeadWare.App.Tests/DeadWare.App.Tests.csproj" /></Solution>
+    <Project Path="src/DeadWare.Devices/DeadWare.Devices.csproj" />
+  </Folder><Project Path="src/DeadWare.Core/DeadWare.Core.csproj" /><Project Path="tests/DeadWare.Tests/DeadWare.Tests.csproj" /><Project Path="tests/DeadWare.App.Tests/DeadWare.App.Tests.csproj" /><Project Path="tests/DeadWare.Devices.Tests/DeadWare.Devices.Tests.csproj" /></Solution>

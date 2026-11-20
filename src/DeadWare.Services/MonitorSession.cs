@@ -32,6 +32,13 @@ public sealed class MonitorSession
     public ConnectionService Connections {get;}
     public UpdateService Updates {get;}
     public UserSettings Settings {get;}
+    /// <summary>The lighting host's client; null while lighting is off or no OpenRGB path is set.</summary>
+    internal DeviceHostClient? Lighting {get;private set;}
+    private readonly SemaphoreSlim lightingGate=new(1,1);
+    // Shared by every lighting client, so a host is never launched within 4 s of the previous one's exit, even across a toggle or a new path.
+    private readonly HostLaunchPacer lightingPacer=new(TimeProvider.System);
+    // Set when Quit begins: a lighting change that gets the gate afterwards starts nothing.
+    private volatile bool lightingClosed;
     public string SettingsStatus {get;private set;}="";
     private readonly string settingsPath=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"DeadWare","settings.json");
     private readonly SettingsSnapshotWriter writer;
@@ -121,9 +128,59 @@ public sealed class MonitorSession
             Changed?.Invoke();
         };
     }
-    public void Start()
+    private DeviceHostClient NewLightingClient()=>new(Settings.OpenRgbPath!,new DeviceHostLauncher(),DeviceHostPipe.ConnectAsync,TimeProvider.System,Environment.IsPrivilegedProcess,lightingPacer);
+    /// <param name="signIn">True when Windows launched DeadWare at sign-in; the lighting host then waits before touching devices.</param>
+    public void Start(bool signIn=false)
     {
+        if(Settings.LightingEnabled&&Settings.OpenRgbPath is not null)
+        {
+            var client=Lighting=NewLightingClient();
+            _=client.StartAsync(signIn,CancellationToken.None);
+        }
         GraphHistory.Start();Cooling.Start();Battery.Start();Usage.Start();ProcessHistory.Start();Alerts.Start();Connections.Start();_ = SaveAsync();Collector.Start();timer.Start();
+    }
+    /// <summary>Saves the lighting choices and starts, restarts or stops the host client to match.</summary>
+    public async Task SetLightingAsync(bool enabled,string? openRgbPath)
+    {
+        // A path the settings file would drop is no path: it could only launch a host that exits at once and is relaunched in a loop.
+        if(!SettingsCodec.IsSafeOpenRgbPath(openRgbPath))openRgbPath=null;
+        await lightingGate.WaitAsync();
+        try
+        {
+            if(lightingClosed)return;
+            bool pathChanged=Settings.OpenRgbPath!=openRgbPath;
+            Settings.LightingEnabled=enabled;Settings.OpenRgbPath=openRgbPath;
+            await SaveAsync();
+            var current=Lighting;
+            if(enabled&&openRgbPath is not null)
+            {
+                if(current is not null&&KeepsLightingClient(pathChanged,current.Problem,current.State?.Status))return;
+                // A retire that throws still lets go of the old client, so no later change re-awaits its failed stop.
+                if(current is not null)try {await RetireLightingAsync(current);} finally {Lighting=null;}
+                var client=Lighting=NewLightingClient();
+                await client.StartAsync(false,CancellationToken.None);
+            }
+            else if(current is not null)try {await RetireLightingAsync(current);} finally {Lighting=null;}
+            Changed?.Invoke();
+        }
+        finally {lightingGate.Release();}
+    }
+    /// <summary>
+    /// Whether a lighting change on with the same path keeps the running client: not when the client has a problem, and not when its host
+    /// reports OpenRGB missing or failed, which last until the host restarts, so choosing the same OpenRGB.exe again is a retry.
+    /// </summary>
+    internal static bool KeepsLightingClient(bool pathChanged,string? problem,HostStatus? status)
+        =>!pathChanged&&problem is null&&status is not (HostStatus.OpenRgbMissing or HostStatus.OpenRgbFailed);
+    private static async Task RetireLightingAsync(DeviceHostClient client) {try {await client.StopAsync();} finally {await client.DisposeAsync();}}
+    /// <summary>Quit's lighting stop: closes lighting so a change that has not begun starts nothing, waits out the change in flight, then stops the current client.</summary>
+    private async Task CloseLightingAsync()
+    {
+        lightingClosed=true;
+        DeviceHostClient? client;
+        await lightingGate.WaitAsync().ConfigureAwait(false);
+        try {client=Lighting;Lighting=null;}
+        finally {lightingGate.Release();}
+        if(client is not null)await RetireLightingAsync(client).ConfigureAwait(false);
     }
     public void SetRange(int seconds) {Settings.HistorySeconds=seconds;Changed?.Invoke();_ = SaveAsync();}
     public void SetGpu(string? id) {Settings.SelectedGpuId=id;Changed?.Invoke();_ = SaveAsync();}
@@ -491,7 +548,9 @@ public sealed class MonitorSession
     {
         diagnostics?.Record("shutdown_begin",new {OpenWindows=layout.Remembered});
         layout.BeginShutdown();timer.Stop();saveTimer.Stop();captureWindows?.Invoke();
-        try {await SaveAsync();}finally {await StopCollectorAsync(QuitDeadline,QuitDeadline,HistoryDeadline);}
+        // The lighting host stops alongside the collector, so quitting takes no longer than it did, plus any lighting change in flight.
+        var lighting=Task.Run(CloseLightingAsync);
+        try {await SaveAsync();}finally {await Task.WhenAll(StopCollectorAsync(QuitDeadline,QuitDeadline,HistoryDeadline),lighting);}
         diagnostics?.Record("shutdown_completed");
     }
     /// <summary>
