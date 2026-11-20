@@ -88,8 +88,7 @@ public sealed class OpenRgbEngineTests : IAsyncLifetime
         var e=Engine();
         await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
         var appData=runner.Info!.Environment["APPDATA"];
-        Assert.Equal(@"C:\cfg",appData);
-        Assert.Equal(@"C:\cfg\openrgb",Path.Combine(appData!,"OpenRGB"),ignoreCase:true);
+        Assert.Equal(@"C:\cfg",appData); // the file OpenRGB then reads there: Prepare_writes_the_OpenRGB_json_OpenRGB_reads_under_its_APPDATA
     }
 
     // F5 item 3a (whole-branch review R4-D15): OpenRGB 1.0rc3 loads GPU vendor DLLs by bare name, and Qt honours QT_PLUGIN_PATH, so an
@@ -237,6 +236,62 @@ public sealed class OpenRgbEngineTests : IAsyncLifetime
         Assert.Equal(1,runner.Count);
         clock.Advance(TimeSpan.FromTicks(1));
         await Until(()=>runner.Count==2&&e.Status==EngineStatus.Running);
+    }
+
+    // F5 item 3c (whole-branch review R4-D4): a conflict stop that lands while a crash's restart delay runs keeps that delay, counted from
+    // the crash: the start after it waits out what is left of it.
+    [Fact]
+    public async Task A_conflict_stop_after_a_crash_keeps_the_crashs_armed_delay()
+    {
+        var clock=new Clock();
+        var e=Track(new OpenRgbEngine(exe,@"C:\cfg\openrgb",runner,(_,_)=>Task.FromResult(true),clock,log));
+        await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
+        runner.At(0).Exit();
+        await Until(()=>e.Status==EngineStatus.Restarting&&clock.Waiting(RestartBackoff.Base));
+        clock.Advance(TimeSpan.FromSeconds(1));
+        await e.StopAsync(keepHistory:true).WaitAsync(RealTimeCap);
+        await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
+        Assert.Equal(EngineStatus.Restarting,e.Status);
+        var left=RestartBackoff.Base-TimeSpan.FromSeconds(1);
+        Assert.True(clock.Waiting(left));
+        clock.Advance(left-TimeSpan.FromTicks(1));
+        await Task.Delay(100);
+        Assert.Equal(1,runner.Count);
+        clock.Advance(TimeSpan.FromTicks(1));
+        await Until(()=>runner.Count==2&&e.Status==EngineStatus.Running);
+    }
+
+    // F5 item 3c (whole-branch review R4-D5): a full stop clears the failure count and the armed delay, not only the give-up: the start
+    // after it launches at once, and the next exit waits the first delay again, 4 s, not the second.
+    [Fact]
+    public async Task A_full_stop_resets_the_failure_count_and_the_armed_delay()
+    {
+        var clock=new Clock();
+        var e=Track(new OpenRgbEngine(exe,@"C:\cfg\openrgb",runner,(_,_)=>Task.FromResult(true),clock,log));
+        await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
+        runner.At(0).Exit();
+        await Until(()=>e.Status==EngineStatus.Restarting&&clock.Waiting(RestartBackoff.Base)); // one failure, its 4 s delay armed
+        await e.StopAsync().WaitAsync(RealTimeCap); // lighting turned off and on
+        await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
+        Assert.Equal(EngineStatus.Running,e.Status);
+        Assert.Equal(2,runner.Count);
+        runner.At(1).Exit();
+        await Until(()=>e.Status==EngineStatus.Restarting&&clock.Waiting(RestartBackoff.Base));
+    }
+
+    // F5 item 3c (whole-branch review R4-D6): on a real file system, the OpenRGB.json Prepare writes is the one OpenRGB loads while it is
+    // built, <APPDATA>\OpenRGB\OpenRGB.json with the APPDATA the engine gives it; the folder name differs only in case.
+    [Fact]
+    public async Task Prepare_writes_the_OpenRGB_json_OpenRGB_reads_under_its_APPDATA()
+    {
+        var config=Path.Combine(dir,"cfg","openrgb");
+        var e=Track(new OpenRgbEngine(exe,config,runner,(_,_)=>Task.FromResult(true),time,log,prepareConfig:d=>OpenRgbConfig.Prepare(d,log)));
+        await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
+        var read=Path.Combine(runner.Info!.Environment["APPDATA"]!,"OpenRGB","OpenRGB.json"); // OpenRGB 1.0rc3's own names
+        Assert.True(File.Exists(read));
+        var json=System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(read))!;
+        Assert.Equal(OpenRgbConfig.LogLimit,(int)json["LogManager"]!["file_count_limit"]!);
+        Assert.False((bool)json["Detectors"]!["detectors"]![OpenRgbConfig.AeroxDetector]!);
     }
 
     // A clock whose wall time can step while its timestamps and timers run on, as the system clock steps on a time-sync correction.
