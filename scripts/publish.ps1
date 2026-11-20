@@ -21,10 +21,19 @@ function Get-PathBelow([string]$Folder, [string]$File) { $File.Substring([IO.Pat
 
 Push-Location $repo
 try {
-    $testArgs = @('test', 'DeadWare.slnx', '-c', 'Release', '--nologo')
+    # One test project at a time. Run together (as `dotnet test DeadWare.slnx` does) they share one disk for their SQLite
+    # files, and on a CI runner single flushes then take seconds (3.1 s measured, 124 ms at most with a project alone), which
+    # fails tests that keep a real store inside a real shutdown deadline. Every project runs even after one has failed.
+    $testArgs = @('-c', 'Release', '--nologo')
     if ($TestFilter) { $testArgs += @('--filter', $TestFilter) }
-    & $Dotnet @testArgs
-    if ($LASTEXITCODE -ne 0) { throw 'Tests failed. No package produced.' }
+    $failed = @()
+    foreach ($project in @('tests/DeadWare.Devices.Tests', 'tests/DeadWare.Tests', 'tests/DeadWare.App.Tests')) {
+        $watch = [Diagnostics.Stopwatch]::StartNew()
+        & $Dotnet test $project @testArgs
+        if ($LASTEXITCODE -ne 0) { $failed += $project }
+        Write-Output ('Tests: {0} took {1:mm\:ss}' -f $project, $watch.Elapsed)
+    }
+    if ($failed) { throw "Tests failed in $($failed -join ', '). No package produced." }
     # The WinUI 3 app is what ships. Its project file fixes the platform, the self-contained Windows App SDK and the
     # DeadWare assembly name, and copies the XAML resources a plain publish leaves out.
     & $Dotnet publish 'src/DeadWare.WinUI/DeadWare.WinUI.csproj' -c Release -r win-x64 --self-contained true -p:PublishTrimmed=false -p:PublishSingleFile=false "-p:Version=$Version" -p:DebugType=None -o $stage --nologo
