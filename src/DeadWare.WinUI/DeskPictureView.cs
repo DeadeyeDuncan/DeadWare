@@ -184,6 +184,9 @@ internal sealed class DeskPictureView : UserControl
         Redraw();
     }
 
+    /// <summary>Forgets the keyboard's stop on the PC tower, for when the page resets the picture's view.</summary>
+    public void ClearStop() => SetTowerStop(false);
+
     private void SetTowerStop(bool on)
     {
         if (towerStop == on) return;
@@ -553,7 +556,7 @@ internal sealed class DeskPictureView : UserControl
         Caption(ds, "PC tower", t.X + 86, t.Y + 24, 11.5f, Ink, Anchor.Start, 160);
         Caption(ds, "tap to see inside ↗", t.X + 86, t.Y + 39, 10, WaveBlue, Anchor.Start, 160);
         // The keyboard's stop: a white outline just outside the tower, as the selected radiator fan's.
-        if (towerStop && keyboardFocus) ds.DrawRoundedRectangle((float)t.X - 4, (float)t.Y - 4, (float)t.W + 8, (float)t.H + 8, 8, 8, White, 1.5f);
+        if (towerStop) ds.DrawRoundedRectangle((float)t.X - 4, (float)t.Y - 4, (float)t.W + 8, (float)t.H + 8, 8, 8, White, 1.5f);
     }
 
     // ---- The inside view: page.html's second SVG ----

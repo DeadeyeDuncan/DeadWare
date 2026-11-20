@@ -60,10 +60,10 @@ internal sealed class LightingPage : Page, IHeaderTool
     private const string NothingSelectedText = "Select a device on the desk or in the list.";
     private const string NothingSelectedHeading = "Nothing selected", TapDeviceText = "Tap a device in the picture to change its colours.", TapPartText = "Tap a part to change its colours.";
     // Below this width the panel goes under the desk card instead of beside it: the plain desk's, and the picture's.
-    private const double WideLayout = 900, PictureWideLayout = 760;
+    private const double WideLayout = 900, PictureWideLayout = 1040;
     // Picture mode's columns: the picture card 7 parts in 10, at most the picture's 1280 px and its card's padding; the panel 3 in 10,
-    // between 280 and 640 px. (The owner's maximised page is about 2290 px wide: the first look's screenshot was scaled.)
-    private const double PictureCardMax = 1312, PicturePanelMin = 280, PicturePanelMax = 640;
+    // at least 280 px and taking what the capped picture leaves, so the two columns end where the effect bar does. (The owner's maximised page is about 2290 px wide: the first look's screenshot was scaled.)
+    private const double PictureCardMax = 1312, PicturePanelMin = 280, PicturePanelMax = double.PositiveInfinity;
     private readonly Dictionary<string, DeviceCard> cards = new(StringComparer.Ordinal);
     // The desk card, the panel and the list card. Wide: the desk card and the list card in leftColumn, the panel beside them. Narrow:
     // the desk card, the panel and leftColumn (the list card alone) one under the other. Only the desk card moves between the two,
@@ -703,7 +703,9 @@ internal sealed class LightingPage : Page, IHeaderTool
         if (!none) noneSince = null;
         else noneSince ??= Environment.TickCount64;
         bool waited = noneSince is { } since && Environment.TickCount64 - since >= NoDevicesAfterMs;
-        bool searching = !any && !waited && shownState is null or { Status: HostStatus.Starting or HostStatus.Waiting or HostStatus.Running };
+        // No state and a client problem is a helper that failed for good (it can't start, or crashed too often): the alert says so, and nothing is looking.
+        bool failed = shownState is null && client?.Problem is { Length: > 0 };
+        bool searching = !any && !waited && !failed && shownState is null or { Status: HostStatus.Starting or HostStatus.Waiting or HostStatus.Running };
         Show(deskArea, any);
         Show(noDevices, none && waited);
         Show(looking, searching);
@@ -745,6 +747,7 @@ internal sealed class LightingPage : Page, IHeaderTool
         selectedDevice = null;
         picture.SelectedPart = null;
         picture.View = PictureView.Desk;
+        picture.ClearStop();
         ShowPictureHeader();
     }
 
