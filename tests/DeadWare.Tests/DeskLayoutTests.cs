@@ -69,6 +69,32 @@ public class DeskLayoutTests
         var l=Good();l.Desk=new(){new(){X=0.9,Y=0,W=0.4,H=0.2}};Assert.Contains("desk",DeskLayouts.Validate(l));
         l=Good();l.Desk=new(){new(){X=0.1,Y=0,W=0,H=0.2}};Assert.Contains("desk",DeskLayouts.Validate(l));
     }
+    [Fact] public void Clone_copies_the_picture()
+    {
+        var l=Good();l.Picture="b650m-link-hub";
+        Assert.Equal("b650m-link-hub",DeskLayouts.Clone(l).Picture);Assert.Null(DeskLayouts.Clone(Good()).Picture);
+    }
+    [Fact] public void Validate_refuses_a_picture_name_over_64_characters_and_accepts_null_and_64()
+    {
+        var l=Good();l.Picture=null;Assert.Null(DeskLayouts.Validate(l));
+        l.Picture=new string('a',64);Assert.Null(DeskLayouts.Validate(l));
+        l.Picture=new string('a',65);Assert.Contains("picture",DeskLayouts.Validate(l));
+    }
+    [Fact] public void Same_compares_zones_as_a_map_and_the_lists_in_order()
+    {
+        DeskLayout Base(){var l=Good();l.Zones["a#0"]=new(0.1,0.2);l.Zones["b#0"]=new(0.3,0.4);l.Tower.Members=["x","y"];l.Unplaced=["u","v"];return l;}
+        Assert.True(DeskLayouts.Same(Base(),Base()));Assert.True(DeskLayouts.Same(Base(),DeskLayouts.Clone(Base())));
+        var reordered=Base();reordered.Zones=reordered.Zones.Reverse().ToDictionary(e=>e.Key,e=>e.Value);Assert.True(DeskLayouts.Same(Base(),reordered));
+        var l2=Base();l2.Zones["a#0"]=new(0.1,0.2000001);Assert.False(DeskLayouts.Same(Base(),l2));
+        l2=Base();l2.Zones["c#0"]=new(0.1,0.2);Assert.False(DeskLayouts.Same(Base(),l2));
+        l2=Base();l2.Tower.Members=["y","x"];Assert.False(DeskLayouts.Same(Base(),l2));
+        l2=Base();l2.Tower.Members.Add("z");Assert.False(DeskLayouts.Same(Base(),l2));
+        l2=Base();l2.Unplaced=["v","u"];Assert.False(DeskLayouts.Same(Base(),l2));
+        l2=Base();l2.Tower.At=new(0.2,0.3);Assert.False(DeskLayouts.Same(Base(),l2));
+        l2=Base();l2.Desk[0].W+=0.01;Assert.False(DeskLayouts.Same(Base(),l2));
+        l2=Base();l2.Desk.RemoveAt(0);Assert.False(DeskLayouts.Same(Base(),l2));
+        l2=Base();l2.Picture="b650m-link-hub";Assert.False(DeskLayouts.Same(Base(),l2));
+    }
     [Fact] public void Validate_checks_unplaced_and_the_entry_caps()
     {
         var l=DeskLayouts.Empty();l.Unplaced=null!;Assert.NotNull(DeskLayouts.Validate(l));

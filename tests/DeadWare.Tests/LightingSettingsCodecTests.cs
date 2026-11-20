@@ -253,6 +253,13 @@ public class LightingSettingsCodecTests
         Assert.Equal("Wave",back.Effect.Kind);Assert.Equal(135,back.Effect.Wave.AngleDeg);Assert.Equal(new[]{"#FF0000","#0000FF"},back.Effect.Wave.Colors);
         Assert.Equal(new DeskPoint(0.25,0.75),back.Layout.Zones["a|1#0"]);Assert.Equal(new[]{"a|1"},back.Layout.Tower.Members);Assert.Equal(new[]{"b|2"},back.Layout.Unplaced);
     }
+    [Fact] public void A_layout_picture_round_trips_and_a_file_without_the_member_reads_as_null()
+    {
+        var s=new LightingSettings();s.Layout.Picture="b650m-link-hub";
+        Assert.Equal("b650m-link-hub",LightingSettingsCodec.Read(LightingSettingsCodec.Write(s)).Settings.Layout.Picture);
+        var r=LightingSettingsCodec.Read("""{"Version":1,"Brightness":80,"DefaultColor":"#112233","ZoneColors":{},"HardwareModes":{},"Layout":{"Version":1,"Zones":{},"Tower":{"At":{"X":0.1,"Y":0.3},"Members":[],"Excluded":[]},"Desk":[],"Unplaced":[]}}""");
+        Assert.False(r.Quarantine);Assert.Null(r.Settings.Layout.Picture);
+    }
     [Fact] public void Write_refuses_an_invalid_effect()=>Assert.Throws<InvalidDataException>(()=>LightingSettingsCodec.Write(new LightingSettings{Effect=new(){Kind="Plasma"}}));
     [Fact] public void A_newer_file_with_another_layout_shape_is_kept()
     {

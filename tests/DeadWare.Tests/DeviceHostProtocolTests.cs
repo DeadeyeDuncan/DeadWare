@@ -75,6 +75,7 @@ public class DeviceHostProtocolTests
         l.Tower=new TowerGroup{At=new DeskPoint(0.2,0.35),Members=["t:0","t:1"],Excluded=["t:2"]};
         l.Desk=[new DeskRect{X=0.1,Y=0.2,W=0.6,H=0.3},new DeskRect{X=0.05,Y=0.5,W=0.25,H=0.4}];
         l.Unplaced=["u:9"];
+        l.Picture="b650m-link-hub";
         return l;
     }
     static void AssertLayout(DeskLayout b)
@@ -89,6 +90,7 @@ public class DeviceHostProtocolTests
         Assert.Equal((0.1,0.2,0.6,0.3),(b.Desk[0].X,b.Desk[0].Y,b.Desk[0].W,b.Desk[0].H));
         Assert.Equal((0.05,0.5,0.25,0.4),(b.Desk[1].X,b.Desk[1].Y,b.Desk[1].W,b.Desk[1].H));
         Assert.Equal(["u:9"],b.Unplaced);
+        Assert.Equal("b650m-link-hub",b.Picture);
     }
     [Fact] public async Task Set_effect_round_trips()
     {

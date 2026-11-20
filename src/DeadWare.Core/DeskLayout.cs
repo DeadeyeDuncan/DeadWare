@@ -5,14 +5,14 @@ namespace DeadWare.Core;
 // Plain classes on purpose: System.Text.Json reflects over them. Ported from DeadLight shared/layout.ts, without rotate and mirror.
 public sealed class DeskRect { public double X{get;set;} public double Y{get;set;} public double W{get;set;} public double H{get;set;} }
 public sealed class TowerGroup { public DeskPoint At{get;set;}=new(0.14,0.3); public List<string> Members{get;set;}=new(); public List<string> Excluded{get;set;}=new(); }
-public sealed class DeskLayout { public int Version{get;set;}=1; public Dictionary<string,DeskPoint> Zones{get;set;}=new(); public TowerGroup Tower{get;set;}=new(); public List<DeskRect> Desk{get;set;}=DeskLayouts.Preset(DeskShape.LLeft); public List<string> Unplaced{get;set;}=new(); }
+public sealed class DeskLayout { public int Version{get;set;}=1; public Dictionary<string,DeskPoint> Zones{get;set;}=new(); public TowerGroup Tower{get;set;}=new(); public List<DeskRect> Desk{get;set;}=DeskLayouts.Preset(DeskShape.LLeft); public List<string> Unplaced{get;set;}=new(); public string? Picture{get;set;} }
 public enum DeskShape { Straight, LLeft, LRight }
 public sealed record ArrangeDevice(string Key,string Name,IReadOnlyList<int> ZoneIndexes);
 
 public static class DeskLayouts
 {
     public const int Columns=12,Rows=8,MaxEntries=4096;
-    private const int MaxKeyLength=512;
+    private const int MaxKeyLength=512,MaxPictureLength=64;
     private const double Slack=1e-9,CellW=1.0/Columns,CellH=1.0/Rows;
     // A wrong guess costs one drag, and the exclusion list makes it stick.
     private static readonly Regex Peripheral=new("keyboard|keypad|mouse|mousepad|mousemat|headset|apex|aerox|arctis|rival|deathadder",RegexOptions.IgnoreCase|RegexOptions.CultureInvariant);
@@ -43,8 +43,15 @@ public static class DeskLayouts
     {
         Version=l.Version,Zones=new(l.Zones),
         Tower=new(){At=l.Tower.At,Members=new(l.Tower.Members),Excluded=new(l.Tower.Excluded)},
-        Desk=l.Desk.Select(r=>R(r.X,r.Y,r.W,r.H)).ToList(),Unplaced=new(l.Unplaced),
+        Desk=l.Desk.Select(r=>R(r.X,r.Y,r.W,r.H)).ToList(),Unplaced=new(l.Unplaced),Picture=l.Picture,
     };
+    // Equal as the user sees them: zones as a key-to-point map whatever their order, every list in order.
+    public static bool Same(DeskLayout a,DeskLayout b)
+    {
+        if(a.Version!=b.Version||a.Picture!=b.Picture||a.Tower.At!=b.Tower.At||a.Zones.Count!=b.Zones.Count) return false;
+        foreach(var (k,p) in a.Zones) if(!b.Zones.TryGetValue(k,out var q)||q!=p) return false;
+        return a.Tower.Members.SequenceEqual(b.Tower.Members)&&a.Tower.Excluded.SequenceEqual(b.Tower.Excluded)&&a.Unplaced.SequenceEqual(b.Unplaced)&&a.Desk.Count==b.Desk.Count&&a.Desk.Zip(b.Desk).All(t=>t.First.X==t.Second.X&&t.First.Y==t.Second.Y&&t.First.W==t.Second.W&&t.First.H==t.Second.H);
+    }
 
     private static bool InUnit(double n)=>n>=-Slack&&n<=1+Slack;   // false for NaN and infinity too
     private static string? ValidateKeys(string what,List<string>? keys)
@@ -82,6 +89,7 @@ public static class DeskLayouts
         if(layout.Desk is null) return "layout desk must be a list";
         if(layout.Desk.Count>2) return "layout desk may hold at most two rectangles";
         for(int i=0;i<layout.Desk.Count;i++){reason=ValidateRect(layout.Desk[i],i);if(reason is not null) return reason;}
+        if(layout.Picture is not null&&layout.Picture.Length>MaxPictureLength) return "layout picture name is too long";
         return ValidateKeys("unplaced",layout.Unplaced);
     }
 
