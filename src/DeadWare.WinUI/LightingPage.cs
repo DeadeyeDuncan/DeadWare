@@ -57,7 +57,22 @@ internal sealed class LightingPage : Page, IHeaderTool
     // the desk card, the panel and leftColumn (the list card alone) one under the other. Only the desk card moves between the two,
     // so the panel, which a zone flyout may be open from, never leaves the tree.
     private readonly DeskView desk = new();
-    private readonly Border deskCard, panelHost = new(), emptyPanel;
+    private readonly Border deskCard, panelHost = new(), panelSlot = new(), emptyPanel, layoutPanel;
+    // Edit layout: the toggle on the desk card, its tools (shown only while it is on), and the selected device's layout controls,
+    // shown under its panel while it is on.
+    private readonly ToggleButton editToggle = new() { Content = "Edit layout", VerticalAlignment = VerticalAlignment.Center };
+    private readonly StackPanel editTools = new() { Orientation = Orientation.Horizontal, Spacing = 12, Visibility = Visibility.Collapsed };
+    private readonly ComboBox shapeBox = new() { Header = "Desk shape", Items = { "Straight", "L left", "L right" }, MinWidth = 140 };
+    private readonly Button resetPositions = new() { Content = "Reset positions", VerticalAlignment = VerticalAlignment.Bottom };
+    private readonly CheckBox inTower = new() { Content = "Inside PC tower" };
+    private readonly ToggleSwitch splitZones = new() { OnContent = "Move zones separately", OffContent = "Move zones separately", MinWidth = 0 };
+    private readonly Button takeOff = new() { Content = "Take off the desk" };
+    // SetLayout requests on their way, counted while layoutEpoch stays: dropping the draft bumps it, so a late reply counts for nothing.
+    // releaseAt: the state the client had when the count reached 0. The pipe writes a reply before the state its request caused, so the
+    // desk keeps drawing its draft until a state other than that one is shown.
+    private int layoutSends, layoutEpoch;
+    private HostState? releaseAt;
+    private bool layoutSyncing, resetAsking;
     private readonly Grid deskArea = new() { RowSpacing = 12 };
     private readonly StackPanel leftColumn = new() { Spacing = 12 };
     private readonly TextBlock towerHeading = Heading("");
@@ -189,11 +204,32 @@ internal sealed class LightingPage : Page, IHeaderTool
         onPanel.Children.Add(noDevices);
 
         // The desk, the selected device's panel, the device list and the devices not placed.
-        deskCard = Pages.Card(new StackPanel { Spacing = 8, Padding = new Thickness(8), Children = { Heading("Desk"), desk } });
+        var deskHeader = new Grid { ColumnSpacing = 12 };
+        deskHeader.ColumnDefinitions.Add(new ColumnDefinition());
+        deskHeader.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        var deskHeading = Heading("Desk");
+        deskHeading.VerticalAlignment = VerticalAlignment.Center;
+        Grid.SetColumn(editToggle, 1);
+        deskHeader.Children.Add(deskHeading);
+        deskHeader.Children.Add(editToggle);
+        editToggle.Click += (_, _) => SetEditing(editToggle.IsChecked == true);
+        editTools.Children.Add(shapeBox);
+        editTools.Children.Add(resetPositions);
+        shapeBox.SelectionChanged += (_, _) => ChangeShape();
+        resetPositions.Click += (_, _) => ResetPositions();
+        deskCard = Pages.Card(new StackPanel { Spacing = 8, Padding = new Thickness(8), Children = { deskHeader, editTools, desk } });
         desk.SelectionChanged += _ => { SyncList(); ShowPanel(); };
+        desk.LayoutEdited += next => SendLayout(next);
         Show(towerHeading, false);
         emptyPanel = Pages.Card(new StackPanel { Spacing = 8, Padding = new Thickness(8), Children = { towerHeading, Muted(NothingSelectedText) } });
-        panelHost.Child = emptyPanel;
+        AutomationProperties.SetName(splitZones, "Move zones separately");
+        inTower.Click += (_, _) => SetInTower(inTower.IsChecked == true);
+        splitZones.Toggled += (_, _) => { if (!layoutSyncing && desk.Selected is { } key && key != DeskView.Tower) desk.SetSplit(key, splitZones.IsOn); };
+        takeOff.Click += (_, _) => TakeOff();
+        layoutPanel = Pages.Card(new StackPanel { Spacing = 8, Padding = new Thickness(8), Children = { inTower, splitZones, takeOff } });
+        layoutPanel.Visibility = Visibility.Collapsed;
+        panelSlot.Child = emptyPanel;
+        panelHost.Child = new StackPanel { Spacing = 12, Children = { panelSlot, layoutPanel } };
         panelHost.VerticalAlignment = VerticalAlignment.Top;
         AutomationProperties.SetName(deviceList, "Devices");
         deviceList.SelectionChanged += (_, _) => OnListSelected();
@@ -247,6 +283,9 @@ internal sealed class LightingPage : Page, IHeaderTool
         allSends.Flush();
         foreach (var pending in zoneSends.Values) pending.Flush();
         effectBar.Leave();
+        // Edit layout ends with the page, and the desk forgets edits on their way: it shows the host's layout when it is back.
+        DropLayoutDraft();
+        SetEditing(false);
     }
 
     /// <summary>The session's change, on the UI thread: once a second from the monitoring tick, and when lighting is turned on or off.</summary>
@@ -353,6 +392,7 @@ internal sealed class LightingPage : Page, IHeaderTool
         // The desk, list, selection and Place on desk sends belonged to the old client too.
         Interlocked.Exchange(ref pendingFrame, null);
         placing.Clear();
+        DropLayoutDraft();
         deskLayout = DeskLayouts.Empty();
         deskDevices = [];
         deskLightsOn = true;
@@ -401,6 +441,8 @@ internal sealed class LightingPage : Page, IHeaderTool
             // A frame shown before the host stopped running is no longer the lights' colours. On every state that isn't Running, not only
             // a null one: a refresh reads only the latest state, so a null state followed quickly by a Starting one may never be rendered.
             desk.ShowColors(null);
+            // Layout edits on their way can't be known to land: the desk drops its draft and shows the host's layout once it runs.
+            DropLayoutDraft();
         }
         ShowStatus();
         seenState |= connected;
@@ -524,12 +566,169 @@ internal sealed class LightingPage : Page, IHeaderTool
             // Or once the layout places the device: the state it caused may already have been the client's when the reply was handled.
             foreach (var (device, send) in placing.ToArray())
                 if (send.Replied && (!ReferenceEquals(send.At, shown.State) || !deskLayout.Unplaced.Contains(device))) placing.Remove(device);
+            // The desk's draft goes at the first state shown with no SetLayout on its way, before the desk takes the layout.
+            TryRelease(shown.State);
         }
         desk.Show(deskLayout, deskDevices, deskLightsOn, live);
+        ShowLayout();
+    }
+
+    /// <summary>
+    /// The list, Not placed, the panel and the edit tools from the layout the desk edits from: its draft while one is held, so an edit
+    /// shows in them at once. Only a running host's device list is complete, so rows go only while it runs.
+    /// </summary>
+    private void ShowLayout()
+    {
         var names = Names(deskDevices);
-        UpdateList(names, running is not null);
-        UpdateNotPlaced(names, running is not null);
+        UpdateList(names, live);
+        UpdateNotPlaced(names, live);
         deviceList.IsEnabled = live;
+        SyncList();
+        ShowPanel();
+        ShowEditTools();
+    }
+
+    /// <summary>Edit layout on or off: the toggle, the tools and the panel's layout controls follow. Leaving it ends a drag in progress.</summary>
+    private void SetEditing(bool on)
+    {
+        desk.Editing = on;
+        if (editToggle.IsChecked != on) editToggle.IsChecked = on;
+        editToggle.Content = on ? "Done" : "Edit layout";
+        ShowEditTools();
+        ShowPanel();
+    }
+
+    /// <summary>The edit tools, shown only in edit layout and usable only while the host runs; the desk shape shown from the layout without sending it.</summary>
+    private void ShowEditTools()
+    {
+        editToggle.IsEnabled = live;
+        Show(editTools, desk.Editing);
+        shapeBox.IsEnabled = resetPositions.IsEnabled = live;
+        int index = DeskLayouts.ShapeOf(desk.Layout) switch { DeskShape.Straight => 0, DeskShape.LLeft => 1, DeskShape.LRight => 2, _ => -1 };
+        if (shapeBox.SelectedIndex == index) return;
+        layoutSyncing = true;
+        try { shapeBox.SelectedIndex = index; }
+        finally { layoutSyncing = false; }
+    }
+
+    /// <summary>
+    /// Holds an edited layout on the desk and sends it. A refusal or failed send drops the draft at once; the reply that leaves none on
+    /// its way marks the state the desk waits past (<see cref="releaseAt"/>). The error shows through the send-error line, from Send.
+    /// </summary>
+    private void SendLayout(DeskLayout next, Action<Reply>? done = null)
+    {
+        if (!live)
+        {
+            DropLayoutDraft();
+            ShowLayout();
+            return;
+        }
+        desk.Hold(next);
+        layoutSends++;
+        int epoch = layoutEpoch;
+        ShowLayout();
+        Send(new SetLayoutRequest(next), reply =>
+        {
+            if (epoch == layoutEpoch)
+            {
+                if (!reply.Ok)
+                {
+                    DropLayoutDraft();
+                    ShowLayout();
+                }
+                else if (--layoutSends == 0)
+                {
+                    releaseAt = client?.State;
+                    // The state it caused may already be shown: a refresh queued before this reply can read a state that came after it.
+                    if (ReferenceEquals(releaseAt, shownState) && TryRelease(shownState)) ShowLayout();
+                }
+            }
+            done?.Invoke(reply);
+        });
+    }
+
+    /// <summary>
+    /// Drops the desk's draft when no SetLayout is on its way and the shown state is not the one the client had at the last reply, or
+    /// already carries the draft's layout. True when it dropped one.
+    /// </summary>
+    private bool TryRelease(HostState? state)
+    {
+        if (layoutSends > 0 || desk.Held is not { } draft || state is null) return false;
+        if (ReferenceEquals(state, releaseAt) && !SameLayout(state.Settings?.Layout, draft)) return false;
+        releaseAt = null;
+        desk.Release();
+        return true;
+    }
+
+    /// <summary>Gives up the layout edits on their way: the desk's draft and any drag go, and their late replies count for nothing.</summary>
+    private void DropLayoutDraft()
+    {
+        layoutEpoch++;
+        layoutSends = 0;
+        releaseAt = null;
+        desk.DropDraft();
+    }
+
+    /// <summary>Two layouts with the same positions, tower, desk and unplaced devices.</summary>
+    private static bool SameLayout(DeskLayout? a, DeskLayout b)
+    {
+        if (a is null || a.Version != b.Version || a.Zones is null || a.Zones.Count != b.Zones.Count || a.Tower is null || a.Desk is null || a.Unplaced is null) return false;
+        foreach (var (key, at) in b.Zones) if (!a.Zones.TryGetValue(key, out var other) || other != at) return false;
+        if (a.Tower.At != b.Tower.At || !a.Tower.Members.SequenceEqual(b.Tower.Members) || !a.Tower.Excluded.SequenceEqual(b.Tower.Excluded) || !a.Unplaced.SequenceEqual(b.Unplaced)) return false;
+        return a.Desk.Count == b.Desk.Count && a.Desk.Zip(b.Desk).All(pair => pair.First is { } x && pair.Second is { } y && x.X == y.X && x.Y == y.Y && x.W == y.W && x.H == y.H);
+    }
+
+    /// <summary>A new desk shape from the tools, by the user only: one set from a state is not sent.</summary>
+    private void ChangeShape()
+    {
+        if (layoutSyncing || !live || !desk.Editing) return;
+        DeskShape? shape = shapeBox.SelectedIndex switch { 0 => DeskShape.Straight, 1 => DeskShape.LLeft, 2 => DeskShape.LRight, _ => null };
+        if (shape is not { } chosen || DeskLayouts.ShapeOf(desk.Layout) == chosen) return;
+        SendLayout(DeskGeometry.WithShape(desk.Layout, chosen));
+    }
+
+    /// <summary>Asks before arranging every device from scratch, keeping the desk shape.</summary>
+    private async void ResetPositions()
+    {
+        if (resetAsking || !live || !desk.Editing || XamlRoot is null) return;
+        resetAsking = true;
+        int sent = generation;
+        ContentDialogResult result;
+        try
+        {
+            var dialog = new ContentDialog
+            {
+                XamlRoot = XamlRoot, Title = "Reset positions?",
+                Content = new TextBlock { Text = "Arrange every device from scratch? The desk shape is kept.", TextWrapping = TextWrapping.Wrap },
+                PrimaryButtonText = "Reset", CloseButtonText = "Cancel", DefaultButton = ContentDialogButton.Close,
+            };
+            result = await dialog.ShowAsync();
+        }
+        catch (Exception error)
+        {
+            App.Note($"Reset positions dialog failed: {error.Message}");
+            return;
+        }
+        finally { resetAsking = false; }
+        // Not if the page left, the client changed, the host stopped running or edit layout ended meanwhile.
+        if (result != ContentDialogResult.Primary || !showing || sent != generation || !live || !desk.Editing) return;
+        SendLayout(DeskGeometry.Reset(desk.Layout, deskDevices));
+    }
+
+    /// <summary>The selected device inside the tower or out of it; the choice sticks, as a drag in or out does.</summary>
+    private void SetInTower(bool inside)
+    {
+        if (!live || !desk.Editing || desk.Selected is not { } key || !desk.CanEdit(key)) return;
+        if (desk.Layout.Tower.Members.Contains(key) == inside) return;
+        SendLayout(DeskGeometry.SetInTower(desk.Layout, key, inside));
+    }
+
+    /// <summary>Takes the selected device off the desk, into Not placed, and clears the selection.</summary>
+    private void TakeOff()
+    {
+        if (!live || !desk.Editing || desk.Selected is not { } key || !desk.CanEdit(key)) return;
+        SendLayout(DeskGeometry.SetUnplaced(desk.Layout, deskDevices, key, true));
+        desk.Selected = null;
         SyncList();
         ShowPanel();
     }
@@ -553,7 +752,7 @@ internal sealed class LightingPage : Page, IHeaderTool
                     row = listRows[deskDevices[i].Key] = new ListRow(deskDevices[i].Key);
                     deviceList.Items.Insert(Math.Min(i, deviceList.Items.Count), row.Item);
                 }
-                row.Update(names[i], DeskGeometry.Where(deskLayout, deskDevices[i]));
+                row.Update(names[i], DeskGeometry.Where(desk.Layout, deskDevices[i]));
             }
         }
         finally { listSyncing = false; }
@@ -562,7 +761,7 @@ internal sealed class LightingPage : Page, IHeaderTool
     /// <summary>The devices the layout doesn't place, each with Place on desk, disabled while the host isn't running or its own send is on its way.</summary>
     private void UpdateNotPlaced(string[] names, bool complete)
     {
-        var unplaced = DeskGeometry.Scene(deskLayout, deskDevices, false, new HashSet<string>()).NotPlaced.Select(device => device.Key).ToHashSet(StringComparer.Ordinal);
+        var unplaced = DeskGeometry.Scene(desk.Layout, deskDevices, false, new HashSet<string>()).NotPlaced.Select(device => device.Key).ToHashSet(StringComparer.Ordinal);
         if (complete)
             foreach (string gone in placeRows.Keys.Where(key => !unplaced.Contains(key)).ToArray())
             {
@@ -590,7 +789,8 @@ internal sealed class LightingPage : Page, IHeaderTool
         if (!live || placing.ContainsKey(key) || !deskDevices.Any(device => device.Key == key)) return;
         placing[key] = (false, null);
         RefreshPlaceButtons();
-        Send(new SetLayoutRequest(DeskGeometry.SetUnplaced(deskLayout, deskDevices, key, false)), reply =>
+        // From the desk's draft when one is held, and held and counted like every other layout edit.
+        SendLayout(DeskGeometry.SetUnplaced(desk.Layout, deskDevices, key, false), reply =>
         {
             if (reply.Ok) placing[key] = (true, client?.State);
             else placing.Remove(key);
@@ -630,10 +830,30 @@ internal sealed class LightingPage : Page, IHeaderTool
         UIElement next = desk.Selected is { } key && key != DeskView.Tower && cards.TryGetValue(key, out var card) ? card.Root : emptyPanel;
         bool tower = desk.Selected == DeskView.Tower;
         Show(towerHeading, tower);
-        if (tower) towerHeading.Text = DeskView.TowerCaption(DeskGeometry.Scene(deskLayout, deskDevices, false, new HashSet<string>()).TowerDevices);
-        if (ReferenceEquals(panelHost.Child, next)) return;
+        if (tower) towerHeading.Text = DeskView.TowerCaption(DeskGeometry.Scene(desk.Layout, deskDevices, false, new HashSet<string>()).TowerDevices);
+        ShowLayoutPanel();
+        if (ReferenceEquals(panelSlot.Child, next)) return;
         if (zoneFlyout.IsOpen) zoneFlyout.Hide();
-        panelHost.Child = next;
+        panelSlot.Child = next;
+    }
+
+    /// <summary>
+    /// The selected device's layout controls, in edit layout only, and not for the tower or a device the desk doesn't place (one it
+    /// never draws, or one taken off it). They show the desk's draft, and work only while the host runs.
+    /// </summary>
+    private void ShowLayoutPanel()
+    {
+        bool shown = desk.Editing && desk.Selected is { } key && key != DeskView.Tower && cards.ContainsKey(key) && desk.CanEdit(key);
+        Show(layoutPanel, shown);
+        if (!shown || desk.Selected is not { } selected) return;
+        inTower.IsEnabled = splitZones.IsEnabled = takeOff.IsEnabled = live;
+        layoutSyncing = true;
+        try
+        {
+            inTower.IsChecked = desk.Layout.Tower.Members.Contains(selected);
+            splitZones.IsOn = desk.IsSplit(selected);
+        }
+        finally { layoutSyncing = false; }
     }
 
     /// <summary>Beside the desk card on a wide page, below it on a narrow one: only the desk card changes parent.</summary>

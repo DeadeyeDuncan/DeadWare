@@ -22,11 +22,19 @@ namespace DeadWare.WinUI;
 /// desk clears the selection. The desk keeps a 4:3 shape, filling its width up to 720 px, so desk units map to pixels the same way at
 /// every size. Off screen it lets go of its drawing surface, as <see cref="ConnectionMapView"/> does. The canvas can't be read by a
 /// screen reader; the page's device list is the accessible way to the same selection.
+/// <para>
+/// In edit layout (<see cref="Editing"/>) a device box, a zone dot or the tower (by its label, or anywhere on it while it is closed)
+/// can be dragged, and with a device or the tower selected the arrow keys move it a grid step at a time; the canvas is then a tab
+/// stop whose accessible name states the selection and its position. Each finished edit is raised once as
+/// <see cref="LayoutEdited"/> and held as a draft, which the view draws instead of the shown layout until its owner drops it
+/// (<see cref="Release"/>, <see cref="DropDraft"/>): arriving layouts never move a box while an edit is on its way.
+/// </para>
 /// </summary>
 internal sealed class DeskView : UserControl
 {
     /// <summary>The value of <see cref="Selected"/> while the tower is selected.</summary>
     public const string Tower = "tower";
+    private const string IdleName = "Desk layout. Use the device list below to select a device.";
     private const double MaxDeskWidth = 720, Aspect = 0.75, BoxWidth = 132, BoxHeight = 44, DotSize = 14, LabelHeight = 20, LabelWidth = 160, ZoneLabelWidth = 96;
     private static readonly CanvasTextFormat NameFormat = Format(12, true);
     private static readonly CanvasTextFormat SmallFormat = Format(11, false);
@@ -42,26 +50,37 @@ internal sealed class DeskView : UserControl
     private Dictionary<string, DeviceView> byKey = new(StringComparer.Ordinal);
     private Dictionary<string, string> names = new(StringComparer.Ordinal), zoneColors = new(StringComparer.Ordinal);
     private IReadOnlyDictionary<string, string>? colors;
-    // The devices whose zones are drawn as separate dots. Empty until edit mode (Task 12) fills it; neither this nor towerOpen is saved.
+    // The devices whose zones are drawn as separate dots, which edit layout's Move zones separately fills; neither this nor towerOpen is saved.
     private readonly HashSet<string> split = new(StringComparer.Ordinal);
     private DeskScene scene;
     private Action<DeskLayout>? layoutEdited;
-    private string? selected;
-    private Point? pressedAt;
-    private bool lightsOn = true, live, towerOpen;
+    private string? selected, shownName;
+    // What a drag moves: a device by its key, a zone dot by its zone key, or the tower.
+    private enum DragKind { Device, Zone, Tower }
+    private readonly record struct DragTarget(DragKind Kind, string Key);
+    // The press in progress, one pointer at a time. Base: the layout at press time, which a drag moves by the total delta so snapping
+    // never drifts. TowerBox: the tower as drawn at press time, which a dropped device is tested against. Editing: edit layout was on.
+    private sealed record Press(uint Pointer, Point Start, DeskLayout Base, DragTarget? Target, DeskBox TowerBox, bool Editing);
+    private Press? press;
+    // held: the last finished edit, drawn until the owner drops it. drag: the drag in progress, drawn over held.
+    private DeskLayout? held, drag;
+    private bool lightsOn = true, live, towerOpen, editing, moved;
 
     public DeskView()
     {
         IsTabStop = false;
+        UseSystemFocusVisuals = true;
         HorizontalAlignment = HorizontalAlignment.Left;
-        AutomationProperties.SetName(this, "Desk layout. Use the device list below to select a device.");
+        UpdateName();
         var back = Caption("BACK OF DESK");
         var front = Caption("FRONT · YOUR SEAT");
         Content = new DeskFrame { Children = { back, surface, front } };
         scene = DeskGeometry.Scene(layout, devices, towerOpen, split);
         surface.PointerPressed += OnPointerPressed;
+        surface.PointerMoved += OnPointerMoved;
         surface.PointerReleased += OnPointerReleased;
-        surface.PointerCaptureLost += (_, _) => pressedAt = null;
+        surface.PointerCaptureLost += OnPointerLost;
+        surface.PointerCanceled += OnPointerLost;
         surface.SizeChanged += (_, _) => { ClearTexts(); Redraw(); };
         ActualThemeChanged += (_, _) => Redraw();
         this.WhileShowing(ShowSurface, HideSurface);
@@ -70,21 +89,79 @@ internal sealed class DeskView : UserControl
     /// <summary>A device key, <see cref="Tower"/>, or null. Setting it from outside raises no <see cref="SelectionChanged"/>.</summary>
     public string? Selected { get => selected; set => Select(value, false); }
 
-    /// <summary>Edit layout is on. Task 12 gives it dragging, the desk shape and reset; until then it changes nothing.</summary>
-    public bool Editing { get; set; }
+    /// <summary>
+    /// Edit layout is on: items can be dragged and nudged with the arrow keys, and the canvas is a tab stop. Turning it off ends a
+    /// drag in progress and takes the canvas out of the tab order again.
+    /// </summary>
+    public bool Editing
+    {
+        get => editing;
+        set
+        {
+            if (editing == value) return;
+            editing = value;
+            IsTabStop = value;
+            if (!value) CancelPress();
+            UpdateName();
+        }
+    }
+
+    /// <summary>The layout edits start from: the held draft while there is one, else the layout last shown. A drag in progress is not in it.</summary>
+    public DeskLayout Layout => held ?? layout;
+
+    /// <summary>The held draft, or null.</summary>
+    public DeskLayout? Held => held;
 
     /// <summary>The user selected an item on the desk, or cleared the selection with a tap on empty desk.</summary>
     public event Action<string?>? SelectionChanged;
 
-    /// <summary>One per completed edit in edit layout (Task 12).</summary>
+    /// <summary>One per finished edit in edit layout: a drop after a drag, or an arrow key press. The edit is already held when it is raised.</summary>
     public event Action<DeskLayout>? LayoutEdited { add => layoutEdited += value; remove => layoutEdited -= value; }
+
+    /// <summary>Holds an edit made outside the view (the panel, the desk shape, reset): drawn instead of the shown layout until dropped.</summary>
+    public void Hold(DeskLayout draft)
+    {
+        held = draft;
+        OpenForSelection();
+        Rebuild();
+    }
+
+    /// <summary>The held edit is saved and shown: the view draws the shown layout again. A drag in progress goes on.</summary>
+    public void Release()
+    {
+        if (held is null) return;
+        held = null;
+        Rebuild();
+    }
+
+    /// <summary>The edits on their way are given up: the held edit and any drag in progress are dropped, and the shown layout is drawn.</summary>
+    public void DropDraft()
+    {
+        bool had = held is not null;
+        held = null;
+        CancelPress();
+        if (had) Rebuild();
+    }
+
+    /// <summary>Whether a device's zones are drawn and dragged as separate dots.</summary>
+    public bool IsSplit(string key) => split.Contains(key);
+
+    public void SetSplit(string key, bool separate)
+    {
+        if (!(separate ? split.Add(key) : split.Remove(key))) return;
+        Rebuild();
+    }
+
+    /// <summary>The device is on the desk (or inside the tower) with a point to move: what edit layout's panel and the arrow keys need.</summary>
+    public bool CanEdit(string key) => Placed(Layout, key);
 
     /// <summary>The tower's caption: "PC tower · 1 device", "PC tower · 3 devices".</summary>
     public static string TowerCaption(int count) => count == 1 ? "PC tower · 1 device" : $"PC tower · {count} devices";
 
     /// <summary>
     /// Shows a layout and the devices it places. <paramref name="lightsOn"/> false draws every box unlit; <paramref name="live"/> false
-    /// draws the desk dimmed and ignores taps, as while the lighting host isn't running.
+    /// draws the desk dimmed and ignores taps, as while the lighting host isn't running. A held draft or a drag in progress keeps
+    /// being drawn in place of the layout's positions; everything else shows from here.
     /// </summary>
     public void Show(DeskLayout layout, IReadOnlyList<DeviceView> devices, bool lightsOn, bool live)
     {
@@ -92,7 +169,7 @@ internal sealed class DeskView : UserControl
         this.devices = devices;
         this.lightsOn = lightsOn;
         this.live = live;
-        if (!live) pressedAt = null;
+        if (!live) CancelPress();
         var list = devices.ToArray();
         var numbered = LightingPage.Names(list);
         byKey = new(StringComparer.Ordinal);
@@ -123,9 +200,13 @@ internal sealed class DeskView : UserControl
 
     private static TextBlock Caption(string text) => new() { Text = text, FontSize = 11, Opacity = 0.7, HorizontalAlignment = HorizontalAlignment.Center, CharacterSpacing = 60 };
 
+    /// <summary>What is drawn: the drag in progress, else the held draft, else the layout last shown.</summary>
+    private DeskLayout Current => drag ?? held ?? layout;
+
     private void Rebuild()
     {
-        scene = DeskGeometry.Scene(layout, devices, towerOpen, split);
+        scene = DeskGeometry.Scene(Current, devices, towerOpen, split);
+        UpdateName();
         Redraw();
     }
 
@@ -141,11 +222,52 @@ internal sealed class DeskView : UserControl
         }
         if (key == selected) return;
         selected = key;
+        UpdateName();
         Redraw();
         if (raise) SelectionChanged?.Invoke(key);
     }
 
-    private bool InTower(string key) => key != Tower && layout.Tower.Members.Contains(key) && !layout.Unplaced.Contains(key);
+    /// <summary>A selected device that an edit put inside the closed tower opens it, so the selection still shows.</summary>
+    private void OpenForSelection()
+    {
+        if (selected is { } key && InTower(key) && !towerOpen) towerOpen = true;
+    }
+
+    private bool InTower(string key) => key != Tower && Current.Tower.Members.Contains(key) && !Current.Unplaced.Contains(key);
+
+    /// <summary>A device the layout places, with at least one zone point: not unsupported, not without LEDs, not taken off the desk.</summary>
+    private bool Placed(DeskLayout from, string key) => key != Tower && PointOf(from, key) is not null;
+
+    /// <summary>Where the desk draws a placed device: its first placed zone's point, as <see cref="DeskGeometry.Scene"/> does.</summary>
+    private DeskPoint? PointOf(DeskLayout from, string key)
+    {
+        if (!byKey.TryGetValue(key, out var device) || device.Kind == PaintKind.Unsupported || from.Unplaced.Contains(key)) return null;
+        foreach (var zone in device.Zones ?? [])
+            if (zone is { LedCount: > 0 } && from.Zones.TryGetValue(LightingKeys.Zone(key, zone.Index), out var at)) return at;
+        return null;
+    }
+
+    /// <summary>A coordinate's grid column or row, 1 to 48.</summary>
+    private static int Cell(double n) => Math.Clamp((int)Math.Floor(n * DeskGeometry.Snap + 1e-9) + 1, 1, DeskGeometry.Snap);
+
+    /// <summary>
+    /// The canvas's accessible name: in edit layout, the selection and where it is ("Apex Pro, On desk, column 24 of 48, row 30 of
+    /// 48"); otherwise, or with nothing that can move selected, the pointer to the device list.
+    /// </summary>
+    private void UpdateName()
+    {
+        string name = IdleName;
+        var from = Current;
+        if (editing && selected == Tower) name = $"PC tower, column {Cell(from.Tower.At.X)} of 48, row {Cell(from.Tower.At.Y)} of 48";
+        else if (editing && selected is { } key && PointOf(from, key) is { } at)
+        {
+            string where = from.Tower.Members.Contains(key) ? "Inside PC" : "On desk";
+            name = $"{names.GetValueOrDefault(key) ?? key}, {where}, column {Cell(at.X)} of 48, row {Cell(at.Y)} of 48";
+        }
+        if (name == shownName) return;
+        shownName = name;
+        AutomationProperties.SetName(this, name);
+    }
 
     // ---- Geometry: desk units (the unit square) to pixels on the surface. ----
 
@@ -190,24 +312,155 @@ internal sealed class DeskView : UserControl
 
     private void OnPointerPressed(object sender, PointerRoutedEventArgs e)
     {
+        // One pointer at a time: a second one pressed during a press or drag is ignored.
+        if (press is not null) return;
         var point = e.GetCurrentPoint(surface);
         if (!live || TooSmall || !point.Properties.IsLeftButtonPressed) return;
-        pressedAt = point.Position;
+        press = new Press(e.Pointer.PointerId, point.Position, Layout, editing ? TargetAt(point.Position) : null, scene.Tower, editing);
+        moved = false;
         surface.CapturePointer(e.Pointer);
+        // In edit layout a press gives the canvas focus, so the arrow keys move what it selects.
+        if (editing) Focus(FocusState.Pointer);
+        e.Handled = true;
+    }
+
+    /// <summary>What a press in edit layout would drag: the tower by its label (or anywhere on it while closed), a zone dot, a device box.</summary>
+    private DragTarget? TargetAt(Point at)
+    {
+        if (TowerLabel().Contains(at)) return new DragTarget(DragKind.Tower, Tower);
+        return HitAt(ToDesk(at)) switch
+        {
+            { Kind: DeskItemKind.Zone, ZoneKey: { } zone } => new DragTarget(DragKind.Zone, zone),
+            { Kind: DeskItemKind.Device, DeviceKey: { } device } => new DragTarget(DragKind.Device, device),
+            { Kind: DeskItemKind.Tower } when !towerOpen => new DragTarget(DragKind.Tower, Tower),
+            _ => null,
+        };
+    }
+
+    /// <summary>The pointer's movement from the press, in desk units, by the same mapping the drawing uses.</summary>
+    private (double Dx, double Dy) Delta(Point start, Point end) => ((end.X - start.X) / SpanX, (end.Y - start.Y) / SpanY);
+
+    private static bool Beyond(double dx, double dy) => Math.Abs(dx) >= DeskGeometry.DragEpsilon || Math.Abs(dy) >= DeskGeometry.DragEpsilon;
+
+    /// <summary>The layout at press time with the target moved by the total delta.</summary>
+    private DeskLayout Moved(DeskLayout from, DragTarget target, double dx, double dy) => target.Kind switch
+    {
+        DragKind.Device => DeskGeometry.MoveDevice(from, devices, target.Key, dx, dy),
+        DragKind.Zone => DeskGeometry.MoveZone(from, target.Key, dx, dy),
+        _ => DeskGeometry.MoveTower(from, devices, dx, dy),
+    };
+
+    private void OnPointerMoved(object sender, PointerRoutedEventArgs e)
+    {
+        if (press is not { Editing: true, Target: { } target } current || e.Pointer.PointerId != current.Pointer || !live || TooSmall) return;
+        var (dx, dy) = Delta(current.Start, e.GetCurrentPoint(surface).Position);
+        // Under the drag threshold in both axes it is still a click.
+        if (!moved && !Beyond(dx, dy)) return;
+        moved = true;
+        drag = Moved(current.Base, target, dx, dy);
+        Rebuild();
         e.Handled = true;
     }
 
     private void OnPointerReleased(object sender, PointerRoutedEventArgs e)
     {
-        if (pressedAt is not { } start) return;
-        pressedAt = null;
+        if (press is not { } current || e.Pointer.PointerId != current.Pointer) return;
+        // Cleared before the capture goes, so the capture-lost event that follows finds no press.
+        press = null;
+        bool dragged = drag is not null;
+        drag = null;
         surface.ReleasePointerCapture(e.Pointer);
         e.Handled = true;
-        if (!live || TooSmall) return;
+        if (!live || TooSmall)
+        {
+            if (dragged) Rebuild();
+            return;
+        }
         var end = e.GetCurrentPoint(surface).Position;
-        // A movement under the drag threshold is a tap.
-        double dx = (end.X - start.X) / SpanX, dy = (end.Y - start.Y) / SpanY;
-        if (Math.Sqrt(dx * dx + dy * dy) < DeskGeometry.DragEpsilon) Tap(end);
+        var (dx, dy) = Delta(current.Start, end);
+        if (!current.Editing)
+        {
+            // A movement under the drag threshold is a tap.
+            if (Math.Sqrt(dx * dx + dy * dy) < DeskGeometry.DragEpsilon) Tap(end);
+            return;
+        }
+        // In edit layout a press that never went past the threshold in either axis is a click, and selects as a tap does.
+        if (!moved && !Beyond(dx, dy))
+        {
+            Tap(end);
+            return;
+        }
+        if (current.Target is not { } target)
+        {
+            if (dragged) Rebuild();
+            return;
+        }
+        var next = Moved(current.Base, target, dx, dy);
+        if (target.Kind == DragKind.Device)
+        {
+            // Dropped on the tower as it was drawn at press time, a device goes inside; dragged out of it, it goes outside and stays out.
+            bool inside = DeskGeometry.InTower(scene with { Tower = current.TowerBox }, ToDesk(end));
+            if (inside != current.Base.Tower.Members.Contains(target.Key)) next = DeskGeometry.SetInTower(next, target.Key, inside);
+        }
+        Finish(next);
+    }
+
+    /// <summary>A pointer cancelled or its capture lost: the drag's draft goes, and the held draft from an earlier edit, if any, shows again.</summary>
+    private void OnPointerLost(object sender, PointerRoutedEventArgs e)
+    {
+        if (press is not { } current || e.Pointer.PointerId != current.Pointer) return;
+        CancelPress();
+    }
+
+    /// <summary>Ends the press in progress without an edit, dropping a drag's draft.</summary>
+    private void CancelPress()
+    {
+        if (press is null && drag is null) return;
+        press = null;
+        bool dragged = drag is not null;
+        drag = null;
+        // Cleared first, so the capture-lost event this raises finds no press.
+        surface.ReleasePointerCaptures();
+        if (dragged) Rebuild();
+    }
+
+    /// <summary>A finished edit: held, drawn and raised once.</summary>
+    private void Finish(DeskLayout next)
+    {
+        held = next;
+        OpenForSelection();
+        Rebuild();
+        layoutEdited?.Invoke(next);
+    }
+
+    /// <summary>In edit layout the arrow keys move the selected device or the tower one grid step; Up is towards the back of the desk.</summary>
+    protected override void OnKeyDown(KeyRoutedEventArgs e)
+    {
+        double step = 1.0 / DeskGeometry.Snap;
+        (double Dx, double Dy)? move = !editing ? null : e.Key switch
+        {
+            Windows.System.VirtualKey.Left => (-step, 0),
+            Windows.System.VirtualKey.Right => (step, 0),
+            Windows.System.VirtualKey.Up => (0, -step),
+            Windows.System.VirtualKey.Down => (0, step),
+            _ => null,
+        };
+        if (move is not { } by)
+        {
+            base.OnKeyDown(e);
+            return;
+        }
+        // Handled either way, so the page doesn't scroll under the desk.
+        e.Handled = true;
+        Nudge(by.Dx, by.Dy);
+    }
+
+    private void Nudge(double dx, double dy)
+    {
+        // Not while the host isn't running, nor during a drag, which would replace the nudge when it drops.
+        if (!live || press is not null || selected is not { } key) return;
+        if (key == Tower) Finish(DeskGeometry.MoveTower(Layout, devices, dx, dy));
+        else if (Placed(Layout, key)) Finish(DeskGeometry.MoveDevice(Layout, devices, key, dx, dy));
     }
 
     private void Tap(Point at)
@@ -243,7 +496,7 @@ internal sealed class DeskView : UserControl
 
     private void HideSurface()
     {
-        pressedAt = null;
+        CancelPress();
         ClearTexts();
         if (canvas is { } old)
         {
@@ -295,7 +548,7 @@ internal sealed class DeskView : UserControl
         // While the host isn't running the desk stays as it was, dimmed.
         using var dim = ds.CreateLayer(live ? 1f : 0.5f);
 
-        foreach (var rect in layout.Desk ?? [])
+        foreach (var rect in Current.Desk ?? [])
         {
             if (rect is null) continue;
             var (a, b) = (ToPixel(rect.X, rect.Y), ToPixel(rect.X + rect.W, rect.Y + rect.H));
