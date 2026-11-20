@@ -1,5 +1,7 @@
 # Lighting step 2: desk layout and effects
 
+The desk card on a PC with a built-in picture is specified in `2026-11-20-lighting-desk-picture-design.md`, which governs there; this document governs the plain desk on any other PC.
+
 Status: draft for the owner's approval, 2026-11-19. This is build-order step 2 of `2026-11-15-lighting-design.md` (the main spec). Step 1 (host, pipe, OpenRGB, static colours) is merged to main as `0e0a6fb` and is not tagged. Where this document and the main spec disagree, this document governs for step 2; the main spec gets a one-line pointer to it as the first task of the plan.
 
 ## Intent
