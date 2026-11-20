@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using DeadWare.App;
 using DeadWare.Core;
 using Microsoft.UI.Dispatching;
@@ -15,7 +14,8 @@ namespace DeadWare.WinUI;
 
 /// <summary>
 /// Lighting: Lights on and Brightness, which the window shows in its header beside the page title as on the approved mockup; a
-/// status line; the Static card's Set all colours with Undo; and a card per device, with a colour swatch for each zone of a device
+/// status line; the effect tiles with the chosen effect's settings (<see cref="LightingEffectBar"/>), Static's being Set all colours
+/// with Undo; and a card per device, with a colour swatch for each zone of a device
 /// DeadWare paints (one running its own effect shows that effect instead of colours). Everything
 /// goes to the lighting host through the session's client (<see cref="MonitorSession.Lighting"/>), which the page follows only
 /// while it is shown, so a hidden page does no work. Every change makes the host broadcast a new state, so the cards and zone rows
@@ -55,12 +55,15 @@ internal sealed class LightingPage : Page, IHeaderTool
     private readonly StackPanel zoneContent = new() { Spacing = 8 };
     private readonly TextBlock zoneHeading = Heading("");
     private readonly Button useShared = new() { Content = "Use the shared colour" };
+    private readonly LightingEffectBar effectBar;
     private readonly Throttle brightnessSends, allSends;
     private readonly Dictionary<string, Throttle> zoneSends = new(StringComparer.Ordinal);
     private ColorPicker? allPicker, zonePicker;
     // The client the page follows, and what it last showed of it.
     private DeviceHostClient? client;
     private HostState? shownState;
+    // The effect the effect bar last showed from a state, which it keeps showing, disabled, while the host reconnects.
+    private EffectSettings? shownEffect;
     // allShown and zoneShown: each picker's colour as last set by the page or picked, so a repeated colour is not sent again.
     private string? sendError, sharedShown, allShown, zoneShown, zoneKey;
     // The colours as they were when Set all colours opened: what Undo puts back.
@@ -131,11 +134,14 @@ internal sealed class LightingPage : Page, IHeaderTool
         setAllFlyout.Opening += (_, _) => OpenSetAll();
         setAllFlyout.Closed += (_, _) => allSends.Flush();
         undo.Click += (_, _) => Undo();
-        var staticCard = Pages.Card(new StackPanel
+        // The effect tiles and the chosen effect's settings. Static's row is Set all colours, which the bar shows only for Static.
+        var staticRow = new StackPanel
         {
-            Spacing = 8, Padding = new Thickness(8),
-            Children = { Heading("Static"), Muted("One colour for every zone. Setting it clears the zones' own colours; while the picker is open, Undo puts them back."), setAll },
-        });
+            Spacing = 8,
+            Children = { Muted("One colour for every zone. Setting it clears the zones' own colours; while the picker is open, Undo puts them back."), setAll },
+        };
+        effectBar = new LightingEffectBar(queue, Send, staticRow) { Padding = new Thickness(8) };
+        var effectCard = Pages.Card(effectBar);
 
         zoneContent.Children.Add(zoneHeading);
         zoneContent.Children.Add(useShared);
@@ -150,20 +156,21 @@ internal sealed class LightingPage : Page, IHeaderTool
         noDevices.Visibility = Visibility.Collapsed;
         onPanel.Children.Add(alert);
         onPanel.Children.Add(status);
-        onPanel.Children.Add(staticCard);
+        onPanel.Children.Add(effectCard);
         onPanel.Children.Add(noDevices);
         onPanel.Children.Add(devices);
         Content = new ScrollViewer { Content = new StackPanel { Padding = new Thickness(24), Spacing = 12, Children = { offCard, onPanel } } };
         this.WhileShowing(Attach, Detach);
     }
 
-    private static TextBlock Muted(string text) => new() { Text = text, TextWrapping = TextWrapping.Wrap, Opacity = 0.7, FontSize = 12 };
+    // Muted, Heading, Show, Hex, ToColor and NewPicker are shared with the effect bar (LightingEffectBar).
+    internal static TextBlock Muted(string text) => new() { Text = text, TextWrapping = TextWrapping.Wrap, Opacity = 0.7, FontSize = 12 };
     // CoolingPage's warning text: what went wrong, in the caution colour.
     private static TextBlock Caution() => new() { TextWrapping = TextWrapping.Wrap, Foreground = (Brush)Application.Current.Resources["SystemFillColorCautionBrush"] };
-    private static TextBlock Heading(string text) => new() { Text = text, Style = (Style)Application.Current.Resources["BodyStrongTextBlockStyle"] };
-    private static void Show(UIElement element, bool visible) => element.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
-    private static string Hex(Color color) => $"#{color.R:X2}{color.G:X2}{color.B:X2}";
-    private static Color ToColor(string? hex) => Rgb.TryParse(hex, out var rgb) ? Color.FromArgb(255, rgb.R, rgb.G, rgb.B) : Microsoft.UI.Colors.Transparent;
+    internal static TextBlock Heading(string text) => new() { Text = text, Style = (Style)Application.Current.Resources["BodyStrongTextBlockStyle"] };
+    internal static void Show(UIElement element, bool visible) => element.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
+    internal static string Hex(Color color) => $"#{color.R:X2}{color.G:X2}{color.B:X2}";
+    internal static Color ToColor(string? hex) => Rgb.TryParse(hex, out var rgb) ? Color.FromArgb(255, rgb.R, rgb.G, rgb.B) : Microsoft.UI.Colors.Transparent;
 
     /// <summary>
     /// Follows the session's client while the page is shown. Its changes are handled from here on, and the session's change is
@@ -190,6 +197,7 @@ internal sealed class LightingPage : Page, IHeaderTool
         brightnessSends.Flush();
         allSends.Flush();
         foreach (var pending in zoneSends.Values) pending.Flush();
+        effectBar.Leave();
     }
 
     /// <summary>The session's change, on the UI thread: once a second from the monitoring tick, and when lighting is turned on or off.</summary>
@@ -232,6 +240,9 @@ internal sealed class LightingPage : Page, IHeaderTool
         lightsSending = brightnessSending = 0;
         client = next;
         shownState = null;
+        // The bar drops its waiting changes and drags, which belonged to the old client.
+        shownEffect = null;
+        effectBar.Show(new EffectSettings(), false);
         // The header hides until the new client's first state, so a drag on it can't get its release.
         seenState = live = dragging = undoReady = false;
         sendError = null;
@@ -285,6 +296,7 @@ internal sealed class LightingPage : Page, IHeaderTool
             // The host is connecting or relaunching: the cards and header controls stay as they were, disabled, until its state is back.
             foreach (var card in cards.Values) card.Disable();
             Show(noDevices, false);
+            effectBar.Show(shownEffect ?? new EffectSettings(), false);
         }
         else
         {
@@ -293,7 +305,10 @@ internal sealed class LightingPage : Page, IHeaderTool
                 ApplyLightsOn(settings);
                 ApplyBrightness(settings);
                 ShowShared(settings.DefaultColor);
+                shownEffect = settings.Effect ?? shownEffect;
             }
+            // Effects go only to a running host whose settings the bar has seen.
+            effectBar.Show(shownEffect ?? new EffectSettings(), live && state.Settings is not null);
             ShowDevices(state);
         }
         UpdateFlyouts(resync: live && !wasLive);
@@ -576,7 +591,7 @@ internal sealed class LightingPage : Page, IHeaderTool
         return true;
     }
 
-    private static ColorPicker NewPicker() => new() { IsAlphaEnabled = false, IsAlphaSliderVisible = false, IsAlphaTextInputVisible = false, IsMoreButtonVisible = true };
+    internal static ColorPicker NewPicker() => new() { IsAlphaEnabled = false, IsAlphaSliderVisible = false, IsAlphaTextInputVisible = false, IsMoreButtonVisible = true };
 
     /// <summary>Shows a colour in a picker without sending it: the guard skips the change it raises.</summary>
     private void SetPicker(ColorPicker picker, string color, ref string? shown)
@@ -620,58 +635,6 @@ internal sealed class LightingPage : Page, IHeaderTool
         if (error == sendError) return;
         sendError = error;
         ShowStatus();
-    }
-
-    /// <summary>
-    /// Sends one target's changes at most once per 100 ms. The first goes at once; later ones within the interval wait for its end,
-    /// and only the latest of them goes, so the final value always does. <see cref="Flush"/> sends a waiting change now, as a slider
-    /// release or a closing flyout does; <see cref="Cancel"/> drops it.
-    /// </summary>
-    private sealed class Throttle
-    {
-        private static readonly TimeSpan Interval = TimeSpan.FromMilliseconds(100);
-        private readonly DispatcherQueueTimer timer;
-        private readonly Action<HostMessage> send;
-        private HostMessage? waiting;
-        private long sentAt;
-
-        public Throttle(DispatcherQueue queue, Action<HostMessage> send)
-        {
-            this.send = send;
-            timer = queue.CreateTimer();
-            timer.IsRepeating = false;
-            timer.Tick += (_, _) => Flush();
-        }
-
-        /// <summary>True while a change waits for the end of the interval.</summary>
-        public bool Pending => waiting is not null;
-
-        public void Post(HostMessage request)
-        {
-            waiting = request;
-            var since = sentAt == 0 ? Interval : Stopwatch.GetElapsedTime(sentAt);
-            if (since >= Interval) Flush();
-            else if (!timer.IsRunning)
-            {
-                timer.Interval = Interval - since;
-                timer.Start();
-            }
-        }
-
-        public void Flush()
-        {
-            timer.Stop();
-            if (waiting is not { } request) return;
-            waiting = null;
-            sentAt = Stopwatch.GetTimestamp();
-            send(request);
-        }
-
-        public void Cancel()
-        {
-            timer.Stop();
-            waiting = null;
-        }
     }
 
     /// <summary>
