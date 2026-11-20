@@ -21,8 +21,8 @@ public static class LightingSettingsCodec
     // and is checked again, so its colours, brightness and modes still count; only a second failure drops it to defaults. It is never quarantined.
     static LightingRead Finish(LightingSettings s)
     {
-        s.Effect??=new();s.Layout??=DeskLayouts.Empty();
-        LightingEffects.Normalize(s.Effect);
+        s.Effect??=new();s.Layout??=DeskLayouts.Empty();s.Devices??=new();
+        LightingEffects.Normalize(s.Effect);DeviceTunings.Normalize(s);
         var error=Validate(s);
         if(s.Version>LightingSettings.CurrentVersion)
         {
@@ -39,7 +39,7 @@ public static class LightingSettingsCodec
         try
         {
             if(System.Text.Json.Nodes.JsonNode.Parse(json) is not System.Text.Json.Nodes.JsonObject o||!o.TryGetPropertyValue("Version",out var v)||v is null||v.GetValueKind()!=JsonValueKind.Number||!v.AsValue().TryGetValue<int>(out var version)||version<=LightingSettings.CurrentVersion) return null;
-            o.Remove("Effect");o.Remove("Layout");
+            o.Remove("Effect");o.Remove("Layout");o.Remove("Devices");
             LightingSettings? s;
             try{s=JsonSerializer.Deserialize<LightingSettings>(o.ToJsonString());}
             catch(JsonException e){return new(new(),$"Lighting settings are not valid JSON: {e.Message}",false,true);}
@@ -62,6 +62,7 @@ public static class LightingSettingsCodec
         var error=Values(settings);
         if(error is null&&settings.Version>LightingSettings.CurrentVersion) error="These lighting settings were saved by a newer DeadWare.";
         if(error is not null) throw new InvalidDataException(error);
+        settings.Version=DeviceTunings.WrittenVersion(settings);
         var json=JsonSerializer.Serialize(settings,Indented);
         return TooLong(json)?throw new InvalidDataException(WrittenTooLarge):json;
     }
@@ -83,6 +84,8 @@ public static class LightingSettingsCodec
         }
         foreach(var (key,mode) in settings.HardwareModes)
             if(key.Length>MaxKeyLength||mode is null||mode.Length>MaxKeyLength) return "A hardware mode entry is invalid.";
+        var devices=DeviceTunings.Validate(settings);
+        if(devices is not null) return devices;
         return (settings.Effect is null?null:LightingEffects.Validate(settings.Effect))??(settings.Layout is null?null:DeskLayouts.Validate(settings.Layout));
     }
 }

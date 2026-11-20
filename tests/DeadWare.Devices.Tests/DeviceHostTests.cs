@@ -447,6 +447,19 @@ public sealed class DeviceHostTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Other_changes_keep_device_tuning()
+    {
+        File.WriteAllText(lightingPath,"{\"Version\":2,\"Devices\":{\"k|1\":{\"Brightness\":70}}}");
+        var h=await Running();
+        Assert.Equal(70,h.State.Settings.Devices["k|1"].Brightness);
+        Assert.True((await Send(h,new SetBrightnessRequest(40))).Ok);
+        Assert.True((await Send(h,new SetEffectRequest("Wave",null))).Ok);
+        Assert.Equal(70,h.State.Settings.Devices["k|1"].Brightness);
+        var saved=new LightingStore(lightingPath).Load().Settings;
+        Assert.Equal(70,saved.Devices["k|1"].Brightness);Assert.Equal(2,saved.Version);
+    }
+
+    [Fact]
     public async Task SetBrightness_out_of_range_replies_error_and_changes_nothing()
     {
         var h=await Running();
@@ -510,7 +523,7 @@ public sealed class DeviceHostTests : IAsyncLifetime
     [Fact]
     public async Task Newer_lighting_json_is_used_but_never_saved()
     {
-        const string json="{\"Version\":2,\"Brightness\":40,\"DefaultColor\":\"#112233\",\"Layout\":{\"Desk\":\"L\"}}";
+        const string json="{\"Version\":3,\"Brightness\":40,\"DefaultColor\":\"#112233\",\"Layout\":{\"Desk\":\"L\"}}";
         File.WriteAllText(lightingPath,json);
         var h=await Running();
         Assert.Equal(40,h.State.Settings.Brightness);
@@ -526,7 +539,7 @@ public sealed class DeviceHostTests : IAsyncLifetime
     [Fact]
     public async Task Newer_lighting_json_this_build_cannot_use_runs_on_defaults_and_says_so()
     {
-        const string json="{\"Version\":2,\"Brightness\":500,\"DefaultColor\":\"#112233\"}";
+        const string json="{\"Version\":3,\"Brightness\":500,\"DefaultColor\":\"#112233\"}";
         File.WriteAllText(lightingPath,json);
         var h=await Running();
         Assert.Contains(DeviceHost.NewerDefaultsNote,h.State.Message);

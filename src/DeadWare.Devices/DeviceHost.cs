@@ -104,7 +104,7 @@ internal sealed class DeviceHost : IAsyncDisposable
         Version=s.Version,LightsOn=s.LightsOn,Brightness=s.Brightness,DefaultColor=s.DefaultColor,
         ZoneColors=(s.ZoneColors??new()).ToDictionary(e=>e.Key,e=>new ZoneColorEntry{Color=e.Value.Color,ZoneName=e.Value.ZoneName}),
         HardwareModes=new(s.HardwareModes??new()),
-        Effect=LightingEffects.Clone(s.Effect),Layout=DeskLayouts.Clone(s.Layout),
+        Effect=LightingEffects.Clone(s.Effect),Layout=DeskLayouts.Clone(s.Layout),Devices=DeviceTunings.Clone(s.Devices),
     };
     double Now()=>time.GetElapsedTime(epoch).TotalMilliseconds;
     void Raise()

@@ -14,6 +14,24 @@ public class LightingKeysTests
     }
 
     [Fact]
+    public void Remap_moves_a_devices_tuning_with_its_key()
+    {
+        var s=new LightingSettings();
+        s.Devices["S1|HID:A"]=new DeviceTuning{Brightness=70};
+        Assert.True(LightingKeys.Remap(s,["|HID:A"]));
+        Assert.Equal(70,s.Devices["|HID:A"].Brightness);
+        Assert.DoesNotContain("S1|HID:A",s.Devices.Keys);
+    }
+    [Fact]
+    public void Remap_counts_a_tuning_entry_as_stored()
+    {
+        var s=With("S1|HID:A");
+        s.Devices["|HID:A"]=new DeviceTuning{Brightness=70};
+        Assert.False(LightingKeys.Remap(s,["|HID:A"]));
+        Assert.Contains("S1|HID:A",s.HardwareModes.Keys);
+    }
+
+    [Fact]
     public void Remap_moves_entries_when_serial_drops_at_same_location()
     {
         var s=With("S1|HID:A");
