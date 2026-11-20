@@ -64,6 +64,20 @@ internal sealed class DeviceHost : IAsyncDisposable
     string message="";
     IReadOnlyList<LightingConflict> conflicts=[];
     public event Action<HostState>? StateChanged;
+    // Preview frames (Task 7): while the window has subscribed and an effect runs, the paint tick takes the effect's colours before
+    // brightness at most once per PreviewGap of the host's time and raises them when they differ from the last frame sent. previewOn, the
+    // last frame and its time are guarded by gate; previewGeneration changes with every subscribe and ClientGone, so a frame taken under an
+    // older subscription is never raised. Frames are raised outside gate under previewGate, which ClientGone also takes, so once it returns
+    // no frame follows.
+    public static readonly TimeSpan PreviewGap=TimeSpan.FromMilliseconds(100);
+    public event Action<PreviewEvent>? PreviewChanged;
+    readonly object previewGate=new();
+    bool previewOn;
+    int previewGeneration;
+    double? lastPreviewMs;
+    Dictionary<string,string>? lastPreview;
+    // The window is gone: its subscription ends. Called by the pipe server outside its own locks.
+    public void ClientGone(){lock(previewGate)lock(gate){previewOn=false;previewGeneration++;lastPreview=null;lastPreviewMs=null;}}
 
     // startupFailure: set when the host could not prepare OpenRGB's config folder; it reports OpenRgbFailed and never starts OpenRGB.
     // callClock: the clock of the bound on OpenRGB calls; real time unless a test supplies one.
@@ -223,6 +237,8 @@ internal sealed class DeviceHost : IAsyncDisposable
     void TickWork(bool slow)
     {
         var changed=false;
+        Dictionary<string,string>? frame=null;
+        var generation=0;
         lock(gate)
         {
             if(!engineActive||status is HostStatus.Blocked or HostStatus.Stopping||engine.Status!=EngineStatus.Running) return;
@@ -238,12 +254,37 @@ internal sealed class DeviceHost : IAsyncDisposable
                 else
                 {
                     if(slow||rescanPending){rescanPending=false;changed=RescanLocked();}
-                    service.Paint(settings,Now());
+                    var t=Now(); // one reading for the paint and the preview
+                    service.Paint(settings,t);
+                    frame=PreviewLocked(t);generation=previewGeneration;
                 }
             }
             catch(Exception e){changed=FailSession(LostText,e);}
         }
         if(changed) Raise();
+        if(frame is not null) RaisePreview(frame,generation);
+    }
+
+    // The frame to send at tMs, or null: none subscribed, no effect running, too soon after the last frame, or the same colours as it.
+    Dictionary<string,string>? PreviewLocked(double tMs)
+    {
+        if(!previewOn||!LightingPaint.EffectRunning(settings)) return null;
+        if(lastPreviewMs is {} last&&tMs-last<PreviewGap.TotalMilliseconds) return null;
+        lastPreviewMs=tMs;
+        var colors=service.Preview(settings,tMs);
+        if(lastPreview is not null&&SameFrame(lastPreview,colors)) return null;
+        lastPreview=colors;
+        return colors;
+    }
+    static bool SameFrame(Dictionary<string,string> a,Dictionary<string,string> b)=>a.Count==b.Count&&a.All(e=>b.TryGetValue(e.Key,out var v)&&v==e.Value);
+
+    void RaisePreview(Dictionary<string,string> frame,int generation)
+    {
+        lock(previewGate)
+        {
+            lock(gate)if(!previewOn||previewGeneration!=generation) return;
+            try{PreviewChanged?.Invoke(new PreviewEvent(frame));}catch(Exception e){log.Write("PreviewChanged handler failed: "+e.Message);}
+        }
     }
 
     // Ruling F: after OpenRGB (re)starts, forget what was sent, reconnect, rescan, then paint.
@@ -376,6 +417,8 @@ internal sealed class DeviceHost : IAsyncDisposable
                 },out raise);
             case SetEffectRequest r:return Mutate(request,s=>SetEffect(s,r),out raise);
             case SetLayoutRequest r:return Mutate(request,s=>SetLayout(s,r),out raise);
+            // Raises no state. A new subscription clears the last frame and its time, so its first frame goes at the next paint tick.
+            case SubscribePreviewRequest r:previewOn=r.On;previewGeneration++;lastPreview=null;lastPreviewMs=null;return Ok(request);
             default:return Fail(request,HostReplyCodes.Unsupported);
         }
     }

@@ -59,11 +59,12 @@ internal static class Program
             using var heldLock=portLock;
             var engine=new OpenRgbEngine(options.OpenRgbPath,configDir,new SystemProcessRunner(job,log),OpenRgbEngine.ProbePort,TimeProvider.System,log,ProtectedFolders.OpenRgbFolderCheck(Environment.IsPrivilegedProcess),dir=>OpenRgbConfig.Prepare(dir,log),portGuard);
             await using var host=new DeviceHost(options,new LightingStore(lightingPath,guardLinks:Environment.IsPrivilegedProcess),engine,()=>new OpenRgbSession(),new ProcessConflictScanner(),TimeProvider.System,log,failure);
-            await using var server=new HostPipeServer(DeviceHostProtocol.PipeName(sid),host.HandleAsync,log);
+            await using var server=new HostPipeServer(DeviceHostProtocol.PipeName(sid),host.HandleAsync,log,clientGone:host.ClientGone);
             host.Initialize(); // settings are loaded before the pipe accepts a single request
             try{server.Open();}
             catch(Exception e){log.Write("pipe could not be created: "+e.Message);return 4;}
             host.StateChanged+=state=>_=server.SendAsync(new StateEvent(state));
+            host.PreviewChanged+=e=>_=server.SendAsync(e);
             using var pipeCts=new CancellationTokenSource();
             using var hostCts=new CancellationTokenSource();
             var serving=server.RunAsync(pipeCts.Token);

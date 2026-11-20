@@ -177,6 +177,107 @@ public sealed class HostPipeServerTests : IDisposable
         Assert.Equal(0,refused.Length);
     }
 
+    // Task 7: a handler that holds request Id 1 until the test lets it go, so broadcasts sent meanwhile queue while the client is not reading.
+    sealed class Held
+    {
+        public readonly TaskCompletionSource Entered=new(TaskCreationOptions.RunContinuationsAsynchronously),Go=new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public async Task<HostMessage> Handle(HostMessage m){if(m.Id==1){Entered.TrySetResult();await Go.Task;}return new Reply(true,null){Id=m.Id};}
+    }
+    static PreviewEvent Frame(string color)=>new(new Dictionary<string,string>{["zone#0"]=color});
+
+    [Fact]
+    public async Task Preview_never_displaces_a_pending_state()
+    {
+        var held=new Held();
+        await using var server=new HostPipeServer(name,held.Handle,log,elevated:false);
+        var run=server.RunAsync(cts.Token);
+        await using var client=await Connect();
+        await DeviceHostProtocol.WriteAsync(client,new GetStateRequest{Id=1},cts.Token);
+        await held.Entered.Task.WaitAsync(cts.Token);
+        var state=server.SendAsync(new StateEvent(Sample()));
+        var preview=server.SendAsync(Frame("#FF0000"));
+        held.Go.SetResult();
+        Assert.Equal(1,Assert.IsType<Reply>(await DeviceHostProtocol.ReadAsync(client,cts.Token)).Id);
+        Assert.IsType<StateEvent>(await DeviceHostProtocol.ReadAsync(client,cts.Token));
+        Assert.Equal("#FF0000",Assert.IsType<PreviewEvent>(await DeviceHostProtocol.ReadAsync(client,cts.Token)).Colors["zone#0"]);
+        await state;await preview;
+        Assert.False(run.IsCompleted);
+    }
+
+    [Fact]
+    public async Task Only_the_latest_preview_is_kept()
+    {
+        var held=new Held();
+        await using var server=new HostPipeServer(name,held.Handle,log,elevated:false);
+        var run=server.RunAsync(cts.Token);
+        await using var client=await Connect();
+        await DeviceHostProtocol.WriteAsync(client,new GetStateRequest{Id=1},cts.Token);
+        await held.Entered.Task.WaitAsync(cts.Token);
+        foreach(var c in new[]{"#110000","#220000","#330000"}) _=server.SendAsync(Frame(c));
+        held.Go.SetResult();
+        Assert.Equal(1,Assert.IsType<Reply>(await DeviceHostProtocol.ReadAsync(client,cts.Token)).Id);
+        Assert.Equal("#330000",Assert.IsType<PreviewEvent>(await DeviceHostProtocol.ReadAsync(client,cts.Token)).Colors["zone#0"]);
+        var send=server.SendAsync(new StateEvent(Sample()));
+        Assert.IsType<StateEvent>(await DeviceHostProtocol.ReadAsync(client,cts.Token)); // nothing else was queued ahead of it
+        await send;
+        Assert.False(run.IsCompleted);
+    }
+
+    // Once for a client that hangs up, and once for a client dropped because a broadcast to it timed out (one larger than the pipe's buffer
+    // that it never reads).
+    [Fact]
+    public async Task ClientGone_is_called_when_a_client_disconnects()
+    {
+        var gone=0;
+        var big=new Dictionary<string,ZoneColorEntry>();
+        for(var i=0;i<3000;i++) big[$"serial-{i}|location-{i}#0"]=new(){Color="#112233",ZoneName="Zone "+i};
+        var bigState=new StateEvent(new(HostStatus.Running,"",false,[],[],new LightingSettings{ZoneColors=big}));
+        await using var server=new HostPipeServer(name,m=>Task.FromResult<HostMessage>(new Reply(true,null){Id=m.Id}),log,elevated:false,writeTimeout:TimeSpan.FromMilliseconds(300),clientGone:()=>Interlocked.Increment(ref gone));
+        var run=server.RunAsync(cts.Token);
+        var first=await Connect();
+        await DeviceHostProtocol.WriteAsync(first,new GetStateRequest{Id=1},cts.Token);
+        await DeviceHostProtocol.ReadAsync(first,cts.Token);
+        Assert.Equal(0,Volatile.Read(ref gone));
+        await first.DisposeAsync();
+        await Waits.Until(()=>Volatile.Read(ref gone)==1);
+        await using var stuck=await ConnectRetrying();
+        await DeviceHostProtocol.WriteAsync(stuck,new GetStateRequest{Id=2},cts.Token);
+        Assert.Equal(2,(await DeviceHostProtocol.ReadAsync(stuck,cts.Token))!.Id);
+        _=server.SendAsync(bigState); // never read
+        await Waits.Until(()=>Volatile.Read(ref gone)==2);
+        Assert.False(run.IsCompleted);
+    }
+
+    // The previous client's ClientGone comes before the next client's first request is handled, so a late one can never end the new
+    // client's preview subscription.
+    [Fact]
+    public async Task A_new_clients_subscription_survives_the_previous_clients_disconnect()
+    {
+        var events=new List<string>();
+        await using var server=new HostPipeServer(name,m=>{lock(events)events.Add("request "+m.Id);return Task.FromResult<HostMessage>(new Reply(true,null){Id=m.Id});},log,elevated:false,
+            clientGone:()=>{Thread.Sleep(200);lock(events)events.Add("gone");}); // slow, as one waiting on the host's lock is
+        var run=server.RunAsync(cts.Token);
+        var first=await Connect();
+        await DeviceHostProtocol.WriteAsync(first,new SubscribePreviewRequest(true){Id=1},cts.Token);
+        await DeviceHostProtocol.ReadAsync(first,cts.Token);
+        await first.DisposeAsync();
+        await using var second=await ConnectRetrying();
+        await DeviceHostProtocol.WriteAsync(second,new SubscribePreviewRequest(true){Id=2},cts.Token);
+        Assert.Equal(2,(await DeviceHostProtocol.ReadAsync(second,cts.Token))!.Id);
+        lock(events)Assert.Equal(["request 1","gone","request 2"],events);
+        Assert.False(run.IsCompleted);
+    }
+
+    // A client connecting just after another hung up can find the pipe still busy with the old one; it tries again, as the window does.
+    async Task<NamedPipeClientStream> ConnectRetrying()
+    {
+        for(var attempt=0;;attempt++)
+        {
+            try{return await Connect();}
+            catch(Exception e) when(attempt<40&&(e is TimeoutException||e is IOException)){await Task.Delay(50);}
+        }
+    }
+
     [Fact]
     public void Sddl_denies_network_gives_user_read_write_and_admins_full()
     {

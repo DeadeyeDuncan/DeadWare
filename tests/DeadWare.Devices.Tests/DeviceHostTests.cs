@@ -1251,4 +1251,112 @@ public sealed class DeviceHostTests : IAsyncLifetime
         Assert.Equal((reads,modes,connects),(session.Reads,session.Modes.Count,session.Connects));
         Assert.Equal(1,runner.Count);
     }
+
+    // Task 7: the preview frames the host raises, each with the fake time it was raised at.
+    List<(DateTimeOffset At,Dictionary<string,string> Colors)> Previews(DeviceHost h)
+    {
+        var seen=new List<(DateTimeOffset,Dictionary<string,string>)>();
+        h.PreviewChanged+=e=>{lock(seen)seen.Add((time.GetUtcNow(),e.Colors));};
+        return seen;
+    }
+    static int CountOf<T>(List<T> list){lock(list)return list.Count;}
+    // Steps fake time by at least span, then waits until the loop waits on its next tick, so every tick in the span has done its work.
+    async Task RunFor(TimeSpan span,TimeSpan tick)
+    {
+        var end=time.GetUtcNow()+span;
+        await AdvanceUntil(()=>time.GetUtcNow()>=end,tick:tick);
+        await Until(()=>time.Waiting(tick));
+    }
+    static bool SameFrame(Dictionary<string,string> a,Dictionary<string,string> b)=>a.Count==b.Count&&a.All(e=>b.TryGetValue(e.Key,out var v)&&v==e.Value);
+    async Task<DeviceHost> RunningWave(EffectParams? p=null)
+    {
+        var h=await Running();
+        Assert.True((await Send(h,new SetEffectRequest("Wave",p))).Ok);
+        await AdvanceUntil(()=>time.Waiting(DeviceHost.FastTick)); // the tick armed before the change runs out first
+        return h;
+    }
+
+    [Fact]
+    public async Task No_preview_without_a_subscription()
+    {
+        var h=await RunningWave();
+        var seen=Previews(h);
+        var from=session.LedCount;
+        await RunFor(TimeSpan.FromSeconds(1),DeviceHost.FastTick);
+        Assert.True(Frames(Apex,from).Count>=2); // the effect ran
+        Assert.Equal(0,CountOf(seen));
+    }
+
+    [Fact]
+    public async Task Preview_flows_to_a_subscriber_at_most_ten_a_second()
+    {
+        var h=await RunningWave();
+        var seen=Previews(h);
+        var states=0;
+        h.StateChanged+=_=>Interlocked.Increment(ref states);
+        var reply=await Send(h,new SubscribePreviewRequest(true){Id=9});
+        Assert.True(reply.Ok);Assert.Equal(9,reply.Id);
+        Assert.Equal(0,Volatile.Read(ref states)); // a subscription raises no state
+        await RunFor(TimeSpan.FromSeconds(1),DeviceHost.FastTick);
+        List<(DateTimeOffset At,Dictionary<string,string> Colors)> frames;
+        lock(seen)frames=seen.ToList();
+        Assert.InRange(frames.Count,2,10);
+        Assert.Contains(ApexZone,frames[0].Colors.Keys);
+        for(var i=1;i<frames.Count;i++)
+        {
+            Assert.False(SameFrame(frames[i-1].Colors,frames[i].Colors));
+            Assert.True(frames[i].At-frames[i-1].At>=DeviceHost.PreviewGap,$"frames {i-1} and {i} came {(frames[i].At-frames[i-1].At).TotalMilliseconds} ms apart");
+        }
+    }
+
+    [Fact]
+    public async Task No_preview_while_static_or_lights_off()
+    {
+        var h=await Running();
+        var seen=Previews(h);
+        Assert.True((await Send(h,new SubscribePreviewRequest(true))).Ok);
+        await RunFor(TimeSpan.FromSeconds(1),DeviceHost.Tick); // Static
+        Assert.Equal(0,CountOf(seen));
+        Assert.True((await Send(h,new SetLightsOnRequest(false))).Ok);
+        Assert.True((await Send(h,new SetEffectRequest("Wave",null))).Ok);
+        await RunFor(TimeSpan.FromSeconds(1),DeviceHost.Tick); // Wave with the lights off
+        Assert.Equal(0,CountOf(seen));
+        Assert.True((await Send(h,new SetLightsOnRequest(true))).Ok); // the subscription was live all along
+        await AdvanceUntil(()=>time.Waiting(DeviceHost.FastTick));
+        await AdvanceUntil(()=>CountOf(seen)>=1,tick:DeviceHost.FastTick);
+    }
+
+    [Fact]
+    public async Task Preview_stops_when_the_client_goes()
+    {
+        var h=await RunningWave();
+        var seen=Previews(h);
+        Assert.True((await Send(h,new SubscribePreviewRequest(true))).Ok);
+        await AdvanceUntil(()=>CountOf(seen)>=2,tick:DeviceHost.FastTick);
+        h.ClientGone();
+        var n=CountOf(seen);
+        await RunFor(TimeSpan.FromSeconds(1),DeviceHost.FastTick);
+        Assert.Equal(n,CountOf(seen));
+        Assert.True((await Send(h,new SubscribePreviewRequest(true))).Ok);
+        await AdvanceUntil(()=>CountOf(seen)>n,tick:DeviceHost.FastTick);
+    }
+
+    // A one-colour Wave shows that colour at every placed zone, so the frame is known: the preview carries it as chosen, the LEDs at 50 %.
+    [Fact]
+    public async Task Preview_is_before_brightness()
+    {
+        var h=await Running();
+        Assert.True((await Send(h,new SetBrightnessRequest(50))).Ok);
+        Assert.True((await Send(h,new SetEffectRequest("Wave",new EffectParams{Colors=["#FF0000"]}))).Ok);
+        await AdvanceUntil(()=>time.Waiting(DeviceHost.FastTick));
+        var seen=Previews(h);
+        Assert.True((await Send(h,new SubscribePreviewRequest(true))).Ok);
+        await AdvanceUntil(()=>CountOf(seen)>=1,tick:DeviceHost.FastTick);
+        Dictionary<string,string> colors;
+        lock(seen)colors=seen[0].Colors;
+        Assert.Equal("#FF0000",colors[ApexZone]);
+        var dimmed=new Rgb(0xFF,0,0).Scale(50);
+        Assert.NotEqual(new Rgb(0xFF,0,0),dimmed);
+        Assert.All(LastLeds(Apex),c=>Assert.Equal(dimmed,c));
+    }
 }
