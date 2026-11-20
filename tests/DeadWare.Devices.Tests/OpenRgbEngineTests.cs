@@ -284,6 +284,81 @@ public sealed class OpenRgbEngineTests : IAsyncLifetime
         Assert.Equal(1,checks);
     }
 
+    // F5 item 2 (whole-branch review D15, Ruling BG): an elevated host's port guard (OpenRgbPortLock.Ensure) is consulted before every
+    // launch. A reason means OpenRGB isn't started, with exactly that text; like the folder refusal it is final and isn't retried.
+    [Fact]
+    public async Task A_port_guard_refusal_fails_without_starting_or_relaunching()
+    {
+        var asked=0;
+        var e=Track(new OpenRgbEngine(exe,@"C:\cfg\openrgb",runner,(_,_)=>Task.FromResult(true),time,log,portGuard:()=>{Interlocked.Increment(ref asked);return OpenRgbPortLock.RefusalText(5,"Access is denied.");}));
+        await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
+        Assert.Equal(EngineStatus.Failed,e.Status);
+        Assert.Equal("DeadWare couldn't limit OpenRGB's network port to its lighting helper (error 5: Access is denied.), so it won't run OpenRGB as administrator. Turn lighting off and on in Settings to try again.",e.FailureReason);
+        await Advance(TimeSpan.FromSeconds(60),TimeSpan.FromSeconds(1));
+        Assert.Equal(0,runner.Count);
+        Assert.Equal(1,Volatile.Read(ref asked));
+        Assert.Equal(EngineStatus.Failed,e.Status);
+    }
+
+    // The guard is asked before each launch, the first and every restart, each time before the process starts.
+    [Fact]
+    public async Task The_port_guard_is_consulted_before_every_launch()
+    {
+        var asked=new List<int>();
+        var e=Track(new OpenRgbEngine(exe,@"C:\cfg\openrgb",runner,(_,_)=>Task.FromResult(true),time,log,portGuard:()=>{lock(asked)asked.Add(runner.Count);return null;}));
+        await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
+        runner.At(0).Exit();
+        await Until(()=>e.Status==EngineStatus.Restarting);
+        await Advance(TimeSpan.FromSeconds(4),TimeSpan.FromMilliseconds(100));
+        await Until(()=>runner.Count==2&&e.Status==EngineStatus.Running);
+        lock(asked)Assert.Equal([0,1],asked);
+    }
+
+    // A refusal at a restart (the filters gone and not added again) stops there, with WFP's own errors shown in hex.
+    [Fact]
+    public async Task A_port_guard_refusal_at_a_restart_is_final()
+    {
+        string? answer=null;
+        var e=Track(new OpenRgbEngine(exe,@"C:\cfg\openrgb",runner,(_,_)=>Task.FromResult(true),time,log,portGuard:()=>Volatile.Read(ref answer)));
+        await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
+        Volatile.Write(ref answer,OpenRgbPortLock.RefusalText(unchecked((int)0x80320003),"The filter does not exist."));
+        runner.At(0).Exit();
+        await Until(()=>e.Status==EngineStatus.Restarting);
+        await Advance(TimeSpan.FromSeconds(4),TimeSpan.FromMilliseconds(100));
+        await Until(()=>e.Status==EngineStatus.Failed);
+        Assert.Equal("DeadWare couldn't limit OpenRGB's network port to its lighting helper (error 0x80320003: The filter does not exist.), so it won't run OpenRGB as administrator. Turn lighting off and on in Settings to try again.",e.FailureReason);
+        await Advance(TimeSpan.FromSeconds(120),TimeSpan.FromSeconds(1));
+        Assert.Equal(1,runner.Count);
+        Assert.Equal(EngineStatus.Failed,e.Status);
+    }
+
+    // A refusal isn't a crash, so it isn't counted in the backoff: a start after a conflict stop that keeps the history launches at once,
+    // where a counted refusal would have armed the 4 s restart delay.
+    [Fact]
+    public async Task A_port_guard_refusal_is_not_counted_in_the_backoff()
+    {
+        string? answer=OpenRgbPortLock.RefusalText(5,"Access is denied.");
+        var e=Track(new OpenRgbEngine(exe,@"C:\cfg\openrgb",runner,(_,_)=>Task.FromResult(true),time,log,portGuard:()=>Volatile.Read(ref answer)));
+        await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
+        Assert.Equal(EngineStatus.Failed,e.Status);
+        await e.StopAsync(keepHistory:true).WaitAsync(RealTimeCap);
+        Volatile.Write(ref answer,null);
+        await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
+        Assert.Equal(EngineStatus.Running,e.Status);
+        Assert.Equal(1,runner.Count);
+    }
+
+    // A guard that throws couldn't confirm the lock either: the same refusal, with the exception's code and message.
+    [Fact]
+    public async Task A_throwing_port_guard_refuses_with_the_locks_text()
+    {
+        var e=Track(new OpenRgbEngine(exe,@"C:\cfg\openrgb",runner,(_,_)=>Task.FromResult(true),time,log,portGuard:()=>throw new System.ComponentModel.Win32Exception(5,"Access is denied.")));
+        await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
+        Assert.Equal(EngineStatus.Failed,e.Status);
+        Assert.Equal(OpenRgbPortLock.RefusalText(5,"Access is denied."),e.FailureReason);
+        Assert.Equal(0,runner.Count);
+    }
+
     // Ruling AR: OpenRGB's settings are prepared before every start, the first and each relaunch.
     [Fact]
     public async Task Config_is_prepared_before_every_start()

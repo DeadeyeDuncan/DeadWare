@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Globalization;
 using System.Net.Sockets;
@@ -45,8 +46,11 @@ internal sealed class OpenRgbEngine : IAsyncDisposable
     public static readonly string GaveUpText=$"OpenRGB stopped {RestartBackoff.MaxFailures} times in {(int)RestartBackoff.Window.TotalMinutes} minutes, counting the times DeadWare stopped it for a program that blocks lighting. Turn lighting off and on in Settings to try again.";
     readonly Action<string>? prepareConfig;
     // prepareConfig: writes OpenRGB's settings before every launch (Ruling AR); a launch whose settings can't be written doesn't happen.
-    public OpenRgbEngine(string exePath,string configDir,IProcessRunner runner,Func<int,CancellationToken,Task<bool>> portOpen,TimeProvider time,HostLog log,Func<string,LocationProtection>? folderCheck=null,Action<string>? prepareConfig=null)
-    {this.exePath=exePath;this.configDir=configDir;this.runner=runner;this.portOpen=portOpen;this.time=time;this.log=log;this.folderCheck=folderCheck;this.prepareConfig=prepareConfig;}
+    // portGuard: an elevated host's OpenRgbPortLock.Ensure (Ruling BG), run before every launch: null when OpenRGB's SDK port is locked to
+    // the host, else the refusal. Null for a host without administrator rights, which adds no lock.
+    readonly Func<string?>? portGuard;
+    public OpenRgbEngine(string exePath,string configDir,IProcessRunner runner,Func<int,CancellationToken,Task<bool>> portOpen,TimeProvider time,HostLog log,Func<string,LocationProtection>? folderCheck=null,Action<string>? prepareConfig=null,Func<string?>? portGuard=null)
+    {this.exePath=exePath;this.configDir=configDir;this.runner=runner;this.portOpen=portOpen;this.time=time;this.log=log;this.folderCheck=folderCheck;this.prepareConfig=prepareConfig;this.portGuard=portGuard;}
     // --server-host 127.0.0.1 (Ruling AN): OpenRGB 1.0rc3 otherwise serves its unauthenticated SDK on every network interface. The literal
     // address, not "localhost", which can resolve to ::1 first, while the session and the port probe use IPv4 loopback.
     public const string Host="127.0.0.1";
@@ -108,6 +112,9 @@ internal sealed class OpenRgbEngine : IAsyncDisposable
                 // Outside the lock: the check walks OpenRGB's whole folder. A refusal is final for this engine and isn't a crash, so it
                 // is neither retried nor counted in the backoff.
                 if(Refusal() is {} refusal){Set(EngineStatus.Failed,refusal);return;}
+                // F5 item 2 (whole-branch review D15, Ruling BG): an elevated host launches OpenRGB only with its SDK port locked to the
+                // host, confirmed before each launch; a refusal is final in the same way.
+                if(PortRefusal() is {} denied){Set(EngineStatus.Failed,denied);return;}
                 if(!Prepared()){Set(EngineStatus.Failed,ConfigFailedText(configDir));return;}
                 // B5: the check and the settings write take a while, and a Stop (a conflict's, say) that lands during them starts nothing.
                 if(quitting||ct.IsCancellationRequested) break;
@@ -171,6 +178,18 @@ internal sealed class OpenRgbEngine : IAsyncDisposable
         if(verdict.Protected) return null;
         log.Write("openrgb folder refused: "+verdict.Reason);
         return OpenRgbFolderRefusal.Text(verdict.Reason);
+    }
+
+    // The port lock's refusal, or null when the lock is in place or the host has none (it isn't elevated). A guard that throws couldn't
+    // confirm the lock either, so it gets the lock's refusal with the exception's code and message.
+    string? PortRefusal()
+    {
+        if(portGuard is null) return null;
+        string? refusal;
+        try{refusal=portGuard();}
+        catch(Exception e){refusal=OpenRgbPortLock.RefusalText(e is Win32Exception w?w.NativeErrorCode:e.HResult,e.Message);}
+        if(refusal is not null) log.Write("openrgb port couldn't be locked: "+refusal);
+        return refusal;
     }
 
     async Task<bool> WaitForPort(IRunningProcess proc,CancellationToken ct)

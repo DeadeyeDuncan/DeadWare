@@ -52,7 +52,10 @@ internal static class Program
             try{job=ProcessJob.Create();}
             catch(Exception e){log.Write("no job object, so OpenRGB may outlive a host that crashes: "+e.Message);}
             var options=new HostOptions(openRgbPath,configDir,lightingPath,logDir??"",startup,sid,session);
-            var engine=new OpenRgbEngine(options.OpenRgbPath,configDir,new SystemProcessRunner(job,log),OpenRgbEngine.ProbePort,TimeProvider.System,log,ProtectedFolders.OpenRgbFolderCheck(Environment.IsPrivilegedProcess),dir=>OpenRgbConfig.Prepare(dir,log));
+            // Ruling BG (D15): an elevated host holds the lock on OpenRGB's SDK port for its whole life; it is disposed after the host has
+            // stopped OpenRGB, and Windows removes its filters anyway when the host ends. None without administrator rights.
+            using var portLock=OpenRgbPortLock.ForHost(Environment.IsPrivilegedProcess);
+            var engine=new OpenRgbEngine(options.OpenRgbPath,configDir,new SystemProcessRunner(job,log),OpenRgbEngine.ProbePort,TimeProvider.System,log,ProtectedFolders.OpenRgbFolderCheck(Environment.IsPrivilegedProcess),dir=>OpenRgbConfig.Prepare(dir,log),portLock is null?null:portLock.Ensure);
             await using var host=new DeviceHost(options,new LightingStore(lightingPath,guardLinks:Environment.IsPrivilegedProcess),engine,()=>new OpenRgbSession(),new ProcessConflictScanner(),TimeProvider.System,log,failure);
             await using var server=new HostPipeServer(DeviceHostProtocol.PipeName(sid),host.HandleAsync,log);
             host.Initialize(); // settings are loaded before the pipe accepts a single request
