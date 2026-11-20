@@ -119,10 +119,30 @@ public class LightingKeysTests
         Assert.Equal(new DeskPoint(0.4,0.4),s.Layout.Zones["|loc#0"]);Assert.False(s.Layout.Zones.ContainsKey("SER|loc#0"));
         Assert.Equal(new[]{"|loc"},s.Layout.Tower.Members);Assert.Equal(new[]{"|loc"},s.Layout.Tower.Excluded);Assert.Equal(new[]{"|loc"},s.Layout.Unplaced);
     }
+    // W3: the stale key is held by a colour, the target ONLY by the layout, so the refusal rests on the layout lines alone.
     [Fact] public void A_target_that_already_has_layout_entries_is_refused()
     {
         var s=new LightingSettings();s.Layout.Zones["SER|loc#0"]=new(0.4,0.4);s.Layout.Zones["|loc#0"]=new(0.6,0.6);
         Assert.False(LightingKeys.Remap(s,["|loc"]));
+        var byZones=new LightingSettings();byZones.ZoneColors["SER|loc#0"]=new ZoneColorEntry{Color="#010203",ZoneName="Fan"};byZones.Layout.Zones["|loc#0"]=new(0.6,0.6);
+        Assert.False(LightingKeys.Remap(byZones,["|loc"]));Assert.Contains("SER|loc#0",byZones.ZoneColors.Keys);
+        var byUnplaced=new LightingSettings();byUnplaced.ZoneColors["SER|loc#0"]=new ZoneColorEntry{Color="#010203",ZoneName="Fan"};byUnplaced.Layout.Unplaced.Add("|loc");
+        Assert.False(LightingKeys.Remap(byUnplaced,["|loc"]));Assert.Contains("SER|loc#0",byUnplaced.ZoneColors.Keys);
+    }
+    // W3: a keyboard after Set all colours has no colour or mode entry left; its zone points alone hold it, and they are re-keyed.
+    [Fact] public void A_device_held_only_by_layout_zone_points_is_remapped()
+    {
+        var s=new LightingSettings();s.Layout.Zones["SER|kb#0"]=new(0.5,0.9);s.Layout.Zones["SER|kb#1"]=new(0.6,0.9);
+        Assert.True(LightingKeys.Remap(s,["|kb"]));
+        Assert.Equal(new DeskPoint(0.5,0.9),s.Layout.Zones["|kb#0"]);Assert.Equal(new DeskPoint(0.6,0.9),s.Layout.Zones["|kb#1"]);
+        Assert.DoesNotContain(s.Layout.Zones.Keys,k=>k.StartsWith("SER|",StringComparison.Ordinal));
+    }
+    // W3: a device taken off the desk has no points; its Unplaced entry alone holds it, and it is re-keyed.
+    [Fact] public void A_device_held_only_in_Unplaced_is_remapped()
+    {
+        var s=new LightingSettings();s.Layout.Unplaced.Add("SER|kb");
+        Assert.True(LightingKeys.Remap(s,["|kb"]));
+        Assert.Equal(new[]{"|kb"},s.Layout.Unplaced);
     }
     [Fact] public void Remap_then_arrange_keeps_a_returning_device_in_place()
     {

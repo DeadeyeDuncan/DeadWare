@@ -67,16 +67,20 @@ internal sealed class LightingPage : Page, IHeaderTool
     private readonly CheckBox inTower = new() { Content = "Inside PC tower" };
     private readonly ToggleSwitch splitZones = new() { OnContent = "Move zones separately", OffContent = "Move zones separately", MinWidth = 0 };
     private readonly Button takeOff = new() { Content = "Take off the desk" };
-    // SetLayout requests on their way, counted while layoutEpoch stays: dropping the draft bumps it, so a late reply counts for nothing.
-    // releaseAfter: the client's state count when the read loop read the reply that left none on its way. The host writes a reply
-    // before the state its request caused, so the draft goes once a state counted above it is shown (shownSeq: the shown state's count).
-    private int layoutSends, layoutEpoch;
-    private long? releaseAfter;
+    // When the desk's draft goes (LayoutDraftGate): SetLayout requests on their way, and the client's state count when the read loop read
+    // the Ok reply that left none on its way. The host writes a reply before the state its request caused, so the draft goes once a state
+    // counted above that is shown (shownSeq: the shown state's count). Dropping the draft makes every late reply count for nothing.
+    private readonly LayoutDraftGate layoutGate = new();
     private long shownSeq;
     // Arrow keys: at most one nudge save on its way (nudgeTicket names it; dropping the draft retires it). nudgeDirty: a nudge moved the
     // draft while one was on its way and no save has carried it yet; it goes when that one's reply is Ok, and holds the draft until then.
     private int nudgeTicket;
     private bool nudgeInFlight, nudgeDirty;
+    // And at most one nudge save per NudgeGap: a nudge that comes sooner after the last nudge save was sent waits (nudgeDirty), and
+    // nudgeTimer, one-shot on the page's queue, sends the waiting draft once the gap is up. Dropping the draft stops it.
+    private const int NudgeGapMs = 200;
+    private readonly DispatcherQueueTimer nudgeTimer;
+    private long? lastNudgeSentAt;
     private bool layoutSyncing, resetAsking;
     private readonly Grid deskArea = new() { RowSpacing = 12 };
     private readonly StackPanel leftColumn = new() { Spacing = 12 };
@@ -137,6 +141,9 @@ internal sealed class LightingPage : Page, IHeaderTool
     {
         this.session = session;
         queue = DispatcherQueue;
+        nudgeTimer = queue.CreateTimer();
+        nudgeTimer.IsRepeating = false;
+        nudgeTimer.Tick += (_, _) => SendWaitingNudge();
         brightnessSends = new Throttle(queue, SendBrightness);
         allSends = new Throttle(queue, request => Send(request));
 
@@ -624,7 +631,7 @@ internal sealed class LightingPage : Page, IHeaderTool
 
     /// <summary>
     /// Holds an edited layout on the desk and sends it. A refusal or failed send drops the draft at once; the Ok reply that leaves none
-    /// on its way sets <see cref="releaseAfter"/> to its state count. The error shows through the send-error line, from SendTracked.
+    /// on its way makes <see cref="layoutGate"/> wait for a state counted above it. The error shows through the send-error line, from SendTracked.
     /// </summary>
     private void SendLayout(DeskLayout next, Action<Reply>? done = null)
     {
@@ -637,25 +644,21 @@ internal sealed class LightingPage : Page, IHeaderTool
         // Every save carries the whole draft, so it carries any nudge still waiting for one too.
         nudgeDirty = false;
         desk.Hold(next);
-        layoutSends++;
-        int epoch = layoutEpoch;
+        int ticket = layoutGate.Sent();
         ShowLayout();
         SendTracked(new SetLayoutRequest(next), tracked =>
         {
-            if (epoch == layoutEpoch)
+            switch (layoutGate.Replied(ticket, tracked.Reply.Ok, tracked.StatesBefore))
             {
-                if (!tracked.Reply.Ok)
-                {
+                case LayoutReplied.Refused:
                     DropLayoutDraft();
                     ShowLayout();
-                }
-                else if (--layoutSends == 0)
-                {
-                    releaseAfter = tracked.StatesBefore;
+                    break;
+                case LayoutReplied.Last:
                     // The state it caused may be in already: shown, or stored and not yet shown, whose refresh would come a little later.
                     if (TryRelease()) ShowLayout();
                     else if (!nudgeDirty && client is { } current && current.Snapshot().Seq > tracked.StatesBefore) Render();
-                }
+                    break;
             }
             done?.Invoke(tracked.Reply);
         });
@@ -667,8 +670,7 @@ internal sealed class LightingPage : Page, IHeaderTool
     /// </summary>
     private bool TryRelease()
     {
-        if (layoutSends > 0 || nudgeDirty || desk.Held is null || releaseAfter is not { } after || shownSeq <= after) return false;
-        releaseAfter = null;
+        if (desk.Held is null || !layoutGate.ShouldRelease(shownSeq, nudgeDirty)) return false;
         desk.Release();
         return true;
     }
@@ -676,17 +678,17 @@ internal sealed class LightingPage : Page, IHeaderTool
     /// <summary>Gives up the layout edits on their way: the desk's draft and any drag go, and their late replies count for nothing.</summary>
     private void DropLayoutDraft()
     {
-        layoutEpoch++;
-        layoutSends = 0;
-        releaseAfter = null;
+        layoutGate.Drop();
         nudgeTicket++;
         nudgeInFlight = nudgeDirty = false;
+        nudgeTimer.Stop();
         desk.DropDraft();
     }
 
     /// <summary>
-    /// An arrow key moved the draft (already held and drawn). Saved at once unless a nudge's save is on its way; then the move waits,
-    /// and the latest draft goes when that save's reply is Ok, so a held key saves about once per round trip rather than once per repeat.
+    /// An arrow key moved the draft (already held and drawn). Saved at once unless a nudge's save is on its way or the last nudge save
+    /// went less than <see cref="NudgeGapMs"/> ago; then the move waits, and the latest draft goes when that save's reply is Ok and the
+    /// gap is up, so a held key saves at most once per round trip and at most five times a second, and its last position always goes.
     /// </summary>
     private void OnNudged(DeskLayout next)
     {
@@ -696,9 +698,10 @@ internal sealed class LightingPage : Page, IHeaderTool
             ShowLayout();
             return;
         }
-        if (nudgeInFlight)
+        if (nudgeInFlight || NudgeWait() > 0)
         {
             nudgeDirty = true;
+            if (!nudgeInFlight) ArmNudge();
             ShowLayout();
             return;
         }
@@ -709,13 +712,32 @@ internal sealed class LightingPage : Page, IHeaderTool
     {
         int ticket = ++nudgeTicket;
         nudgeInFlight = true;
+        lastNudgeSentAt = Environment.TickCount64;
         SendLayout(next, reply =>
         {
             // A nudge retired by a dropped draft, or a client swap, leaves the newer one's state alone.
             if (ticket != nudgeTicket) return;
             nudgeInFlight = false;
-            if (reply.Ok && nudgeDirty && desk.Held is { } draft) SendNudge(draft);
+            if (reply.Ok && nudgeDirty) SendWaitingNudge();
         });
+    }
+
+    /// <summary>The waiting nudge's draft goes now if the gap since the last nudge save is up, else when it is; not while one is on its way.</summary>
+    private void SendWaitingNudge()
+    {
+        if (nudgeInFlight || !nudgeDirty || desk.Held is not { } draft) return;
+        if (NudgeWait() > 0) ArmNudge();
+        else SendNudge(draft);
+    }
+
+    /// <summary>Milliseconds until a nudge save may go, 0 when it may go now.</summary>
+    private long NudgeWait() => lastNudgeSentAt is { } at ? Math.Max(0, NudgeGapMs - (Environment.TickCount64 - at)) : 0;
+
+    private void ArmNudge()
+    {
+        if (nudgeTimer.IsRunning) return;
+        nudgeTimer.Interval = TimeSpan.FromMilliseconds(Math.Max(1, NudgeWait()));
+        nudgeTimer.Start();
     }
 
     /// <summary>A new desk shape from the tools, by the user only: one set from a state is not sent.</summary>

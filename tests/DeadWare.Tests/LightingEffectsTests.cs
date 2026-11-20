@@ -64,6 +64,14 @@ public class LightingEffectsTests
         Assert.Equal(new Rgb(255,0,0),LightingEffects.Evaluate(EffectKind.Spectrum,new(0.3,0.7),0,q,Rgb.Black)); // hue 0
         Assert.Equal(LightingEffects.Evaluate(EffectKind.Spectrum,new(0,0),900,q,Rgb.Black),LightingEffects.Evaluate(EffectKind.Spectrum,new(1,1),900,q,Rgb.Black));
     }
+    // W4: Spectrum moves with time. At speed 100 (2 cycles a second) a quarter cycle is 125 ms: the phase at (0,0) goes from 0 to 0.75
+    // (it runs backwards in time), so the hue goes from 0 to 270, violet.
+    [Fact] public void Spectrum_changes_with_time_by_the_exact_hue()
+    {
+        var q=new EffectParams{Speed=100};
+        Assert.Equal(new Rgb(255,0,0),LightingEffects.Evaluate(EffectKind.Spectrum,new(0.3,0.7),0,q,Rgb.Black));
+        Assert.Equal(new Rgb(128,0,255),LightingEffects.Evaluate(EffectKind.Spectrum,new(0.3,0.7),125,q,Rgb.Black));
+    }
     [Fact] public void Static_returns_the_zone_colour()=>Assert.Equal(new Rgb(1,2,3),LightingEffects.Evaluate(EffectKind.Static,new(0,0),5,new(),new Rgb(1,2,3)));
     [Fact] public void Evaluate_is_deterministic()
     {
@@ -130,5 +138,7 @@ public class LightingEffectsTests
     {
         var s=new EffectSettings{Wave=new(){AngleDeg=360},Breathing=new(){AngleDeg=725}};LightingEffects.Normalize(s);
         Assert.Equal(0,s.Wave.AngleDeg);Assert.Equal(5,s.Breathing.AngleDeg);
+        // L8: a tiny negative angle rounds to 360 in the addition, and the outer % 360 takes it back to 0.
+        var t=new EffectSettings{Wave=new(){AngleDeg=-1e-20}};LightingEffects.Normalize(t);Assert.Equal(0,t.Wave.AngleDeg);
     }
 }

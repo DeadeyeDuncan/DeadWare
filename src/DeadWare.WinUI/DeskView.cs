@@ -18,8 +18,9 @@ namespace DeadWare.WinUI;
 /// <summary>
 /// The Lighting page's desk, drawn with Win2D from <see cref="DeskGeometry.Scene"/>: the layout's desk rectangles as a muted outline,
 /// the PC tower as a labelled box, a rounded box per placed device in the average of its zones' colours, and a dot per zone for a
-/// device whose zones are shown separately. A tap selects an item, a tap on the tower's label opens or closes it, and a tap on empty
-/// desk clears the selection. The desk keeps a 4:3 shape, filling its width up to 720 px, so desk units map to pixels the same way at
+/// device whose zones are shown separately. A tap selects an item; a tap anywhere on the closed tower opens and selects it, and on
+/// the open tower its label closes it and its box selects it; a tap on empty desk clears the selection. The desk keeps a 4:3 shape,
+/// filling its width up to 720 px, so desk units map to pixels the same way at
 /// every size. Off screen it lets go of its drawing surface, as <see cref="ConnectionMapView"/> does. The canvas can't be read by a
 /// screen reader; the page's device list is the accessible way to the same selection.
 /// <para>
@@ -33,7 +34,7 @@ namespace DeadWare.WinUI;
 internal sealed class DeskView : UserControl
 {
     /// <summary>The value of <see cref="Selected"/> while the tower is selected.</summary>
-    public const string Tower = "tower";
+    public const string Tower = DeskGeometry.TowerKey;
     private const string IdleName = "Desk layout. Use the device list below to select a device.";
     private const double MaxDeskWidth = 720, Aspect = 0.75, BoxWidth = 132, BoxHeight = 44, DotSize = 14, LabelHeight = 20, LabelWidth = 160, ZoneLabelWidth = 96;
     private static readonly CanvasTextFormat NameFormat = Format(12, true);
@@ -91,7 +92,7 @@ internal sealed class DeskView : UserControl
 
     /// <summary>
     /// Edit layout is on: items can be dragged and nudged with the arrow keys, and the canvas is a tab stop. Turning it off ends a
-    /// drag in progress and takes the canvas out of the tab order again.
+    /// drag in progress, ends Move zones separately for every device and takes the canvas out of the tab order again.
     /// </summary>
     public bool Editing
     {
@@ -101,7 +102,15 @@ internal sealed class DeskView : UserControl
             if (editing == value) return;
             editing = value;
             IsTabStop = value;
-            if (!value) CancelPress();
+            if (!value)
+            {
+                CancelPress();
+                if (split.Count > 0)
+                {
+                    split.Clear();
+                    Rebuild();
+                }
+            }
             UpdateName();
         }
     }
@@ -353,7 +362,7 @@ internal sealed class DeskView : UserControl
     {
         DragKind.Device => DeskGeometry.MoveDevice(from, devices, target.Key, dx, dy),
         DragKind.Zone => DeskGeometry.MoveZone(from, target.Key, dx, dy),
-        _ => DeskGeometry.MoveTower(from, devices, dx, dy),
+        _ => DeskGeometry.MoveTower(from, dx, dy),
     };
 
     private void OnPointerMoved(object sender, PointerRoutedEventArgs e)
@@ -402,12 +411,8 @@ internal sealed class DeskView : UserControl
             return;
         }
         var next = Moved(current.Base, target, dx, dy);
-        if (target.Kind == DragKind.Device)
-        {
-            // Dropped on the tower as it was drawn at press time, a device goes inside; dragged out of it, it goes outside and stays out.
-            bool inside = DeskGeometry.InTower(scene with { Tower = current.TowerBox }, ToDesk(end));
-            if (inside != current.Base.Tower.Members.Contains(target.Key)) next = DeskGeometry.SetInTower(next, target.Key, inside);
-        }
+        // Dropped on the tower as it was drawn at press time, a device goes inside; dragged out of it, it goes outside and stays out.
+        if (target.Kind == DragKind.Device) next = DeskGeometry.Drop(next, scene with { Tower = current.TowerBox }, target.Key, ToDesk(end));
         Finish(next);
     }
 
@@ -442,13 +447,12 @@ internal sealed class DeskView : UserControl
     /// <summary>In edit layout the arrow keys move the selected device or the tower one grid step; Up is towards the back of the desk.</summary>
     protected override void OnKeyDown(KeyRoutedEventArgs e)
     {
-        double step = 1.0 / DeskGeometry.Snap;
-        (double Dx, double Dy)? move = !editing ? null : e.Key switch
+        (int Dx, int Dy)? move = !editing ? null : e.Key switch
         {
-            Windows.System.VirtualKey.Left => (-step, 0),
-            Windows.System.VirtualKey.Right => (step, 0),
-            Windows.System.VirtualKey.Up => (0, -step),
-            Windows.System.VirtualKey.Down => (0, step),
+            Windows.System.VirtualKey.Left => (-1, 0),
+            Windows.System.VirtualKey.Right => (1, 0),
+            Windows.System.VirtualKey.Up => (0, -1),
+            Windows.System.VirtualKey.Down => (0, 1),
             _ => null,
         };
         if (move is not { } by)
@@ -461,23 +465,36 @@ internal sealed class DeskView : UserControl
         Nudge(by.Dx, by.Dy);
     }
 
-    private void Nudge(double dx, double dy)
+    private void Nudge(int dx, int dy)
     {
         // Not while the host isn't running, nor during a drag, which would replace the nudge when it drops.
         if (!live || press is not null || selected is not { } key) return;
-        if (key == Tower) Finish(DeskGeometry.MoveTower(Layout, devices, dx, dy), true);
-        else if (Placed(Layout, key)) Finish(DeskGeometry.MoveDevice(Layout, devices, key, dx, dy), true);
+        // The same layout back: nothing could move (at the desk's edge, or nothing placed is selected), so nothing is held or sent.
+        var from = Layout;
+        var next = DeskGeometry.Nudge(from, devices, key, dx, dy);
+        if (!ReferenceEquals(next, from)) Finish(next, true);
     }
 
     private void Tap(Point at)
     {
-        if (TowerLabel().Contains(at))
+        var hit = HitAt(ToDesk(at));
+        bool onLabel = TowerLabel().Contains(at);
+        // Anywhere on the closed tower, its label included, opens it in place and selects it.
+        if (!towerOpen && (onLabel || hit is { Kind: DeskItemKind.Tower }))
         {
-            towerOpen = !towerOpen;
+            towerOpen = true;
+            Rebuild();
+            Select(Tower, true);
+            return;
+        }
+        // The open tower's label closes it; its box selects it, below.
+        if (onLabel)
+        {
+            towerOpen = false;
             Rebuild();
             return;
         }
-        string? key = HitAt(ToDesk(at)) switch
+        string? key = hit switch
         {
             { Kind: DeskItemKind.Tower } => Tower,
             { DeviceKey: { } device } => device,

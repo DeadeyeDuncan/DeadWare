@@ -33,6 +33,12 @@ public class LightingPaintTests
         s.Effect.Kind="Breathing";s.Layout.Zones[LightingKeys.Zone(d.Key,0)]=new(0.5,0.5);
         var half=1000/LightingEffects.CyclesPerSecond(40)/2;                                                       // phase 0.5: full colour
         Assert.Equal(new Rgb(0x46,0x82,0xB4),LightingPaint.Paint(s,d,-half).Colors[0]);
+        Assert.Equal(Rgb.Black,LightingPaint.Paint(s,d,0).Colors[0]);                                                // phase 0: black
+        // L6: a zone with a colour of its own pulses that colour, not the shared one.
+        s.Layout.Zones[LightingKeys.Zone(d.Key,1)]=new(0.9,0.1);s.ZoneColors[LightingKeys.Zone(d.Key,1)]=new ZoneColorEntry{Color="#FF0000",ZoneName="B"};
+        var p=LightingPaint.Paint(s,d,-half).Colors;
+        Assert.Equal(new Rgb(0x46,0x82,0xB4),p[0]);Assert.Equal(new Rgb(255,0,0),p[2]);Assert.Equal(new Rgb(255,0,0),p[4]);
+        Assert.Equal(Rgb.Black,LightingPaint.Paint(s,d,0).Colors[2]);
     }
     [Fact] public void EffectRunning_needs_lights_on_and_a_moving_kind(){Assert.True(LightingPaint.EffectRunning(s));s.Effect.Kind="Static";Assert.False(LightingPaint.EffectRunning(s));}
 

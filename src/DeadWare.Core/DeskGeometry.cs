@@ -10,6 +10,8 @@ public sealed record DeskScene(IReadOnlyList<DeskItem> Items,DeskBox Tower,int T
 public static class DeskGeometry
 {
     public const int Snap=48;
+    // What Nudge takes for the tower instead of a device key.
+    public const string TowerKey="tower";
     public const double DragEpsilon=0.01,TowerHalf=0.06;
     private static double Clamp01(double n)=>Math.Min(1,Math.Max(0,n));
     private static double SnapTo(double n)=>Math.Round(Clamp01(n)*Snap,MidpointRounding.AwayFromZero)/Snap;
@@ -70,11 +72,38 @@ public static class DeskGeometry
         return MoveKeys(layout,d is null?Array.Empty<string>():ZoneKeysOf(d),dx,dy);
     }
     public static DeskLayout MoveZone(DeskLayout layout,string zoneKey,double dx,double dy)=>MoveKeys(layout,new[]{zoneKey},dx,dy);
-    public static DeskLayout MoveTower(DeskLayout layout,IReadOnlyList<DeviceView> devices,double dx,double dy)
+    // Every zone point of every member moves, live or not (fix wave W8): an unplugged member keeps its place inside the tower for its return.
+    public static DeskLayout MoveTower(DeskLayout layout,double dx,double dy)
     {
-        var next=MoveKeys(layout,devices.Where(d=>layout.Tower.Members.Contains(d.Key)).SelectMany(ZoneKeysOf),dx,dy);
+        var members=new HashSet<string>(layout.Tower.Members);
+        var next=MoveKeys(layout,layout.Zones.Keys.Where(k=>LightingKeys.TrySplitZone(k,out var d,out _)&&members.Contains(d)).ToList(),dx,dy);
         next.Tower.At=new(SnapTo(layout.Tower.At.X+dx),SnapTo(layout.Tower.At.Y+dy));
         return next;
+    }
+
+    // A device dragged to dropAt: inside the tower as it was drawn when the press began (pressScene's box) it goes in, outside it goes out
+    // and is excluded so it stays out. The moved layout itself when its membership already matches.
+    public static DeskLayout Drop(DeskLayout moved,DeskScene pressScene,string deviceKey,DeskPoint dropAt)
+    {
+        var inside=InTower(pressScene,dropAt);
+        return inside!=moved.Tower.Members.Contains(deviceKey)?SetInTower(moved,deviceKey,inside):moved;
+    }
+    // An arrow key: the selected device (by key) or the tower (TowerKey) moved dx, dy grid steps of 1/Snap. A device moves only when the
+    // desk draws it: painted, not taken off, with a zone with LEDs that has a point. Returns the SAME object when nothing can move (an
+    // unknown or undrawn key, or everything already at the edge), so the caller can skip the save.
+    public static DeskLayout Nudge(DeskLayout layout,IReadOnlyList<DeviceView> devices,string selected,int dx,int dy)
+    {
+        double sx=(double)dx/Snap,sy=(double)dy/Snap;
+        DeskLayout next;
+        if(selected==TowerKey) next=MoveTower(layout,sx,sy);
+        else
+        {
+            var d=devices.FirstOrDefault(x=>x.Key==selected);
+            if(d is null||d.Kind==PaintKind.Unsupported||layout.Unplaced.Contains(d.Key)||PlacedZones(layout,d).Count==0) return layout;
+            next=MoveDevice(layout,devices,selected,sx,sy);
+        }
+        var same=next.Tower.At==layout.Tower.At&&next.Zones.All(e=>layout.Zones.TryGetValue(e.Key,out var p)&&p==e.Value);
+        return same?layout:next;
     }
 
     public static DeskLayout SetInTower(DeskLayout layout,string deviceKey,bool inside)

@@ -7,7 +7,9 @@ internal sealed record HostOptions(string OpenRgbPath,string ConfigDir,string Li
 internal interface IConflictScanner { IReadOnlyList<LightingConflict> Scan(int? ownOpenRgbPid); }
 
 // Orchestrates the host: settings, conflict gate, OpenRGB engine, device painting and the window's requests.
-// Concurrency: ONE lock (gate) guards every touch of settings, the device service, the session flag and the status.
+// Concurrency: two locks. gate guards every touch of settings, the device service, the session flag, the status and the preview state;
+// previewGate serialises raising preview frames against ClientGone. Order: previewGate then gate, never the reverse. PreviewChanged
+// subscribers run under previewGate (not gate), and nothing calls the pipe server while holding gate.
 // Callers are the run loop, pipe requests and engine events on the supervisor thread. Their work under the lock is synchronous and
 // includes OpenRGB SDK calls, which OpenRGB.NET leaves unbounded: BoundedSession cuts each one off at BoundedSession.CallBound (3 s) and
 // drops the session (Ruling AO). One hold of the lock can chain several such calls, each with its own bound: a connect is Connect,
@@ -19,7 +21,7 @@ internal interface IConflictScanner { IReadOnlyList<LightingConflict> Scan(int? 
 // with the engine's own lock the wrong way round and a slow subscriber cannot stall painting.
 internal sealed class DeviceHost : IAsyncDisposable
 {
-    // FastTick: the paint tick while a desk effect runs with the lights on; Tick otherwise. SlowTick's work keeps its cadence at either.
+    // FastTick: the paint tick while a desk effect runs with the lights on and the host is Running with a session; Tick otherwise. SlowTick's work keeps its cadence at either.
     public static readonly TimeSpan Tick=TimeSpan.FromMilliseconds(500),SlowTick=TimeSpan.FromSeconds(5),StartupDelay=TimeSpan.FromSeconds(10);
     public static readonly TimeSpan FastTick=TimeSpan.FromMilliseconds(33);
     public static readonly TimeSpan ConnectDelayMin=TimeSpan.FromSeconds(2),ConnectDelayMax=TimeSpan.FromSeconds(30);
@@ -139,9 +141,10 @@ internal sealed class DeviceHost : IAsyncDisposable
             while(true)
             {
                 // Read each turn: an effect chosen or stopped takes effect from the next tick. slow stays timed by elapsed time, so the 5 s
-                // work keeps its cadence at either tick.
+                // work keeps its cadence at either tick. FastTick only while a frame can be painted: an effect runs, the session is
+                // connected and the host is Running (fix wave L1); waiting, blocked or given up, the loop keeps Tick.
                 TimeSpan tick;
-                lock(gate)tick=LightingPaint.EffectRunning(settings)?FastTick:Tick;
+                lock(gate)tick=LightingPaint.EffectRunning(settings)&&sessionOk&&status==HostStatus.Running?FastTick:Tick;
                 await Task.Delay(tick,time,ct).ConfigureAwait(false);
                 var now=time.GetTimestamp();
                 var slow=time.GetElapsedTime(lastSlow,now)>=SlowTick;
@@ -241,11 +244,12 @@ internal sealed class DeviceHost : IAsyncDisposable
         var generation=0;
         lock(gate)
         {
-            if(!engineActive||status is HostStatus.Blocked or HostStatus.Stopping||engine.Status!=EngineStatus.Running) return;
+            if(!engineActive||status is HostStatus.Blocked or HostStatus.Stopping||engine.Status!=EngineStatus.Running){ForgetPreview();return;}
             try
             {
                 if(!sessionOk)
                 {
+                    ForgetPreview();
                     var now=time.GetTimestamp();
                     if(now<nextConnectAt) return;
                     changed=ConnectLocked();
@@ -259,16 +263,18 @@ internal sealed class DeviceHost : IAsyncDisposable
                     frame=PreviewLocked(t);generation=previewGeneration;
                 }
             }
-            catch(Exception e){changed=FailSession(LostText,e);}
+            catch(Exception e){ForgetPreview();changed=FailSession(LostText,e);}
         }
         if(changed) Raise();
         if(frame is not null) RaisePreview(frame,generation);
     }
 
     // The frame to send at tMs, or null: none subscribed, no effect running, too soon after the last frame, or the same colours as it.
+    // While no frame is produced (no effect running, or no running session) the window shows the state's colours, so the last frame and
+    // its time are forgotten then: the first frame after a resume is sent even when it equals the last one (fix wave W1).
     Dictionary<string,string>? PreviewLocked(double tMs)
     {
-        if(!previewOn||!LightingPaint.EffectRunning(settings)) return null;
+        if(!previewOn||!LightingPaint.EffectRunning(settings)){ForgetPreview();return null;}
         if(lastPreviewMs is {} last&&tMs-last<PreviewGap.TotalMilliseconds) return null;
         lastPreviewMs=tMs;
         var colors=service.Preview(settings,tMs);
@@ -276,6 +282,7 @@ internal sealed class DeviceHost : IAsyncDisposable
         lastPreview=colors;
         return colors;
     }
+    void ForgetPreview(){lastPreview=null;lastPreviewMs=null;}
     static bool SameFrame(Dictionary<string,string> a,Dictionary<string,string> b)=>a.Count==b.Count&&a.All(e=>b.TryGetValue(e.Key,out var v)&&v==e.Value);
 
     void RaisePreview(Dictionary<string,string> frame,int generation)
@@ -291,6 +298,7 @@ internal sealed class DeviceHost : IAsyncDisposable
     bool ConnectLocked()
     {
         service.Reset();
+        ForgetPreview();
         try
         {
             session.Connect();
@@ -437,13 +445,18 @@ internal sealed class DeviceHost : IAsyncDisposable
         return null;
     }
 
-    // The window's draft, checked, then completed with points for live zones it lacks; entries for absent devices are kept.
+    // The window's draft, checked, re-keyed for devices back under a new key, then completed with points for live zones it lacks; entries
+    // for absent devices are kept. Remap first, as at a rescan (fix wave W7): a draft made before a rescan re-keyed a device would otherwise
+    // give the new key fresh points and strand the old ones. The remap sees the draft alone: the live colours and modes are already under
+    // the new keys, and Remap refuses a target it finds stored anywhere.
     string? SetLayout(LightingSettings s,SetLayoutRequest r)
     {
         if(r.Layout is null) return "Layout is missing.";
         var error=DeskLayouts.Validate(r.Layout);
         if(error is not null) return error;
-        s.Layout=DeskLayouts.AutoArrange(DeskLayouts.Clone(r.Layout),DeskLayouts.Arrangeable(service.Views(s)));
+        var draft=new LightingSettings{Layout=DeskLayouts.Clone(r.Layout)};
+        LightingKeys.Remap(draft,service.Devices.Select(d=>d.Key).ToList());
+        s.Layout=DeskLayouts.AutoArrange(draft.Layout,DeskLayouts.Arrangeable(service.Views(s)));
         return null;
     }
 
@@ -471,6 +484,7 @@ internal sealed class DeviceHost : IAsyncDisposable
             catch(Exception e){log.Write("saving lighting.json failed: "+e.Message);return Fail(request,HostReplyCodes.CouldntSave);}
         }
         settings=candidate;
+        if(!LightingPaint.EffectRunning(settings)) ForgetPreview();
         if(engineActive&&sessionOk&&status==HostStatus.Running)
         {
             try

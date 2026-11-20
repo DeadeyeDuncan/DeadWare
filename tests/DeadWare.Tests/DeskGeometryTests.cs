@@ -194,9 +194,72 @@ public class DeskGeometryTests
     [Fact] public void MoveTower_MovesAnchorAndMembersOnly()
     {
         var l=Arranged(Gpu,Kb);l.Zones[Z(Gpu,0)]=new(0.5,0.5);l.Zones[Z(Gpu,1)]=new(0.25,0.25);var kb=l.Zones[Z(Kb,0)];l.Tower.At=new(0.5,0.5);
-        var n=DeskGeometry.MoveTower(l,new[]{Gpu,Kb},0.1,0);
+        var n=DeskGeometry.MoveTower(l,0.1,0);
         Close(29.0/48,n.Tower.At.X);Close(0.5,n.Tower.At.Y);Close(29.0/48,n.Zones[Z(Gpu,0)].X);Close(17.0/48,n.Zones[Z(Gpu,1)].X);Close(0.25,n.Zones[Z(Gpu,1)].Y);
         Assert.Equal(kb,n.Zones[Z(Kb,0)]);
+    }
+    // Fix wave W8: an unplugged member keeps its points and its membership; moving the tower moves them too, so it returns in its place.
+    [Fact] public void MoveTower_MovesAnAbsentMembersPointsWithTheAnchor()
+    {
+        var l=Arranged(Gpu,Ram);l.Tower.At=new(0.5,0.5);l.Zones[Z(Ram,0)]=new(0.25,0.75);l.Zones[Z(Gpu,0)]=new(0.5,0.5);
+        Assert.Contains(Ram.Key,l.Tower.Members);
+        var n=DeskGeometry.MoveTower(l,0.125,-0.125); // the device list has no Ram: unplugged
+        Close(0.625,n.Tower.At.X);Close(0.375,n.Tower.At.Y);
+        Close(0.375,n.Zones[Z(Ram,0)].X);Close(0.625,n.Zones[Z(Ram,0)].Y);
+        Close(n.Tower.At.X-0.25,n.Zones[Z(Ram,0)].X);Close(n.Tower.At.Y+0.25,n.Zones[Z(Ram,0)].Y); // the same offset from the anchor
+    }
+    // Fix wave W2: the drop-on-tower rule, tested against the tower box as drawn at press time.
+    [Fact] public void Drop_InsideThePressTimeTowerJoins_OutsideLeavesAndExcludes_MatchingChangesNothing()
+    {
+        var l=Arranged(Kb,Ram);var press=Scene(l,new[]{Kb,Ram});var inBox=new DeskPoint(0.14,0.3);var outside=new DeskPoint(0.9,0.9);
+        Assert.True(DeskGeometry.InTower(press,inBox));Assert.False(DeskGeometry.InTower(press,outside));
+        Assert.DoesNotContain(Kb.Key,l.Tower.Members);Assert.Contains(Ram.Key,l.Tower.Members);
+        var joined=DeskGeometry.Drop(l,press,Kb.Key,inBox);
+        Assert.Contains(Kb.Key,joined.Tower.Members);Assert.DoesNotContain(Kb.Key,joined.Tower.Excluded);
+        var left=DeskGeometry.Drop(l,press,Ram.Key,outside);
+        Assert.DoesNotContain(Ram.Key,left.Tower.Members);Assert.Contains(Ram.Key,left.Tower.Excluded);
+        Assert.Same(l,DeskGeometry.Drop(l,press,Kb.Key,outside));
+        Assert.Same(l,DeskGeometry.Drop(l,press,Ram.Key,inBox));
+        // The box is the press-time one: a tower since moved away doesn't decide it.
+        var moved=DeskGeometry.MoveTower(l,0.5,0.5);
+        Assert.Contains(Kb.Key,DeskGeometry.Drop(moved,press,Kb.Key,inBox).Tower.Members);
+    }
+    [Fact] public void Nudge_MovesADeviceOneGridStepPerUnit()
+    {
+        var l=Arranged(Gpu,Kb);l.Zones[Z(Gpu,0)]=new(0.5,0.5);l.Zones[Z(Gpu,1)]=new(0.25,0.25);var kb=l.Zones[Z(Kb,0)];
+        var n=DeskGeometry.Nudge(l,All,Gpu.Key,1,-2);
+        Close(25.0/48,n.Zones[Z(Gpu,0)].X);Close(22.0/48,n.Zones[Z(Gpu,0)].Y);Close(13.0/48,n.Zones[Z(Gpu,1)].X);Close(10.0/48,n.Zones[Z(Gpu,1)].Y);
+        Assert.Equal(kb,n.Zones[Z(Kb,0)]);Assert.Equal(l.Tower.At,n.Tower.At);
+    }
+    [Fact] public void Nudge_MovesTheTowerWithItsMembers()
+    {
+        var l=Arranged(Gpu,Kb);l.Tower.At=new(0.5,0.5);l.Zones[Z(Gpu,0)]=new(0.5,0.5);var kb=l.Zones[Z(Kb,0)];
+        var n=DeskGeometry.Nudge(l,All,DeskGeometry.TowerKey,-1,1);
+        Close(23.0/48,n.Tower.At.X);Close(25.0/48,n.Tower.At.Y);Close(23.0/48,n.Zones[Z(Gpu,0)].X);Close(25.0/48,n.Zones[Z(Gpu,0)].Y);
+        Assert.Equal(kb,n.Zones[Z(Kb,0)]);
+    }
+    [Fact] public void Nudge_ClampsAtTheEdgeAndReturnsTheSameObjectThere()
+    {
+        var l=Arranged(Kb,Ram);l.Zones[Z(Kb,0)]=new(1,0.5);
+        var n=DeskGeometry.Nudge(l,All,Kb.Key,1,0);
+        Assert.Same(l,n);
+        Assert.Equal(new DeskPoint(1,0.5),n.Zones[Z(Kb,0)]);
+        Close(47.0/48,DeskGeometry.Nudge(l,All,Kb.Key,-1,0).Zones[Z(Kb,0)].X);
+        l.Tower.At=new(0,0);l.Zones[Z(Ram,0)]=new(0,0.5);
+        Assert.Same(l,DeskGeometry.Nudge(l,All,DeskGeometry.TowerKey,-1,0));
+        Assert.NotSame(l,DeskGeometry.Nudge(l,All,DeskGeometry.TowerKey,0,-1)); // its member can still move up
+    }
+    [Fact] public void Nudge_ReturnsTheSameObjectForWhatCannotMove()
+    {
+        var uns=Dev("u|1","Radeon Unsup",kind:PaintKind.Unsupported);var dark=Dev("n|1","Fan dark",leds:0);
+        var l=Arranged(Kb,Ram);l.Zones[Z(uns,0)]=new(0.5,0.5);l.Zones[Z(dark,0)]=new(0.6,0.6);
+        var devices=new[]{Kb,Ram,uns,dark};
+        Assert.Same(l,DeskGeometry.Nudge(l,devices,"nope|0",1,0));      // unknown key
+        Assert.Same(l,DeskGeometry.Nudge(l,devices,uns.Key,1,0));       // not drawn: unsupported
+        Assert.Same(l,DeskGeometry.Nudge(l,devices,dark.Key,1,0));      // not drawn: no zone with LEDs
+        var off=DeskGeometry.SetUnplaced(l,devices,Kb.Key,true);
+        Assert.Same(off,DeskGeometry.Nudge(off,devices,Kb.Key,1,0));    // taken off the desk
+        Assert.Same(l,DeskGeometry.Nudge(l,devices,Kb.Key,0,0));        // no step
     }
     [Fact] public void SetInTower_False_RemovesMemberAndExcludes_TrueReverses_RepeatsChangeNothing()
     {
@@ -256,7 +319,7 @@ public class DeskGeometryTests
     {
         var l=Arranged(Gpu,Kb);l.Zones[Z(Gpu,0)]=new(0.5,0.5);var count=l.Zones.Count;var d=new[]{Gpu,Kb};
         void Check(){Assert.Equal(count,l.Zones.Count);Assert.Equal(new DeskPoint(0.5,0.5),l.Zones[Z(Gpu,0)]);Assert.Equal(new[]{Gpu.Key},l.Tower.Members);Assert.Empty(l.Unplaced);Assert.Empty(l.Tower.Excluded);Assert.Equal(new DeskPoint(0.14,0.3),l.Tower.At);Assert.Equal(DeskShape.LLeft,DeskLayouts.ShapeOf(l));}
-        DeskGeometry.MoveDevice(l,d,Gpu.Key,0.2,0.2);Check();DeskGeometry.MoveZone(l,Z(Gpu,0),0.2,0.2);Check();DeskGeometry.MoveTower(l,d,0.2,0.2);Check();
+        DeskGeometry.MoveDevice(l,d,Gpu.Key,0.2,0.2);Check();DeskGeometry.MoveZone(l,Z(Gpu,0),0.2,0.2);Check();DeskGeometry.MoveTower(l,0.2,0.2);Check();DeskGeometry.Nudge(l,d,Gpu.Key,1,1);Check();DeskGeometry.Nudge(l,d,DeskGeometry.TowerKey,1,1);Check();DeskGeometry.Drop(l,Scene(l,d),Kb.Key,new(0.14,0.3));Check();
         DeskGeometry.SetInTower(l,Gpu.Key,false);Check();DeskGeometry.SetInTower(l,Gpu.Key,true);Check();DeskGeometry.SetInTower(l,Kb.Key,true);Check();DeskGeometry.SetUnplaced(l,d,Gpu.Key,false);Check();DeskGeometry.SetUnplaced(l,d,Gpu.Key,true);Check();DeskGeometry.WithShape(l,DeskShape.Straight);Check();DeskGeometry.Reset(l,d);Check();Scene(l,d,true);Check();
     }
 }

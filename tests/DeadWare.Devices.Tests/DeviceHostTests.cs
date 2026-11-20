@@ -1012,6 +1012,23 @@ public sealed class DeviceHostTests : IAsyncLifetime
         Assert.False(time.Waiting(DeviceHost.FastTick));
     }
 
+    // Fix wave L1: the fast tick only while something can be painted. With Wave chosen while OpenRGB won't connect the loop waits Tick;
+    // once the session is back and Running, FastTick.
+    [Fact]
+    public async Task Tick_is_slow_while_the_session_is_down_even_with_an_effect()
+    {
+        session.FailConnect=true;
+        var h=Build();Start(h);
+        await Until(()=>h.State.Status==HostStatus.Waiting);
+        Assert.True((await Send(h,new SetEffectRequest("Wave",null))).Ok);
+        await RunFor(TimeSpan.FromSeconds(3),DeviceHost.Tick); // stalls if the loop waits FastTick instead
+        Assert.False(time.Waiting(DeviceHost.FastTick));
+        Assert.Equal(HostStatus.Waiting,h.State.Status);
+        session.FailConnect=false;
+        await AdvanceUntil(()=>h.State.Status==HostStatus.Running);
+        await AdvanceUntil(()=>time.Waiting(DeviceHost.FastTick));
+    }
+
     // With the lights off an effect doesn't run: the loop keeps its 500 ms tick and every frame is black, the same each time.
     [Fact]
     public async Task Tick_is_slow_while_lights_are_off()
@@ -1188,9 +1205,8 @@ public sealed class DeviceHostTests : IAsyncLifetime
         Assert.True((await Send(h,new SetEffectRequest("Wave",null))).Ok);
         Assert.Equal((connects,reads,calls,leds),(session.Connects,session.Reads,session.Calls.Count,session.LedCount));
         Assert.Equal("Wave",new LightingStore(lightingPath).Load().Settings.Effect.Kind);
-        await AdvanceUntil(()=>time.Waiting(DeviceHost.FastTick)); // the tick armed before the change runs out first
-        session.FailConnect=false;
-        await AdvanceUntil(()=>h.State.Status==HostStatus.Running,tick:DeviceHost.FastTick);
+        session.FailConnect=false; // nothing can be painted until the reconnect, so the loop keeps Tick until then (fix wave L1)
+        await AdvanceUntil(()=>h.State.Status==HostStatus.Running);
         await AdvanceUntil(()=>Frames(Apex,0).Count>=2,tick:DeviceHost.FastTick);
         Assert.DoesNotContain(string.Join(",",Enumerable.Repeat(SteelBlue,112)),Frames(Apex,0));
     }
@@ -1358,5 +1374,64 @@ public sealed class DeviceHostTests : IAsyncLifetime
         var dimmed=new Rgb(0xFF,0,0).Scale(50);
         Assert.NotEqual(new Rgb(0xFF,0,0),dimmed);
         Assert.All(LastLeds(Apex),c=>Assert.Equal(dimmed,c));
+    }
+
+    // Fix wave W1: while no effect runs the window shows the state's colours, so the host forgets its last frame then, and a one-colour
+    // Wave that resumes sends its (unchanged) frame again. Each stop is held over a slow tick, so the tick's own check is what forgets it.
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task A_constant_frame_is_sent_again_after_the_effect_stops_and_resumes(bool byLights)
+    {
+        var h=await RunningWave(new EffectParams{Colors=["#FF0000"]});
+        var seen=Previews(h);
+        Assert.True((await Send(h,new SubscribePreviewRequest(true))).Ok);
+        await AdvanceUntil(()=>CountOf(seen)>=1,tick:DeviceHost.FastTick);
+        Assert.True((await Send(h,byLights?new SetLightsOnRequest(false):new SetEffectRequest("Static",null))).Ok);
+        await AdvanceUntil(()=>time.Waiting(DeviceHost.Tick),tick:DeviceHost.FastTick); // the armed fast tick runs out first
+        await RunFor(TimeSpan.FromSeconds(1),DeviceHost.Tick);
+        Assert.Equal(1,CountOf(seen));
+        Assert.True((await Send(h,byLights?new SetLightsOnRequest(true):new SetEffectRequest("Wave",null))).Ok);
+        await AdvanceUntil(()=>time.Waiting(DeviceHost.FastTick));
+        await AdvanceUntil(()=>CountOf(seen)>=2,tick:DeviceHost.FastTick,limit:TimeSpan.FromSeconds(2));
+        lock(seen)Assert.True(SameFrame(seen[0].Colors,seen[1].Colors));
+    }
+
+    // W5: a frame equal to the last one sent is not sent again: a one-colour Wave sends one frame in a second of ticks, a rainbow more.
+    [Fact]
+    public async Task A_one_colour_wave_sends_one_frame_a_rainbow_more()
+    {
+        var h=await RunningWave(new EffectParams{Colors=["#FF0000"]});
+        var seen=Previews(h);
+        Assert.True((await Send(h,new SubscribePreviewRequest(true))).Ok);
+        await RunFor(TimeSpan.FromSeconds(1),DeviceHost.FastTick);
+        Assert.Equal(1,CountOf(seen));
+        Assert.True((await Send(h,new SetEffectRequest("Wave",new EffectParams()))).Ok);
+        await RunFor(TimeSpan.FromSeconds(1),DeviceHost.FastTick);
+        Assert.True(CountOf(seen)>2,$"{CountOf(seen)} frames");
+    }
+
+    // W7: a draft keyed on a device's old key, arriving after a rescan re-keyed that device, is re-keyed too before auto-arrange, so the
+    // device takes the draft's point under its new key and gets no fresh cell. The device's own zone colour, already under the new key,
+    // doesn't stop that.
+    [Fact]
+    public async Task SetLayout_remaps_a_stale_draft_before_arranging()
+    {
+        var h=await Running();
+        var k1=LightingKeys.Device("SERIAL-1","I2C: FAKE-1");var k2=LightingKeys.Device("","I2C: FAKE-1");
+        var draft=DeskLayouts.Clone(h.State.Settings.Layout);
+        var point=draft.Zones[LightingKeys.Zone(k1,0)];
+        var list=session.Controllers.ToList();list[0]=list[0] with{Serial=""};session.Controllers=list; // it lost its serial
+        Assert.True((await Send(h,new RescanRequest())).Ok);
+        Assert.Equal(point,h.State.Settings.Layout.Zones[LightingKeys.Zone(k2,0)]);
+        Assert.True((await Send(h,new SetZoneColorRequest(LightingKeys.Zone(k2,0),"#00FF00"))).Ok);
+        var moved=new DeskPoint(0.5,0.5);Assert.NotEqual(point,moved);
+        draft.Zones[LightingKeys.Zone(k1,0)]=moved;
+        Assert.True((await Send(h,new SetLayoutRequest(draft))).Ok);
+        var saved=new LightingStore(lightingPath).Load().Settings.Layout;
+        Assert.Equal(moved,saved.Zones[LightingKeys.Zone(k2,0)]);
+        Assert.DoesNotContain(saved.Zones.Keys,k=>k.StartsWith(k1+"#",StringComparison.Ordinal));
+        Assert.DoesNotContain(k1,saved.Tower.Members);
+        Assert.Equal(saved.Zones,h.State.Settings.Layout.Zones);
     }
 }

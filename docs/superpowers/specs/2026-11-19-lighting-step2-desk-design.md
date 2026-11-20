@@ -115,12 +115,12 @@ In Edit layout the panel also shows:
 
 ### Edit layout
 
-A toggle button on the desk card. While on:
+A toggle button on the desk card; it reads "Done" while on. While on:
 
-- Drag a device box to move all its zones together. Drag a zone dot to move one zone. Drag the PC tower's label to move the tower and everything inside it.
+- Drag a device box to move all its zones together. Drag a zone dot to move one zone. Drag the PC tower's label, or anywhere on its box while it is closed, to move the tower and everything inside it.
 - Dropping a device on the PC tower puts it inside; dragging it out takes it out, and it stays out.
 - Positions snap to a 48 by 48 grid.
-- With a device selected, the arrow keys move it one grid step.
+- With a device or the tower selected, the arrow keys move it one grid step, while the desk has keyboard focus. Arrow-key moves are saved at most five times a second.
 - **Desk shape** list: Straight, L left, L right. It changes only the outline.
 - **Reset positions** asks for confirmation, then arranges every device from scratch and keeps the desk shape.
 - The lights take the new positions when a drag is dropped, not during the drag.

@@ -63,7 +63,10 @@ internal sealed class LightingEffectBar : StackPanel
     // epoch: bumped when the guards are cleared, so a reply to a change sent before then touches nothing.
     private int epoch;
     private string? pickerShown;
-    private bool syncing, live;
+    // colourFollow: a colour change was refused since the user last changed a colour, so the working colours follow every arriving state
+    // (no hold of any kind applies to them) until the user next picks, adds or removes one. The pipe delivers a request's reply before the
+    // state it caused, so a later Ok reply can't end this: its state is still to come, and the colours must take it.
+    private bool syncing, live, colourFollow;
 
     public LightingEffectBar(DispatcherQueue queue, Action<HostMessage, Action<Reply>?> send, UIElement staticRow, Action? staticHidden = null)
     {
@@ -120,12 +123,12 @@ internal sealed class LightingEffectBar : StackPanel
         colourContent.Children.Add(colourHeading);
         colourContent.Children.Add(remove);
         colourFlyout.Content = colourContent;
-        // A pick still waiting goes as the flyout closes. If the swatches' last reply was a refusal and nothing has been sent since, the
-        // swatches go back to the latest state again, so no later send carries the refused colour.
+        // A pick still waiting goes as the flyout closes. If a colour change was refused since the user last changed one, the swatches go
+        // back to the latest state again, so no later send carries the refused colour.
         colourFlyout.Closed += (_, _) =>
         {
             colourSends.Flush();
-            if (colourGuard.Refused && stateEffect is { } effect) Show(effect, live);
+            if (colourFollow && stateEffect is { } effect) Show(effect, live);
         };
 
         speedRow = Row("Speed", speed.Slider);
@@ -195,15 +198,16 @@ internal sealed class LightingEffectBar : StackPanel
         if (speed.Holding && LightingEffects.ParamsFor(working, speed.HeldKind) is { } held && LightingEffects.ParamsFor(next, speed.HeldKind) is { } p) p.Speed = held.Speed;
         if (spread.Holding) next.Wave.Spread = working.Wave.Spread;
         if (directionGuard.Holds) next.Wave.AngleDeg = working.Wave.AngleDeg;
-        if (colourGuard.Holds || colourSends.Pending) next.Wave.Colors = new List<string>(working.Wave.Colors);
-        // The colour being picked is the colour flyout's own while it is open, unless the swatches' last reply was a refusal; once the
-        // host runs again, or after a refusal, the picker shows the state's colour.
-        else if (!colourGuard.Refused && live && wasLive && colourFlyout.IsOpen && editing >= 0 && editing < working.Wave.Colors.Count && editing < next.Wave.Colors.Count)
+        // After a refusal the colours follow the state until the user next changes one (colourFollow): nothing below holds them.
+        if (!colourFollow && (colourGuard.Holds || colourSends.Pending)) next.Wave.Colors = new List<string>(working.Wave.Colors);
+        // The colour being picked is the colour flyout's own while it is open, for a pick made since the last refusal only; once the host
+        // runs again, or while following after a refusal, the picker shows the state's colour.
+        else if (!colourFollow && live && wasLive && colourFlyout.IsOpen && editing >= 0 && editing < working.Wave.Colors.Count && editing < next.Wave.Colors.Count)
             next.Wave.Colors[editing] = working.Wave.Colors[editing];
         chosen = kind;
         next.Kind = chosen.ToString();
         working = next;
-        Fill(resync: (live && !wasLive) || colourGuard.Refused);
+        Fill(resync: (live && !wasLive) || colourFollow);
     }
 
     /// <summary>
@@ -222,6 +226,7 @@ internal sealed class LightingEffectBar : StackPanel
     private void ClearGuards()
     {
         epoch++;
+        colourFollow = false;
         foreach (var guard in new[] { tileGuard, directionGuard, colourGuard, speed.Guard, spread.Guard }) guard.Clear();
     }
 
@@ -348,8 +353,13 @@ internal sealed class LightingEffectBar : StackPanel
             guard.Count = Math.Max(0, guard.Count - 1);
             guard.Refused = !reply.Ok;
             if (reply.Ok) return;
-            // A pick still waiting would carry the swatches' working colours to the host before they are the state's again.
-            if (guard == colourGuard) colourSends.Cancel();
+            // A pick still waiting would carry the swatches' working colours to the host before they are the state's again. From here
+            // the colours follow every state until the user changes one again.
+            if (guard == colourGuard)
+            {
+                colourSends.Cancel();
+                colourFollow = true;
+            }
             if (stateEffect is { } effect) Show(effect, live);
         });
     }
@@ -385,6 +395,7 @@ internal sealed class LightingEffectBar : StackPanel
         string color = Hex(args.NewColor);
         // Not the colour the bar shows when the flyout opens, nor one the picker raises while it loads.
         if (syncing || !live || !sender.IsLoaded || color == pickerShown || editing < 0 || editing >= working.Wave.Colors.Count) return;
+        colourFollow = false;
         pickerShown = color;
         working.Wave.Colors[editing] = color;
         syncing = true;
@@ -396,19 +407,22 @@ internal sealed class LightingEffectBar : StackPanel
     private void RemoveColour()
     {
         if (!live || editing < 0 || editing >= working.Wave.Colors.Count) return;
-        // A pick still waiting would go after the removal; the removal's send carries every other colour as it is.
+        // A pick still waiting would go after the removal; the removal's send carries every other colour as it is. It is sent before the
+        // flyout hides: Closed may run within Hide, and it then finds the user's change on its way rather than a refusal to go back to.
         colourSends.Cancel();
+        colourFollow = false;
         working.Wave.Colors.RemoveAt(editing);
         editing = -1;
+        SendCopy(EffectKind.Wave, colourGuard);
         colourFlyout.Hide();
         Fill(resync: false);
-        SendCopy(EffectKind.Wave, colourGuard);
     }
 
     private void AddColour()
     {
         var colours = working.Wave.Colors;
         if (!live || chosen != EffectKind.Wave || colours.Count >= LightingEffects.MaxColors) return;
+        colourFollow = false;
         colours.Add(colours.Count == 0 ? FirstAddedColour : colours[^1]);
         Fill(resync: false);
         SendCopy(EffectKind.Wave, colourGuard);

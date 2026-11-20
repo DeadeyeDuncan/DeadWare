@@ -82,7 +82,6 @@ public static class LightingEffects
         q.Speed=double.IsNaN(q.Speed)?DefaultSpeed:Clamp100(q.Speed);
         q.Spread=double.IsNaN(q.Spread)?DefaultSpread:Clamp100(q.Spread);
         q.AngleDeg=double.IsFinite(q.AngleDeg)?(q.AngleDeg%360+360)%360:0;
-        if(q.AngleDeg>=360) q.AngleDeg=0; // a tiny negative angle can round up to 360 in the addition
         q.Colors??=new();
         return q;
     }
