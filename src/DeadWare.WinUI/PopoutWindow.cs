@@ -216,15 +216,15 @@ internal sealed class GraphPopout : UserControl
         else if (kind == "network")
         {
             double? up = Live("network/upload");
-            value.Text = "↓ " + HistoryChartModel.Bytes(current, true);
-            second.Text = "↑ " + HistoryChartModel.Bytes(up, true);
+            value.Text = "↓ " + HistoryChartModel.Rate(current);
+            second.Text = "↑ " + HistoryChartModel.Rate(up);
             double? localDown = Live("network/download/local");
             local.Visibility = localDown is null ? Visibility.Collapsed : Visibility.Visible;
-            if (localDown is not null) local.Text = $"· local ↓ {HistoryChartModel.Bytes(localDown, true)} ↑ {HistoryChartModel.Bytes(session.Value("network/upload/local"), true)}";
+            if (localDown is not null) local.Text = $"· local ↓ {HistoryChartModel.Rate(localDown)} ↑ {HistoryChartModel.Rate(session.Value("network/upload/local"))}";
             details.Text = $"↓ Download: {Pattern("download")} line\n↑ Upload: {Pattern("upload", dashed: true)} line\nBoth directions share the same scale."
                 + (localDown is null ? "" : "\nMuted traces: local-network share (LAN, loopback, link-local) from per-app capture.");
-            AutomationProperties.SetName(value, "Download " + HistoryChartModel.Bytes(current, true));
-            AutomationProperties.SetName(second, "Upload " + HistoryChartModel.Bytes(up, true));
+            AutomationProperties.SetName(value, "Download " + HistoryChartModel.Rate(current));
+            AutomationProperties.SetName(second, "Upload " + HistoryChartModel.Rate(up));
         }
         else if (kind == "storage")
         {

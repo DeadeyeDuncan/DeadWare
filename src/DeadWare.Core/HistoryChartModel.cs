@@ -248,7 +248,7 @@ public static class HistoryChartModel
             ChartPoint? dot=trace.Hidden?null:new ChartPoint(at,plot.Top+plot.Height*(1-Math.Clamp(value/trace.Maximum,0,1)));
             lines.Add(new(trace.ColorKey,trace.Dotted?FormattableString.Invariant($"{value:0} RPM"):AxisLabel(request.Kind,compare,value),dot));
         }
-        if(localDown is not null||localUp is not null)lines.Add(new("muted",$"Local ↓ {Bytes(localDown,true)} ↑ {Bytes(localUp,true)}",null));
+        if(localDown is not null||localUp is not null)lines.Add(new("muted",$"Local ↓ {Rate(localDown)} ↑ {Rate(localUp)}",null));
         // The eight busiest cores, then a count of the rest.
         const int shown=8;
         foreach(var core in coreValues.OrderByDescending(c=>c.Value).ThenBy(c=>c.Core).Take(shown))
@@ -271,7 +271,7 @@ public static class HistoryChartModel
     }
 
     /// <summary>A value as the chart's axis and readout write it: a byte rate, a percentage, or degrees (°C when devices are compared).</summary>
-    public static string AxisLabel(string kind,bool compare,double value)=>kind is "network" or "storage"?Bytes(value,true)
+    public static string AxisLabel(string kind,bool compare,double value)=>kind=="network"?Rate(value):kind=="storage"?Bytes(value,true)
         :FormattableString.Invariant($"{value:0}{(kind.Contains("temp")?(compare?"°C":"°"):"%")}");
 
     /// <summary>The local-network share of the network totals (per-app capture); drawn muted under the totals.</summary>
@@ -291,6 +291,12 @@ public static class HistoryChartModel
     /// <summary>The graph colour a kind's main trace uses.</summary>
     public static string ColorKey(string kind)=>kind switch {"network"=>"download","storage"=>"diskread",_=>kind};
 
+    /// <summary>The network rate unit the user chose in Settings; stored values stay bytes per second. Set by the session on load and on change.</summary>
+    public static NetworkRateUnit NetworkUnit {get;set;}=NetworkRateUnit.BytesPerSecond;
+    /// <summary>The Usage history unit label of the network series, which formats through <see cref="Rate"/>; "B/s" stays bytes for I/O.</summary>
+    public const string NetworkRateLabel="network/s";
+    /// <summary>A network rate (bytes per second) in the chosen unit; storage rates keep <see cref="Bytes"/>.</summary>
+    public static string Rate(double? bytesPerSecond)=>NetworkRateUnits.Format(bytesPerSecond,NetworkUnit);
     /// <summary>A byte count in decimal units and the user's locale, as the dashboard writes it: 1.5 MB, or 1.5 MB/s for a rate.</summary>
     public static string Bytes(double? bytes,bool rate=false)
     {

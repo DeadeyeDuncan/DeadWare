@@ -2,7 +2,7 @@ namespace DeadWare.Core;
 public record HardwareSources(bool Cpu,bool Gpu,bool Memory,bool Motherboard,bool Controllers,bool Storage);
 /// <param name="IdleGpuCadence">The app's setting: per-app GPU counters are read at the full cadence only while a page that shows them
 /// holds <c>Collector.ShowLiveGpu()</c>, and every few seconds otherwise. Off (every poll) for diagnostics and tests.</param>
-public record CollectorOptions(bool HardwareEnabled=true,bool EtwEnabled=true,bool ExtendedSensors=false,bool DiagnosticTimings=false,double PollingIntervalSeconds=1,bool StorageSensors=true,bool ProcessMonitoring=false,bool ProcessDiskTracing=false,bool IdleGpuCadence=false)
+public record CollectorOptions(bool HardwareEnabled=true,bool EtwEnabled=true,bool ExtendedSensors=false,bool DiagnosticTimings=false,double PollingIntervalSeconds=1,bool StorageSensors=true,bool ProcessMonitoring=false,bool ProcessDiskTracing=false,bool IdleGpuCadence=false,bool ExcludeVirtualAdapters=false)
 {
     public HardwareSources Sources=>new(HardwareEnabled,HardwareEnabled,HardwareEnabled&&ExtendedSensors,HardwareEnabled&&ExtendedSensors,HardwareEnabled&&ExtendedSensors,HardwareEnabled&&ExtendedSensors);
 }

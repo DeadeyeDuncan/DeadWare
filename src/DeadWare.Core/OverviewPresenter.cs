@@ -38,11 +38,11 @@ public static class OverviewPresenter
         value.HasValue && double.IsFinite(value.Value) ? value.Value.ToString("0.0", CultureInfo.CurrentCulture) + unit : "—";
 
     /// <summary>The card's large reading.</summary>
-    public static string Value(string kind, double? current) => kind is "network" or "storage" ? HistoryChartModel.Bytes(current, true)
+    public static string Value(string kind, double? current) => kind == "network" ? HistoryChartModel.Rate(current) : kind == "storage" ? HistoryChartModel.Bytes(current, true)
         : Number(current, kind.Contains("temp", StringComparison.Ordinal) ? " °C" : " %");
 
     /// <summary>One of MIN / AVG / MAX.</summary>
-    public static string Statistic(string kind, double? value) => kind is "network" or "storage" ? HistoryChartModel.Bytes(value, true)
+    public static string Statistic(string kind, double? value) => kind == "network" ? HistoryChartModel.Rate(value) : kind == "storage" ? HistoryChartModel.Bytes(value, true)
         : Number(value, kind.Contains("temp", StringComparison.Ordinal) ? "°C" : "%");
 
     /// <summary>A fan or pump line: its speed, or why there is none, then how its trace is drawn. Without a pattern it is the short form for the widget.</summary>

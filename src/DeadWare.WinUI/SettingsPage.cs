@@ -32,7 +32,8 @@ internal sealed class SettingsPage : Page
     private bool syncing, loaded;
 
     // Monitoring
-    private readonly ComboBox polling = new() { MinWidth = 180 };
+    private readonly ComboBox polling = new() { MinWidth = 180 }, networkUnit = new() { MinWidth = 220 };
+    private readonly CheckBox excludeVirtualAdapters = new() { Content = "Exclude virtual adapters from network totals" };
     private readonly CheckBox processMonitoring = new() { Content = "Per-process monitoring" }, cpuCoreUsage = new() { Content = "Show per-core CPU usage on usage graphs" };
     private readonly CheckBox extended = new() { Content = "Extended sensors (may affect responsiveness)" }, storageSensors = new() { Content = "Storage sensors (temperature and health; restart to apply)" };
     private readonly TextBlock elevateResult = Muted("");
@@ -204,6 +205,13 @@ internal sealed class SettingsPage : Page
         panel.Children.Add(new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12, Children = { new TextBlock { Text = "Data polling interval", VerticalAlignment = VerticalAlignment.Center }, polling } });
         panel.Children.Add(Muted("Applies without restarting after the current wait or reading finishes. Faster polling uses more resources; slow hardware may take longer than the selected interval. At 5 or 10 seconds, Cooling Health records history but does not gather enough samples for reference comparisons."));
 
+        foreach (string unit in NetworkRateUnits.All) networkUnit.Items.Add(NetworkRateUnits.Label(unit));
+        AutomationProperties.SetName(networkUnit, "Network rate unit");
+        networkUnit.SelectionChanged += (_, _) => { if (!syncing && networkUnit.SelectedIndex >= 0) session.SetNetworkRateUnit(NetworkRateUnits.All[networkUnit.SelectedIndex]); };
+        panel.Children.Add(new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12, Children = { new TextBlock { Text = "Network rate unit", VerticalAlignment = VerticalAlignment.Center }, networkUnit } });
+        panel.Children.Add(Muted("Bytes per second (MB/s) is the default and matches Task Manager and file copies. Bits per second (Mbps) matches ISP plans and download meters such as Steam's: 1 MB/s is 8 Mbps. Applies immediately to every network rate shown (graphs, Processes, Connections, Usage history); saved history and alert thresholds stay in bytes."));
+        panel.Children.Add(Bind(excludeVirtualAdapters, "Exclude virtual adapters from network totals", session.SetExcludeVirtualAdapters));
+        panel.Children.Add(Muted("Off (default) sums every active adapter, so Hyper-V, WSL, Docker and VPN adapters can count the same traffic twice. On leaves out adapters Windows reports as tunnels or PPP links and those named Hyper-V, vEthernet, WSL, VPN, Virtual, TAP, Wintun, WireGuard, Tailscale, ZeroTier, Docker, VMware or VirtualBox. Applies from the next poll to the network graphs and history; per-application traffic is unchanged."));
         panel.Children.Add(Bind(processMonitoring, "Per-process monitoring", session.SetProcessMonitoring));
         panel.Children.Add(Muted(ProcessCopy.ScanSentence(session.Current?.Elevated ?? Collector.IsElevated, ProcessFeatures.DiskColumns, ProcessFeatures.ScanLoop, history: true)));
         panel.Children.Add(Bind(cpuCoreUsage, "Show per-core CPU usage on usage graphs", session.SetCpuCoreUsage));
@@ -877,6 +885,9 @@ internal sealed class SettingsPage : Page
             int interval = -1;
             for (int i = 0; i < PollingPolicy.Intervals.Count; i++) if (PollingPolicy.Intervals[i] == settings.PollingIntervalSeconds) interval = i;
             if (polling.SelectedIndex != interval) polling.SelectedIndex = interval;
+            int unitIndex = Array.IndexOf(NetworkRateUnits.All, NetworkRateUnits.Normalize(settings.NetworkRateUnit));
+            if (networkUnit.SelectedIndex != unitIndex) networkUnit.SelectedIndex = unitIndex;
+            excludeVirtualAdapters.IsChecked = settings.ExcludeVirtualAdapters;
             processMonitoring.IsChecked = settings.ProcessMonitoring;
             cpuCoreUsage.IsChecked = settings.ShowCpuCoreUsage;
             extended.IsChecked = settings.ExtendedSensors;

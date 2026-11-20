@@ -89,13 +89,14 @@ public sealed class MonitorSession
         }
         catch(Exception e) when(e is IOException or UnauthorizedAccessException) {Settings=new();SettingsStatus="Settings unavailable; using defaults.";diagnostics?.Record("settings_load_failed",error:e);}
         excludedKeys=AppExclusions.Keys(Settings.ExcludedApps);
+        HistoryChartModel.NetworkUnit=NetworkRateUnits.Parse(Settings.NetworkRateUnit);
         writer=new(settingsPath);
         layout=new(Settings.RestoreOpenWindows?Settings.OpenWindows:[]);
         diagnostics?.Record("settings_loaded",new {Status=SettingsStatus,Settings.RestoreOpenWindows,OpenWindows=layout.Remembered,Settings.SelectedGpuId,Disk=LayoutDiagnostics.ReadSettingsState(settingsPath)});
         saveTimer.Tick+=async ()=>{saveTimer.Stop();await SaveAsync();};
         timer.Interval=TimeSpan.FromSeconds(Math.Min(1,Settings.PollingIntervalSeconds));
         // IdleGpuCadence: per-app GPU counters run at full speed only while a page holds Collector.ShowLiveGpu().
-        Collector=new(new CollectorOptions(ExtendedSensors:Settings.ExtendedSensors,PollingIntervalSeconds:Settings.PollingIntervalSeconds,StorageSensors:Settings.StorageSensors,ProcessMonitoring:Settings.ProcessMonitoring,ProcessDiskTracing:ProcessFeatures.DiskColumns&&Collector.IsElevated,IdleGpuCadence:true));
+        Collector=new(new CollectorOptions(ExtendedSensors:Settings.ExtendedSensors,PollingIntervalSeconds:Settings.PollingIntervalSeconds,StorageSensors:Settings.StorageSensors,ProcessMonitoring:Settings.ProcessMonitoring,ProcessDiskTracing:ProcessFeatures.DiskColumns&&Collector.IsElevated,IdleGpuCadence:true,ExcludeVirtualAdapters:Settings.ExcludeVirtualAdapters));
         GraphHistory=new(Path.Combine(Path.GetDirectoryName(settingsPath)!,"live-graph-history.db"),Environment.MachineName,Collector.History);
         Collector.SampleAvailable+=GraphHistory.TryRecord;
         Cooling=new(Path.Combine(Path.GetDirectoryName(settingsPath)!,"cooling-history.db"),Environment.MachineName,Settings.CoolingConfigurationId);
@@ -240,6 +241,16 @@ public sealed class MonitorSession
         }
         if(!changed)return;
         Changed?.Invoke();_ = SaveAsync();
+    }
+    public void SetNetworkRateUnit(string unit)
+    {
+        unit=NetworkRateUnits.Normalize(unit);if(Settings.NetworkRateUnit==unit)return;
+        Settings.NetworkRateUnit=unit;HistoryChartModel.NetworkUnit=NetworkRateUnits.Parse(unit);Changed?.Invoke();_ = SaveAsync();
+    }
+    public void SetExcludeVirtualAdapters(bool enabled)
+    {
+        if(Settings.ExcludeVirtualAdapters==enabled)return;
+        Settings.ExcludeVirtualAdapters=enabled;Collector.SetExcludeVirtualAdapters(enabled);Changed?.Invoke();_ = SaveAsync();
     }
     public void SetGraphSmoothing(bool enabled)
     {

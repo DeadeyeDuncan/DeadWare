@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Network rate unit.** **Settings → Monitoring → Network rate unit** shows every network rate as **Bytes per second (MB/s)**, the default and the previous behaviour, or **Bits per second (Mbps)**, the unit ISP plans and download meters such as Steam's use (1 MB/s = 8 Mbps). The choice applies at once to the dashboard, pop-outs and widget network graphs (legends, tooltips, axes and MIN/AVG/MAX), the Processes Network, Download and Upload columns, Connections' rates and Destinations table, and Usage history's network chart and traffic strip. Stored values, the Usage history CSV export and network alert thresholds (still entered in MB/s) are unchanged; storage rates stay bytes per second. A missing or unknown saved value reads as bytes per second.
+- **Exclude virtual adapters from network totals.** A new Monitoring option, off by default, leaves Hyper-V, WSL, Docker, VPN and other virtual adapters (tunnels, PPP links, and adapters named Hyper-V, vEthernet, WSL, VPN, Virtual, TAP, Wintun, WireGuard, Tailscale, ZeroTier, Docker, VMware or VirtualBox) out of the dashboard's interface total, which otherwise can count VPN or virtual-switch traffic twice. It applies from the next poll, and the network graph's status line shows how many adapters are excluded. Per-application traffic is unchanged.
 ## 0.18.0 — A native Windows interface
 
 - **Rebuilt on WinUI 3.** DeadWare's interface now uses Windows' own WinUI 3 controls. Every page, the pop-out graphs, the desktop widget, the tray icon, Start with Windows and the updater carry over, and your settings, histories and window positions are used as they are. Light or dark mode and the accent colour follow your Windows settings, with the Mica backdrop on Windows 11.

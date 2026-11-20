@@ -271,6 +271,7 @@ internal sealed class ConnectionsPage : Page
     private static TextBlock Text(string text) => new() { Text = text, FontSize = 12, TextWrapping = TextWrapping.Wrap };
     private static TextBlock Muted(string text) => new() { Text = text, FontSize = 12, Opacity = 0.7, TextWrapping = TextWrapping.Wrap };
     private static string B(double? bytes, bool rate = false) => HistoryChartModel.Bytes(bytes, rate);
+    private static string R(double? bytesPerSecond) => HistoryChartModel.Rate(bytesPerSecond);
 
     private static void Fill(ComboBox box, string name, params string[] items)
     {
@@ -642,7 +643,7 @@ internal sealed class ConnectionsPage : Page
         var located = filtered.Where(c => c.Location?.Point is not null).ToArray();
         rows = located.Select(c => new PeerRow(ConnectionsPresenter.Key(c.Traffic.Peer), $"{Marked(c.Traffic.Peer.Process.Name)} / {c.Traffic.Peer.Process.Pid}",
             ConnectionsPresenter.Endpoint(c.Traffic.Peer.RemoteAddress, c.Traffic.Peer.RemotePort, c.Traffic.Peer.Protocol), ConnectionsPresenter.Location(c.Traffic.Peer.RemoteAddress, c.Location),
-            B(view.Available ? c.Traffic.DownloadBytesPerSecond : null, true), B(view.Available ? c.Traffic.UploadBytesPerSecond : null, true), B(c.Traffic.ReceivedBytes), B(c.Traffic.SentBytes),
+            R(view.Available ? c.Traffic.DownloadBytesPerSecond : null), R(view.Available ? c.Traffic.UploadBytesPerSecond : null), B(c.Traffic.ReceivedBytes), B(c.Traffic.SentBytes),
             view.Complete ? "Observed" : "Incomplete", $"First {c.Traffic.FirstSeen.ToLocalTime():g} · Last {c.Traffic.LastSeen.ToLocalTime():g}")).ToArray();
         long received = 0, sent = 0;
         foreach (var item in filtered) { received = ConnectionsPresenter.Add(received, item.Traffic.ReceivedBytes); sent = ConnectionsPresenter.Add(sent, item.Traffic.SentBytes); }
@@ -658,7 +659,7 @@ internal sealed class ConnectionsPage : Page
             return new ConnectionMapPoint(key, c.Location!.Point!, c.Traffic.ReceivedBytes, c.Traffic.SentBytes, selectedKey == key,
                 view.Available && c.Traffic.DownloadBytesPerSecond > 0, view.Available && c.Traffic.UploadBytesPerSecond > 0,
                 Label: Marked(c.Traffic.Peer.Process.Name),
-                Detail: $"{ConnectionsPresenter.Location(c.Traffic.Peer.RemoteAddress, c.Location)} · ↓ {B(view.Available ? c.Traffic.DownloadBytesPerSecond : null, true)} · ↑ {B(view.Available ? c.Traffic.UploadBytesPerSecond : null, true)}");
+                Detail: $"{ConnectionsPresenter.Location(c.Traffic.Peer.RemoteAddress, c.Location)} · ↓ {R(view.Available ? c.Traffic.DownloadBytesPerSecond : null)} · ↑ {R(view.Available ? c.Traffic.UploadBytesPerSecond : null)}");
         }).ToArray(), view.Origin, view.Available, view.Status);
         UpdateDestinationHighlight(); UpdateMapAnimation(); RefreshMappedConnections(); UpdateExportEnabled(); range.IsEnabled = IsHistory;
     }
@@ -669,7 +670,7 @@ internal sealed class ConnectionsPage : Page
         historyMinuteReady = view.Query.To - view.Query.From <= TimeSpan.FromMinutes(1);
         ConnectionHistoryRow? Representative(ConnectionHistoryMarker m) => m.Representative ?? view.Rows.FirstOrDefault(r => r.Location == m.Location && r.Origin == m.Origin);
         rows = view.Markers.Select(Representative).OfType<ConnectionHistoryRow>().DistinctBy(ConnectionsPresenter.Key).Select(r => new PeerRow(ConnectionsPresenter.Key(r), $"{r.Process.Name} / {r.Process.Pid}",
-            ConnectionsPresenter.Endpoint(r.RemoteAddress, r.RemotePort, r.Protocol), ConnectionsPresenter.Location(r.RemoteAddress, r.Location), B(r.DownloadBytesPerSecond, true), B(r.UploadBytesPerSecond, true),
+            ConnectionsPresenter.Endpoint(r.RemoteAddress, r.RemotePort, r.Protocol), ConnectionsPresenter.Location(r.RemoteAddress, r.Location), R(r.DownloadBytesPerSecond), R(r.UploadBytesPerSecond),
             B(r.ReceivedBytes), B(r.SentBytes), r.Complete ? "Recorded" : "Incomplete", $"First {r.FirstSeen.ToLocalTime():g} · Last {r.LastSeen.ToLocalTime():g}")).ToArray();
         var s = view.Summary;
         // A view without a strip is unavailable (a failed read, the TEMP limit or no service): unknown counts are "—", never 0.
@@ -688,7 +689,7 @@ internal sealed class ConnectionsPage : Page
             return new ConnectionMapPoint(representative is not null ? ConnectionsPresenter.Key(representative) : ConnectionsPresenter.Key(m), m.Location.Point!, m.ReceivedBytes, m.SentBytes,
                 selectedKey is not null && m.Representative is not null && selectedKey == ConnectionsPresenter.Key(m.Representative),
                 Label: representative?.Process.Name,
-                Detail: representative is null ? null : $"{ConnectionsPresenter.Location(representative.RemoteAddress, representative.Location)} · ↓ {B(representative.DownloadBytesPerSecond, true)} · ↑ {B(representative.UploadBytesPerSecond, true)}");
+                Detail: representative is null ? null : $"{ConnectionsPresenter.Location(representative.RemoteAddress, representative.Location)} · ↓ {R(representative.DownloadBytesPerSecond)} · ↑ {R(representative.UploadBytesPerSecond)}");
         }).ToArray(), ConnectionsPresenter.CommonOrigin(view.Markers), true, "Saved approximate geography · illustrative curves" + (view.OmittedMarkers > 0 ? $" · +{view.OmittedMarkers:N0} grouped locations omitted" : ""));
         UpdateDestinationHighlight(); UpdateMapAnimation(); RefreshMappedConnections(); UpdateExportEnabled(); range.IsEnabled = IsHistory;
     }
