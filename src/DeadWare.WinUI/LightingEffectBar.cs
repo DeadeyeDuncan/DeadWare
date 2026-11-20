@@ -28,6 +28,8 @@ internal sealed class LightingEffectBar : StackPanel
 
     private readonly Action<HostMessage, Action<Reply>?> send;
     private readonly UIElement staticRow;
+    // Raised when the bar hides staticRow, so the page can close a flyout opened from it.
+    private readonly Action? staticHidden;
     // One guard per control (the sliders hold their own): while a change of the bar's own is on its way, an arriving state doesn't
     // overwrite the control it came from. tileGuard keeps the chosen tile; colourGuard keeps the swatches (picks, Add and Remove).
     private readonly Guard tileGuard = new(), directionGuard = new(), colourGuard = new();
@@ -55,17 +57,19 @@ internal sealed class LightingEffectBar : StackPanel
     // The last state's effect, which a press that changed nothing gives back to its slider.
     private EffectSettings? stateEffect;
     private EffectKind chosen;
-    // editing: the swatch the colour flyout edits, -1 while it is closed. pickerShown: the picker's colour as last set or picked.
+    // editing: the swatch the colour flyout edits or last edited, -1 after Remove. A light-dismiss leaves it in place, so whether the
+    // flyout is open is colourFlyout.IsOpen, never editing. pickerShown: the picker's colour as last set or picked.
     private int editing = -1;
     // epoch: bumped when the guards are cleared, so a reply to a change sent before then touches nothing.
     private int epoch;
     private string? pickerShown;
     private bool syncing, live;
 
-    public LightingEffectBar(DispatcherQueue queue, Action<HostMessage, Action<Reply>?> send, UIElement staticRow)
+    public LightingEffectBar(DispatcherQueue queue, Action<HostMessage, Action<Reply>?> send, UIElement staticRow, Action? staticHidden = null)
     {
         this.send = send;
         this.staticRow = staticRow;
+        this.staticHidden = staticHidden;
         Spacing = 12;
 
         var tileGrid = new Grid { ColumnSpacing = 8 };
@@ -116,7 +120,13 @@ internal sealed class LightingEffectBar : StackPanel
         colourContent.Children.Add(colourHeading);
         colourContent.Children.Add(remove);
         colourFlyout.Content = colourContent;
-        colourFlyout.Closed += (_, _) => colourSends.Flush();
+        // A pick still waiting goes as the flyout closes. If the swatches' last reply was a refusal and nothing has been sent since, the
+        // swatches go back to the latest state again, so no later send carries the refused colour.
+        colourFlyout.Closed += (_, _) =>
+        {
+            colourSends.Flush();
+            if (colourGuard.Refused && stateEffect is { } effect) Show(effect, live);
+        };
 
         speedRow = Row("Speed", speed.Slider);
         foreach (var (name, _) in LightingEffects.Directions) direction.Items.Add(name);
@@ -169,21 +179,31 @@ internal sealed class LightingEffectBar : StackPanel
             colourSends.Cancel();
             ClearGuards();
         }
-        var next = LightingEffects.Clone(effect);
-        if (LightingEffects.ParamsFor(working, chosen) is { } shown)
+        // The tile holds while its own change is on its way and not refused. When the kind changes any other way (a refused tile change,
+        // or a state from elsewhere), a waiting parameter send is dropped rather than sent: every send sets the kind too, so it would put
+        // back the kind it was made under. Dropped first, so its value doesn't hold below either.
+        var kind = tileGuard.Holds ? chosen : LightingEffects.KindOf(effect.Kind);
+        if (kind != chosen)
         {
-            if (speed.Holding && LightingEffects.ParamsFor(next, chosen) is { } p) p.Speed = shown.Speed;
-            if (spread.Holding) next.Wave.Spread = working.Wave.Spread;
+            speed.Sends.Cancel();
+            spread.Sends.Cancel();
+            colourSends.Cancel();
         }
-        if (directionGuard.Busy) next.Wave.AngleDeg = working.Wave.AngleDeg;
-        if (colourGuard.Busy || colourSends.Pending) next.Wave.Colors = new List<string>(working.Wave.Colors);
-        // The colour being picked is the colour flyout's own while it is open; once the host runs again, the picker shows its colour.
-        else if (live && wasLive && colourFlyout.IsOpen && editing >= 0 && editing < working.Wave.Colors.Count && editing < next.Wave.Colors.Count)
+        // Each held value is kept for the kind it was changed for, so a hold on Wave's Speed or Spread outlives a visit to another tile.
+        // A control whose last reply was a refusal holds only while dragged or waiting: otherwise it takes the state's value.
+        var next = LightingEffects.Clone(effect);
+        if (speed.Holding && LightingEffects.ParamsFor(working, speed.HeldKind) is { } held && LightingEffects.ParamsFor(next, speed.HeldKind) is { } p) p.Speed = held.Speed;
+        if (spread.Holding) next.Wave.Spread = working.Wave.Spread;
+        if (directionGuard.Holds) next.Wave.AngleDeg = working.Wave.AngleDeg;
+        if (colourGuard.Holds || colourSends.Pending) next.Wave.Colors = new List<string>(working.Wave.Colors);
+        // The colour being picked is the colour flyout's own while it is open, unless the swatches' last reply was a refusal; once the
+        // host runs again, or after a refusal, the picker shows the state's colour.
+        else if (!colourGuard.Refused && live && wasLive && colourFlyout.IsOpen && editing >= 0 && editing < working.Wave.Colors.Count && editing < next.Wave.Colors.Count)
             next.Wave.Colors[editing] = working.Wave.Colors[editing];
-        chosen = tileGuard.Busy ? chosen : LightingEffects.KindOf(effect.Kind);
+        chosen = kind;
         next.Kind = chosen.ToString();
         working = next;
-        Fill(resync: live && !wasLive);
+        Fill(resync: (live && !wasLive) || colourGuard.Refused);
     }
 
     /// <summary>
@@ -202,7 +222,7 @@ internal sealed class LightingEffectBar : StackPanel
     private void ClearGuards()
     {
         epoch++;
-        tileGuard.Count = directionGuard.Count = colourGuard.Count = speed.Guard.Count = spread.Guard.Count = 0;
+        foreach (var guard in new[] { tileGuard, directionGuard, colourGuard, speed.Guard, spread.Guard }) guard.Clear();
     }
 
     private static EffectKind KindOf(HostMessage request) => LightingEffects.KindOf(((SetEffectRequest)request).Kind);
@@ -210,6 +230,7 @@ internal sealed class LightingEffectBar : StackPanel
     /// <summary>Brings every control up to date with the working copy and the chosen kind, without sending anything.</summary>
     private void Fill(bool resync)
     {
+        bool staticCollapsed;
         syncing = true;
         try
         {
@@ -218,8 +239,9 @@ internal sealed class LightingEffectBar : StackPanel
                 tiles[i].IsChecked = Kinds[i].Kind == chosen;
                 tiles[i].IsEnabled = live;
             }
-            bool wave = chosen == EffectKind.Wave;
-            Reveal(staticRow, chosen == EffectKind.Static);
+            bool wave = chosen == EffectKind.Wave, showStatic = chosen == EffectKind.Static;
+            staticCollapsed = !showStatic && staticRow.Visibility == Visibility.Visible;
+            Reveal(staticRow, showStatic);
             Reveal(waveRows, wave);
             foreach (var row in waveExtras) Reveal(row, wave);
             var settings = LightingEffects.ParamsFor(working, chosen);
@@ -233,6 +255,8 @@ internal sealed class LightingEffectBar : StackPanel
         }
         finally { syncing = false; }
         FillFlyout(resync);
+        // Static's row just went: a flyout the page opened from it must not stay up with its button hidden.
+        if (staticCollapsed) staticHidden?.Invoke();
     }
 
     private void FillSwatches()
@@ -309,19 +333,24 @@ internal sealed class LightingEffectBar : StackPanel
 
     /// <summary>
     /// Sends a kind with its whole set of settings as the working copy holds them now (Static has none), guarding the control it came
-    /// from until its reply. An Ok reply ends the guard and the next state is shown as it is; a refused or failed one ends it too and
-    /// the bar goes back to the latest state, whose reason the page's send-error line shows. A reply from before the guards were
-    /// cleared does nothing.
+    /// from until its reply. An Ok reply ends the guard and the next state is shown as it is; a refused or failed one ends it too,
+    /// marks the control refused (it holds no more until it sends again) and the bar goes back to the latest state, whose reason the
+    /// page's send-error line shows. A reply from before the guards were cleared does nothing.
     /// </summary>
     private void SendCopy(EffectKind kind, Guard guard)
     {
         int sent = epoch;
         guard.Count++;
+        guard.Refused = false;
         send(Request(kind), reply =>
         {
             if (sent != epoch) return;
             guard.Count = Math.Max(0, guard.Count - 1);
-            if (!reply.Ok && stateEffect is { } effect) Show(effect, live);
+            guard.Refused = !reply.Ok;
+            if (reply.Ok) return;
+            // A pick still waiting would carry the swatches' working colours to the host before they are the state's again.
+            if (guard == colourGuard) colourSends.Cancel();
+            if (stateEffect is { } effect) Show(effect, live);
         });
     }
 
@@ -415,6 +444,7 @@ internal sealed class LightingEffectBar : StackPanel
             {
                 if (bar.syncing || !bar.live || bar.chosen == EffectKind.Static) return;
                 changed = true;
+                HeldKind = bar.chosen;
                 edit(Math.Round(args.NewValue));
                 Sends.Post(bar.Request(bar.chosen));
             };
@@ -433,8 +463,13 @@ internal sealed class LightingEffectBar : StackPanel
         public Throttle Sends { get; }
         public Guard Guard { get; } = new();
         public bool Dragging { get; private set; }
-        /// <summary>The user's value holds against an arriving state: it is being dragged, waits to go or is on its way.</summary>
-        public bool Holding => Dragging || Sends.Pending || Guard.Busy;
+        /// <summary>The kind whose setting the slider last changed: the one its held value belongs to.</summary>
+        public EffectKind HeldKind { get; private set; }
+        /// <summary>
+        /// The user's value holds against an arriving state: it is being dragged, waits to go, or is on its way and its last reply
+        /// wasn't a refusal.
+        /// </summary>
+        public bool Holding => Dragging || Sends.Pending || Guard.Holds;
 
         /// <summary>Ends a drag and drops a waiting change, as when the host stops running.</summary>
         public void Cancel()
@@ -454,16 +489,28 @@ internal sealed class LightingEffectBar : StackPanel
         {
             if (!Dragging) return;
             Dragging = false;
+            bool waiting = Sends.Pending;
             Sends.Flush();
-            // A press that changed nothing leaves nothing on its way, so the slider takes the state that arrived meanwhile.
-            if (!changed && bar.stateEffect is { } effect) bar.Show(effect, bar.live);
+            // A press that changed nothing leaves nothing on its way, so the slider takes the state that arrived meanwhile. So does a drag
+            // whose last reply was a refusal with nothing waiting to go at the release: its value goes back to the state's.
+            if ((!changed || (Guard.Refused && !waiting)) && bar.stateEffect is { } effect) bar.Show(effect, bar.live);
         }
     }
 
-    /// <summary>How many of one control's changes are on their way: sent, their reply not yet seen.</summary>
+    /// <summary>
+    /// How many of one control's changes are on their way (sent, their reply not yet seen), and whether its last reply was a refusal.
+    /// A refused control holds no more until it sends again.
+    /// </summary>
     private sealed class Guard
     {
         public int Count;
-        public bool Busy => Count > 0;
+        public bool Refused;
+        public bool Holds => Count > 0 && !Refused;
+
+        public void Clear()
+        {
+            Count = 0;
+            Refused = false;
+        }
     }
 }

@@ -140,7 +140,7 @@ internal sealed class LightingPage : Page, IHeaderTool
             Spacing = 8,
             Children = { Muted("One colour for every zone. Setting it clears the zones' own colours; while the picker is open, Undo puts them back."), setAll },
         };
-        effectBar = new LightingEffectBar(queue, Send, staticRow) { Padding = new Thickness(8) };
+        effectBar = new LightingEffectBar(queue, Send, staticRow, () => { if (setAllFlyout.IsOpen) setAllFlyout.Hide(); }) { Padding = new Thickness(8) };
         var effectCard = Pages.Card(effectBar);
 
         zoneContent.Children.Add(zoneHeading);
