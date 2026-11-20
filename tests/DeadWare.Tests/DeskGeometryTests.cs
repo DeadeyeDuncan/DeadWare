@@ -241,6 +241,17 @@ public class DeskGeometryTests
         Assert.Equal("Inside PC",DeskGeometry.Where(l,Gpu));Assert.Equal("On desk",DeskGeometry.Where(l,Kb));
         l.Unplaced.Add(Kb.Key);Assert.Equal("Not placed",DeskGeometry.Where(l,Kb));
     }
+    [Fact] public void Where_SaysNotOnDeskForADeviceTheDeskCannotPlace()
+    {
+        var uns=Dev("u|1","Radeon Unsup",kind:PaintKind.Unsupported);var dark=Dev("n|1","Fan dark",2,leds:0);var hwDark=Dev("h|0","Radeon Hw dark",kind:PaintKind.Hardware,leds:0);
+        var l=Arranged(Gpu,Kb);
+        Assert.Equal("Not on desk",DeskGeometry.Where(l,uns));Assert.Equal("Not on desk",DeskGeometry.Where(l,dark));
+        l.Tower.Members.Add(dark.Key);l.Tower.Members.Add(uns.Key);Assert.Equal("Not on desk",DeskGeometry.Where(l,dark));Assert.Equal("Not on desk",DeskGeometry.Where(l,uns));
+        l.Unplaced.Add(dark.Key);l.Unplaced.Add(uns.Key);Assert.Equal("Not on desk",DeskGeometry.Where(l,dark));Assert.Equal("Not on desk",DeskGeometry.Where(l,uns));
+        l.Tower.Members.Add(hwDark.Key);l.Unplaced.Add(hwDark.Key);Assert.Equal("Own effect",DeskGeometry.Where(l,hwDark));
+        // The other answers are unchanged.
+        Assert.Equal("Inside PC",DeskGeometry.Where(l,Gpu));Assert.Equal("On desk",DeskGeometry.Where(l,Kb));
+    }
     [Fact] public void NoFunction_MutatesItsInput()
     {
         var l=Arranged(Gpu,Kb);l.Zones[Z(Gpu,0)]=new(0.5,0.5);var count=l.Zones.Count;var d=new[]{Gpu,Kb};

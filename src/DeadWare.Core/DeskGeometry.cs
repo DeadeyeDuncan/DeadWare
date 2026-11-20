@@ -104,5 +104,6 @@ public static class DeskGeometry
         var empty=DeskLayouts.Empty();empty.Desk=DeskLayouts.Clone(layout).Desk;
         return DeskLayouts.AutoArrange(empty,DeskLayouts.Arrangeable(devices));
     }
-    public static string Where(DeskLayout layout,DeviceView device)=>Own(device)?"Own effect":layout.Unplaced.Contains(device.Key)?"Not placed":layout.Tower.Members.Contains(device.Key)?"Inside PC":"On desk";
+    // "Not on desk": a device Arrangeable leaves out (Unsupported, or no zone with LEDs), which Scene never draws whatever the layout says.
+    public static string Where(DeskLayout layout,DeviceView device)=>Own(device)?"Own effect":device.Kind==PaintKind.Unsupported||!device.Zones.Any(z=>z.LedCount>0)?"Not on desk":layout.Unplaced.Contains(device.Key)?"Not placed":layout.Tower.Members.Contains(device.Key)?"Inside PC":"On desk";
 }

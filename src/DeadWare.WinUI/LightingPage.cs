@@ -296,7 +296,7 @@ internal sealed class LightingPage : Page, IHeaderTool
 
     /// <summary>
     /// Shows the waiting frame on the desk. Dropped while the page is hidden, when it came from a client the page no longer follows,
-    /// and while the latest state has no effect running: the host can send one frame computed just before a switch to Static or lights
+    /// while the latest state isn't Running, and while it has no effect running: the host can send one frame computed just before a switch to Static or lights
     /// off, after that state, and no later frame would replace it.
     /// </summary>
     private void ShowFrame()
@@ -304,7 +304,8 @@ internal sealed class LightingPage : Page, IHeaderTool
         // Cleared before taking the frame, so a frame raised while this runs queues the next show.
         Volatile.Write(ref frameQueued, 0);
         if (Interlocked.Exchange(ref pendingFrame, null) is not { } frame || !showing || client is null || !ReferenceEquals(frame.Source, client)) return;
-        if (client.State?.Settings is not { } settings || !LightingPaint.EffectRunning(settings)) return;
+        // Nor while the host isn't running, so a frame can't paint over the colours a non-running state cleared.
+        if (client.State is not { Status: HostStatus.Running, Settings: { } settings } || !LightingPaint.EffectRunning(settings)) return;
         desk.ShowColors(frame.Colors);
     }
 
@@ -397,6 +398,9 @@ internal sealed class LightingPage : Page, IHeaderTool
             // colours once it runs again.
             allSends.Cancel();
             foreach (var pending in zoneSends.Values) pending.Cancel();
+            // A frame shown before the host stopped running is no longer the lights' colours. On every state that isn't Running, not only
+            // a null one: a refresh reads only the latest state, so a null state followed quickly by a Starting one may never be rendered.
+            desk.ShowColors(null);
         }
         ShowStatus();
         seenState |= connected;
@@ -409,8 +413,7 @@ internal sealed class LightingPage : Page, IHeaderTool
             foreach (var card in cards.Values) card.Disable();
             Show(noDevices, false);
             effectBar.Show(shownEffect ?? new EffectSettings(), false);
-            // So do the desk, the list and the panel; a frame shown before the host went is no longer the lights' colours.
-            desk.ShowColors(null);
+            // So do the desk, the list and the panel, in the state's colours (cleared above).
             ShowDesk(null);
         }
         else

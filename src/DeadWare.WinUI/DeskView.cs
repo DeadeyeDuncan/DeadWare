@@ -335,7 +335,10 @@ internal sealed class DeskView : UserControl
         string name = item.DeviceKey is { } k && names.TryGetValue(k, out var numbered) ? numbered : item.Label;
         double inner = w - 20;
         ds.DrawTextLayout(Text(creator, name, true, inner), x + 10, y + 5, ink);
-        int zones = item.DeviceKey is { } d && byKey.TryGetValue(d, out var device) ? (device.Zones ?? []).Count : item.ZoneKeys.Count;
+        // The zones the desk can place: those with LEDs, each key once.
+        int zones = item.DeviceKey is { } d && byKey.TryGetValue(d, out var device)
+            ? (device.Zones ?? []).Where(zone => zone is { Key: not null, LedCount: > 0 }).Select(zone => zone.Key).Distinct(StringComparer.Ordinal).Count()
+            : item.ZoneKeys.Count;
         string count = zones == 1 ? "1 zone" : $"{zones} zones";
         if (!item.OwnEffect) { ds.DrawTextLayout(Text(creator, count, false, inner), x + 10, y + 23, muted); return; }
         // A device running its own effect: its zone count, then the tag, each in half the line.
