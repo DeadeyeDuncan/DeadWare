@@ -47,8 +47,9 @@ internal sealed class OpenRgbEngine : IAsyncDisposable
     public static readonly string GaveUpText=$"OpenRGB stopped {RestartBackoff.MaxFailures} times in {(int)RestartBackoff.Window.TotalMinutes} minutes, counting the times DeadWare stopped it for a program that blocks lighting. Turn lighting off and on in Settings to try again.";
     readonly Action<string>? prepareConfig;
     // prepareConfig: writes OpenRGB's settings before every launch (Ruling AR); a launch whose settings can't be written doesn't happen.
-    // portGuard: an elevated host's OpenRgbPortLock.Ensure (Ruling BG), run before every launch: null when OpenRGB's SDK port is locked to
-    // the host, else the refusal. Null for a host without administrator rights, which adds no lock.
+    // portGuard: an elevated host's OpenRgbPortLock.Guard (Ruling BG; F6 item 1, Ruling BH), run before every launch: null when OpenRGB's
+    // SDK port is locked to the host and its self-check passed, else the refusal. Null for a host without administrator rights, which adds
+    // no lock.
     readonly Func<string?>? portGuard;
     public OpenRgbEngine(string exePath,string configDir,IProcessRunner runner,Func<int,CancellationToken,Task<bool>> portOpen,TimeProvider time,HostLog log,Func<string,LocationProtection>? folderCheck=null,Action<string>? prepareConfig=null,Func<string?>? portGuard=null)
     {this.exePath=exePath;this.configDir=configDir;this.runner=runner;this.portOpen=portOpen;this.time=time;this.log=log;this.folderCheck=folderCheck;this.prepareConfig=prepareConfig;this.portGuard=portGuard;}
@@ -218,7 +219,7 @@ internal sealed class OpenRgbEngine : IAsyncDisposable
         string? refusal;
         try{refusal=portGuard();}
         catch(Exception e){refusal=OpenRgbPortLock.RefusalText(e is Win32Exception w?w.NativeErrorCode:e.HResult,e.Message);}
-        if(refusal is not null) log.Write("openrgb port couldn't be locked: "+refusal);
+        if(refusal is not null) log.Write("openrgb port guard refused: "+refusal);
         return refusal;
     }
 

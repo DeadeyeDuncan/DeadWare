@@ -28,6 +28,111 @@ public sealed class OpenRgbPortLockTests
         Assert.Equal("D:(A;;CC;;;BA)",l.UserSddl);
     }
 
+    // F6 item 3 (whole-branch review D2): Program takes its port guard from GuardFor. An elevated host gets the production lock to hold
+    // and that lock's Guard, its filters and then its self-check; a host without administrator rights gets neither.
+    [Fact]
+    public void GuardFor_gives_an_elevated_host_the_locks_guard_and_others_none()
+    {
+        Assert.Null(GuardFor(privileged:false,null,out var none));
+        Assert.Null(none);
+        var guard=GuardFor(privileged:true,null,out var held);
+        using var _=held;
+        Assert.NotNull(held);
+        Assert.NotNull(guard);
+        Assert.Same(held,guard.Target);
+        Assert.Equal(nameof(OpenRgbPortLock.Guard),guard.Method.Name);
+        Assert.Equal(OpenRgbEngine.Port,held.Port);
+        Assert.Equal(Environment.ProcessPath,held.AppPath);
+        Assert.Equal(AdministratorsOnly,held.UserSddl);
+    }
+
+    // F6 item 1 (Ruling BH): the self-check's refusals, word for word, with the real port in the second.
+    [Fact]
+    public void The_self_check_texts_are_exact()
+    {
+        Assert.Equal("DeadWare's limit on OpenRGB's network port would also block its own lighting helper (Windows refused its test connection), so it won't run OpenRGB as administrator. Turn lighting off and on in Settings to try again.",SelfBlockedText);
+        Assert.Equal("Another program is using OpenRGB's network port 6744, so DeadWare won't run OpenRGB as administrator. Quit that program, then turn lighting off and on in Settings.",PortTakenText(6744));
+    }
+
+    // Each outcome of the self-check's connect: refused passes, a connect that succeeds is another program on the port (named by the lock's
+    // own port), and access denied, any other error or no answer in time is the lock blocking the host. Each check logs its outcome once.
+    [Theory]
+    [InlineData(SocketError.ConnectionRefused,null,"ConnectionRefused (10061)")]
+    [InlineData(SocketError.AccessDenied,"blocked","AccessDenied (10013)")]
+    [InlineData(SocketError.Success,"taken","Success (0)")]
+    [InlineData(SocketError.TimedOut,"blocked","TimedOut (10060)")]
+    [InlineData(SocketError.NetworkUnreachable,"blocked","NetworkUnreachable (10051)")]
+    public void The_self_check_maps_each_connect_outcome(SocketError outcome,string? refusal,string logged)
+    {
+        var lines=new List<string>();
+        var asked=new List<int>();
+        using var l=new OpenRgbPortLock(50123,Environment.ProcessPath!,AdministratorsOnly,x64:true,connect:port=>{asked.Add(port);return outcome;},log:lines.Add);
+        Assert.Equal(refusal switch{"blocked"=>SelfBlockedText,"taken"=>PortTakenText(50123),_=>null},l.SelfCheck());
+        Assert.Equal([50123],asked);
+        Assert.Equal(["openrgb port self-check: "+logged],lines);
+    }
+
+    // A connect that throws something other than a socket error couldn't show the host gets through either.
+    [Fact]
+    public void A_self_check_whose_connect_throws_is_the_blocked_refusal()
+    {
+        var lines=new List<string>();
+        using var l=new OpenRgbPortLock(50123,Environment.ProcessPath!,AdministratorsOnly,x64:true,connect:_=>throw new InvalidOperationException("broken"),log:lines.Add);
+        Assert.Equal(SelfBlockedText,l.SelfCheck());
+        Assert.Equal(["openrgb port self-check failed: broken"],lines);
+    }
+
+    // The self-check runs only once the filters are in place: a lock that refuses doesn't connect at all, and its refusal stands.
+    [Fact]
+    public void The_guard_self_checks_only_after_ensure_succeeds()
+    {
+        var connects=0;
+        using var l=new OpenRgbPortLock(6744,Environment.ProcessPath!,AdministratorsOnly,x64:false,connect:_=>{connects++;return SocketError.ConnectionRefused;});
+        Assert.Equal(RefusalText(50,new Win32Exception(50).Message),l.Guard());
+        Assert.Equal(0,connects);
+    }
+
+    // The real connect, without a lock: refused where nothing listens, success where something does, well inside its timeout.
+    [Fact]
+    public void ConnectOnce_reports_refused_and_success()
+    {
+        var clock=System.Diagnostics.Stopwatch.StartNew();
+        Assert.Equal(SocketError.ConnectionRefused,ConnectOnce(FreePort()));
+        Assert.True(clock.Elapsed<SelfCheckTimeout,$"{clock.Elapsed}");
+        using var server=new Listener();
+        Assert.Equal(SocketError.Success,ConnectOnce(server.Port));
+    }
+
+    // Whole-branch review D7/D14: the host's connects to OpenRGB, the port probe's, the self-check's and OpenRGB.NET's, use a parameterless
+    // TcpClient or socket: a dual-mode IPv6 socket wherever IPv6 is on, so a connect to 127.0.0.1 goes out as ::ffff:127.0.0.1 and meets
+    // the V6 filters as well as the V4 ones.
+    [Fact]
+    public void A_parameterless_TcpClient_is_a_dual_mode_ipv6_socket()
+    {
+        if(!Socket.OSSupportsIPv6) return;
+        using var client=new TcpClient();
+        Assert.Equal(AddressFamily.InterNetworkV6,client.Client.AddressFamily);
+        Assert.True(client.Client.DualMode);
+    }
+
+    // F6 item 6 (whole-branch review D6): Ensure's retry. A failed attempt closes the session and tries once more with a fresh one; the
+    // second attempt's code is the answer.
+    [Fact]
+    public void A_failed_attempt_is_retried_once_after_closing_the_session()
+    {
+        var calls=new List<string>();
+        var codes=new Queue<int>([5,0]);
+        Assert.Equal(0,Retried(()=>{calls.Add("attempt");return codes.Dequeue();},()=>calls.Add("close")));
+        Assert.Equal(["attempt","close","attempt"],calls);
+        calls.Clear();
+        codes=new Queue<int>([5,6,0]);
+        Assert.Equal(6,Retried(()=>{calls.Add("attempt");return codes.Dequeue();},()=>calls.Add("close")));
+        Assert.Equal(["attempt","close","attempt"],calls);
+        calls.Clear();
+        Assert.Equal(0,Retried(()=>{calls.Add("attempt");return 0;},()=>calls.Add("close")));
+        Assert.Equal(["attempt"],calls);
+    }
+
     [Fact]
     public void The_refusal_text_is_exact()
     {
@@ -183,6 +288,138 @@ public sealed class OpenRgbPortLockTests
         l.Dispose();
         Assert.Equal(SocketError.Success,Connect(server.Port));
     }
+
+    // F6 item 2 (whole-branch review D7/D14): with the lock permitting this image, a dual-mode connect to ::ffff:127.0.0.1 gets through,
+    // both a dual-mode socket's and a parameterless TcpClient's to 127.0.0.1, as the host's own connects are.
+    [ElevatedFact]
+    public void The_permitted_image_connects_through_a_dual_mode_socket()
+    {
+        using var server=new Listener();
+        using var l=new OpenRgbPortLock(server.Port,Environment.ProcessPath!);
+        Assert.Null(l.Ensure());
+        Assert.Equal(SocketError.Success,Connect(server.Port,dualModeMapped:true));
+        using var client=new TcpClient();
+        Assert.True(client.Client.DualMode);
+        client.Connect(IPAddress.Loopback,server.Port);
+        Assert.True(client.Connected);
+    }
+
+    // F6 item 1 (a): a lock permitting this image, with nothing listening: the self-check's connect is refused, so it passes.
+    [ElevatedFact]
+    public void The_self_check_passes_when_the_permit_lets_the_host_through()
+    {
+        var lines=new List<string>();
+        using var l=new OpenRgbPortLock(FreePort(),Environment.ProcessPath!,log:lines.Add);
+        Assert.Null(l.Guard());
+        Assert.Equal(["openrgb port self-check: ConnectionRefused (10061)"],lines);
+    }
+
+    // F6 item 1 (b): a lock permitting another image blocks this one too, so the self-check gives the first refusal.
+    [ElevatedFact]
+    public void The_self_check_refuses_when_the_lock_blocks_the_host()
+    {
+        var lines=new List<string>();
+        using var l=new OpenRgbPortLock(FreePort(),Cmd,log:lines.Add);
+        Assert.Equal(SelfBlockedText,l.Guard());
+        Assert.Equal(["openrgb port self-check: AccessDenied (10013)"],lines);
+    }
+
+    // F6 item 1 (c): a lock permitting this image, with a listener on the port: another program holds it, the second refusal.
+    [ElevatedFact]
+    public void The_self_check_refuses_when_another_program_holds_the_port()
+    {
+        using var server=new Listener();
+        using var l=new OpenRgbPortLock(server.Port,Environment.ProcessPath!);
+        Assert.Equal(PortTakenText(server.Port),l.Guard());
+    }
+
+    // F6 item 6 (whole-branch review D6): what Ensure added, read back from the filter engine by key. The sublayer weighs 0xFFFF. The blocks
+    // carry FWPM_FILTER_FLAG_CLEAR_ACTION_RIGHT and the permits don't; the permits weigh more. Every filter matches TCP, the port and the
+    // loopback address (::ffff:127.0.0.1 at the V6 layer), and the permits add this image's app ID and the Administrators-only descriptor.
+    [ElevatedFact]
+    public void The_filters_and_sublayer_read_back_as_designed()
+    {
+        using var server=new Listener();
+        using var l=new OpenRgbPortLock(server.Port,Environment.ProcessPath!);
+        Assert.Null(l.Ensure());
+        Assert.Equal(0u,FwpmSubLayerGetByKey0(l.Engine!,l.SubLayerKey,out var sub));
+        try{Assert.Equal(0xFFFF,Marshal.PtrToStructure<FWPM_SUBLAYER0>(sub).weight);}
+        finally{FwpmFreeMemory0(ref sub);}
+        var v4=new Guid("c38d57d1-05a7-4c33-904f-7fbceee60e82");   // FWPM_LAYER_ALE_AUTH_CONNECT_V4, fwpmu.h
+        var v6=new Guid("4a72393b-319f-44bc-84c3-ba54dcb3b6b4");   // FWPM_LAYER_ALE_AUTH_CONNECT_V6, fwpmu.h
+        var mapped=IPAddress.Parse("::ffff:127.0.0.1").GetAddressBytes();
+        foreach(var (key,layer,permit) in new[]{(l.BlockV4,v4,false),(l.PermitV4,v4,true),(l.BlockV6,v6,false),(l.PermitV6,v6,true)})
+        {
+            var f=ReadFilter(l,key);
+            Assert.Equal(layer,f.Layer);
+            Assert.Equal(l.SubLayerKey,f.SubLayer);
+            Assert.Equal(permit?0x1002u:0x1001u,f.Action);                            // FWP_ACTION_PERMIT / FWP_ACTION_BLOCK, terminating
+            Assert.Equal(!permit,(f.Flags&0x8)!=0);                                     // FWPM_FILTER_FLAG_CLEAR_ACTION_RIGHT
+            Assert.Equal(permit?15ul:1ul,f.Weight);
+            Guid[] fields=permit?[ConditionIpProtocol,ConditionIpRemotePort,ConditionIpRemoteAddress,ConditionAleAppId,ConditionAleUserId]
+                :[ConditionIpProtocol,ConditionIpRemotePort,ConditionIpRemoteAddress];
+            Assert.Equal(fields.Order(),f.Conditions.Keys.Order());
+            Assert.Equal((FwpUint8,(object)(byte)6),f.Conditions[ConditionIpProtocol]);
+            Assert.Equal((FwpUint16,(object)(ushort)server.Port),f.Conditions[ConditionIpRemotePort]);
+            var address=f.Conditions[ConditionIpRemoteAddress];
+            if(layer==v6){Assert.Equal(FwpByteArray16Type,address.Type);Assert.Equal(mapped,(byte[])address.Value);}
+            else Assert.Equal((FwpUint32,(object)0x7F000001u),address);
+            if(!permit) continue;
+            var appId=f.Conditions[ConditionAleAppId];
+            Assert.Equal(FwpByteBlobType,appId.Type);
+            var image=System.Text.Encoding.Unicode.GetString((byte[])appId.Value).TrimEnd('\0');
+            Assert.StartsWith(@"\device\",image,StringComparison.OrdinalIgnoreCase);
+            Assert.EndsWith(@"\"+Path.GetFileName(Environment.ProcessPath!),image,StringComparison.OrdinalIgnoreCase);
+            var user=f.Conditions[ConditionAleUserId];
+            Assert.Equal(FwpSecurityDescriptorType,user.Type);
+            var sddl=new System.Security.AccessControl.RawSecurityDescriptor((byte[])user.Value,0).GetSddlForm(System.Security.AccessControl.AccessControlSections.Access);
+            Assert.Matches(@"^D:[A-Z]*\(A;;CC;;;BA\)$",sddl);
+        }
+        // The higher weight is what lets the permit win inside the lock's own sublayer.
+        Assert.True(ReadFilter(l,l.PermitV4).Weight>ReadFilter(l,l.BlockV4).Weight);
+        Assert.True(ReadFilter(l,l.PermitV6).Weight>ReadFilter(l,l.BlockV6).Weight);
+    }
+
+    sealed record Filter(Guid Layer,Guid SubLayer,uint Action,uint Flags,ulong Weight,Dictionary<Guid,(uint Type,object Value)> Conditions);
+
+    // One of the lock's filters as the filter engine returns it, decoded before WFP's copy is freed.
+    static Filter ReadFilter(OpenRgbPortLock l,Guid key)
+    {
+        Assert.Equal(0u,FwpmFilterGetByKey0(l.Engine!,in key,out var p));
+        try
+        {
+            var f=Marshal.PtrToStructure<FWPM_FILTER0>(p);
+            var conditions=new Dictionary<Guid,(uint,object)>();
+            var size=Marshal.SizeOf<FWPM_FILTER_CONDITION0>();
+            for(var i=0;i<f.numFilterConditions;i++)
+            {
+                var c=Marshal.PtrToStructure<FWPM_FILTER_CONDITION0>(f.filterCondition+i*size);
+                Assert.Equal(0u,c.matchType); // FWP_MATCH_EQUAL
+                var v=c.conditionValue;
+                object value=v.type switch
+                {
+                    FwpUint8=>v.uint8,
+                    FwpUint16=>v.uint16,
+                    FwpUint32=>v.uint32,
+                    FwpByteArray16Type=>Bytes(v.pointer,16),
+                    FwpByteBlobType or FwpSecurityDescriptorType=>Blob(v.pointer),
+                    _=>throw new InvalidOperationException($"condition type {v.type}"),
+                };
+                conditions.Add(c.fieldKey,(v.type,value));
+            }
+            return new(f.layerKey,f.subLayerKey,f.action.type,f.flags,Weight(f.weight),conditions);
+        }
+        finally{FwpmFreeMemory0(ref p);}
+    }
+    // FWP_VALUE0 of the integer types a filter weight may come back as (fwptypes.h: FWP_UINT8 1, FWP_UINT16 2, FWP_UINT32 3, FWP_UINT64 4,
+    // the last by pointer).
+    static ulong Weight(FWP_VALUE0 v)=>v.type switch
+    {
+        1=>v.uint8,2=>v.uint16,3=>v.uint32,4=>(ulong)Marshal.ReadInt64(v.pointer),
+        _=>throw new InvalidOperationException($"weight type {v.type}"),
+    };
+    static byte[] Bytes(IntPtr p,int n){var b=new byte[n];Marshal.Copy(p,b,0,n);return b;}
+    static byte[] Blob(IntPtr p){var blob=Marshal.PtrToStructure<FWP_BYTE_BLOB>(p);return Bytes(blob.data,(int)blob.size);}
 
     // Before every launch Ensure confirms the filters still exist: one deleted behind the lock's back is added again, and the block holds.
     [ElevatedFact]

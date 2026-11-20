@@ -1,5 +1,7 @@
 using System.ComponentModel;
 using System.Globalization;
+using System.Net;
+using System.Net.Sockets;
 using System.Runtime.InteropServices;
 using Microsoft.Win32.SafeHandles;
 
@@ -17,6 +19,11 @@ namespace DeadWare.Devices;
 //     descriptor that grants only BUILTIN\Administrators FWP_ACTRL_MATCH_FILTER (D:(A;;CC;;;BA)). A token without administrator rights
 //     holds Administrators deny-only and fails that match, and so does a copy of DeadWare.Devices.exe such a program starts and controls.
 // The filters match by remote address: FWP_CONDITION_FLAG_IS_LOOPBACK isn't used (Ruling BG).
+// F6 item 1 (whole-branch review D15 and D7/D14, Ruling BH): once the filters are in place, and before OpenRGB starts, the host connects
+// to the port itself, as its port probe and OpenRGB.NET do: a parameterless TcpClient, so a dual-mode socket whose connect to 127.0.0.1
+// goes out as ::ffff:127.0.0.1. Refused means nothing listens and the permit let the host through. Access denied means the lock blocks
+// the host itself, for example if Windows' own app ID for the host's image differs from FwpmGetAppIdFromFileName0's; without this check
+// that would show only as OpenRGB stopping five times. A connect that succeeds means another program holds the port.
 internal sealed class OpenRgbPortLock : IDisposable
 {
     // CC is FWP_ACTRL_MATCH_FILTER (0x1, fwptypes.h), the right WFP checks when it evaluates a FWP_SECURITY_DESCRIPTOR_TYPE condition.
@@ -27,18 +34,73 @@ internal sealed class OpenRgbPortLock : IDisposable
     readonly bool x64;
     readonly object gate=new();
     readonly Guid subLayerKey=Guid.NewGuid();
+    internal Guid SubLayerKey=>subLayerKey; // for the elevated tests that read the lock back
     // Fresh keys for each lock, so two locks (two users' elevated hosts, or parallel tests) never collide.
     internal readonly Guid BlockV4=Guid.NewGuid(),PermitV4=Guid.NewGuid(),BlockV6=Guid.NewGuid(),PermitV6=Guid.NewGuid();
+    readonly Func<int,SocketError> connect;
+    readonly Action<string>? log;
     EngineHandle? engine;
     bool disposed;
 
-    public OpenRgbPortLock(int port,string appPath,string userSddl=AdministratorsOnly):this(port,appPath,userSddl,Environment.Is64BitProcess){}
+    public OpenRgbPortLock(int port,string appPath,string userSddl=AdministratorsOnly,Action<string>? log=null):this(port,appPath,userSddl,Environment.Is64BitProcess,null,log){}
     // x64: the structure layouts below are x64's (DeadWare ships win-x64 only); a 32-bit process refuses rather than guess them.
-    internal OpenRgbPortLock(int port,string appPath,string userSddl,bool x64){Port=port;AppPath=appPath;UserSddl=userSddl;this.x64=x64;}
+    // connect: the self-check's one connect to the port and its outcome; the unit tests' seam, ConnectOnce otherwise.
+    internal OpenRgbPortLock(int port,string appPath,string userSddl,bool x64,Func<int,SocketError>? connect=null,Action<string>? log=null)
+    {Port=port;AppPath=appPath;UserSddl=userSddl;this.x64=x64;this.connect=connect??ConnectOnce;this.log=log;}
 
     // The lock an elevated host holds for its whole life; none for a host without administrator rights, which can't add filters and whose
     // OpenRGB has only the user's rights. Nothing touches Windows until the first Ensure.
-    public static OpenRgbPortLock? ForHost(bool privileged)=>privileged?new(OpenRgbEngine.Port,Environment.ProcessPath??"",AdministratorsOnly):null;
+    public static OpenRgbPortLock? ForHost(bool privileged,Action<string>? log=null)=>privileged?new(OpenRgbEngine.Port,Environment.ProcessPath??"",AdministratorsOnly,log):null;
+
+    // F6 item 3 (whole-branch review D2): Program's choice, kept here so the tests can pin it. An elevated host's engine gets the lock's
+    // Guard as its port guard, and the host holds the lock (portLock) for its whole life and disposes it at exit; a host without
+    // administrator rights gets neither.
+    public static Func<string?>? GuardFor(bool privileged,Action<string>? log,out OpenRgbPortLock? portLock)
+    {
+        portLock=ForHost(privileged,log);
+        return portLock is null?null:portLock.Guard;
+    }
+
+    // The port guard the engine runs before every launch: the filters confirmed or added, then the self-check. Null when both pass, else
+    // the refusal, which the engine treats as final.
+    public string? Guard()=>Ensure()??SelfCheck();
+
+    public const string SelfBlockedText="DeadWare's limit on OpenRGB's network port would also block its own lighting helper (Windows refused its test connection), so it won't run OpenRGB as administrator. Turn lighting off and on in Settings to try again.";
+    public static string PortTakenText(int port)
+        =>$"Another program is using OpenRGB's network port {port.ToString(CultureInfo.InvariantCulture)}, so DeadWare won't run OpenRGB as administrator. Quit that program, then turn lighting off and on in Settings.";
+    // A refused loopback connect can take about a second on Windows, so the self-check allows a few.
+    public static readonly TimeSpan SelfCheckTimeout=TimeSpan.FromSeconds(5);
+
+    // The self-check, after Ensure has put the filters in place: one connect to 127.0.0.1 on the port. Refused passes; access denied, an
+    // error of any other kind or no answer in time is SelfBlockedText; a connect that succeeds is PortTakenText. The outcome is logged once.
+    internal string? SelfCheck()
+    {
+        SocketError outcome;
+        try{outcome=connect(Port);}
+        catch(Exception e)
+        {
+            log?.Invoke("openrgb port self-check failed: "+e.Message);
+            return SelfBlockedText;
+        }
+        log?.Invoke($"openrgb port self-check: {outcome} ({((int)outcome).ToString(CultureInfo.InvariantCulture)})");
+        return outcome switch
+        {
+            SocketError.ConnectionRefused=>null,
+            SocketError.Success=>PortTakenText(Port),
+            _=>SelfBlockedText,
+        };
+    }
+
+    // One connect from this process to 127.0.0.1 on the port, through a parameterless TcpClient as ProbePort's: a dual-mode IPv6 socket
+    // wherever IPv6 is on. Success, the socket error, or TimedOut after SelfCheckTimeout.
+    internal static SocketError ConnectOnce(int port)
+    {
+        using var client=new TcpClient();
+        using var timeout=new CancellationTokenSource(SelfCheckTimeout);
+        try{client.ConnectAsync(IPAddress.Loopback,port,timeout.Token).AsTask().GetAwaiter().GetResult();return SocketError.Success;}
+        catch(SocketException e){return e.SocketErrorCode;}
+        catch(OperationCanceledException){return SocketError.TimedOut;}
+    }
 
     public static string RefusalText(int code,string message)
         =>$"DeadWare couldn't limit OpenRGB's network port to its lighting helper (error {Code(code)}: {message}), so it won't run OpenRGB as administrator. Turn lighting off and on in Settings to try again.";
@@ -55,12 +117,19 @@ internal sealed class OpenRgbPortLock : IDisposable
         {
             if(disposed) return RefusalText(ErrorInvalidHandle,Message(ErrorInvalidHandle));
             if(!x64) return RefusalText(ErrorNotSupported,Message(ErrorNotSupported));
-            var code=TryEnsure();
-            if(code!=0){Close();code=TryEnsure();}
+            var code=Retried(TryEnsure,Close);
             if(code==0) return null;
             Close();
             return RefusalText(code,Message(code));
         }
+    }
+
+    // F6 item 6 (whole-branch review D6): the retry, apart so a unit test can pin it. A failed attempt closes the session before the second.
+    internal static int Retried(Func<int> attempt,Action close)
+    {
+        var code=attempt();
+        if(code!=0){close();code=attempt();}
+        return code;
     }
 
     public void Dispose(){lock(gate){disposed=true;Close();}}
@@ -230,7 +299,7 @@ internal sealed class OpenRgbPortLock : IDisposable
     const uint FwpmFilterFlagClearActionRight=0x8;      // fwpmtypes.h:474
     const uint FwpActionBlock=0x1|0x1000,FwpActionPermit=0x2|0x1000; // fwptypes.h:308-309, FWP_ACTION_FLAG_TERMINATING
     const uint FwpMatchEqual=0;                          // fwptypes.h:195
-    const uint FwpUint8=1,FwpUint16=2,FwpUint32=3,FwpByteArray16Type=11,FwpByteBlobType=12,FwpSecurityDescriptorType=14; // fwptypes.h:113-128
+    internal const uint FwpUint8=1,FwpUint16=2,FwpUint32=3,FwpByteArray16Type=11,FwpByteBlobType=12,FwpSecurityDescriptorType=14; // fwptypes.h:113-128
     const byte IpProtoTcp=6;
     const uint LoopbackV4=0x7F000001;                    // 127.0.0.1, host byte order as FWP_UINT32 addresses are
     static readonly byte[] MappedLoopback=[0,0,0,0,0,0,0,0,0,0,0xFF,0xFF,127,0,0,1]; // ::ffff:127.0.0.1, network byte order
@@ -240,11 +309,11 @@ internal sealed class OpenRgbPortLock : IDisposable
     internal const int FwpEFilterNotFound=unchecked((int)0x80320003),FwpESubLayerNotFound=unchecked((int)0x80320007); // winerror.h
     static readonly Guid LayerAleAuthConnectV4=new("c38d57d1-05a7-4c33-904f-7fbceee60e82");   // fwpmu.h:457
     static readonly Guid LayerAleAuthConnectV6=new("4a72393b-319f-44bc-84c3-ba54dcb3b6b4");   // fwpmu.h:475
-    static readonly Guid ConditionIpRemoteAddress=new("b235ae9a-1d64-49b8-a44c-5ff3d9095045"); // fwpmu.h:1417
-    static readonly Guid ConditionIpProtocol=new("3971ef2b-623e-4f9a-8cb1-6e79b806b9a7");      // fwpmu.h:1704
-    static readonly Guid ConditionIpRemotePort=new("c35a604d-d22b-4e1a-91b4-68f674ee674b");    // fwpmu.h:1724
-    static readonly Guid ConditionAleAppId=new("d78e1e87-8644-4ea5-9437-d809ecefc971");        // fwpmu.h:1865
-    static readonly Guid ConditionAleUserId=new("af043a0a-b34d-4f86-979c-c90371af6e66");       // fwpmu.h:1887
+    internal static readonly Guid ConditionIpRemoteAddress=new("b235ae9a-1d64-49b8-a44c-5ff3d9095045"); // fwpmu.h:1417
+    internal static readonly Guid ConditionIpProtocol=new("3971ef2b-623e-4f9a-8cb1-6e79b806b9a7");      // fwpmu.h:1704
+    internal static readonly Guid ConditionIpRemotePort=new("c35a604d-d22b-4e1a-91b4-68f674ee674b");    // fwpmu.h:1724
+    internal static readonly Guid ConditionAleAppId=new("d78e1e87-8644-4ea5-9437-d809ecefc971");        // fwpmu.h:1865
+    internal static readonly Guid ConditionAleUserId=new("af043a0a-b34d-4f86-979c-c90371af6e66");       // fwpmu.h:1887
 
     // x64 layouts, field for field from the SDK headers; OpenRgbPortLockTests pins each size and offset.
     [StructLayout(LayoutKind.Sequential)] internal struct FWPM_DISPLAY_DATA0{public IntPtr name,description;} // fwptypes.h:408, 16 bytes
@@ -289,12 +358,12 @@ internal sealed class OpenRgbPortLock : IDisposable
     [DllImport("fwpuclnt.dll")] static extern uint FwpmTransactionCommit0(EngineHandle engineHandle);
     [DllImport("fwpuclnt.dll")] static extern uint FwpmTransactionAbort0(EngineHandle engineHandle);
     [DllImport("fwpuclnt.dll")] static extern uint FwpmSubLayerAdd0(EngineHandle engineHandle,in FWPM_SUBLAYER0 subLayer,IntPtr sd);
-    [DllImport("fwpuclnt.dll")] static extern uint FwpmSubLayerGetByKey0(EngineHandle engineHandle,in Guid key,out IntPtr subLayer);
+    [DllImport("fwpuclnt.dll")] internal static extern uint FwpmSubLayerGetByKey0(EngineHandle engineHandle,in Guid key,out IntPtr subLayer);
     [DllImport("fwpuclnt.dll")] static extern uint FwpmFilterAdd0(EngineHandle engineHandle,in FWPM_FILTER0 filter,IntPtr sd,out ulong id);
-    [DllImport("fwpuclnt.dll")] static extern uint FwpmFilterGetByKey0(EngineHandle engineHandle,in Guid key,out IntPtr filter);
+    [DllImport("fwpuclnt.dll")] internal static extern uint FwpmFilterGetByKey0(EngineHandle engineHandle,in Guid key,out IntPtr filter);
     [DllImport("fwpuclnt.dll")] internal static extern uint FwpmFilterDeleteByKey0(EngineHandle engineHandle,in Guid key);
     [DllImport("fwpuclnt.dll",CharSet=CharSet.Unicode)] static extern uint FwpmGetAppIdFromFileName0(string fileName,out IntPtr appId);
-    [DllImport("fwpuclnt.dll")] static extern void FwpmFreeMemory0(ref IntPtr p);
+    [DllImport("fwpuclnt.dll")] internal static extern void FwpmFreeMemory0(ref IntPtr p);
     [DllImport("advapi32.dll",CharSet=CharSet.Unicode,SetLastError=true)] [return:MarshalAs(UnmanagedType.Bool)]
     static extern bool ConvertStringSecurityDescriptorToSecurityDescriptorW(string sddl,uint revision,out IntPtr sd,out uint size);
     [DllImport("kernel32.dll")] static extern IntPtr LocalFree(IntPtr p);
