@@ -127,7 +127,7 @@ internal sealed class DeviceHostClient : IAsyncDisposable
         IDeviceHostProcess? old;lock(gate){old=process;process=null;}
         old?.Dispose();
         pacer.HostExited();
-        if(backoff.RecordFailure(time.GetUtcNow()) is not {} delay) {SetProblem(GaveUpProblem);return false;}
+        if(backoff.RecordFailure(time) is not {} delay) {SetProblem(GaveUpProblem);return false;}
         return await Pause(delay,ct).ConfigureAwait(false)&&await PacedLaunchAsync(false,ct).ConfigureAwait(false);
     }
     /// <summary>Launches once <see cref="pacer"/> allows it; a stop during the wait launches nothing.</summary>

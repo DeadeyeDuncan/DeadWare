@@ -341,6 +341,99 @@ public sealed class OpenRgbEngineTests : IAsyncLifetime
         Assert.True(OpenRgbEngine.Left(clock,now-clock.TimestampFrequency)<=TimeSpan.Zero);
     }
 
+    // Four OpenRGB exits, each relaunched after its delay (4 s doubling to 32 s): a minute in all, so all four fall inside the window.
+    async Task FourExits(OpenRgbEngine e,Clock clock)
+    {
+        await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
+        for(var i=0;i<RestartBackoff.MaxFailures-1;i++)
+        {
+            await Until(()=>runner.Count==i+1&&e.Status==EngineStatus.Running);
+            runner.At(i).Exit();
+            var delay=RestartBackoff.Base*Math.Pow(2,i);
+            await Until(()=>e.Status==EngineStatus.Restarting&&clock.Waiting(delay));
+            clock.Advance(delay);
+        }
+        await Until(()=>runner.Count==RestartBackoff.MaxFailures&&e.Status==EngineStatus.Running);
+    }
+
+    // F6 item 4 (whole-branch review D4): the give-up window counts on the monotonic clock too. An hour's step back of the wall clock
+    // doesn't keep four exits counted once ten minutes have passed (the fifth gets the first delay again), and an hour's step forward
+    // doesn't drop them early (the fifth inside the ten minutes gives up).
+    [Theory]
+    [InlineData(-3600)]
+    [InlineData(3600)]
+    public async Task The_give_up_window_ignores_a_wall_clock_step(int stepSeconds)
+    {
+        var clock=new Clock();
+        var stepped=new SteppedClock(clock);
+        var e=Track(new OpenRgbEngine(exe,@"C:\cfg\openrgb",runner,(_,_)=>Task.FromResult(true),stepped,log));
+        await FourExits(e,clock);
+        stepped.Step=TimeSpan.FromSeconds(stepSeconds);
+        if(stepSeconds<0) clock.Advance(RestartBackoff.Window+TimeSpan.FromMinutes(1));
+        runner.At(RestartBackoff.MaxFailures-1).Exit();
+        if(stepSeconds<0) await Until(()=>e.Status==EngineStatus.Restarting&&clock.Waiting(RestartBackoff.Base));
+        else
+        {
+            await Until(()=>e.Status==EngineStatus.Failed);
+            Assert.Equal(OpenRgbEngine.GaveUpText,e.FailureReason);
+        }
+    }
+
+    // A clock whose timestamps tick at 3 MHz, not TimeSpan's 10 MHz, as a machine's QPC may: GetTimestamp() is the inner clock's time in
+    // those units. Its wall time and timers are the inner clock's.
+    sealed class SlowTimestampClock(Clock inner):TimeProvider
+    {
+        public const long Frequency=3_000_000;
+        public override DateTimeOffset GetUtcNow()=>inner.GetUtcNow();
+        public override long GetTimestamp()=>(long)((Int128)inner.GetTimestamp()*Frequency/TimeSpan.TicksPerSecond);
+        public override long TimestampFrequency=>Frequency;
+        public override TimeZoneInfo LocalTimeZone=>inner.LocalTimeZone;
+        public override ITimer CreateTimer(TimerCallback callback,object? state,TimeSpan dueTime,TimeSpan period)=>inner.CreateTimer(callback,state,dueTime,period);
+    }
+
+    // F6 item 5 (whole-branch review D5): with a timestamp frequency other than TimeSpan's, the relaunch a conflict stop arms still waits
+    // exactly the backoff from the stop, so the delay is converted into timestamp units the right way round.
+    [Fact]
+    public async Task The_relaunch_delay_holds_at_another_timestamp_frequency()
+    {
+        var clock=new Clock();
+        var slow=new SlowTimestampClock(clock);
+        Assert.NotEqual(TimeSpan.TicksPerSecond,slow.TimestampFrequency);
+        var e=Track(new OpenRgbEngine(exe,@"C:\cfg\openrgb",runner,(_,_)=>Task.FromResult(true),slow,log));
+        await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
+        await e.StopAsync(keepHistory:true).WaitAsync(RealTimeCap);
+        clock.Advance(TimeSpan.FromSeconds(1));
+        await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
+        Assert.Equal(EngineStatus.Restarting,e.Status);
+        var left=RestartBackoff.Base-TimeSpan.FromSeconds(1);
+        Assert.True(clock.Waiting(left));
+        clock.Advance(left-TimeSpan.FromTicks(1));
+        await Task.Delay(100);
+        Assert.Equal(1,runner.Count);
+        clock.Advance(TimeSpan.FromTicks(1));
+        await Until(()=>runner.Count==2&&e.Status==EngineStatus.Running);
+    }
+
+    // F6 item 5: the give-up window holds at that frequency too: four exits are forgotten once ten minutes have passed, and a fifth
+    // inside the ten minutes gives up.
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task The_give_up_window_holds_at_another_timestamp_frequency(bool afterTheWindow)
+    {
+        var clock=new Clock();
+        var e=Track(new OpenRgbEngine(exe,@"C:\cfg\openrgb",runner,(_,_)=>Task.FromResult(true),new SlowTimestampClock(clock),log));
+        await FourExits(e,clock);
+        clock.Advance(afterTheWindow?RestartBackoff.Window+TimeSpan.FromMinutes(1):RestartBackoff.Window-TimeSpan.FromMinutes(2));
+        runner.At(RestartBackoff.MaxFailures-1).Exit();
+        if(afterTheWindow) await Until(()=>e.Status==EngineStatus.Restarting&&clock.Waiting(RestartBackoff.Base));
+        else
+        {
+            await Until(()=>e.Status==EngineStatus.Failed);
+            Assert.Equal(OpenRgbEngine.GaveUpText,e.FailureReason);
+        }
+    }
+
     [Fact]
     public async Task Stop_kills_tree_and_does_not_restart()
     {

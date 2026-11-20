@@ -168,8 +168,7 @@ internal sealed class OpenRgbEngine : IAsyncDisposable
                 // F4 item 3 (whole-branch review D8): every OpenRGB that was launched and ended counts, one a stop ended included, so a program
                 // that comes and goes can't cycle OpenRGB faster or longer than crashes can. A full stop clears the count after it.
                 if(quitting&&proc is null) break;
-                var now=time.GetUtcNow();
-                var delay=backoff.RecordFailure(now);
+                var delay=backoff.RecordFailure(time); // on the monotonic clock, as resumeAt is (F6 item 4, whole-branch review D4)
                 lock(gate){if(delay is null) gaveUp=true;else resumeAt=time.GetTimestamp()+(long)(delay.Value.Ticks*(double)time.TimestampFrequency/TimeSpan.TicksPerSecond);}
                 if(quitting) break;
                 if(delay is null){Set(EngineStatus.Failed,GaveUpText);return;}
