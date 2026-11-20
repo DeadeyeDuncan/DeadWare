@@ -431,6 +431,119 @@ public class DeviceHostClientTests:IAsyncLifetime
         await Settle();
         Assert.True(reply.Ok);Assert.Null(client.Problem);
     }
+    static readonly Dictionary<string,string> Frame=new(){["desk:0"]="#FF0000",["tower:1"]="#00FF80"};
+    /// <summary>The host's answers, with a subscription acknowledged by a plain reply and then followed on the same pipe by <paramref name="after"/>, so a test's frame never races the host's own writes.</summary>
+    static Func<HostMessage,HostMessage[]> Subscribe(Func<bool,HostMessage[]>? after=null)=>m=>m is SubscribePreviewRequest s?[new Reply(true,null){Id=m.Id},..(after?.Invoke(s.On)??[])]:FakeHost.Answers(m);
+    List<HostMessage> Seen() {lock(host.Received)return [..host.Received];}
+    [Fact] public async Task A_preview_event_raises_Preview_with_its_colours()
+    {
+        host.Answer=Subscribe(on=>on?[new PreviewEvent(Frame)]:[]);
+        var client=Make();IReadOnlyDictionary<string,string>? got=null;client.Preview+=c=>Volatile.Write(ref got,c);
+        await client.StartAsync(false,CancellationToken.None);
+        await Until(()=>client.State is not null);
+        client.SetPreview(true);
+        await Until(()=>Volatile.Read(ref got) is not null,"the preview raised");
+        Assert.Equal(Frame,got!);
+    }
+    [Fact] public async Task SetPreview_sends_a_subscribe_request()
+    {
+        host.Answer=Subscribe();
+        var client=Make();
+        await client.StartAsync(false,CancellationToken.None);
+        await Until(()=>client.State is not null);
+        client.SetPreview(true);client.SetPreview(true);
+        await Until(()=>host.Count<SubscribePreviewRequest>()==1);
+        await Settle();
+        Assert.Equal(1,host.Count<SubscribePreviewRequest>());
+        client.SetPreview(false);
+        await Until(()=>host.Count<SubscribePreviewRequest>()==2);
+        client.SetPreview(true);
+        await Until(()=>host.Count<SubscribePreviewRequest>()==3);
+        await Settle();
+        Assert.Equal([true,false,true],Seen().OfType<SubscribePreviewRequest>().Select(s=>s.On));
+    }
+    [Fact] public async Task The_subscription_is_sent_again_after_a_reconnect()
+    {
+        launcher.Running=new FakeProcess();host.Answer=Subscribe();
+        var client=Make();
+        await client.StartAsync(false,CancellationToken.None);
+        await Until(()=>client.State is not null);
+        client.SetPreview(true);
+        await Until(()=>host.Count<SubscribePreviewRequest>()==1);
+        int before=Seen().Count;
+        host.Server!.Dispose();
+        await Until(()=>client.State is null,"the dropped host's state cleared");
+        await Elapse(Retry);
+        await Until(()=>host.Connections==2&&host.Count<SubscribePreviewRequest>()==2,"the resubscribe");
+        var fresh=Seen().Skip(before).ToList();
+        int asked=fresh.FindIndex(m=>m is GetStateRequest),subscribed=fresh.FindIndex(m=>m is SubscribePreviewRequest);
+        Assert.True(asked>=0&&subscribed>asked,"the new connection asks for the state before it subscribes");
+        Assert.True(((SubscribePreviewRequest)fresh[subscribed]).On);
+    }
+    [Fact] public async Task SetPreview_before_the_first_connection_is_sent_once_connected()
+    {
+        host.Answer=Subscribe();
+        var client=Make();
+        client.SetPreview(true);
+        await client.StartAsync(false,CancellationToken.None);
+        await Until(()=>host.Count<SubscribePreviewRequest>()==1);
+        await Settle();
+        var seen=Seen();
+        Assert.Equal(1,host.Count<SubscribePreviewRequest>());
+        Assert.True(seen.FindIndex(m=>m is GetStateRequest)<seen.FindIndex(m=>m is SubscribePreviewRequest{On:true}));
+    }
+    [Fact] public async Task A_preview_event_does_not_change_State_or_raise_Changed()
+    {
+        host.Answer=Subscribe(on=>on?[new PreviewEvent(Frame)]:[]);
+        var client=Make();int changed=0,previews=0;HostState? seen=null;
+        client.Changed+=()=>{Volatile.Write(ref seen,client.State);Interlocked.Increment(ref changed);};
+        client.Preview+=_=>Interlocked.Increment(ref previews);
+        client.SetPreview(true);
+        await client.StartAsync(false,CancellationToken.None);
+        await Until(()=>Volatile.Read(ref previews)==1,"the preview raised");
+        await Settle();
+        Assert.Equal(1,Volatile.Read(ref changed));Assert.NotNull(seen);Assert.Same(seen,client.State);
+    }
+    [Fact] public async Task A_preview_event_while_not_wanted_is_dropped()
+    {
+        // A frame the host had already queued arrives just after the unsubscribe's reply.
+        host.Answer=Subscribe(on=>on?[]:[new PreviewEvent(Frame)]);
+        var client=Make();int previews=0;client.Preview+=_=>Interlocked.Increment(ref previews);
+        await client.StartAsync(false,CancellationToken.None);
+        await Until(()=>client.State is not null);
+        client.SetPreview(true);
+        await Until(()=>host.Count<SubscribePreviewRequest>()==1);
+        client.SetPreview(false);
+        await Until(()=>host.Count<SubscribePreviewRequest>()==2);
+        // The pipe is ordered: once this request's answer is read, the stale frame was read before it.
+        Assert.True((await client.SendAsync(new GetStateRequest(),CancellationToken.None).WaitAsync(Bound)).Ok);
+        await Settle();
+        Assert.Equal(0,Volatile.Read(ref previews));
+    }
+    [Fact] public async Task A_throwing_Preview_subscriber_does_not_end_the_connection()
+    {
+        host.Answer=Subscribe(on=>on?[new PreviewEvent(Frame)]:[]);
+        var client=Make();int calls=0;
+        client.Preview+=_=>throw new InvalidOperationException("subscriber failed");
+        client.Preview+=_=>Interlocked.Increment(ref calls);
+        await client.StartAsync(false,CancellationToken.None);
+        await Until(()=>client.State is not null);
+        client.SetPreview(true);
+        await Until(()=>Volatile.Read(ref calls)==1,"the second subscriber called");
+        var reply=await client.SendAsync(new SetLightsOnRequest(true),CancellationToken.None).WaitAsync(Bound);
+        Assert.True(reply.Ok);Assert.Null(client.Problem);
+    }
+    [Fact] public async Task SetPreview_never_throws_unconnected_or_after_dispose()
+    {
+        bool up=false;var client=Make(NoPipeUntil(()=>up));
+        client.SetPreview(true);client.SetPreview(false);
+        await client.StartAsync(false,CancellationToken.None);
+        await Until(()=>launcher.Launched==1);
+        client.SetPreview(true);
+        await client.DisposeAsync().AsTask().WaitAsync(Bound);
+        client.SetPreview(false);client.SetPreview(true);
+        Assert.Equal(0,host.Count<SubscribePreviewRequest>());
+    }
     [Fact] public async Task Real_connect_rejects_a_pipe_server_that_is_not_DeadWare_Devices()
     {
         string name="DeadWare.Devices.Tests."+Guid.NewGuid().ToString("N");

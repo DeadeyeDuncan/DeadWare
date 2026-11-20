@@ -34,19 +34,31 @@ internal sealed class DeviceHostClient : IAsyncDisposable
         NoAnswerText=>"The lighting helper didn't answer, so the last change may not have applied.",
         _=>$"The last change didn't apply: {HostReplyCodes.Explain(why)}",
     };
-    sealed class Conn(Stream stream) {public readonly Stream Stream=stream;public readonly SemaphoreSlim Write=new(1,1);public readonly Dictionary<long,TaskCompletionSource<Reply>> Pending=new();public bool Dead,Checked;}
+    sealed class Conn(Stream stream) {public readonly Stream Stream=stream;public readonly SemaphoreSlim Write=new(1,1);public readonly Dictionary<long,TaskCompletionSource<Reply>> Pending=new();public bool Dead,Checked,Ready;public Task Previews=Task.CompletedTask;}
     readonly string openRgbPath;readonly IDeviceHostLauncher launcher;readonly Func<CancellationToken,Task<Stream>> connect;readonly TimeProvider time;readonly bool windowElevated;readonly HostLaunchPacer pacer;
     readonly object gate=new();readonly RestartBackoff backoff=new();
     readonly CancellationTokenSource lifetime=new();readonly CancellationTokenSource pacing;readonly TaskCompletionSource disposed=new(TaskCreationOptions.RunContinuationsAsynchronously);
     CancellationTokenRegistration startToken;
     // stopWindow: the running stop's 5 s window; stopSent: its one StopRequest has been claimed, by the stop or by a connection registered after it began.
-    IDeviceHostProcess? process;Conn? conn;HostState? state;string? problem;Task? loop,stopTask;CancellationTokenSource? stopWindow;bool stopping,stopSent,disposing,startupPending;long nextId;
+    IDeviceHostProcess? process;Conn? conn;HostState? state;string? problem;Task? loop,stopTask;CancellationTokenSource? stopWindow;bool stopping,stopSent,disposing,startupPending,previewWanted;long nextId;
     /// <param name="pacer">Shared by the session's clients so that no launch follows a host's exit within 4 s; a client of its own by default.</param>
     public DeviceHostClient(string openRgbPath,IDeviceHostLauncher launcher,Func<CancellationToken,Task<Stream>> connect,TimeProvider time,bool windowElevated=false,HostLaunchPacer? pacer=null)
     {this.pacer=pacer??new(time);this.windowElevated=windowElevated;this.openRgbPath=openRgbPath;this.launcher=launcher;this.connect=connect;this.time=time;pacing=CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);}
     public HostState? State {get {lock(gate)return state;}}
     public string? Problem {get {lock(gate)return problem;}}
     public event Action? Changed;
+    /// <summary>A preview frame, zone key to #RRGGBB, raised on the read loop like <see cref="Changed"/> and only while <see cref="SetPreview"/> wants frames.</summary>
+    public event Action<IReadOnlyDictionary<string,string>>? Preview;
+    /// <summary>
+    /// Remembers whether the window wants preview frames: sent now when connected (once the connection's state has arrived), and again after every reconnect.
+    /// Never blocks and never throws; no reply is awaited, and a failed send is left to the next connection. A repeat of the wanted value sends nothing.
+    /// </summary>
+    public void SetPreview(bool on) {lock(gate){if(previewWanted==on)return;previewWanted=on;if(conn is {Dead:false,Ready:true} c)QueuePreview(c,on);}}
+    /// <summary>Under the lock: queues a subscribe request behind the connection's earlier ones, so the host sees them in the order they were decided.</summary>
+    void QueuePreview(Conn c,bool on)=>c.Previews=c.Previews.ContinueWith(_=>SendPreviewAsync(c,on),CancellationToken.None,TaskContinuationOptions.None,TaskScheduler.Default).Unwrap();
+    async Task SendPreviewAsync(Conn c,bool on) {try {await SendAsync(c,new SubscribePreviewRequest(on),CancellationToken.None).ConfigureAwait(false);} catch(Exception) {}}
+    /// <summary>Raises <see cref="Preview"/> with each subscriber contained, as <see cref="RaiseChanged"/> does.</summary>
+    void RaisePreview(IReadOnlyDictionary<string,string> colors) {if(Preview is {} handlers)foreach(Action<IReadOnlyDictionary<string,string>> handler in handlers.GetInvocationList())try {handler(colors);} catch(Exception) {}}
     /// <summary>Starts the background connection loop and returns at once; <paramref name="startup"/> is true for a Windows sign-in launch and applies to the first launch only.</summary>
     public Task StartAsync(bool startup,CancellationToken token)
     {
@@ -165,7 +177,7 @@ internal sealed class DeviceHostClient : IAsyncDisposable
             Task exited=CurrentProcess?.WaitForExitAsync(serve.Token)??Task.Delay(Timeout.Infinite,serve.Token);
             var read=ReadAsync(c,serve.Token);
             // A stop that began before this connection was registered could not reach the host: its StopRequest goes now.
-            if(stop is {} window)stopSend=SendStopAsync(c,window);else _=RefreshAsync(ct);
+            if(stop is {} window)stopSend=SendStopAsync(c,window);else _=RefreshAsync(c,ct);
             await Task.WhenAny(read,exited).ConfigureAwait(false);
             serve.Cancel();
             try {await exited.ConfigureAwait(false);} catch(Exception) {}
@@ -184,7 +196,12 @@ internal sealed class DeviceHostClient : IAsyncDisposable
             if(cleared)RaiseChanged();
         }
     }
-    async Task RefreshAsync(CancellationToken ct) {try {await SendAsync(new GetStateRequest(),ct).ConfigureAwait(false);} catch(Exception) {}}
+    /// <summary>Asks a new connection for the state, then resubscribes to previews when wanted, so the window has a state before any frame.</summary>
+    async Task RefreshAsync(Conn c,CancellationToken ct)
+    {
+        try {await SendAsync(c,new GetStateRequest(),ct).ConfigureAwait(false);} catch(Exception) {}
+        lock(gate){if(c.Dead)return;c.Ready=true;if(previewWanted)QueuePreview(c,true);}
+    }
     /// <summary>Under the lock: the stop window's token when the caller is the one to send the running stop's single StopRequest on <paramref name="c"/>, else null.</summary>
     CancellationToken? ClaimStop(Conn? c) {if(c is null||c.Dead||stopWindow is null||stopSent)return null;stopSent=true;return stopWindow.Token;}
     /// <summary>Writes StopRequest under the connection's write lock, within <paramref name="limit"/>. No reply is awaited: the caller waits for the exit instead.</summary>
@@ -230,6 +247,8 @@ internal sealed class DeviceHostClient : IAsyncDisposable
                     RaiseChanged();
                     if(first&&windowElevated&&!update.State.Elevated)return ServeEnd.WrongElevation;
                 }
+                // A frame the host queued before an unsubscribe can still arrive after it: dropped while frames aren't wanted.
+                else if(message is PreviewEvent frame) {bool wanted;lock(gate)wanted=previewWanted;if(wanted)RaisePreview(frame.Colors);}
             }
             return ServeEnd.Closed;
         }
@@ -243,11 +262,13 @@ internal sealed class DeviceHostClient : IAsyncDisposable
         waiting.TrySetResult(reply);
     }
     /// <summary>Sends a request and returns the host's answer. Connection problems come back as a failed <see cref="Reply"/>; only a cancelled <paramref name="token"/> throws.</summary>
-    public async Task<Reply> SendAsync(HostMessage request,CancellationToken token)
+    public Task<Reply> SendAsync(HostMessage request,CancellationToken token) {Conn? c;lock(gate)c=conn;return SendAsync(c,request,token);}
+    /// <summary>Sends on one connection, which is never the next one should it drop meanwhile.</summary>
+    async Task<Reply> SendAsync(Conn? c,HostMessage request,CancellationToken token)
     {
         var waiting=new TaskCompletionSource<Reply>(TaskCreationOptions.RunContinuationsAsynchronously);
-        long id=Interlocked.Increment(ref nextId);Conn? c;
-        lock(gate){c=conn;if(c is null||c.Dead)return NotConnected;c.Pending[id]=waiting;}
+        long id=Interlocked.Increment(ref nextId);
+        lock(gate){if(c is null||c.Dead)return NotConnected;c.Pending[id]=waiting;}
         using var timeout=new CancellationTokenSource(ReplyTimeout,time);
         using var linked=CancellationTokenSource.CreateLinkedTokenSource(token,timeout.Token);
         bool locked=false;
