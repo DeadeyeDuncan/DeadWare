@@ -15,7 +15,7 @@ public static class LightingEffects
         ("Right to left",180),("Front-right to back-left",225),("Front to back",270),("Front-left to back-right",315),
     };
     private static double Clamp100(double n)=>Math.Min(100,Math.Max(0,n));
-    private static double Wrap01(double n)=>n-Math.Floor(n);
+    public static double Wrap01(double n)=>n-Math.Floor(n);
     private static EffectParams CloneParams(EffectParams? p)=>p is null?new():new(){Speed=p.Speed,AngleDeg=p.AngleDeg,Spread=p.Spread,Colors=p.Colors is null?new():new List<string>(p.Colors)};
     public static EffectSettings Clone(EffectSettings s)=>new(){Kind=s.Kind,Wave=CloneParams(s.Wave),Breathing=CloneParams(s.Breathing),Spectrum=CloneParams(s.Spectrum)};
     private static bool TryKind(string? kind,out EffectKind k){k=EffectKind.Static;if(kind is null) return false;foreach(var n in Enum.GetNames<EffectKind>()) if(string.Equals(n,kind,StringComparison.Ordinal)){k=Enum.Parse<EffectKind>(n);return true;}return false;}
@@ -34,7 +34,7 @@ public static class LightingEffects
         return new(Ch((r+m)*255),Ch((g+m)*255),Ch((b+m)*255));
     }
     private static Rgb Lerp(Rgb a,Rgb b,double f){var t=Math.Min(1,Math.Max(0,f));return new(Ch(a.R+(b.R-a.R)*t),Ch(a.G+(b.G-a.G)*t),Ch(a.B+(b.B-a.B)*t));}
-    private static Rgb Dim(Rgb c,double f){var t=Math.Min(1,Math.Max(0,f));return new(Ch(c.R*t),Ch(c.G*t),Ch(c.B*t));}
+    public static Rgb Dim(Rgb c,double f){var t=Math.Min(1,Math.Max(0,f));return new(Ch(c.R*t),Ch(c.G*t),Ch(c.B*t));}
     // N colours interpolate across N segments; the last wraps back to the first.
     public static Rgb SamplePalette(IReadOnlyList<Rgb> colors,double phase)
     {
