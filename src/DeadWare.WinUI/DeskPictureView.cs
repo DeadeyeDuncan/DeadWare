@@ -165,13 +165,9 @@ internal sealed class DeskPictureView : UserControl
         SetTowerStop(false);
         var at = e.GetPosition(surface);
         double s = BoxScale, x = at.X / s, y = at.Y / s;
-        if (view == PictureView.Inside)
-        {
-            PartTapped?.Invoke(DeskPictures.Hit(shown, PictureView.Inside, x, y));
-            return;
-        }
-        if (DeskPictures.Hit(shown, PictureView.Desk, x, y) is { } part) PartTapped?.Invoke(part);
-        else if (DeskPictures.HitTower(shown.Picture, x, y)) TowerTapped?.Invoke();
+        // Core decides what a tap hits in the view showing: a part first, then the tower, which only the desk view has.
+        if (DeskPictures.Hit(shown, view, x, y) is { } part) PartTapped?.Invoke(part);
+        else if (DeskPictures.HitTower(shown.Picture, view, x, y)) TowerTapped?.Invoke();
         else PartTapped?.Invoke(null);
     }
 
@@ -691,7 +687,8 @@ internal sealed class DeskPictureView : UserControl
         float r = (float)(b.W / 2);
         var (look, color) = LookOf(part);
         ds.DrawCircle(center, r, color, 6);
-        if (selected == part.Part.Id) ds.DrawCircle(center, r + 3 + 2, Accent, 2);
+        // Selected: a white outline just outside the ring, as the other fans.
+        if (selected == part.Part.Id) ds.DrawCircle(center, r + 3 + 2, White, 2);
         if (look == Look.Missing) NotFoundNote(ds, b.CenterX, b.CenterY, Anchor.Middle);
     }
 

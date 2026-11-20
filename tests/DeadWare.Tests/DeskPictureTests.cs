@@ -46,7 +46,7 @@ public class DeskPictureTests
         Assert.Equal(LightingKeys.Zone(Key("Corsair iCUE Link System Hub"),2),P("fan3").ShownZoneKey);
         Assert.Equal(LightingKeys.Zone(Key("Corsair iCUE Link System Hub"),3),P("pump").ShownZoneKey);
         Assert.Equal("RAM|A",P("ram1").DeviceKey);Assert.Equal("RAM|B",P("ram2").DeviceKey);        // by key order, not list order
-        Assert.Equal(5,P("gpu").ZoneKeys.Count);
+        Assert.Equal(5,P("gpu").ZoneKeys.Count);Assert.Equal(LightingKeys.Zone(Key("Gigabyte Radeon RX 6800 XT GAMING OC"),0),P("gpu").ShownZoneKey);   // the card shows GPU zone 1
         Assert.True(P("front2").OwnEffect);Assert.False(P("fan1").OwnEffect);
         Assert.Equal(new[]{"MSI motherboard headers (2 zones)"},s.NotInPicture);
     }
@@ -110,6 +110,23 @@ public class DeskPictureTests
         var rig=Rig();rig.Add(Dev("Odd thing",("a",3)));rig.Add(Dev("Dark",("a",0)));
         Assert.Equal(new[]{"MSI motherboard headers (2 zones)","Odd thing (1 zone)"},DeskPictures.Resolve(DeskPictures.OwnerRig,rig).NotInPicture);
     }
+    // A lit zone of a device in the picture that no part covers (a fifth zone on the hub, a second on the keyboard): named with the device,
+    // given no point, while the device's covered zones keep their points and the device stays placed.
+    [Fact] public void A_lit_zone_no_part_covers_is_named_and_unplaced_and_the_rest_of_its_device_stays()
+    {
+        var hub=Key("Corsair iCUE Link System Hub");var kb=Key("SteelSeries Apex Pro");var board=Key("MSI MAG B650M MORTAR WIFI (MS-7D76)");
+        var rig=Rig().Select(d=>d.Key==hub?Dev("Corsair iCUE Link System Hub",("iCUE LINK RX RGB",8),("iCUE LINK RX RGB",8),("iCUE LINK RX RGB",8),("iCUE LINK TITAN 360",20),("Spare",4),("Dark",0),("Strip",6))
+            :d.Key==kb?Dev("SteelSeries Apex Pro",("Keyboard",112),("Logo",1)):d).ToList();
+        var s=DeskPictures.Resolve(DeskPictures.OwnerRig,rig);
+        Assert.All(s.Parts,p=>Assert.True(p.Found));
+        Assert.Equal(new[]{"SteelSeries Apex Pro (1 zone)","Corsair iCUE Link System Hub (2 zones)","MSI motherboard headers (2 zones)"},s.NotInPicture);   // in the device list's order
+        var plain=DeskPictures.Layout(DeskPictures.OwnerRig,Rig());var l=DeskPictures.Layout(DeskPictures.OwnerRig,rig);
+        Assert.Equal(plain.Zones,l.Zones);                                                           // the covered zones' points as before, none for the extra zones
+        Assert.Equal(new[]{board},l.Unplaced);                                                        // device keys only: an uncovered zone has no point, which is what keeps its saved colour
+        Assert.DoesNotContain(hub,l.Unplaced);Assert.DoesNotContain(kb,l.Unplaced);                    // a device key there would stop the effect on its covered zones too
+        Assert.Null(DeskLayouts.Validate(l));
+        rig.Reverse();Assert.True(DeskLayouts.Same(l,DeskPictures.Layout(DeskPictures.OwnerRig,rig)));
+    }
     [Fact] public void Desk_parts_sit_at_their_centres_and_the_case_fills_its_wave_region()
     {
         var r=DeskPictures.OwnerRig;DeskPoint At(string id)=>DeskPictures.PointOf(r,r.Parts.Single(p=>p.Id==id));
@@ -165,6 +182,7 @@ public class DeskPictureTests
         }
         Assert.Equal("front2",DeskPictures.Hit(s,PictureView.Inside,528,216)!.Part.Id);                // own-effect parts can be tapped
         Assert.Null(DeskPictures.Hit(s,PictureView.Desk,360,50));                                      // the main monitor: furniture
-        Assert.True(DeskPictures.HitTower(DeskPictures.OwnerRig,77,416));Assert.False(DeskPictures.HitTower(DeskPictures.OwnerRig,390,125));
+        Assert.True(DeskPictures.HitTower(DeskPictures.OwnerRig,PictureView.Desk,77,416));Assert.False(DeskPictures.HitTower(DeskPictures.OwnerRig,PictureView.Desk,390,125));
+        Assert.False(DeskPictures.HitTower(DeskPictures.OwnerRig,PictureView.Inside,77,416));         // the tower is hit only in the desk view
     }
 }

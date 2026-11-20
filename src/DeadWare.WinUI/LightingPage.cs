@@ -815,8 +815,9 @@ internal sealed class LightingPage : Page, IHeaderTool
 
     /// <summary>
     /// How the selected part's device card shows in picture mode, as the mockups: "Keyboard · SteelSeries Apex Pro" over "selected on the
-    /// desk" (or "selected inside the PC") for a device with one part in the picture; the device's name over "radiator fan 2 selected", with
-    /// that part's row highlighted, for one with several. A row whose zone is one part's alone is named as the picture names the part
+    /// desk" (or "selected inside the PC") for a device with one part in the picture; the device's name over "radiator fan 2 selected" for
+    /// one with several. Either way the row of the zone the part shows is highlighted (the mouse's Middle, the card's GPU zone 1, radiator
+    /// fan 2's own). A row whose zone is one part's alone is named as the picture names the part
     /// ("RAM 1", "Radiator fan 2", "Pump"); the zones of a part that covers several keep their own names, which tell them apart. The
     /// device's name is the host's, never numbered: the part's name is what tells two sticks apart, and the page's number, which follows
     /// the host's list order, need not agree with it. Null when no found part is selected.
@@ -829,7 +830,7 @@ internal sealed class LightingPage : Page, IHeaderTool
         var own = shown.Parts.Where(p => p.DeviceKey == key).ToList();
         var labels = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var p in own) if (p.ZoneKeys.Count == 1) labels[p.ZoneKeys[0]] = p.Part.Label;
-        if (own.Count == 1) return new($"{part.Part.Label} · {device}", part.Part.View == PictureView.Desk ? "selected on the desk" : "selected inside the PC", null, device, labels);
+        if (own.Count == 1) return new($"{part.Part.Label} · {device}", part.Part.View == PictureView.Desk ? "selected on the desk" : "selected inside the PC", part.ShownZoneKey, device, labels);
         return new(device, $"{part.Part.Label.ToLowerInvariant()} selected", part.ShownZoneKey, device, labels);
     }
 

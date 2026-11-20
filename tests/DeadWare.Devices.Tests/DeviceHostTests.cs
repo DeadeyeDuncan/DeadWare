@@ -1522,8 +1522,8 @@ public sealed class DeviceHostTests : IAsyncLifetime
         session.Controllers=all; // both come back
         Assert.True((await Send(h,new RescanRequest())).Ok);
         Assert.True(DeskLayouts.Same(before,h.State.Settings.Layout));
-        Assert.Equal(0,LogCount("desk picture left"));
         Assert.Equal(1,LogCount("desk picture applied"));
+        Assert.Equal(1,LogCount("desk picture")); // and no other line about the picture: it was never left, reset or applied again
     }
 
     // OpenRGB lists devices a few at a time at each start: a saved picture is kept through every partial list, with no log line.
@@ -1550,15 +1550,18 @@ public sealed class DeviceHostTests : IAsyncLifetime
         Assert.Equal(0,LogCount("desk picture"));
     }
 
-    // A file from another build may name a picture this one doesn't have: reset to the plain desk, the name cleared, saved once.
+    // A file from another build may name a picture this one doesn't have: reset to the plain desk, the name cleared, saved once. The
+    // desk's shape is kept, as Reset positions keeps it: the saved one here is not the shape a new layout starts with.
     [Fact]
     public async Task A_saved_picture_name_this_build_does_not_have_resets_to_the_plain_desk()
     {
-        new LightingStore(lightingPath).Save(new LightingSettings{Layout=new DeskLayout{Picture="some-other-picture",Zones={[ApexZone]=new(0.9,0.1)}}});
+        new LightingStore(lightingPath).Save(new LightingSettings{Layout=new DeskLayout{Picture="some-other-picture",Desk=DeskLayouts.Preset(DeskShape.LRight),Zones={[ApexZone]=new(0.9,0.1)}}});
+        Assert.NotEqual(DeskShape.LRight,DeskLayouts.ShapeOf(new DeskLayout()));
         var h=await Running(CountingStore());
         var layout=h.State.Settings.Layout;
         Assert.Null(layout.Picture);
-        Assert.True(DeskLayouts.Same(DeskLayouts.AutoArrange(new DeskLayout(),DeskLayouts.Arrangeable(h.State.Devices)),layout));
+        Assert.Equal(DeskShape.LRight,DeskLayouts.ShapeOf(layout));
+        Assert.True(DeskLayouts.Same(DeskLayouts.AutoArrange(new DeskLayout{Desk=DeskLayouts.Preset(DeskShape.LRight)},DeskLayouts.Arrangeable(h.State.Devices)),layout));
         Assert.Equal(1,Volatile.Read(ref saves));
         Assert.True(DeskLayouts.Same(layout,SavedLayout()));
     }
@@ -1654,5 +1657,15 @@ public sealed class DeviceHostTests : IAsyncLifetime
         Rgb[] seen=[hub[0],hub[16],LastLeds(Apex)[0]]; // the hub's zones hold 8, 8, 8 and 20 LEDs: zone 2 starts at 16
         Assert.Equal([Expected("fan1"),Expected("fan3"),Expected("keyboard")],seen);
         Assert.Equal(3,seen.Distinct().Count());
+        // Left to right, the three sit in that order along the palette. Where a painted colour lies on the red, green, blue palette is
+        // read from the colour itself, not from the effect's own maths: each third blends one colour into the next and leaves the third at 0.
+        static double Along(Rgb c)=>c.B==0?c.G/(double)(c.R+c.G)/3:c.R==0?(1+c.B/(double)(c.G+c.B))/3:(2+c.R/(double)(c.B+c.R))/3;
+        static double Ahead(Rgb from,Rgb to){var d=Along(to)-Along(from);return d-Math.Floor(d);}
+        static double X(string id)=>DeskPictures.PointOf(DeskPictures.OwnerRig,Part(id)).X;
+        Assert.All(seen,c=>Assert.Contains((byte)0,new[]{c.R,c.G,c.B}));
+        Assert.True(X("fan1")<X("fan3")&&X("fan3")<X("keyboard"));
+        const double wavelength=1.6; // Wave's default spread of 50: the palette repeats every 1.6 desk widths
+        Assert.Equal((X("fan3")-X("fan1"))/wavelength,Ahead(seen[0],seen[1]),0.01);   // about 0.10 of the palette ahead of fan 1; 8-bit colour reads to well within 0.01
+        Assert.Equal((X("keyboard")-X("fan1"))/wavelength,Ahead(seen[0],seen[2]),0.01);   // about 0.29 ahead
     }
 }

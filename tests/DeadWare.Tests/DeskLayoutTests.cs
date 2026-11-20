@@ -92,6 +92,11 @@ public class DeskLayoutTests
         l2=Base();l2.Unplaced=["v","u"];Assert.False(DeskLayouts.Same(Base(),l2));
         l2=Base();l2.Tower.At=new(0.2,0.3);Assert.False(DeskLayouts.Same(Base(),l2));
         l2=Base();l2.Desk[0].W+=0.01;Assert.False(DeskLayouts.Same(Base(),l2));
+        l2=Base();l2.Desk[0].X+=0.01;Assert.False(DeskLayouts.Same(Base(),l2));
+        l2=Base();l2.Desk[0].Y+=0.01;Assert.False(DeskLayouts.Same(Base(),l2));
+        l2=Base();l2.Desk[0].H+=0.01;Assert.False(DeskLayouts.Same(Base(),l2));
+        l2=Base();l2.Version=2;Assert.False(DeskLayouts.Same(Base(),l2));
+        l2=Base();l2.Tower.Excluded.Add("z");Assert.False(DeskLayouts.Same(Base(),l2));
         l2=Base();l2.Desk.RemoveAt(0);Assert.False(DeskLayouts.Same(Base(),l2));
         l2=Base();l2.Picture="b650m-link-hub";Assert.False(DeskLayouts.Same(Base(),l2));
     }

@@ -44,25 +44,27 @@ public static class DeskPictures
 
     public static PictureScene Resolve(DeskPicture picture,IReadOnlyList<DeviceView> devices)
     {
-        var parts=new List<ResolvedPart>();var used=new HashSet<string>(StringComparer.Ordinal);
+        var parts=new List<ResolvedPart>();
         var lit=DeskLayouts.Arrangeable(devices);   // a part only matches what the desk can place
         foreach(var p in picture.Parts)
         {
             var match=lit.Where(d=>p.Prefix?d.Name.StartsWith(p.DeviceName,StringComparison.Ordinal):d.Name==p.DeviceName).OrderBy(d=>d.Key,StringComparer.Ordinal).Skip(p.Ordinal).FirstOrDefault();
             if(match is null||!match.ZoneIndexes.Contains(p.ShownZone)){parts.Add(new(p,null,[],null,false));continue;}
-            used.Add(match.Key);
             var keys=p.Zones.Where(match.ZoneIndexes.Contains).Select(i=>LightingKeys.Zone(match.Key,i)).ToList();
             parts.Add(new(p,match.Key,keys,LightingKeys.Zone(match.Key,p.ShownZone),devices.First(d=>d.Key==match.Key).Kind==PaintKind.Hardware));
         }
-        var off=new List<string>();
-        foreach(var a in DeskLayouts.Arrangeable(devices))
+        // Named with its count of lit zones no part covers: all of them for a device without a part, the extra ones for a device with one.
+        var covered=new HashSet<string>(parts.SelectMany(r=>r.ZoneKeys),StringComparer.Ordinal);var off=new List<string>();
+        foreach(var a in lit)
         {
-            if(used.Contains(a.Key)) continue;
+            int count=Uncovered(a,covered).Count();
+            if(count==0) continue;
             var name=picture.OffPictureNames.TryGetValue(a.Name,out var n)?n:a.Name;
-            off.Add($"{name} ({a.ZoneIndexes.Count} zone{(a.ZoneIndexes.Count==1?"":"s")})");
+            off.Add($"{name} ({count} zone{(count==1?"":"s")})");
         }
         return new(picture,parts,off);
     }
+    private static IEnumerable<string> Uncovered(ArrangeDevice a,IReadOnlySet<string> covered)=>a.ZoneIndexes.Select(i=>LightingKeys.Zone(a.Key,i)).Where(k=>!covered.Contains(k));
 
     public static DeskPoint PointOf(DeskPicture picture,PicturePart part)
     {
@@ -87,7 +89,10 @@ public static class DeskPictures
         var points=new Dictionary<string,List<DeskPoint>>();   // a zone lit by several parts takes the mean of their points
         foreach(var r in scene.Parts){var at=PointOf(picture,r.Part);foreach(var k in r.ZoneKeys){if(!points.TryGetValue(k,out var l)) points[k]=l=new();l.Add(at);}}
         foreach(var (k,l) in points){var o=l.OrderBy(q=>q.X).ThenBy(q=>q.Y).ToList();layout.Zones[k]=new(o.Sum(q=>q.X)/o.Count,o.Sum(q=>q.Y)/o.Count);}
-        layout.Unplaced=DeskLayouts.Arrangeable(devices).Where(a=>!used.Contains(a.Key)).Select(a=>a.Key).Order(StringComparer.Ordinal).ToList();   // by key, so OpenRGB's list order never changes the layout
+        // Unplaced holds device keys only: the devices no part matched, which keep their saved colour during effects. A lit zone of a matched
+        // device that no part covers has no point, and the painter gives a zone without a point its saved colour, so it needs no entry.
+        // Sorted, so OpenRGB's list order never changes the layout.
+        layout.Unplaced=DeskLayouts.Arrangeable(devices).Where(a=>!used.Contains(a.Key)).Select(a=>a.Key).Order(StringComparer.Ordinal).ToList();
         return layout;
     }
 
@@ -110,5 +115,6 @@ public static class DeskPictures
         }
         return best;
     }
-    public static bool HitTower(DeskPicture picture,double x,double y)=>Reach(picture.Tower,x,y) is not null;
+    // The tower is drawn, and can be tapped, only in the desk view.
+    public static bool HitTower(DeskPicture picture,PictureView view,double x,double y)=>view==PictureView.Desk&&Reach(picture.Tower,x,y) is not null;
 }

@@ -73,7 +73,7 @@ As the mockups show. In words:
 - **The panel** (right of the card; below it on a narrow window): the device's name, which part is selected, and what step 2's panel shows today (each zone with its colour, its flyout, "Use the shared colour", the notes for own-effect devices). Nothing from later steps.
 - **In the mockups but not part of the page:** the "On other PCs" card and the two dashed notes in the panel ("Under Wave the whole keyboard shows one colour…", "Each part of the hub is placed where it sits…"). They explain the mockup to its reader and are not built.
 - **Under the drawing:** "Not in the picture: …" names lit devices or zones the picture has no part for, and says they keep their saved colour during effects. On the owner's PC that is the motherboard's two headers.
-- **A part whose device wasn't found** is drawn unlit with "not found" under its label, and can't be tapped. (On 2026-11-19 OpenRGB did not detect the graphics card after a hard reset; the picture must say so honestly when that happens.)
+- **A part whose device wasn't found** is drawn unlit with "not found" drawn on the part, and can't be tapped. (On 2026-11-19 OpenRGB did not detect the graphics card after a hard reset; the picture must say so honestly when that happens.)
 - **Lights off:** every part is drawn unlit. **Helper not running:** the drawing is dimmed and taps do nothing, as in step 2.
 - **Other PCs:** the plain desk card and its **Edit layout**, the Devices list and Not placed, exactly as step 2 built them.
 
