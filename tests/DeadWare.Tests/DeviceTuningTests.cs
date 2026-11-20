@@ -29,6 +29,8 @@ public class DeviceTuningTests
     {
         Assert.Equal("Device brightness must be 0 to 100.",DeviceTunings.Validate(With(new(){Brightness=-1})));
         Assert.Equal("Device brightness must be 0 to 100.",DeviceTunings.Validate(With(new(){Brightness=101})));
+        Assert.Equal("Colour correction must be 0 to 200.",DeviceTunings.Validate(With(new(){Correction=new(){R=-1}})));
+        Assert.Equal("Colour correction must be 0 to 200.",DeviceTunings.Validate(With(new(){Correction=new(){R=201}})));
         Assert.Equal("Colour correction must be 0 to 200.",DeviceTunings.Validate(With(new(){Correction=new(){G=-1}})));
         Assert.Equal("Colour correction must be 0 to 200.",DeviceTunings.Validate(With(new(){Correction=new(){B=201}})));
         Assert.Equal("Mode speed must be 0 to 100.",DeviceTunings.Validate(With(new(){Mode=new(){Speed=-1}})));

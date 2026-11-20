@@ -304,11 +304,12 @@ public class LightingSettingsCodecTests
     [Fact]
     public void An_untuned_file_is_written_as_version_1()
     {
-        Assert.Contains("\"Version\": 1",LightingSettingsCodec.Write(new LightingSettings()));
+        static int FileVersion(string json)=>System.Text.Json.JsonDocument.Parse(json).RootElement.GetProperty("Version").GetInt32();
+        Assert.Equal(1,FileVersion(LightingSettingsCodec.Write(new LightingSettings())));
         var r=LightingSettingsCodec.Read("""{"Version":2,"Devices":{"k":{"Brightness":70}}}""");
         Assert.Equal(2,r.Settings.Version);
         r.Settings.Devices.Clear();
-        Assert.Contains("\"Version\": 1",LightingSettingsCodec.Write(r.Settings));
+        Assert.Equal(1,FileVersion(LightingSettingsCodec.Write(r.Settings)));
     }
     [Fact]
     public void A_version_1_file_loads_with_an_empty_table()
@@ -322,6 +323,12 @@ public class LightingSettingsCodecTests
         var r=LightingSettingsCodec.Read("""{"Version":2,"Devices":null}""");
         Assert.NotNull(r.Settings.Devices);Assert.Empty(r.Settings.Devices);Assert.False(r.Quarantine);Assert.Null(r.Error);
     }
+    [Fact]
+    public void A_default_entry_is_dropped_on_read()
+    {
+        var r=LightingSettingsCodec.Read("""{"Version":2,"Devices":{"a":{"Brightness":100,"Correction":{"R":100,"G":100,"B":100}},"b":{"Brightness":70}}}""");
+        Assert.DoesNotContain("a",r.Settings.Devices.Keys);Assert.Equal(70,r.Settings.Devices["b"].Brightness);
+    }
     [Fact] public void Current_version_2_is_not_newer()=>Assert.False(LightingSettingsCodec.Read("""{"Version":2}""").Newer);
     [Fact]
     public void A_null_entry_is_quarantined_not_thrown()
@@ -332,7 +339,13 @@ public class LightingSettingsCodecTests
     [Fact]
     public void A_later_file_with_a_table_of_another_shape_is_still_read()
     {
-        var r=LightingSettingsCodec.Read("""{"Version":3,"Devices":7}""");
-        Assert.True(r.Newer);Assert.False(r.Quarantine);Assert.Empty(r.Settings.Devices);
+        var r=LightingSettingsCodec.Read("""{"Version":3,"Brightness":40,"Devices":7}""");
+        Assert.True(r.Newer);Assert.False(r.Quarantine);Assert.Null(r.Error);Assert.Equal(40,r.Settings.Brightness);Assert.Empty(r.Settings.Devices);
+    }
+    [Fact]
+    public void A_later_file_with_an_unknown_mode_keeps_its_other_settings()
+    {
+        var r=LightingSettingsCodec.Read("""{"Version":3,"Brightness":40,"Devices":{"k":{"Mode":{"Kind":"fire"}}}}""");
+        Assert.True(r.Newer);Assert.False(r.Quarantine);Assert.Equal(40,r.Settings.Brightness);Assert.Empty(r.Settings.Devices);
     }
 }

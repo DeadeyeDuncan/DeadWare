@@ -26,7 +26,7 @@ public static class LightingSettingsCodec
         var error=Validate(s);
         if(s.Version>LightingSettings.CurrentVersion)
         {
-            if(error is not null){s.Effect=new();s.Layout=DeskLayouts.Empty();var again=Validate(s);if(again is null) return new(s,null,false,true);}
+            if(error is not null){s.Effect=new();s.Layout=DeskLayouts.Empty();s.Devices=new();var again=Validate(s);if(again is null) return new(s,null,false,true);}
             return new(error is null?s:new(),error,false,true);
         }
         return error is null?new(s,null,false):new(new(),error,true);
