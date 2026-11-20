@@ -100,7 +100,7 @@ Four tiles under the header, one selected: **Static** (your saved colours), **Wa
 - **A device box** per device that has LEDs and is on the desk, drawn at its first placed zone's point, labelled with the device's name and zone count, and filled or edged with its current colour. A device running its own hardware effect is drawn grey with the tag "own effect".
 - **The PC tower** is one box labelled "PC tower" with the number of devices inside. Tapping it opens it in place: the box grows to enclose the devices inside, which are then drawn as their own boxes. Tapping its label again closes it. This is the generic "inside view".
 - **Tapping a device** selects it. Its panel appears on the right (below on a narrow window). Selecting a device that is inside the tower opens the tower.
-- **A device list** under the desk names every device with where it is (On desk, Inside PC, Not placed, Own effect). It is the keyboard and screen-reader way to select a device, since a drawn canvas is not accessible.
+- **A device list** under the desk names every device with where it is (On desk, Inside PC, Not placed, Own effect, or Not on desk for a device DeadWare can't light or one with no lit zones, which the desk never draws). It is the keyboard and screen-reader way to select a device, since a drawn canvas is not accessible.
 - **Not placed** lists devices the user has taken off the desk. They keep their static colour during every effect. Each has **Place on desk**.
 
 ### Device panel
@@ -159,6 +159,7 @@ A port of DeadLight's `shared/layout.ts` without rotate and mirror:
 
 - `zones`: zone key to a point in the unit square.
 - `tower`: an anchor point, `members` (device keys inside), `excluded` (device keys the user dragged out, so auto-arrange doesn't put them back).
+- Opened, the tower's box is the bounds of its members' points with a margin of 0.06 on every side, so it always has area.
 - `desk`: at most two rectangles, set only from the three presets (DeadLight's numbers).
 - `unplaced` (new): device keys the user took off the desk.
 - Validation as in DeadLight's `validateLayout`, plus `unplaced` as an array of strings.
@@ -206,7 +207,7 @@ Hardware-mode and unsupported devices are handled exactly as in step 1, whatever
 - The conflict scan and the device rescan keep their 5 s cadence, whatever the paint tick is.
 - Effect time is the monotonic time since the helper started, so every device is in step and a clock change doesn't jump the pattern.
 - After each rescan that changes the device list, the helper runs auto-arrange. If the layout changed, it saves and raises a state event.
-- Changing effect or layout never restarts OpenRGB, never rescans and never switches a device's mode.
+- Changing effect or layout never restarts OpenRGB, never asks OpenRGB to rescan its hardware and never switches a device's mode. If OpenRGB has announced a device-list change the helper has not read yet, the change reads it first, so nothing is painted at a stale device index, as in step 1.
 
 ### Pipe
 
