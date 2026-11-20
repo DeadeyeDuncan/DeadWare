@@ -492,3 +492,24 @@ No code. Every step is described to the user and runs only with their go-ahead. 
 - [ ] **Step 8: Check Quit:** Quit DeadWare. `DeadWare.Devices.exe` and OpenRGB both exit within 5 s.
 - [ ] **Step 9: Restore:** the user restarts their installed DeadWare and DeadLight.
 - [ ] **Step 10: Record the results** in the PR description and open the PR against `main`. Don't merge or tag without the user.
+
+### Task 16: lock OpenRGB's SDK port (whole-branch review D15, owner's decision 2026-11-19)
+
+**Goal:** only DeadWare's own lighting helper, and only while it runs with administrator rights, may connect to the OpenRGB it runs as administrator. OpenRGB 1.0rc3's SDK has no authentication, and its profile requests save, load and delete `.orp` files at any path the client names (`NetworkServer.cpp:881-930`, `ProfileManager.cpp:35-69`, `:436-446`). The design is the spec's "The SDK port lock" (Ruling BG). Nothing persistent is added to Windows: everything the lock adds goes when its process exits.
+
+**Files:**
+- Create: `src/DeadWare.Devices/OpenRgbPortLock.cs`, `tests/DeadWare.Devices.Tests/OpenRgbPortLockTests.cs`
+- Modify: `src/DeadWare.Devices/OpenRgbEngine.cs`, `src/DeadWare.Devices/Program.cs`, `tests/DeadWare.Devices.Tests/OpenRgbEngineTests.cs`, `tests/DeadWare.Devices.Tests/ElevatedFactAttribute.cs`, `docs/user-guide.md`, `docs/releases/v0.19.0.md`
+
+**Interfaces:**
+- Produces:
+  - `internal sealed class OpenRgbPortLock : IDisposable`, with a constructor `OpenRgbPortLock(int port, string appPath, string userSddl = AdministratorsOnly)`, `static OpenRgbPortLock? ForHost(bool privileged)` (null without administrator rights; otherwise port 6744, `Environment.ProcessPath` and `D:(A;;CC;;;BA)`), `string? Ensure()` (null once the filters are in place, else the refusal) and `static string RefusalText(int code, string message)`.
+  - `OpenRgbEngine` gains `Func<string?>? portGuard`, consulted before every launch beside `folderCheck`.
+
+- [ ] **Step 1: Write the failing engine tests** with the fake runner: a guard that returns a reason fails the engine with exactly that text and starts nothing; the guard is consulted before every launch, restarts included; a refusal is final, neither retried nor counted in the backoff; a guard that throws refuses with the lock's text; `ForHost(false)` is null.
+- [ ] **Step 2: Pin the x64 layouts** of `FWPM_SESSION0`, `FWPM_SUBLAYER0`, `FWPM_FILTER0`, `FWPM_FILTER_CONDITION0`, `FWPM_ACTION0`, `FWP_CONDITION_VALUE0`, `FWP_VALUE0`, `FWP_BYTE_BLOB` and `FWPM_DISPLAY_DATA0` against `fwpmtypes.h` and `fwptypes.h` (sizes and offsets), and a 32-bit process's refusal.
+- [ ] **Step 3: Write the elevated integration tests** (`[ElevatedFact]`, skipped without administrator rights; CI's runner is elevated), each with a `TcpListener` on 127.0.0.1 and an ephemeral port in place of OpenRGB: the lock permitting this test's own image connects; permitting `cmd.exe` refuses with WSAEACCES; permitting this image with a descriptor for an unrelated SID refuses; a dual-mode IPv6 connect to `::ffff:127.0.0.1` is refused; another port stays reachable; after Dispose the refused connect succeeds; a filter deleted behind the lock's back is added again by the next `Ensure`.
+- [ ] **Step 4: Implement** the lock (P/Invoke `fwpuclnt.dll`, `advapi32` and `kernel32`; free what WFP and `ConvertStringSecurityDescriptorToSecurityDescriptorW` allocate), the engine's guard and the wiring in `Program.cs`, which holds the lock for the host's life.
+- [ ] **Step 5: Mutation checks** on an elevated run: drop the user condition (the unrelated-SID test fails); permit by port only (the `cmd.exe` test fails); drop `CLEAR_ACTION_RIGHT` (record whether any test notices).
+- [ ] **Step 6: Docs:** the guide's OpenRGB paragraph and one release-note line.
+- [ ] **Step 7: Commit:** `fix(lighting): only the lighting helper may connect to the OpenRGB it runs as administrator`
