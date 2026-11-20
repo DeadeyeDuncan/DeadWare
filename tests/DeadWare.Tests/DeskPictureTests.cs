@@ -21,15 +21,18 @@ public class DeskPictureTests
         Dev("MSI MAG B650M MORTAR WIFI (MS-7D76)",("JRGB1",1),("JRGB2",1),("JRAINBOW1",0),("JRAINBOW2",0)),
     ];
 
+    // Once saved, a picture is kept whatever devices are found: a PC can't lose its motherboard, only OpenRGB can miss it.
     [Fact] public void Applies_needs_both_signature_devices_unless_already_in_use()
     {
         var board="MSI MAG B650M MORTAR WIFI (MS-7D76)";var hub="Corsair iCUE Link System Hub";
         Assert.Same(DeskPictures.OwnerRig,DeskPictures.Applies([board,hub,"x"],null));
         Assert.Null(DeskPictures.Applies([board],null));
         Assert.Null(DeskPictures.Applies([hub],null));
+        Assert.Null(DeskPictures.Applies(["x"],null));
         Assert.Same(DeskPictures.OwnerRig,DeskPictures.Applies([board],DeskPictures.OwnerRigName));
         Assert.Same(DeskPictures.OwnerRig,DeskPictures.Applies([hub],DeskPictures.OwnerRigName));
-        Assert.Null(DeskPictures.Applies(["x"],DeskPictures.OwnerRigName));
+        Assert.Same(DeskPictures.OwnerRig,DeskPictures.Applies(["x"],DeskPictures.OwnerRigName));
+        Assert.Same(DeskPictures.OwnerRig,DeskPictures.Applies([],DeskPictures.OwnerRigName));
         Assert.Null(DeskPictures.Applies([board],"some-other-picture"));
         Assert.Null(DeskPictures.Named("nope"));Assert.Null(DeskPictures.Named(null));
     }
@@ -124,6 +127,15 @@ public class DeskPictureTests
         Assert.Equal(new[]{Key("MSI MAG B650M MORTAR WIFI (MS-7D76)")},l.Unplaced);
         Assert.Empty(l.Tower.Members);Assert.Empty(l.Tower.Excluded);
         Assert.True(DeskLayouts.Same(l,DeskPictures.Layout(DeskPictures.OwnerRig,Rig())));
+    }
+    // Unplaced follows device key order, not OpenRGB's list order, so a reordered list never changes the layout.
+    [Fact] public void Layout_lists_unplaced_devices_by_key_whatever_the_list_order()
+    {
+        var rig=Rig();rig.Add(Dev("Z|1","Odd Z",PaintKind.Direct,("a",3)));rig.Add(Dev("A|1","Odd A",PaintKind.Direct,("a",3)));
+        var expected=new[]{"A|1",Key("MSI MAG B650M MORTAR WIFI (MS-7D76)"),"Z|1"};
+        Assert.Equal(expected,DeskPictures.Layout(DeskPictures.OwnerRig,rig).Unplaced);
+        rig.Reverse();
+        Assert.Equal(expected,DeskPictures.Layout(DeskPictures.OwnerRig,rig).Unplaced);
     }
     [Fact] public void Taps_hit_found_parts_in_their_own_view_only()
     {

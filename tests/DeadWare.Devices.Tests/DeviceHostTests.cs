@@ -1503,19 +1503,82 @@ public sealed class DeviceHostTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Losing_both_signature_devices_returns_to_the_plain_desk()
+    public async Task The_picture_survives_both_signature_devices_going_missing()
     {
         UseOwnerRig();
+        var all=session.Controllers;
         var h=await Running(CountingStore());
         var before=h.State.Settings.Layout;
-        var saved=Volatile.Read(ref saves);
+        Assert.Equal(1,LogCount("desk picture applied")); // the first connect, from no saved picture
         Without(FakeOpenRgbSession.OwnerHub,Board);
         Assert.True((await Send(h,new RescanRequest())).Ok);
         var after=h.State.Settings.Layout;
-        Assert.Null(after.Picture);
-        Assert.True(DeskLayouts.Same(DeskGeometry.Reset(before,h.State.Devices),after));
-        Assert.Equal(saved+1,Volatile.Read(ref saves));
+        Assert.Equal(DeskPictures.OwnerRigName,after.Picture);
+        Assert.Empty(after.Tower.Members); // nothing is auto-arranged
+        var rest=before.Zones.Where(e=>!e.Key.StartsWith(HubKey+"#",StringComparison.Ordinal)).ToDictionary(e=>e.Key,e=>e.Value);
+        Assert.Equal(rest,after.Zones);
+        Assert.True(DeskLayouts.Same(DeskPictures.Layout(DeskPictures.OwnerRig,h.State.Devices),after));
         Assert.True(DeskLayouts.Same(after,SavedLayout()));
+        session.Controllers=all; // both come back
+        Assert.True((await Send(h,new RescanRequest())).Ok);
+        Assert.True(DeskLayouts.Same(before,h.State.Settings.Layout));
+        Assert.Equal(0,LogCount("desk picture left"));
+        Assert.Equal(1,LogCount("desk picture applied"));
+    }
+
+    // OpenRGB lists devices a few at a time at each start: a saved picture is kept through every partial list, with no log line.
+    [Fact]
+    public async Task A_partial_device_list_at_start_keeps_a_saved_picture()
+    {
+        UseOwnerRig();
+        var all=session.Controllers;
+        var views=all.Select(c=>LightingPaint.View(new LightingSettings(),new LightingDevice(LightingKeys.Device(c.Serial,c.Location),c.Name,c.Type,c.Zones,c.Modes,c.ActiveMode))).ToList();
+        new LightingStore(lightingPath).Save(new LightingSettings{Layout=DeskPictures.Layout(DeskPictures.OwnerRig,views)});
+        void Only(params string[] names)=>session.Controllers=all.Where(c=>names.Contains(c.Name)).Select((c,i)=>c with{Index=i}).ToList();
+        Only("SteelSeries Apex Pro");
+        var h=await Running();
+        Assert.Single(h.State.Devices);
+        Assert.Equal(DeskPictures.OwnerRigName,h.State.Settings.Layout.Picture);
+        Only("SteelSeries Apex Pro","Corsair Vengeance RGB DDR5","Gigabyte Radeon RX 6800 XT GAMING OC");
+        Assert.True((await Send(h,new RescanRequest())).Ok);
+        Assert.Equal(4,h.State.Devices.Count); // two RAM sticks share a name
+        Assert.Equal(DeskPictures.OwnerRigName,h.State.Settings.Layout.Picture);
+        session.Controllers=all;
+        Assert.True((await Send(h,new RescanRequest())).Ok);
+        Assert.Equal(8,h.State.Devices.Count);
+        Assert.True(DeskLayouts.Same(DeskPictures.Layout(DeskPictures.OwnerRig,h.State.Devices),h.State.Settings.Layout));
+        Assert.Equal(0,LogCount("desk picture"));
+    }
+
+    // A file from another build may name a picture this one doesn't have: reset to the plain desk, the name cleared, saved once.
+    [Fact]
+    public async Task A_saved_picture_name_this_build_does_not_have_resets_to_the_plain_desk()
+    {
+        new LightingStore(lightingPath).Save(new LightingSettings{Layout=new DeskLayout{Picture="some-other-picture",Zones={[ApexZone]=new(0.9,0.1)}}});
+        var h=await Running(CountingStore());
+        var layout=h.State.Settings.Layout;
+        Assert.Null(layout.Picture);
+        Assert.True(DeskLayouts.Same(DeskLayouts.AutoArrange(new DeskLayout(),DeskLayouts.Arrangeable(h.State.Devices)),layout));
+        Assert.Equal(1,Volatile.Read(ref saves));
+        Assert.True(DeskLayouts.Same(layout,SavedLayout()));
+    }
+
+    // A second host on the same file and the same devices finds the picture's layout already saved.
+    [Fact]
+    public async Task A_restart_from_the_saved_picture_saves_nothing()
+    {
+        UseOwnerRig();
+        var first=await Running();
+        Assert.Equal(DeskPictures.OwnerRigName,SavedLayout().Picture);
+        Assert.True((await Send(first,new StopRequest())).Ok);
+        await run!.WaitAsync(RealTimeCap);
+        await first.DisposeAsync().AsTask().WaitAsync(RealTimeCap);
+        var file=File.ReadAllText(lightingPath);
+        var h=await Running(CountingStore());
+        Assert.Equal(DeskPictures.OwnerRigName,h.State.Settings.Layout.Picture);
+        Assert.Equal(8,h.State.Devices.Count);
+        Assert.Equal(0,Volatile.Read(ref saves));
+        Assert.Equal(file,File.ReadAllText(lightingPath));
     }
 
     [Fact]
@@ -1540,14 +1603,11 @@ public sealed class DeviceHostTests : IAsyncLifetime
         Assert.False(reply.Ok);Assert.Equal(PictureRefused,reply.Error);
         Assert.True(DeskLayouts.Same(layout,h.State.Settings.Layout));
         Assert.Equal(file,File.ReadAllText(lightingPath));
-        // Once no picture applies, a layout is accepted as before.
+        // Missing signature devices don't lift the refusal: the picture is kept.
         Without(FakeOpenRgbSession.OwnerHub,Board);
         Assert.True((await Send(h,new RescanRequest())).Ok);
-        Assert.Null(h.State.Settings.Layout.Picture);
-        draft=DeskLayouts.Clone(h.State.Settings.Layout);draft.Zones[ApexZone]=new(0.9,0.1);
-        Assert.True((await Send(h,new SetLayoutRequest(draft))).Ok);
-        Assert.Equal(new DeskPoint(0.9,0.1),SavedLayout().Zones[ApexZone]);
-        Assert.Equal(new DeskPoint(0.9,0.1),h.State.Settings.Layout.Zones[ApexZone]);
+        reply=await Send(h,new SetLayoutRequest(draft));
+        Assert.False(reply.Ok);Assert.Equal(PictureRefused,reply.Error);
     }
 
     [Fact]
@@ -1562,6 +1622,12 @@ public sealed class DeviceHostTests : IAsyncLifetime
         Assert.Equal(saved,Volatile.Read(ref saves));
         Assert.Null(h.State.Settings.Layout.Picture);
         Assert.True(DeskLayouts.Same(layout,h.State.Settings.Layout));
+        // Where no picture applies, a layout is accepted as before.
+        draft.Picture=null;draft.Zones[ApexZone]=new(0.9,0.1);
+        Assert.True((await Send(h,new SetLayoutRequest(draft))).Ok);
+        Assert.Equal(saved+1,Volatile.Read(ref saves));
+        Assert.Equal(new DeskPoint(0.9,0.1),SavedLayout().Zones[ApexZone]);
+        Assert.Equal(new DeskPoint(0.9,0.1),h.State.Settings.Layout.Zones[ApexZone]);
     }
 
     // The effect is painted at the picture's points: each part's first LED is the wave at that part's point, at the frame's effect time,

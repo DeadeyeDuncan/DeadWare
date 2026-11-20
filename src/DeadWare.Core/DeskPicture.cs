@@ -32,11 +32,13 @@ public static class DeskPictures
     ],new Dictionary<string,string>{[Board]="MSI motherboard headers"});
 
     public static DeskPicture? Named(string? name)=>name==OwnerRigName?OwnerRig:null;
+    // A picture applies when all its signature devices are present, or once saved, whatever devices are found: one of them is the PC's own
+    // motherboard, which it can't lose, so a missing one is OpenRGB not detecting it yet (it lists devices a few at a time at each start).
     public static DeskPicture? Applies(IEnumerable<string> deviceNames,string? savedPicture)
     {
-        var names=new HashSet<string>(deviceNames,StringComparer.Ordinal);
         var saved=Named(savedPicture);
-        if(saved is not null) return saved.Signature.Any(names.Contains)?saved:null;
+        if(saved is not null) return saved;
+        var names=new HashSet<string>(deviceNames,StringComparer.Ordinal);
         return OwnerRig.Signature.All(names.Contains)?OwnerRig:null;
     }
 
@@ -77,7 +79,7 @@ public static class DeskPictures
         var points=new Dictionary<string,List<DeskPoint>>();   // a zone lit by several parts takes the mean of their points
         foreach(var r in scene.Parts){var at=PointOf(picture,r.Part);foreach(var k in r.ZoneKeys){if(!points.TryGetValue(k,out var l)) points[k]=l=new();l.Add(at);}}
         foreach(var (k,l) in points){var o=l.OrderBy(q=>q.X).ThenBy(q=>q.Y).ToList();layout.Zones[k]=new(o.Sum(q=>q.X)/o.Count,o.Sum(q=>q.Y)/o.Count);}
-        layout.Unplaced=DeskLayouts.Arrangeable(devices).Where(a=>!used.Contains(a.Key)).Select(a=>a.Key).ToList();
+        layout.Unplaced=DeskLayouts.Arrangeable(devices).Where(a=>!used.Contains(a.Key)).Select(a=>a.Key).Order(StringComparer.Ordinal).ToList();   // by key, so OpenRGB's list order never changes the layout
         return layout;
     }
 

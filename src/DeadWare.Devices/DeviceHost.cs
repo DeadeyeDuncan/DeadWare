@@ -332,8 +332,9 @@ internal sealed class DeviceHost : IAsyncDisposable
     // After a change: re-key saved entries for devices back under a new key first, so their points are kept, then give the zones still
     // without a point one. The arranged layout is adopted only when the settings with it stay valid and savable (1 MiB): otherwise the
     // layout stays as it was, the reason is logged once, and the live settings stay savable, so later changes aren't refused. One save
-    // covers both. On the owner's rig the layout is the built-in picture's (DeskPictures), not an arranged one; when the picture stops
-    // applying (both signature devices gone) the desk is auto-arranged afresh with the default desk shape the picture carried.
+    // covers both. On the owner's rig the layout is the built-in picture's (DeskPictures), not an arranged one, over the devices found so
+    // far: a saved picture is never left because devices are missing (OpenRGB lists them a few at a time at each start). Only a saved name
+    // this build has no picture for is reset: auto-arranged afresh, its desk shape kept, the name cleared.
     bool RescanLocked()
     {
         var changed=service.Rescan();
@@ -342,7 +343,10 @@ internal sealed class DeviceHost : IAsyncDisposable
         var save=LightingKeys.Remap(settings,service.Devices.Select(d=>d.Key).ToList());
         var views=service.Views(settings);
         var picture=DeskPictures.Applies(views.Select(v=>v.Name),settings.Layout.Picture);
-        var arranged=picture is not null?DeskPictures.Layout(picture,views):settings.Layout.Picture is not null?DeskGeometry.Reset(settings.Layout,views):DeskLayouts.AutoArrange(settings.Layout,DeskLayouts.Arrangeable(views));
+        DeskLayout arranged;
+        if(picture is not null) arranged=DeskPictures.Layout(picture,views);
+        else if(settings.Layout.Picture is not null) arranged=DeskGeometry.Reset(settings.Layout,views);
+        else arranged=DeskLayouts.AutoArrange(settings.Layout,DeskLayouts.Arrangeable(views));
         if(ReferenceEquals(arranged,settings.Layout)||DeskLayouts.Same(arranged,settings.Layout)) lastArrangeError=null;
         else
         {
@@ -350,7 +354,7 @@ internal sealed class DeviceHost : IAsyncDisposable
             var error=LightingSettingsCodec.Validate(candidate);
             if(error is null)
             {
-                if(arranged.Picture!=settings.Layout.Picture) log.Write(arranged.Picture is null?"desk picture left: "+settings.Layout.Picture:"desk picture applied: "+arranged.Picture);
+                if(arranged.Picture!=settings.Layout.Picture) log.Write(arranged.Picture is null?"desk picture not known to this build, plain desk instead: "+settings.Layout.Picture:"desk picture applied: "+arranged.Picture);
                 settings=candidate;save=true;lastArrangeError=null;
             }
             else if(error!=lastArrangeError){lastArrangeError=error;log.Write("desk layout not arranged: "+error);}
