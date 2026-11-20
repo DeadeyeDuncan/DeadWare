@@ -13,11 +13,26 @@ public static class LightingSettingsCodec
     {
         LightingSettings? s;
         try{s=JsonSerializer.Deserialize<LightingSettings>(json);}
-        catch(JsonException e){return new(new(),$"Lighting settings are not valid JSON: {e.Message}",true);}
+        catch(JsonException e){return NewerShape(json)??new(new(),$"Lighting settings are not valid JSON: {e.Message}",true);}
         if(s is null) return new(new(),"Lighting settings were empty.",true);
+        s.Effect??=new();s.Layout??=DeskLayouts.Empty();
+        LightingEffects.Normalize(s.Effect);
         var error=Validate(s);
         if(s.Version>LightingSettings.CurrentVersion) return new(error is null?s:new(),error,false,true);
         return error is null?new(s,null,false):new(new(),error,true);
+    }
+    // A wrong JSON type in Effect or Layout is a JsonException, which would set a later DeadWare's file aside (Ruling AS). When its Version is
+    // above ours, drop those two members, which may have another shape there, and read the rest; null when the file isn't such a file.
+    static LightingRead? NewerShape(string json)
+    {
+        try
+        {
+            if(System.Text.Json.Nodes.JsonNode.Parse(json) is not System.Text.Json.Nodes.JsonObject o||!o.TryGetPropertyValue("Version",out var v)||v is null||v.GetValueKind()!=JsonValueKind.Number||!v.AsValue().TryGetValue<int>(out var version)||version<=LightingSettings.CurrentVersion) return null;
+            o.Remove("Effect");o.Remove("Layout");
+            var r=Read(o.ToJsonString());
+            return new(r.Settings,r.Error,false,true);
+        }
+        catch(Exception e) when(e is JsonException or InvalidOperationException or FormatException){return null;}
     }
     // A lighting.json is a few KB, so one longer than MaxFileBytes is damaged and isn't read at all (F3 item 7): it would make every start
     // slow and memory-hungry, and set aside it costs one start only. The caller quarantines it as it does any invalid file.
@@ -55,6 +70,6 @@ public static class LightingSettingsCodec
         }
         foreach(var (key,mode) in settings.HardwareModes)
             if(key.Length>MaxKeyLength||mode is null||mode.Length>MaxKeyLength) return "A hardware mode entry is invalid.";
-        return null;
+        return (settings.Effect is null?null:LightingEffects.Validate(settings.Effect))??(settings.Layout is null?null:DeskLayouts.Validate(settings.Layout));
     }
 }

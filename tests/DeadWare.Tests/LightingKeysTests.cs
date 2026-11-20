@@ -110,4 +110,25 @@ public class LightingKeysTests
     {
         Assert.False(LightingKeys.TrySplitZone("S|HID#VID_1B1C&PID_0C3F#b&16",out _,out _));
     }
+
+    [Fact] public void Remap_moves_layout_entries()
+    {
+        var s=new LightingSettings();
+        s.Layout.Zones["SER|loc#0"]=new(0.4,0.4);s.Layout.Tower.Members.Add("SER|loc");s.Layout.Tower.Excluded.Add("SER|loc");s.Layout.Unplaced.Add("SER|loc");
+        Assert.True(LightingKeys.Remap(s,["|loc"]));
+        Assert.Equal(new DeskPoint(0.4,0.4),s.Layout.Zones["|loc#0"]);Assert.False(s.Layout.Zones.ContainsKey("SER|loc#0"));
+        Assert.Equal(new[]{"|loc"},s.Layout.Tower.Members);Assert.Equal(new[]{"|loc"},s.Layout.Tower.Excluded);Assert.Equal(new[]{"|loc"},s.Layout.Unplaced);
+    }
+    [Fact] public void A_target_that_already_has_layout_entries_is_refused()
+    {
+        var s=new LightingSettings();s.Layout.Zones["SER|loc#0"]=new(0.4,0.4);s.Layout.Zones["|loc#0"]=new(0.6,0.6);
+        Assert.False(LightingKeys.Remap(s,["|loc"]));
+    }
+    [Fact] public void Remap_then_arrange_keeps_a_returning_device_in_place()
+    {
+        var s=new LightingSettings();s.Layout.Zones["SER|loc#0"]=new(0.4,0.4);s.Layout.Tower.Members.Add("SER|loc");
+        LightingKeys.Remap(s,["|loc"]);
+        var next=DeskLayouts.AutoArrange(s.Layout,[new("|loc","Fans",[0])]);
+        Assert.Same(s.Layout,next);Assert.Equal(new DeskPoint(0.4,0.4),next.Zones["|loc#0"]);
+    }
 }
