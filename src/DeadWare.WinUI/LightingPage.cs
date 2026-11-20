@@ -68,10 +68,15 @@ internal sealed class LightingPage : Page, IHeaderTool
     private readonly ToggleSwitch splitZones = new() { OnContent = "Move zones separately", OffContent = "Move zones separately", MinWidth = 0 };
     private readonly Button takeOff = new() { Content = "Take off the desk" };
     // SetLayout requests on their way, counted while layoutEpoch stays: dropping the draft bumps it, so a late reply counts for nothing.
-    // releaseAt: the state the client had when the count reached 0. The pipe writes a reply before the state its request caused, so the
-    // desk keeps drawing its draft until a state other than that one is shown.
+    // releaseAfter: the client's state count when the read loop read the reply that left none on its way. The host writes a reply
+    // before the state its request caused, so the draft goes once a state counted above it is shown (shownSeq: the shown state's count).
     private int layoutSends, layoutEpoch;
-    private HostState? releaseAt;
+    private long? releaseAfter;
+    private long shownSeq;
+    // Arrow keys: at most one nudge save on its way (nudgeTicket names it; dropping the draft retires it). nudgeDirty: a nudge moved the
+    // draft while one was on its way and no save has carried it yet; it goes when that one's reply is Ok, and holds the draft until then.
+    private int nudgeTicket;
+    private bool nudgeInFlight, nudgeDirty;
     private bool layoutSyncing, resetAsking;
     private readonly Grid deskArea = new() { RowSpacing = 12 };
     private readonly StackPanel leftColumn = new() { Spacing = 12 };
@@ -220,6 +225,7 @@ internal sealed class LightingPage : Page, IHeaderTool
         deskCard = Pages.Card(new StackPanel { Spacing = 8, Padding = new Thickness(8), Children = { deskHeader, editTools, desk } });
         desk.SelectionChanged += _ => { SyncList(); ShowPanel(); };
         desk.LayoutEdited += next => SendLayout(next);
+        desk.Nudged += OnNudged;
         Show(towerHeading, false);
         emptyPanel = Pages.Card(new StackPanel { Spacing = 8, Padding = new Thickness(8), Children = { towerHeading, Muted(NothingSelectedText) } });
         AutomationProperties.SetName(splitZones, "Move zones separately");
@@ -393,6 +399,8 @@ internal sealed class LightingPage : Page, IHeaderTool
         Interlocked.Exchange(ref pendingFrame, null);
         placing.Clear();
         DropLayoutDraft();
+        // The new client counts its states from 0.
+        shownSeq = 0;
         deskLayout = DeskLayouts.Empty();
         deskDevices = [];
         deskLightsOn = true;
@@ -420,8 +428,11 @@ internal sealed class LightingPage : Page, IHeaderTool
             Show(headerTool, false);
             return;
         }
-        var state = client.State;
+        // The state and its count together, so the desk's draft is released only for a state shown after the one its last edit caused.
+        var snapshot = client.Snapshot();
+        var state = snapshot.State;
         shownState = state;
+        shownSeq = snapshot.Seq;
         bool connected = state is not null, wasLive = live;
         // Colours go only to a running host; until it runs, the cards stay as they were, disabled.
         live = state is { Status: HostStatus.Running };
@@ -567,7 +578,7 @@ internal sealed class LightingPage : Page, IHeaderTool
             foreach (var (device, send) in placing.ToArray())
                 if (send.Replied && (!ReferenceEquals(send.At, shown.State) || !deskLayout.Unplaced.Contains(device))) placing.Remove(device);
             // The desk's draft goes at the first state shown with no SetLayout on its way, before the desk takes the layout.
-            TryRelease(shown.State);
+            TryRelease();
         }
         desk.Show(deskLayout, deskDevices, deskLightsOn, live);
         ShowLayout();
@@ -612,8 +623,8 @@ internal sealed class LightingPage : Page, IHeaderTool
     }
 
     /// <summary>
-    /// Holds an edited layout on the desk and sends it. A refusal or failed send drops the draft at once; the reply that leaves none on
-    /// its way marks the state the desk waits past (<see cref="releaseAt"/>). The error shows through the send-error line, from Send.
+    /// Holds an edited layout on the desk and sends it. A refusal or failed send drops the draft at once; the Ok reply that leaves none
+    /// on its way sets <see cref="releaseAfter"/> to its state count. The error shows through the send-error line, from SendTracked.
     /// </summary>
     private void SendLayout(DeskLayout next, Action<Reply>? done = null)
     {
@@ -623,39 +634,41 @@ internal sealed class LightingPage : Page, IHeaderTool
             ShowLayout();
             return;
         }
+        // Every save carries the whole draft, so it carries any nudge still waiting for one too.
+        nudgeDirty = false;
         desk.Hold(next);
         layoutSends++;
         int epoch = layoutEpoch;
         ShowLayout();
-        Send(new SetLayoutRequest(next), reply =>
+        SendTracked(new SetLayoutRequest(next), tracked =>
         {
             if (epoch == layoutEpoch)
             {
-                if (!reply.Ok)
+                if (!tracked.Reply.Ok)
                 {
                     DropLayoutDraft();
                     ShowLayout();
                 }
                 else if (--layoutSends == 0)
                 {
-                    releaseAt = client?.State;
-                    // The state it caused may already be shown: a refresh queued before this reply can read a state that came after it.
-                    if (ReferenceEquals(releaseAt, shownState) && TryRelease(shownState)) ShowLayout();
+                    releaseAfter = tracked.StatesBefore;
+                    // The state it caused may be in already: shown, or stored and not yet shown, whose refresh would come a little later.
+                    if (TryRelease()) ShowLayout();
+                    else if (!nudgeDirty && client is { } current && current.Snapshot().Seq > tracked.StatesBefore) Render();
                 }
             }
-            done?.Invoke(reply);
+            done?.Invoke(tracked.Reply);
         });
     }
 
     /// <summary>
-    /// Drops the desk's draft when no SetLayout is on its way and the shown state is not the one the client had at the last reply, or
-    /// already carries the draft's layout. True when it dropped one.
+    /// Drops the desk's draft once no SetLayout is on its way, no nudge waits for a save, and the shown state was stored after the last
+    /// reply was read: a later state than the one that reply's request caused. True when it dropped one.
     /// </summary>
-    private bool TryRelease(HostState? state)
+    private bool TryRelease()
     {
-        if (layoutSends > 0 || desk.Held is not { } draft || state is null) return false;
-        if (ReferenceEquals(state, releaseAt) && !SameLayout(state.Settings?.Layout, draft)) return false;
-        releaseAt = null;
+        if (layoutSends > 0 || nudgeDirty || desk.Held is null || releaseAfter is not { } after || shownSeq <= after) return false;
+        releaseAfter = null;
         desk.Release();
         return true;
     }
@@ -665,17 +678,44 @@ internal sealed class LightingPage : Page, IHeaderTool
     {
         layoutEpoch++;
         layoutSends = 0;
-        releaseAt = null;
+        releaseAfter = null;
+        nudgeTicket++;
+        nudgeInFlight = nudgeDirty = false;
         desk.DropDraft();
     }
 
-    /// <summary>Two layouts with the same positions, tower, desk and unplaced devices.</summary>
-    private static bool SameLayout(DeskLayout? a, DeskLayout b)
+    /// <summary>
+    /// An arrow key moved the draft (already held and drawn). Saved at once unless a nudge's save is on its way; then the move waits,
+    /// and the latest draft goes when that save's reply is Ok, so a held key saves about once per round trip rather than once per repeat.
+    /// </summary>
+    private void OnNudged(DeskLayout next)
     {
-        if (a is null || a.Version != b.Version || a.Zones is null || a.Zones.Count != b.Zones.Count || a.Tower is null || a.Desk is null || a.Unplaced is null) return false;
-        foreach (var (key, at) in b.Zones) if (!a.Zones.TryGetValue(key, out var other) || other != at) return false;
-        if (a.Tower.At != b.Tower.At || !a.Tower.Members.SequenceEqual(b.Tower.Members) || !a.Tower.Excluded.SequenceEqual(b.Tower.Excluded) || !a.Unplaced.SequenceEqual(b.Unplaced)) return false;
-        return a.Desk.Count == b.Desk.Count && a.Desk.Zip(b.Desk).All(pair => pair.First is { } x && pair.Second is { } y && x.X == y.X && x.Y == y.Y && x.W == y.W && x.H == y.H);
+        if (!live)
+        {
+            DropLayoutDraft();
+            ShowLayout();
+            return;
+        }
+        if (nudgeInFlight)
+        {
+            nudgeDirty = true;
+            ShowLayout();
+            return;
+        }
+        SendNudge(next);
+    }
+
+    private void SendNudge(DeskLayout next)
+    {
+        int ticket = ++nudgeTicket;
+        nudgeInFlight = true;
+        SendLayout(next, reply =>
+        {
+            // A nudge retired by a dropped draft, or a client swap, leaves the newer one's state alone.
+            if (ticket != nudgeTicket) return;
+            nudgeInFlight = false;
+            if (reply.Ok && nudgeDirty && desk.Held is { } draft) SendNudge(draft);
+        });
     }
 
     /// <summary>A new desk shape from the tools, by the user only: one set from a state is not sent.</summary>
@@ -1122,19 +1162,26 @@ internal sealed class LightingPage : Page, IHeaderTool
     /// later change succeeds or the page follows another client: a state arriving doesn't end it. A reply from a client the page no
     /// longer follows is dropped with its callback.
     /// </summary>
-    private async void Send(HostMessage request, Action<Reply>? done = null)
+    private void Send(HostMessage request, Action<Reply>? done = null) => SendTracked(request, done is null ? null : tracked => done(tracked.Reply));
+
+    /// <summary>
+    /// <see cref="Send"/> with the reply's state count (<see cref="TrackedReply.StatesBefore"/>): the same generation check, callback and
+    /// send-error line. A reply made up here, with no client or after a throw, carries the client's count as it is then.
+    /// </summary>
+    private async void SendTracked(HostMessage request, Action<TrackedReply>? done)
     {
         int sent = generation;
-        Reply reply;
-        if (client is not { } target) reply = new Reply(false, null);
+        TrackedReply tracked;
+        if (client is not { } target) tracked = new TrackedReply(new Reply(false, null), 0);
         else
         {
-            // SendAsync answers connection problems with a failed reply and throws only when its token is cancelled, which this one never is.
-            try { reply = await target.SendAsync(request, CancellationToken.None); }
-            catch (Exception failure) { reply = new Reply(false, failure.Message); }
+            // SendTrackedAsync answers connection problems with a failed reply and throws only when its token is cancelled, which this one never is.
+            try { tracked = await target.SendTrackedAsync(request, CancellationToken.None); }
+            catch (Exception failure) { tracked = new TrackedReply(new Reply(false, failure.Message), target.Snapshot().Seq); }
         }
         if (sent != generation) return;
-        done?.Invoke(reply);
+        var reply = tracked.Reply;
+        done?.Invoke(tracked);
         string? error = reply.Ok ? null : DeviceHostClient.FailedChangeText(reply.Error);
         if (error == sendError) return;
         sendError = error;

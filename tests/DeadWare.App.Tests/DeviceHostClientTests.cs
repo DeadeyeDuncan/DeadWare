@@ -544,6 +544,101 @@ public class DeviceHostClientTests:IAsyncLifetime
         client.SetPreview(false);client.SetPreview(true);
         Assert.Equal(0,host.Count<SubscribePreviewRequest>());
     }
+    [Fact] public async Task Seq_counts_every_state_and_never_resets_on_reconnect()
+    {
+        launcher.Running=new FakeProcess();
+        var client=Make();
+        Assert.Equal(new HostSnapshot(null,0),client.Snapshot());
+        await client.StartAsync(false,CancellationToken.None);
+        // The connection's GetState answer is the first state.
+        await Until(()=>client.Snapshot().Seq==1,"the connection's state");
+        await host.Push(new StateEvent(Sample)).WaitAsync(Bound);
+        await host.Push(new StateEvent(Sample)).WaitAsync(Bound);
+        await Until(()=>client.Snapshot().Seq==3,"two pushed states counted");
+        host.Server!.Dispose();
+        await Until(()=>client.State is null,"the dropped host's state cleared");
+        // Clearing the state stores none, and the count stays.
+        Assert.Equal(3,client.Snapshot().Seq);
+        await Elapse(Retry);
+        await Until(()=>host.Connections==2&&client.State is not null,"the reconnect's state");
+        Assert.Equal(4,client.Snapshot().Seq);
+    }
+    /// <summary>The host's usual order, a reply and at once the state it caused: the reply counts only the states before it, every time.</summary>
+    [Fact] public async Task A_tracked_reply_reports_the_states_seen_before_it()
+    {
+        var client=Make();
+        await client.StartAsync(false,CancellationToken.None);
+        await Until(()=>client.Snapshot().Seq==1,"the connection's state");
+        for(int i=0;i<50;i++)
+        {
+            long before=client.Snapshot().Seq;
+            var tracked=await client.SendTrackedAsync(new SetLightsOnRequest(true),CancellationToken.None).WaitAsync(Bound);
+            Assert.True(tracked.Reply.Ok);
+            Assert.Equal(before,tracked.StatesBefore);
+            await Until(()=>client.Snapshot().Seq==tracked.StatesBefore+1,"the state that followed the reply");
+        }
+    }
+    [Fact] public async Task A_tracked_reply_is_exact_when_a_state_precedes_the_reply()
+    {
+        host.Answer=m=>m is SetLightsOnRequest?[new StateEvent(Sample),new Reply(true,null){Id=m.Id}]:FakeHost.Answers(m);
+        var client=Make();
+        await client.StartAsync(false,CancellationToken.None);
+        await Until(()=>client.Snapshot().Seq==1,"the connection's state");
+        for(int i=0;i<20;i++)
+        {
+            long before=client.Snapshot().Seq;
+            var tracked=await client.SendTrackedAsync(new SetLightsOnRequest(true),CancellationToken.None).WaitAsync(Bound);
+            Assert.True(tracked.Reply.Ok);
+            Assert.Equal(before+1,tracked.StatesBefore);
+            Assert.Equal(before+1,client.Snapshot().Seq);
+        }
+    }
+    [Fact] public async Task Snapshot_reads_state_and_seq_together()
+    {
+        var client=Make();
+        await client.StartAsync(false,CancellationToken.None);
+        await Until(()=>client.Snapshot().Seq==1,"the connection's state");
+        // State n<i> is the (1+i)th state stored: a snapshot that pairs it with any other count read the two apart.
+        bool done=false;
+        var reader=Task.Run(()=>
+        {
+            var mismatches=new List<string>();
+            while(!Volatile.Read(ref done))
+            {
+                var snap=client.Snapshot();
+                long expected=snap.State?.Message is {} m&&m.StartsWith('n')?1+long.Parse(m[1..]):1;
+                if(snap.Seq!=expected)mismatches.Add($"{snap.State?.Message} with {snap.Seq}");
+            }
+            return mismatches;
+        });
+        for(int i=1;i<=200;i++)await host.Push(new StateEvent(Sample with {Message=$"n{i}"})).WaitAsync(Bound);
+        await Until(()=>client.Snapshot().Seq==201,"every pushed state counted");
+        Volatile.Write(ref done,true);
+        Assert.Empty(await reader.WaitAsync(Bound));
+        Assert.Equal("n200",client.Snapshot().State!.Message);
+    }
+    [Fact] public async Task A_made_up_reply_carries_the_current_seq()
+    {
+        launcher.Running=new FakeProcess();
+        host.Answer=m=>m is RescanRequest?[]:FakeHost.Answers(m);
+        var client=Make();
+        Assert.Equal(0,(await client.SendTrackedAsync(new RescanRequest(),CancellationToken.None).WaitAsync(Bound)).StatesBefore);
+        await client.StartAsync(false,CancellationToken.None);
+        await Until(()=>client.Snapshot().Seq==1,"the connection's state");
+        // No answer: the reply made up at the timeout carries the states stored while it waited.
+        var unanswered=client.SendTrackedAsync(new RescanRequest(),CancellationToken.None);
+        await Until(()=>host.Saw<RescanRequest>());
+        await host.Push(new StateEvent(Sample)).WaitAsync(Bound);
+        await Until(()=>client.Snapshot().Seq==2,"the pushed state counted");
+        time.Advance(Window);
+        var timedOut=await unanswered.WaitAsync(Bound);
+        Assert.Equal((false,"The lighting helper didn't answer.",2L),(timedOut.Reply.Ok,timedOut.Reply.Error,timedOut.StatesBefore));
+        // Not connected: the count stays through the drop.
+        host.Server!.Dispose();
+        await Until(()=>client.State is null,"the dropped host's state cleared");
+        var offline=await client.SendTrackedAsync(new RescanRequest(),CancellationToken.None).WaitAsync(Bound);
+        Assert.Equal((false,"The lighting helper isn't connected.",2L),(offline.Reply.Ok,offline.Reply.Error,offline.StatesBefore));
+    }
     [Fact] public async Task Real_connect_rejects_a_pipe_server_that_is_not_DeadWare_Devices()
     {
         string name="DeadWare.Devices.Tests."+Guid.NewGuid().ToString("N");

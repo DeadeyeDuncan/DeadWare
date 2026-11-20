@@ -10,6 +10,13 @@ namespace DeadWare.App;
 /// <summary>A running DeadWare.Devices process: the client waits on it, and kills it only when it will not stop.</summary>
 internal interface IDeviceHostProcess : IDisposable { int Id {get;} bool HasExited {get;} Task WaitForExitAsync(CancellationToken token); void Kill(); }
 internal enum ServeEnd { Closed, VersionMismatch, WrongElevation }
+/// <summary>The latest state and how many states the client has stored so far, read together: <see cref="Seq"/> never decreases and survives reconnects.</summary>
+internal readonly record struct HostSnapshot(HostState? State,long Seq);
+/// <summary>
+/// A reply and the client's state count as the read loop read that reply's frame. The host writes a request's reply before the state the
+/// request caused, so once <see cref="DeviceHostClient.Snapshot"/> shows a Seq above <see cref="StatesBefore"/>, that state (or a later one) is in.
+/// </summary>
+internal readonly record struct TrackedReply(Reply Reply,long StatesBefore);
 internal interface IDeviceHostLauncher { IDeviceHostProcess Start(string openRgbPath,bool startup); IDeviceHostProcess? FindRunning(); }
 /// <summary>
 /// The window's side of the lighting host: it finds or launches DeviceHost, connects to its pipe, keeps the latest <see cref="HostState"/>,
@@ -34,17 +41,21 @@ internal sealed class DeviceHostClient : IAsyncDisposable
         NoAnswerText=>"The lighting helper didn't answer, so the last change may not have applied.",
         _=>$"The last change didn't apply: {HostReplyCodes.Explain(why)}",
     };
-    sealed class Conn(Stream stream) {public readonly Stream Stream=stream;public readonly SemaphoreSlim Write=new(1,1);public readonly Dictionary<long,TaskCompletionSource<Reply>> Pending=new();public bool Dead,Checked,Ready;public Task Previews=Task.CompletedTask;}
+    sealed class Conn(Stream stream) {public readonly Stream Stream=stream;public readonly SemaphoreSlim Write=new(1,1);public readonly Dictionary<long,TaskCompletionSource<TrackedReply>> Pending=new();public bool Dead,Checked,Ready;public Task Previews=Task.CompletedTask;}
     readonly string openRgbPath;readonly IDeviceHostLauncher launcher;readonly Func<CancellationToken,Task<Stream>> connect;readonly TimeProvider time;readonly bool windowElevated;readonly HostLaunchPacer pacer;
     readonly object gate=new();readonly RestartBackoff backoff=new();
     readonly CancellationTokenSource lifetime=new();readonly CancellationTokenSource pacing;readonly TaskCompletionSource disposed=new(TaskCreationOptions.RunContinuationsAsynchronously);
     CancellationTokenRegistration startToken;
     // stopWindow: the running stop's 5 s window; stopSent: its one StopRequest has been claimed, by the stop or by a connection registered after it began.
     IDeviceHostProcess? process;Conn? conn;HostState? state;string? problem;Task? loop,stopTask;CancellationTokenSource? stopWindow;bool stopping,stopSent,disposing,startupPending,previewWanted;long nextId;
+    // seq: the states stored so far, from StateEvents and GetState answers alike, counted on the read loop under the lock; never reset.
+    long seq;
     /// <param name="pacer">Shared by the session's clients so that no launch follows a host's exit within 4 s; a client of its own by default.</param>
     public DeviceHostClient(string openRgbPath,IDeviceHostLauncher launcher,Func<CancellationToken,Task<Stream>> connect,TimeProvider time,bool windowElevated=false,HostLaunchPacer? pacer=null)
     {this.pacer=pacer??new(time);this.windowElevated=windowElevated;this.openRgbPath=openRgbPath;this.launcher=launcher;this.connect=connect;this.time=time;pacing=CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);}
     public HostState? State {get {lock(gate)return state;}}
+    /// <summary>The latest state and the count of states stored so far, read together under the lock.</summary>
+    public HostSnapshot Snapshot() {lock(gate)return new(state,seq);}
     public string? Problem {get {lock(gate)return problem;}}
     public event Action? Changed;
     /// <summary>A preview frame, zone key to #RRGGBB, raised on the read loop like <see cref="Changed"/> and only while <see cref="SetPreview"/> wants frames.</summary>
@@ -187,9 +198,9 @@ internal sealed class DeviceHostClient : IAsyncDisposable
         }
         finally
         {
-            List<TaskCompletionSource<Reply>> orphaned;bool cleared;
-            lock(gate){c.Dead=true;if(conn==c)conn=null;orphaned=[..c.Pending.Values];c.Pending.Clear();cleared=state is not null;state=null;}
-            foreach(var p in orphaned)p.TrySetResult(NotConnected);
+            List<TaskCompletionSource<TrackedReply>> orphaned;bool cleared;long now;
+            lock(gate){c.Dead=true;if(conn==c)conn=null;orphaned=[..c.Pending.Values];c.Pending.Clear();cleared=state is not null;state=null;now=seq;}
+            foreach(var p in orphaned)p.TrySetResult(new(NotConnected,now));
             stream.Dispose();
             await stopSend.ConfigureAwait(false);
             // The host is gone or out of reach, so its last state no longer describes it: the page can tell a relaunch from a running host.
@@ -239,11 +250,12 @@ internal sealed class DeviceHostClient : IAsyncDisposable
             while(await DeviceHostProtocol.ReadAsync(c.Stream,token).ConfigureAwait(false) is {} message)
             {
                 if(message.Version!=DeviceHostProtocol.Version)return ServeEnd.VersionMismatch;
-                if(message is Reply reply)Complete(c,reply.Id,reply);
+                // StatesBefore is taken here, on the read loop, as the reply's frame is read: never in a continuation, where a later frame may already be stored.
+                if(message is Reply reply)Complete(c,reply.Id,reply,null);
                 else if(message is StateEvent update)
                 {
-                    bool first;lock(gate){state=update.State;first=!c.Checked;c.Checked=true;}
-                    if(update.Id!=0)Complete(c,update.Id,new Reply(true,null));
+                    bool first;long before;lock(gate){before=seq;state=update.State;seq++;first=!c.Checked;c.Checked=true;}
+                    if(update.Id!=0)Complete(c,update.Id,new Reply(true,null),before);
                     RaiseChanged();
                     if(first&&windowElevated&&!update.State.Elevated)return ServeEnd.WrongElevation;
                 }
@@ -255,20 +267,28 @@ internal sealed class DeviceHostClient : IAsyncDisposable
         catch(InvalidDataException) {return ServeEnd.VersionMismatch;}
         catch(Exception e) when(e is IOException or ObjectDisposedException or OperationCanceledException) {return ServeEnd.Closed;}
     }
-    void Complete(Conn c,long id,Reply reply)
+    /// <param name="before">The state count the reply was read at (a GetState answer's, before it is stored); null reads it now, under the lock that takes the pending request.</param>
+    void Complete(Conn c,long id,Reply reply,long? before)
     {
-        TaskCompletionSource<Reply>? waiting;
-        lock(gate){if(!c.Pending.Remove(id,out waiting))return;}
-        waiting.TrySetResult(reply);
+        TaskCompletionSource<TrackedReply>? waiting;long at;
+        lock(gate){if(!c.Pending.Remove(id,out waiting))return;at=before??seq;}
+        waiting.TrySetResult(new(reply,at));
     }
     /// <summary>Sends a request and returns the host's answer. Connection problems come back as a failed <see cref="Reply"/>; only a cancelled <paramref name="token"/> throws.</summary>
-    public Task<Reply> SendAsync(HostMessage request,CancellationToken token) {Conn? c;lock(gate)c=conn;return SendAsync(c,request,token);}
+    public async Task<Reply> SendAsync(HostMessage request,CancellationToken token)=>(await SendTrackedAsync(request,token).ConfigureAwait(false)).Reply;
+    /// <summary>
+    /// As <see cref="SendAsync(HostMessage,CancellationToken)"/>, with the state count as the read loop read the reply. A reply the client
+    /// makes up (not connected, no answer, a failed write) carries the count as it is then.
+    /// </summary>
+    public Task<TrackedReply> SendTrackedAsync(HostMessage request,CancellationToken token) {Conn? c;lock(gate)c=conn;return SendTrackedAsync(c,request,token);}
+    long Seq {get {lock(gate)return seq;}}
+    async Task<Reply> SendAsync(Conn? c,HostMessage request,CancellationToken token)=>(await SendTrackedAsync(c,request,token).ConfigureAwait(false)).Reply;
     /// <summary>Sends on one connection, which is never the next one should it drop meanwhile.</summary>
-    async Task<Reply> SendAsync(Conn? c,HostMessage request,CancellationToken token)
+    async Task<TrackedReply> SendTrackedAsync(Conn? c,HostMessage request,CancellationToken token)
     {
-        var waiting=new TaskCompletionSource<Reply>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var waiting=new TaskCompletionSource<TrackedReply>(TaskCreationOptions.RunContinuationsAsynchronously);
         long id=Interlocked.Increment(ref nextId);
-        lock(gate){if(c is null||c.Dead)return NotConnected;c.Pending[id]=waiting;}
+        lock(gate){if(c is null||c.Dead)return new(NotConnected,seq);c.Pending[id]=waiting;}
         using var timeout=new CancellationTokenSource(ReplyTimeout,time);
         using var linked=CancellationTokenSource.CreateLinkedTokenSource(token,timeout.Token);
         bool locked=false;
@@ -284,11 +304,11 @@ internal sealed class DeviceHostClient : IAsyncDisposable
                 // A write that failed or was cut short may have left half a frame on the pipe; closing it makes the read loop reconnect.
                 if(locked)c.Stream.Dispose();
                 if(token.IsCancellationRequested)throw;
-                return e is OperationCanceledException?NoAnswer:NotConnected;
+                return new(e is OperationCanceledException?NoAnswer:NotConnected,Seq);
             }
             finally {if(locked)c.Write.Release();}
             try {return await waiting.Task.WaitAsync(linked.Token).ConfigureAwait(false);}
-            catch(OperationCanceledException) when(!token.IsCancellationRequested) {return NoAnswer;}
+            catch(OperationCanceledException) when(!token.IsCancellationRequested) {return new(NoAnswer,Seq);}
         }
         finally {lock(gate)c.Pending.Remove(id);}
     }

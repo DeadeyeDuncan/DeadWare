@@ -25,8 +25,8 @@ namespace DeadWare.WinUI;
 /// <para>
 /// In edit layout (<see cref="Editing"/>) a device box, a zone dot or the tower (by its label, or anywhere on it while it is closed)
 /// can be dragged, and with a device or the tower selected the arrow keys move it a grid step at a time; the canvas is then a tab
-/// stop whose accessible name states the selection and its position. Each finished edit is raised once as
-/// <see cref="LayoutEdited"/> and held as a draft, which the view draws instead of the shown layout until its owner drops it
+/// stop whose accessible name states the selection and its position. Each finished edit is raised once, as
+/// <see cref="LayoutEdited"/> for a drop or <see cref="Nudged"/> for an arrow key, and held as a draft, which the view draws instead of the shown layout until its owner drops it
 /// (<see cref="Release"/>, <see cref="DropDraft"/>): arriving layouts never move a box while an edit is on its way.
 /// </para>
 /// </summary>
@@ -115,8 +115,11 @@ internal sealed class DeskView : UserControl
     /// <summary>The user selected an item on the desk, or cleared the selection with a tap on empty desk.</summary>
     public event Action<string?>? SelectionChanged;
 
-    /// <summary>One per finished edit in edit layout: a drop after a drag, or an arrow key press. The edit is already held when it is raised.</summary>
+    /// <summary>One per finished drag in edit layout, raised at the drop. The edit is already held when it is raised.</summary>
     public event Action<DeskLayout>? LayoutEdited { add => layoutEdited += value; remove => layoutEdited -= value; }
+
+    /// <summary>One per arrow key press in edit layout, with the held draft moved one grid step. The move is already held when it is raised.</summary>
+    public event Action<DeskLayout>? Nudged;
 
     /// <summary>Holds an edit made outside the view (the panel, the desk shape, reset): drawn instead of the shown layout until dropped.</summary>
     public void Hold(DeskLayout draft)
@@ -247,22 +250,25 @@ internal sealed class DeskView : UserControl
         return null;
     }
 
-    /// <summary>A coordinate's grid column or row, 1 to 48.</summary>
-    private static int Cell(double n) => Math.Clamp((int)Math.Floor(n * DeskGeometry.Snap + 1e-9) + 1, 1, DeskGeometry.Snap);
+    /// <summary>The grid has 49 positions a side, 0/48 to 48/48.</summary>
+    private const int Positions = DeskGeometry.Snap + 1;
+
+    /// <summary>A coordinate's grid column or row, 1 to 49.</summary>
+    private static int Cell(double n) => Math.Clamp((int)Math.Round(n * DeskGeometry.Snap, MidpointRounding.AwayFromZero) + 1, 1, Positions);
 
     /// <summary>
-    /// The canvas's accessible name: in edit layout, the selection and where it is ("Apex Pro, On desk, column 24 of 48, row 30 of
-    /// 48"); otherwise, or with nothing that can move selected, the pointer to the device list.
+    /// The canvas's accessible name: in edit layout, the selection and where it is ("Apex Pro, On desk, column 24 of 49, row 30 of
+    /// 49"); otherwise, or with nothing that can move selected, the pointer to the device list.
     /// </summary>
     private void UpdateName()
     {
         string name = IdleName;
         var from = Current;
-        if (editing && selected == Tower) name = $"PC tower, column {Cell(from.Tower.At.X)} of 48, row {Cell(from.Tower.At.Y)} of 48";
+        if (editing && selected == Tower) name = $"PC tower, column {Cell(from.Tower.At.X)} of {Positions}, row {Cell(from.Tower.At.Y)} of {Positions}";
         else if (editing && selected is { } key && PointOf(from, key) is { } at)
         {
             string where = from.Tower.Members.Contains(key) ? "Inside PC" : "On desk";
-            name = $"{names.GetValueOrDefault(key) ?? key}, {where}, column {Cell(at.X)} of 48, row {Cell(at.Y)} of 48";
+            name = $"{names.GetValueOrDefault(key) ?? key}, {where}, column {Cell(at.X)} of {Positions}, row {Cell(at.Y)} of {Positions}";
         }
         if (name == shownName) return;
         shownName = name;
@@ -424,13 +430,13 @@ internal sealed class DeskView : UserControl
         if (dragged) Rebuild();
     }
 
-    /// <summary>A finished edit: held, drawn and raised once.</summary>
-    private void Finish(DeskLayout next)
+    /// <summary>A finished edit: held, drawn and raised once, as a nudge for an arrow key and as an edit for a drop.</summary>
+    private void Finish(DeskLayout next, bool nudge = false)
     {
         held = next;
         OpenForSelection();
         Rebuild();
-        layoutEdited?.Invoke(next);
+        (nudge ? Nudged : layoutEdited)?.Invoke(next);
     }
 
     /// <summary>In edit layout the arrow keys move the selected device or the tower one grid step; Up is towards the back of the desk.</summary>
@@ -459,8 +465,8 @@ internal sealed class DeskView : UserControl
     {
         // Not while the host isn't running, nor during a drag, which would replace the nudge when it drops.
         if (!live || press is not null || selected is not { } key) return;
-        if (key == Tower) Finish(DeskGeometry.MoveTower(Layout, devices, dx, dy));
-        else if (Placed(Layout, key)) Finish(DeskGeometry.MoveDevice(Layout, devices, key, dx, dy));
+        if (key == Tower) Finish(DeskGeometry.MoveTower(Layout, devices, dx, dy), true);
+        else if (Placed(Layout, key)) Finish(DeskGeometry.MoveDevice(Layout, devices, key, dx, dy), true);
     }
 
     private void Tap(Point at)
