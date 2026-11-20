@@ -13,7 +13,8 @@ public sealed class DeviceHostTests : IAsyncLifetime
     readonly string exe,lightingPath;
     readonly Clock time=new();
     readonly FakeRunner runner;
-    readonly FakeOpenRgbSession session=FakeOpenRgbSession.FromFixture();
+    // Another PC, with no desk picture, unless a test makes it the owner's before it builds the host (UseOwnerRig).
+    FakeOpenRgbSession session=FakeOpenRgbSession.FromFixture();
     readonly HostLog log;
     readonly List<LightingConflict> conflicts=new();
     readonly List<Hold> holds=new();
@@ -1433,5 +1434,159 @@ public sealed class DeviceHostTests : IAsyncLifetime
         Assert.DoesNotContain(saved.Zones.Keys,k=>k.StartsWith(k1+"#",StringComparison.Ordinal));
         Assert.DoesNotContain(k1,saved.Tower.Members);
         Assert.Equal(saved.Zones,h.State.Settings.Layout.Zones);
+    }
+
+    // Lighting desk picture, Task 2: on the owner's rig the device host lays the desk out from its built-in picture.
+    const string Board="MSI MAG B650M MORTAR WIFI (MS-7D76)";
+    static readonly string HubKey=LightingKeys.Device("SERIAL-6",@"HID: \\?\HID#FAKE-3");
+    const string PictureRefused="This PC's layout comes from its built-in picture.",PictureNamed="A window can't choose the desk picture.";
+    void UseOwnerRig()=>session=FakeOpenRgbSession.FromFixture(owner:true);
+    int Hub=>session.Controllers.FindIndex(c=>c.Name==FakeOpenRgbSession.OwnerHub);
+    static PicturePart Part(string id)=>DeskPictures.OwnerRig.Parts.Single(p=>p.Id==id);
+    DeskLayout SavedLayout()=>new LightingStore(lightingPath).Load().Settings.Layout;
+    int LogCount(string text)=>File.ReadAllText(Path.Combine(dir,"logs","devices.log")).Split(text).Length-1;
+    void Without(params string[] names)=>session.Reorder(l=>l.Where(c=>!names.Contains(c.Name)).ToList());
+
+    [Fact]
+    public async Task The_picture_replaces_the_layout_at_connect()
+    {
+        UseOwnerRig();
+        var apex=LightingKeys.Device("SERIAL-4",@"HID: \\?\HID#FAKE-1");
+        var seed=new DeskLayout();
+        seed.Zones[ApexZone]=DeskLayouts.AutoArrange(new DeskLayout(),[new ArrangeDevice(apex,"SteelSeries Apex Pro",[0])]).Zones[ApexZone];
+        seed.Zones["gone|x#0"]=new(0.4,0.4);
+        seed.Tower.Members.Add(LightingKeys.Device("SERIAL-1","I2C: FAKE-1"));
+        seed.Tower.Excluded.Add(LightingKeys.Device("SERIAL-3","I2C: FAKE-3"));
+        new LightingStore(lightingPath).Save(new LightingSettings{Layout=seed});
+        var h=await Running();
+        var saved=SavedLayout();
+        Assert.Equal(DeskPictures.OwnerRigName,saved.Picture);
+        Assert.True(DeskLayouts.Same(DeskPictures.Layout(DeskPictures.OwnerRig,h.State.Devices),saved));
+        Assert.DoesNotContain("gone|x#0",saved.Zones.Keys);
+        Assert.Equal(DeskPictures.PointOf(DeskPictures.OwnerRig,Part("keyboard")),saved.Zones[ApexZone]);
+        Assert.True(DeskLayouts.Same(saved,h.State.Settings.Layout));
+    }
+
+    // The device list changes shape (new indexes) but the picture's layout does not: nothing is saved.
+    [Fact]
+    public async Task A_rescan_that_changes_nothing_in_the_picture_saves_nothing()
+    {
+        UseOwnerRig();
+        var h=await Running(CountingStore());
+        Assert.Equal(1,Volatile.Read(ref saves));
+        var layout=h.State.Settings.Layout;
+        Assert.Equal(DeskPictures.OwnerRigName,layout.Picture);
+        session.Reorder(l=>Enumerable.Reverse(l).ToList());
+        Assert.True((await Send(h,new RescanRequest())).Ok);
+        Assert.Equal(2,LogCount("devices changed:")); // the rescan saw a changed list
+        Assert.Equal(1,Volatile.Read(ref saves));
+        Assert.True(DeskLayouts.Same(layout,h.State.Settings.Layout));
+    }
+
+    // The board alone still holds the saved picture: the hub's zones lose their points, everything else stays.
+    [Fact]
+    public async Task The_picture_survives_the_hub_going_missing()
+    {
+        UseOwnerRig();
+        var h=await Running(CountingStore());
+        var before=h.State.Settings.Layout;
+        Assert.Contains(before.Zones.Keys,k=>k.StartsWith(HubKey+"#",StringComparison.Ordinal));
+        Without(FakeOpenRgbSession.OwnerHub);
+        Assert.True((await Send(h,new RescanRequest())).Ok);
+        var after=h.State.Settings.Layout;
+        Assert.Equal(DeskPictures.OwnerRigName,after.Picture);
+        Assert.DoesNotContain(after.Zones.Keys,k=>k.StartsWith(HubKey+"#",StringComparison.Ordinal));
+        var rest=before.Zones.Where(e=>!e.Key.StartsWith(HubKey+"#",StringComparison.Ordinal)).ToDictionary(e=>e.Key,e=>e.Value);
+        Assert.Equal(rest,after.Zones);
+        Assert.Equal(before.Unplaced,after.Unplaced);
+        Assert.True(DeskLayouts.Same(after,SavedLayout()));
+    }
+
+    [Fact]
+    public async Task Losing_both_signature_devices_returns_to_the_plain_desk()
+    {
+        UseOwnerRig();
+        var h=await Running(CountingStore());
+        var before=h.State.Settings.Layout;
+        var saved=Volatile.Read(ref saves);
+        Without(FakeOpenRgbSession.OwnerHub,Board);
+        Assert.True((await Send(h,new RescanRequest())).Ok);
+        var after=h.State.Settings.Layout;
+        Assert.Null(after.Picture);
+        Assert.True(DeskLayouts.Same(DeskGeometry.Reset(before,h.State.Devices),after));
+        Assert.Equal(saved+1,Volatile.Read(ref saves));
+        Assert.True(DeskLayouts.Same(after,SavedLayout()));
+    }
+
+    [Fact]
+    public async Task No_picture_on_another_pc()
+    {
+        var h=await Running();
+        var layout=h.State.Settings.Layout;
+        Assert.Null(layout.Picture);
+        Assert.True(DeskLayouts.Same(DeskLayouts.AutoArrange(new DeskLayout(),DeskLayouts.Arrangeable(h.State.Devices)),layout));
+        Assert.True(DeskLayouts.Same(layout,SavedLayout()));
+    }
+
+    [Fact]
+    public async Task SetLayout_is_refused_while_a_picture_applies()
+    {
+        UseOwnerRig();
+        var h=await Running();
+        var layout=h.State.Settings.Layout;
+        var file=File.ReadAllText(lightingPath);
+        var draft=DeskLayouts.Clone(layout);draft.Picture=null;draft.Zones[ApexZone]=new(0.9,0.1);
+        var reply=await Send(h,new SetLayoutRequest(draft));
+        Assert.False(reply.Ok);Assert.Equal(PictureRefused,reply.Error);
+        Assert.True(DeskLayouts.Same(layout,h.State.Settings.Layout));
+        Assert.Equal(file,File.ReadAllText(lightingPath));
+        // Once no picture applies, a layout is accepted as before.
+        Without(FakeOpenRgbSession.OwnerHub,Board);
+        Assert.True((await Send(h,new RescanRequest())).Ok);
+        Assert.Null(h.State.Settings.Layout.Picture);
+        draft=DeskLayouts.Clone(h.State.Settings.Layout);draft.Zones[ApexZone]=new(0.9,0.1);
+        Assert.True((await Send(h,new SetLayoutRequest(draft))).Ok);
+        Assert.Equal(new DeskPoint(0.9,0.1),SavedLayout().Zones[ApexZone]);
+        Assert.Equal(new DeskPoint(0.9,0.1),h.State.Settings.Layout.Zones[ApexZone]);
+    }
+
+    [Fact]
+    public async Task SetLayout_refuses_a_layout_that_names_a_picture()
+    {
+        var h=await Running(CountingStore());
+        var layout=h.State.Settings.Layout;
+        var saved=Volatile.Read(ref saves);
+        var draft=DeskLayouts.Clone(layout);draft.Picture=DeskPictures.OwnerRigName;
+        var reply=await Send(h,new SetLayoutRequest(draft));
+        Assert.False(reply.Ok);Assert.Equal(PictureNamed,reply.Error);
+        Assert.Equal(saved,Volatile.Read(ref saves));
+        Assert.Null(h.State.Settings.Layout.Picture);
+        Assert.True(DeskLayouts.Same(layout,h.State.Settings.Layout));
+    }
+
+    // The effect is painted at the picture's points: each part's first LED is the wave at that part's point, at the frame's effect time,
+    // which is the fake time since the host was made (its epoch).
+    [Fact]
+    public async Task Wave_follows_the_pictures_points()
+    {
+        UseOwnerRig();
+        var start=time.GetUtcNow();
+        var h=await Running();
+        Assert.True((await Send(h,new SetBrightnessRequest(100))).Ok);
+        var wave=new EffectParams{Colors=["#FF0000","#00FF00","#0000FF"]};
+        Assert.True((await Send(h,new SetEffectRequest("Wave",wave))).Ok);
+        await AdvanceUntil(()=>time.Waiting(DeviceHost.FastTick));
+        var from=session.LedCount;
+        await AdvanceUntil(()=>session.Leds.Skip(from).Any(l=>l.Index==Hub),tick:DeviceHost.FastTick);
+        await Until(()=>time.Waiting(DeviceHost.FastTick)); // that tick's paint is done and the clock has not moved since
+        var t=(time.GetUtcNow()-start).TotalMilliseconds;
+        var settings=h.State.Settings;
+        Assert.True(Rgb.TryParse(settings.DefaultColor,out var zoneColour));
+        Assert.Empty(settings.ZoneColors);
+        Rgb Expected(string id)=>LightingEffects.Evaluate(EffectKind.Wave,DeskPictures.PointOf(DeskPictures.OwnerRig,Part(id)),t,wave,zoneColour);
+        var hub=LastLeds(Hub);
+        Rgb[] seen=[hub[0],hub[16],LastLeds(Apex)[0]]; // the hub's zones hold 8, 8, 8 and 20 LEDs: zone 2 starts at 16
+        Assert.Equal([Expected("fan1"),Expected("fan3"),Expected("keyboard")],seen);
+        Assert.Equal(3,seen.Distinct().Count());
     }
 }

@@ -332,20 +332,27 @@ internal sealed class DeviceHost : IAsyncDisposable
     // After a change: re-key saved entries for devices back under a new key first, so their points are kept, then give the zones still
     // without a point one. The arranged layout is adopted only when the settings with it stay valid and savable (1 MiB): otherwise the
     // layout stays as it was, the reason is logged once, and the live settings stay savable, so later changes aren't refused. One save
-    // covers both.
+    // covers both. On the owner's rig the layout is the built-in picture's (DeskPictures), not an arranged one; when the picture stops
+    // applying (both signature devices gone) the desk is auto-arranged afresh with the default desk shape the picture carried.
     bool RescanLocked()
     {
         var changed=service.Rescan();
         if(!changed) return false;
         log.Write($"devices changed: {service.Devices.Count} device(s)");
         var save=LightingKeys.Remap(settings,service.Devices.Select(d=>d.Key).ToList());
-        var arranged=DeskLayouts.AutoArrange(settings.Layout,DeskLayouts.Arrangeable(service.Views(settings)));
-        if(ReferenceEquals(arranged,settings.Layout)) lastArrangeError=null;
+        var views=service.Views(settings);
+        var picture=DeskPictures.Applies(views.Select(v=>v.Name),settings.Layout.Picture);
+        var arranged=picture is not null?DeskPictures.Layout(picture,views):settings.Layout.Picture is not null?DeskGeometry.Reset(settings.Layout,views):DeskLayouts.AutoArrange(settings.Layout,DeskLayouts.Arrangeable(views));
+        if(ReferenceEquals(arranged,settings.Layout)||DeskLayouts.Same(arranged,settings.Layout)) lastArrangeError=null;
         else
         {
             var candidate=Clone(settings);candidate.Layout=arranged;
             var error=LightingSettingsCodec.Validate(candidate);
-            if(error is null){settings=candidate;save=true;lastArrangeError=null;}
+            if(error is null)
+            {
+                if(arranged.Picture!=settings.Layout.Picture) log.Write(arranged.Picture is null?"desk picture left: "+settings.Layout.Picture:"desk picture applied: "+arranged.Picture);
+                settings=candidate;save=true;lastArrangeError=null;
+            }
             else if(error!=lastArrangeError){lastArrangeError=error;log.Write("desk layout not arranged: "+error);}
         }
         if(save) SaveQuietly();
@@ -449,8 +456,11 @@ internal sealed class DeviceHost : IAsyncDisposable
     // for absent devices are kept. Remap first, as at a rescan (fix wave W7): a draft made before a rescan re-keyed a device would otherwise
     // give the new key fresh points and strand the old ones. The remap sees the draft alone: the live colours and modes are already under
     // the new keys, and Remap refuses a target it finds stored anywhere.
+    // On the owner's rig the layout is the picture's, and only the device host sets a layout's picture.
     string? SetLayout(LightingSettings s,SetLayoutRequest r)
     {
+        if(settings.Layout.Picture is not null) return "This PC's layout comes from its built-in picture.";
+        if(r.Layout?.Picture is not null) return "A window can't choose the desk picture.";
         if(r.Layout is null) return "Layout is missing.";
         var error=DeskLayouts.Validate(r.Layout);
         if(error is not null) return error;

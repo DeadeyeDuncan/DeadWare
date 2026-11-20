@@ -84,10 +84,14 @@ sealed class FakeOpenRgbSession:IOpenRgbSession
 
     sealed record Zone(string Name,int LedCount);
     sealed record Dev(string Name,string Serial,string Location,int Type,Zone[] Zones,string[] Modes,int ActiveMode);
-    public static FakeOpenRgbSession FromFixture()
+    public const string OwnerHub="Corsair iCUE Link System Hub",OtherHub="Corsair iCUE Link Hub (test)";
+    // The fixture holds both of the owner's picture's signature devices. Unless owner is set, the hub is renamed, so the session stands for
+    // another PC, one with no desk picture, and the layout is auto-arranged as before the picture.
+    public static FakeOpenRgbSession FromFixture(bool owner=false)
     {
         var json=File.ReadAllText(Path.Combine(AppContext.BaseDirectory,"Fixtures","controllers.json"));
         var devs=JsonSerializer.Deserialize<Dev[]>(json,new JsonSerializerOptions{PropertyNameCaseInsensitive=true})!;
+        if(!owner) devs=devs.Select(d=>d.Name==OwnerHub?d with{Name=OtherHub}:d).ToArray();
         return new(){Controllers=devs.Select((d,i)=>new OpenRgbController(i,d.Name,d.Type,d.Serial,d.Location,
             d.Zones.Select((z,zi)=>new LightingZone(zi,z.Name,z.LedCount)).ToList(),d.Modes,d.ActiveMode)).ToList()};
     }
