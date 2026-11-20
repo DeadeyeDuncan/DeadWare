@@ -29,7 +29,8 @@ internal sealed class OpenRgbEngine : IAsyncDisposable
     bool started;
     // F4 item 3 (whole-branch review D8, D9): the restart history a conflict stop keeps and a full stop clears, with the backoff's count.
     // resumeAt: the earliest the next launch may start, armed with each restart delay. gaveUp: the backoff gave up, so a start fails at once.
-    DateTimeOffset? resumeAt;
+    // F5 item 3b (whole-branch review R4-D2): resumeAt is a time.GetTimestamp() value, so a step of the wall clock doesn't move it.
+    long? resumeAt;
     bool gaveUp;
     EngineStatus status=EngineStatus.Stopped;
     int? processId;
@@ -119,9 +120,9 @@ internal sealed class OpenRgbEngine : IAsyncDisposable
             // F4 item 3 (whole-branch review D9): a start after a conflict stop waits out what is left of the delay that stop armed, as a crash
             // restart waits out its own, so OpenRGB is never relaunched sooner than 4 s after it was stopped. The first attempt resolves as a
             // restart, so the host's loop carries on scanning meanwhile, and a stop in the wait cancels the launch.
-            DateTimeOffset? at;
+            long? at;
             lock(gate)at=resumeAt;
-            if(at-time.GetUtcNow() is {Ticks:>0} left)
+            if(at is {} due&&Left(time,due) is {Ticks:>0} left)
             {
                 var pause=Task.Delay(left,time,ct); // registered before the status change so a clock advance can't miss it
                 Set(EngineStatus.Restarting,null);
@@ -169,7 +170,7 @@ internal sealed class OpenRgbEngine : IAsyncDisposable
                 if(quitting&&proc is null) break;
                 var now=time.GetUtcNow();
                 var delay=backoff.RecordFailure(now);
-                lock(gate){if(delay is null) gaveUp=true;else resumeAt=now+delay.Value;}
+                lock(gate){if(delay is null) gaveUp=true;else resumeAt=time.GetTimestamp()+(long)(delay.Value.Ticks*(double)time.TimestampFrequency/TimeSpan.TicksPerSecond);}
                 if(quitting) break;
                 if(delay is null){Set(EngineStatus.Failed,GaveUpText);return;}
                 var wait=Task.Delay(delay.Value,time,ct); // registered before the status change so a clock advance can't miss it
@@ -180,6 +181,14 @@ internal sealed class OpenRgbEngine : IAsyncDisposable
         }
         catch(OperationCanceledException){}
         finally{firstAttempt.TrySetResult();}
+    }
+
+    // F5 item 3b (whole-branch review R4-D2): what is left until a deadline on the monotonic clock (a time.GetTimestamp() value), never
+    // more than the backoff's cap.
+    internal static TimeSpan Left(TimeProvider time,long due)
+    {
+        var left=time.GetElapsedTime(time.GetTimestamp(),due);
+        return left>RestartBackoff.Cap?RestartBackoff.Cap:left;
     }
 
     bool Prepared()

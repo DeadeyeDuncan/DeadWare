@@ -239,6 +239,53 @@ public sealed class OpenRgbEngineTests : IAsyncLifetime
         await Until(()=>runner.Count==2&&e.Status==EngineStatus.Running);
     }
 
+    // A clock whose wall time can step while its timestamps and timers run on, as the system clock steps on a time-sync correction.
+    sealed class SteppedClock(Clock inner):TimeProvider
+    {
+        public TimeSpan Step;
+        public override DateTimeOffset GetUtcNow()=>inner.GetUtcNow()+Step;
+        public override long GetTimestamp()=>inner.GetTimestamp();
+        public override long TimestampFrequency=>inner.TimestampFrequency;
+        public override TimeZoneInfo LocalTimeZone=>inner.LocalTimeZone;
+        public override ITimer CreateTimer(TimerCallback callback,object? state,TimeSpan dueTime,TimeSpan period)=>inner.CreateTimer(callback,state,dueTime,period);
+    }
+
+    // F5 item 3b (whole-branch review R4-D2): the earliest relaunch a conflict stop arms is kept on the monotonic clock, so a step of the
+    // wall clock, an hour back or forward, neither stretches the wait nor lets the relaunch come sooner than the backoff after the stop.
+    [Theory]
+    [InlineData(-3600)]
+    [InlineData(3600)]
+    public async Task The_delay_a_conflict_stop_armed_ignores_a_wall_clock_step(int stepSeconds)
+    {
+        var clock=new Clock();
+        var stepped=new SteppedClock(clock);
+        var e=Track(new OpenRgbEngine(exe,@"C:\cfg\openrgb",runner,(_,_)=>Task.FromResult(true),stepped,log));
+        await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
+        await e.StopAsync(keepHistory:true).WaitAsync(RealTimeCap);
+        clock.Advance(TimeSpan.FromSeconds(1));
+        stepped.Step=TimeSpan.FromSeconds(stepSeconds);
+        await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
+        Assert.Equal(EngineStatus.Restarting,e.Status);
+        var left=RestartBackoff.Base-TimeSpan.FromSeconds(1);
+        Assert.True(clock.Waiting(left));
+        clock.Advance(left-TimeSpan.FromTicks(1));
+        await Task.Delay(100);
+        Assert.Equal(1,runner.Count);
+        clock.Advance(TimeSpan.FromTicks(1));
+        await Until(()=>runner.Count==2&&e.Status==EngineStatus.Running);
+    }
+
+    // What is left of an armed delay never exceeds the backoff's cap, whatever the deadline says.
+    [Fact]
+    public void What_is_left_of_an_armed_delay_is_clamped_to_the_cap()
+    {
+        var clock=new Clock();
+        var now=clock.GetTimestamp();
+        Assert.Equal(RestartBackoff.Cap,OpenRgbEngine.Left(clock,now+clock.TimestampFrequency*7200));
+        Assert.Equal(TimeSpan.FromSeconds(3),OpenRgbEngine.Left(clock,now+clock.TimestampFrequency*3));
+        Assert.True(OpenRgbEngine.Left(clock,now-clock.TimestampFrequency)<=TimeSpan.Zero);
+    }
+
     [Fact]
     public async Task Stop_kills_tree_and_does_not_restart()
     {
