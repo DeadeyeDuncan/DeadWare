@@ -32,8 +32,8 @@ public static class DeskGeometry
         foreach(var d in Placeable(devices))
         {
             bool member=layout.Tower.Members.Contains(d.Key);
-            if(member) towerDevices++;
             if(layout.Unplaced.Contains(d.Key)){notPlaced.Add(d);continue;}
+            if(member) towerDevices++;
             var placed=PlacedZones(layout,d);
             if(placed.Count==0) continue;
             if(member) foreach(var z in placed) memberPoints.Add(layout.Zones[LightingKeys.Zone(d.Key,z.Index)]);
@@ -43,7 +43,7 @@ public static class DeskGeometry
             else items.Add(new(DeskItemKind.Device,d.Key,null,layout.Zones[keys[0]],d.Name,Own(d),keys));
         }
         var box=ClosedBox(layout);
-        if(towerOpen&&memberPoints.Count>0) box=new(memberPoints.Min(p=>p.X),memberPoints.Min(p=>p.Y),memberPoints.Max(p=>p.X),memberPoints.Max(p=>p.Y));
+        if(towerOpen&&memberPoints.Count>0) box=new(Clamp01(memberPoints.Min(p=>p.X)-TowerHalf),Clamp01(memberPoints.Min(p=>p.Y)-TowerHalf),Clamp01(memberPoints.Max(p=>p.X)+TowerHalf),Clamp01(memberPoints.Max(p=>p.Y)+TowerHalf));
         items.Add(new(DeskItemKind.Tower,null,null,layout.Tower.At,"PC tower",false,Array.Empty<string>()));
         return new(items,box,towerDevices,notPlaced);
     }
