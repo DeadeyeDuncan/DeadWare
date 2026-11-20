@@ -111,13 +111,13 @@ internal sealed class LightingDeviceService
         lock(gate){lastSent.Clear();applied.Clear();directSet.Clear();activeMode.Clear();seeded=false;seedFailureLogged=false;}
     }
 
-    public void Paint(LightingSettings settings)
+    public void Paint(LightingSettings settings,double tMs=0)
     {
         lock(gate)
         {
             foreach(var d in devices)
             {
-                try{PaintDevice(settings,d);lastError.Remove(d.Key);}
+                try{PaintDevice(settings,d,tMs);lastError.Remove(d.Key);}
                 // The connection is gone, not this device: the caller drops the session and every device is repainted after it reconnects.
                 catch(OpenRgbSessionLostException){throw;}
                 catch(Exception e)
@@ -134,9 +134,9 @@ internal sealed class LightingDeviceService
         }
     }
 
-    void PaintDevice(LightingSettings settings,LightingDevice d)
+    void PaintDevice(LightingSettings settings,LightingDevice d,double tMs)
     {
-        var paint=LightingPaint.Paint(settings,d);
+        var paint=LightingPaint.Paint(settings,d,tMs);
         if(paint.Kind==PaintKind.Unsupported) return;
         var index=indexByKey[d.Key];
         if(paint.Kind==PaintKind.Hardware)
@@ -177,5 +177,17 @@ internal sealed class LightingDeviceService
     public IReadOnlyList<DeviceView> Views(LightingSettings settings)
     {
         lock(gate)return devices.Select(d=>LightingPaint.View(settings,d)).ToList();
+    }
+
+    // Zone key -> #RRGGBB as the effect shows it at tMs, before brightness, for Direct devices and zones with LEDs.
+    public Dictionary<string,string> Preview(LightingSettings settings,double tMs)
+    {
+        var r=new Dictionary<string,string>();
+        lock(gate)foreach(var d in devices)
+        {
+            if(LightingPaint.Paint(settings,d,tMs).Kind!=PaintKind.Direct) continue;
+            foreach(var z in d.Zones) if(z.LedCount>0) r[LightingKeys.Zone(d.Key,z.Index)]=LightingPaint.ZoneShown(settings,d,z,tMs).ToHex();
+        }
+        return r;
     }
 }
