@@ -15,22 +15,35 @@ public static class LightingSettingsCodec
         try{s=JsonSerializer.Deserialize<LightingSettings>(json);}
         catch(JsonException e){return NewerShape(json)??new(new(),$"Lighting settings are not valid JSON: {e.Message}",true);}
         if(s is null) return new(new(),"Lighting settings were empty.",true);
+        return Finish(s);
+    }
+    // Defaults for null members, normalise, validate. A newer file (Ruling AS) whose Effect or Layout this build refuses gets those two reset
+    // and is checked again, so its colours, brightness and modes still count; only a second failure drops it to defaults. It is never quarantined.
+    static LightingRead Finish(LightingSettings s)
+    {
         s.Effect??=new();s.Layout??=DeskLayouts.Empty();
         LightingEffects.Normalize(s.Effect);
         var error=Validate(s);
-        if(s.Version>LightingSettings.CurrentVersion) return new(error is null?s:new(),error,false,true);
+        if(s.Version>LightingSettings.CurrentVersion)
+        {
+            if(error is not null){s.Effect=new();s.Layout=DeskLayouts.Empty();var again=Validate(s);if(again is null) return new(s,null,false,true);}
+            return new(error is null?s:new(),error,false,true);
+        }
         return error is null?new(s,null,false):new(new(),error,true);
     }
     // A wrong JSON type in Effect or Layout is a JsonException, which would set a later DeadWare's file aside (Ruling AS). When its Version is
-    // above ours, drop those two members, which may have another shape there, and read the rest; null when the file isn't such a file.
+    // above ours, drop those two members, which may have another shape there, and read the rest once; null when the file isn't such a file.
+    // Version is read as an int only: "Version": 2.0 is still a type error and quarantines.
     static LightingRead? NewerShape(string json)
     {
         try
         {
             if(System.Text.Json.Nodes.JsonNode.Parse(json) is not System.Text.Json.Nodes.JsonObject o||!o.TryGetPropertyValue("Version",out var v)||v is null||v.GetValueKind()!=JsonValueKind.Number||!v.AsValue().TryGetValue<int>(out var version)||version<=LightingSettings.CurrentVersion) return null;
             o.Remove("Effect");o.Remove("Layout");
-            var r=Read(o.ToJsonString());
-            return new(r.Settings,r.Error,false,true);
+            LightingSettings? s;
+            try{s=JsonSerializer.Deserialize<LightingSettings>(o.ToJsonString());}
+            catch(JsonException e){return new(new(),$"Lighting settings are not valid JSON: {e.Message}",false,true);}
+            return s is null?new(new(),"Lighting settings were empty.",false,true):Finish(s);
         }
         catch(Exception e) when(e is JsonException or InvalidOperationException or FormatException){return null;}
     }
