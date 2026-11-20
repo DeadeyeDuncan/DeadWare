@@ -54,6 +54,52 @@ public class DeskPictureTests
         Assert.False(s.Parts.Single(p=>p.Part.Id=="gpu").Found);
         Assert.Equal("RAM|B",s.Parts.Single(p=>p.Part.Id=="ram1").DeviceKey);Assert.False(s.Parts.Single(p=>p.Part.Id=="ram2").Found);
         Assert.Null(DeskPictures.Hit(s,PictureView.Inside,315,295));                                  // the card's box: not found, so not tappable
+        var full=DeskPictures.Resolve(DeskPictures.OwnerRig,Rig());
+        foreach(var r in s.Parts.Where(r=>r.Part.Id is not ("gpu" or "ram1" or "ram2"))) Assert.Equal(full.Parts.Single(f=>f.Part.Id==r.Part.Id).DeviceKey,r.DeviceKey);   // nothing else moves
+        Assert.All(s.Parts.Where(r=>r.Part.Id is not ("gpu" or "ram1" or "ram2")),r=>Assert.True(r.Found));
+    }
+    [Fact] public void Exact_name_parts_do_not_match_by_prefix()
+    {
+        var rig=Rig();rig.Add(Dev("A|first","SteelSeries Apex Pro TKL",PaintKind.Direct,("Keyboard",87)));   // its key sorts before the real keyboard's
+        Assert.Equal(Key("SteelSeries Apex Pro"),DeskPictures.Resolve(DeskPictures.OwnerRig,rig).Parts.Single(p=>p.Part.Id=="keyboard").DeviceKey);
+        var only=Rig().Where(d=>d.Name!="SteelSeries Apex Pro").ToList();only.Add(rig[^1]);
+        Assert.False(DeskPictures.Resolve(DeskPictures.OwnerRig,only).Parts.Single(p=>p.Part.Id=="keyboard").Found);
+    }
+    [Fact] public void Layout_writes_each_parts_own_point()
+    {
+        var r=DeskPictures.OwnerRig;var l=DeskPictures.Layout(r,Rig());DeskPoint At(string id)=>DeskPictures.PointOf(r,r.Parts.Single(p=>p.Id==id));
+        var hub=Key("Corsair iCUE Link System Hub");var mouse=Key("SteelSeries Aerox 9 Wireless Wired");
+        Assert.Equal(At("fan1"),l.Zones[LightingKeys.Zone(hub,0)]);Assert.Equal(At("fan2"),l.Zones[LightingKeys.Zone(hub,1)]);Assert.Equal(At("fan3"),l.Zones[LightingKeys.Zone(hub,2)]);
+        Assert.Equal(At("pump"),l.Zones[LightingKeys.Zone(hub,3)]);Assert.Equal(At("keyboard"),l.Zones[LightingKeys.Zone(Key("SteelSeries Apex Pro"),0)]);
+        Assert.Equal(At("ram1"),l.Zones[LightingKeys.Zone("RAM|A",0)]);Assert.Equal(At("ram2"),l.Zones[LightingKeys.Zone("RAM|B",0)]);
+        Assert.Equal(At("mouse"),l.Zones[LightingKeys.Zone(mouse,3)]);Assert.Equal(At("gpu"),l.Zones[LightingKeys.Zone(Key("Gigabyte Radeon RX 6800 XT GAMING OC"),2)]);
+    }
+    [Fact] public void A_zone_lit_by_several_parts_takes_the_mean_whatever_the_part_order()
+    {
+        var r=DeskPictures.OwnerRig;var node=LightingKeys.Zone(Key("Corsair Lighting Node Pro"),0);
+        var l=DeskPictures.Layout(r,Rig());var mid=DeskPictures.PointOf(r,r.Parts.Single(p=>p.Id=="front2"));
+        Assert.Equal(mid.X,l.Zones[node].X,12);Assert.Equal(mid.Y,l.Zones[node].Y,12);
+        var rev=DeskPictures.Layout(r with{Parts=r.Parts.Reverse().ToList()},Rig());
+        Assert.True(DeskLayouts.Same(l,rev));
+    }
+    [Fact] public void A_part_only_matches_a_device_and_zones_the_desk_can_place()
+    {
+        var rig=Rig().Where(d=>d.Name!="SteelSeries Apex Pro").ToList();rig.Add(Dev("U|1","SteelSeries Apex Pro",PaintKind.Unsupported,("Keyboard",112)));
+        Assert.False(DeskPictures.Resolve(DeskPictures.OwnerRig,rig).Parts.Single(p=>p.Part.Id=="keyboard").Found);
+        var node=Key("Corsair Lighting Node Pro");
+        var unsized=Rig().Select(d=>d.Key==node?Dev(node,d.Name,PaintKind.Hardware,("Corsair Channel 1",0),("Corsair Channel 2",0)):d).ToList();
+        var s=DeskPictures.Resolve(DeskPictures.OwnerRig,unsized);
+        Assert.All(s.Parts.Where(p=>p.Part.Id.StartsWith("front")),p=>Assert.False(p.Found));
+        Assert.DoesNotContain(LightingKeys.Zone(node,0),DeskPictures.Layout(DeskPictures.OwnerRig,unsized).Zones.Keys);
+        var shownDark=Rig().Select(d=>d.Name.StartsWith("SteelSeries Aerox")?Dev(d.Key,d.Name,PaintKind.Direct,("Front",1),("Middle",0),("Rear",1),("Reactive",1)):d).ToList();   // shown zone 1 has no LEDs
+        Assert.False(DeskPictures.Resolve(DeskPictures.OwnerRig,shownDark).Parts.Single(p=>p.Part.Id=="mouse").Found);
+        var mouse=DeskPictures.Resolve(DeskPictures.OwnerRig,Rig().Select(d=>d.Name.StartsWith("SteelSeries Aerox")?Dev(d.Key,d.Name,PaintKind.Direct,("Front",1),("Middle",1),("Rear",0),("Reactive",1)):d).ToList()).Parts.Single(p=>p.Part.Id=="mouse");
+        Assert.Equal(3,mouse.ZoneKeys.Count);Assert.DoesNotContain(LightingKeys.Zone(mouse.DeviceKey!,2),mouse.ZoneKeys);   // only zones with LEDs
+    }
+    [Fact] public void Where_tap_areas_overlap_the_nearer_centre_wins()
+    {
+        var s=DeskPictures.Resolve(DeskPictures.OwnerRig,Rig());
+        Assert.Equal("ram2",DeskPictures.Hit(s,PictureView.Inside,406,170)!.Part.Id);Assert.Equal("ram1",DeskPictures.Hit(s,PictureView.Inside,403.9,170)!.Part.Id);
     }
     [Fact] public void The_mouse_resolves_under_its_wireless_name()=>Assert.True(DeskPictures.Resolve(DeskPictures.OwnerRig,Rig("SteelSeries Aerox 9 Wireless")).Parts.Single(p=>p.Part.Id=="mouse").Found);
     [Fact] public void A_device_without_a_part_is_named_as_it_is_and_a_dark_device_is_not_listed()

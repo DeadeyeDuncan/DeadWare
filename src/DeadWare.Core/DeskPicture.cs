@@ -43,14 +43,14 @@ public static class DeskPictures
     public static PictureScene Resolve(DeskPicture picture,IReadOnlyList<DeviceView> devices)
     {
         var parts=new List<ResolvedPart>();var used=new HashSet<string>(StringComparer.Ordinal);
+        var lit=DeskLayouts.Arrangeable(devices);   // a part only matches what the desk can place
         foreach(var p in picture.Parts)
         {
-            var match=devices.Where(d=>p.Prefix?d.Name.StartsWith(p.DeviceName,StringComparison.Ordinal):d.Name==p.DeviceName).OrderBy(d=>d.Key,StringComparer.Ordinal).Skip(p.Ordinal).FirstOrDefault();
-            if(match is null){parts.Add(new(p,null,[],null,false));continue;}
+            var match=lit.Where(d=>p.Prefix?d.Name.StartsWith(p.DeviceName,StringComparison.Ordinal):d.Name==p.DeviceName).OrderBy(d=>d.Key,StringComparer.Ordinal).Skip(p.Ordinal).FirstOrDefault();
+            if(match is null||!match.ZoneIndexes.Contains(p.ShownZone)){parts.Add(new(p,null,[],null,false));continue;}
             used.Add(match.Key);
-            var keys=p.Zones.Where(i=>match.Zones.Any(z=>z.Index==i)).Select(i=>LightingKeys.Zone(match.Key,i)).ToList();
-            var shown=match.Zones.Any(z=>z.Index==p.ShownZone)?LightingKeys.Zone(match.Key,p.ShownZone):null;
-            parts.Add(new(p,match.Key,keys,shown,match.Kind==PaintKind.Hardware));
+            var keys=p.Zones.Where(match.ZoneIndexes.Contains).Select(i=>LightingKeys.Zone(match.Key,i)).ToList();
+            parts.Add(new(p,match.Key,keys,LightingKeys.Zone(match.Key,p.ShownZone),devices.First(d=>d.Key==match.Key).Kind==PaintKind.Hardware));
         }
         var off=new List<string>();
         foreach(var a in DeskLayouts.Arrangeable(devices))
@@ -74,7 +74,9 @@ public static class DeskPictures
     {
         var scene=Resolve(picture,devices);var layout=new DeskLayout{Picture=picture.Name};
         var used=new HashSet<string>(scene.Parts.Where(p=>p.Found).Select(p=>p.DeviceKey!),StringComparer.Ordinal);
-        foreach(var r in scene.Parts){var at=PointOf(picture,r.Part);foreach(var k in r.ZoneKeys) layout.Zones[k]=at;}
+        var points=new Dictionary<string,List<DeskPoint>>();   // a zone lit by several parts takes the mean of their points
+        foreach(var r in scene.Parts){var at=PointOf(picture,r.Part);foreach(var k in r.ZoneKeys){if(!points.TryGetValue(k,out var l)) points[k]=l=new();l.Add(at);}}
+        foreach(var (k,l) in points){var o=l.OrderBy(q=>q.X).ThenBy(q=>q.Y).ToList();layout.Zones[k]=new(o.Sum(q=>q.X)/o.Count,o.Sum(q=>q.Y)/o.Count);}
         layout.Unplaced=DeskLayouts.Arrangeable(devices).Where(a=>!used.Contains(a.Key)).Select(a=>a.Key).ToList();
         return layout;
     }
