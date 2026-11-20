@@ -72,6 +72,14 @@ public static class DeskPictures
         return new(0.03+0.27*(b.CenterX-c.X)/c.W,0.60+0.38*(b.CenterY-c.Y)/c.H);
     }
 
+    // The way the wave's colours travel across the desk drawing, as a unit vector in drawing units. The wave runs in the unit square, so a
+    // step (dx,dy) in the drawing moves its phase by dx*cos/720+dy*sin/450: the wavefront is at right angles to (cos/720,sin/450), not (cos,sin).
+    public static (double X,double Y) WaveDirection(double angleDeg)
+    {
+        double a=angleDeg*Math.PI/180,x=Math.Cos(a)/BoxW,y=Math.Sin(a)/BoxH,n=Math.Sqrt(x*x+y*y);
+        return (x/n,y/n);
+    }
+
     public static DeskLayout Layout(DeskPicture picture,IReadOnlyList<DeviceView> devices)
     {
         var scene=Resolve(picture,devices);var layout=new DeskLayout{Picture=picture.Name};

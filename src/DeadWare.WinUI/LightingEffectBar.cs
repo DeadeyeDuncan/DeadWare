@@ -6,6 +6,7 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
+using Windows.Foundation;
 using static DeadWare.WinUI.LightingPage;
 
 namespace DeadWare.WinUI;
@@ -34,12 +35,14 @@ internal sealed class LightingEffectBar : StackPanel
     // overwrite the control it came from. tileGuard keeps the chosen tile; colourGuard keeps the swatches (picks, Add and Remove).
     private readonly Guard tileGuard = new(), directionGuard = new(), colourGuard = new();
     private readonly ToggleButton[] tiles = new ToggleButton[Kinds.Length];
-    private readonly StackPanel waveRows = new() { Spacing = 8 };
-    // speedRow: every effect but Static. waveExtras: Direction and Spread, which only Wave has.
-    private readonly FrameworkElement speedRow;
-    private readonly FrameworkElement[] waveExtras;
+    // The chosen effect's settings on one row under the tiles, as the mockup: each control with its label to its left, going on to
+    // another line only where the bar is too narrow for them all. speedGroup: every effect but Static. waveGroups: Colours, Direction
+    // and Spread, which only Wave has.
+    private readonly WrapRow settingsRow = new();
+    private readonly FrameworkElement speedGroup;
+    private readonly FrameworkElement[] waveGroups;
     private readonly EffectSlider speed, spread;
-    private readonly ComboBox direction = new() { MinWidth = 240 };
+    private readonly ComboBox direction = new() { MinWidth = 200 };
     private readonly Button[] swatches = new Button[LightingEffects.MaxColors];
     private readonly Border[] dots = new Border[LightingEffects.MaxColors];
     private readonly string?[] swatchColours = new string?[LightingEffects.MaxColors];
@@ -116,7 +119,8 @@ internal sealed class LightingEffectBar : StackPanel
         AutomationProperties.SetName(addColour, "Add colour");
         addColour.Click += (_, _) => AddColour();
         swatchRow.Children.Add(addColour);
-        waveRows.Children.Add(Row("Colours", new StackPanel { Spacing = 4, Children = { swatchRow, noColours } }));
+        // The hint for a wave with no colours is a caption under the Colours group.
+        var coloursGroup = Group("Colours", swatchRow, noColours);
 
         AutomationProperties.SetName(remove, "Remove colour");
         remove.Click += (_, _) => RemoveColour();
@@ -131,37 +135,91 @@ internal sealed class LightingEffectBar : StackPanel
             if (colourFollow && stateEffect is { } effect) Show(effect, live);
         };
 
-        speedRow = Row("Speed", speed.Slider);
+        speedGroup = Group("Speed", speed.Slider);
         foreach (var (name, _) in LightingEffects.Directions) direction.Items.Add(name);
         AutomationProperties.SetName(direction, "Direction");
         direction.SelectionChanged += (_, _) => PickDirection();
-        // Wave's rows in order: Colours, Speed, Direction, Spread. Breathing and Spectrum show Speed alone; Speed moves between them.
-        Children.Add(waveRows);
-        Children.Add(speedRow);
-        var directionRow = Row("Direction", direction);
-        var spreadRow = Row("Spread", spread.Slider);
-        Children.Add(directionRow);
-        Children.Add(spreadRow);
-        waveExtras = [directionRow, spreadRow];
+        // Wave's groups in order: Colours, Speed, Direction, Spread. Breathing and Spectrum show Speed alone.
+        var directionGroup = Group("Direction", direction);
+        var spreadGroup = Group("Spread", spread.Slider);
+        settingsRow.Children.Add(coloursGroup);
+        settingsRow.Children.Add(speedGroup);
+        settingsRow.Children.Add(directionGroup);
+        settingsRow.Children.Add(spreadGroup);
+        Children.Add(settingsRow);
+        waveGroups = [coloursGroup, directionGroup, spreadGroup];
         Fill(resync: false);
     }
 
     // The page's Show, under another name: this class's own Show is the state's.
     private static void Reveal(UIElement element, bool visible) => LightingPage.Show(element, visible);
 
-    /// <summary>A label and its control on one line, the labels in a column of their own.</summary>
-    private static Grid Row(string label, FrameworkElement control)
+    /// <summary>
+    /// A label with its control to its right, on a first line of one height for every group so the labels of a row line up, and
+    /// optionally a caption under them.
+    /// </summary>
+    private static Grid Group(string label, FrameworkElement control, FrameworkElement? caption = null)
     {
-        var grid = new Grid { ColumnSpacing = 12 };
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(88) });
-        grid.ColumnDefinitions.Add(new ColumnDefinition());
+        var grid = new Grid { ColumnSpacing = 10 };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto, MinHeight = 32 });
         var text = new TextBlock { Text = label, VerticalAlignment = VerticalAlignment.Center };
         control.HorizontalAlignment = HorizontalAlignment.Left;
         control.VerticalAlignment = VerticalAlignment.Center;
         Grid.SetColumn(control, 1);
         grid.Children.Add(text);
         grid.Children.Add(control);
+        if (caption is null) return grid;
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        caption.Margin = new Thickness(0, 2, 0, 0);
+        Grid.SetRow(caption, 1);
+        Grid.SetColumnSpan(caption, 2);
+        grid.Children.Add(caption);
         return grid;
+    }
+
+    /// <summary>
+    /// Its children side by side at their own sizes, tops in line, going on to a new line where the next one doesn't fit the width.
+    /// A collapsed child takes no room and no gap.
+    /// </summary>
+    private sealed class WrapRow : Panel
+    {
+        private const double GapX = 24, GapY = 8;
+
+        protected override Size MeasureOverride(Size availableSize)
+        {
+            foreach (var child in Children) child.Measure(new Size(availableSize.Width, double.PositiveInfinity));
+            return Place(availableSize.Width, false);
+        }
+
+        protected override Size ArrangeOverride(Size finalSize)
+        {
+            Place(finalSize.Width, true);
+            return finalSize;
+        }
+
+        private Size Place(double width, bool arrange)
+        {
+            double x = 0, y = 0, line = 0, widest = 0;
+            foreach (var child in Children)
+            {
+                if (child.Visibility == Visibility.Collapsed) continue;
+                var size = child.DesiredSize;
+                // Half a pixel of slack, so rounding between measuring and arranging never moves a child to the next line.
+                if (x > 0 && x + GapX + size.Width > width + 0.5)
+                {
+                    y += line + GapY;
+                    x = line = 0;
+                }
+                double left = x > 0 ? x + GapX : 0;
+                if (arrange) child.Arrange(new Rect(left, y, size.Width, size.Height));
+                x = left + size.Width;
+                line = Math.Max(line, size.Height);
+                widest = Math.Max(widest, x);
+            }
+            return new Size(widest, y + line);
+        }
     }
 
     /// <summary>
@@ -247,10 +305,10 @@ internal sealed class LightingEffectBar : StackPanel
             bool wave = chosen == EffectKind.Wave, showStatic = chosen == EffectKind.Static;
             staticCollapsed = !showStatic && staticRow.Visibility == Visibility.Visible;
             Reveal(staticRow, showStatic);
-            Reveal(waveRows, wave);
-            foreach (var row in waveExtras) Reveal(row, wave);
+            foreach (var group in waveGroups) Reveal(group, wave);
             var settings = LightingEffects.ParamsFor(working, chosen);
-            Reveal(speedRow, settings is not null);
+            Reveal(speedGroup, settings is not null);
+            Reveal(settingsRow, settings is not null);
             if (settings is not null && !speed.Dragging) speed.Slider.Value = Math.Clamp(settings.Speed, 0, 100);
             if (!spread.Dragging) spread.Slider.Value = Math.Clamp(working.Wave.Spread, 0, 100);
             speed.Slider.IsEnabled = spread.Slider.IsEnabled = live;
@@ -473,7 +531,7 @@ internal sealed class LightingEffectBar : StackPanel
             Slider.AddHandler(UIElement.KeyUpEvent, new KeyEventHandler((_, _) => Sends.Flush()), true);
         }
 
-        public Slider Slider { get; } = new() { Minimum = 0, Maximum = 100, StepFrequency = 1, SmallChange = 1, LargeChange = 10, Width = 240 };
+        public Slider Slider { get; } = new() { Minimum = 0, Maximum = 100, StepFrequency = 1, SmallChange = 1, LargeChange = 10, Width = 180 };
         public Throttle Sends { get; }
         public Guard Guard { get; } = new();
         public bool Dragging { get; private set; }

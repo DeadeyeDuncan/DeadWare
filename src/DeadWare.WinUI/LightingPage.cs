@@ -24,6 +24,7 @@ namespace DeadWare.WinUI;
 /// and list rows are kept by device and zone key and updated in place: a colour flyout stays open while states arrive. Colours go
 /// only to a running host: until it runs, whether it is connecting, starting, waiting, blocked or without OpenRGB, the desk, list
 /// and panel stay as they were, disabled, so a relaunched host, which lists no devices until it runs, doesn't take them away.
+/// Until there is something to draw (a picture named by the layout, or a device found) one line stands in place of the desk area.
 /// </summary>
 internal sealed class LightingPage : Page, IHeaderTool
 {
@@ -50,15 +51,26 @@ internal sealed class LightingPage : Page, IHeaderTool
     private readonly StackPanel setAllContent = new() { Spacing = 8 };
     private readonly Button undo = new() { Content = "Undo", IsEnabled = false };
     private readonly TextBlock noDevices = Muted("No lighting devices found yet.");
+    // In place of the desk area while there is nothing to draw yet: no picture named and no device found. After NoDevicesAfterMs of a
+    // running host listing none, noDevices takes its place. noneSince: when the running host was first shown listing none
+    // (Environment.TickCount64); the session's once-a-second change is what looks at it again, so no timer is kept for it.
+    private readonly TextBlock looking = Muted("Looking for lighting devices…");
+    private const long NoDevicesAfterMs = 45_000;
+    private long? noneSince;
     private const string NothingSelectedText = "Select a device on the desk or in the list.";
-    // Below this width the panel goes under the desk card instead of beside it.
-    private const double WideLayout = 900;
+    private const string NothingSelectedHeading = "Nothing selected", TapDeviceText = "Tap a device in the picture to change its colours.", TapPartText = "Tap a part to change its colours.";
+    // Below this width the panel goes under the desk card instead of beside it: the plain desk's, and the picture's.
+    private const double WideLayout = 900, PictureWideLayout = 760;
+    // Picture mode's columns: the picture card 7 parts in 10, at most the picture's 1280 px and its card's padding; the panel 3 in 10,
+    // between 280 and 640 px. (The owner's maximised page is about 2290 px wide: the first look's screenshot was scaled.)
+    private const double PictureCardMax = 1312, PicturePanelMin = 280, PicturePanelMax = 640;
     private readonly Dictionary<string, DeviceCard> cards = new(StringComparer.Ordinal);
     // The desk card, the panel and the list card. Wide: the desk card and the list card in leftColumn, the panel beside them. Narrow:
     // the desk card, the panel and leftColumn (the list card alone) one under the other. Only the desk card moves between the two,
     // so the panel, which a zone flyout may be open from, never leaves the tree.
     private readonly DeskView desk = new();
     private readonly Border deskCard, panelHost = new(), panelSlot = new(), emptyPanel, layoutPanel, listCard;
+    private readonly TextBlock emptyText = Muted(NothingSelectedText);
     private readonly Grid deskHeader = new() { ColumnSpacing = 12 };
     // Picture mode: the layout names a picture of a known rig (the host decides, never the page), and the desk card shows that picture
     // (DeskPictureView) instead of the plain desk, with nothing that could send a layout: no Edit layout, device list or Not placed.
@@ -74,6 +86,8 @@ internal sealed class LightingPage : Page, IHeaderTool
     private readonly TextBlock notInPicture = new() { TextWrapping = TextWrapping.Wrap, FontSize = 12 };
     private readonly Run notInPictureList = new();
     private DeskPicture? shownPicture;
+    // The picture the latest state's layout named, running or not; null with a new client.
+    private string? statePicture;
     private PictureScene? scene;
     private string? selectedDevice;
     // The effect from the last running state, for the picture's wave band.
@@ -106,7 +120,8 @@ internal sealed class LightingPage : Page, IHeaderTool
     private bool layoutSyncing, resetAsking;
     private readonly Grid deskArea = new() { RowSpacing = 12 };
     private readonly StackPanel leftColumn = new() { Spacing = 12 };
-    private readonly TextBlock towerHeading = Heading("");
+    // The empty panel's heading: the tower's caption while the plain desk's tower is selected, "Nothing selected" in picture mode.
+    private readonly TextBlock emptyHeading = Heading("");
     private readonly ListView deviceList = new() { SelectionMode = ListViewSelectionMode.Single };
     private readonly Dictionary<string, ListRow> listRows = new(StringComparer.Ordinal);
     private readonly StackPanel notPlaced = new() { Spacing = 8, Visibility = Visibility.Collapsed };
@@ -119,7 +134,9 @@ internal sealed class LightingPage : Page, IHeaderTool
     private DeskLayout deskLayout = DeskLayouts.Empty();
     private DeviceView[] deskDevices = [];
     private bool deskLightsOn = true, listSyncing;
-    private bool? wide;
+    // How the desk area was last arranged, and the page's width then: the mode changes the arrangement too.
+    private (bool Wide, bool Picture)? arranged;
+    private double deskWidth;
     // The preview frame waiting for the UI thread, at most one: a newer frame replaces it. previewHandler: the handler on the followed client.
     private sealed record PreviewFrame(DeviceHostClient Source, IReadOnlyDictionary<string, string> Colors);
     private PreviewFrame? pendingFrame;
@@ -236,6 +253,7 @@ internal sealed class LightingPage : Page, IHeaderTool
         onPanel.Children.Add(status);
         onPanel.Children.Add(effectCard);
         onPanel.Children.Add(noDevices);
+        onPanel.Children.Add(looking);
 
         // The desk, the selected device's panel, the device list and the devices not placed.
         deskHeader.ColumnDefinitions.Add(new ColumnDefinition());
@@ -266,6 +284,7 @@ internal sealed class LightingPage : Page, IHeaderTool
         notInPicture.Inlines.Add(notInPictureList);
         picture.PartTapped += SelectPart;
         picture.TowerTapped += () => ShowPictureView(PictureView.Inside);
+        picture.DeskRequested += () => ShowPictureView(PictureView.Desk);
         Show(pictureHeader, false);
         Show(picture, false);
         Show(notInPicture, false);
@@ -273,8 +292,8 @@ internal sealed class LightingPage : Page, IHeaderTool
         desk.SelectionChanged += _ => { SyncList(); ShowPanel(); };
         desk.LayoutEdited += next => SendLayout(next);
         desk.Nudged += OnNudged;
-        Show(towerHeading, false);
-        emptyPanel = Pages.Card(new StackPanel { Spacing = 8, Padding = new Thickness(8), Children = { towerHeading, Muted(NothingSelectedText) } });
+        Show(emptyHeading, false);
+        emptyPanel = Pages.Card(new StackPanel { Spacing = 8, Padding = new Thickness(8), Children = { emptyHeading, emptyText } });
         AutomationProperties.SetName(splitZones, "Move zones separately");
         inTower.Click += (_, _) => SetInTower(inTower.IsChecked == true);
         splitZones.Toggled += (_, _) => { if (!layoutSyncing && shownPicture is null && desk.Selected is { } key && key != DeskView.Tower) desk.SetSplit(key, splitZones.IsOn); };
@@ -348,6 +367,8 @@ internal sealed class LightingPage : Page, IHeaderTool
     {
         if (!queue.HasThreadAccess) { queue.TryEnqueue(OnSessionChanged); return; }
         var current = session.Lighting;
+        // The same client: only the wait for a running host's first device is looked at again, which no state need end.
+        if (showing && ReferenceEquals(current, client) && noneSince is not null) ShowDeskArea();
         if (!showing || ReferenceEquals(current, client)) return;
         Unhook();
         Reset(current);
@@ -451,7 +472,8 @@ internal sealed class LightingPage : Page, IHeaderTool
         sharedShown = null;
         sharedDot.Background = null;
         cards.Clear();
-        Show(noDevices, false);
+        noneSince = null;
+        statePicture = null;
         if (zoneFlyout.IsOpen) zoneFlyout.Hide();
         if (setAllFlyout.IsOpen) setAllFlyout.Hide();
         // The desk, list, selection and Place on desk sends belonged to the old client too.
@@ -479,6 +501,7 @@ internal sealed class LightingPage : Page, IHeaderTool
         placeRows.Clear();
         Show(notPlaced, false);
         ShowPanel();
+        ShowDeskArea();
     }
 
     /// <summary>Brings the page up to date with the followed client, on the UI thread.</summary>
@@ -528,7 +551,6 @@ internal sealed class LightingPage : Page, IHeaderTool
         {
             // The host is connecting or relaunching: the cards and header controls stay as they were, disabled, until its state is back.
             foreach (var card in cards.Values) card.Disable();
-            Show(noDevices, false);
             effectBar.Show(shownEffect ?? new EffectSettings(), false);
             // So do the desk, the list and the panel, in the state's colours (cleared above).
             ShowDesk(null);
@@ -629,7 +651,6 @@ internal sealed class LightingPage : Page, IHeaderTool
         foreach (var device in list) if (!cards.ContainsKey(device.Key)) cards[device.Key] = new DeviceCard(this);
         var names = Names(list);
         for (int i = 0; i < list.Length; i++) cards[list[i].Key].Update(list[i], names[i], live);
-        Show(noDevices, live && list.Length == 0);
         ShowDesk(live ? (state, list) : null);
     }
 
@@ -657,11 +678,35 @@ internal sealed class LightingPage : Page, IHeaderTool
             // The desk's draft goes at the first state shown with no SetLayout on its way, before the desk takes the layout.
             TryRelease();
         }
-        // The layout decides the mode, so the plain desk is never shown a layout that names a picture.
-        SetMode(DeskPictures.Named(deskLayout.Picture));
+        // The layout decides the mode, so the plain desk is never shown a layout that names a picture. Until the host runs, the layout a
+        // state carries names it too (the saved one), so the picture shows before the first running state, dimmed, its parts not yet found.
+        // It is remembered, so the picture stays while the host reconnects before it has ever run.
+        if (shownState?.Settings?.Layout is { } saved) statePicture = saved.Picture;
+        SetMode(DeskPictures.Named(deskLayout.Picture) ?? DeskPictures.Named(statePicture));
         if (shownPicture is null) desk.Show(deskLayout, deskDevices, deskLightsOn, live);
         else ShowPicture();
         ShowLayout();
+        ShowDeskArea();
+    }
+
+    /// <summary>
+    /// The desk area, or a line in its place while there is nothing to draw: no picture named and no device found. The line is "Looking
+    /// for lighting devices…" while the host connects, starts, waits or has run for less than <see cref="NoDevicesAfterMs"/> without
+    /// listing a device (OpenRGB lists them a few at a time), then "No lighting devices found yet."; a host that is blocked, without
+    /// OpenRGB or stopping isn't looking, and the status line says why, so neither line shows. The plain desk appears with the first
+    /// device, the picture as soon as a layout names it.
+    /// </summary>
+    private void ShowDeskArea()
+    {
+        bool any = shownPicture is not null || deskDevices.Length > 0;
+        bool none = !any && live;
+        if (!none) noneSince = null;
+        else noneSince ??= Environment.TickCount64;
+        bool waited = noneSince is { } since && Environment.TickCount64 - since >= NoDevicesAfterMs;
+        bool searching = !any && !waited && shownState is null or { Status: HostStatus.Starting or HostStatus.Waiting or HostStatus.Running };
+        Show(deskArea, any);
+        Show(noDevices, none && waited);
+        Show(looking, searching);
     }
 
     /// <summary>
@@ -688,6 +733,8 @@ internal sealed class LightingPage : Page, IHeaderTool
         Show(pictureHeader, on);
         Show(picture, on);
         if (!on) Show(notInPicture, false);
+        // The picture's columns are its own (ArrangeDesk).
+        ArrangeDesk(deskWidth);
         SyncList();
         ShowPanel();
     }
@@ -764,18 +811,27 @@ internal sealed class LightingPage : Page, IHeaderTool
     }
 
     /// <summary>
-    /// The panel's heading for the selected part, as the mockups: "Keyboard · SteelSeries Apex Pro" over "selected on the desk" (or
-    /// "selected inside the PC") for a device with one part in the picture; the device's name over "radiator fan 2 selected" for one with
-    /// several. The device's name is the page's, numbered when another device has the same one. Null when no found part is selected.
+    /// How the selected part's device card shows in picture mode, as the mockups: "Keyboard · SteelSeries Apex Pro" over "selected on the
+    /// desk" (or "selected inside the PC") for a device with one part in the picture; the device's name over "radiator fan 2 selected", with
+    /// that part's row highlighted, for one with several. A row whose zone is one part's alone is named as the picture names the part
+    /// ("RAM 1", "Radiator fan 2", "Pump"); the zones of a part that covers several keep their own names, which tell them apart. The
+    /// device's name is the host's, never numbered: the part's name is what tells two sticks apart, and the page's number, which follows
+    /// the host's list order, need not agree with it. Null when no found part is selected.
     /// </summary>
-    private (string Title, string Sub, string? Zone)? PictureHeading(string deviceName)
+    private PictureMark? MarkFor()
     {
         if (scene is not { } shown || picture.SelectedPart is not { } id || selectedDevice is not { } key) return null;
         if (shown.Parts.FirstOrDefault(p => p.Part.Id == id && p.DeviceKey == key) is not { } part) return null;
-        int parts = shown.Parts.Count(p => p.DeviceKey == key);
-        if (parts == 1) return ($"{part.Part.Label} · {deviceName}", part.Part.View == PictureView.Desk ? "selected on the desk" : "selected inside the PC", part.ShownZoneKey);
-        return (deviceName, $"{part.Part.Label.ToLowerInvariant()} selected", part.ShownZoneKey);
+        string device = deskDevices.FirstOrDefault(d => d.Key == key)?.Name ?? part.Part.DeviceName;
+        var own = shown.Parts.Where(p => p.DeviceKey == key).ToList();
+        var labels = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var p in own) if (p.ZoneKeys.Count == 1) labels[p.ZoneKeys[0]] = p.Part.Label;
+        if (own.Count == 1) return new($"{part.Part.Label} · {device}", part.Part.View == PictureView.Desk ? "selected on the desk" : "selected inside the PC", null, device, labels);
+        return new(device, $"{part.Part.Label.ToLowerInvariant()} selected", part.ShownZoneKey, device, labels);
     }
+
+    /// <summary>A device card's picture-mode look: its heading and sub-line, the zone whose row is highlighted, the device's name and its rows' labels by zone key.</summary>
+    private sealed record PictureMark(string Title, string Sub, string? Zone, string Device, IReadOnlyDictionary<string, string> Labels);
 
     /// <summary>
     /// The list, Not placed, the panel and the edit tools from the layout the desk edits from: its draft while one is held, so an edit
@@ -1073,25 +1129,22 @@ internal sealed class LightingPage : Page, IHeaderTool
 
     /// <summary>
     /// The panel: the selected device's card, or, with nothing selected, a line saying how to select one (under the tower's caption
-    /// while the tower is selected). A zone flyout opened from the card that leaves closes.
+    /// while the tower is selected, under "Nothing selected" in picture mode). A zone flyout opened from the card that leaves closes.
     /// </summary>
     private void ShowPanel()
     {
         DeviceCard? card = Selected is { } key && key != DeskView.Tower && cards.TryGetValue(key, out var found) ? found : null;
         UIElement next = card?.Root ?? emptyPanel;
         bool tower = shownPicture is null && desk.Selected == DeskView.Tower;
-        Show(towerHeading, tower);
-        if (tower) towerHeading.Text = DeskView.TowerCaption(DeskGeometry.Scene(desk.Layout, deskDevices, false, new HashSet<string>()).TowerDevices);
-        // Picture mode has no list to select from and the mockups show no empty panel: with nothing selected the panel is empty.
-        Show(emptyPanel, shownPicture is null);
-        // The picture's heading and highlighted row on the shown card; a card leaving the panel, or shown in plain mode, goes back to its name.
-        if (markedCard is not null && !ReferenceEquals(markedCard, card)) markedCard.Mark(null, null, null);
+        bool pictureOn = shownPicture is not null;
+        Show(emptyHeading, tower || pictureOn);
+        if (tower) emptyHeading.Text = DeskView.TowerCaption(DeskGeometry.Scene(desk.Layout, deskDevices, false, new HashSet<string>()).TowerDevices);
+        else if (pictureOn) emptyHeading.Text = NothingSelectedHeading;
+        emptyText.Text = !pictureOn ? NothingSelectedText : picture.View == PictureView.Inside ? TapPartText : TapDeviceText;
+        // The picture's heading, row names and highlighted row on the shown card; a card leaving the panel, or shown in plain mode, goes back to its own.
+        if (markedCard is not null && !ReferenceEquals(markedCard, card)) markedCard.Mark(null);
         markedCard = card;
-        if (card is not null)
-        {
-            if (shownPicture is not null && PictureHeading(card.Name) is { } heading) card.Mark(heading.Title, heading.Sub, heading.Zone);
-            else card.Mark(null, null, null);
-        }
+        card?.Mark(pictureOn ? MarkFor() : null);
         ShowLayoutPanel();
         if (ReferenceEquals(panelSlot.Child, next)) return;
         if (zoneFlyout.IsOpen) zoneFlyout.Hide();
@@ -1120,22 +1173,32 @@ internal sealed class LightingPage : Page, IHeaderTool
     /// <summary>The selected device: the plain desk's selection, or in picture mode the selected part's device.</summary>
     private string? Selected => shownPicture is null ? desk.Selected : selectedDevice;
 
-    /// <summary>Beside the desk card on a wide page, below it on a narrow one: only the desk card changes parent.</summary>
+    /// <summary>
+    /// Beside the desk card on a wide page, below it on a narrow one: only the desk card changes parent, and only when the page goes
+    /// from one to the other. The plain desk's columns are 2 to 1 with the desk's column stopping at the desk's own width; the picture's
+    /// are 7 to 3, the picture growing with the page up to 1280 px, and it stacks only below <see cref="PictureWideLayout"/>.
+    /// </summary>
     private void ArrangeDesk(double width)
     {
-        bool next = width >= WideLayout;
-        if (next == wide) return;
-        wide = next;
-        if (deskCard.Parent is Panel parent) parent.Children.Remove(deskCard);
-        deskArea.RowDefinitions.Clear();
+        deskWidth = width;
+        bool pictureOn = shownPicture is not null;
+        var next = (Wide: width >= (pictureOn ? PictureWideLayout : WideLayout), Picture: pictureOn);
+        if (arranged is { } now && now == next) return;
+        bool move = arranged?.Wide != next.Wide;
+        arranged = next;
         var (left, right) = (deskArea.ColumnDefinitions[0], deskArea.ColumnDefinitions[1]);
-        if (next)
+        if (next.Wide)
         {
-            // The desk is at most 720 px wide, so its column stops at that and its card's padding; the panel takes the rest.
-            left.Width = new GridLength(2, GridUnitType.Star);
-            left.MaxWidth = 752;
-            right.Width = new GridLength(1, GridUnitType.Star);
+            // The plain desk is at most 720 px wide, so its column stops at that and its card's padding; the panel takes the rest.
+            left.Width = new GridLength(pictureOn ? 7 : 2, GridUnitType.Star);
+            left.MaxWidth = pictureOn ? PictureCardMax : 752;
+            right.Width = new GridLength(pictureOn ? 3 : 1, GridUnitType.Star);
+            right.MinWidth = pictureOn ? PicturePanelMin : 0;
+            right.MaxWidth = pictureOn ? PicturePanelMax : double.PositiveInfinity;
             deskArea.ColumnSpacing = 12;
+            if (!move) return;
+            if (deskCard.Parent is Panel parent) parent.Children.Remove(deskCard);
+            deskArea.RowDefinitions.Clear();
             leftColumn.Children.Insert(0, deskCard);
             Cell(leftColumn, 0, 0);
             Cell(panelHost, 0, 1);
@@ -1145,7 +1208,12 @@ internal sealed class LightingPage : Page, IHeaderTool
             left.Width = new GridLength(1, GridUnitType.Star);
             left.MaxWidth = double.PositiveInfinity;
             right.Width = new GridLength(0);
+            right.MinWidth = 0;
+            right.MaxWidth = double.PositiveInfinity;
             deskArea.ColumnSpacing = 0;
+            if (!move) return;
+            if (deskCard.Parent is Panel parent) parent.Children.Remove(deskCard);
+            deskArea.RowDefinitions.Clear();
             for (int i = 0; i < 3; i++) deskArea.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
             deskArea.Children.Add(deskCard);
             Cell(deskCard, 0, 0);
@@ -1321,8 +1389,8 @@ internal sealed class LightingPage : Page, IHeaderTool
     /// <summary>Names the zone flyout's heading and picker after its zone and device.</summary>
     private void LabelZoneFlyout(ZoneRow row, ZoneView zone)
     {
-        zoneHeading.Text = $"{row.Device} · {zone.Name}";
-        if (zonePicker is not null) AutomationProperties.SetName(zonePicker, $"Colour for {zone.Name} on {row.Device}");
+        zoneHeading.Text = $"{row.Device} · {row.Label}";
+        if (zonePicker is not null) AutomationProperties.SetName(zonePicker, $"Colour for {row.Label} on {row.Device}");
     }
 
     private void OnZonePicked(ColorPicker sender, ColorChangedEventArgs args)
@@ -1427,8 +1495,8 @@ internal sealed class LightingPage : Page, IHeaderTool
         private readonly StackPanel zones = new() { Spacing = 4 };
         private readonly Dictionary<string, ZoneRow> rows = new(StringComparer.Ordinal);
         private string[] zoneKeys = [];
-        // The picture's heading in place of the name, and the zone whose row is highlighted; both null in plain mode.
-        private string? heading, highlighted;
+        // Picture mode's heading, row names and highlighted row; null in plain mode.
+        private PictureMark? mark;
 
         public DeviceCard(LightingPage page)
         {
@@ -1444,17 +1512,20 @@ internal sealed class LightingPage : Page, IHeaderTool
         public string Name { get; private set; } = "";
 
         /// <summary>
-        /// The picture's heading and sub-line in place of the name, and the zone whose row is highlighted; all null puts the card back
-        /// as plain mode shows it. Kept across updates, and applied to rows rebuilt later.
+        /// The picture's heading and sub-line in place of the name, its names for the device and the rows, and the zone whose row is
+        /// highlighted; null puts the card back as plain mode shows it. Kept across updates, and applied to rows rebuilt later.
         /// </summary>
-        public void Mark(string? title, string? sub, string? zoneKey)
+        public void Mark(PictureMark? next)
         {
-            heading = title;
-            highlighted = zoneKey;
-            this.title.Text = heading ?? Name;
-            if (subtitle.Text != (sub ?? "")) subtitle.Text = sub ?? "";
-            Show(subtitle, sub is not null);
-            foreach (var (key, row) in rows) row.Highlight(key == highlighted);
+            mark = next;
+            title.Text = next?.Title ?? Name;
+            if (subtitle.Text != (next?.Sub ?? "")) subtitle.Text = next?.Sub ?? "";
+            Show(subtitle, next is not null);
+            foreach (var (key, row) in rows)
+            {
+                row.Rename(next?.Device ?? Name, next?.Labels.GetValueOrDefault(key));
+                row.Highlight(next?.Zone is { } zone && key == zone);
+            }
         }
 
         public ZoneRow? Find(string zoneKey) => rows.GetValueOrDefault(zoneKey);
@@ -1465,7 +1536,7 @@ internal sealed class LightingPage : Page, IHeaderTool
         public void Update(DeviceView device, string name, bool live)
         {
             Name = name;
-            title.Text = heading ?? name;
+            title.Text = mark?.Title ?? name;
             bool hardware = device.Kind == PaintKind.Hardware, unsupported = device.Kind == PaintKind.Unsupported;
             // The device's own effect and whether it stays lit with lights off don't change with Lights on (Ruling AB), so the card
             // names the effect while the lights are off too, and warns before they go off that the device will stay lit.
@@ -1495,8 +1566,8 @@ internal sealed class LightingPage : Page, IHeaderTool
             }
             foreach (var zone in list)
             {
-                rows[zone.Key].Update(name, zone, live);
-                rows[zone.Key].Highlight(zone.Key == highlighted);
+                rows[zone.Key].Update(mark?.Device ?? name, mark?.Labels.GetValueOrDefault(zone.Key), zone, live);
+                rows[zone.Key].Highlight(mark?.Zone is { } marked && zone.Key == marked);
             }
         }
 
@@ -1563,7 +1634,8 @@ internal sealed class LightingPage : Page, IHeaderTool
         private readonly Border dot = new() { Width = 18, Height = 18, CornerRadius = new CornerRadius(9) };
         private readonly TextBlock name = new() { TextWrapping = TextWrapping.Wrap, VerticalAlignment = VerticalAlignment.Center };
         private readonly TextBlock source = Muted("");
-        private string? color, described;
+        // label: the picture's name for the row's part, in place of the zone's name; null in plain mode.
+        private string? color, described, label;
         private bool highlighted;
         // The selected part's row in picture mode: a subtle accent background, as the mockup's radiator fan 2.
         private static Brush? highlight;
@@ -1590,6 +1662,8 @@ internal sealed class LightingPage : Page, IHeaderTool
         /// <summary>The device's name as its card shows it.</summary>
         public string Device { get; private set; } = "";
         public ZoneView? Zone { get; private set; }
+        /// <summary>The row's name: the picture's name for its part in picture mode, else the zone's.</summary>
+        public string Label => label ?? Zone?.Name ?? "";
         /// <summary>The swatch can be used: the host runs, DeadWare paints the device and the zone has LEDs.</summary>
         public bool CanPaint => Swatch.IsEnabled;
 
@@ -1602,14 +1676,32 @@ internal sealed class LightingPage : Page, IHeaderTool
             Root.CornerRadius = on ? new CornerRadius(4) : default;
         }
 
-        /// <param name="device">The device's name as its card shows it.</param>
-        /// <param name="zone">The zone as the host lists it.</param>
-        /// <param name="paints">The host runs and paints the device, so a zone with LEDs can take a colour.</param>
-        public void Update(string device, ZoneView zone, bool paints)
+        /// <summary>The device's and the row's names as the card now shows them: the picture's, or with a null label the zone's own.</summary>
+        public void Rename(string device, string? label)
         {
             Device = device;
+            this.label = label;
+            ShowName();
+        }
+
+        private void ShowName()
+        {
+            if (Zone is null) return;
+            if (name.Text != Label) name.Text = Label;
+            string description = $"Colour for {Label} on {Device}";
+            if (description == described) return;
+            described = description;
+            AutomationProperties.SetName(Swatch, description);
+        }
+
+        /// <param name="device">The device's name as its card shows it.</param>
+        /// <param name="label">The picture's name for the row's part, or null for the zone's own name.</param>
+        /// <param name="zone">The zone as the host lists it.</param>
+        /// <param name="paints">The host runs and paints the device, so a zone with LEDs can take a colour.</param>
+        public void Update(string device, string? label, ZoneView zone, bool paints)
+        {
             Zone = zone;
-            name.Text = zone.Name;
+            Rename(device, label);
             source.Text = zone.OwnColor ? "Own colour" : "Shared colour";
             // A zone with no LEDs has nothing to colour, so it gets no swatch.
             bool lit = zone.LedCount > 0;
@@ -1621,10 +1713,6 @@ internal sealed class LightingPage : Page, IHeaderTool
                 dot.Background = new SolidColorBrush(ToColor(color));
                 ToolTipService.SetToolTip(Swatch, color);
             }
-            string description = $"Colour for {zone.Name} on {device}";
-            if (description == described) return;
-            described = description;
-            AutomationProperties.SetName(Swatch, description);
         }
     }
 }

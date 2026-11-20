@@ -137,6 +137,20 @@ public class DeskPictureTests
         rig.Reverse();
         Assert.Equal(expected,DeskPictures.Layout(DeskPictures.OwnerRig,rig).Unplaced);
     }
+    // The wave runs in the unit square, where a box point is (x/720, y/450): across the drawing its colours travel along (cos/720, sin/450), not (cos, sin).
+    [Theory]
+    [InlineData(0,1,0)]
+    [InlineData(90,0,1)]
+    [InlineData(45,0.529998940,0.847998304)]                                                           // (450, 720) / 849.06: about 58 degrees in the drawing, not 45
+    public void The_waves_direction_in_the_drawing_is_the_way_its_colours_travel(double angle,double x,double y)
+    {
+        var d=DeskPictures.WaveDirection(angle);
+        Assert.Equal(x,d.X,6);Assert.Equal(y,d.Y,6);Assert.Equal(1,d.X*d.X+d.Y*d.Y,9);
+        // Two points on a line at right angles to it are lit alike, and a step along it moves the phase forward.
+        double Along(double px,double py)=>LightingEffects.Project(new(px/720,py/450),angle);
+        Assert.Equal(Along(300,200),Along(300-80*d.Y,200+80*d.X),9);
+        Assert.True(Along(300+80*d.X,200+80*d.Y)>Along(300,200));
+    }
     [Fact] public void Taps_hit_found_parts_in_their_own_view_only()
     {
         var s=DeskPictures.Resolve(DeskPictures.OwnerRig,Rig());

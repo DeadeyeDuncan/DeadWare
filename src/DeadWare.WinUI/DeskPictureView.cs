@@ -20,16 +20,18 @@ namespace DeadWare.WinUI;
 /// <summary>
 /// The Lighting page's desk as a picture of one known rig (<see cref="DeskPictures.OwnerRig"/>), drawn with Win2D: the desk seen from
 /// above with its furniture, keyboard, mouse and PC tower, or the inside of the tower through its side window. Everything is drawn in a
-/// box 720 wide by 450 high, the numbers of the approved mockups, scaled uniformly to the control's width (at most 900 px) and centred;
+/// box 720 wide by 450 high, the numbers of the approved mockups, scaled uniformly to the control's width (at most 1280 px) and centred;
 /// a tap converts back to box units with the same scale, so <see cref="DeskPictures.Hit"/> and <see cref="DeskPictures.HitTower"/>
 /// take it as it is. Each lit part shows its colour with a soft glow of that colour; the stage stays dark in both themes, because it
 /// shows lights. Nothing moves by itself: the view draws again only when it is given something new. Off screen it lets go of its
-/// drawing surface, as <see cref="DeskView"/> does. The canvas can't be read by a screen reader and isn't a tab stop; the page's part
-/// list is the keyboard path to the same selection.
+/// drawing surface, as <see cref="DeskView"/> does. The drawing is one tab stop: the arrow keys move the selection through the found parts
+/// of the view in the picture's own order (written top to bottom, left to right), the PC tower being the last stop of the desk view;
+/// Enter or Space on the tower opens the inside view, and Escape in the inside view asks for the desk. The control's name says which
+/// drawing it is and what is selected; the canvas itself can't be read by a screen reader.
 /// </summary>
 internal sealed class DeskPictureView : UserControl
 {
-    private const double BoxW = 720, BoxH = 450, MaxDrawWidth = 900, GlowDeviation = 5, GlowMargin = 0.4;
+    private const double BoxW = 720, BoxH = 450, MaxDrawWidth = 1280, GlowDeviation = 5, GlowMargin = 0.4;
     private const float NoteSize = 9;
     private const string OwnEffectNote = "own effect", NotFound = "not found";
 
@@ -57,6 +59,9 @@ internal sealed class DeskPictureView : UserControl
     private PictureView view = PictureView.Desk;
     private string? selected, shownName;
     private bool lightsOn = true, live, waveRunning;
+    // The keyboard's stop is the PC tower (desk view only), which is not a part and so never the selection; keyboardFocus: the control
+    // has focus from the keyboard, the only time the tower's stop is drawn.
+    private bool towerStop, keyboardFocus;
     private double waveAngle;
 
     // How a part shows: in its colour, grey while it runs its own effect, unlit, or not found at all.
@@ -65,11 +70,14 @@ internal sealed class DeskPictureView : UserControl
 
     public DeskPictureView()
     {
-        IsTabStop = false;
+        IsTabStop = true;
+        UseSystemFocusVisuals = true;
         UpdateName();
         Content = new StagePanel { Children = { surface } };
         surface.Tapped += OnTapped;
         surface.SizeChanged += (_, _) => Redraw();
+        GotFocus += (_, _) => SetKeyboardFocus(FocusState == FocusState.Keyboard);
+        LostFocus += (_, _) => SetKeyboardFocus(false);
         this.WhileShowing(ShowSurface, HideSurface);
     }
 
@@ -77,21 +85,24 @@ internal sealed class DeskPictureView : UserControl
     public PictureView View
     {
         get => view;
-        set { if (view == value) return; view = value; Redraw(); }
+        set { if (view == value) return; view = value; towerStop = false; UpdateName(); Redraw(); }
     }
 
     /// <summary>A part id, or null. Setting it raises nothing.</summary>
     public string? SelectedPart
     {
         get => selected;
-        set { if (selected == value) return; selected = value; UpdateName(); Redraw(); }
+        set { if (selected == value) return; selected = value; if (value is not null) towerStop = false; UpdateName(); Redraw(); }
     }
 
     /// <summary>A tap on a found part, or null for a tap on empty space, furniture or a part that isn't found.</summary>
     public event Action<ResolvedPart?>? PartTapped;
 
-    /// <summary>A tap on the PC tower in the desk view.</summary>
+    /// <summary>A tap on the PC tower in the desk view, or Enter or Space with the keyboard's stop on it.</summary>
     public event Action? TowerTapped;
+
+    /// <summary>Escape in the inside view: the desk view is asked for.</summary>
+    public event Action? DeskRequested;
 
     /// <summary>
     /// Shows the picture's parts as resolved. <paramref name="lightsOn"/> false draws every part unlit; <paramref name="live"/> false
@@ -126,11 +137,15 @@ internal sealed class DeskPictureView : UserControl
 
     private void Redraw() => canvas?.Invalidate();
 
-    /// <summary>"Desk picture. Keyboard, SteelSeries Apex Pro." with a part selected, else "Desk picture."</summary>
+    /// <summary>
+    /// "Desk picture" or "Inside the PC picture"; with a part selected "Desk picture. Keyboard, SteelSeries Apex Pro."; with the keyboard's
+    /// stop on the tower "Desk picture. PC tower."
+    /// </summary>
     private void UpdateName()
     {
         var part = selected is null ? null : scene?.Parts.FirstOrDefault(p => p.Part.Id == selected);
-        string name = part is null ? "Desk picture." : $"Desk picture. {part.Part.Label}, {part.Part.DeviceName}.";
+        string what = view == PictureView.Inside ? "Inside the PC picture" : "Desk picture";
+        string name = part is not null ? $"{what}. {part.Part.Label}, {part.Part.DeviceName}." : towerStop ? $"{what}. PC tower." : what;
         if (name == shownName) return;
         shownName = name;
         AutomationProperties.SetName(this, name);
@@ -145,6 +160,9 @@ internal sealed class DeskPictureView : UserControl
     {
         if (!live || scene is not { } shown || TooSmall) return;
         e.Handled = true;
+        // The arrow keys carry on from what was tapped.
+        Focus(FocusState.Pointer);
+        SetTowerStop(false);
         var at = e.GetPosition(surface);
         double s = BoxScale, x = at.X / s, y = at.Y / s;
         if (view == PictureView.Inside)
@@ -155,6 +173,74 @@ internal sealed class DeskPictureView : UserControl
         if (DeskPictures.Hit(shown, PictureView.Desk, x, y) is { } part) PartTapped?.Invoke(part);
         else if (DeskPictures.HitTower(shown.Picture, x, y)) TowerTapped?.Invoke();
         else PartTapped?.Invoke(null);
+    }
+
+    // ---- Keyboard: one tab stop; the arrow keys step through the found parts, and the tower in the desk view. ----
+
+    private void SetKeyboardFocus(bool on)
+    {
+        if (keyboardFocus == on) return;
+        keyboardFocus = on;
+        Redraw();
+    }
+
+    private void SetTowerStop(bool on)
+    {
+        if (towerStop == on) return;
+        towerStop = on;
+        UpdateName();
+        Redraw();
+    }
+
+    /// <summary>
+    /// Left and Up go to the stop before, Right and Down to the one after; the first arrow key goes to the first stop (or, going back, the
+    /// last). The stops are the view's found parts in the picture's order, then the tower in the desk view. A part is selected as a tap
+    /// selects it; the tower is only stopped at, with nothing selected, and Enter or Space there opens the inside view. Escape in the
+    /// inside view asks for the desk, with the stop on the tower it came from. Nothing while the picture is dimmed, as for taps.
+    /// </summary>
+    protected override void OnKeyDown(KeyRoutedEventArgs e)
+    {
+        if (live && scene is { } shown && HandleKey(shown, e.Key)) e.Handled = true;
+        else base.OnKeyDown(e);
+    }
+
+    private bool HandleKey(PictureScene shown, Windows.System.VirtualKey key)
+    {
+        switch (key)
+        {
+            case Windows.System.VirtualKey.Left or Windows.System.VirtualKey.Up: Step(shown, -1); return true;
+            case Windows.System.VirtualKey.Right or Windows.System.VirtualKey.Down: Step(shown, 1); return true;
+            case Windows.System.VirtualKey.Enter or Windows.System.VirtualKey.Space:
+                // On a part there is nothing to do: the arrow key that reached it selected it.
+                if (view != PictureView.Desk || !towerStop) return selected is not null;
+                TowerTapped?.Invoke();
+                return true;
+            case Windows.System.VirtualKey.Escape:
+                if (view != PictureView.Inside) return false;
+                DeskRequested?.Invoke();
+                if (view == PictureView.Desk) SetTowerStop(true);
+                return true;
+            default: return false;
+        }
+    }
+
+    private void Step(PictureScene shown, int by)
+    {
+        var stops = shown.Parts.Where(p => p.Found && p.Part.View == view).ToList();
+        int count = stops.Count + (view == PictureView.Desk ? 1 : 0);
+        if (count == 0) return;
+        int at = towerStop && view == PictureView.Desk ? stops.Count : stops.FindIndex(p => p.Part.Id == selected);
+        int next = at < 0 ? (by > 0 ? 0 : count - 1) : Math.Clamp(at + by, 0, count - 1);
+        if (next == at) return;
+        if (next < stops.Count)
+        {
+            // The page selects it, which takes the stop off the tower (SelectedPart).
+            PartTapped?.Invoke(stops[next]);
+            return;
+        }
+        // The tower: nothing is selected while the stop is on it.
+        if (selected is not null) PartTapped?.Invoke(null);
+        SetTowerStop(true);
     }
 
     // ---- Surface lifetime ----
@@ -361,11 +447,14 @@ internal sealed class DeskPictureView : UserControl
         if (waveRunning) DrawWaveArrow(ds);
     }
 
-    /// <summary>The wave's soft band: 150 wide along the direction, centred where the mockup's is, clipped to the box.</summary>
+    /// <summary>
+    /// The wave's soft band: 150 wide along the way the colours travel across the drawing (<see cref="DeskPictures.WaveDirection"/>, which
+    /// on a diagonal is not the angle itself, the box being wider than it is high), centred where the mockup's is, clipped to the box.
+    /// </summary>
     private void DrawWaveBand(CanvasDrawingSession ds)
     {
-        double a = waveAngle * Math.PI / 180;
-        var d = new Vector2((float)Math.Cos(a), (float)Math.Sin(a));
+        var (dx, dy) = DeskPictures.WaveDirection(waveAngle);
+        var d = new Vector2((float)dx, (float)dy);
         var n = new Vector2(-d.Y, d.X);
         var c = new Vector2(393, 225);
         Vector2 back = c - d * 75, ahead = c + d * 75;
@@ -382,10 +471,12 @@ internal sealed class DeskPictureView : UserControl
     /// <summary>
     /// The wave's arrow and caption. Left to right they sit exactly as in the mockup; for other directions the arrow turns about its
     /// centre, which rises and moves right with the arrow's slope so it stays in the box and clear of "you", and the caption moves beside it.
+    /// The arrow points the way the band travels, at right angles to it.
     /// </summary>
     private void DrawWaveArrow(CanvasDrawingSession ds)
     {
-        double a = waveAngle * Math.PI / 180, sin = Math.Abs(Math.Sin(a)), cos = Math.Abs(Math.Cos(a));
+        var (dx, dy) = DeskPictures.WaveDirection(waveAngle);
+        double a = Math.Atan2(dy, dx), sin = Math.Abs(dy), cos = Math.Abs(dx);
         var c = new Vector2((float)(370 + 110 * sin), (float)(438 - 62 * sin));
         var saved = ds.Transform;
         ds.Transform = Matrix3x2.CreateRotation((float)a, c) * saved;
@@ -461,6 +552,8 @@ internal sealed class DeskPictureView : UserControl
         ds.FillRectangle(x + 46, y + 26, 3, 20, ram);
         Caption(ds, "PC tower", t.X + 86, t.Y + 24, 11.5f, Ink, Anchor.Start, 160);
         Caption(ds, "tap to see inside ↗", t.X + 86, t.Y + 39, 10, WaveBlue, Anchor.Start, 160);
+        // The keyboard's stop: a white outline just outside the tower, as the selected radiator fan's.
+        if (towerStop && keyboardFocus) ds.DrawRoundedRectangle((float)t.X - 4, (float)t.Y - 4, (float)t.W + 8, (float)t.H + 8, 8, 8, White, 1.5f);
     }
 
     // ---- The inside view: page.html's second SVG ----
@@ -599,7 +692,7 @@ internal sealed class DeskPictureView : UserControl
         if (look == Look.Missing) NotFoundNote(ds, b.CenterX, b.CenterY, Anchor.Middle);
     }
 
-    /// <summary>The surface at the box's 720:450 shape, as wide as the space allows up to 900 px and centred, sized in layout.</summary>
+    /// <summary>The surface at the box's 720:450 shape, as wide as the space allows up to 1280 px and centred, sized in layout.</summary>
     private sealed class StagePanel : Panel
     {
         private static double DrawWidth(double available) => double.IsFinite(available) && available >= 0 ? Math.Min(available, MaxDrawWidth) : MaxDrawWidth;
