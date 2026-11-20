@@ -44,6 +44,8 @@ public sealed class ProcessHistoryService
         markerPath = Path.ChangeExtension(Path.GetFullPath(path), ".clear.json");
     }
     public long DroppedSamples => Interlocked.Read(ref dropped);
+    /// <summary>Publications the worker has not taken yet, as on the other history services.</summary>
+    public int PendingSamples => queue.Reader.Count;
     public bool Failed => Volatile.Read(ref failed);
     public string Status => (Volatile.Read(ref failed) ? Volatile.Read(ref status) : Volatile.Read(ref recording) == 0
         ? PausedStatus : Volatile.Read(ref status)) +

@@ -147,14 +147,19 @@ public class CoolingShutdownTests
     [Fact]
     public async Task Sign_out_still_flushes_connections_when_the_final_drain_faults()
     {
-        string root=Root();var capture=new EtwNetwork(_=>new(11,1,"fixture"));
-        var (session,collector,connections,worker)=StuckSession(root,capture);var now=DateTimeOffset.UtcNow;
+        string root=Root();var capture=new EtwNetwork(_=>new(11,1,"fixture"));long saved=0;
+        // The writer's Append is kept in memory: this fact is about the order of the stop (a faulted final drain must not skip the
+        // connection flush), and the flush has to be done when the 3 s sign-out window returns. A real store puts a disk flush
+        // inside that window, and on a CI disk shared with the other test projects one flush alone was measured at 3.1 s.
+        // The facts around this one keep the real store and check the saved bytes on disk.
+        var connections=new ConnectionService(new NoLocation(),()=>DateTimeOffset.UtcNow,(records,_)=>Interlocked.Add(ref saved,records.Sum(r=>r.Delta.ReceivedBytes)));
+        var (session,collector,_,worker)=StuckSession(root,capture,connections);
         collector.FinalConnectionsAvailable+=_=>throw new InvalidOperationException("late subscriber failure");worker.SetResult();
         try
         {
-            connections.Start();await SavedBytes(connections,now);Observe(capture,collector);
+            connections.Start();Observe(capture,collector);
             typeof(MonitorSession).GetMethod("StopCollectorForSessionEnding",Flags)!.Invoke(session,null);
-            Assert.True(connections.StopAsync().IsCompleted);Assert.Equal(71,await SavedBytes(connections,now));
+            Assert.True(connections.StopAsync().IsCompleted);Assert.Equal(71,Interlocked.Read(ref saved));
             Assert.Contains("session_end_collector_stop_failed",File.ReadAllText(Path.Combine(root,"trace.jsonl")));
         }
         finally {await connections.StopAsync();if(Directory.Exists(root))Directory.Delete(root,true);}
@@ -184,6 +189,12 @@ public class CoolingShutdownTests
         {
             history.Configure(true,true);history.Start();
             for(int s=0;s<30;s++)history.TryRecord(ProcessHistoryServiceTests.Reading(s));
+            // The worker creates its database and expires old days before it takes anything off the queue, then holds the open
+            // minute in memory for the drain to write. Wait for that, so Quit's history cap covers the drain, as at a real quit
+            // long after startup, not a first-time SQLite creation: on a CI disk shared with the other test projects single
+            // flushes take seconds (3.1 s measured), and creation plus the drain then outlasts the cap. The wait is a hang guard.
+            using(var warm=new CancellationTokenSource(TimeSpan.FromSeconds(60)))
+                while(history.PendingSamples>0)await Task.Delay(10,warm.Token);
             await Stop(session,TimeSpan.FromSeconds(1)).WaitAsync(TimeSpan.FromSeconds(15));
             Assert.True(history.StopAsync().IsCompleted);
             var view=await history.ReadApplicationsAsync(ProcessHistoryServiceTests.Start,ProcessHistoryServiceTests.Start.AddMinutes(1),ProcessRank.CpuTime);

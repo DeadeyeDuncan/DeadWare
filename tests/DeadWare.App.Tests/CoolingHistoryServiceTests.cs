@@ -17,6 +17,11 @@ public class CoolingHistoryServiceTests
         try
         {
             service.Start();var now=DateTimeOffset.UtcNow;var origin=now.AddMinutes(-65);
+            // Feed waits for the worker after each minute so the 120-slot queue never drops a sample. Each wait spans one or more
+            // database commits (the first one the creation of the database), and nothing here is about how fast the disk is: the
+            // limit only stops a hung worker from hanging the run. It was 5 s, which a CI disk shared with the other test projects
+            // exceeds (single flushes of 3.1 s measured, this test at 8 to 13 s in passing runs).
+            var hung=TimeSpan.FromSeconds(60);
             async Task Feed(DateTimeOffset start,int seconds,double mono,double temperature)
             {
                 for(int i=0;i<=seconds;i++)
@@ -28,18 +33,21 @@ public class CoolingHistoryServiceTests
                         {Sample=new(start.AddSeconds(i),mono+i,new Dictionary<string,double?>())});
                     if(i%60==59)
                     {
-                        using var deadline=new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                        using var deadline=new CancellationTokenSource(hung);
                         while(service.PendingSamples>0)await Task.Delay(1,deadline.Token);
                     }
                 }
-                using var finish=new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                using var finish=new CancellationTokenSource(hung);
                 while(service.PendingSamples>0)await Task.Delay(1,finish.Token);
             }
             await Feed(origin,37*60,0,60);
             var baseline=await service.ReadViewAsync(null,null,1);
             Assert.NotNull(baseline.SelectedDevice);
             await service.CreateReferenceAsync(baseline.SelectedDevice,origin,origin.AddMinutes(37),"Known reference");
-            await Feed(now.AddMinutes(-18),18*60,47*60,70);
+            // The service compares against the real clock and warns only while the newest saved minute is at most 120 s old, so
+            // the warmer stream ends at the time this feed starts, not at the time the test started: the reference feed above
+            // is two thirds of the disk work and no longer counts against those 120 s.
+            await Feed(DateTimeOffset.UtcNow.AddMinutes(-18),18*60,47*60,70);
             await service.StopAsync();
             var result=await service.ReadViewAsync(null,null,1);
             Assert.Equal(0,service.DroppedSamples);Assert.Equal(0,delivered);
