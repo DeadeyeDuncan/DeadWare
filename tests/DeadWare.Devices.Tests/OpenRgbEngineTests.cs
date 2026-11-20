@@ -92,6 +92,35 @@ public sealed class OpenRgbEngineTests : IAsyncLifetime
         Assert.Equal(@"C:\cfg\openrgb",Path.Combine(appData!,"OpenRGB"),ignoreCase:true);
     }
 
+    // F5 item 3a (whole-branch review R4-D15): OpenRGB 1.0rc3 loads GPU vendor DLLs by bare name, and Qt honours QT_PLUGIN_PATH, so an
+    // OpenRGB that inherited the host's environment, the user's PATH included, could load a DLL from a folder the user can write. OpenRGB
+    // starts with only the allow-listed variables, APPDATA, and a PATH of its own folder and the system folders.
+    [Fact]
+    public async Task OpenRGB_starts_with_only_the_allow_listed_environment_and_a_system_path()
+    {
+        Assert.Equal(["SystemRoot","windir","SystemDrive","ComSpec","PATHEXT","OS","PROCESSOR_ARCHITECTURE","NUMBER_OF_PROCESSORS","ProgramData","ProgramFiles",
+            "ProgramFiles(x86)","ProgramW6432","CommonProgramFiles","CommonProgramW6432","ALLUSERSPROFILE","USERPROFILE","USERNAME","USERDOMAIN","COMPUTERNAME",
+            "TEMP","TMP","LOCALAPPDATA"],OpenRgbEngine.AllowedVariables);
+        var path=Environment.GetEnvironmentVariable("PATH");
+        Environment.SetEnvironmentVariable("QT_PLUGIN_PATH",@"C:\planted\qt");
+        Environment.SetEnvironmentVariable("PATH",@"C:\planted\bin;"+path);
+        try
+        {
+            var e=Engine();
+            await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
+            var env=runner.Info!.Environment;
+            string[] allowed=[..OpenRgbEngine.AllowedVariables,"PATH","APPDATA"];
+            foreach(var key in env.Keys) Assert.Contains(key,allowed,StringComparer.OrdinalIgnoreCase);
+            Assert.False(env.ContainsKey("QT_PLUGIN_PATH"));
+            var system=Environment.GetFolderPath(Environment.SpecialFolder.System);
+            Assert.Equal($@"{dir};{system};{Path.GetDirectoryName(system)};{system}\Wbem",env["PATH"]);
+            Assert.DoesNotContain("planted",env["PATH"]);
+            Assert.Equal(@"C:\cfg",env["APPDATA"]);
+            Assert.Equal(Environment.GetEnvironmentVariable("SystemRoot"),env["SystemRoot"]);
+        }
+        finally{Environment.SetEnvironmentVariable("PATH",path);Environment.SetEnvironmentVariable("QT_PLUGIN_PATH",null);}
+    }
+
     // Its guard: for a config folder of any other name, <APPDATA>\OpenRGB would be another folder, so OpenRGB isn't started, and the reason
     // says why.
     [Fact]

@@ -64,6 +64,28 @@ internal sealed class OpenRgbEngine : IAsyncDisposable
     // folder, so the engine refuses to start (Program always names it openrgb).
     public static string? AppData(string configDir)
         =>string.Equals(Path.GetFileName(configDir),"openrgb",StringComparison.OrdinalIgnoreCase)&&Path.GetDirectoryName(configDir) is {Length:>0} parent?parent:null;
+    // F5 item 3a (whole-branch review R4-D15): OpenRGB 1.0rc3 loads GPU vendor DLLs by bare name (atiadlxx.dll, nvapi64.dll), and Qt
+    // honours QT_PLUGIN_PATH and QT_QPA_PLATFORM_PLUGIN_PATH. An OpenRGB that inherited the host's environment would search the user's PATH,
+    // %LOCALAPPDATA%\Microsoft\WindowsApps included, and an elevated one would run a DLL planted there as administrator. So the child's
+    // environment is cleared and given only these variables, copied from the host's, plus APPDATA (the config folder's parent, F4 item 1)
+    // and a PATH of OpenRGB's own folder and the system folders, never the inherited PATH. Every host does this, elevated or not.
+    internal static readonly string[] AllowedVariables=["SystemRoot","windir","SystemDrive","ComSpec","PATHEXT","OS","PROCESSOR_ARCHITECTURE","NUMBER_OF_PROCESSORS",
+        "ProgramData","ProgramFiles","ProgramFiles(x86)","ProgramW6432","CommonProgramFiles","CommonProgramW6432","ALLUSERSPROFILE","USERPROFILE","USERNAME",
+        "USERDOMAIN","COMPUTERNAME","TEMP","TMP","LOCALAPPDATA"];
+    internal static string SystemPath(string exeFolder)
+    {
+        var system=Environment.GetFolderPath(Environment.SpecialFolder.System);
+        return string.Join(';',exeFolder,system,Path.GetDirectoryName(system)??"",Path.Combine(system,"Wbem"));
+    }
+    internal static void SetEnvironment(ProcessStartInfo info,string exeFolder,string appData)
+    {
+        var env=info.Environment;
+        env.Clear();
+        foreach(var name in AllowedVariables)
+            if(Environment.GetEnvironmentVariable(name) is {Length:>0} value) env[name]=value;
+        env["PATH"]=SystemPath(exeFolder);
+        env["APPDATA"]=appData;
+    }
     public static string FolderNameText(string configDir)=>$"OpenRGB's settings folder for DeadWare, {configDir}, isn't named openrgb, so DeadWare didn't start OpenRGB: OpenRGB would read settings and keep its log in another folder.";
     public int? ProcessId{get{lock(gate)return processId;}}
     public EngineStatus Status{get{lock(gate)return status;}}
@@ -123,7 +145,7 @@ internal sealed class OpenRgbEngine : IAsyncDisposable
                 {
                     var info=new ProcessStartInfo(exePath){WorkingDirectory=Path.GetDirectoryName(exePath)??""};
                     foreach(var a in Arguments(configDir)) info.ArgumentList.Add(a);
-                    info.Environment["APPDATA"]=AppData(configDir); // StartAsync refused a folder for which this is null
+                    SetEnvironment(info,Path.GetDirectoryName(exePath)??"",AppData(configDir)!); // StartAsync refused a folder for which AppData is null
                     proc=runner.Start(info);
                     lock(gate){current=proc;processId=proc.Id;}
                     if(await WaitForPort(proc,ct).ConfigureAwait(false))
