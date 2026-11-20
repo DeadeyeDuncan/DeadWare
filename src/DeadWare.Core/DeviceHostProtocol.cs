@@ -22,6 +22,10 @@ public sealed record HostState(HostStatus Status,string Message,bool Elevated,IR
 [JsonDerivedType(typeof(StopRequest),"stop")]
 [JsonDerivedType(typeof(Reply),"reply")]
 [JsonDerivedType(typeof(StateEvent),"state")]
+[JsonDerivedType(typeof(SetEffectRequest),"setEffect")]
+[JsonDerivedType(typeof(SetLayoutRequest),"setLayout")]
+[JsonDerivedType(typeof(SubscribePreviewRequest),"subscribePreview")]
+[JsonDerivedType(typeof(PreviewEvent),"preview")]
 public abstract record HostMessage
 {
     [JsonRequired] public int Version { get; init; } = DeviceHostProtocol.Version;
@@ -37,6 +41,10 @@ public sealed record RescanRequest : HostMessage;
 public sealed record StopRequest : HostMessage;
 public sealed record Reply(bool Ok,string? Error) : HostMessage;
 public sealed record StateEvent(HostState State) : HostMessage;
+public sealed record SetEffectRequest(string Kind,EffectParams? Params) : HostMessage;
+public sealed record SetLayoutRequest(DeskLayout Layout) : HostMessage;
+public sealed record SubscribePreviewRequest(bool On) : HostMessage;
+public sealed record PreviewEvent(Dictionary<string,string> Colors) : HostMessage;
 [JsonSourceGenerationOptions(UseStringEnumConverter=true)]
 [JsonSerializable(typeof(HostMessage))]
 internal sealed partial class DeviceHostJsonContext : JsonSerializerContext;

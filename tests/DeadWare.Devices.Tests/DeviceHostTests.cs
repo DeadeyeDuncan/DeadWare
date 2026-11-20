@@ -13,7 +13,8 @@ public sealed class DeviceHostTests : IAsyncLifetime
     readonly string exe,lightingPath;
     readonly Clock time=new();
     readonly FakeRunner runner;
-    readonly FakeOpenRgbSession session=FakeOpenRgbSession.FromFixture();
+    // Another PC, with no desk picture, unless a test makes it the owner's before it builds the host (UseOwnerRig).
+    FakeOpenRgbSession session=FakeOpenRgbSession.FromFixture();
     readonly HostLog log;
     readonly List<LightingConflict> conflicts=new();
     readonly List<Hold> holds=new();
@@ -124,15 +125,17 @@ public sealed class DeviceHostTests : IAsyncLifetime
     // its next tick, so the loop has done each tick's work, and armed what comes next, before the clock moves on, however late the thread
     // pool runs it. Fails once limit (FakeTimeLimit unless raised) of fake time has passed without the condition and work still queued has
     // had RealTimeCap to finish, or after RealTimeCap of real time in which the loop never waited on its tick. Returns the fake time moved.
-    async Task<TimeSpan> AdvanceUntil(Func<bool> cond,TimeSpan? step=null,TimeSpan? limit=null,[CallerArgumentExpression(nameof(cond))] string what="")
+    // tick: the loop's tick, DeviceHost.FastTick while an effect runs with the lights on; the step defaults to it.
+    async Task<TimeSpan> AdvanceUntil(Func<bool> cond,TimeSpan? step=null,TimeSpan? limit=null,TimeSpan? tick=null,[CallerArgumentExpression(nameof(cond))] string what="")
     {
-        var s=step??DeviceHost.Tick;
+        var t=tick??DeviceHost.Tick;
+        var s=step??t;
         var max=limit??FakeTimeLimit;
         var moved=TimeSpan.Zero;
         var idle=Stopwatch.StartNew();
         while(!cond())
         {
-            if(moved<max&&time.Waiting(DeviceHost.Tick)){time.Advance(s);moved+=s;idle.Restart();}
+            if(moved<max&&time.Waiting(t)){time.Advance(s);moved+=s;idle.Restart();}
             else if(idle.Elapsed>RealTimeCap)
                 Assert.Fail(moved>=max
                     ?$"condition not reached within the {max.TotalSeconds:0.#} s fake-time limit: {what}"
@@ -141,14 +144,25 @@ public sealed class DeviceHostTests : IAsyncLifetime
         }
         return moved;
     }
-    async Task<DeviceHost> Running()
+    async Task<DeviceHost> Running(LightingStore? store=null)
     {
-        var h=Build();Start(h);
+        var h=Build(store:store);Start(h);
         await Until(()=>h.State.Status==HostStatus.Running);
         return h;
     }
     static async Task<Reply> Send(DeviceHost h,HostMessage m)=>Assert.IsType<Reply>(await h.HandleAsync(m));
     Rgb[] LastLeds(int index)=>session.Leds.Last(l=>l.Index==index).Colors;
+    // A store that counts its saves, which write as the real one does.
+    int saves;
+    LightingStore CountingStore()=>new(lightingPath,write:(stream,json)=>{Interlocked.Increment(ref saves);using var w=new StreamWriter(stream,leaveOpen:true);w.Write(json);});
+    // A device OpenRGB reports from now on. The list is replaced, never changed in place, since the host reads it on its own thread.
+    void AddDevice(string serial,string name,int zones)
+        =>session.Controllers=[..session.Controllers,new OpenRgbController(session.Controllers.Count,name,3,serial,$"HID: {serial}",Enumerable.Range(0,zones).Select(z=>new LightingZone(z,$"Zone {z}",4)).ToList(),["Direct"],0)];
+    // The distinct frames sent to the device at index since the from-th LED write.
+    List<string> Frames(int index,int from)=>session.Leds.Skip(from).Where(l=>l.Index==index).Select(l=>string.Join(",",l.Colors)).Distinct().ToList();
+    static readonly Rgb SteelBlue=new(0x46,0x82,0xB4);
+    int Apex=>session.Controllers.FindIndex(c=>c.Name=="SteelSeries Apex Pro");
+    static readonly string ApexZone=LightingKeys.Zone(LightingKeys.Device("SERIAL-4",@"HID: \\?\HID#FAKE-1"),0);
 
     [Fact]
     public async Task Blocking_conflict_reports_Blocked_and_never_starts_engine()
@@ -611,7 +625,10 @@ public sealed class DeviceHostTests : IAsyncLifetime
         var h=await Running();
         // Entries with non-ASCII keys and names of the longest length, then entries with ASCII names taking up the rest, to just under the cap.
         var colors=new Dictionary<string,ZoneColorEntry>();
-        long Size()=>Written(new LightingSettings{DefaultColor="#123456",ZoneColors=colors});
+        // Measured on the host's own settings, with the layout auto-arrange gave its devices at the first connect and its effect, with the
+        // colours swapped in, as the ReplaceColors below leaves them.
+        var basis=h.State.Settings;
+        long Size(){basis.DefaultColor="#123456";basis.ZoneColors=colors;return Written(basis);}
         string Key(int i)=>$"zone-{i:D5}-"+new string('ß',LightingSettingsCodec.MaxKeyLength-11);
         var full=new ZoneColorEntry{Color="#FF0000",ZoneName=new string('ü',LightingSettingsCodec.MaxKeyLength)};
         colors[Key(0)]=full;var one=Size();colors[Key(1)]=full;var each=Size()-one;
@@ -979,5 +996,676 @@ public sealed class DeviceHostTests : IAsyncLifetime
         Assert.True(reply.Ok);Assert.Equal(3,reply.Id);
         await run!.WaitAsync(RealTimeCap); // no fake time involved: Stop cancels the loop's tick and RunAsync then stops the engine
         Assert.True(runner.At(0).Killed);
+    }
+
+    // Lighting step 2: the loop ticks every 33 ms only while an effect runs with the lights on; otherwise every 500 ms. A tick already armed
+    // runs out first, so each switch takes effect from the next tick.
+    [Fact]
+    public async Task Tick_is_fast_only_while_an_effect_runs_with_lights_on()
+    {
+        var h=await Running();
+        await Until(()=>time.Waiting(DeviceHost.Tick));
+        Assert.False(time.Waiting(DeviceHost.FastTick));
+        Assert.True((await Send(h,new SetEffectRequest("Wave",null))).Ok);
+        await AdvanceUntil(()=>time.Waiting(DeviceHost.FastTick));
+        Assert.True((await Send(h,new SetLightsOnRequest(false))).Ok);
+        await AdvanceUntil(()=>time.Waiting(DeviceHost.Tick),tick:DeviceHost.FastTick);
+        Assert.False(time.Waiting(DeviceHost.FastTick));
+    }
+
+    // Fix wave L1: the fast tick only while something can be painted. With Wave chosen while OpenRGB won't connect the loop waits Tick;
+    // once the session is back and Running, FastTick.
+    [Fact]
+    public async Task Tick_is_slow_while_the_session_is_down_even_with_an_effect()
+    {
+        session.FailConnect=true;
+        var h=Build();Start(h);
+        await Until(()=>h.State.Status==HostStatus.Waiting);
+        Assert.True((await Send(h,new SetEffectRequest("Wave",null))).Ok);
+        await RunFor(TimeSpan.FromSeconds(3),DeviceHost.Tick); // stalls if the loop waits FastTick instead
+        Assert.False(time.Waiting(DeviceHost.FastTick));
+        Assert.Equal(HostStatus.Waiting,h.State.Status);
+        session.FailConnect=false;
+        await AdvanceUntil(()=>h.State.Status==HostStatus.Running);
+        await AdvanceUntil(()=>time.Waiting(DeviceHost.FastTick));
+    }
+
+    // With the lights off an effect doesn't run: the loop keeps its 500 ms tick and every frame is black, the same each time.
+    [Fact]
+    public async Task Tick_is_slow_while_lights_are_off()
+    {
+        var h=await Running();
+        Assert.True((await Send(h,new SetLightsOnRequest(false))).Ok);
+        Assert.True((await Send(h,new SetEffectRequest("Wave",null))).Ok);
+        var from=session.LedCount;
+        await AdvanceUntil(()=>session.Leds.Skip(from).Count(l=>l.Index==Apex)>=3); // the tick stays Tick, or this stalls
+        await Until(()=>time.Waiting(DeviceHost.Tick));
+        Assert.False(time.Waiting(DeviceHost.FastTick));
+        var written=session.Leds.Skip(from).ToList();
+        Assert.All(written,w=>Assert.All(w.Colors,c=>Assert.Equal(Rgb.Black,c)));
+        Assert.All(written.GroupBy(w=>w.Index),g=>Assert.Single(g.Select(w=>string.Join(",",w.Colors)).Distinct()));
+    }
+
+    // The host paints the effect at the time since it started, so a placed Direct device gets new frames as time passes.
+    [Fact]
+    public async Task Frames_change_as_time_passes()
+    {
+        var h=await Running();
+        Assert.Contains(ApexZone,h.State.Settings.Layout.Zones.Keys); // placed at the first connect
+        Assert.True((await Send(h,new SetEffectRequest("Wave",null))).Ok);
+        await AdvanceUntil(()=>time.Waiting(DeviceHost.FastTick));
+        var from=session.LedCount;
+        await AdvanceUntil(()=>Frames(Apex,from).Count>=2,tick:DeviceHost.FastTick);
+    }
+
+    // The 5 s work (conflict scan, rescan) keeps its cadence when the loop ticks every 33 ms: once per 5 s of fake time, not once per tick.
+    [Fact]
+    public async Task The_five_second_work_keeps_its_cadence_at_the_fast_tick()
+    {
+        var h=await Running();
+        Assert.True((await Send(h,new SetEffectRequest("Wave",null))).Ok);
+        await AdvanceUntil(()=>time.Waiting(DeviceHost.FastTick));
+        var before=Volatile.Read(ref scans);
+        await AdvanceUntil(()=>Volatile.Read(ref scans)>before,tick:DeviceHost.FastTick);
+        var first=time.GetUtcNow();
+        var at=Volatile.Read(ref scans);
+        await AdvanceUntil(()=>Volatile.Read(ref scans)>=at+2,tick:DeviceHost.FastTick);
+        // Two more scans took two slow ticks, each the first 33 ms tick at or past 5 s: 5.016 s apiece.
+        Assert.InRange((time.GetUtcNow()-first).TotalMilliseconds,2*DeviceHost.SlowTick.TotalMilliseconds,2*(DeviceHost.SlowTick+DeviceHost.FastTick).TotalMilliseconds);
+        Assert.Equal(at+2,Volatile.Read(ref scans));
+    }
+
+    // A device that appears gets points for its zones, saved and in the state, and a rescan that finds no change saves nothing.
+    [Fact]
+    public async Task A_new_device_is_arranged_and_saved_once()
+    {
+        var h=await Running(CountingStore());
+        Assert.Equal(1,Volatile.Read(ref saves)); // the first connect arranged the fixture's devices and saved them once
+        var saved=Volatile.Read(ref saves);
+        var key=LightingKeys.Device("SERIAL-NEW","HID: SERIAL-NEW");
+        AddDevice("SERIAL-NEW","Fan Hub",3);
+        Assert.True((await Send(h,new RescanRequest())).Ok);
+        Assert.Equal(saved+1,Volatile.Read(ref saves));
+        var zones=Enumerable.Range(0,3).Select(i=>LightingKeys.Zone(key,i)).ToList();
+        var layout=new LightingStore(lightingPath).Load().Settings.Layout;
+        Assert.All(zones,z=>Assert.Contains(z,layout.Zones.Keys));
+        Assert.Contains(key,layout.Tower.Members);
+        var state=Assert.IsType<StateEvent>(await h.HandleAsync(new GetStateRequest{Id=2})).State;
+        Assert.All(zones,z=>Assert.Equal(layout.Zones[z],state.Settings.Layout.Zones[z]));
+        Assert.True((await Send(h,new RescanRequest())).Ok);
+        Assert.Equal(saved+1,Volatile.Read(ref saves));
+    }
+
+    // A device that comes back under a new key at the same location keeps its saved points: the remap re-keys them before auto-arrange
+    // could place the new key elsewhere, and one save covers both.
+    [Fact]
+    public async Task Remap_runs_before_arrange()
+    {
+        var h=await Running(CountingStore());
+        var old=LightingKeys.Zone(LightingKeys.Device("SERIAL-1","I2C: FAKE-1"),0);
+        var point=h.State.Settings.Layout.Zones[old];
+        var saved=Volatile.Read(ref saves);
+        var list=session.Controllers.ToList();list[0]=list[0] with{Serial=""};session.Controllers=list; // it lost its serial
+        Assert.True((await Send(h,new RescanRequest())).Ok);
+        var layout=h.State.Settings.Layout;
+        Assert.Equal(point,layout.Zones[LightingKeys.Zone(LightingKeys.Device("","I2C: FAKE-1"),0)]);
+        Assert.DoesNotContain(old,layout.Zones.Keys);
+        Assert.Equal(saved+1,Volatile.Read(ref saves));
+        Assert.Equal(point,new LightingStore(lightingPath).Load().Settings.Layout.Zones[LightingKeys.Zone(LightingKeys.Device("","I2C: FAKE-1"),0)]);
+    }
+
+    // The points for a newly seen device would make lighting.json larger than 1 MiB: the layout stays as it was, one log line says why (once
+    // per reason, however many rescans meet it), and later changes are still accepted, since the live settings remain savable.
+    [Fact]
+    public async Task A_layout_too_large_to_save_is_not_adopted_at_a_rescan()
+    {
+        var h=await Running();
+        var basis=h.State.Settings;
+        var colors=new Dictionary<string,ZoneColorEntry>();
+        long Size(){basis.ZoneColors=colors;return Written(basis);}
+        for(var i=0;;i++)
+        {
+            colors[$"fill-{i:D5}"]=new ZoneColorEntry{Color="#FF0000",ZoneName=""};
+            var left=LightingSettingsCodec.MaxFileBytes-Size();
+            if(left<0){colors.Remove($"fill-{i:D5}");break;}
+            colors[$"fill-{i:D5}"].ZoneName=new string('n',(int)Math.Min(left,LightingSettingsCodec.MaxKeyLength));
+        }
+        Assert.InRange(Size(),LightingSettingsCodec.MaxFileBytes-200,LightingSettingsCodec.MaxFileBytes); // 16 more points take far more
+        Assert.True((await Send(h,new ReplaceColorsRequest(basis.DefaultColor,colors))).Ok);
+        var layout=h.State.Settings.Layout;
+        AddDevice("SERIAL-NEW","Fan Hub",16);
+        Assert.True((await Send(h,new RescanRequest())).Ok);
+        var after=h.State.Settings.Layout;
+        Assert.Equal(layout.Zones,after.Zones);
+        Assert.Equal(layout.Tower.Members,after.Tower.Members);
+        Assert.Equal(9,h.State.Devices.Count); // the device itself is seen
+        AddDevice("SERIAL-NEW2","Fan Hub",16);
+        Assert.True((await Send(h,new RescanRequest())).Ok);
+        Assert.Equal(layout.Zones,h.State.Settings.Layout.Zones);
+        var text=File.ReadAllText(Path.Combine(dir,"logs","devices.log"));
+        Assert.Equal(1,text.Split("desk layout not arranged: Lighting settings would be larger than 1 MiB when saved.").Length-1);
+        Assert.True((await Send(h,new SetBrightnessRequest(30))).Ok);
+        Assert.Equal(30,new LightingStore(lightingPath).Load().Settings.Brightness);
+    }
+
+    [Fact]
+    public async Task SetEffect_saves_and_refuses()
+    {
+        var h=await Running();
+        Assert.True((await Send(h,new SetEffectRequest("Breathing",new EffectParams{Speed=10}))).Ok);
+        Assert.True((await Send(h,new SetEffectRequest("Spectrum",new EffectParams{Speed=20}))).Ok);
+        Assert.True((await Send(h,new SetEffectRequest("Wave",new EffectParams{Speed=70}))).Ok);
+        var effect=new LightingStore(lightingPath).Load().Settings.Effect;
+        Assert.Equal("Wave",effect.Kind);Assert.Equal(70,effect.Wave.Speed);
+        Assert.Equal(10,effect.Breathing.Speed);Assert.Equal(20,effect.Spectrum.Speed); // a Wave Params leaves the others alone
+        Assert.Equal("Wave",h.State.Settings.Effect.Kind);Assert.Equal(70,h.State.Settings.Effect.Wave.Speed);
+        var file=File.ReadAllText(lightingPath);
+        HostMessage[] refused=
+        [
+            new SetEffectRequest("Wave",new EffectParams{Speed=101}),
+            new SetEffectRequest("Wave",new EffectParams{Colors=Enumerable.Repeat("#FF0000",LightingEffects.MaxColors+1).ToList()}),
+            new SetEffectRequest("Wave",new EffectParams{Colors=["red"]}),
+            new SetEffectRequest("Plasma",null),
+            new SetEffectRequest("1",null), // a kind is known by its name only
+            new SetEffectRequest(null!,null),
+            new SetEffectRequest("Static",new EffectParams()),
+            new SetEffectRequest("Wave",new EffectParams{Colors=null!}),
+        ];
+        foreach(var m in refused)
+        {
+            var reply=await Send(h,m);
+            Assert.False(reply.Ok);Assert.False(string.IsNullOrEmpty(reply.Error));
+            Assert.Equal("Wave",h.State.Settings.Effect.Kind);Assert.Equal(70,h.State.Settings.Effect.Wave.Speed);Assert.Empty(h.State.Settings.Effect.Wave.Colors);
+            Assert.Equal(file,File.ReadAllText(lightingPath));
+        }
+        Assert.True((await Send(h,new SetEffectRequest("Static",null))).Ok);
+        Assert.Equal("Static",h.State.Settings.Effect.Kind);
+        Assert.Equal(70,h.State.Settings.Effect.Wave.Speed);
+        Assert.Equal("Static",new LightingStore(lightingPath).Load().Settings.Effect.Kind);
+    }
+
+    [Fact]
+    public async Task SetEffect_refused_when_the_save_fails()
+    {
+        var h=await Running(new LightingStore(lightingPath,write:(_,_)=>throw new IOException("the disk is full")));
+        var reply=await Send(h,new SetEffectRequest("Wave",new EffectParams{Speed=70}){Id=4});
+        Assert.False(reply.Ok);Assert.Equal(HostReplyCodes.CouldntSave,reply.Error);Assert.Equal(4,reply.Id);
+        Assert.Equal("Static",h.State.Settings.Effect.Kind);
+        Assert.Equal(40,h.State.Settings.Effect.Wave.Speed);
+    }
+
+    // An effect chosen while OpenRGB won't connect is saved and answered at once, with no OpenRGB call; the frames after the reconnect are
+    // the effect's from the first, so the first connect places the devices before it paints.
+    [Fact]
+    public async Task SetEffect_while_waiting_is_saved_and_painted_after_reconnect()
+    {
+        session.FailConnect=true;
+        var h=Build();Start(h);
+        await Until(()=>h.State.Status==HostStatus.Waiting);
+        var (connects,reads,calls,leds)=(session.Connects,session.Reads,session.Calls.Count,session.LedCount);
+        Assert.True((await Send(h,new SetEffectRequest("Wave",null))).Ok);
+        Assert.Equal((connects,reads,calls,leds),(session.Connects,session.Reads,session.Calls.Count,session.LedCount));
+        Assert.Equal("Wave",new LightingStore(lightingPath).Load().Settings.Effect.Kind);
+        session.FailConnect=false; // nothing can be painted until the reconnect, so the loop keeps Tick until then (fix wave L1)
+        await AdvanceUntil(()=>h.State.Status==HostStatus.Running);
+        await AdvanceUntil(()=>Frames(Apex,0).Count>=2,tick:DeviceHost.FastTick);
+        Assert.DoesNotContain(string.Join(",",Enumerable.Repeat(SteelBlue,112)),Frames(Apex,0));
+    }
+
+    [Fact]
+    public async Task SetLayout_places_a_device_the_draft_lacks()
+    {
+        var h=await Running();
+        var a=LightingKeys.Zone(LightingKeys.Device("SERIAL-1","I2C: FAKE-1"),0);
+        var b=LightingKeys.Zone(LightingKeys.Device("SERIAL-2","I2C: FAKE-2"),0);
+        var draft=new DeskLayout{Zones={[a]=new(0.5,0.5)}};
+        Assert.True((await Send(h,new SetLayoutRequest(draft))).Ok);
+        var saved=new LightingStore(lightingPath).Load().Settings.Layout;
+        Assert.Equal(new DeskPoint(0.5,0.5),saved.Zones[a]);
+        Assert.Contains(b,saved.Zones.Keys);
+        Assert.Contains(ApexZone,saved.Zones.Keys);
+        Assert.Equal(saved.Zones,h.State.Settings.Layout.Zones);
+        Assert.Single(draft.Zones); // the request's own layout is left as it came
+    }
+
+    [Fact]
+    public async Task SetLayout_refuses_an_invalid_layout()
+    {
+        var h=await Running();
+        var layout=h.State.Settings.Layout;
+        var file=File.ReadAllText(lightingPath);
+        var bad=DeskLayouts.Clone(layout);bad.Zones[ApexZone]=new(2,0.5);
+        var reply=await Send(h,new SetLayoutRequest(bad));
+        Assert.False(reply.Ok);Assert.Contains("unit square",reply.Error);
+        Assert.False((await Send(h,new SetLayoutRequest(null!))).Ok);
+        Assert.Equal(layout.Zones,h.State.Settings.Layout.Zones);
+        Assert.Equal(file,File.ReadAllText(lightingPath));
+    }
+
+    [Fact]
+    public async Task SetLayout_keeps_entries_for_absent_devices()
+    {
+        var h=await Running();
+        var draft=DeskLayouts.Clone(h.State.Settings.Layout);
+        draft.Zones["ghost|nowhere#0"]=new(0.3,0.3);draft.Tower.Excluded.Add("ghost|nowhere");draft.Unplaced.Add("other|gone");
+        Assert.True((await Send(h,new SetLayoutRequest(draft))).Ok);
+        var saved=new LightingStore(lightingPath).Load().Settings.Layout;
+        Assert.Equal(new DeskPoint(0.3,0.3),saved.Zones["ghost|nowhere#0"]);
+        Assert.Contains("ghost|nowhere",saved.Tower.Excluded);
+        Assert.Contains("other|gone",saved.Unplaced);
+    }
+
+    // Choosing an effect or a layout repaints only: it reads no device list and switches no device's mode.
+    [Fact]
+    public async Task Changing_effect_or_layout_never_rescans_or_switches_modes()
+    {
+        var h=await Running();
+        await Until(()=>time.Waiting(DeviceHost.Tick)); // the first tick's work is done; nothing moves the clock below
+        var (reads,modes,connects)=(session.Reads,session.Modes.Count,session.Connects);
+        Assert.True((await Send(h,new SetEffectRequest("Wave",new EffectParams{Speed=90}))).Ok);
+        var draft=DeskLayouts.Clone(h.State.Settings.Layout);draft.Zones[ApexZone]=new(0.9,0.1);
+        Assert.True((await Send(h,new SetLayoutRequest(draft))).Ok);
+        Assert.Equal((reads,modes,connects),(session.Reads,session.Modes.Count,session.Connects));
+        Assert.Equal(1,runner.Count);
+    }
+
+    // Task 7: the preview frames the host raises, each with the fake time it was raised at.
+    List<(DateTimeOffset At,Dictionary<string,string> Colors)> Previews(DeviceHost h)
+    {
+        var seen=new List<(DateTimeOffset,Dictionary<string,string>)>();
+        h.PreviewChanged+=e=>{lock(seen)seen.Add((time.GetUtcNow(),e.Colors));};
+        return seen;
+    }
+    static int CountOf<T>(List<T> list){lock(list)return list.Count;}
+    // Steps fake time by at least span, then waits until the loop waits on its next tick, so every tick in the span has done its work.
+    async Task RunFor(TimeSpan span,TimeSpan tick)
+    {
+        var end=time.GetUtcNow()+span;
+        await AdvanceUntil(()=>time.GetUtcNow()>=end,tick:tick);
+        await Until(()=>time.Waiting(tick));
+    }
+    static bool SameFrame(Dictionary<string,string> a,Dictionary<string,string> b)=>a.Count==b.Count&&a.All(e=>b.TryGetValue(e.Key,out var v)&&v==e.Value);
+    async Task<DeviceHost> RunningWave(EffectParams? p=null)
+    {
+        var h=await Running();
+        Assert.True((await Send(h,new SetEffectRequest("Wave",p))).Ok);
+        await AdvanceUntil(()=>time.Waiting(DeviceHost.FastTick)); // the tick armed before the change runs out first
+        return h;
+    }
+
+    [Fact]
+    public async Task No_preview_without_a_subscription()
+    {
+        var h=await RunningWave();
+        var seen=Previews(h);
+        var from=session.LedCount;
+        await RunFor(TimeSpan.FromSeconds(1),DeviceHost.FastTick);
+        Assert.True(Frames(Apex,from).Count>=2); // the effect ran
+        Assert.Equal(0,CountOf(seen));
+    }
+
+    [Fact]
+    public async Task Preview_flows_to_a_subscriber_at_most_ten_a_second()
+    {
+        var h=await RunningWave();
+        var seen=Previews(h);
+        var states=0;
+        h.StateChanged+=_=>Interlocked.Increment(ref states);
+        var reply=await Send(h,new SubscribePreviewRequest(true){Id=9});
+        Assert.True(reply.Ok);Assert.Equal(9,reply.Id);
+        Assert.Equal(0,Volatile.Read(ref states)); // a subscription raises no state
+        await RunFor(TimeSpan.FromSeconds(1),DeviceHost.FastTick);
+        List<(DateTimeOffset At,Dictionary<string,string> Colors)> frames;
+        lock(seen)frames=seen.ToList();
+        Assert.InRange(frames.Count,2,10);
+        Assert.Contains(ApexZone,frames[0].Colors.Keys);
+        for(var i=1;i<frames.Count;i++)
+        {
+            Assert.False(SameFrame(frames[i-1].Colors,frames[i].Colors));
+            Assert.True(frames[i].At-frames[i-1].At>=DeviceHost.PreviewGap,$"frames {i-1} and {i} came {(frames[i].At-frames[i-1].At).TotalMilliseconds} ms apart");
+        }
+    }
+
+    [Fact]
+    public async Task No_preview_while_static_or_lights_off()
+    {
+        var h=await Running();
+        var seen=Previews(h);
+        Assert.True((await Send(h,new SubscribePreviewRequest(true))).Ok);
+        await RunFor(TimeSpan.FromSeconds(1),DeviceHost.Tick); // Static
+        Assert.Equal(0,CountOf(seen));
+        Assert.True((await Send(h,new SetLightsOnRequest(false))).Ok);
+        Assert.True((await Send(h,new SetEffectRequest("Wave",null))).Ok);
+        await RunFor(TimeSpan.FromSeconds(1),DeviceHost.Tick); // Wave with the lights off
+        Assert.Equal(0,CountOf(seen));
+        Assert.True((await Send(h,new SetLightsOnRequest(true))).Ok); // the subscription was live all along
+        await AdvanceUntil(()=>time.Waiting(DeviceHost.FastTick));
+        await AdvanceUntil(()=>CountOf(seen)>=1,tick:DeviceHost.FastTick);
+    }
+
+    [Fact]
+    public async Task Preview_stops_when_the_client_goes()
+    {
+        var h=await RunningWave();
+        var seen=Previews(h);
+        Assert.True((await Send(h,new SubscribePreviewRequest(true))).Ok);
+        await AdvanceUntil(()=>CountOf(seen)>=2,tick:DeviceHost.FastTick);
+        h.ClientGone();
+        var n=CountOf(seen);
+        await RunFor(TimeSpan.FromSeconds(1),DeviceHost.FastTick);
+        Assert.Equal(n,CountOf(seen));
+        Assert.True((await Send(h,new SubscribePreviewRequest(true))).Ok);
+        await AdvanceUntil(()=>CountOf(seen)>n,tick:DeviceHost.FastTick);
+    }
+
+    // A one-colour Wave shows that colour at every placed zone, so the frame is known: the preview carries it as chosen, the LEDs at 50 %.
+    [Fact]
+    public async Task Preview_is_before_brightness()
+    {
+        var h=await Running();
+        Assert.True((await Send(h,new SetBrightnessRequest(50))).Ok);
+        Assert.True((await Send(h,new SetEffectRequest("Wave",new EffectParams{Colors=["#FF0000"]}))).Ok);
+        await AdvanceUntil(()=>time.Waiting(DeviceHost.FastTick));
+        var seen=Previews(h);
+        Assert.True((await Send(h,new SubscribePreviewRequest(true))).Ok);
+        await AdvanceUntil(()=>CountOf(seen)>=1,tick:DeviceHost.FastTick);
+        Dictionary<string,string> colors;
+        lock(seen)colors=seen[0].Colors;
+        Assert.Equal("#FF0000",colors[ApexZone]);
+        var dimmed=new Rgb(0xFF,0,0).Scale(50);
+        Assert.NotEqual(new Rgb(0xFF,0,0),dimmed);
+        Assert.All(LastLeds(Apex),c=>Assert.Equal(dimmed,c));
+    }
+
+    // Fix wave W1: while no effect runs the window shows the state's colours, so the host forgets its last frame then, and a one-colour
+    // Wave that resumes sends its (unchanged) frame again. Each stop is held over a slow tick, so the tick's own check is what forgets it.
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task A_constant_frame_is_sent_again_after_the_effect_stops_and_resumes(bool byLights)
+    {
+        var h=await RunningWave(new EffectParams{Colors=["#FF0000"]});
+        var seen=Previews(h);
+        Assert.True((await Send(h,new SubscribePreviewRequest(true))).Ok);
+        await AdvanceUntil(()=>CountOf(seen)>=1,tick:DeviceHost.FastTick);
+        Assert.True((await Send(h,byLights?new SetLightsOnRequest(false):new SetEffectRequest("Static",null))).Ok);
+        await AdvanceUntil(()=>time.Waiting(DeviceHost.Tick),tick:DeviceHost.FastTick); // the armed fast tick runs out first
+        await RunFor(TimeSpan.FromSeconds(1),DeviceHost.Tick);
+        Assert.Equal(1,CountOf(seen));
+        Assert.True((await Send(h,byLights?new SetLightsOnRequest(true):new SetEffectRequest("Wave",null))).Ok);
+        await AdvanceUntil(()=>time.Waiting(DeviceHost.FastTick));
+        await AdvanceUntil(()=>CountOf(seen)>=2,tick:DeviceHost.FastTick,limit:TimeSpan.FromSeconds(2));
+        lock(seen)Assert.True(SameFrame(seen[0].Colors,seen[1].Colors));
+    }
+
+    // W5: a frame equal to the last one sent is not sent again: a one-colour Wave sends one frame in a second of ticks, a rainbow more.
+    [Fact]
+    public async Task A_one_colour_wave_sends_one_frame_a_rainbow_more()
+    {
+        var h=await RunningWave(new EffectParams{Colors=["#FF0000"]});
+        var seen=Previews(h);
+        Assert.True((await Send(h,new SubscribePreviewRequest(true))).Ok);
+        await RunFor(TimeSpan.FromSeconds(1),DeviceHost.FastTick);
+        Assert.Equal(1,CountOf(seen));
+        Assert.True((await Send(h,new SetEffectRequest("Wave",new EffectParams()))).Ok);
+        await RunFor(TimeSpan.FromSeconds(1),DeviceHost.FastTick);
+        Assert.True(CountOf(seen)>2,$"{CountOf(seen)} frames");
+    }
+
+    // W7: a draft keyed on a device's old key, arriving after a rescan re-keyed that device, is re-keyed too before auto-arrange, so the
+    // device takes the draft's point under its new key and gets no fresh cell. The device's own zone colour, already under the new key,
+    // doesn't stop that.
+    [Fact]
+    public async Task SetLayout_remaps_a_stale_draft_before_arranging()
+    {
+        var h=await Running();
+        var k1=LightingKeys.Device("SERIAL-1","I2C: FAKE-1");var k2=LightingKeys.Device("","I2C: FAKE-1");
+        var draft=DeskLayouts.Clone(h.State.Settings.Layout);
+        var point=draft.Zones[LightingKeys.Zone(k1,0)];
+        var list=session.Controllers.ToList();list[0]=list[0] with{Serial=""};session.Controllers=list; // it lost its serial
+        Assert.True((await Send(h,new RescanRequest())).Ok);
+        Assert.Equal(point,h.State.Settings.Layout.Zones[LightingKeys.Zone(k2,0)]);
+        Assert.True((await Send(h,new SetZoneColorRequest(LightingKeys.Zone(k2,0),"#00FF00"))).Ok);
+        var moved=new DeskPoint(0.5,0.5);Assert.NotEqual(point,moved);
+        draft.Zones[LightingKeys.Zone(k1,0)]=moved;
+        Assert.True((await Send(h,new SetLayoutRequest(draft))).Ok);
+        var saved=new LightingStore(lightingPath).Load().Settings.Layout;
+        Assert.Equal(moved,saved.Zones[LightingKeys.Zone(k2,0)]);
+        Assert.DoesNotContain(saved.Zones.Keys,k=>k.StartsWith(k1+"#",StringComparison.Ordinal));
+        Assert.DoesNotContain(k1,saved.Tower.Members);
+        Assert.Equal(saved.Zones,h.State.Settings.Layout.Zones);
+    }
+
+    // Lighting desk picture, Task 2: on the owner's rig the device host lays the desk out from its built-in picture.
+    const string Board="MSI MAG B650M MORTAR WIFI (MS-7D76)";
+    static readonly string HubKey=LightingKeys.Device("SERIAL-6",@"HID: \\?\HID#FAKE-3");
+    const string PictureRefused="This PC's layout comes from its built-in picture.",PictureNamed="A window can't choose the desk picture.";
+    void UseOwnerRig()=>session=FakeOpenRgbSession.FromFixture(owner:true);
+    int Hub=>session.Controllers.FindIndex(c=>c.Name==FakeOpenRgbSession.OwnerHub);
+    static PicturePart Part(string id)=>DeskPictures.OwnerRig.Parts.Single(p=>p.Id==id);
+    DeskLayout SavedLayout()=>new LightingStore(lightingPath).Load().Settings.Layout;
+    int LogCount(string text)=>File.ReadAllText(Path.Combine(dir,"logs","devices.log")).Split(text).Length-1;
+    void Without(params string[] names)=>session.Reorder(l=>l.Where(c=>!names.Contains(c.Name)).ToList());
+
+    [Fact]
+    public async Task The_picture_replaces_the_layout_at_connect()
+    {
+        UseOwnerRig();
+        var apex=LightingKeys.Device("SERIAL-4",@"HID: \\?\HID#FAKE-1");
+        var seed=new DeskLayout();
+        seed.Zones[ApexZone]=DeskLayouts.AutoArrange(new DeskLayout(),[new ArrangeDevice(apex,"SteelSeries Apex Pro",[0])]).Zones[ApexZone];
+        seed.Zones["gone|x#0"]=new(0.4,0.4);
+        seed.Tower.Members.Add(LightingKeys.Device("SERIAL-1","I2C: FAKE-1"));
+        seed.Tower.Excluded.Add(LightingKeys.Device("SERIAL-3","I2C: FAKE-3"));
+        new LightingStore(lightingPath).Save(new LightingSettings{Layout=seed});
+        var h=await Running();
+        var saved=SavedLayout();
+        Assert.Equal(DeskPictures.OwnerRigName,saved.Picture);
+        Assert.True(DeskLayouts.Same(DeskPictures.Layout(DeskPictures.OwnerRig,h.State.Devices),saved));
+        Assert.DoesNotContain("gone|x#0",saved.Zones.Keys);
+        Assert.Equal(DeskPictures.PointOf(DeskPictures.OwnerRig,Part("keyboard")),saved.Zones[ApexZone]);
+        Assert.True(DeskLayouts.Same(saved,h.State.Settings.Layout));
+    }
+
+    // The device list changes shape (new indexes) but the picture's layout does not: nothing is saved.
+    [Fact]
+    public async Task A_rescan_that_changes_nothing_in_the_picture_saves_nothing()
+    {
+        UseOwnerRig();
+        var h=await Running(CountingStore());
+        Assert.Equal(1,Volatile.Read(ref saves));
+        var layout=h.State.Settings.Layout;
+        Assert.Equal(DeskPictures.OwnerRigName,layout.Picture);
+        session.Reorder(l=>Enumerable.Reverse(l).ToList());
+        Assert.True((await Send(h,new RescanRequest())).Ok);
+        Assert.Equal(2,LogCount("devices changed:")); // the rescan saw a changed list
+        Assert.Equal(1,Volatile.Read(ref saves));
+        Assert.True(DeskLayouts.Same(layout,h.State.Settings.Layout));
+    }
+
+    // The board alone still holds the saved picture: the hub's zones lose their points, everything else stays.
+    [Fact]
+    public async Task The_picture_survives_the_hub_going_missing()
+    {
+        UseOwnerRig();
+        var h=await Running(CountingStore());
+        var before=h.State.Settings.Layout;
+        Assert.Contains(before.Zones.Keys,k=>k.StartsWith(HubKey+"#",StringComparison.Ordinal));
+        Without(FakeOpenRgbSession.OwnerHub);
+        Assert.True((await Send(h,new RescanRequest())).Ok);
+        var after=h.State.Settings.Layout;
+        Assert.Equal(DeskPictures.OwnerRigName,after.Picture);
+        Assert.DoesNotContain(after.Zones.Keys,k=>k.StartsWith(HubKey+"#",StringComparison.Ordinal));
+        var rest=before.Zones.Where(e=>!e.Key.StartsWith(HubKey+"#",StringComparison.Ordinal)).ToDictionary(e=>e.Key,e=>e.Value);
+        Assert.Equal(rest,after.Zones);
+        Assert.Equal(before.Unplaced,after.Unplaced);
+        Assert.True(DeskLayouts.Same(after,SavedLayout()));
+    }
+
+    [Fact]
+    public async Task The_picture_survives_both_signature_devices_going_missing()
+    {
+        UseOwnerRig();
+        var all=session.Controllers;
+        var h=await Running(CountingStore());
+        var before=h.State.Settings.Layout;
+        Assert.Equal(1,LogCount("desk picture applied")); // the first connect, from no saved picture
+        Without(FakeOpenRgbSession.OwnerHub,Board);
+        Assert.True((await Send(h,new RescanRequest())).Ok);
+        var after=h.State.Settings.Layout;
+        Assert.Equal(DeskPictures.OwnerRigName,after.Picture);
+        Assert.Empty(after.Tower.Members); // nothing is auto-arranged
+        var rest=before.Zones.Where(e=>!e.Key.StartsWith(HubKey+"#",StringComparison.Ordinal)).ToDictionary(e=>e.Key,e=>e.Value);
+        Assert.Equal(rest,after.Zones);
+        Assert.True(DeskLayouts.Same(DeskPictures.Layout(DeskPictures.OwnerRig,h.State.Devices),after));
+        Assert.True(DeskLayouts.Same(after,SavedLayout()));
+        session.Controllers=all; // both come back
+        Assert.True((await Send(h,new RescanRequest())).Ok);
+        Assert.True(DeskLayouts.Same(before,h.State.Settings.Layout));
+        Assert.Equal(1,LogCount("desk picture applied"));
+        Assert.Equal(1,LogCount("desk picture")); // and no other line about the picture: it was never left, reset or applied again
+    }
+
+    // OpenRGB lists devices a few at a time at each start: a saved picture is kept through every partial list, with no log line.
+    [Fact]
+    public async Task A_partial_device_list_at_start_keeps_a_saved_picture()
+    {
+        UseOwnerRig();
+        var all=session.Controllers;
+        var views=all.Select(c=>LightingPaint.View(new LightingSettings(),new LightingDevice(LightingKeys.Device(c.Serial,c.Location),c.Name,c.Type,c.Zones,c.Modes,c.ActiveMode))).ToList();
+        new LightingStore(lightingPath).Save(new LightingSettings{Layout=DeskPictures.Layout(DeskPictures.OwnerRig,views)});
+        void Only(params string[] names)=>session.Controllers=all.Where(c=>names.Contains(c.Name)).Select((c,i)=>c with{Index=i}).ToList();
+        Only("SteelSeries Apex Pro");
+        var h=await Running();
+        Assert.Single(h.State.Devices);
+        Assert.Equal(DeskPictures.OwnerRigName,h.State.Settings.Layout.Picture);
+        Only("SteelSeries Apex Pro","Corsair Vengeance RGB DDR5","Gigabyte Radeon RX 6800 XT GAMING OC");
+        Assert.True((await Send(h,new RescanRequest())).Ok);
+        Assert.Equal(4,h.State.Devices.Count); // two RAM sticks share a name
+        Assert.Equal(DeskPictures.OwnerRigName,h.State.Settings.Layout.Picture);
+        session.Controllers=all;
+        Assert.True((await Send(h,new RescanRequest())).Ok);
+        Assert.Equal(8,h.State.Devices.Count);
+        Assert.True(DeskLayouts.Same(DeskPictures.Layout(DeskPictures.OwnerRig,h.State.Devices),h.State.Settings.Layout));
+        Assert.Equal(0,LogCount("desk picture"));
+    }
+
+    // A file from another build may name a picture this one doesn't have: reset to the plain desk, the name cleared, saved once. The
+    // desk's shape is kept, as Reset positions keeps it: the saved one here is not the shape a new layout starts with.
+    [Fact]
+    public async Task A_saved_picture_name_this_build_does_not_have_resets_to_the_plain_desk()
+    {
+        new LightingStore(lightingPath).Save(new LightingSettings{Layout=new DeskLayout{Picture="some-other-picture",Desk=DeskLayouts.Preset(DeskShape.LRight),Zones={[ApexZone]=new(0.9,0.1)}}});
+        Assert.NotEqual(DeskShape.LRight,DeskLayouts.ShapeOf(new DeskLayout()));
+        var h=await Running(CountingStore());
+        var layout=h.State.Settings.Layout;
+        Assert.Null(layout.Picture);
+        Assert.Equal(DeskShape.LRight,DeskLayouts.ShapeOf(layout));
+        Assert.True(DeskLayouts.Same(DeskLayouts.AutoArrange(new DeskLayout{Desk=DeskLayouts.Preset(DeskShape.LRight)},DeskLayouts.Arrangeable(h.State.Devices)),layout));
+        Assert.Equal(1,Volatile.Read(ref saves));
+        Assert.True(DeskLayouts.Same(layout,SavedLayout()));
+    }
+
+    // A second host on the same file and the same devices finds the picture's layout already saved.
+    [Fact]
+    public async Task A_restart_from_the_saved_picture_saves_nothing()
+    {
+        UseOwnerRig();
+        var first=await Running();
+        Assert.Equal(DeskPictures.OwnerRigName,SavedLayout().Picture);
+        Assert.True((await Send(first,new StopRequest())).Ok);
+        await run!.WaitAsync(RealTimeCap);
+        await first.DisposeAsync().AsTask().WaitAsync(RealTimeCap);
+        var file=File.ReadAllText(lightingPath);
+        var h=await Running(CountingStore());
+        Assert.Equal(DeskPictures.OwnerRigName,h.State.Settings.Layout.Picture);
+        Assert.Equal(8,h.State.Devices.Count);
+        Assert.Equal(0,Volatile.Read(ref saves));
+        Assert.Equal(file,File.ReadAllText(lightingPath));
+    }
+
+    [Fact]
+    public async Task No_picture_on_another_pc()
+    {
+        var h=await Running();
+        var layout=h.State.Settings.Layout;
+        Assert.Null(layout.Picture);
+        Assert.True(DeskLayouts.Same(DeskLayouts.AutoArrange(new DeskLayout(),DeskLayouts.Arrangeable(h.State.Devices)),layout));
+        Assert.True(DeskLayouts.Same(layout,SavedLayout()));
+    }
+
+    [Fact]
+    public async Task SetLayout_is_refused_while_a_picture_applies()
+    {
+        UseOwnerRig();
+        var h=await Running();
+        var layout=h.State.Settings.Layout;
+        var file=File.ReadAllText(lightingPath);
+        var draft=DeskLayouts.Clone(layout);draft.Picture=null;draft.Zones[ApexZone]=new(0.9,0.1);
+        var reply=await Send(h,new SetLayoutRequest(draft));
+        Assert.False(reply.Ok);Assert.Equal(PictureRefused,reply.Error);
+        Assert.True(DeskLayouts.Same(layout,h.State.Settings.Layout));
+        Assert.Equal(file,File.ReadAllText(lightingPath));
+        // Missing signature devices don't lift the refusal: the picture is kept.
+        Without(FakeOpenRgbSession.OwnerHub,Board);
+        Assert.True((await Send(h,new RescanRequest())).Ok);
+        reply=await Send(h,new SetLayoutRequest(draft));
+        Assert.False(reply.Ok);Assert.Equal(PictureRefused,reply.Error);
+    }
+
+    [Fact]
+    public async Task SetLayout_refuses_a_layout_that_names_a_picture()
+    {
+        var h=await Running(CountingStore());
+        var layout=h.State.Settings.Layout;
+        var saved=Volatile.Read(ref saves);
+        var draft=DeskLayouts.Clone(layout);draft.Picture=DeskPictures.OwnerRigName;
+        var reply=await Send(h,new SetLayoutRequest(draft));
+        Assert.False(reply.Ok);Assert.Equal(PictureNamed,reply.Error);
+        Assert.Equal(saved,Volatile.Read(ref saves));
+        Assert.Null(h.State.Settings.Layout.Picture);
+        Assert.True(DeskLayouts.Same(layout,h.State.Settings.Layout));
+        // Where no picture applies, a layout is accepted as before.
+        draft.Picture=null;draft.Zones[ApexZone]=new(0.9,0.1);
+        Assert.True((await Send(h,new SetLayoutRequest(draft))).Ok);
+        Assert.Equal(saved+1,Volatile.Read(ref saves));
+        Assert.Equal(new DeskPoint(0.9,0.1),SavedLayout().Zones[ApexZone]);
+        Assert.Equal(new DeskPoint(0.9,0.1),h.State.Settings.Layout.Zones[ApexZone]);
+    }
+
+    // The effect is painted at the picture's points: each part's first LED is the wave at that part's point, at the frame's effect time,
+    // which is the fake time since the host was made (its epoch).
+    [Fact]
+    public async Task Wave_follows_the_pictures_points()
+    {
+        UseOwnerRig();
+        var start=time.GetUtcNow();
+        var h=await Running();
+        Assert.True((await Send(h,new SetBrightnessRequest(100))).Ok);
+        var wave=new EffectParams{Colors=["#FF0000","#00FF00","#0000FF"]};
+        Assert.True((await Send(h,new SetEffectRequest("Wave",wave))).Ok);
+        await AdvanceUntil(()=>time.Waiting(DeviceHost.FastTick));
+        var from=session.LedCount;
+        await AdvanceUntil(()=>session.Leds.Skip(from).Any(l=>l.Index==Hub),tick:DeviceHost.FastTick);
+        await Until(()=>time.Waiting(DeviceHost.FastTick)); // that tick's paint is done and the clock has not moved since
+        var t=(time.GetUtcNow()-start).TotalMilliseconds;
+        var settings=h.State.Settings;
+        Assert.True(Rgb.TryParse(settings.DefaultColor,out var zoneColour));
+        Assert.Empty(settings.ZoneColors);
+        Rgb Expected(string id)=>LightingEffects.Evaluate(EffectKind.Wave,DeskPictures.PointOf(DeskPictures.OwnerRig,Part(id)),t,wave,zoneColour);
+        var hub=LastLeds(Hub);
+        Rgb[] seen=[hub[0],hub[16],LastLeds(Apex)[0]]; // the hub's zones hold 8, 8, 8 and 20 LEDs: zone 2 starts at 16
+        Assert.Equal([Expected("fan1"),Expected("fan3"),Expected("keyboard")],seen);
+        Assert.Equal(3,seen.Distinct().Count());
+        // Left to right, the three sit in that order along the palette. Where a painted colour lies on the red, green, blue palette is
+        // read from the colour itself, not from the effect's own maths: each third blends one colour into the next and leaves the third at 0.
+        static double Along(Rgb c)=>c.B==0?c.G/(double)(c.R+c.G)/3:c.R==0?(1+c.B/(double)(c.G+c.B))/3:(2+c.R/(double)(c.B+c.R))/3;
+        static double Ahead(Rgb from,Rgb to){var d=Along(to)-Along(from);return d-Math.Floor(d);}
+        static double X(string id)=>DeskPictures.PointOf(DeskPictures.OwnerRig,Part(id)).X;
+        Assert.All(seen,c=>Assert.Contains((byte)0,new[]{c.R,c.G,c.B}));
+        Assert.True(X("fan1")<X("fan3")&&X("fan3")<X("keyboard"));
+        const double wavelength=1.6; // Wave's default spread of 50: the palette repeats every 1.6 desk widths
+        Assert.Equal((X("fan3")-X("fan1"))/wavelength,Ahead(seen[0],seen[1]),0.01);   // about 0.10 of the palette ahead of fan 1; 8-bit colour reads to well within 0.01
+        Assert.Equal((X("keyboard")-X("fan1"))/wavelength,Ahead(seen[0],seen[2]),0.01);   // about 0.29 ahead
     }
 }

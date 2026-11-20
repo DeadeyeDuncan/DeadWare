@@ -8,6 +8,40 @@ public class LightingPaintTests
     private static LightingDevice Dev(string name="Kb",params string[] modes)=>
         new("k|l",name,0,[new LightingZone(0,"Keyboard",3),new LightingZone(1,"Logo",1)],modes.Length==0?["Direct"]:modes,0);
 
+    private readonly LightingSettings s=new();
+    private readonly LightingDevice d=new("e|l","Strip",0,[new LightingZone(0,"A",2),new LightingZone(1,"B",3)],["Direct"],0);
+    public LightingPaintTests(){s.Effect.Kind="Wave";s.Effect.Wave.Colors=["#FF0000","#0000FF"];s.Effect.Wave.Spread=50;}
+
+    [Fact] public void A_wave_gives_each_zone_its_points_colour_on_every_led()
+    {
+        s.Layout.Zones[LightingKeys.Zone(d.Key,0)]=new(0,0);s.Layout.Zones[LightingKeys.Zone(d.Key,1)]=new(0.8,0);   // phases 0 and 0.5
+        var p=LightingPaint.Paint(s,d,0);
+        Assert.Equal(new[]{new Rgb(255,0,0),new Rgb(255,0,0),new Rgb(0,0,255),new Rgb(0,0,255),new Rgb(0,0,255)},p.Colors);
+    }
+    [Fact] public void A_zone_without_a_point_keeps_its_static_colour(){s.Layout.Zones.Clear();Assert.All(LightingPaint.Paint(s,d,0).Colors,c=>Assert.Equal(new Rgb(0x46,0x82,0xB4),c));}
+    [Fact] public void An_unplaced_device_keeps_its_static_colour(){s.Layout.Zones[LightingKeys.Zone(d.Key,0)]=new(0,0);s.Layout.Unplaced.Add(d.Key);Assert.Equal(new Rgb(0x46,0x82,0xB4),LightingPaint.Paint(s,d,0).Colors[0]);}
+    [Fact] public void Brightness_is_applied_after_the_effect(){s.Layout.Zones[LightingKeys.Zone(d.Key,0)]=new(0,0);s.Brightness=50;Assert.Equal(new Rgb(128,0,0),LightingPaint.Paint(s,d,0).Colors[0]);}
+    [Fact] public void Lights_off_is_black_whatever_the_effect(){s.LightsOn=false;Assert.All(LightingPaint.Paint(s,d,1234).Colors,c=>Assert.Equal(Rgb.Black,c));Assert.False(LightingPaint.EffectRunning(s));}
+    [Fact] public void A_hardware_device_is_untouched_by_an_effect()
+    {
+        var node=new LightingDevice("n|1","Corsair Lighting Node Pro",0,[new(0,"Channel 1",48)],["Direct","Rainbow Wave"],1);
+        var p=LightingPaint.Paint(s,node,999);
+        Assert.Equal(PaintKind.Hardware,p.Kind);Assert.Equal("Rainbow Wave",p.Mode);Assert.Empty(p.Colors);
+    }
+    [Fact] public void Breathing_uses_the_shared_colour_for_a_zone_with_none_of_its_own()
+    {
+        s.Effect.Kind="Breathing";s.Layout.Zones[LightingKeys.Zone(d.Key,0)]=new(0.5,0.5);
+        var half=1000/LightingEffects.CyclesPerSecond(40)/2;                                                       // phase 0.5: full colour
+        Assert.Equal(new Rgb(0x46,0x82,0xB4),LightingPaint.Paint(s,d,-half).Colors[0]);
+        Assert.Equal(Rgb.Black,LightingPaint.Paint(s,d,0).Colors[0]);                                                // phase 0: black
+        // L6: a zone with a colour of its own pulses that colour, not the shared one.
+        s.Layout.Zones[LightingKeys.Zone(d.Key,1)]=new(0.9,0.1);s.ZoneColors[LightingKeys.Zone(d.Key,1)]=new ZoneColorEntry{Color="#FF0000",ZoneName="B"};
+        var p=LightingPaint.Paint(s,d,-half).Colors;
+        Assert.Equal(new Rgb(0x46,0x82,0xB4),p[0]);Assert.Equal(new Rgb(255,0,0),p[2]);Assert.Equal(new Rgb(255,0,0),p[4]);
+        Assert.Equal(Rgb.Black,LightingPaint.Paint(s,d,0).Colors[2]);
+    }
+    [Fact] public void EffectRunning_needs_lights_on_and_a_moving_kind(){Assert.True(LightingPaint.EffectRunning(s));s.Effect.Kind="Static";Assert.False(LightingPaint.EffectRunning(s));}
+
     [Fact]
     public void Paint_uses_zone_entry_when_name_matches()
     {

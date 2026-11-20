@@ -68,6 +68,93 @@ public class DeviceHostProtocolTests
             default: Assert.Equal(m,back); break;
         }
     }
+    static DeskLayout SampleLayout()
+    {
+        var l=new DeskLayout();
+        l.Zones["k:0"]=new DeskPoint(0.25,0.5);
+        l.Tower=new TowerGroup{At=new DeskPoint(0.2,0.35),Members=["t:0","t:1"],Excluded=["t:2"]};
+        l.Desk=[new DeskRect{X=0.1,Y=0.2,W=0.6,H=0.3},new DeskRect{X=0.05,Y=0.5,W=0.25,H=0.4}];
+        l.Unplaced=["u:9"];
+        l.Picture="b650m-link-hub";
+        return l;
+    }
+    static void AssertLayout(DeskLayout b)
+    {
+        Assert.Equal(1,b.Version);
+        Assert.Equal(new DeskPoint(0.25,0.5),Assert.Single(b.Zones).Value);
+        Assert.Equal("k:0",Assert.Single(b.Zones).Key);
+        Assert.Equal(new DeskPoint(0.2,0.35),b.Tower.At);
+        Assert.Equal(["t:0","t:1"],b.Tower.Members);
+        Assert.Equal(["t:2"],b.Tower.Excluded);
+        Assert.Equal(2,b.Desk.Count);
+        Assert.Equal((0.1,0.2,0.6,0.3),(b.Desk[0].X,b.Desk[0].Y,b.Desk[0].W,b.Desk[0].H));
+        Assert.Equal((0.05,0.5,0.25,0.4),(b.Desk[1].X,b.Desk[1].Y,b.Desk[1].W,b.Desk[1].H));
+        Assert.Equal(["u:9"],b.Unplaced);
+        Assert.Equal("b650m-link-hub",b.Picture);
+    }
+    [Fact] public async Task Set_effect_round_trips()
+    {
+        var p=new EffectParams{Speed=70,AngleDeg=90,Spread=20,Colors=["#112233","#445566"]};
+        var b=Assert.IsType<SetEffectRequest>(await RoundTrip(new SetEffectRequest("Wave",p){Id=21}));
+        Assert.Equal(21,b.Id);
+        Assert.Equal("Wave",b.Kind);
+        Assert.NotNull(b.Params);
+        Assert.Equal((70.0,90.0,20.0),(b.Params!.Speed,b.Params.AngleDeg,b.Params.Spread));
+        Assert.Equal(["#112233","#445566"],b.Params.Colors);
+        var s=Assert.IsType<SetEffectRequest>(await RoundTrip(new SetEffectRequest("Static",null){Id=22}));
+        Assert.Equal("Static",s.Kind);
+        Assert.Null(s.Params);
+    }
+    [Fact] public async Task Set_layout_round_trips()
+    {
+        var b=Assert.IsType<SetLayoutRequest>(await RoundTrip(new SetLayoutRequest(SampleLayout()){Id=23}));
+        Assert.Equal(23,b.Id);
+        AssertLayout(b.Layout);
+    }
+    [Fact] public async Task Subscribe_preview_round_trips()
+    {
+        foreach(bool on in new[]{true,false})
+        {
+            var b=Assert.IsType<SubscribePreviewRequest>(await RoundTrip(new SubscribePreviewRequest(on){Id=24}));
+            Assert.Equal(on,b.On);
+            Assert.Equal(24,b.Id);
+        }
+    }
+    [Fact] public async Task Preview_event_round_trips()
+    {
+        var b=Assert.IsType<PreviewEvent>(await RoundTrip(new PreviewEvent(new(){["k:0"]="#010203",["k:1"]="#FFFFFF"}){Id=25}));
+        Assert.Equal(25,b.Id);
+        Assert.Equal(2,b.Colors.Count);
+        Assert.Equal("#010203",b.Colors["k:0"]);
+        Assert.Equal("#FFFFFF",b.Colors["k:1"]);
+    }
+    [Fact] public async Task State_event_carries_effect_and_layout()
+    {
+        var st=State();
+        st.Settings.Effect=new EffectSettings{Kind="Wave",Wave=new EffectParams{Speed=65,AngleDeg=45,Spread=10,Colors=["#AA0000","#00BB00"]},Breathing=new EffectParams{Speed=12,AngleDeg=3,Spread=88,Colors=["#0000CC"]},Spectrum=new EffectParams{Speed=99,AngleDeg=180,Spread=1}};
+        st.Settings.Layout=SampleLayout();
+        var e=Assert.IsType<StateEvent>(await RoundTrip(new StateEvent(st){Id=26})).State.Settings;
+        Assert.Equal("Wave",e.Effect.Kind);
+        Assert.Equal((65.0,45.0,10.0),(e.Effect.Wave.Speed,e.Effect.Wave.AngleDeg,e.Effect.Wave.Spread));
+        Assert.Equal(["#AA0000","#00BB00"],e.Effect.Wave.Colors);
+        Assert.Equal((12.0,3.0,88.0),(e.Effect.Breathing.Speed,e.Effect.Breathing.AngleDeg,e.Effect.Breathing.Spread));
+        Assert.Equal(["#0000CC"],e.Effect.Breathing.Colors);
+        Assert.Equal((99.0,180.0,1.0),(e.Effect.Spectrum.Speed,e.Effect.Spectrum.AngleDeg,e.Effect.Spectrum.Spread));
+        Assert.Empty(e.Effect.Spectrum.Colors);
+        AssertLayout(e.Layout);
+    }
+    [Fact] public async Task A_state_with_4096_layout_zones_fits_the_frame()
+    {
+        var st=State();
+        for(int i=0;i<4096;i++) st.Settings.Layout.Zones[new string((char)('a'+i%26),50)+i.ToString("D10")]=new DeskPoint(i/4096.0,0.123456789);
+        Assert.All(st.Settings.Layout.Zones.Keys,k=>Assert.Equal(60,k.Length));
+        var ms=new MemoryStream();
+        await DeviceHostProtocol.WriteAsync(ms,new StateEvent(st){Id=27},default);
+        Assert.True(ms.Length-4<=DeviceHostProtocol.MaxMessageBytes);
+        ms.Position=0;
+        var back=Assert.IsType<StateEvent>(await DeviceHostProtocol.ReadAsync(ms,default));
+        Assert.Equal(4096,back.State.Settings.Layout.Zones.Count);
+    }
     // Polish item 2: ConflictsChecked travels with the state, and a state without it reads false, so an empty list from a host that never
     // said it scanned is no all-clear.
     [Fact] public async Task Conflicts_checked_round_trips_and_reads_false_when_absent()

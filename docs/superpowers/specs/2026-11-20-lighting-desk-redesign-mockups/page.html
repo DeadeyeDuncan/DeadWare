@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Lighting page, step 2 redesign mockup</title>
+<style>
+  :root { --bg:#0b0f17; --card:#111722; --line:#1f2937; --ink:#e6edf6; --mute:#8b98ab; --acc:#5ee0ff; --wood:#2b211a; --woodline:#4b3a2b; }
+  * { box-sizing:border-box; }
+  body { margin:0; width:1100px; height:700px; background:var(--bg); color:var(--ink); font:13px/1.35 "Segoe UI",system-ui,sans-serif; overflow:hidden; }
+  .page { padding:18px 22px; }
+  h1 { font-size:22px; margin:0; font-weight:600; }
+  .sub { color:var(--mute); font-size:12px; margin-top:2px; }
+  .head { display:flex; align-items:flex-start; justify-content:space-between; }
+  .head .right { display:flex; align-items:center; gap:22px; margin-top:4px; }
+  .switch { width:38px; height:20px; border-radius:10px; background:var(--acc); position:relative; display:inline-block; vertical-align:middle; margin-right:8px; }
+  .switch::after { content:""; position:absolute; right:3px; top:3px; width:14px; height:14px; border-radius:50%; background:#0b0f17; }
+  .slider { width:120px; height:4px; border-radius:2px; background:linear-gradient(90deg,var(--acc) 80%,#2a3444 80%); position:relative; display:inline-block; }
+  .slider::after { content:""; position:absolute; left:calc(80% - 6px); top:-4px; width:12px; height:12px; border-radius:50%; background:#dfe7f1; }
+  .tiles { display:grid; grid-template-columns:repeat(4,1fr); gap:10px; margin-top:14px; }
+  .tile { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:9px 13px; }
+  .tile b { display:block; font-size:14px; font-weight:600; }
+  .tile span { color:var(--mute); font-size:11.5px; }
+  .tile.on { border-color:var(--acc); box-shadow:0 0 0 1px var(--acc) inset; background:#0f2230; }
+  .row { display:flex; align-items:center; gap:26px; margin:12px 2px 12px; font-size:12.5px; }
+  .row label { color:var(--mute); margin-right:8px; }
+  .dot { display:inline-block; width:15px; height:15px; border-radius:50%; margin-right:5px; vertical-align:middle; }
+  .mini { width:110px; height:4px; border-radius:2px; background:linear-gradient(90deg,var(--acc) 55%,#2a3444 55%); display:inline-block; position:relative; vertical-align:middle; }
+  .mini::after { content:""; position:absolute; left:calc(55% - 5px); top:-3px; width:10px; height:10px; border-radius:50%; background:#dfe7f1; }
+  .pick { border:1px solid var(--line); border-radius:6px; padding:3px 22px 3px 9px; background:var(--card); position:relative; }
+  .pick::after { content:"▾"; position:absolute; right:7px; color:var(--mute); }
+  .main { display:grid; grid-template-columns:1fr 318px; gap:12px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:12px 14px; }
+  .card h2 { font-size:14px; margin:0; font-weight:600; display:inline-block; }
+  .hint { color:var(--mute); font-size:11.5px; margin-left:10px; }
+  .btn { float:right; border:1px solid #33415a; border-radius:7px; padding:3px 11px; font-size:12px; color:var(--ink); background:#131b29; }
+  svg text { font-family:"Segoe UI",system-ui,sans-serif; }
+  .panel h3 { margin:0; font-size:15px; font-weight:600; }
+  .panel .mute { color:var(--mute); font-size:11.5px; }
+  .zone { display:flex; align-items:center; justify-content:space-between; padding:7px 0; border-top:1px solid var(--line); font-size:12.5px; }
+  .zone:first-of-type { border-top:0; }
+  .sw { width:18px; height:18px; border-radius:5px; display:inline-block; vertical-align:middle; margin-right:8px; border:1px solid #0006; }
+  .note { margin-top:10px; padding:8px 10px; border-radius:8px; background:#0e1520; border:1px dashed #2a3850; color:var(--mute); font-size:11.5px; }
+  .strip { margin-top:8px; color:var(--mute); font-size:11.5px; }
+  .strip b { color:var(--ink); font-weight:600; }
+  .view-inside .v-desk, .view-desk .v-inside { display:none; }
+</style>
+</head>
+<body class="view-desk">
+<script>if (location.search.indexOf('inside') >= 0) document.body.className = 'view-inside';</script>
+<div class="page">
+  <div class="head">
+    <div><h1>Lighting</h1><div class="sub">8 devices through OpenRGB · Wave is running</div></div>
+    <div class="right"><span><i class="switch"></i>Lights on</span><span><span style="color:var(--mute);margin-right:10px">Brightness · 80%</span><i class="slider"></i></span></div>
+  </div>
+
+  <div class="tiles">
+    <div class="tile"><b>Static</b><span>your saved colours</span></div>
+    <div class="tile on"><b>Wave</b><span>sweeps across the desk</span></div>
+    <div class="tile"><b>Breathing</b><span>everything pulses together</span></div>
+    <div class="tile"><b>Spectrum</b><span>cycles through colours together</span></div>
+  </div>
+  <div class="row">
+    <span><label>Colours</label><i class="dot" style="background:#4fd8ff"></i><i class="dot" style="background:#9a6bff"></i><i class="dot" style="background:#ff4d5e"></i><span style="color:var(--mute)">＋</span></span>
+    <span><label>Speed</label><i class="mini"></i></span>
+    <span><label>Direction</label><span class="pick">Left to right</span></span>
+    <span><label>Spread</label><i class="mini"></i></span>
+  </div>
+
+  <div class="main">
+    <!-- ================= DESK ================= -->
+    <div class="card v-desk">
+      <h2>Desk</h2><span class="hint">tap a device to change its colours · tap the PC to see inside</span>
+      <svg viewBox="0 0 720 450" width="100%" style="display:block;margin-top:6px">
+        <defs>
+          <linearGradient id="wave" x1="0" x2="1"><stop offset="0" stop-color="#4fd8ff" stop-opacity="0"/><stop offset=".5" stop-color="#4fd8ff" stop-opacity=".22"/><stop offset="1" stop-color="#4fd8ff" stop-opacity="0"/></linearGradient>
+          <filter id="glow" x="-40%" y="-40%" width="180%" height="180%"><feGaussianBlur stdDeviation="5" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+        </defs>
+        <!-- desk: long part along the back, short part down the left -->
+        <path d="M22 22 H698 V178 H176 V372 H22 Z" fill="var(--wood)" stroke="var(--woodline)" stroke-width="2"/>
+        <text x="360" y="13" text-anchor="middle" font-size="9" fill="#5d6b80" letter-spacing="1.5">BACK OF DESK</text>
+        <!-- grey furniture, orientation only -->
+        <path d="M250 52 Q360 30 470 52" fill="none" stroke="#9aa6b6" stroke-width="6" stroke-linecap="round"/>
+        <text x="360" y="72" text-anchor="middle" font-size="9.5" fill="#7c899b">main monitor</text>
+        <rect x="196" y="34" width="24" height="20" rx="3" fill="#3a4556"/><rect x="640" y="34" width="24" height="20" rx="3" fill="#3a4556"/>
+        <rect x="38" y="70" width="7" height="150" rx="3.5" fill="#9aa6b6"/>
+        <text x="62" y="150" font-size="9.5" fill="#7c899b" transform="rotate(-90 62 150)" text-anchor="middle">second monitor</text>
+        <rect x="42" y="322" width="26" height="26" rx="4" fill="#3a4556"/><circle cx="96" cy="335" r="13" fill="#3a4556"/>
+        <!-- wave band -->
+        <rect x="318" y="0" width="150" height="450" fill="url(#wave)"/>
+        <!-- keyboard (selected) -->
+        <g filter="url(#glow)"><rect x="290" y="96" width="200" height="58" rx="7" fill="#0c2733" stroke="#4fd8ff" stroke-width="2.5"/></g>
+        <g stroke="#4fd8ff" stroke-opacity=".75" stroke-width="2" stroke-dasharray="9 5"><path d="M304 110H476M304 121H476M304 132H476M304 143H476"/></g>
+        <text x="390" y="172" text-anchor="middle" font-size="10.5" fill="#4fd8ff">Keyboard · selected</text>
+        <!-- mouse on its mat -->
+        <rect x="512" y="92" width="120" height="68" rx="6" fill="#1a1512" stroke="#3b2e23"/>
+        <g filter="url(#glow)"><ellipse cx="566" cy="126" rx="11" ry="18" fill="#9a6bff"/></g>
+        <text x="572" y="172" text-anchor="middle" font-size="10.5" fill="#c9d3e0">Mouse</text>
+        <!-- you -->
+        <circle cx="390" cy="290" r="46" fill="#121a27" stroke="#263247"/><text x="390" y="294" text-anchor="middle" font-size="10" fill="#6c7a8f">you</text>
+        <!-- PC tower on the floor -->
+        <g filter="url(#glow)"><rect x="40" y="388" width="74" height="56" rx="6" fill="#0c1a26" stroke="#4fd8ff" stroke-width="2"/></g>
+        <rect x="50" y="398" width="16" height="6" rx="3" fill="#4fd8ff"/><rect x="70" y="398" width="16" height="6" rx="3" fill="#4fd8ff"/><rect x="90" y="398" width="16" height="6" rx="3" fill="#62c8ff"/>
+        <circle cx="64" cy="424" r="8" fill="none" stroke="#4fd8ff" stroke-width="2.5"/><rect x="80" y="414" width="3" height="20" fill="#bff3ff"/><rect x="86" y="414" width="3" height="20" fill="#bff3ff"/>
+        <text x="126" y="412" font-size="11.5" fill="#e6edf6">PC tower</text><text x="126" y="427" font-size="10" fill="#4fd8ff">tap to see inside ↗</text>
+        <!-- caption -->
+        <path d="M300 438 H440" stroke="#4fd8ff" stroke-width="1.5"/><path d="M440 438 l-7 -4 v8 z" fill="#4fd8ff"/>
+        <text x="370" y="431" text-anchor="middle" font-size="9.5" fill="#6fb9cc">wave moving left to right</text>
+      </svg>
+      <div class="strip"><b>Not in the picture:</b> MSI motherboard headers (2 zones) · they keep your saved colour during effects</div>
+    </div>
+
+    <!-- ================= INSIDE THE PC ================= -->
+    <div class="card v-inside">
+      <h2>Inside the PC</h2><span class="hint">side window, front on the right · tap a part to change its colours</span><span class="btn">← Back to desk</span>
+      <svg viewBox="0 0 720 450" width="100%" style="display:block;margin-top:6px">
+        <defs>
+          <filter id="glow2" x="-40%" y="-40%" width="180%" height="180%"><feGaussianBlur stdDeviation="5" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+        </defs>
+        <text x="150" y="16" font-size="9.5" fill="#6c7a8f">rear</text><text x="566" y="16" font-size="9.5" fill="#6c7a8f" text-anchor="end">front</text>
+        <rect x="140" y="22" width="440" height="418" rx="10" fill="#090d14" stroke="#33415a" stroke-width="2.5"/>
+        <!-- radiator fans -->
+        <g filter="url(#glow2)"><rect x="160" y="38" width="118" height="26" rx="6" fill="#4fd8ff"/><rect x="290" y="38" width="118" height="26" rx="6" fill="#7aa2ff" stroke="#fff" stroke-width="2"/><rect x="420" y="38" width="118" height="26" rx="6" fill="#9a6bff"/></g>
+        <text x="160" y="80" font-size="10" fill="#8b98ab">radiator fans 1–3 · Corsair iCUE LINK hub</text>
+        <!-- rear fan, unlit -->
+        <circle cx="186" cy="150" r="30" fill="none" stroke="#33415a" stroke-width="3"/><circle cx="186" cy="150" r="5" fill="#33415a"/>
+        <text x="186" y="198" font-size="9.5" fill="#6c7a8f" text-anchor="middle">rear fan, unlit</text>
+        <!-- board area -->
+        <rect x="236" y="100" width="210" height="150" rx="6" fill="#0e131c" stroke="#232f42"/>
+        <g filter="url(#glow2)"><circle cx="306" cy="168" r="30" fill="#0b1118" stroke="#6fb4ff" stroke-width="7"/></g>
+        <text x="306" y="222" font-size="10" fill="#c9d3e0" text-anchor="middle">pump</text>
+        <g filter="url(#glow2)"><rect x="392" y="112" width="8" height="112" rx="2" fill="#a98bff"/><rect x="408" y="112" width="8" height="112" rx="2" fill="#a98bff"/></g>
+        <text x="404" y="240" font-size="10" fill="#c9d3e0" text-anchor="middle">RAM ×2</text>
+        <!-- GPU -->
+        <rect x="170" y="270" width="290" height="50" rx="6" fill="#141b27" stroke="#2b384d"/>
+        <g filter="url(#glow2)"><text x="250" y="302" font-size="17" font-weight="700" fill="#b38cff" letter-spacing="1.5">GIGABYTE</text></g>
+        <text x="172" y="336" font-size="10" fill="#c9d3e0">graphics card</text>
+        <!-- front fans, own effect -->
+        <g fill="none" stroke="#5b6778" stroke-width="6"><circle cx="528" cy="140" r="26"/><circle cx="528" cy="216" r="26"/><circle cx="528" cy="292" r="26"/></g>
+        <text x="528" y="336" font-size="10" fill="#c9d3e0" text-anchor="middle">front fans ×3</text>
+        <text x="528" y="349" font-size="9" fill="#8b98ab" text-anchor="middle">own effect</text>
+        <!-- PSU shroud -->
+        <rect x="150" y="372" width="420" height="58" rx="6" fill="#0d121a" stroke="#1e2939"/><text x="360" y="405" font-size="10" fill="#465367" text-anchor="middle">power supply</text>
+      </svg>
+      <div class="strip"><b>Not in the picture:</b> MSI motherboard headers (2 zones) · they keep your saved colour during effects</div>
+    </div>
+
+    <!-- ================= RIGHT COLUMN ================= -->
+    <div>
+      <div class="card panel v-desk">
+        <h3>Keyboard · SteelSeries Apex Pro</h3><div class="mute">selected on the desk</div>
+        <div style="margin-top:10px">
+          <div class="zone"><span><i class="sw" style="background:#4682b4"></i>Keyboard</span><span class="mute">112 LEDs · shared colour</span></div>
+        </div>
+        <div class="note">Under Wave the whole keyboard shows one colour as the wave passes. Its saved colour is used for Static and Breathing.</div>
+      </div>
+      <div class="card panel v-inside">
+        <h3>Corsair iCUE LINK hub</h3><div class="mute">radiator fan 2 selected</div>
+        <div style="margin-top:10px">
+          <div class="zone"><span><i class="sw" style="background:#4682b4"></i>Radiator fan 1</span><span class="mute">shared colour</span></div>
+          <div class="zone" style="background:#0f2230;margin:0 -6px;padding:7px 6px;border-radius:6px"><span><i class="sw" style="background:#ff8a3d"></i>Radiator fan 2</span><span class="mute">own colour</span></div>
+          <div class="zone"><span><i class="sw" style="background:#4682b4"></i>Radiator fan 3</span><span class="mute">shared colour</span></div>
+          <div class="zone"><span><i class="sw" style="background:#4682b4"></i>Pump</span><span class="mute">shared colour</span></div>
+        </div>
+        <div class="note">Each part of the hub is placed where it sits in the case, so Wave reaches the fans one after another.</div>
+      </div>
+      <div class="card" style="margin-top:10px">
+        <h2>On other PCs</h2>
+        <div class="mute" style="color:var(--mute);font-size:11.5px;margin-top:6px">This drawing is your desk and your tower. A PC whose devices don't match yours gets the same desk with each device as a plain labelled shape, placed automatically, and no inside view.</div>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

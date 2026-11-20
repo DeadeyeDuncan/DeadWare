@@ -223,4 +223,69 @@ public class LightingSettingsCodecTests
         Assert.Equal(TooLargeError, r.Error);
         Assert.Empty(r.Settings.ZoneColors);
     }
+
+    [Fact] public void A_file_without_effect_or_layout_gets_static_and_an_empty_layout()
+    {
+        var r=LightingSettingsCodec.Read("""{"Version":1,"LightsOn":true,"Brightness":80,"DefaultColor":"#112233","ZoneColors":{},"HardwareModes":{}}""");
+        Assert.Null(r.Error);Assert.Equal("Static",r.Settings.Effect.Kind);Assert.Empty(r.Settings.Layout.Zones);Assert.Equal(DeskShape.LLeft,DeskLayouts.ShapeOf(r.Settings.Layout));
+    }
+    [Fact] public void Null_effect_and_layout_read_as_defaults()
+    {
+        var r=LightingSettingsCodec.Read("""{"Version":1,"Brightness":80,"DefaultColor":"#112233","ZoneColors":{},"HardwareModes":{},"Effect":null,"Layout":null}""");
+        Assert.Null(r.Error);Assert.NotNull(r.Settings.Effect);Assert.NotNull(r.Settings.Layout);
+    }
+    [Fact] public void An_unknown_effect_and_out_of_range_numbers_keep_the_file()
+    {
+        var r=LightingSettingsCodec.Read("""{"Version":1,"Brightness":80,"DefaultColor":"#112233","ZoneColors":{},"HardwareModes":{},"Effect":{"Kind":"Plasma","Wave":{"Speed":500,"AngleDeg":725,"Spread":-1,"Colors":[]}}}""");
+        Assert.False(r.Quarantine);Assert.Equal("Static",r.Settings.Effect.Kind);Assert.Equal(100,r.Settings.Effect.Wave.Speed);Assert.Equal(5,r.Settings.Effect.Wave.AngleDeg);Assert.Equal("#112233",r.Settings.DefaultColor);
+    }
+    [Theory]
+    [InlineData("""{"Kind":"Wave","Wave":{"Colors":["red"]}}""")]
+    [InlineData("""{"Kind":"Wave","Wave":{"Colors":["#112233","#112233","#112233","#112233","#112233","#112233","#112233","#112233","#112233"]}}""")]
+    [InlineData("""{"Kind":"Wave","Wave":{"Speed":"fast"}}""")]
+    public void A_malformed_effect_sets_the_file_aside(string effect)=>Assert.True(LightingSettingsCodec.Read("""{"Version":1,"Brightness":80,"DefaultColor":"#112233","ZoneColors":{},"HardwareModes":{},"Effect":"""+effect+"}").Quarantine);
+    [Fact] public void A_layout_point_outside_the_square_sets_the_file_aside()=>Assert.True(LightingSettingsCodec.Read("""{"Version":1,"Brightness":80,"DefaultColor":"#112233","ZoneColors":{},"HardwareModes":{},"Layout":{"Version":1,"Zones":{"a|1#0":{"X":2,"Y":0}},"Tower":{"At":{"X":0.1,"Y":0.3},"Members":[],"Excluded":[]},"Desk":[],"Unplaced":[]}}""").Quarantine);
+    [Fact] public void Effect_and_layout_round_trip()
+    {
+        var s=new LightingSettings{Effect=new(){Kind="Wave",Wave=new(){Speed=70,AngleDeg=135,Spread=20,Colors={"#FF0000","#0000FF"}}}};
+        s.Layout.Zones["a|1#0"]=new(0.25,0.75);s.Layout.Tower.Members.Add("a|1");s.Layout.Unplaced.Add("b|2");
+        var back=LightingSettingsCodec.Read(LightingSettingsCodec.Write(s)).Settings;
+        Assert.Equal("Wave",back.Effect.Kind);Assert.Equal(135,back.Effect.Wave.AngleDeg);Assert.Equal(new[]{"#FF0000","#0000FF"},back.Effect.Wave.Colors);
+        Assert.Equal(new DeskPoint(0.25,0.75),back.Layout.Zones["a|1#0"]);Assert.Equal(new[]{"a|1"},back.Layout.Tower.Members);Assert.Equal(new[]{"b|2"},back.Layout.Unplaced);
+    }
+    [Fact] public void A_layout_picture_round_trips_and_a_file_without_the_member_reads_as_null()
+    {
+        var s=new LightingSettings();s.Layout.Picture="b650m-link-hub";
+        Assert.Equal("b650m-link-hub",LightingSettingsCodec.Read(LightingSettingsCodec.Write(s)).Settings.Layout.Picture);
+        var r=LightingSettingsCodec.Read("""{"Version":1,"Brightness":80,"DefaultColor":"#112233","ZoneColors":{},"HardwareModes":{},"Layout":{"Version":1,"Zones":{},"Tower":{"At":{"X":0.1,"Y":0.3},"Members":[],"Excluded":[]},"Desk":[],"Unplaced":[]}}""");
+        Assert.False(r.Quarantine);Assert.Null(r.Settings.Layout.Picture);
+    }
+    [Fact] public void Write_refuses_an_invalid_effect()=>Assert.Throws<InvalidDataException>(()=>LightingSettingsCodec.Write(new LightingSettings{Effect=new(){Kind="Plasma"}}));
+    [Fact] public void A_newer_file_with_another_layout_shape_is_kept()
+    {
+        var r=LightingSettingsCodec.Read("""{"Version":2,"Brightness":40,"DefaultColor":"#112233","Effect":"Plasma","Layout":{"Desk":"L"}}""");
+        Assert.True(r.Newer);Assert.False(r.Quarantine);Assert.Equal(40,r.Settings.Brightness);Assert.Equal("Static",r.Settings.Effect.Kind);Assert.Empty(r.Settings.Layout.Zones);
+    }
+    [Fact] public void A_newer_file_with_a_wrong_typed_brightness_is_kept_on_defaults()
+    {
+        var r=LightingSettingsCodec.Read("""{"Version":2,"Brightness":"high"}""");
+        Assert.True(r.Newer);Assert.False(r.Quarantine);Assert.NotNull(r.Error);Assert.Equal(100,r.Settings.Brightness);
+    }
+    [Fact] public void A_newer_file_whose_zone_colours_became_a_list_is_kept_on_defaults()
+    {
+        var r=LightingSettingsCodec.Read("""{"Version":2,"Brightness":40,"ZoneColors":[]}""");
+        Assert.True(r.Newer);Assert.False(r.Quarantine);Assert.NotNull(r.Error);Assert.Equal(100,r.Settings.Brightness);
+    }
+    [Fact] public void A_newer_file_with_a_layout_this_build_refuses_keeps_the_rest()
+    {
+        var r=LightingSettingsCodec.Read("""{"Version":2,"Brightness":80,"DefaultColor":"#112233","ZoneColors":{"a|1#0":{"Color":"#010203","ZoneName":"Z"}},"HardwareModes":{},"Layout":{"Version":2,"Zones":{},"Tower":{"At":{"X":0.1,"Y":0.3},"Members":[],"Excluded":[]},"Desk":[],"Unplaced":[]}}""");
+        Assert.True(r.Newer);Assert.False(r.Quarantine);Assert.Equal(80,r.Settings.Brightness);Assert.Equal("#010203",r.Settings.ZoneColors["a|1#0"].Color);
+        Assert.Equal(1,r.Settings.Layout.Version);Assert.Equal(DeskShape.LLeft,DeskLayouts.ShapeOf(r.Settings.Layout));Assert.Equal(new DeskPoint(0.14,0.3),r.Settings.Layout.Tower.At);
+    }
+    [Fact] public void A_newer_file_with_nine_wave_colours_keeps_the_rest()
+    {
+        var r=LightingSettingsCodec.Read("""{"Version":2,"Brightness":80,"DefaultColor":"#112233","ZoneColors":{},"HardwareModes":{},"Effect":{"Kind":"Wave","Wave":{"Colors":["#112233","#112233","#112233","#112233","#112233","#112233","#112233","#112233","#112233"]}}}""");
+        Assert.True(r.Newer);Assert.False(r.Quarantine);Assert.Equal(80,r.Settings.Brightness);Assert.Equal("Static",r.Settings.Effect.Kind);Assert.Empty(r.Settings.Effect.Wave.Colors);
+    }
+    [Fact] public void A_current_file_with_a_layout_version_this_build_refuses_is_still_set_aside()=>Assert.True(LightingSettingsCodec.Read("""{"Version":1,"Brightness":80,"DefaultColor":"#112233","ZoneColors":{},"HardwareModes":{},"Layout":{"Version":2,"Zones":{},"Tower":{"At":{"X":0.1,"Y":0.3},"Members":[],"Excluded":[]},"Desk":[],"Unplaced":[]}}""").Quarantine);
 }

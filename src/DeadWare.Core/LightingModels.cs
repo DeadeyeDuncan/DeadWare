@@ -29,6 +29,8 @@ public sealed class LightingSettings
     public string DefaultColor {get;set;}="#4682B4";
     public Dictionary<string,ZoneColorEntry> ZoneColors {get;set;}=new();
     public Dictionary<string,string> HardwareModes {get;set;}=new();
+    public EffectSettings Effect {get;set;}=new();
+    public DeskLayout Layout {get;set;}=DeskLayouts.Empty();
 }
 // Newer: the file came from a later DeadWare. It is used as far as this build understands it, never quarantined and never rewritten.
 public sealed record LightingRead(LightingSettings Settings,string? Error,bool Quarantine,bool Newer=false);

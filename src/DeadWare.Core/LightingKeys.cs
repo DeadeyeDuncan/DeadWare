@@ -26,6 +26,10 @@ public static partial class LightingKeys
         foreach(var k in liveDeviceKeys){var loc=LocationOf(k);byLocation[loc]=byLocation.ContainsKey(loc)?null:k;}
         var stored=new HashSet<string>(settings.HardwareModes.Keys);
         foreach(var k in settings.ZoneColors.Keys) stored.Add(TrySplitZone(k,out var d,out _)?d:k);
+        foreach(var k in settings.Layout.Zones.Keys) stored.Add(TrySplitZone(k,out var d,out _)?d:k);
+        foreach(var k in settings.Layout.Tower.Members) stored.Add(k);
+        foreach(var k in settings.Layout.Tower.Excluded) stored.Add(k);
+        foreach(var k in settings.Layout.Unplaced) stored.Add(k);
         var renames=new Dictionary<string,string>();
         foreach(var s in stored)
         {
@@ -43,6 +47,11 @@ public static partial class LightingKeys
         }
         settings.ZoneColors=settings.ZoneColors.ToDictionary(e=>Rekey(e.Key),e=>e.Value);
         settings.HardwareModes=settings.HardwareModes.ToDictionary(e=>Rekey(e.Key),e=>e.Value);
+        var lay=settings.Layout;
+        lay.Zones=lay.Zones.ToDictionary(e=>Rekey(e.Key),e=>e.Value);
+        lay.Tower.Members=lay.Tower.Members.Select(Rekey).Distinct().ToList();
+        lay.Tower.Excluded=lay.Tower.Excluded.Select(Rekey).Distinct().ToList();
+        lay.Unplaced=lay.Unplaced.Select(Rekey).Distinct().ToList();
         return true;
     }
 }

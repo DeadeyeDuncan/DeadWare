@@ -40,7 +40,16 @@ public static class LightingPaint
         }).ToList();
         return new DeviceView(device.Key,device.Name,device.Type,p.Kind,p.Mode,own,own is not null&&!device.Modes.Contains(StaticMode),zones);
     }
-    public static DevicePaint Paint(LightingSettings settings,LightingDevice device)
+    public static bool EffectRunning(LightingSettings settings)=>settings.LightsOn&&LightingEffects.KindOf(settings.Effect.Kind)!=EffectKind.Static;
+    // The zone's colour before brightness: its static colour, unless an effect is selected and the zone's device is placed with a point for the zone.
+    public static Rgb ZoneShown(LightingSettings settings,LightingDevice device,LightingZone zone,double tMs)
+    {
+        var baseColor=ZoneColor(settings,device,zone);
+        var kind=LightingEffects.KindOf(settings.Effect.Kind);
+        if(kind==EffectKind.Static||settings.Layout.Unplaced.Contains(device.Key)||!settings.Layout.Zones.TryGetValue(LightingKeys.Zone(device.Key,zone.Index),out var pt)) return baseColor;
+        return LightingEffects.Evaluate(kind,pt,tMs,LightingEffects.ParamsFor(settings.Effect,kind)!,baseColor);
+    }
+    public static DevicePaint Paint(LightingSettings settings,LightingDevice device,double tMs=0)
     {
         var mode=HardwareModeFor(settings,device);
         if(mode is not null)
@@ -52,7 +61,7 @@ public static class LightingPaint
         var colors=new List<Rgb>();
         foreach(var z in device.Zones)
         {
-            var c=settings.LightsOn?ZoneColor(settings,device,z).Scale(settings.Brightness):Rgb.Black;
+            var c=settings.LightsOn?ZoneShown(settings,device,z,tMs).Scale(settings.Brightness):Rgb.Black;
             for(int i=0;i<z.LedCount;i++) colors.Add(c);
         }
         return new(PaintKind.Direct,DirectMode,colors.ToArray(),false);

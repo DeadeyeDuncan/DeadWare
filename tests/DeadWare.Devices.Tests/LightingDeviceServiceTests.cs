@@ -75,6 +75,30 @@ public sealed class LightingDeviceServiceTests : IDisposable
         Ms(1);svc.Paint(s);
         Assert.Equal(2,session.Leds.Count(l=>l.Index==i));
     }
+    static LightingSettings Wave(){var s=new LightingSettings();s.Effect.Kind="Wave";s.Effect.Wave.Colors=["#FF0000","#0000FF"];return s;}
+    [Fact] public void Paint_sends_new_frames_as_effect_time_advances()
+    {
+        var s=Wave();var i=IndexOf(Hid);s.Layout.Zones[LightingKeys.Zone(svc.Devices[3].Key,0)]=new(0.3,0);
+        svc.Paint(s,0);Ms(40);svc.Paint(s,500);
+        var w=session.Leds.Where(l=>l.Index==i).ToList();
+        Assert.Equal(2,w.Count);Assert.False(w[0].Colors.AsSpan().SequenceEqual(w[1].Colors));
+    }
+    [Fact] public void A_hardware_device_gets_no_UpdateLeds_during_an_effect()
+    {
+        var s=Wave();var node=IndexOf(Node);s.Layout.Zones[LightingKeys.Zone(svc.Devices[6].Key,0)]=new(0.3,0);
+        svc.Paint(s,0);Ms(40);svc.Paint(s,500);
+        Assert.DoesNotContain(session.Leds,l=>l.Index==node);
+    }
+    [Fact] public void Preview_lists_direct_zones_before_brightness()
+    {
+        var s=Wave();s.Brightness=50;
+        var hid=LightingKeys.Zone(svc.Devices[3].Key,0);var msi=svc.Devices[7].Key;
+        s.Layout.Zones[hid]=new(0,0);s.Layout.Zones[LightingKeys.Zone(svc.Devices[6].Key,0)]=new(0,0);
+        var p=svc.Preview(s,0);
+        Assert.Equal("#FF0000",p[hid]);
+        Assert.DoesNotContain(p.Keys,k=>k.StartsWith(svc.Devices[6].Key));
+        Assert.Contains(LightingKeys.Zone(msi,0),p.Keys);Assert.DoesNotContain(LightingKeys.Zone(msi,2),p.Keys);
+    }
     [Fact] public void Lights_off_refreshes_black()
     {
         var s=new LightingSettings{LightsOn=false};var i=IndexOf(Hid);

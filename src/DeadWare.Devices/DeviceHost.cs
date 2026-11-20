@@ -7,7 +7,9 @@ internal sealed record HostOptions(string OpenRgbPath,string ConfigDir,string Li
 internal interface IConflictScanner { IReadOnlyList<LightingConflict> Scan(int? ownOpenRgbPid); }
 
 // Orchestrates the host: settings, conflict gate, OpenRGB engine, device painting and the window's requests.
-// Concurrency: ONE lock (gate) guards every touch of settings, the device service, the session flag and the status.
+// Concurrency: two locks. gate guards every touch of settings, the device service, the session flag, the status and the preview state;
+// previewGate serialises raising preview frames against ClientGone. Order: previewGate then gate, never the reverse. PreviewChanged
+// subscribers run under previewGate (not gate), and nothing calls the pipe server while holding gate.
 // Callers are the run loop, pipe requests and engine events on the supervisor thread. Their work under the lock is synchronous and
 // includes OpenRGB SDK calls, which OpenRGB.NET leaves unbounded: BoundedSession cuts each one off at BoundedSession.CallBound (3 s) and
 // drops the session (Ruling AO). One hold of the lock can chain several such calls, each with its own bound: a connect is Connect,
@@ -19,7 +21,9 @@ internal interface IConflictScanner { IReadOnlyList<LightingConflict> Scan(int? 
 // with the engine's own lock the wrong way round and a slow subscriber cannot stall painting.
 internal sealed class DeviceHost : IAsyncDisposable
 {
+    // FastTick: the paint tick while a desk effect runs with the lights on and the host is Running with a session; Tick otherwise. SlowTick's work keeps its cadence at either.
     public static readonly TimeSpan Tick=TimeSpan.FromMilliseconds(500),SlowTick=TimeSpan.FromSeconds(5),StartupDelay=TimeSpan.FromSeconds(10);
+    public static readonly TimeSpan FastTick=TimeSpan.FromMilliseconds(33);
     public static readonly TimeSpan ConnectDelayMin=TimeSpan.FromSeconds(2),ConnectDelayMax=TimeSpan.FromSeconds(30);
     public const string ScanFailedText="DeadWare couldn't check for conflicting programs; it will try again shortly.";
     // Polish round 2, item 8: the host runs on defaults and saves nothing, and the file is read again only when a host starts (Initialize
@@ -46,12 +50,15 @@ internal sealed class DeviceHost : IAsyncDisposable
     readonly TimeProvider time;
     readonly HostLog log;
     readonly string? startupFailure;
+    // epoch: when the host was made; effects are painted at the milliseconds since (Now).
+    readonly long epoch;
     readonly CancellationTokenSource stopCts=new();
     readonly object gate=new();
     LightingSettings settings=new();
     // conflictsChecked: a conflict scan has completed since the host started (polish item 2); it stays set.
     bool saveAllowed=true,engineActive,sessionOk,rescanPending,disposed,loaded,conflictsChecked;
-    string? note,lastConflictKey,lastSessionError,lastScanError;
+    // lastArrangeError: why the last rescan's auto-arrange wasn't adopted, so the same reason is logged once.
+    string? note,lastConflictKey,lastSessionError,lastScanError,lastArrangeError;
     readonly object raiseGate=new();
     long nextConnectAt;
     TimeSpan connectDelay=ConnectDelayMin;
@@ -59,12 +66,27 @@ internal sealed class DeviceHost : IAsyncDisposable
     string message="";
     IReadOnlyList<LightingConflict> conflicts=[];
     public event Action<HostState>? StateChanged;
+    // Preview frames (Task 7): while the window has subscribed and an effect runs, the paint tick takes the effect's colours before
+    // brightness at most once per PreviewGap of the host's time and raises them when they differ from the last frame sent. previewOn, the
+    // last frame and its time are guarded by gate; previewGeneration changes with every subscribe and ClientGone, so a frame taken under an
+    // older subscription is never raised. Frames are raised outside gate under previewGate, which ClientGone also takes, so once it returns
+    // no frame follows.
+    public static readonly TimeSpan PreviewGap=TimeSpan.FromMilliseconds(100);
+    public event Action<PreviewEvent>? PreviewChanged;
+    readonly object previewGate=new();
+    bool previewOn;
+    int previewGeneration;
+    double? lastPreviewMs;
+    Dictionary<string,string>? lastPreview;
+    // The window is gone: its subscription ends. Called by the pipe server outside its own locks.
+    public void ClientGone(){lock(previewGate)lock(gate){previewOn=false;previewGeneration++;lastPreview=null;lastPreviewMs=null;}}
 
     // startupFailure: set when the host could not prepare OpenRGB's config folder; it reports OpenRgbFailed and never starts OpenRGB.
     // callClock: the clock of the bound on OpenRGB calls; real time unless a test supplies one.
     public DeviceHost(HostOptions options,LightingStore store,OpenRgbEngine engine,Func<IOpenRgbSession> sessionFactory,IConflictScanner conflicts,TimeProvider time,HostLog log,string? startupFailure=null,TimeProvider? callClock=null)
     {
         this.options=options;this.store=store;this.engine=engine;scanner=conflicts;this.time=time;this.log=log;this.startupFailure=startupFailure;
+        epoch=time.GetTimestamp();
         session=new BoundedSession(sessionFactory(),callClock);
         service=new(session,time,log);
         session.DeviceListUpdated+=OnDeviceListUpdated;
@@ -82,7 +104,9 @@ internal sealed class DeviceHost : IAsyncDisposable
         Version=s.Version,LightsOn=s.LightsOn,Brightness=s.Brightness,DefaultColor=s.DefaultColor,
         ZoneColors=(s.ZoneColors??new()).ToDictionary(e=>e.Key,e=>new ZoneColorEntry{Color=e.Value.Color,ZoneName=e.Value.ZoneName}),
         HardwareModes=new(s.HardwareModes??new()),
+        Effect=LightingEffects.Clone(s.Effect),Layout=DeskLayouts.Clone(s.Layout),
     };
+    double Now()=>time.GetElapsedTime(epoch).TotalMilliseconds;
     void Raise()
     {
         // Build and deliver under one gate: concurrent raises reach subscribers in build order, so the last delivered state is the newest.
@@ -116,7 +140,12 @@ internal sealed class DeviceHost : IAsyncDisposable
             await CheckConflictsAsync(ct).ConfigureAwait(false);
             while(true)
             {
-                await Task.Delay(Tick,time,ct).ConfigureAwait(false);
+                // Read each turn: an effect chosen or stopped takes effect from the next tick. slow stays timed by elapsed time, so the 5 s
+                // work keeps its cadence at either tick. FastTick only while a frame can be painted: an effect runs, the session is
+                // connected and the host is Running (fix wave L1); waiting, blocked or given up, the loop keeps Tick.
+                TimeSpan tick;
+                lock(gate)tick=LightingPaint.EffectRunning(settings)&&sessionOk&&status==HostStatus.Running?FastTick:Tick;
+                await Task.Delay(tick,time,ct).ConfigureAwait(false);
                 var now=time.GetTimestamp();
                 var slow=time.GetElapsedTime(lastSlow,now)>=SlowTick;
                 if(slow){lastSlow=now;await CheckConflictsAsync(ct).ConfigureAwait(false);}
@@ -211,13 +240,16 @@ internal sealed class DeviceHost : IAsyncDisposable
     void TickWork(bool slow)
     {
         var changed=false;
+        Dictionary<string,string>? frame=null;
+        var generation=0;
         lock(gate)
         {
-            if(!engineActive||status is HostStatus.Blocked or HostStatus.Stopping||engine.Status!=EngineStatus.Running) return;
+            if(!engineActive||status is HostStatus.Blocked or HostStatus.Stopping||engine.Status!=EngineStatus.Running){ForgetPreview();return;}
             try
             {
                 if(!sessionOk)
                 {
+                    ForgetPreview();
                     var now=time.GetTimestamp();
                     if(now<nextConnectAt) return;
                     changed=ConnectLocked();
@@ -226,24 +258,53 @@ internal sealed class DeviceHost : IAsyncDisposable
                 else
                 {
                     if(slow||rescanPending){rescanPending=false;changed=RescanLocked();}
-                    service.Paint(settings);
+                    var t=Now(); // one reading for the paint and the preview
+                    service.Paint(settings,t);
+                    frame=PreviewLocked(t);generation=previewGeneration;
                 }
             }
-            catch(Exception e){changed=FailSession(LostText,e);}
+            catch(Exception e){ForgetPreview();changed=FailSession(LostText,e);}
         }
         if(changed) Raise();
+        if(frame is not null) RaisePreview(frame,generation);
+    }
+
+    // The frame to send at tMs, or null: none subscribed, no effect running, too soon after the last frame, or the same colours as it.
+    // While no frame is produced (no effect running, or no running session) the window shows the state's colours, so the last frame and
+    // its time are forgotten then: the first frame after a resume is sent even when it equals the last one (fix wave W1).
+    Dictionary<string,string>? PreviewLocked(double tMs)
+    {
+        if(!previewOn||!LightingPaint.EffectRunning(settings)){ForgetPreview();return null;}
+        if(lastPreviewMs is {} last&&tMs-last<PreviewGap.TotalMilliseconds) return null;
+        lastPreviewMs=tMs;
+        var colors=service.Preview(settings,tMs);
+        if(lastPreview is not null&&SameFrame(lastPreview,colors)) return null;
+        lastPreview=colors;
+        return colors;
+    }
+    void ForgetPreview(){lastPreview=null;lastPreviewMs=null;}
+    static bool SameFrame(Dictionary<string,string> a,Dictionary<string,string> b)=>a.Count==b.Count&&a.All(e=>b.TryGetValue(e.Key,out var v)&&v==e.Value);
+
+    void RaisePreview(Dictionary<string,string> frame,int generation)
+    {
+        lock(previewGate)
+        {
+            lock(gate)if(!previewOn||previewGeneration!=generation) return;
+            try{PreviewChanged?.Invoke(new PreviewEvent(frame));}catch(Exception e){log.Write("PreviewChanged handler failed: "+e.Message);}
+        }
     }
 
     // Ruling F: after OpenRGB (re)starts, forget what was sent, reconnect, rescan, then paint.
     bool ConnectLocked()
     {
         service.Reset();
+        ForgetPreview();
         try
         {
             session.Connect();
             sessionOk=true;
             RescanLocked();
-            service.Paint(settings);
+            service.Paint(settings,Now());
             status=HostStatus.Running;message="";lastSessionError=null;connectDelay=ConnectDelayMin;nextConnectAt=0;
             return true;
         }
@@ -268,12 +329,37 @@ internal sealed class DeviceHost : IAsyncDisposable
         return changed;
     }
 
+    // After a change: re-key saved entries for devices back under a new key first, so their points are kept, then give the zones still
+    // without a point one. The arranged layout is adopted only when the settings with it stay valid and savable (1 MiB): otherwise the
+    // layout stays as it was, the reason is logged once, and the live settings stay savable, so later changes aren't refused. One save
+    // covers both. On the owner's rig the layout is the built-in picture's (DeskPictures), not an arranged one, over the devices found so
+    // far: a saved picture is never left because devices are missing (OpenRGB lists them a few at a time at each start). Only a saved name
+    // this build has no picture for is reset: auto-arranged afresh, its desk shape kept, the name cleared.
     bool RescanLocked()
     {
         var changed=service.Rescan();
         if(!changed) return false;
         log.Write($"devices changed: {service.Devices.Count} device(s)");
-        if(LightingKeys.Remap(settings,service.Devices.Select(d=>d.Key).ToList())) SaveQuietly();
+        var save=LightingKeys.Remap(settings,service.Devices.Select(d=>d.Key).ToList());
+        var views=service.Views(settings);
+        var picture=DeskPictures.Applies(views.Select(v=>v.Name),settings.Layout.Picture);
+        DeskLayout arranged;
+        if(picture is not null) arranged=DeskPictures.Layout(picture,views);
+        else if(settings.Layout.Picture is not null) arranged=DeskGeometry.Reset(settings.Layout,views);
+        else arranged=DeskLayouts.AutoArrange(settings.Layout,DeskLayouts.Arrangeable(views));
+        if(ReferenceEquals(arranged,settings.Layout)||DeskLayouts.Same(arranged,settings.Layout)) lastArrangeError=null;
+        else
+        {
+            var candidate=Clone(settings);candidate.Layout=arranged;
+            var error=LightingSettingsCodec.Validate(candidate);
+            if(error is null)
+            {
+                if(arranged.Picture!=settings.Layout.Picture) log.Write(arranged.Picture is null?"desk picture not known to this build, plain desk instead: "+settings.Layout.Picture:"desk picture applied: "+arranged.Picture);
+                settings=candidate;save=true;lastArrangeError=null;
+            }
+            else if(error!=lastArrangeError){lastArrangeError=error;log.Write("desk layout not arranged: "+error);}
+        }
+        if(save) SaveQuietly();
         return true;
     }
 
@@ -333,7 +419,7 @@ internal sealed class DeviceHost : IAsyncDisposable
                 return Ok(request);
             case RescanRequest:
                 if(!engineActive||!sessionOk||status!=HostStatus.Running) return Fail(request,"OpenRGB is not running.");
-                try{RescanLocked();service.Paint(settings);raise=true;return Ok(request);}
+                try{RescanLocked();service.Paint(settings,Now());raise=true;return Ok(request);}
                 catch(Exception e){FailSession(LostText,e);raise=true;return Fail(request,HostReplyCodes.RescanFailed);}
             case SetLightsOnRequest r:return Mutate(request,s=>{s.LightsOn=r.On;return null;},out raise);
             case SetBrightnessRequest r:return Mutate(request,s=>{if(r.Percent is<0 or>100) return "Brightness must be 0 to 100.";s.Brightness=r.Percent;return null;},out raise);
@@ -348,8 +434,44 @@ internal sealed class DeviceHost : IAsyncDisposable
                     s.ZoneColors=r.ZoneColors.ToDictionary(e=>e.Key,e=>e.Value is null?null!:new ZoneColorEntry{Color=e.Value.Color,ZoneName=e.Value.ZoneName});
                     return null;
                 },out raise);
+            case SetEffectRequest r:return Mutate(request,s=>SetEffect(s,r),out raise);
+            case SetLayoutRequest r:return Mutate(request,s=>SetLayout(s,r),out raise);
+            // Raises no state. A new subscription clears the last frame and its time, so its first frame goes at the next paint tick.
+            case SubscribePreviewRequest r:previewOn=r.On;previewGeneration++;lastPreview=null;lastPreviewMs=null;return Ok(request);
             default:return Fail(request,HostReplyCodes.Unsupported);
         }
+    }
+
+    // A kind is known by its exact name only (never a number, as Enum.TryParse would take). Params, when sent, replace that kind's set
+    // alone; Static has none. A null colour list is kept so validation refuses it rather than reading it as no colours.
+    static string? SetEffect(LightingSettings s,SetEffectRequest r)
+    {
+        if(r.Kind is null||!Enum.GetNames<EffectKind>().Contains(r.Kind,StringComparer.Ordinal)) return "Effect kind is not known.";
+        var kind=Enum.Parse<EffectKind>(r.Kind);
+        s.Effect.Kind=r.Kind;
+        if(r.Params is not {} q) return null;
+        if(kind==EffectKind.Static) return "Static takes no effect settings.";
+        var p=new EffectParams{Speed=q.Speed,AngleDeg=q.AngleDeg,Spread=q.Spread,Colors=q.Colors is null?null!:new(q.Colors)};
+        if(kind==EffectKind.Wave) s.Effect.Wave=p;else if(kind==EffectKind.Breathing) s.Effect.Breathing=p;else s.Effect.Spectrum=p;
+        return null;
+    }
+
+    // The window's draft, checked, re-keyed for devices back under a new key, then completed with points for live zones it lacks; entries
+    // for absent devices are kept. Remap first, as at a rescan (fix wave W7): a draft made before a rescan re-keyed a device would otherwise
+    // give the new key fresh points and strand the old ones. The remap sees the draft alone: the live colours and modes are already under
+    // the new keys, and Remap refuses a target it finds stored anywhere.
+    // On the owner's rig the layout is the picture's, and only the device host sets a layout's picture.
+    string? SetLayout(LightingSettings s,SetLayoutRequest r)
+    {
+        if(settings.Layout.Picture is not null) return "This PC's layout comes from its built-in picture.";
+        if(r.Layout?.Picture is not null) return "A window can't choose the desk picture.";
+        if(r.Layout is null) return "Layout is missing.";
+        var error=DeskLayouts.Validate(r.Layout);
+        if(error is not null) return error;
+        var draft=new LightingSettings{Layout=DeskLayouts.Clone(r.Layout)};
+        LightingKeys.Remap(draft,service.Devices.Select(d=>d.Key).ToList());
+        s.Layout=DeskLayouts.AutoArrange(draft.Layout,DeskLayouts.Arrangeable(service.Views(s)));
+        return null;
     }
 
     string? SetZone(LightingSettings s,SetZoneColorRequest r)
@@ -376,6 +498,7 @@ internal sealed class DeviceHost : IAsyncDisposable
             catch(Exception e){log.Write("saving lighting.json failed: "+e.Message);return Fail(request,HostReplyCodes.CouldntSave);}
         }
         settings=candidate;
+        if(!LightingPaint.EffectRunning(settings)) ForgetPreview();
         if(engineActive&&sessionOk&&status==HostStatus.Running)
         {
             try
@@ -384,7 +507,7 @@ internal sealed class DeviceHost : IAsyncDisposable
                 // at its new index, never a stale one. OpenRGB.NET 3.1.1 never raises that event (O21), so with it the 5 s rescan is what
                 // finds a change, and a change made in between still meets the old indexes.
                 if(rescanPending){rescanPending=false;RescanLocked();}
-                service.Paint(settings);
+                service.Paint(settings,Now());
             }
             catch(Exception e){FailSession(LostText,e);}
         }
