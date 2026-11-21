@@ -28,12 +28,18 @@ namespace DeadWare.WinUI;
 /// drawing surface, as <see cref="DeskView"/> does. The drawing is one tab stop: the arrow keys move the selection through the found parts
 /// of the view in the picture's own order (written top to bottom, left to right), the PC tower being the last stop of the desk view;
 /// Enter or Space on the tower opens the inside view, and Escape in the inside view asks for the desk. The control's name says which
-/// drawing it is and what is selected; the canvas itself can't be read by a screen reader.
+/// drawing it is and what is selected; the canvas itself can't be read by a screen reader. The third view (lighting 3b) is one keyboard
+/// drawn large at its keys' real shapes (<see cref="KeyShapes"/>), in the box's middle with its aspect kept, each key in its live colour
+/// with its label; while <see cref="PickingKeys"/> a press, a drag and a release on its keys are raised as <see cref="KeyPickDown"/>,
+/// <see cref="KeyPickOver"/> and <see cref="KeyPickUp"/>, and the keys in <see cref="PickedKeys"/> have an accent outline.
 /// </summary>
 internal sealed class DeskPictureView : UserControl
 {
     private const double BoxW = 720, BoxH = 450, MaxDrawWidth = 1280, GlowDeviation = 5, GlowMargin = 0.4;
     private const float NoteSize = 9;
+    // The keyboard view: the box less a margin, the keys fitted into it; each key shrunk by KeyGap key units on every side (the shapes
+    // touch), its corners rounded by KeyRound key units, and its picked outline PickedStroke pixels wide whatever the scale.
+    private const double KeysMargin = 20, KeyGap = 0.06, KeyRound = 0.12, PickedStroke = 3;
     private const string OwnEffectNote = "own effect", NotFound = "not found";
 
     // The mockups' colours (page.html). The stage is the card the mockup's drawings sit on.
@@ -43,7 +49,7 @@ internal sealed class DeskPictureView : UserControl
     private static readonly Color TowerFill = Hex(0x0C1A26), CaseFill = Hex(0x090D14), CaseEdge = Hex(0x33415A), CaptionGrey = Hex(0x8B98AB), BoardFill = Hex(0x0E131C), BoardEdge = Hex(0x232F42);
     private static readonly Color PumpFill = Hex(0x0B1118), CardFill = Hex(0x141B27), CardEdge = Hex(0x2B384D), PsuFill = Hex(0x0D121A), PsuEdge = Hex(0x1E2939), PsuInk = Hex(0x465367);
     // An unlit part is outlined in the mockup's unlit rear-fan colour; a part running its own effect is drawn in the mockup's front-fan grey.
-    private static readonly Color Unlit = Hex(0x33415A), Grey = Hex(0x5B6778), White = Hex(0xFFFFFF);
+    private static readonly Color Unlit = Hex(0x33415A), Grey = Hex(0x5B6778), White = Hex(0xFFFFFF), Black = Hex(0x000000);
     private static readonly CanvasStrokeStyle RoundCaps = new() { StartCap = CanvasCapStyle.Round, EndCap = CanvasCapStyle.Round };
     // SVG's stroke-dasharray "9 5" on a 2-wide stroke; Win2D counts dashes in stroke widths.
     private static readonly CanvasStrokeStyle KeyRows = new() { CustomDashStyle = [4.5f, 2.5f] };
@@ -60,6 +66,13 @@ internal sealed class DeskPictureView : UserControl
     private IReadOnlyDictionary<string, KeyMapView> keyMaps = new Dictionary<string, KeyMapView>(StringComparer.Ordinal);
     private IReadOnlyDictionary<string, string> stateColors = new Dictionary<string, string>(StringComparer.Ordinal);
     private PictureView view = PictureView.Desk;
+    // The keyboard view: the device it draws, the keys picked, whether the pointer picks keys, and a drag in progress (the key it is on).
+    private string? keysDevice;
+    private IReadOnlySet<int>? pickedKeys;
+    private bool pickingKeys, keyDragging;
+    private int? dragKey;
+    // The shapes of the last key map drawn, made again only when the map changes.
+    private (KeyMapView Map, KeyShapeSet? Set)? keyShapes;
     private string? selected, shownName;
     private bool lightsOn = true, live, waveRunning;
     // The keyboard's stop is the PC tower (desk view only), which is not a part and so never the selection; keyboardFocus: the control
@@ -78,6 +91,11 @@ internal sealed class DeskPictureView : UserControl
         UpdateName();
         Content = new StagePanel { Children = { surface } };
         surface.Tapped += OnTapped;
+        surface.PointerPressed += OnPointerPressed;
+        surface.PointerMoved += OnPointerMoved;
+        surface.PointerReleased += (_, e) => EndKeyDrag(e.Pointer);
+        surface.PointerCanceled += (_, e) => EndKeyDrag(e.Pointer);
+        surface.PointerCaptureLost += (_, _) => EndKeyDrag(null);
         surface.SizeChanged += (_, _) => Redraw();
         GotFocus += (_, _) => SetKeyboardFocus(FocusState == FocusState.Keyboard);
         LostFocus += (_, _) => SetKeyboardFocus(false);
@@ -88,8 +106,53 @@ internal sealed class DeskPictureView : UserControl
     public PictureView View
     {
         get => view;
-        set { if (view == value) return; view = value; towerStop = false; UpdateName(); Redraw(); }
+        set
+        {
+            if (view == value) return;
+            // A drag on the keyboard ends with its view.
+            if (view == PictureView.Keys) EndKeyDrag(null);
+            view = value;
+            towerStop = false;
+            UpdateName();
+            Redraw();
+        }
     }
+
+    /// <summary>The device the keyboard view draws, by key; its key map comes from <see cref="SetKeyMaps"/>. Setting it raises nothing but a drag's end.</summary>
+    public string? KeysDevice
+    {
+        get => keysDevice;
+        set { if (keysDevice == value) return; EndKeyDrag(null); keysDevice = value; Redraw(); }
+    }
+
+    /// <summary>
+    /// The keyboard view's picked keys, by light index, drawn with an accent outline while <see cref="PickingKeys"/>. Every set redraws,
+    /// so the same set, changed in place, can be given again.
+    /// </summary>
+    public IReadOnlySet<int>? PickedKeys
+    {
+        get => pickedKeys;
+        set { pickedKeys = value; UpdateName(); Redraw(); }
+    }
+
+    /// <summary>Whether the pointer picks keys in the keyboard view. Turning it off ends a drag in progress.</summary>
+    public bool PickingKeys
+    {
+        get => pickingKeys;
+        set { if (pickingKeys == value) return; if (!value) EndKeyDrag(null); pickingKeys = value; UpdateName(); Redraw(); }
+    }
+
+    /// <summary>A press on a key of the keyboard view while picking: the light it lights.</summary>
+    public event Action<int>? KeyPickDown;
+
+    /// <summary>The pointer, still pressed after <see cref="KeyPickDown"/>, moved onto another key of the keyboard view.</summary>
+    public event Action<int>? KeyPickOver;
+
+    /// <summary>
+    /// The press that raised <see cref="KeyPickDown"/> is over: released, cancelled or its capture lost, or the view, the device or picking
+    /// changed under it. Raised once per <see cref="KeyPickDown"/>.
+    /// </summary>
+    public event Action? KeyPickUp;
 
     /// <summary>A part id, or null. Setting it raises nothing.</summary>
     public string? SelectedPart
@@ -154,8 +217,8 @@ internal sealed class DeskPictureView : UserControl
     private void UpdateName()
     {
         var part = selected is null ? null : scene?.Parts.FirstOrDefault(p => p.Part.Id == selected);
-        string what = view == PictureView.Inside ? "Inside the PC picture" : "Desk picture";
-        string name = part is not null ? $"{what}. {part.Part.Label}, {part.Part.DeviceName}." : towerStop ? $"{what}. PC tower." : what;
+        string what = view switch { PictureView.Inside => "Inside the PC picture", PictureView.Keys => "Keyboard picture", _ => "Desk picture" };
+        string name = view == PictureView.Keys ? (pickingKeys ? $"{what}. {pickedKeys?.Count ?? 0} keys picked." : what) : part is not null ? $"{what}. {part.Part.Label}, {part.Part.DeviceName}." : towerStop ? $"{what}. PC tower." : what;
         if (name == shownName) return;
         shownName = name;
         AutomationProperties.SetName(this, name);
@@ -168,7 +231,8 @@ internal sealed class DeskPictureView : UserControl
 
     private void OnTapped(object sender, TappedRoutedEventArgs e)
     {
-        if (!live || scene is not { } shown || TooSmall) return;
+        // The keyboard view takes presses, not taps.
+        if (view == PictureView.Keys || !live || scene is not { } shown || TooSmall) return;
         e.Handled = true;
         // The arrow keys carry on from what was tapped.
         Focus(FocusState.Pointer);
@@ -179,6 +243,66 @@ internal sealed class DeskPictureView : UserControl
         if (DeskPictures.Hit(shown, view, x, y) is { } part) PartTapped?.Invoke(part);
         else if (DeskPictures.HitTower(shown.Picture, view, x, y)) TowerTapped?.Invoke();
         else PartTapped?.Invoke(null);
+    }
+
+    // ---- The keyboard view's pointer: a press on a key, a drag across keys, a release ----
+
+    private void OnPointerPressed(object sender, PointerRoutedEventArgs e)
+    {
+        if (view != PictureView.Keys || !pickingKeys || !live || keyDragging || TooSmall) return;
+        if (KeyAt(e.GetCurrentPoint(surface).Position) is not { } light) return;
+        e.Handled = true;
+        Focus(FocusState.Pointer);
+        // Captured, so the drag goes on across the gaps and outside the keys, and its release comes here wherever it happens.
+        keyDragging = surface.CapturePointer(e.Pointer);
+        if (!keyDragging) return;
+        dragKey = light;
+        KeyPickDown?.Invoke(light);
+    }
+
+    private void OnPointerMoved(object sender, PointerRoutedEventArgs e)
+    {
+        if (!keyDragging) return;
+        e.Handled = true;
+        if (KeyAt(e.GetCurrentPoint(surface).Position) is not { } over || over == dragKey) return;
+        dragKey = over;
+        KeyPickOver?.Invoke(over);
+    }
+
+    /// <summary>Ends a drag on the keyboard, if one is in progress, and raises <see cref="KeyPickUp"/> once.</summary>
+    private void EndKeyDrag(Pointer? pointer)
+    {
+        if (!keyDragging) return;
+        // Cleared first: letting go of the capture raises PointerCaptureLost, which comes back here.
+        keyDragging = false;
+        dragKey = null;
+        if (pointer is not null) surface.ReleasePointerCapture(pointer);
+        else surface.ReleasePointerCaptures();
+        KeyPickUp?.Invoke();
+    }
+
+    /// <summary>The light whose key is under a point on the surface, or null.</summary>
+    private int? KeyAt(Point at)
+    {
+        if (KeyFit() is not { } fit) return null;
+        double s = BoxScale;
+        return KeyShapes.Hit(fit.Set, (at.X / s - fit.X) / fit.Scale, (at.Y / s - fit.Y) / fit.Scale);
+    }
+
+    /// <summary>The keyboard view's key map, from the maps given, or null when its device has none.</summary>
+    private KeyMapView? KeysMap() => keysDevice is { } key && keyMaps.TryGetValue(key, out var map) ? map : null;
+
+    /// <summary>
+    /// The keyboard view's shapes and where they go in box units: key units times Scale, from (X, Y), fitted into the box less its margin
+    /// with the aspect kept and centred. Null without a key map or without shapes.
+    /// </summary>
+    private (KeyShapeSet Set, double Scale, double X, double Y)? KeyFit()
+    {
+        if (KeysMap() is not { } map) return null;
+        if (keyShapes is not { } cached || !ReferenceEquals(cached.Map, map)) keyShapes = cached = (map, KeyShapes.Of(map));
+        if (cached.Set is not { Keys.Count: > 0 } set || set.Width <= 0 || set.Height <= 0) return null;
+        double w = BoxW - 2 * KeysMargin, h = BoxH - 2 * KeysMargin, scale = Math.Min(w / set.Width, h / set.Height);
+        return (set, scale, KeysMargin + (w - set.Width * scale) / 2, KeysMargin + (h - set.Height * scale) / 2);
     }
 
     // ---- Keyboard: one tab stop; the arrow keys step through the found parts, and the tower in the desk view. ----
@@ -382,6 +506,7 @@ internal sealed class DeskPictureView : UserControl
         using var dim = ds.CreateLayer(live ? 1f : 0.5f);
         ds.Transform = Matrix3x2.CreateScale((float)BoxScale);
         if (view == PictureView.Inside) DrawInside(ds, shown);
+        else if (view == PictureView.Keys) DrawKeyboardView(ds, shown);
         else DrawDesk(ds, shown);
         ds.Transform = Matrix3x2.Identity;
     }
@@ -583,6 +708,41 @@ internal sealed class DeskPictureView : UserControl
         // The keyboard's stop: a white outline just outside the tower, as the selected radiator fan's.
         if (towerStop) ds.DrawRoundedRectangle((float)t.X - 4, (float)t.Y - 4, (float)t.W + 8, (float)t.H + 8, 8, 8, White, 1.5f);
     }
+
+    // ---- The keyboard view (lighting 3b): key-painting.html's large keyboard ----
+
+    /// <summary>
+    /// Every key at its shape, as a rounded rectangle in its live colour: the frame's colour for its light (read as <see cref="DrawKeys"/>
+    /// reads it), else the colour of the zone the keyboard's part shows; unlit with the lights off. Its label goes on it in white or black
+    /// by the fill's brightness (key-painting.html's rule), and a picked key, while picking, has a 3 px accent outline inside its edge.
+    /// </summary>
+    private void DrawKeyboardView(CanvasDrawingSession ds, PictureScene shown)
+    {
+        if (KeysMap() is not { } map || KeyFit() is not { } fit) return;
+        Color? zone = null;
+        if (lightsOn && shown.Parts.FirstOrDefault(p => p.Found && p.DeviceKey == keysDevice) is { ShownZoneKey: { } zoneKey } && ZoneColor(zoneKey) is { } zoneColor) zone = zoneColor;
+        string? packed = null;
+        if (lightsOn && frame?.Lights is { } lights && keysDevice is { } deviceKey && lights.TryGetValue(deviceKey, out var text) && text.Length == 6 * map.Names.Count) packed = text;
+        double k = fit.Scale;
+        float round = (float)(KeyRound * k), stroke = (float)(PickedStroke / BoxScale);
+        foreach (var key in fit.Set.Keys)
+        {
+            Color fill = zone ?? Unlit;
+            if (packed is not null && key.Light >= 0 && key.Light < map.Names.Count
+                && int.TryParse(packed.AsSpan(6 * key.Light, 6), System.Globalization.NumberStyles.AllowHexSpecifier, System.Globalization.CultureInfo.InvariantCulture, out int rgb)) fill = Hex(rgb);
+            var rect = new Rect(fit.X + (key.X + KeyGap) * k, fit.Y + (key.Y + KeyGap) * k, Math.Max(0, (key.W - 2 * KeyGap) * k), Math.Max(0, (key.H - 2 * KeyGap) * k));
+            ds.FillRoundedRectangle(rect, round, round, fill);
+            if (pickingKeys && pickedKeys is { } picked && picked.Contains(key.Light))
+                ds.DrawRoundedRectangle(new Rect(rect.X + stroke / 2, rect.Y + stroke / 2, Math.Max(0, rect.Width - stroke), Math.Max(0, rect.Height - stroke)), round, round, Accent, stroke);
+            if (key.Label.Length == 0) continue;
+            float size = (float)((key.Label.Length > 3 ? 0.24 : 0.3) * k);
+            var label = Text(ds, key.Label, size, false, Anchor.Middle, 0, rect.Width);
+            ds.DrawTextLayout(label, (float)rect.X, (float)(rect.Y + (rect.Height - label.LayoutBounds.Height) / 2), Bright(fill) ? Black : White);
+        }
+    }
+
+    /// <summary>A fill light enough for black text: key-painting.html's (299 R + 587 G + 114 B) / 1000 of at least 150.</summary>
+    private static bool Bright(Color c) => (c.R * 299 + c.G * 587 + c.B * 114) / 1000.0 >= 150;
 
     // ---- The inside view: page.html's second SVG ----
 

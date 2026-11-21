@@ -1,6 +1,6 @@
 namespace DeadWare.Core;
 
-public enum PictureView { Desk, Inside }
+public enum PictureView { Desk, Inside, Keys }
 public enum PartKind { Keyboard, Mouse, FanBar, FanRing, PumpRing, RamStick, Card }
 public readonly record struct PicBox(double X,double Y,double W,double H) { public double CenterX=>X+W/2; public double CenterY=>Y+H/2; }
 public sealed record PicturePart(string Id,PartKind Kind,PictureView View,PicBox Box,string Label,string DeviceName,bool Prefix,int Ordinal,IReadOnlyList<int> Zones,int ShownZone);

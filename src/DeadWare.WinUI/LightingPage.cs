@@ -80,6 +80,8 @@ internal sealed class LightingPage : Page, IHeaderTool
     private const string InsideHint = "side window, front on the right · tap a part to change its colours";
     private const string KeepColourText = " · they keep your saved colour during effects";
     private readonly DeskPictureView picture = new();
+    // Lighting 3b: the large keyboard view's tools, for the picture's keyboard view: its switch and Done in the header, its card in the panel.
+    private readonly KeyboardEditor keyEditor;
     private readonly Grid pictureHeader = new() { ColumnSpacing = 10 };
     private readonly TextBlock pictureTitle = Heading("Desk"), pictureHint = Muted(DeskHint);
     private readonly Button backToDesk = new() { Content = "← Back to desk", VerticalAlignment = VerticalAlignment.Center };
@@ -279,6 +281,13 @@ internal sealed class LightingPage : Page, IHeaderTool
         pictureHeader.Children.Add(pictureHint);
         pictureHeader.Children.Add(backToDesk);
         backToDesk.Click += (_, _) => ShowPictureView(PictureView.Desk);
+        // The keyboard view's switch and Done sit where Back to desk does; only one of them shows.
+        keyEditor = new KeyboardEditor(queue, SendTracked, picture);
+        keyEditor.DoneRequested += () => LeaveKeys(sendWaiting: true);
+        keyEditor.PartChanged += ShowPictureHeader;
+        Grid.SetColumn(keyEditor.Bar, 2);
+        Show(keyEditor.Bar, false);
+        pictureHeader.Children.Add(keyEditor.Bar);
         notInPicture.Inlines.Add(new Run { Text = "Not in the picture:", FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
         notInPictureList.Foreground = (Brush)Application.Current.Resources["TextFillColorSecondaryBrush"];
         notInPicture.Inlines.Add(notInPictureList);
@@ -359,6 +368,8 @@ internal sealed class LightingPage : Page, IHeaderTool
         effectBar.Leave();
         // So do the cards' tuning sliders, which may never get their release either.
         foreach (var card in cards.Values) card.Leave();
+        // The large keyboard view closes with the page, as Done closes it, its waiting change sent.
+        LeaveKeys(sendWaiting: true);
         // Edit layout ends with the page, and the desk forgets edits on their way: it shows the host's layout when it is back.
         DropLayoutDraft();
         SetEditing(false);
@@ -759,9 +770,13 @@ internal sealed class LightingPage : Page, IHeaderTool
         ShowPanel();
     }
 
-    /// <summary>The picture's view back to the desk with nothing selected.</summary>
+    /// <summary>
+    /// The picture's view back to the desk with nothing selected. The large keyboard view closes with its waiting change dropped: this runs
+    /// for a new client, a change of mode and the page shown again (leaving the page already closed it, sending that change).
+    /// </summary>
     private void ResetPictureView()
     {
+        keyEditor.Close(sendWaiting: false);
         selectedDevice = null;
         picture.SelectedPart = null;
         picture.View = PictureView.Desk;
@@ -769,13 +784,74 @@ internal sealed class LightingPage : Page, IHeaderTool
         ShowPictureHeader();
     }
 
-    /// <summary>The desk card's title and hint for the picture's view, with Back to desk in the inside view.</summary>
+    /// <summary>
+    /// The desk card's title and hint for the picture's view, with Back to desk in the inside view; in the keyboard view "Painting keys" or
+    /// "Layers" by the editor's part, the keyboard's name, and the editor's switch and Done.
+    /// </summary>
     private void ShowPictureHeader()
     {
-        bool inside = picture.View == PictureView.Inside;
-        pictureTitle.Text = inside ? "Inside the PC" : "Desk";
-        pictureHint.Text = inside ? InsideHint : DeskHint;
+        bool inside = picture.View == PictureView.Inside, keys = picture.View == PictureView.Keys;
+        pictureTitle.Text = keys ? (keyEditor.Part == KeyboardEditor.EditorPart.Layers ? "Layers" : "Painting keys") : inside ? "Inside the PC" : "Desk";
+        pictureHint.Text = keys ? keyEditor.Title : inside ? InsideHint : DeskHint;
         Show(backToDesk, inside);
+        Show(keyEditor.Bar, keys);
+    }
+
+    /// <summary>
+    /// Opens the large keyboard view for a keyboard of the running host's list, on one part: the picture's keyboard view through
+    /// <see cref="ShowPictureView"/>, the editor's card in the panel. The keyboard stays the selected device. Only in picture mode, whose
+    /// picture the view takes the place of; false when it can't open (plain mode, the host not running, or not a keyboard with keys).
+    /// </summary>
+    internal bool OpenKeyboard(string deviceKey, KeyboardEditor.EditorPart part)
+    {
+        if (shownPicture is null || !live || scene is null) return false;
+        if (deskDevices.FirstOrDefault(d => d.Key == deviceKey) is not { Keyboard: true, Keys: not null } keyboard) return false;
+        if (selectedDevice != deviceKey)
+        {
+            // Selected as a tap on its part selects it, so the card's heading and the selection follow the keyboard.
+            selectedDevice = deviceKey;
+            picture.SelectedPart = scene.Parts.FirstOrDefault(p => p.Found && p.DeviceKey == deviceKey)?.Part.Id;
+        }
+        keyEditor.Open(keyboard, KeyboardHeading(keyboard), part, shownSeq, live);
+        ShowPictureView(PictureView.Keys);
+        return true;
+    }
+
+    /// <summary>
+    /// Closes the large keyboard view, if it is open, back to the desk view with the keyboard still selected: Done and leaving the page
+    /// (its waiting change sent), the keyboard gone or another device selected (dropped).
+    /// </summary>
+    private void LeaveKeys(bool sendWaiting)
+    {
+        if (!keyEditor.IsOpen && picture.View != PictureView.Keys) return;
+        keyEditor.Close(sendWaiting);
+        if (picture.View == PictureView.Keys) picture.View = PictureView.Desk;
+        ShowPictureHeader();
+        SyncList();
+        ShowPanel();
+    }
+
+    /// <summary>The editor card's heading: the picture's for the keyboard's part ("Keyboard · SteelSeries Apex Pro"), else the device's name as the page shows it.</summary>
+    private string KeyboardHeading(DeviceView keyboard)
+    {
+        if (selectedDevice == keyboard.Key && MarkFor() is { } mark) return mark.Title;
+        int at = Array.FindIndex(deskDevices, d => d.Key == keyboard.Key);
+        return at >= 0 ? Names(deskDevices)[at] : keyboard.Name ?? "";
+    }
+
+    /// <summary>
+    /// The open keyboard view from the devices the desk last showed: the editor follows its keyboard, and the view closes when a running
+    /// host no longer lists it as a keyboard with keys. While the host isn't running the list is the last running one, and the view stays, disabled.
+    /// </summary>
+    private void UpdateKeys()
+    {
+        if (keyEditor.DeviceKey is not { } key) return;
+        if (deskDevices.FirstOrDefault(d => d.Key == key) is { Keyboard: true, Keys: not null } keyboard)
+        {
+            keyEditor.Update(keyboard, KeyboardHeading(keyboard), shownSeq, live);
+            if (picture.View == PictureView.Keys && pictureHint.Text != keyEditor.Title) pictureHint.Text = keyEditor.Title;
+        }
+        else LeaveKeys(sendWaiting: false);
     }
 
     /// <summary>
@@ -805,6 +881,7 @@ internal sealed class LightingPage : Page, IHeaderTool
         bool wave = deskLightsOn && deskEffect is { } effect && LightingEffects.KindOf(effect.Kind) == EffectKind.Wave;
         double angle = deskEffect is { } current ? LightingEffects.ParamsFor(current, EffectKind.Wave)?.AngleDeg ?? 0 : 0;
         picture.Show(next, deskLightsOn, live, wave, angle);
+        UpdateKeys();
         if (next.NotInPicture.Count > 0) notInPictureList.Text = " " + string.Join(" · ", next.NotInPicture) + KeepColourText;
         Show(notInPicture, next.NotInPicture.Count > 0);
     }
@@ -814,18 +891,28 @@ internal sealed class LightingPage : Page, IHeaderTool
     {
         if (shownPicture is null) return;
         bool found = part is { Found: true };
+        // Selecting another device closes the large keyboard view, as Done does but dropping a waiting change. (The keyboard view itself
+        // raises no part taps, so this guards any other way of selecting.)
+        if (keyEditor.IsOpen && (!found || part!.DeviceKey != keyEditor.DeviceKey)) LeaveKeys(sendWaiting: false);
         picture.SelectedPart = found ? part!.Part.Id : null;
         selectedDevice = found ? part!.DeviceKey : null;
         SyncList();
         ShowPanel();
     }
 
-    /// <summary>The desk or the inside view, with nothing selected.</summary>
+    /// <summary>
+    /// The desk or the inside view, with nothing selected (the large keyboard view, if open, closes first, its waiting change sent); or the
+    /// keyboard view, which <see cref="OpenKeyboard"/> opens with its keyboard still selected.
+    /// </summary>
     private void ShowPictureView(PictureView view)
     {
         if (shownPicture is null) return;
-        selectedDevice = null;
-        picture.SelectedPart = null;
+        if (view != PictureView.Keys)
+        {
+            keyEditor.Close(sendWaiting: true);
+            selectedDevice = null;
+            picture.SelectedPart = null;
+        }
         picture.View = view;
         ShowPictureHeader();
         SyncList();
@@ -1161,7 +1248,8 @@ internal sealed class LightingPage : Page, IHeaderTool
     private void ShowPanel()
     {
         DeviceCard? card = Selected is { } key && key != DeskView.Tower && cards.TryGetValue(key, out var found) ? found : null;
-        UIElement next = card?.Root ?? emptyPanel;
+        // The large keyboard view's card takes the panel while the view is open.
+        UIElement next = keyEditor.IsOpen ? keyEditor.Root : card?.Root ?? emptyPanel;
         bool tower = shownPicture is null && desk.Selected == DeskView.Tower;
         bool pictureOn = shownPicture is not null;
         Show(emptyHeading, tower || pictureOn);
