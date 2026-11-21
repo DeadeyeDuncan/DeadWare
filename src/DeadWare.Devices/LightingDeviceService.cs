@@ -132,13 +132,14 @@ internal sealed class LightingDeviceService
         lock(gate){lastSent.Clear();applied.Clear();directSet.Clear();activeMode.Clear();modeProblem.Clear();skipped.Clear();seeded=false;seedFailureLogged=false;}
     }
 
-    public void Paint(LightingSettings settings,double tMs=0)
+    // presses (lighting 3b): live key presses for fade and ripple layers, stamped on the same clock as tMs.
+    public void Paint(LightingSettings settings,double tMs=0,IReadOnlyList<LightPress>? presses=null)
     {
         lock(gate)
         {
             foreach(var d in devices)
             {
-                try{PaintDevice(settings,d,tMs);lastError.Remove(d.Key);}
+                try{PaintDevice(settings,d,tMs,presses);lastError.Remove(d.Key);}
                 // The connection is gone, not this device: the caller drops the session and every device is repainted after it reconnects.
                 catch(OpenRgbSessionLostException){throw;}
                 catch(Exception e)
@@ -155,9 +156,9 @@ internal sealed class LightingDeviceService
         }
     }
 
-    void PaintDevice(LightingSettings settings,LightingDevice d,double tMs)
+    void PaintDevice(LightingSettings settings,LightingDevice d,double tMs,IReadOnlyList<LightPress>? presses)
     {
-        var paint=LightingPaint.Paint(settings,d,tMs);
+        var paint=LightingPaint.Paint(settings,d,tMs,presses);
         if(paint.Kind==PaintKind.Unsupported) return;
         var index=indexByKey[d.Key];
         if(paint.Kind==PaintKind.Hardware)
@@ -228,12 +229,12 @@ internal sealed class LightingDeviceService
     // Zone key -> #RRGGBB at tMs before tuning and brightness, for Direct devices and zones with LEDs: the colour of the zone's first light in
     // the device's base frame (its keyboard mode, else the desk effect or static colour), so the picture shows a mode on a device with no key
     // map too. Without a mode the base frame is each zone's ZoneShown colour, as before step 3a.
-    public Dictionary<string,string> Preview(LightingSettings settings,double tMs)
+    public Dictionary<string,string> Preview(LightingSettings settings,double tMs,IReadOnlyList<LightPress>? presses=null)
     {
         var r=new Dictionary<string,string>();
         lock(gate)foreach(var d in devices)
         {
-            if(LightingPaint.Paint(settings,d,tMs).Kind!=PaintKind.Direct) continue;
+            if(LightingPaint.Paint(settings,d,tMs,presses).Kind!=PaintKind.Direct) continue;
             var lights=LightingPaint.Lights(settings,d,tMs);
             var first=0;
             foreach(var z in d.Zones)
@@ -247,13 +248,14 @@ internal sealed class LightingDeviceService
 
     // Device key -> its lights' colours at tMs before tuning and brightness, packed as upper-case RRGGBB per light, for each Direct device
     // with a key map; null when there is none. Lighting 3b: the paint stage's colours (LightingPaint.Shown), so painted keys and layers show.
-    public Dictionary<string,string>? PreviewLights(LightingSettings settings,double tMs)
+    // Key presses show here (the key-press rule, point 4's one exception): these frames go only to a window subscribed to them.
+    public Dictionary<string,string>? PreviewLights(LightingSettings settings,double tMs,IReadOnlyList<LightPress>? presses=null)
     {
         Dictionary<string,string>? r=null;
         lock(gate)foreach(var d in devices)
         {
-            if(KeyMaps.Of(d) is null||LightingPaint.Paint(settings,d,tMs).Kind!=PaintKind.Direct) continue;
-            var lights=LightingPaint.Shown(settings,d,tMs,null);
+            if(KeyMaps.Of(d) is null||LightingPaint.Paint(settings,d,tMs,presses).Kind!=PaintKind.Direct) continue;
+            var lights=LightingPaint.Shown(settings,d,tMs,presses);
             var bytes=new byte[lights.Length*3];
             for(var i=0;i<lights.Length;i++){bytes[i*3]=lights[i].R;bytes[i*3+1]=lights[i].G;bytes[i*3+2]=lights[i].B;}
             (r??=new())[d.Key]=Convert.ToHexString(bytes);

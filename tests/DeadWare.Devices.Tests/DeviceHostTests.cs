@@ -83,7 +83,7 @@ public sealed class DeviceHostTests : IAsyncLifetime
     // The scanner sees the fake OpenRGB processes that are still running, through the real classification (F15): one whose id isn't the
     // pid the host passes counts as another OpenRGB. So a host that stopped passing its own pid, or kept a scan that raced a relaunch,
     // would block itself. The test's own conflicts are added after a park, which a test can hold the loop in.
-    DeviceHost Build(bool startup=false,string? exePath=null,Action<OpenRgbEngine>? beforeHost=null,Func<string,DeadWare.UpdateCore.LocationProtection>? folderCheck=null,string? startupFailure=null,LightingStore? store=null,HostLog? hostLog=null)
+    DeviceHost Build(bool startup=false,string? exePath=null,Action<OpenRgbEngine>? beforeHost=null,Func<string,DeadWare.UpdateCore.LocationProtection>? folderCheck=null,string? startupFailure=null,LightingStore? store=null,HostLog? hostLog=null,IKeyPressSource? keys=null)
     {
         var log=hostLog??this.log;
         var engine=new OpenRgbEngine(exePath??exe,@"C:\cfg\openrgb",runner,(_,_)=>Task.FromResult(true),time,log,folderCheck);
@@ -97,7 +97,7 @@ public sealed class DeviceHostTests : IAsyncLifetime
             return found;
         });
         var options=new HostOptions(exePath??exe,@"C:\cfg\openrgb",lightingPath,Path.Combine(dir,"logs"),startup,"S-1-5-21-1",1);
-        return host=new DeviceHost(options,store??new LightingStore(lightingPath),engine,()=>session,scanner,time,log,startupFailure);
+        return host=new DeviceHost(options,store??new LightingStore(lightingPath),engine,()=>session,scanner,time,log,startupFailure,keys:keys);
     }
     void Start(DeviceHost h)=>run=h.RunAsync(CancellationToken.None);
     // Fake time AdvanceUntil may move without its condition before it fails, so a host cadence that slows down fails the test instead of
@@ -2553,5 +2553,330 @@ public sealed class DeviceHostTests : IAsyncLifetime
         Assert.True((await Send(h,new SetLightsOnRequest(true))).Ok);
         await AdvanceUntil(()=>CountOf(seen)>=2);
         lock(seen)Assert.StartsWith("00FF00",seen[1].Lights![ApexKey]);
+    }
+
+    // Controller ruling R8 (a): the frame a state asks for goes only after that state has been handed to StateChanged. The state is held in
+    // its handler while ticks run: no frame comes; once it is let go the frame follows at once (b), without a tick.
+    [Fact]
+    public async Task A_forced_frame_never_precedes_the_state_that_caused_it()
+    {
+        var h=await Running();
+        Assert.True((await Send(h,new SetDeviceKeysRequest(ApexKey,Keys((0,"#FF0000"))))).Ok);
+        var seen=FullPreviews(h);
+        Assert.True((await Send(h,new SubscribePreviewRequest(true))).Ok);
+        await AdvanceUntil(()=>CountOf(seen)>=1);
+        await RunFor(TimeSpan.FromSeconds(1),DeviceHost.Tick);
+        var hold=NewHold();var parkNext=1;
+        h.StateChanged+=_=>{if(Interlocked.Exchange(ref parkNext,0)==1) hold.Park();};
+        var sending=Task.Run(()=>h.HandleAsync(new SetDeviceKeysRequest(ApexKey,Keys((0,"#00FF00")))));
+        await Until(()=>hold.Parked);
+        await RunFor(TimeSpan.FromSeconds(2),DeviceHost.Tick); // the loop ticks while the state waits in its handler
+        Assert.Equal(1,CountOf(seen));
+        hold.Release();
+        Assert.True(Assert.IsType<Reply>(await sending).Ok);
+        await Until(()=>CountOf(seen)>=2);
+        lock(seen)Assert.StartsWith("00FF00",seen[1].Lights![ApexKey]);
+    }
+
+    // Controller ruling R8 (b): an accepted static change while subscribed is sent at once, not up to a slow tick later.
+    [Fact]
+    public async Task A_static_change_is_sent_without_waiting_for_a_tick()
+    {
+        var h=await Running();
+        Assert.True((await Send(h,new SetDeviceKeysRequest(ApexKey,Keys((0,"#FF0000"))))).Ok);
+        var seen=FullPreviews(h);
+        Assert.True((await Send(h,new SubscribePreviewRequest(true))).Ok);
+        await AdvanceUntil(()=>CountOf(seen)>=1);
+        await RunFor(TimeSpan.FromSeconds(1),DeviceHost.Tick);
+        var at=time.GetUtcNow();
+        Assert.True((await Send(h,new SetDeviceKeysRequest(ApexKey,Keys((0,"#00FF00"))))).Ok);
+        await Until(()=>CountOf(seen)>=2);
+        Assert.Equal(at,time.GetUtcNow());
+        lock(seen)Assert.StartsWith("00FF00",seen[1].Lights![ApexKey]);
+    }
+
+    // Lighting 3b, Task 6: the key-press hook, through a fake source that keeps the gate it was given, so a test presses keys itself.
+    sealed class FakeKeys(TimeProvider time):IKeyPressSource
+    {
+        readonly object sync=new();
+        bool installed;
+        int starts,stops;
+        public volatile bool FailStart;
+        public KeyPressGate? Gate;
+        public DateTimeOffset StartedAt;
+        public bool Installed{get{lock(sync)return installed;}}
+        public int Starts{get{lock(sync)return starts;}}
+        public int Stops{get{lock(sync)return stops;}}
+        public bool Start(KeyPressGate gate){lock(sync){starts++;Gate=gate;if(FailStart) return false;installed=true;StartedAt=time.GetUtcNow();return true;}}
+        public void Stop(){lock(sync){stops++;installed=false;}}
+        public void Dispose(){}
+    }
+    const int ScanA=0x1E,ScanW=0x11,ScanCtrl=0x1D,ScanQ=0x10;
+    static readonly Rgb PressedRed=new(0xFF,0x82,0xB4); // steel blue with red added at full strength
+    // The fixture keyboard's lights 0 to 3 get real key names; the rest keep theirs, which name no key.
+    void NameApexKeys()
+    {
+        string[] keys=["Key: A","Key: W","Key: Left Control","Key: Right Control"];
+        session.Controllers[Apex]=session.Controllers[Apex] with{LedNames=Enumerable.Range(0,112).Select(i=>i<keys.Length?keys[i]:"Key "+i).ToArray()};
+    }
+    static DeviceLayer Ripple(int strength=100,List<LayerLight>? lights=null)=>new(){Kind="ripple",Color="#FF0000",Strength=strength,Lights=lights};
+    async Task<(DeviceHost Host,FakeKeys Keys)> Watching(DeviceLayer? layer,bool names=true)
+    {
+        if(names) NameApexKeys();
+        var keys=new FakeKeys(time);
+        var h=Build(keys:keys);Start(h);
+        await Until(()=>h.State.Status==HostStatus.Running);
+        if(layer is not null) Assert.True((await Send(h,new SetDeviceLayersRequest(ApexKey,[layer]))).Ok);
+        return (h,keys);
+    }
+    List<HostState> StatesOf(DeviceHost h){var states=new List<HostState>();h.StateChanged+=s=>{lock(states)states.Add(s);};return states;}
+    string LogText()=>File.ReadAllText(Path.Combine(dir,"logs","devices.log"));
+    static void Tap(FakeKeys k,int scan,bool extended=false){k.Gate!.OnKey(scan,extended,false,false);k.Gate.OnKey(scan,extended,false,true);}
+    // After a press: the loop goes fast, then back to the slow tick once the reaction is over.
+    async Task<TimeSpan> UntilReactionEnds()
+    {
+        await Until(()=>time.Waiting(DeviceHost.FastTick));
+        return await AdvanceUntil(()=>time.Waiting(DeviceHost.Tick),tick:DeviceHost.FastTick);
+    }
+
+    [Fact]
+    public async Task The_hook_starts_with_a_ripple_layer_and_stops_without_one()
+    {
+        var (h,keys)=await Watching(null);
+        Assert.Equal(0,keys.Starts);Assert.False(h.State.KeyHook);
+        var states=StatesOf(h);
+        Assert.True((await Send(h,new SetDeviceLayersRequest(ApexKey,[Ripple()]))).Ok);
+        Assert.Equal(1,keys.Starts);Assert.True(keys.Installed);Assert.True(h.State.KeyHook);
+        lock(states)Assert.True(states[^1].KeyHook);
+        Assert.True((await Send(h,new SetDeviceLayersRequest(ApexKey,null))).Ok);
+        Assert.Equal(1,keys.Stops);Assert.False(keys.Installed);Assert.False(h.State.KeyHook);
+        lock(states)Assert.False(states[^1].KeyHook);
+        Assert.Single(LogLines("Key presses: watching, for 1 keyboard(s)."));
+        Assert.Single(LogLines("Key presses: not watching."));
+    }
+
+    [Fact]
+    public async Task The_hook_stops_when_lights_go_off_and_presses_are_cleared()
+    {
+        var (h,keys)=await Watching(Ripple());
+        Tap(keys,ScanA);
+        Assert.Single(keys.Gate!.Live());
+        Assert.True((await Send(h,new SetLightsOnRequest(false))).Ok);
+        Assert.Equal(1,keys.Stops);Assert.False(h.State.KeyHook);
+        Assert.Empty(keys.Gate.Live());
+        Assert.True((await Send(h,new SetLightsOnRequest(true))).Ok);
+        Assert.Equal(2,keys.Starts);Assert.True(h.State.KeyHook);
+    }
+
+    [Fact]
+    public async Task The_hook_stops_when_the_host_stops_running()
+    {
+        var (h,keys)=await Watching(Ripple());
+        Assert.True(keys.Installed);
+        lock(conflicts)conflicts.Add(DeadLight);
+        await AdvanceUntil(()=>h.State.Status==HostStatus.Blocked);
+        Assert.False(keys.Installed);Assert.False(h.State.KeyHook);
+        lock(conflicts)conflicts.Clear();
+        await AdvanceUntil(()=>h.State.Status==HostStatus.Running);
+        await Until(()=>keys.Installed);
+        Assert.Equal(2,keys.Starts);
+        Assert.True((await Send(h,new StopRequest())).Ok);
+        await run!.WaitAsync(RealTimeCap);
+        Assert.False(keys.Installed);
+        Assert.True(keys.Stops>=2);
+        Assert.Empty(keys.Gate!.Live());
+    }
+
+    // A run that ends by cancellation raises no state, so only RunAsync's own stop removes the hook then.
+    [Fact]
+    public async Task The_hook_stops_when_the_run_is_cancelled()
+    {
+        NameApexKeys();
+        var keys=new FakeKeys(time);
+        var h=Build(keys:keys);
+        using var cts=new CancellationTokenSource();
+        run=h.RunAsync(cts.Token);
+        await Until(()=>h.State.Status==HostStatus.Running);
+        Assert.True((await Send(h,new SetDeviceLayersRequest(ApexKey,[Ripple()]))).Ok);
+        Assert.True(keys.Installed);
+        cts.Cancel();
+        await run.WaitAsync(RealTimeCap);
+        Assert.False(keys.Installed);
+        Assert.Empty(keys.Gate!.Live());
+        Assert.Single(LogLines("Key presses: not watching."));
+    }
+
+    [Theory]
+    [InlineData("strength 0")]
+    [InlineData("no lights")]
+    [InlineData("no known keys")]
+    public async Task A_layer_that_can_do_nothing_starts_no_hook(string why)
+    {
+        var layer=why switch{"strength 0"=>Ripple(strength:0),"no lights"=>Ripple(lights:[]),_=>Ripple()};
+        var (h,keys)=await Watching(layer,names:why!="no known keys");
+        await RunFor(TimeSpan.FromSeconds(1),DeviceHost.Tick);
+        Assert.Equal(0,keys.Starts);Assert.False(h.State.KeyHook);
+        Assert.Empty(LogLines("Key presses: watching"));
+    }
+
+    [Fact]
+    public async Task A_keyboard_in_a_hardware_mode_starts_no_hook()
+    {
+        NameApexKeys();
+        session.Controllers[Apex]=session.Controllers[Apex] with{Modes=["Direct","Spectrum"]};
+        var seeded=new LightingSettings();
+        seeded.HardwareModes[ApexKey]="Spectrum";
+        seeded.Devices[ApexKey]=new DeviceTuning{Layers=[Ripple()]};
+        File.WriteAllText(lightingPath,LightingSettingsCodec.Write(seeded));
+        var (h,keys)=await Watching(null,names:false);
+        Assert.Equal(PaintKind.Hardware,ApexView(h).Kind);
+        Assert.Single(ApexEntry(h)!.Layers!); // kept
+        await RunFor(TimeSpan.FromSeconds(1),DeviceHost.Tick);
+        Assert.Equal(0,keys.Starts);Assert.False(h.State.KeyHook);
+    }
+
+    [Fact]
+    public async Task A_press_runs_the_fast_tick_until_the_reaction_ends()
+    {
+        var (h,keys)=await Watching(Ripple());
+        await RunFor(TimeSpan.FromSeconds(2),DeviceHost.Tick);
+        Assert.False(time.Waiting(DeviceHost.FastTick)); // nobody typing: the slow tick
+        keys.Gate!.OnKey(ScanA,false,false,false);
+        var moved=await UntilReactionEnds();
+        Assert.InRange(moved.TotalMilliseconds,600,600+2*DeviceHost.FastTick.TotalMilliseconds);
+        await RunFor(TimeSpan.FromSeconds(2),DeviceHost.Tick); // stalls if the loop goes back to FastTick
+        Assert.False(time.Waiting(DeviceHost.FastTick));
+    }
+
+    [Fact]
+    public async Task A_press_wakes_the_loop_at_once()
+    {
+        var (h,keys)=await Watching(Ripple());
+        await RunFor(TimeSpan.FromSeconds(1),DeviceHost.Tick);
+        time.Advance(TimeSpan.FromMilliseconds(40)); // past the device's frame cap, far short of the slow tick
+        var from=session.LedCount;
+        keys.Gate!.OnKey(ScanA,false,false,false);
+        await Until(()=>session.Leds.Skip(from).Any(l=>l.Index==Apex&&l.Colors[0]==PressedRed));
+    }
+
+    [ThreadStatic] static bool inOnKey;
+    [Fact]
+    public async Task A_press_never_runs_the_tick_on_the_callers_thread()
+    {
+        var (h,keys)=await Watching(Ripple());
+        await RunFor(TimeSpan.FromSeconds(1),DeviceHost.Tick);
+        int painted=0,onCaller=0;
+        session.FailLeds=i=>{if(i==Apex){Interlocked.Increment(ref painted);if(inOnKey) Interlocked.Increment(ref onCaller);}return false;};
+        time.Advance(TimeSpan.FromMilliseconds(40));
+        inOnKey=true;
+        try{keys.Gate!.OnKey(ScanA,false,false,false);}
+        finally{inOnKey=false;}
+        await Until(()=>Volatile.Read(ref painted)>0);
+        Assert.Equal(0,Volatile.Read(ref onCaller));
+    }
+
+    [Fact]
+    public async Task A_press_reaches_the_preview_lights_and_nothing_else()
+    {
+        var (h,keys)=await Watching(Ripple());
+        var states=StatesOf(h);
+        var seen=FullPreviews(h);
+        Assert.True((await Send(h,new SubscribePreviewRequest(true))).Ok);
+        await AdvanceUntil(()=>CountOf(seen)>=1);
+        await RunFor(TimeSpan.FromSeconds(1),DeviceHost.Tick); // a still tick forgets the last frame
+        var logBefore=LogText();
+        time.Advance(TimeSpan.FromMilliseconds(40));
+        Tap(keys,ScanA);
+        await Until(()=>{lock(seen)return seen.Any(f=>f.Lights![ApexKey].StartsWith("FF82B4",StringComparison.Ordinal));});
+        await UntilReactionEnds();
+        await RunFor(TimeSpan.FromSeconds(1),DeviceHost.Tick);
+        Assert.Equal(0,CountOf(states));
+        Assert.Equal(logBefore,LogText());
+    }
+
+    [Fact]
+    public async Task A_renamed_keyboard_gets_a_new_press_table()
+    {
+        var (h,keys)=await Watching(Ripple());
+        Tap(keys,ScanA);
+        Assert.Equal([0],keys.Gate!.Live()[^1].Lights);
+        var swapped=session.Controllers[Apex].LedNames!.ToArray();
+        (swapped[0],swapped[1])=(swapped[1],swapped[0]);
+        session.Controllers[Apex]=session.Controllers[Apex] with{LedNames=swapped};
+        Assert.True((await Send(h,new RescanRequest())).Ok);
+        Tap(keys,ScanA);
+        var live=keys.Gate.Live();
+        Assert.Equal([1],live[^1].Lights); // A is light 1 now; light 0 is W
+        Assert.DoesNotContain(live.Skip(1),p=>p.Lights.Contains(0));
+    }
+
+    [Fact]
+    public async Task The_hook_is_refreshed_every_five_minutes_silently()
+    {
+        var (h,keys)=await Watching(Ripple());
+        var states=StatesOf(h);
+        var logBefore=LogText();
+        var started=keys.StartedAt;
+        await AdvanceUntil(()=>time.GetUtcNow()>=started+TimeSpan.FromSeconds(295),step:TimeSpan.FromSeconds(5),limit:TimeSpan.FromMinutes(6));
+        await AdvanceUntil(()=>time.GetUtcNow()>=started+TimeSpan.FromSeconds(298.5));
+        Assert.Equal(0,keys.Stops);
+        keys.Gate!.OnKey(ScanA,false,false,false); // held, and live
+        await UntilReactionEnds();
+        await AdvanceUntil(()=>keys.Starts>=2,limit:TimeSpan.FromSeconds(5));
+        Assert.Equal(1,keys.Stops);Assert.True(keys.Installed);
+        Assert.Single(keys.Gate.Live());               // the live press is kept
+        keys.Gate.OnKey(ScanA,false,false,false);       // within 2 s of its last sighting, yet counts: held keys were forgotten
+        Assert.Equal(2,keys.Gate.Live().Count);
+        Assert.Equal(0,CountOf(states));
+        Assert.Equal(logBefore,LogText());
+    }
+
+    [Fact]
+    public async Task A_hook_that_cannot_start_is_reported_and_retried()
+    {
+        NameApexKeys();
+        var keys=new FakeKeys(time){FailStart=true};
+        var h=Build(keys:keys);Start(h);
+        await Until(()=>h.State.Status==HostStatus.Running);
+        Assert.True((await Send(h,new SetDeviceLayersRequest(ApexKey,[Ripple()]))).Ok);
+        var tried=keys.Starts;
+        Assert.True(tried>=1);Assert.False(h.State.KeyHook);
+        Assert.Single(LogLines("Key presses: couldn't watch for key presses ("));
+        Assert.True((await Send(h,new SetBrightnessRequest(40))).Ok);
+        Assert.True(keys.Starts>tried);
+        Assert.Single(LogLines("Key presses: couldn't watch for key presses ("));
+        keys.FailStart=false;
+        Assert.True((await Send(h,new SetBrightnessRequest(50))).Ok);
+        Assert.True(keys.Installed);Assert.True(h.State.KeyHook);
+        Assert.Single(LogLines("Key presses: watching, for 1 keyboard(s)."));
+    }
+
+    [Fact]
+    public async Task Without_a_key_source_nothing_is_watched()
+    {
+        NameApexKeys();
+        var h=await Running();
+        Assert.True((await Send(h,new SetDeviceLayersRequest(ApexKey,[Ripple()]))).Ok);
+        await RunFor(TimeSpan.FromSeconds(1),DeviceHost.Tick);
+        Assert.False(h.State.KeyHook);
+        Assert.False(time.Waiting(DeviceHost.FastTick));
+        Assert.Empty(LogLines("Key presses"));
+    }
+
+    [Fact]
+    public async Task The_log_never_names_a_pressed_key()
+    {
+        var (h,keys)=await Watching(Ripple());
+        var before=LogText().Length;
+        time.Advance(TimeSpan.FromMilliseconds(40));
+        Tap(keys,ScanA);Tap(keys,ScanW);Tap(keys,ScanCtrl);Tap(keys,ScanCtrl,true);Tap(keys,ScanQ);
+        keys.Gate!.OnKey(ScanA,false,true,false); // software-sent
+        await UntilReactionEnds();
+        await RunFor(TimeSpan.FromSeconds(6),DeviceHost.Tick); // across a rescan
+        Assert.True((await Send(h,new SetLightsOnRequest(false))).Ok);
+        var added=LogText()[before..].Split('\n',StringSplitOptions.RemoveEmptyEntries).Select(l=>l.TrimEnd('\r')[(l.IndexOf(' ')+1)..]).ToList();
+        string[] allowed=[@"^Key presses: watching, for \d+ keyboard\(s\)\.$",@"^Key presses: not watching\.$",@"^Key presses: couldn't watch for key presses \(.*\)\.$"];
+        Assert.All(added,l=>Assert.Contains(allowed,a=>System.Text.RegularExpressions.Regex.IsMatch(l,a)));
+        Assert.Equal(["Key presses: not watching."],added);
     }
 }
