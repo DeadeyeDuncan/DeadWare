@@ -34,7 +34,7 @@ internal sealed class DeviceSections
     ];
 
     private readonly Action<HostMessage, Action<Reply>?> send;
-    private readonly ComboBox mode = new() { HorizontalAlignment = HorizontalAlignment.Stretch };
+    private readonly ComboBox mode = new() { HorizontalAlignment = HorizontalAlignment.Left, MinWidth = 240, MaxWidth = TuningSlider.MaxRowWidth };
     private readonly ComboBoxItem[] items;
     private readonly TuningSlider speed, brightness, red, green, blue;
     private readonly Button reset = new() { Content = "Reset", VerticalAlignment = VerticalAlignment.Center };

@@ -18,6 +18,8 @@ internal sealed class TuningSlider
     private readonly Throttle sends;
     private readonly Action<HostMessage, Action<Reply>?> send;
     private readonly Func<int, string> format;
+    /// <summary>The widest a tuning slider is drawn, and with its label and value the widest a card control is.</summary>
+    internal const double MaxSliderWidth = 320, MaxRowWidth = 76 + 10 + MaxSliderWidth + 10 + 40;
     private readonly TextBlock value = new() { VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Right };
     // sending: the slider's changes sent whose reply hasn't come. posted: the value of the latest change posted to the throttle, the
     // only one of those waiting that goes. shown: the value from the last state, which the slider goes back to.
@@ -63,8 +65,12 @@ internal sealed class TuningSlider
         // The label column holds the longest label ("This device"), the value column the widest value ("100%", "200").
         Root = new Grid { ColumnSpacing = 10 };
         Root.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(76) });
-        Root.ColumnDefinitions.Add(new ColumnDefinition());
+        // The slider stops at 320 px however wide the card is (it ran to about 800 px on a maximised window, too long for a fine
+        // adjustment). The last column takes what is left once the slider is at its cap; its tiny weight gives the slider
+        // nearly all the room on a narrow card.
+        Root.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1000, GridUnitType.Star), MaxWidth = MaxSliderWidth });
         Root.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(40) });
+        Root.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         Grid.SetColumn(Slider, 1);
         Grid.SetColumn(value, 2);
         AutomationProperties.SetAccessibilityView(name, Microsoft.UI.Xaml.Automation.Peers.AccessibilityView.Raw);
