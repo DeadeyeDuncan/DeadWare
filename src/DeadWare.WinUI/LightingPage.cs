@@ -136,6 +136,8 @@ internal sealed class LightingPage : Page, IHeaderTool
     private DeskLayout deskLayout = DeskLayouts.Empty();
     private DeviceView[] deskDevices = [];
     private bool deskLightsOn = true, listSyncing;
+    // The running state's KeyHook as the desk last showed it, for the layers editor's note.
+    private bool deskKeyHook;
     // How the desk area was last arranged, and the page's width then: the mode changes the arrangement too.
     private (bool Wide, bool Picture)? arranged;
     private double deskWidth;
@@ -508,6 +510,7 @@ internal sealed class LightingPage : Page, IHeaderTool
         deskLayout = DeskLayouts.Empty();
         deskDevices = [];
         deskLightsOn = true;
+        deskKeyHook = false;
         deskEffect = null;
         desk.Selected = null;
         ShowDeskColors(null);
@@ -698,6 +701,7 @@ internal sealed class LightingPage : Page, IHeaderTool
                 deskLightsOn = settings.LightsOn;
                 deskEffect = settings.Effect;
             }
+            deskKeyHook = shown.State.KeyHook;
             deskDevices = shown.Devices;
             if (desk.Selected is { } key && key != DeskView.Tower && !deskDevices.Any(device => device.Key == key)) desk.Selected = null;
             // A Place on desk whose reply came is over once a newer state than the one at its reply is shown.
@@ -812,7 +816,7 @@ internal sealed class LightingPage : Page, IHeaderTool
             selectedDevice = deviceKey;
             picture.SelectedPart = scene.Parts.FirstOrDefault(p => p.Found && p.DeviceKey == deviceKey)?.Part.Id;
         }
-        keyEditor.Open(keyboard, KeyboardHeading(keyboard), part, shownSeq, live);
+        keyEditor.Open(keyboard, KeyboardHeading(keyboard), part, shownSeq, live, deskLightsOn, deskKeyHook);
         ShowPictureView(PictureView.Keys);
         return true;
     }
@@ -848,7 +852,7 @@ internal sealed class LightingPage : Page, IHeaderTool
         if (keyEditor.DeviceKey is not { } key) return;
         if (deskDevices.FirstOrDefault(d => d.Key == key) is { Keyboard: true, Keys: not null } keyboard)
         {
-            keyEditor.Update(keyboard, KeyboardHeading(keyboard), shownSeq, live);
+            keyEditor.Update(keyboard, KeyboardHeading(keyboard), shownSeq, live, deskLightsOn, deskKeyHook);
             if (picture.View == PictureView.Keys && pictureHint.Text != keyEditor.Title) pictureHint.Text = keyEditor.Title;
         }
         else LeaveKeys(sendWaiting: false);
