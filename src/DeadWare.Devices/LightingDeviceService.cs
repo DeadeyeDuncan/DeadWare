@@ -33,7 +33,7 @@ internal sealed class LightingDeviceService
     public IReadOnlyList<LightingDevice> Devices{get{lock(gate)return devices;}}
     public LightingDeviceService(IOpenRgbSession session,TimeProvider time,HostLog log){this.session=session;this.time=time;this.log=log;}
 
-    // Names the light count and each zone's matrix size too, so a key map arriving or changing raises a state.
+    // Names the light count and each zone's matrix size too, so a key map arriving or changing size raises a state.
     static string Shape(IEnumerable<(string Key,int Index,IReadOnlyList<LightingZone> Zones,int Lights)> d)
         =>string.Join(";",d.Select(x=>$"{x.Key}@{x.Index}/{x.Lights}:"+string.Join(",",x.Zones.Select(z=>$"{z.Index}/{z.Name}/{z.LedCount}/{(z.Matrix is {} m?$"{m.Width}x{m.Height}":"-")}"))));
 
