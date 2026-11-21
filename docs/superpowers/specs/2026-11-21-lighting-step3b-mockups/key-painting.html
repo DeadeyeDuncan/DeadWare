@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Lighting step 3b: key painting mockup</title>
+<style>
+  :root { --bg:#0b0f17; --card:#111722; --line:#1f2937; --ink:#e6edf6; --mute:#8b98ab; --acc:#5ee0ff; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:13px/1.4 "Segoe UI",system-ui,sans-serif; }
+  .page { padding:18px 22px 30px; max-width:1280px; }
+  h1 { font-size:20px; margin:0; font-weight:600; }
+  .sub { color:var(--mute); font-size:12.5px; margin:2px 0 14px; max-width:860px; }
+  .cap { color:var(--mute); font-size:11.5px; text-transform:uppercase; letter-spacing:.08em; margin:18px 0 6px 2px; }
+  .tabs { display:flex; gap:8px; margin-bottom:12px; flex-wrap:wrap; }
+  .tab { border:1px solid #33415a; border-radius:8px; padding:7px 14px; background:#131b29; color:var(--ink); cursor:pointer; font:inherit; }
+  .tab.on { border-color:var(--acc); color:var(--acc); background:#12283a; }
+  .tab small { color:var(--mute); margin-left:6px; }
+  .cols { display:grid; grid-template-columns:minmax(0,1fr) 300px; gap:14px; align-items:start; }
+  @media (max-width:900px) { .cols { grid-template-columns:1fr; } }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:13px 15px; }
+  .card h3 { margin:0; font-size:15px; font-weight:600; }
+  .mute { color:var(--mute); font-size:11.5px; }
+  .sec { border-top:1px solid var(--line); margin-top:11px; padding-top:10px; }
+  .sec > b { display:block; font-size:12px; font-weight:600; margin-bottom:6px; letter-spacing:.02em; }
+  .btn { border:1px solid #33415a; border-radius:7px; padding:4px 11px; font:inherit; font-size:12px; color:var(--ink); background:#131b29; display:inline-block; cursor:pointer; margin:0 4px 5px 0; }
+  .btn:hover { border-color:#55637a; }
+  .btn.on { border-color:var(--acc); color:var(--acc); background:#12283a; }
+  .btn.pri { background:#12283a; border-color:var(--acc); color:var(--acc); }
+  .bar { display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; gap:10px; flex-wrap:wrap; }
+  .bar b { font-size:14px; font-weight:600; }
+  .sws { display:flex; flex-wrap:wrap; gap:7px; }
+  .swb { width:28px; height:28px; border-radius:7px; border:2px solid #0008; cursor:pointer; padding:0; }
+  .swb.on { outline:2px solid var(--acc); outline-offset:2px; }
+  .look { display:flex; align-items:center; justify-content:space-between; padding:5px 8px; border-radius:6px; font-size:12.5px; cursor:pointer; }
+  .look:hover { background:#141d2b; }
+  .look.on { background:#12283a; color:var(--acc); }
+  .note { margin-top:10px; padding:8px 10px; border-radius:8px; background:#0e1520; border:1px dashed #2a3850; color:var(--mute); font-size:11.5px; }
+  .kbwrap { overflow-x:auto; }
+  svg { display:block; user-select:none; touch-action:none; }
+  svg text { font-family:"Segoe UI",system-ui,sans-serif; pointer-events:none; }
+  .key { cursor:pointer; }
+  .legend { display:flex; gap:16px; flex-wrap:wrap; margin-top:10px; color:var(--mute); font-size:11.5px; align-items:center; }
+  .legend i { display:inline-block; width:16px; height:12px; border-radius:3px; vertical-align:-2px; margin-right:6px; }
+  .zone { display:flex; align-items:center; justify-content:space-between; padding:5px 8px; border-radius:6px; font-size:12.5px; }
+  .pick { border:1px solid #33415a; border-radius:7px; padding:5px 26px 5px 10px; background:#131b29; position:relative; display:block; font-size:12.5px; }
+  .pick::after { content:"▾"; position:absolute; right:9px; color:var(--mute); }
+  .new { border-left:3px solid var(--acc); padding-left:10px; margin-left:-13px; }
+</style>
+</head>
+<body>
+<div class="page">
+  <h1>Lighting · step 3b mockup 1 · painting keys</h1>
+  <div class="sub">This page works: click the keys and the buttons to try it. It shows two ways painting could work, and saved keyboard looks. Colours, names and the key drawing are examples; the real page draws the keys your keyboard reports.</div>
+
+  <div class="tabs">
+    <button class="tab on" id="tabA">Way 1 · Pick keys, then choose a colour <small>recommended</small></button>
+    <button class="tab" id="tabB">Way 2 · Brush: choose a colour, then click or drag over keys</button>
+  </div>
+
+  <div class="cols">
+    <!-- ============ BIG KEYBOARD (takes the desk picture's place while painting) ============ -->
+    <div class="card">
+      <div class="bar">
+        <span><b>Painting keys</b> <span class="mute">· Keyboard · SteelSeries Apex Pro · takes the place of the desk picture until you press Done</span></span>
+        <span><button class="btn" id="undo">↶ Undo</button><button class="btn pri">Done</button></span>
+      </div>
+      <div class="kbwrap"><svg id="kb" viewBox="0 0 900 262" width="100%" style="min-width:640px"></svg></div>
+      <div class="legend">
+        <span><i style="background:#14291d;border:1px solid #1f5a33"></i>not painted: shows the keyboard's lighting mode</span>
+        <span><i style="background:#ff3b3b"></i>painted: keeps its own colour</span>
+        <span id="legSel"><i style="background:#14291d;border:2px solid #5ee0ff"></i>picked</span>
+        <span id="count"></span>
+      </div>
+    </div>
+
+    <!-- ============ CARD WITH THE TOOLS ============ -->
+    <div class="card">
+      <h3>Keyboard · SteelSeries Apex Pro</h3><div class="mute">painting keys</div>
+
+      <div class="sec" id="pickSec"><b>Pick keys</b>
+        <div class="mute" style="margin-bottom:7px">Click a key to pick it, click again to drop it. Drag across keys to pick several.</div>
+        <button class="btn" data-g="all">All</button><button class="btn" data-g="none">None</button><button class="btn" data-g="wasd">WASD</button><button class="btn" data-g="arrows">Arrows</button><button class="btn" data-g="numbers">Number row</button><button class="btn" data-g="fkeys">F keys</button><button class="btn" data-g="numpad">Number pad</button>
+      </div>
+
+      <div class="sec" id="brushSec" hidden><b>Brush</b>
+        <div class="mute" style="margin-bottom:7px">Choose a colour below, then click a key or drag across keys to paint them.</div>
+        <button class="btn on" id="toolPaint">Paint</button><button class="btn" id="toolErase">Eraser</button>
+      </div>
+
+      <div class="sec"><b id="colTitle">Colour for the picked keys</b>
+        <div class="sws" id="sws"></div>
+        <div class="mute" style="margin-top:7px">The real page opens the same colour picker the Colour section uses today.</div>
+      </div>
+
+      <div class="sec"><b>Remove paint</b>
+        <button class="btn" id="clearSel">From the picked keys</button><button class="btn" id="clearAll">From every key</button>
+      </div>
+
+      <div class="sec"><b>Saved looks</b>
+        <div id="looks"></div>
+        <div style="margin-top:7px"><button class="btn" id="saveNew">Save as a new look…</button><button class="btn">Rename</button><button class="btn">Delete</button></div>
+        <div class="mute">Click a look to switch the keyboard to it. A look keeps the painted keys, the lighting mode and the layers.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ HOW YOU GET HERE ============ -->
+  <div class="cap">How you get here · the keyboard's normal card beside the desk picture, with the two new parts marked</div>
+  <div class="cols">
+    <div class="note" style="margin:0;align-self:stretch">
+      The desk picture stays as it is today. Painted keys show in it at their own colour, small as they are.<br><br>
+      Pressing <b style="color:var(--ink)">Paint keys…</b> swaps the picture for the big keyboard above, the same way the inside-the-PC view takes over today. <b style="color:var(--ink)">Done</b> brings the desk back. Every change is saved and shown on the real keyboard as you make it.
+    </div>
+    <div class="card">
+      <h3>Keyboard · SteelSeries Apex Pro</h3><div class="mute">selected on the desk · 112 keys</div>
+      <div class="sec new"><b>Saved looks <span class="mute">· new</span></b>
+        <span class="pick">Gaming</span>
+      </div>
+      <div class="sec"><b>Colour</b>
+        <div class="zone" style="background:#12283a"><span><i style="width:18px;height:18px;border-radius:5px;display:inline-block;vertical-align:middle;margin-right:8px;background:#22e04a"></i>Keyboard</span><span class="mute">all keys</span></div>
+      </div>
+      <div class="sec new"><b>Key colours <span class="mute">· new</span></b>
+        <div class="zone" style="padding-left:0"><span>8 keys painted</span><button class="btn pri" style="margin:0">Paint keys…</button></div>
+      </div>
+      <div class="sec"><b>Lighting mode</b><span class="pick">Static</span></div>
+      <div class="sec"><b>Brightness</b><div class="mute">as today</div></div>
+      <div class="sec"><b>Colour correction</b><div class="mute">as today</div></div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  var U = 38, G = 4, X0 = 10, Y0 = 10, NS = 'http://www.w3.org/2000/svg';
+  // each row: main block, nav block (starts at 15.5 units), number pad (starts at 19 units). [label, width] ; label 0 = gap
+  var rows = [
+    { main: [['Esc',1],[0,1],['F1',1],['F2',1],['F3',1],['F4',1],[0,.5],['F5',1],['F6',1],['F7',1],['F8',1],[0,.5],['F9',1],['F10',1],['F11',1],['F12',1]], nav: [['PrtSc',1],['ScrLk',1],['Pause',1]], pad: [] },
+    { main: [['`',1],['1',1],['2',1],['3',1],['4',1],['5',1],['6',1],['7',1],['8',1],['9',1],['0',1],['-',1],['=',1],['Backspace',2]], nav: [['Ins',1],['Home',1],['PgUp',1]], pad: [['Num',1],['/',1],['*',1],['-',1]] },
+    { main: [['Tab',1.5],['Q',1],['W',1],['E',1],['R',1],['T',1],['Y',1],['U',1],['I',1],['O',1],['P',1],['[',1],[']',1],['\\',1.5]], nav: [['Del',1],['End',1],['PgDn',1]], pad: [['7',1],['8',1],['9',1],['+',1]] },
+    { main: [['Caps',1.75],['A',1],['S',1],['D',1],['F',1],['G',1],['H',1],['J',1],['K',1],['L',1],[';',1],["'",1],['Enter',2.25]], nav: [], pad: [['4',1],['5',1],['6',1]] },
+    { main: [['Shift',2.25],['Z',1],['X',1],['C',1],['V',1],['B',1],['N',1],['M',1],[',',1],['.',1],['/',1],['Shift',2.75]], nav: [[0,1],['↑',1]], pad: [['1',1],['2',1],['3',1],['Ent',1]] },
+    { main: [['Ctrl',1.25],['Win',1.25],['Alt',1.25],['Space',6.25],['Alt',1.25],['Fn',1.25],['Menu',1.25],['Ctrl',1.25]], nav: [['←',1],['↓',1],['→',1]], pad: [['0',2],['.',1]] }
+  ];
+  var keys = [];
+  rows.forEach(function (row, r) {
+    [['main', 0], ['nav', 15.5], ['pad', 19]].forEach(function (blk) {
+      var x = blk[1];
+      row[blk[0]].forEach(function (k) {
+        if (k[0] !== 0) keys.push({ id: keys.length, label: k[0], x: x, w: k[1], r: r, blk: blk[0] });
+        x += k[1];
+      });
+    });
+  });
+  function ids(test) { return keys.filter(test).map(function (k) { return k.id; }); }
+  var groups = {
+    all: ids(function () { return true; }),
+    none: [],
+    wasd: ids(function (k) { return k.blk === 'main' && 'WASD'.indexOf(k.label) >= 0 && k.label.length === 1; }),
+    arrows: ids(function (k) { return '↑←↓→'.indexOf(k.label) >= 0; }),
+    numbers: ids(function (k) { return k.blk === 'main' && k.r === 1 && /^[0-9]$/.test(k.label); }),
+    fkeys: ids(function (k) { return /^F\d+$/.test(k.label); }),
+    numpad: ids(function (k) { return k.blk === 'pad'; })
+  };
+  function paintOf(group, colour, into) { groups[group].forEach(function (i) { into[i] = colour; }); return into; }
+  var looks = [
+    { name: 'Gaming', paint: paintOf('arrows', '#ffd23b', paintOf('wasd', '#ff3b3b', {})) },
+    { name: 'Work', paint: paintOf('fkeys', '#5b9dff', paintOf('numpad', '#ffffff', {})) },
+    { name: 'Plain', paint: {} }
+  ];
+  var palette = ['#ff3b3b', '#ff8a2b', '#ffd23b', '#22e04a', '#38e9ff', '#5b9dff', '#b46bff', '#ff5bd0', '#ffffff'];
+  var mode = 'pick', tool = 'paint', colour = palette[0];
+  var paint = Object.assign({}, looks[0].paint), sel = {}, look = 0, history = [];
+  var svg = document.getElementById('kb'), rects = [], texts = [], drag = null;
+
+  function dark(hex) { var n = parseInt(hex.slice(1), 16); return ((n >> 16) * 299 + ((n >> 8) & 255) * 587 + (n & 255) * 114) / 1000 < 150; }
+  function remember() { history.push(JSON.stringify(paint)); if (history.length > 50) history.shift(); }
+  function draw() {
+    var painted = 0, picked = 0;
+    keys.forEach(function (k, i) {
+      var c = paint[k.id], s = !!sel[k.id];
+      if (c) painted++; if (s) picked++;
+      rects[i].setAttribute('fill', c || '#14291d');
+      rects[i].setAttribute('stroke', s ? '#5ee0ff' : (c ? '#0008' : '#1f5a33'));
+      rects[i].setAttribute('stroke-width', s ? 3 : 1);
+      texts[i].setAttribute('fill', c ? (dark(c) ? '#fff' : '#111') : '#7fa38c');
+    });
+    document.getElementById('count').textContent = painted + ' keys painted' + (mode === 'pick' ? ' · ' + picked + ' picked' : '');
+    var box = document.getElementById('looks'); box.innerHTML = '';
+    looks.forEach(function (l, i) {
+      var d = document.createElement('div'); d.className = 'look' + (i === look ? ' on' : '');
+      d.innerHTML = '<span>' + l.name + '</span><span class="mute">' + Object.keys(l.paint).length + ' keys painted</span>';
+      d.onclick = function () { remember(); paint = Object.assign({}, l.paint); look = i; draw(); };
+      box.appendChild(d);
+    });
+    Array.prototype.forEach.call(document.querySelectorAll('.swb'), function (b) { b.classList.toggle('on', mode === 'brush' && b.dataset.c === colour); });
+  }
+  function touch(k, first) {
+    if (mode === 'pick') {
+      if (first) drag = { add: !sel[k.id] };
+      if (drag.add) sel[k.id] = true; else delete sel[k.id];
+    } else {
+      if (first) { remember(); drag = {}; }
+      if (tool === 'paint') paint[k.id] = colour; else delete paint[k.id];
+    }
+    draw();
+  }
+  keys.forEach(function (k) {
+    var r = document.createElementNS(NS, 'rect');
+    r.setAttribute('x', X0 + k.x * U); r.setAttribute('y', Y0 + k.r * (U + 2) + (k.r > 0 ? 8 : 0));
+    r.setAttribute('width', k.w * U - G); r.setAttribute('height', U - G); r.setAttribute('rx', 5); r.setAttribute('class', 'key');
+    r.addEventListener('pointerdown', function (e) { e.preventDefault(); touch(k, true); });
+    r.addEventListener('pointerenter', function () { if (drag) touch(k, false); });
+    var t = document.createElementNS(NS, 'text');
+    t.setAttribute('x', X0 + k.x * U + (k.w * U - G) / 2); t.setAttribute('y', Y0 + k.r * (U + 2) + (k.r > 0 ? 8 : 0) + (U - G) / 2 + 4);
+    t.setAttribute('text-anchor', 'middle'); t.setAttribute('font-size', k.label.length > 3 ? 9 : 11); t.textContent = k.label;
+    svg.appendChild(r); svg.appendChild(t); rects.push(r); texts.push(t);
+  });
+  window.addEventListener('pointerup', function () { drag = null; });
+
+  var sws = document.getElementById('sws');
+  palette.forEach(function (c) {
+    var b = document.createElement('button'); b.className = 'swb'; b.style.background = c; b.dataset.c = c; b.title = c;
+    b.onclick = function () {
+      if (mode === 'pick') { remember(); Object.keys(sel).forEach(function (i) { paint[i] = c; }); }
+      else { colour = c; tool = 'paint'; setTool(); }
+      draw();
+    };
+    sws.appendChild(b);
+  });
+  Array.prototype.forEach.call(document.querySelectorAll('[data-g]'), function (b) {
+    b.onclick = function () { sel = {}; groups[b.dataset.g].forEach(function (i) { sel[i] = true; }); draw(); };
+  });
+  function setTool() {
+    document.getElementById('toolPaint').classList.toggle('on', tool === 'paint');
+    document.getElementById('toolErase').classList.toggle('on', tool === 'erase');
+  }
+  document.getElementById('toolPaint').onclick = function () { tool = 'paint'; setTool(); };
+  document.getElementById('toolErase').onclick = function () { tool = 'erase'; setTool(); };
+  document.getElementById('clearSel').onclick = function () { remember(); Object.keys(sel).forEach(function (i) { delete paint[i]; }); draw(); };
+  document.getElementById('clearAll').onclick = function () { remember(); paint = {}; draw(); };
+  document.getElementById('undo').onclick = function () { if (history.length) { paint = JSON.parse(history.pop()); draw(); } };
+  document.getElementById('saveNew').onclick = function () { looks.push({ name: 'My look ' + (looks.length - 2), paint: Object.assign({}, paint) }); look = looks.length - 1; draw(); };
+  function setMode(m) {
+    mode = m; sel = {};
+    document.getElementById('tabA').classList.toggle('on', m === 'pick');
+    document.getElementById('tabB').classList.toggle('on', m === 'brush');
+    document.getElementById('pickSec').hidden = m !== 'pick';
+    document.getElementById('brushSec').hidden = m !== 'brush';
+    document.getElementById('clearSel').hidden = m !== 'pick';
+    document.getElementById('legSel').hidden = m !== 'pick';
+    document.getElementById('colTitle').textContent = m === 'pick' ? 'Colour for the picked keys' : 'Brush colour';
+    draw();
+  }
+  document.getElementById('tabA').onclick = function () { setMode('pick'); };
+  document.getElementById('tabB').onclick = function () { setMode('brush'); };
+  setMode('pick');
+})();
+</script>
+</body>
+</html>
