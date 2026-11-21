@@ -27,6 +27,8 @@ public sealed record HostState(HostStatus Status,string Message,bool Elevated,IR
 [JsonDerivedType(typeof(SetLayoutRequest),"setLayout")]
 [JsonDerivedType(typeof(SubscribePreviewRequest),"subscribePreview")]
 [JsonDerivedType(typeof(PreviewEvent),"preview")]
+[JsonDerivedType(typeof(SetDeviceTuningRequest),"setDeviceTuning")]
+[JsonDerivedType(typeof(SetDeviceModeRequest),"setDeviceMode")]
 public abstract record HostMessage
 {
     [JsonRequired] public int Version { get; init; } = DeviceHostProtocol.Version;
@@ -45,18 +47,25 @@ public sealed record StateEvent(HostState State) : HostMessage;
 public sealed record SetEffectRequest(string Kind,EffectParams? Params) : HostMessage;
 public sealed record SetLayoutRequest(DeskLayout Layout) : HostMessage;
 public sealed record SubscribePreviewRequest(bool On) : HostMessage;
-public sealed record PreviewEvent(Dictionary<string,string> Colors) : HostMessage;
+// Colors: zone key -> #RRGGBB. Lights (step 3a): device key -> its lights' colours packed as upper-case RRGGBB per light, no separator, for
+// each painted device with a key map. Both are the colours before tuning and brightness.
+public sealed record PreviewEvent(Dictionary<string,string> Colors,Dictionary<string,string>? Lights=null) : HostMessage;
+// Step 3a. A null member leaves that setting as it is; ResetCorrection removes the correction (and wins over one sent with it).
+public sealed record SetDeviceTuningRequest(string DeviceKey,int? Brightness=null,DeviceCorrection? Correction=null,bool ResetCorrection=false) : HostMessage;
+// Kind null: follow the desk effect.
+public sealed record SetDeviceModeRequest(string DeviceKey,string? Kind,int Speed=40) : HostMessage;
 [JsonSourceGenerationOptions(UseStringEnumConverter=true)]
 [JsonSerializable(typeof(HostMessage))]
 internal sealed partial class DeviceHostJsonContext : JsonSerializerContext;
 // The short codes a failed Reply can carry (the host's own sentences, such as a validation message, are shown as they are), and their plain words.
 public static class HostReplyCodes
 {
-    public const string Starting="starting",Unsupported="unsupported",RescanFailed="rescan failed",UnknownZone="unknown zone",CouldntSave="couldn't save settings",Version="version",InternalError="internal error";
+    public const string Starting="starting",Unsupported="unsupported",RescanFailed="rescan failed",UnknownZone="unknown zone",CouldntSave="couldn't save settings",Version="version",InternalError="internal error",UnknownDevice="unknown device";
     public static string Explain(string why)=>why switch
     {
         Starting=>"The lighting helper is still starting. Try again in a moment.",
         UnknownZone=>"That zone isn't listed any more. Its device may have been unplugged.",
+        UnknownDevice=>"That device isn't listed any more. It may have been unplugged.",
         CouldntSave=>"DeadWare couldn't save your lighting settings, so the change wasn't made.",
         InternalError=>"The lighting helper hit an error. Details are in its log, devices.log.",
         RescanFailed=>"The lighting helper lost its connection to OpenRGB and is reconnecting.",

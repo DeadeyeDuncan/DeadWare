@@ -27,6 +27,11 @@ public class DeviceHostProtocolTests
         yield return [new StopRequest{Id=9}];
         yield return [new Reply(false,"nope"){Id=10}];
         yield return [new StateEvent(State()){Id=11}];
+        yield return [new SetDeviceTuningRequest("k",50,new DeviceCorrection{R=150,G=90,B=0},true){Id=30}];
+        yield return [new SetDeviceTuningRequest("k"){Id=31}];
+        yield return [new SetDeviceModeRequest("k","wave",70){Id=32}];
+        yield return [new SetDeviceModeRequest("k",null){Id=33}];
+        yield return [new PreviewEvent(new(){["k#0"]="#010203"},new(){["k"]="0A0B0CFFFFFF"}){Id=34}];
     }
     static async Task<HostMessage?> RoundTrip(HostMessage m)
     {
@@ -64,6 +69,17 @@ public class DeviceHostProtocolTests
                 Assert.Equal(40,s.Settings.Brightness);
                 Assert.Equal("#010203",s.Settings.ZoneColors["k:0"].Color);
                 Assert.Equal("Direct",s.Settings.HardwareModes["k"]);
+                break;
+            // Step 3a: these carry a class or dictionaries, which a record compares by reference.
+            case SetDeviceTuningRequest t:
+                var tb=Assert.IsType<SetDeviceTuningRequest>(back);
+                Assert.Equal((t.DeviceKey,t.Brightness,t.ResetCorrection),(tb.DeviceKey,tb.Brightness,tb.ResetCorrection));
+                Assert.Equal((t.Correction?.R,t.Correction?.G,t.Correction?.B),(tb.Correction?.R,tb.Correction?.G,tb.Correction?.B));
+                break;
+            case PreviewEvent p:
+                var pb=Assert.IsType<PreviewEvent>(back);
+                Assert.Equal(p.Colors,pb.Colors);
+                Assert.Equal(p.Lights,pb.Lights);
                 break;
             default: Assert.Equal(m,back); break;
         }
@@ -127,6 +143,49 @@ public class DeviceHostProtocolTests
         Assert.Equal(2,b.Colors.Count);
         Assert.Equal("#010203",b.Colors["k:0"]);
         Assert.Equal("#FFFFFF",b.Colors["k:1"]);
+    }
+    // Step 3a: a frame from a host without per-light colours still reads, with none.
+    [Fact] public async Task A_preview_without_lights_still_reads()
+    {
+        var b=Assert.IsType<PreviewEvent>(await DeviceHostProtocol.ReadAsync(Frame("""{"type":"preview","Version":1,"Id":35,"Colors":{"k#0":"#010203"}}"""),default));
+        Assert.Equal(35,b.Id);
+        Assert.Equal("#010203",b.Colors["k#0"]);
+        Assert.Null(b.Lights);
+    }
+    [Fact] public async Task The_new_requests_use_their_discriminators()
+    {
+        var t=Assert.IsType<SetDeviceTuningRequest>(await DeviceHostProtocol.ReadAsync(Frame("""{"type":"setDeviceTuning","Version":1,"DeviceKey":"k","Brightness":20}"""),default));
+        Assert.Equal(("k",(int?)20,(DeviceCorrection?)null,false),(t.DeviceKey,t.Brightness,t.Correction,t.ResetCorrection));
+        var m=Assert.IsType<SetDeviceModeRequest>(await DeviceHostProtocol.ReadAsync(Frame("""{"type":"setDeviceMode","Version":1,"DeviceKey":"k","Kind":"cycle"}"""),default));
+        Assert.Equal(("k","cycle",40),(m.DeviceKey,m.Kind,m.Speed));
+    }
+    [Fact] public void Unknown_device_has_its_plain_words()
+        =>Assert.Equal("That device isn't listed any more. It may have been unplugged.",HostReplyCodes.Explain(HostReplyCodes.UnknownDevice));
+    // Step 3a: the device's tuning, mode and key map travel with the state; a state from a host without them reads brightness 100 and nulls.
+    [Fact] public async Task A_device_views_tuning_mode_and_key_map_round_trip()
+    {
+        var st=State();
+        var v=st.Devices[0] with{Brightness=35,Correction=new DeviceCorrection{R=180,G=0,B=99},LightingMode=new DeviceMode{Kind="wave",Speed=12},
+            ModeProblem="This keyboard doesn't report its key positions.",Keyboard=true,Wave=true,Keys=new KeyMapView(["Esc","F1"],[0.0,null],[0.5,1.0],0.04)};
+        var b=Assert.Single(Assert.IsType<StateEvent>(await RoundTrip(new StateEvent(st with{Devices=[v]}){Id=36})).State.Devices);
+        Assert.Equal(35,b.Brightness);
+        Assert.Equal((180,0,99),(b.Correction!.R,b.Correction.G,b.Correction.B));
+        Assert.Equal(("wave",12),(b.LightingMode!.Kind,b.LightingMode.Speed));
+        Assert.Equal("This keyboard doesn't report its key positions.",b.ModeProblem);
+        Assert.True(b.Keyboard);Assert.True(b.Wave);
+        Assert.Equal(["Esc","F1"],b.Keys!.Names);
+        Assert.Equal([0.0,null],b.Keys.X);
+        Assert.Equal([0.5,1.0],b.Keys.Y);
+        Assert.Equal(0.04,b.Keys.KeyWidth);
+        var ms=new MemoryStream();
+        await DeviceHostProtocol.WriteAsync(ms,new StateEvent(State()){Id=37},default);
+        var node=System.Text.Json.Nodes.JsonNode.Parse(ms.ToArray().AsSpan(4))!;
+        var dv=node["State"]!["Devices"]![0]!.AsObject();
+        foreach(var name in new[]{"Brightness","Correction","LightingMode","ModeProblem","Keyboard","Wave","Keys"}) dv.Remove(name);
+        var old=Assert.Single(Assert.IsType<StateEvent>(await DeviceHostProtocol.ReadAsync(Frame(node.ToJsonString()),default)).State.Devices);
+        Assert.Equal(100,old.Brightness);
+        Assert.Null(old.Correction);Assert.Null(old.LightingMode);Assert.Null(old.ModeProblem);Assert.Null(old.Keys);
+        Assert.False(old.Keyboard);Assert.False(old.Wave);
     }
     [Fact] public async Task State_event_carries_effect_and_layout()
     {

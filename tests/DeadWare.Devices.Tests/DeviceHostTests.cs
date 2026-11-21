@@ -1681,4 +1681,328 @@ public sealed class DeviceHostTests : IAsyncLifetime
         Assert.Equal((X("fan3")-X("fan1"))/wavelength,Ahead(seen[0],seen[1]),0.01);   // about 0.10 of the palette ahead of fan 1; 8-bit colour reads to well within 0.01
         Assert.Equal((X("keyboard")-X("fan1"))/wavelength,Ahead(seen[0],seen[2]),0.01);   // about 0.29 ahead
     }
+
+    // Step 3a, Task 4: device tuning and keyboard modes through the pipe.
+    static readonly string ApexKey=LightingKeys.Device("SERIAL-4",@"HID: \\?\HID#FAKE-1");
+    static readonly string DramKey=LightingKeys.Device("SERIAL-1","I2C: FAKE-1");
+    static readonly string MouseKey=LightingKeys.Device("SERIAL-5",@"HID: \\?\HID#FAKE-2");
+    static readonly string NodeKey=LightingKeys.Device("SERIAL-7",@"HID: \\?\HID#FAKE-4");
+    bool ApexShows(Rgb c){try{return LastLeds(Apex).All(x=>x==c);}catch(InvalidOperationException){return false;}}
+    void DropApexMatrix()=>session.Controllers[Apex]=session.Controllers[Apex] with{Zones=session.Controllers[Apex].Zones.Select(z=>z with{Matrix=null}).ToList()};
+    // Each preview frame whole, per-light colours included.
+    List<PreviewEvent> FullPreviews(DeviceHost h)
+    {
+        var seen=new List<PreviewEvent>();
+        h.PreviewChanged+=e=>{lock(seen)seen.Add(e);};
+        return seen;
+    }
+    static string[] Chunks(string packed)=>Enumerable.Range(0,packed.Length/6).Select(i=>packed.Substring(i*6,6)).ToArray();
+
+    [Fact]
+    public async Task SetDeviceTuning_saves_and_repaints()
+    {
+        var h=await Running();
+        await AdvanceUntil(()=>ApexShows(SteelBlue));
+        var from=session.LedCount;
+        var reply=await Send(h,new SetDeviceTuningRequest(ApexKey,50){Id=3});
+        Assert.True(reply.Ok);Assert.Equal(3,reply.Id);
+        await AdvanceUntil(()=>session.Leds.Skip(from).Any(l=>l.Index==Apex));
+        var half=SteelBlue.Scale(50);
+        Assert.NotEqual(SteelBlue,half);
+        Assert.All(session.Leds.Skip(from).First(l=>l.Index==Apex).Colors,c=>Assert.Equal(half,c));
+        Assert.Equal(50,h.State.Settings.Devices[ApexKey].Brightness);
+        Assert.Equal(50,Assert.Single(h.State.Devices,d=>d.Key==ApexKey).Brightness);
+        var saved=new LightingStore(lightingPath).Load().Settings;
+        Assert.Equal(50,saved.Devices[ApexKey].Brightness);Assert.Equal(2,saved.Version);
+    }
+
+    [Fact]
+    public async Task SetDeviceTuning_leaves_unnamed_settings_alone()
+    {
+        var h=await Running();
+        Assert.True((await Send(h,new SetDeviceTuningRequest(ApexKey,50,new DeviceCorrection{R=150,G=100,B=80}))).Ok);
+        Assert.True((await Send(h,new SetDeviceModeRequest(ApexKey,"breathing",20))).Ok);
+        Assert.True((await Send(h,new SetDeviceTuningRequest(ApexKey,70))).Ok);
+        var t=h.State.Settings.Devices[ApexKey];
+        Assert.Equal(70,t.Brightness);
+        Assert.Equal((150,100,80),(t.Correction!.R,t.Correction.G,t.Correction.B));
+        Assert.Equal(("breathing",20),(t.Mode!.Kind,t.Mode.Speed));
+        Assert.True((await Send(h,new SetDeviceTuningRequest(ApexKey,null,new DeviceCorrection{R=10,G=20,B=30}))).Ok);
+        t=h.State.Settings.Devices[ApexKey];
+        Assert.Equal(70,t.Brightness);
+        Assert.Equal((10,20,30),(t.Correction!.R,t.Correction.G,t.Correction.B));
+        Assert.Equal("breathing",t.Mode!.Kind);
+        Assert.True((await Send(h,new SetDeviceTuningRequest(ApexKey))).Ok); // names nothing: accepted, and nothing changes
+        t=h.State.Settings.Devices[ApexKey];
+        Assert.Equal((70,10,"breathing"),(t.Brightness,t.Correction!.R,t.Mode!.Kind));
+    }
+
+    [Fact]
+    public async Task ResetCorrection_removes_it()
+    {
+        var h=await Running();
+        Assert.True((await Send(h,new SetDeviceTuningRequest(ApexKey,null,new DeviceCorrection{R=150,G=100,B=80}))).Ok);
+        Assert.True((await Send(h,new SetDeviceTuningRequest(ApexKey,null,null,true))).Ok);
+        Assert.False(h.State.Settings.Devices.ContainsKey(ApexKey)); // nothing else was set, so the entry goes
+        Assert.Null(Assert.Single(h.State.Devices,d=>d.Key==ApexKey).Correction);
+        Assert.True((await Send(h,new SetDeviceTuningRequest(ApexKey,60,new DeviceCorrection{R=150,G=100,B=80}))).Ok);
+        Assert.True((await Send(h,new SetDeviceTuningRequest(ApexKey,null,null,true))).Ok);
+        Assert.Null(h.State.Settings.Devices[ApexKey].Correction);
+        Assert.Equal(60,h.State.Settings.Devices[ApexKey].Brightness);
+        var saved=new LightingStore(lightingPath).Load().Settings;
+        Assert.Null(saved.Devices[ApexKey].Correction);Assert.Equal(60,saved.Devices[ApexKey].Brightness);
+    }
+
+    [Fact]
+    public async Task SetDeviceTuning_out_of_range_replies_the_sentence_and_changes_nothing()
+    {
+        var h=await Running(CountingStore());
+        var before=Volatile.Read(ref saves);
+        Assert.Equal("Device brightness must be 0 to 100.",(await Send(h,new SetDeviceTuningRequest(ApexKey,101))).Error);
+        Assert.Equal("Device brightness must be 0 to 100.",(await Send(h,new SetDeviceTuningRequest(ApexKey,-1))).Error);
+        Assert.Equal("Colour correction must be 0 to 200.",(await Send(h,new SetDeviceTuningRequest(ApexKey,null,new DeviceCorrection{R=201}))).Error);
+        Assert.Equal("Colour correction must be 0 to 200.",(await Send(h,new SetDeviceTuningRequest(ApexKey,50,new DeviceCorrection{B=-1}))).Error);
+        Assert.Equal("Mode speed must be 0 to 100.",(await Send(h,new SetDeviceModeRequest(ApexKey,"cycle",101))).Error);
+        Assert.Equal("Lighting mode is not known.",(await Send(h,new SetDeviceModeRequest(ApexKey,"Cycle"))).Error);
+        Assert.Empty(h.State.Settings.Devices);
+        Assert.Equal(before,Volatile.Read(ref saves));
+        Assert.True((await Send(h,new SetDeviceTuningRequest(ApexKey,0,new DeviceCorrection{R=200,G=0,B=0}))).Ok); // the bounds themselves are accepted
+    }
+
+    [Fact]
+    public async Task A_request_for_an_unknown_device_is_refused()
+    {
+        var h=await Running(CountingStore());
+        var before=Volatile.Read(ref saves);
+        var a=await Send(h,new SetDeviceTuningRequest("ghost|nowhere",50){Id=4});
+        Assert.False(a.Ok);Assert.Equal(HostReplyCodes.UnknownDevice,a.Error);Assert.Equal(4,a.Id);
+        var b=await Send(h,new SetDeviceModeRequest("ghost|nowhere","cycle"));
+        Assert.False(b.Ok);Assert.Equal(HostReplyCodes.UnknownDevice,b.Error);
+        Assert.Equal(HostReplyCodes.UnknownDevice,(await Send(h,new SetDeviceModeRequest("ghost|nowhere",null))).Error);
+        Assert.Empty(h.State.Settings.Devices);
+        Assert.Equal(before,Volatile.Read(ref saves));
+    }
+
+    [Fact]
+    public async Task An_unplugged_devices_entry_is_kept()
+    {
+        var h=await Running();
+        Assert.True((await Send(h,new SetDeviceTuningRequest(ApexKey,40))).Ok);
+        session.Controllers=session.Controllers.Where(c=>c.Name!="SteelSeries Apex Pro").ToList();
+        Assert.True((await Send(h,new RescanRequest())).Ok);
+        Assert.DoesNotContain(h.State.Devices,d=>d.Key==ApexKey);
+        Assert.Equal(40,h.State.Settings.Devices[ApexKey].Brightness);
+        Assert.Equal(40,new LightingStore(lightingPath).Load().Settings.Devices[ApexKey].Brightness);
+        Assert.Equal(HostReplyCodes.UnknownDevice,(await Send(h,new SetDeviceTuningRequest(ApexKey,60))).Error);
+        Assert.Equal(HostReplyCodes.UnknownDevice,(await Send(h,new SetDeviceModeRequest(ApexKey,"cycle"))).Error);
+        Assert.Equal(40,h.State.Settings.Devices[ApexKey].Brightness);
+    }
+
+    [Fact]
+    public async Task SetDeviceMode_refuses_what_the_device_cant_do()
+    {
+        DropApexMatrix();
+        var h=await Running();
+        Assert.Equal("This keyboard doesn't report its key positions.",(await Send(h,new SetDeviceModeRequest(ApexKey,"wave"))).Error);
+        Assert.Equal("Lighting modes are for keyboards.",(await Send(h,new SetDeviceModeRequest(MouseKey,"cycle"))).Error);
+        Assert.Equal("Lighting modes are for keyboards.",(await Send(h,new SetDeviceModeRequest(MouseKey,"static"))).Error);
+        Assert.Empty(h.State.Settings.Devices);
+        Assert.True((await Send(h,new SetDeviceModeRequest(ApexKey,"breathing"))).Ok); // a mode it can do
+        Assert.True((await Send(h,new SetDeviceModeRequest(MouseKey,null))).Ok); // following the desk is never refused
+        Assert.Equal("breathing",Assert.Single(h.State.Settings.Devices).Value.Mode!.Kind);
+    }
+
+    [Fact]
+    public async Task SetDeviceMode_null_returns_to_the_desk_effect()
+    {
+        var h=await Running();
+        Assert.True((await Send(h,new SetDeviceModeRequest(ApexKey,"cycle",60))).Ok);
+        Assert.Equal(("cycle",60),(h.State.Settings.Devices[ApexKey].Mode!.Kind,h.State.Settings.Devices[ApexKey].Mode!.Speed));
+        Assert.Equal("cycle",Assert.Single(h.State.Devices,d=>d.Key==ApexKey).LightingMode!.Kind);
+        await AdvanceUntil(()=>time.Waiting(DeviceHost.FastTick));
+        await AdvanceUntil(()=>{try{return LastLeds(Apex).Any(c=>c!=SteelBlue);}catch(InvalidOperationException){return false;}},tick:DeviceHost.FastTick);
+        Assert.True((await Send(h,new SetDeviceModeRequest(ApexKey,null))).Ok);
+        Assert.False(h.State.Settings.Devices.ContainsKey(ApexKey));
+        Assert.Null(Assert.Single(h.State.Devices,d=>d.Key==ApexKey).LightingMode);
+        await AdvanceUntil(()=>time.Waiting(DeviceHost.Tick),tick:DeviceHost.FastTick);
+        await AdvanceUntil(()=>ApexShows(SteelBlue));
+    }
+
+    [Fact]
+    public async Task Tuning_a_hardware_device_is_saved_but_sends_no_frame()
+    {
+        var h=await Running();
+        var node=session.Controllers.FindIndex(c=>c.Name==LightingDeviceService.NodePro);
+        Assert.Equal(PaintKind.Hardware,Assert.Single(h.State.Devices,d=>d.Key==NodeKey).Kind);
+        var modes=session.Modes.Count(m=>m.Index==node);
+        Assert.True((await Send(h,new SetDeviceTuningRequest(NodeKey,30,new DeviceCorrection{R=50,G=100,B=100}))).Ok);
+        Assert.Equal(30,new LightingStore(lightingPath).Load().Settings.Devices[NodeKey].Brightness);
+        var view=Assert.Single(h.State.Devices,d=>d.Key==NodeKey);
+        Assert.Equal((30,50),(view.Brightness,view.Correction!.R));
+        Assert.Equal(PaintKind.Hardware,view.Kind);
+        await RunFor(TimeSpan.FromSeconds(2),DeviceHost.Tick);
+        Assert.DoesNotContain(session.Leds,l=>l.Index==node);
+        Assert.Equal(modes,session.Modes.Count(m=>m.Index==node)); // its hardware effect isn't sent again either
+    }
+
+    [Fact]
+    public async Task Tick_is_fast_for_an_animated_keyboard_mode_under_a_static_desk()
+    {
+        var h=await Running();
+        await Until(()=>time.Waiting(DeviceHost.Tick));
+        Assert.Equal("Static",h.State.Settings.Effect.Kind);
+        Assert.True((await Send(h,new SetDeviceModeRequest(ApexKey,"static"))).Ok); // a still mode: the tick stays slow
+        await RunFor(TimeSpan.FromSeconds(2),DeviceHost.Tick);
+        Assert.False(time.Waiting(DeviceHost.FastTick));
+        Assert.True((await Send(h,new SetDeviceModeRequest(ApexKey,"breathing"))).Ok);
+        await AdvanceUntil(()=>time.Waiting(DeviceHost.FastTick));
+        var from=session.LedCount;
+        await AdvanceUntil(()=>Frames(Apex,from).Count>=3,tick:DeviceHost.FastTick);
+    }
+
+    [Theory]
+    [InlineData("follow")]
+    [InlineData("lights off")]
+    [InlineData("hardware")]
+    public async Task Tick_is_fast_for_an_animated_keyboard_mode_under_a_static_desk_and_slow_again_when_it_stops(string stop)
+    {
+        // The keyboard has a saved hardware effect it doesn't offer yet, so it is painted until it does.
+        File.WriteAllText(lightingPath,"{\"Version\":1,\"HardwareModes\":{"+System.Text.Json.JsonSerializer.Serialize(ApexKey)+":\"Spectrum\"}}");
+        var h=await Running();
+        Assert.Equal(PaintKind.Direct,Assert.Single(h.State.Devices,d=>d.Key==ApexKey).Kind);
+        Assert.True((await Send(h,new SetDeviceModeRequest(ApexKey,"wave"))).Ok);
+        await AdvanceUntil(()=>time.Waiting(DeviceHost.FastTick));
+        switch(stop)
+        {
+            case "follow":Assert.True((await Send(h,new SetDeviceModeRequest(ApexKey,null))).Ok);break;
+            case "lights off":Assert.True((await Send(h,new SetLightsOnRequest(false))).Ok);break;
+            default:
+                session.Controllers[Apex]=session.Controllers[Apex] with{Modes=["Direct","Spectrum"]};
+                Assert.True((await Send(h,new RescanRequest())).Ok);
+                Assert.Equal(PaintKind.Hardware,Assert.Single(h.State.Devices,d=>d.Key==ApexKey).Kind);
+                Assert.Equal("wave",h.State.Settings.Devices[ApexKey].Mode!.Kind); // its mode is kept
+                break;
+        }
+        await AdvanceUntil(()=>time.Waiting(DeviceHost.Tick),tick:DeviceHost.FastTick);
+        await RunFor(TimeSpan.FromSeconds(2),DeviceHost.Tick); // stalls if the loop goes back to FastTick
+        Assert.False(time.Waiting(DeviceHost.FastTick));
+    }
+
+    [Fact]
+    public async Task Preview_flows_for_an_animated_keyboard_mode_under_a_static_desk()
+    {
+        var h=await Running();
+        Assert.True((await Send(h,new SetDeviceModeRequest(ApexKey,"wave"))).Ok);
+        await AdvanceUntil(()=>time.Waiting(DeviceHost.FastTick));
+        var seen=FullPreviews(h);
+        Assert.True((await Send(h,new SubscribePreviewRequest(true))).Ok);
+        // The zone colours stay the same under a static desk, so a second frame is sent only because the keyboard's lights moved.
+        await AdvanceUntil(()=>CountOf(seen)>=2,tick:DeviceHost.FastTick);
+        List<PreviewEvent> frames;
+        lock(seen)frames=seen.ToList();
+        Assert.Contains(ApexZone,frames[0].Colors.Keys);
+        Assert.Contains(LightingKeys.Zone(DramKey,0),frames[0].Colors.Keys);
+        var lights=frames[0].Lights;
+        Assert.NotNull(lights);
+        var packed=Assert.Single(lights!); // the keyboard alone has a key map; the DRAM and the rest have none
+        Assert.Equal(ApexKey,packed.Key);
+        Assert.Equal(112*6,packed.Value.Length);
+        Assert.Matches("^[0-9A-F]+$",packed.Value);
+        Assert.True(Chunks(packed.Value).Distinct().Count()>1); // a rainbow across the keys
+        Assert.NotEqual(packed.Value,frames[1].Lights![ApexKey]);
+    }
+
+    [Fact]
+    public async Task Preview_lights_are_before_tuning()
+    {
+        var h=await Running();
+        Assert.True((await Send(h,new SetDeviceTuningRequest(ApexKey,0))).Ok);
+        Assert.True((await Send(h,new SetDeviceModeRequest(ApexKey,"wave"))).Ok);
+        await AdvanceUntil(()=>time.Waiting(DeviceHost.FastTick));
+        var seen=FullPreviews(h);
+        Assert.True((await Send(h,new SubscribePreviewRequest(true))).Ok);
+        await AdvanceUntil(()=>CountOf(seen)>=1,tick:DeviceHost.FastTick);
+        string packed;
+        lock(seen)packed=seen[0].Lights![ApexKey];
+        Assert.All(Chunks(packed),c=>Assert.NotEqual("000000",c));
+        Assert.All(LastLeds(Apex),c=>Assert.Equal(Rgb.Black,c)); // the keyboard itself is dark
+    }
+
+    // The mode's phase is the host's time times its speed, so a brightness or correction change leaves it where the clock has it.
+    [Fact]
+    public async Task A_tuning_change_does_not_restart_the_mode()
+    {
+        var start=time.GetUtcNow(); // the host's epoch: it is built before the clock moves
+        var h=await Running();
+        Assert.True((await Send(h,new SetDeviceModeRequest(ApexKey,"cycle"))).Ok);
+        await AdvanceUntil(()=>time.Waiting(DeviceHost.FastTick));
+        await RunFor(TimeSpan.FromMilliseconds(700),DeviceHost.FastTick);
+        // The last tick painted the keyboard just now, so the change's own paint is held by the 33 ms cap and the next tick sends it.
+        var from=session.LedCount;
+        Assert.True((await Send(h,new SetDeviceTuningRequest(ApexKey,50,new DeviceCorrection{R=120,G=80,B=100}))).Ok);
+        await Elapse(DeviceHost.FastTick);
+        await Until(()=>session.Leds.Skip(from).Any(l=>l.Index==Apex));
+        var t=(time.GetUtcNow()-start).TotalMilliseconds;
+        Assert.True(t>700);
+        var c=session.Controllers[Apex];
+        var expected=LightingPaint.Paint(h.State.Settings,new LightingDevice(ApexKey,c.Name,c.Type,c.Zones,c.Modes,c.ActiveMode,c.LedNames),t).Colors;
+        Assert.Equal(expected,session.Leds.Skip(from).First(l=>l.Index==Apex).Colors);
+    }
+
+    [Fact]
+    public async Task Reply_precedes_the_state_broadcast_for_a_device_tuning_over_a_real_pipe()
+    {
+        var h=Build();
+        var states=new List<HostState>();
+        h.StateChanged+=s=>{lock(states)states.Add(s);};
+        Start(h);
+        await Until(()=>{lock(states)return states.Any(s=>s.Status==HostStatus.Running);});
+        var pipe="DeadWare.Devices.Test."+Guid.NewGuid().ToString("N");
+        await using var server=new HostPipeServer(pipe,h.HandleAsync,log);
+        h.StateChanged+=st=>_=server.SendAsync(new StateEvent(st));
+        using var cts=new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        var serving=server.RunAsync(cts.Token);
+        await using var client=new System.IO.Pipes.NamedPipeClientStream(".",pipe,System.IO.Pipes.PipeDirection.InOut,System.IO.Pipes.PipeOptions.Asynchronous);
+        await client.ConnectAsync(5000,cts.Token);
+        await DeviceHostProtocol.WriteAsync(client,new SetDeviceTuningRequest(ApexKey,40){Id=6},cts.Token);
+        var first=Assert.IsType<Reply>(await DeviceHostProtocol.ReadAsync(client,cts.Token));
+        Assert.True(first.Ok);Assert.Equal(6,first.Id);
+        var second=Assert.IsType<StateEvent>(await DeviceHostProtocol.ReadAsync(client,cts.Token));
+        Assert.Equal(0,second.Id);Assert.Equal(40,Assert.Single(second.State.Devices,d=>d.Key==ApexKey).Brightness);
+        cts.Cancel();
+    }
+
+    // Ruling 1: a keyboard with no key map running a mode gets no per-light colours, but its zone colours move, so frames keep flowing.
+    [Fact]
+    public async Task Preview_flows_for_a_mode_on_a_keyboard_without_a_key_map()
+    {
+        DropApexMatrix();
+        var h=await Running();
+        Assert.True((await Send(h,new SetDeviceModeRequest(ApexKey,"cycle"))).Ok);
+        await AdvanceUntil(()=>time.Waiting(DeviceHost.FastTick));
+        var seen=FullPreviews(h);
+        Assert.True((await Send(h,new SubscribePreviewRequest(true))).Ok);
+        await AdvanceUntil(()=>CountOf(seen)>=3,tick:DeviceHost.FastTick);
+        List<PreviewEvent> frames;
+        lock(seen)frames=seen.ToList();
+        Assert.All(frames,f=>Assert.Null(f.Lights));
+        Assert.NotEqual(frames[0].Colors[ApexZone],frames[1].Colors[ApexZone]);
+    }
+
+    // Ruling 3: entries for absent devices count toward the cap, so a first entry for a present device is refused at 256.
+    [Fact]
+    public async Task The_257th_device_entry_is_refused()
+    {
+        var entries=string.Join(",",Enumerable.Range(0,DeviceTunings.MaxEntries).Select(i=>$"\"gone-{i}|HID: gone-{i}\":{{\"Brightness\":50}}"));
+        File.WriteAllText(lightingPath,"{\"Version\":2,\"Devices\":{"+entries+"}}");
+        var h=await Running(CountingStore());
+        Assert.Equal(DeviceTunings.MaxEntries,h.State.Settings.Devices.Count);
+        await Until(()=>time.Waiting(DeviceHost.Tick));
+        var before=Volatile.Read(ref saves);
+        var reply=await Send(h,new SetDeviceTuningRequest(ApexKey,50));
+        Assert.False(reply.Ok);Assert.Equal("Too many device entries.",reply.Error);
+        Assert.Equal(before,Volatile.Read(ref saves));
+        Assert.False(h.State.Settings.Devices.ContainsKey(ApexKey));
+        Assert.Equal(DeviceTunings.MaxEntries,new LightingStore(lightingPath).Load().Settings.Devices.Count);
+    }
 }

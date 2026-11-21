@@ -396,6 +396,45 @@ public sealed class LightingDeviceServiceTests : IDisposable
             Assert.False(KeyMaps.SupportsWave(d));
         }
     }
+    // Step 3a: a saved mode the device can't run is painted as Static and logged from Paint, so with no window subscribed too: once per
+    // device and reason, not per frame, and again after the mode has run in between.
+    [Fact] public void A_saved_mode_that_cant_run_is_logged_once_not_per_frame()
+    {
+        var i=IndexOf(Hid);var full=session.Controllers[i];
+        var flat=full with{Zones=full.Zones.Select(z=>z with{Matrix=null}).ToList()};
+        session.Controllers[i]=flat;svc.Rescan();
+        var kb=svc.Devices.First(d=>d.Key.StartsWith(Hid+"|")).Key;var mouse=svc.Devices.First(d=>d.Key.StartsWith("SERIAL-5|")).Key;
+        var s=new LightingSettings();
+        s.Devices[kb]=new DeviceTuning{Mode=new DeviceMode{Kind="wave"}};
+        s.Devices[mouse]=new DeviceTuning{Mode=new DeviceMode{Kind="breathing"}};
+        void Frames(int n){for(var k=0;k<n;k++){svc.Paint(s,k*100.0);Ms(100);}}
+        string[] Logged(string name)=>Lines(File.ReadAllText(Path.Combine(dir,"devices.log")),"can't run on "+name);
+        Frames(5);
+        Assert.Equal(["saved lighting mode wave can't run on SteelSeries Apex Pro ("+kb+"), so it is painted as Static: This keyboard doesn't report its key positions."],Logged("SteelSeries Apex Pro"));
+        Assert.Equal(["saved lighting mode breathing can't run on SteelSeries Aerox 9 Wireless Wired ("+mouse+"), so it is painted as Static: Lighting modes are for keyboards."],Logged("SteelSeries Aerox"));
+        session.Controllers[i]=full;svc.Rescan();
+        Frames(3); // the wave runs
+        Assert.Single(Logged("SteelSeries Apex Pro"));
+        session.Controllers[i]=flat;svc.Rescan();
+        Frames(3);
+        Assert.Equal(2,Logged("SteelSeries Apex Pro").Length);
+        Assert.Single(Logged("SteelSeries Aerox"));
+    }
+    // Ruling 1: a zone's preview colour is its first light in the device's base frame, so a mode shows on a keyboard with no key map too.
+    [Fact] public void Preview_zone_colours_follow_a_device_mode()
+    {
+        var i=IndexOf(Hid);var full=session.Controllers[i];
+        session.Controllers[i]=full with{Zones=full.Zones.Select(z=>z with{Matrix=null}).ToList()};svc.Rescan();
+        var kb=svc.Devices.First(d=>d.Key.StartsWith(Hid+"|"));
+        Assert.Null(KeyMaps.Of(kb));
+        var s=new LightingSettings();
+        s.Devices[kb.Key]=new DeviceTuning{Mode=new DeviceMode{Kind="cycle"}};
+        var zone=LightingKeys.Zone(kb.Key,0);
+        var a=svc.Preview(s,0)[zone];var b=svc.Preview(s,500)[zone];
+        Assert.NotEqual(a,b);
+        Assert.Equal(LightingPaint.Lights(s,kb,500)[0].ToHex(),b);
+        Assert.Null(svc.PreviewLights(s,500));
+    }
     [Fact] public void A_matrix_arriving_later_changes_the_shape()
     {
         var i=IndexOf(Hid);
