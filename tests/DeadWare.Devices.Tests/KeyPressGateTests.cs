@@ -181,4 +181,34 @@ public sealed class KeyPressGateTests
         Assert.InRange(live.Count,1,KeyPressGate.MaxLive);
         Assert.Equal(live.OrderBy(p=>p.AtMs).Select(p=>p.AtMs),live.Select(p=>p.AtMs));
     }
+
+    // Fix round 1, M1: the table is built in Prepare, so a key with no light, or a held key's repeat, costs no name matching and no
+    // allocation on the hook's thread.
+    [Fact]
+    public void An_unmapped_key_or_a_held_repeat_allocates_nothing()
+    {
+        var g=Gate();
+        g.Prepare([Kb("kb1",Board),Kb("kb2",Board)]);
+        g.OnKey(A,false,false,false);
+        g.OnKey(Q,false,false,false);g.OnKey(A,false,false,false); // warm up both paths
+        var before=GC.GetAllocatedBytesForCurrentThread();
+        for(var i=0;i<1000;i++){g.OnKey(Q,false,false,false);g.OnKey(Q,false,false,true);g.OnKey(A,false,false,false);}
+        Assert.Equal(0,GC.GetAllocatedBytesForCurrentThread()-before);
+        Assert.Equal(1,pressed);
+    }
+
+    // Fix round 1, M8: preparing the same table again (as every raised state does) while someone types drops no key event: every down
+    // after an up counts.
+    [Fact]
+    public async Task Preparing_the_same_table_while_typing_drops_nothing()
+    {
+        var clock=0L;var count=0;
+        var g=new KeyPressGate(()=>Interlocked.Increment(ref clock),()=>Interlocked.Increment(ref count));
+        g.Prepare([Kb("kb1",Board)]);
+        using var stop=new CancellationTokenSource();
+        var preparing=Task.Run(()=>{while(!stop.IsCancellationRequested) g.Prepare([Kb("kb1",Board.ToArray())]);});
+        for(var i=0;i<20_000;i++){g.OnKey(A,false,false,false);g.OnKey(A,false,false,true);}
+        stop.Cancel();await preparing;
+        Assert.Equal(20_000,Volatile.Read(ref count));
+    }
 }

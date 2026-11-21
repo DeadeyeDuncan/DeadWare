@@ -2602,12 +2602,15 @@ public sealed class DeviceHostTests : IAsyncLifetime
         bool installed;
         int starts,stops;
         public volatile bool FailStart;
+        public volatile string? Refusal; // Start throws with this, as the real hook does when Windows refuses
         public KeyPressGate? Gate;
         public DateTimeOffset StartedAt;
         public bool Installed{get{lock(sync)return installed;}}
         public int Starts{get{lock(sync)return starts;}}
         public int Stops{get{lock(sync)return stops;}}
-        public bool Start(KeyPressGate gate){lock(sync){starts++;Gate=gate;if(FailStart) return false;installed=true;StartedAt=time.GetUtcNow();return true;}}
+        public bool Start(KeyPressGate gate){lock(sync){starts++;Gate=gate;if(Refusal is{} why) throw new InvalidOperationException(why);if(FailStart) return false;installed=true;StartedAt=time.GetUtcNow();return true;}}
+        // The hook goes away by itself, as when its thread's message loop ends or Windows removes it.
+        public void Die(){lock(sync)installed=false;}
         public void Stop(){lock(sync){stops++;installed=false;}}
         public void Dispose(){}
     }
@@ -2878,5 +2881,50 @@ public sealed class DeviceHostTests : IAsyncLifetime
         string[] allowed=[@"^Key presses: watching, for \d+ keyboard\(s\)\.$",@"^Key presses: not watching\.$",@"^Key presses: couldn't watch for key presses \(.*\)\.$"];
         Assert.All(added,l=>Assert.Contains(allowed,a=>System.Text.RegularExpressions.Regex.IsMatch(l,a)));
         Assert.Equal(["Key presses: not watching."],added);
+    }
+
+    // Fix round 1, M4: a hook that goes away by itself makes the state truthful at the next tick, and is started again.
+    [Fact]
+    public async Task A_hook_that_dies_is_noticed_at_the_next_tick()
+    {
+        var (h,keys)=await Watching(Ripple());
+        var states=StatesOf(h);
+        await RunFor(TimeSpan.FromSeconds(1),DeviceHost.Tick);
+        keys.FailStart=true;
+        keys.Die();
+        await AdvanceUntil(()=>{lock(states)return states.Any(s=>!s.KeyHook);},limit:TimeSpan.FromSeconds(1));
+        Assert.Equal(2,keys.Starts); // tried again
+        Assert.False(h.State.KeyHook);
+        Assert.Single(LogLines("Key presses: couldn't watch for key presses ("));
+        await RunFor(TimeSpan.FromSeconds(2),DeviceHost.Tick);
+        Assert.Single(states); // one state, not one per tick
+        keys.FailStart=false;
+        Assert.True((await Send(h,new SetBrightnessRequest(40))).Ok); // a failed start is tried again at the next state
+        Assert.Equal(3,keys.Starts);
+        Assert.True(keys.Installed);Assert.True(h.State.KeyHook);
+    }
+
+    // Fix round 1, M5: when Start throws with Windows' reason, the couldn't-watch line carries it.
+    [Fact]
+    public async Task A_refused_hook_is_logged_with_the_reason()
+    {
+        NameApexKeys();
+        var keys=new FakeKeys(time){Refusal="Windows refused the keyboard hook: Access is denied. (5)"};
+        var h=Build(keys:keys);Start(h);
+        await Until(()=>h.State.Status==HostStatus.Running);
+        Assert.True((await Send(h,new SetDeviceLayersRequest(ApexKey,[Ripple()]))).Ok);
+        Assert.Equal(["Key presses: couldn't watch for key presses (Windows refused the keyboard hook: Access is denied. (5))."],
+            LogLines("Key presses:").Select(l=>l[(l.IndexOf(' ')+1)..].TrimEnd('\r')));
+        Assert.False(h.State.KeyHook);
+    }
+
+    // Fix round 1, M6: the light-names line, once, with at most 20 of the unknown names.
+    [Fact]
+    public async Task The_light_names_line_lists_at_most_twenty_unknown_names()
+    {
+        var (h,keys)=await Watching(Ripple());
+        Assert.True((await Send(h,new SetBrightnessRequest(40))).Ok);
+        var want="SteelSeries Apex Pro: 4 of 112 light names are known keys; not known: "+string.Join(", ",Enumerable.Range(4,20).Select(i=>"Key "+i))+" and 88 more.";
+        Assert.Equal([want],LogLines("light names are known keys").Select(l=>l[(l.IndexOf(' ')+1)..].TrimEnd('\r')));
     }
 }

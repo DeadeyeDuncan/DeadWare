@@ -154,7 +154,7 @@ internal sealed class DeviceHost : IAsyncDisposable
 
     // The keyboards whose key presses matter: lights on, painted, a fade or ripple layer of some strength over at least one light
     // (LightingLayers.NeedsKeys), and at least one light named for a known key. Each such keyboard's light names are logged once per
-    // device-list change: facts about the device, never about what was pressed.
+    // device-list change: facts about the device, never about what was pressed. At most MaxNamesLogged unknown names are listed.
     List<(string DeviceKey,IReadOnlyList<string> LightNames)> WatchedLocked()
     {
         var r=new List<(string,IReadOnlyList<string>)>();
@@ -162,16 +162,22 @@ internal sealed class DeviceHost : IAsyncDisposable
         {
             if(d.LedNames is not{Count:>0} names||!LightingLayers.NeedsKeys(settings,d)) continue;
             var unknown=KeyPressTable.Unrecognised(names);
-            if(namesLogged.Add(d.Key)) log.Write($"{d.Name}: {names.Count-unknown.Count} of {names.Count} light names are known keys; not known: {(unknown.Count==0?"none":string.Join(", ",unknown))}.");
+            if(namesLogged.Add(d.Key)) log.Write($"{d.Name}: {names.Count-unknown.Count} of {names.Count} light names are known keys; not known: {UnknownText(unknown)}.");
             if(unknown.Count<names.Count) r.Add((d.Key,names));
         }
         return r;
     }
 
+    const int MaxNamesLogged=20;
+    static string UnknownText(IReadOnlyList<string> unknown)=>unknown.Count==0?"none"
+        :string.Join(", ",unknown.Take(MaxNamesLogged))+(unknown.Count>MaxNamesLogged?$" and {unknown.Count-MaxNamesLogged} more":"");
+    static void StopQuietly(IKeyPressSource keys){try{keys.Stop();}catch(Exception){}}
+
     // The key-press rule, point 7: the source runs only while the host is Running with a session and some keyboard needs key presses. With
     // none it is stopped and the gate forgets every press and held key; with some the gate gets their table and the source is started if it
     // isn't. A start that fails is logged once and tried again at the next call. refresh (every KeyRefresh while started): stop, forget held
-    // keys, start again, silently unless Installed changes. Returns whether Installed changed.
+    // keys, start again, silently unless Installed changes. A source that was started but is no longer installed (Windows removed the hook,
+    // or its thread ended) counts as not started, so it is started again here. Returns whether Installed changed.
     bool Watch(bool refresh=false)
     {
         if(keys is null) return false;
@@ -182,7 +188,7 @@ internal sealed class DeviceHost : IAsyncDisposable
             lock(gate){before=keyHook;want=engineActive&&sessionOk&&status==HostStatus.Running?WatchedLocked():[];}
             if(want.Count==0)
             {
-                if(watchStarted){keys.Stop();watchStarted=false;}
+                if(watchStarted){StopQuietly(keys);watchStarted=false;}
                 presses.Prepare([]);
                 watchFailLogged=false;
                 if(watchLogged>0){watchLogged=0;log.Write("Key presses: not watching.");}
@@ -190,7 +196,7 @@ internal sealed class DeviceHost : IAsyncDisposable
             else
             {
                 presses.Prepare(want);
-                if(watchStarted&&refresh){keys.Stop();watchStarted=false;presses.Released();}
+                if(watchStarted&&(refresh||!keys.Installed)){StopQuietly(keys);watchStarted=false;presses.Released();}
                 if(!watchStarted)
                 {
                     string? why=null;
@@ -198,7 +204,7 @@ internal sealed class DeviceHost : IAsyncDisposable
                     if(watchStarted){watchFailLogged=false;refreshAt=time.GetTimestamp()+(long)(KeyRefresh.TotalSeconds*time.TimestampFrequency);}
                     else
                     {
-                        try{keys.Stop();}catch(Exception){}
+                        StopQuietly(keys);
                         watchLogged=0;
                         if(!watchFailLogged){watchFailLogged=true;log.Write($"Key presses: couldn't watch for key presses ({why??StartRefused}).");}
                     }
@@ -211,12 +217,15 @@ internal sealed class DeviceHost : IAsyncDisposable
         }
     }
     bool RefreshDue(){if(keys is null) return false;lock(watchGate)return watchStarted&&time.GetTimestamp()>=refreshAt;}
+    // The source's Installed differs from what the last state said (fix round 1, M4): a hook whose thread died, or that Windows removed, is
+    // noticed at the next tick, and the Raise this brings tries it again and makes the state truthful.
+    bool KeyHookStale(){if(keys is null) return false;var now=keys.Installed;lock(gate)return now!=keyHook;}
     void StopWatching()
     {
         if(keys is null) return;
         lock(watchGate)
         {
-            try{keys.Stop();}catch(Exception e){log.Write("Key presses: stopping failed: "+e.Message);}
+            StopQuietly(keys);
             watchStarted=false;
             presses.Prepare([]);
             if(watchLogged>0){watchLogged=0;log.Write("Key presses: not watching.");}
@@ -267,7 +276,7 @@ internal sealed class DeviceHost : IAsyncDisposable
                 var slow=time.GetElapsedTime(lastSlow,now)>=SlowTick;
                 if(slow){lastSlow=now;await CheckConflictsAsync(ct).ConfigureAwait(false);}
                 TickWork(slow);
-                if(RefreshDue()&&Watch(refresh:true)) Raise();
+                if(RefreshDue()?Watch(refresh:true):KeyHookStale()) Raise();
             }
         }
         catch(OperationCanceledException){}

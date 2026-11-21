@@ -11,6 +11,7 @@ namespace DeadWare.Devices.Tests;
 public sealed class KeyPressRuleTests
 {
     static readonly string[] Allowed=["SetWindowsHookEx","UnhookWindowsHookEx","CallNextHookEx","GetMessage","PostThreadMessage","GetModuleHandle","GetCurrentThreadId"];
+    static readonly string[] Dynamic=["NativeLibrary","GetProcAddress","delegate* unmanaged","delegate*unmanaged"];
     static readonly string[] Forbidden=["ToUnicode","ToAscii","MapVirtualKey","VkKeyScan","GetKeyState","GetAsyncKeyState","GetKeyboardState","GetKeyNameText","GetKeyboardLayout","GetRawInputData","RegisterRawInputDevices","Console.ReadKey"];
 
     [Fact]
@@ -74,6 +75,10 @@ public sealed class KeyPressRuleTests
         foreach(var (name,text) in all)
             foreach(var word in Forbidden)
                 Assert.False(text.Contains(word,StringComparison.Ordinal),$"{name} mentions {word}");
+        // Fix round 1, M3: no binding to Windows functions by other means than the import attributes counted below.
+        foreach(var (name,text) in all)
+            foreach(var word in Dynamic)
+                Assert.False(text.Contains(word,StringComparison.Ordinal),$"{name} binds a function by other means: {word}");
         var hook=all.Single(s=>s.Name=="DeadWare.Devices/KeyPressHook.cs").Text;
         Assert.DoesNotContain("vkCode",hook);
         // Each imported entry point: the method declared after a DllImport or LibraryImport attribute, or its EntryPoint when one is given.
