@@ -175,4 +175,140 @@ public class LightingPaintTests
         var p=LightingPaint.Paint(new LightingSettings(),Dev("Mystery","Breathing"));
         Assert.Equal(PaintKind.Unsupported,p.Kind);
     }
+
+    // Step 3a: device tuning and keyboard modes. A keyboard of one zone of 3 lights at X 0, 0.5 and 1.
+    private static LightingDevice Kb(params string[] modes)=>
+        new("kb|1","Apex",KeyMaps.KeyboardType,[new LightingZone(0,"Keyboard",3,new ZoneMatrix(3,1,[0,1,2]))],modes.Length==0?["Direct"]:modes,0);
+
+    // The integer form keeps today's output bit for bit: v*page/100 rounded away from zero, for every channel value and page brightness.
+    [Fact]
+    public void Default_tuning_changes_nothing()
+    {
+        for(var v=0;v<=255;v++)
+            for(var p=0;p<=100;p++)
+            {
+                var c=new Rgb((byte)v,(byte)v,(byte)v);
+                if(LightingPaint.Tune(c,null,p)!=c.Scale(p)) Assert.Fail($"v {v}, page {p}: {LightingPaint.Tune(c,null,p)} is not {c.Scale(p)}");
+            }
+        s.Layout.Zones[LightingKeys.Zone(d.Key,0)]=new(0,0);s.Layout.Zones[LightingKeys.Zone(d.Key,1)]=new(0.37,0.2);s.Brightness=58;
+        var expected=d.Zones.SelectMany(z=>Enumerable.Repeat(LightingPaint.ZoneShown(s,d,z,777).Scale(58),z.LedCount));
+        Assert.Equal(expected,LightingPaint.Paint(s,d,777).Colors);
+    }
+    // Blue tells one rounding from rounding per stage: 3 at 50% correction is 1.5, then 50% and 50% give 0.375, so 0; rounded after the
+    // correction it is 2, and 0.5 rounds to 1, as it does rounding after each brightness too (2, 1, 0.5 to 1) (whole-branch review 1, D5).
+    [Fact] public void Correction_then_brightness_with_one_rounding()=>
+        Assert.Equal(new Rgb(51,13,0),LightingPaint.Tune(new(101,51,3),new DeviceTuning{Brightness=50,Correction=new(){R=200,G=100,B=50}},50));
+    // The design's own case, the part of DeadLight's compose test that needs no key paint or layers. Kept beside the one above, whose blue
+    // input was chosen to tell one rounding from two and so no longer checks a blue channel that survives.
+    [Fact] public void The_designs_reduced_DeadLight_case()=>
+        Assert.Equal(new Rgb(51,13,3),LightingPaint.Tune(new(101,51,21),new DeviceTuning{Brightness=50,Correction=new(){R=200,G=100,B=50}},50));
+    [Fact] public void Correction_clamps_at_255_before_brightness()=>
+        Assert.Equal(new Rgb(128,0,0),LightingPaint.Tune(new(200,0,0),new DeviceTuning{Brightness=50,Correction=new(){R=200}},100));
+    [Fact]
+    public void Brightness_zero_and_correction_zero_are_black()
+    {
+        var white=new Rgb(255,255,255);
+        Assert.Equal(Rgb.Black,LightingPaint.Tune(white,new DeviceTuning{Brightness=0},100));
+        Assert.Equal(Rgb.Black,LightingPaint.Tune(white,new DeviceTuning{Correction=new(){R=0,G=0,B=0}},100));
+        Assert.Equal(Rgb.Black,LightingPaint.Tune(white,new DeviceTuning{Correction=new(){R=200,G=200,B=200}},0));
+        var kb=Kb();s.Devices[kb.Key]=new DeviceTuning{Brightness=0};
+        Assert.All(LightingPaint.Paint(s,kb,0).Colors,c=>Assert.Equal(Rgb.Black,c));
+    }
+    [Fact]
+    public void Lights_off_is_black_whatever_the_tuning_or_mode()
+    {
+        var kb=Kb();
+        s.Devices[kb.Key]=new DeviceTuning{Brightness=80,Correction=new(){R=200,G=150,B=50},Mode=new(){Kind=DeviceModes.Wave,Speed=60}};
+        s.LightsOn=false;
+        var p=LightingPaint.Paint(s,kb,4321);
+        Assert.Equal(PaintKind.Direct,p.Kind);Assert.Equal(3,p.Colors.Length);Assert.All(p.Colors,c=>Assert.Equal(Rgb.Black,c));
+    }
+    [Fact]
+    public void A_hardware_device_ignores_tuning_and_mode()
+    {
+        var kb=Kb("Direct","Spectrum");
+        s.HardwareModes[kb.Key]="Spectrum";
+        s.Devices[kb.Key]=new DeviceTuning{Brightness=30,Correction=new(){R=0},Mode=new(){Kind=DeviceModes.Cycle}};
+        var p=LightingPaint.Paint(s,kb,999);
+        Assert.Equal(PaintKind.Hardware,p.Kind);Assert.Equal("Spectrum",p.Mode);Assert.Empty(p.Colors);
+        Assert.Equal(30,s.Devices[kb.Key].Brightness);
+    }
+    [Fact]
+    public void A_keyboard_mode_replaces_the_desk_effect_for_that_device_only()
+    {
+        var kb=Kb();
+        s.Layout.Zones[LightingKeys.Zone(d.Key,0)]=new(0,0);s.Layout.Zones[LightingKeys.Zone(d.Key,1)]=new(0.8,0);s.Layout.Zones[LightingKeys.Zone(kb.Key,0)]=new(0.8,0);
+        var strip=LightingPaint.Paint(s,d,2500).Colors;
+        var desk=LightingPaint.ZoneShown(s,kb,kb.Zones[0],2500);
+        Assert.All(LightingPaint.Paint(s,kb,2500).Colors,c=>Assert.Equal(desk,c));                                      // the desk wave's colour at its point
+        var mode=new DeviceMode{Kind=DeviceModes.Cycle,Speed=20};
+        s.Devices[kb.Key]=new DeviceTuning{Mode=mode};
+        Assert.Equal(DeviceModes.Frame(s,kb,mode,2500),LightingPaint.Paint(s,kb,2500).Colors);
+        Assert.Equal(DeviceModes.Frame(s,kb,mode,2500),LightingPaint.Lights(s,kb,2500));
+        Assert.Equal(strip,LightingPaint.Paint(s,d,2500).Colors);
+    }
+    // Spec, "A saved mode that can't run": the device is painted as Static (its saved zone colours), not with the desk effect.
+    [Fact]
+    public void A_saved_mode_that_cant_run_paints_static_under_a_moving_desk_effect()
+    {
+        var blind=Kb() with{Zones=[new LightingZone(0,"Keyboard",3)]};
+        s.Layout.Zones[LightingKeys.Zone(blind.Key,0)]=new(0,0);s.Layout.Zones[LightingKeys.Zone(d.Key,0)]=new(0,0);s.Layout.Zones[LightingKeys.Zone(d.Key,1)]=new(0.8,0);
+        s.ZoneColors[LightingKeys.Zone(d.Key,1)]=new ZoneColorEntry{Color="#20C040",ZoneName="B"};
+        s.Brightness=50;
+        Assert.Equal(new Rgb(128,0,0),LightingPaint.Paint(s,blind,0).Colors[0]);                                       // the moving desk wave reaches it
+        s.Devices[blind.Key]=new DeviceTuning{Mode=new(){Kind=DeviceModes.Wave}};
+        s.Devices[d.Key]=new DeviceTuning{Mode=new(){Kind=DeviceModes.Breathing}};
+        Assert.Equal(Enumerable.Repeat(new Rgb(0x46,0x82,0xB4).Scale(50),3),LightingPaint.Paint(s,blind,0).Colors);
+        Assert.Equal([..Enumerable.Repeat(new Rgb(0x46,0x82,0xB4).Scale(50),2),..Enumerable.Repeat(new Rgb(0x20,0xC0,0x40).Scale(50),3)],LightingPaint.Paint(s,d,0).Colors);
+    }
+    [Fact]
+    public void Animating_needs_lights_on_and_a_moving_desk_effect_or_a_running_animated_mode()
+    {
+        var kb=Kb("Direct","Spectrum");
+        void Both(bool expected)
+        {
+            var devices=new[]{kb,d};
+            var views=devices.Select(x=>LightingPaint.View(s,x)).ToList();
+            Assert.Equal(expected,LightingPaint.Animating(s,devices));
+            Assert.Equal(expected,LightingPaint.Animating(s,views));
+        }
+        Both(true);                                                                                                       // the desk wave
+        s.Effect.Kind="Static";Both(false);
+        s.Devices[kb.Key]=new DeviceTuning{Mode=new(){Kind=DeviceModes.Wave}};Both(true);
+        s.LightsOn=false;Both(false);s.LightsOn=true;
+        s.HardwareModes[kb.Key]="Spectrum";Both(false);s.HardwareModes.Clear();
+        kb=kb with{Zones=[new LightingZone(0,"Keyboard",3)]};Both(false);                                               // saved, but it can't run
+        kb=Kb("Direct","Spectrum");Both(true);
+        s.Devices[kb.Key].Mode!.Kind=DeviceModes.Static;Both(false);
+    }
+    // Whole-branch review 1, D3: a null view, as a damaged state over the pipe could hold, is skipped, not dereferenced.
+    [Fact]
+    public void Animating_skips_a_null_view()
+    {
+        var kb=Kb();
+        s.Effect.Kind="Static";
+        Assert.False(LightingPaint.Animating(s,new DeviceView?[]{null,LightingPaint.View(s,d)}));
+        s.Devices[kb.Key]=new DeviceTuning{Mode=new(){Kind=DeviceModes.Wave}};
+        Assert.True(LightingPaint.Animating(s,new DeviceView?[]{null,LightingPaint.View(s,kb)}));
+    }
+    [Fact]
+    public void View_carries_tuning_mode_problem_and_keys()
+    {
+        var kb=Kb();
+        var plain=LightingPaint.View(s,kb);
+        Assert.Equal(100,plain.Brightness);Assert.Null(plain.Correction);Assert.Null(plain.LightingMode);Assert.Null(plain.ModeProblem);
+        Assert.True(plain.Keyboard);Assert.True(plain.Wave);
+        Assert.NotNull(plain.Keys);Assert.Equal(new double?[]{0,0.5,1},plain.Keys!.X);
+        s.Devices[kb.Key]=new DeviceTuning{Brightness=40,Correction=new(){R=120,G=90,B=80},Mode=new(){Kind=DeviceModes.Wave,Speed=70}};
+        var v=LightingPaint.View(s,kb);
+        Assert.Equal(40,v.Brightness);Assert.Equal((120,90,80),(v.Correction!.R,v.Correction.G,v.Correction.B));
+        Assert.Equal((DeviceModes.Wave,70),(v.LightingMode!.Kind,v.LightingMode.Speed));Assert.Null(v.ModeProblem);
+        var blind=LightingPaint.View(s,kb with{Zones=[new LightingZone(0,"Keyboard",3)]});
+        Assert.Equal(DeviceModes.Wave,blind.LightingMode!.Kind);Assert.Equal("This keyboard doesn't report its key positions.",blind.ModeProblem);
+        Assert.True(blind.Keyboard);Assert.False(blind.Wave);Assert.Null(blind.Keys);
+        var strip=LightingPaint.View(s,d);
+        Assert.False(strip.Keyboard);Assert.False(strip.Wave);Assert.Null(strip.Keys);Assert.Null(strip.LightingMode);
+        s.Devices[d.Key]=new DeviceTuning{Mode=new(){Kind=DeviceModes.Breathing}};
+        Assert.Equal("Lighting modes are for keyboards.",LightingPaint.View(s,d).ModeProblem);
+    }
 }

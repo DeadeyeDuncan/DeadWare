@@ -25,6 +25,7 @@ public static partial class LightingKeys
         var byLocation=new Dictionary<string,string?>();
         foreach(var k in liveDeviceKeys){var loc=LocationOf(k);byLocation[loc]=byLocation.ContainsKey(loc)?null:k;}
         var stored=new HashSet<string>(settings.HardwareModes.Keys);
+        foreach(var k in settings.Devices.Keys) stored.Add(k);
         foreach(var k in settings.ZoneColors.Keys) stored.Add(TrySplitZone(k,out var d,out _)?d:k);
         foreach(var k in settings.Layout.Zones.Keys) stored.Add(TrySplitZone(k,out var d,out _)?d:k);
         foreach(var k in settings.Layout.Tower.Members) stored.Add(k);
@@ -47,6 +48,7 @@ public static partial class LightingKeys
         }
         settings.ZoneColors=settings.ZoneColors.ToDictionary(e=>Rekey(e.Key),e=>e.Value);
         settings.HardwareModes=settings.HardwareModes.ToDictionary(e=>Rekey(e.Key),e=>e.Value);
+        settings.Devices=settings.Devices.ToDictionary(e=>Rekey(e.Key),e=>e.Value);
         var lay=settings.Layout;
         lay.Zones=lay.Zones.ToDictionary(e=>Rekey(e.Key),e=>e.Value);
         lay.Tower.Members=lay.Tower.Members.Select(Rekey).Distinct().ToList();

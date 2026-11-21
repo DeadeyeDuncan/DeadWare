@@ -6,7 +6,8 @@ public enum HostStatus { Starting, Waiting, Running, Blocked, OpenRgbMissing, Op
 public sealed record ZoneView(string Key,int Index,string Name,int LedCount,string Color,bool OwnColor);
 // Mode: what the device is set to now (a hardware device shows Static while lights are off). OwnEffect: its own hardware effect, and
 // StaysLitWhenOff: whether it stays lit while lights are off (a hardware effect and no Static mode); both hold whatever Lights on is.
-public sealed record DeviceView(string Key,string Name,int Type,PaintKind Kind,string? Mode,string? OwnEffect,bool StaysLitWhenOff,IReadOnlyList<ZoneView> Zones);
+public sealed record DeviceView(string Key,string Name,int Type,PaintKind Kind,string? Mode,string? OwnEffect,bool StaysLitWhenOff,IReadOnlyList<ZoneView> Zones,
+    int Brightness=100,DeviceCorrection? Correction=null,DeviceMode? LightingMode=null,string? ModeProblem=null,bool Keyboard=false,bool Wave=false,KeyMapView? Keys=null);
 // ConflictsChecked: the host has completed a conflict scan since it started, so an empty Conflicts list means nothing was found (polish
 // item 2). One that never scans, such as one whose OpenRGB settings folder was refused, leaves it false. Optional on the wire, and false
 // when absent, so the protocol stays version 1.
@@ -26,6 +27,8 @@ public sealed record HostState(HostStatus Status,string Message,bool Elevated,IR
 [JsonDerivedType(typeof(SetLayoutRequest),"setLayout")]
 [JsonDerivedType(typeof(SubscribePreviewRequest),"subscribePreview")]
 [JsonDerivedType(typeof(PreviewEvent),"preview")]
+[JsonDerivedType(typeof(SetDeviceTuningRequest),"setDeviceTuning")]
+[JsonDerivedType(typeof(SetDeviceModeRequest),"setDeviceMode")]
 public abstract record HostMessage
 {
     [JsonRequired] public int Version { get; init; } = DeviceHostProtocol.Version;
@@ -44,18 +47,25 @@ public sealed record StateEvent(HostState State) : HostMessage;
 public sealed record SetEffectRequest(string Kind,EffectParams? Params) : HostMessage;
 public sealed record SetLayoutRequest(DeskLayout Layout) : HostMessage;
 public sealed record SubscribePreviewRequest(bool On) : HostMessage;
-public sealed record PreviewEvent(Dictionary<string,string> Colors) : HostMessage;
+// Colors: zone key -> #RRGGBB. Lights (step 3a): device key -> its lights' colours packed as upper-case RRGGBB per light, no separator, for
+// each painted device with a key map. Both are the colours before tuning and brightness.
+public sealed record PreviewEvent(Dictionary<string,string> Colors,Dictionary<string,string>? Lights=null) : HostMessage;
+// Step 3a. A null member leaves that setting as it is; ResetCorrection removes the correction (and wins over one sent with it).
+public sealed record SetDeviceTuningRequest(string DeviceKey,int? Brightness=null,DeviceCorrection? Correction=null,bool ResetCorrection=false) : HostMessage;
+// Kind null: follow the desk effect.
+public sealed record SetDeviceModeRequest(string DeviceKey,string? Kind,int Speed=40) : HostMessage;
 [JsonSourceGenerationOptions(UseStringEnumConverter=true)]
 [JsonSerializable(typeof(HostMessage))]
 internal sealed partial class DeviceHostJsonContext : JsonSerializerContext;
 // The short codes a failed Reply can carry (the host's own sentences, such as a validation message, are shown as they are), and their plain words.
 public static class HostReplyCodes
 {
-    public const string Starting="starting",Unsupported="unsupported",RescanFailed="rescan failed",UnknownZone="unknown zone",CouldntSave="couldn't save settings",Version="version",InternalError="internal error";
+    public const string Starting="starting",Unsupported="unsupported",RescanFailed="rescan failed",UnknownZone="unknown zone",CouldntSave="couldn't save settings",Version="version",InternalError="internal error",UnknownDevice="unknown device";
     public static string Explain(string why)=>why switch
     {
         Starting=>"The lighting helper is still starting. Try again in a moment.",
         UnknownZone=>"That zone isn't listed any more. Its device may have been unplugged.",
+        UnknownDevice=>"That device isn't listed any more. It may have been unplugged.",
         CouldntSave=>"DeadWare couldn't save your lighting settings, so the change wasn't made.",
         InternalError=>"The lighting helper hit an error. Details are in its log, devices.log.",
         RescanFailed=>"The lighting helper lost its connection to OpenRGB and is reconnecting.",

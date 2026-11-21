@@ -1,7 +1,7 @@
 namespace DeadWare.Core;
 
-public sealed record LightingZone(int Index,string Name,int LedCount);
-public sealed record LightingDevice(string Key,string Name,int Type,IReadOnlyList<LightingZone> Zones,IReadOnlyList<string> Modes,int ActiveMode);
+public sealed record LightingZone(int Index,string Name,int LedCount,ZoneMatrix? Matrix=null);
+public sealed record LightingDevice(string Key,string Name,int Type,IReadOnlyList<LightingZone> Zones,IReadOnlyList<string> Modes,int ActiveMode,IReadOnlyList<string>? LedNames=null);
 public enum PaintKind { Direct, Hardware, Unsupported }
 public sealed record DevicePaint(PaintKind Kind,string? Mode,Rgb[] Colors,bool StaysLitWhenOff);
 
@@ -38,8 +38,40 @@ public static class LightingPaint
             var own=settings.ZoneColors.TryGetValue(zk,out var e)&&e.ZoneName==z.Name;
             return new ZoneView(zk,z.Index,z.Name,z.LedCount,ZoneColor(settings,device,z).ToHex(),own);
         }).ToList();
-        return new DeviceView(device.Key,device.Name,device.Type,p.Kind,p.Mode,own,own is not null&&!device.Modes.Contains(StaticMode),zones);
+        // Step 3a: the saved tuning and mode, copied so a view never shares the live settings' objects; the mode even when it can't run,
+        // with the reason.
+        var t=DeviceTunings.Of(settings,device.Key);
+        var c=t?.Correction is{} k?new DeviceCorrection{R=k.R,G=k.G,B=k.B}:null;
+        var mode=t?.Mode is{} m?new DeviceMode{Kind=m.Kind,Speed=m.Speed}:null;
+        return new DeviceView(device.Key,device.Name,device.Type,p.Kind,p.Mode,own,own is not null&&!device.Modes.Contains(StaticMode),zones,
+            t?.Brightness??100,c,mode,mode is null?null:DeviceModes.CantRun(device,mode.Kind),KeyMaps.IsKeyboard(device),KeyMaps.SupportsWave(device),KeyMaps.Of(device));
     }
+    // The base frame, one colour per light before tuning: the device's running keyboard mode; Static for a saved mode it can't run now
+    // (spec: painted as Static, nothing deleted); else each zone's colour as the desk shows it.
+    public static Rgb[] Lights(LightingSettings s,LightingDevice d,double tMs)
+    {
+        if(DeviceModes.Running(s,d) is{} m) return DeviceModes.Frame(s,d,m,tMs);
+        if(DeviceTunings.Of(s,d.Key)?.Mode is not null) return DeviceModes.Frame(s,d,new DeviceMode{Kind=DeviceModes.Static},tMs);
+        var colors=new List<Rgb>();
+        foreach(var z in d.Zones){var c=ZoneShown(s,d,z,tMs);for(var i=0;i<z.LedCount;i++) colors.Add(c);}
+        return colors.ToArray();
+    }
+    // Colour correction, then device and page brightness, with one rounding at the end. Integers until that last step, so that with no
+    // tuning it is exactly Rgb.Scale(page): v*100*100*page/1e6 is the same double as v*page/100.0. Never multiply by fractions here.
+    public static Rgb Tune(Rgb c,DeviceTuning? t,int pageBrightness)
+    {
+        int device=t?.Brightness??100,page=Math.Clamp(pageBrightness,0,100);
+        var k=t?.Correction;
+        byte Ch(byte v,int gain){var n=Math.Min(v*gain,25500);return (byte)Math.Round(n*device*page/1_000_000.0,MidpointRounding.AwayFromZero);}
+        return new(Ch(c.R,k?.R??100),Ch(c.G,k?.G??100),Ch(c.B,k?.B??100));
+    }
+    private static bool Painted(LightingSettings s,LightingDevice d)=>HardwareModeFor(s,d) is null&&d.Modes.Contains(DirectMode);
+    // Something moves: lights on and a desk effect running, or a painted device running an animated keyboard mode.
+    public static bool Animating(LightingSettings s,IEnumerable<LightingDevice> devices)=>
+        s.LightsOn&&(EffectRunning(s)||devices.Any(d=>Painted(s,d)&&DeviceModes.Animated(DeviceModes.Running(s,d)?.Kind)));
+    // A null view, as a damaged state over the pipe could hold, is skipped as the window's other view code does.
+    public static bool Animating(LightingSettings s,IEnumerable<DeviceView?> devices)=>
+        s.LightsOn&&(EffectRunning(s)||devices.Any(v=>v is not null&&v.Kind==PaintKind.Direct&&DeviceModes.Animated(v.LightingMode?.Kind)&&v.ModeProblem is null));
     public static bool EffectRunning(LightingSettings settings)=>settings.LightsOn&&LightingEffects.KindOf(settings.Effect.Kind)!=EffectKind.Static;
     // The zone's colour before brightness: its static colour, unless an effect is selected and the zone's device is placed with a point for the zone.
     public static Rgb ZoneShown(LightingSettings settings,LightingDevice device,LightingZone zone,double tMs)
@@ -58,12 +90,9 @@ public static class LightingPaint
             return device.Modes.Contains(StaticMode)?new(PaintKind.Hardware,StaticMode,[Rgb.Black],false):new(PaintKind.Hardware,mode,[],true);
         }
         if(!device.Modes.Contains(DirectMode)) return new(PaintKind.Unsupported,null,[],false);
-        var colors=new List<Rgb>();
-        foreach(var z in device.Zones)
-        {
-            var c=settings.LightsOn?ZoneShown(settings,device,z,tMs).Scale(settings.Brightness):Rgb.Black;
-            for(int i=0;i<z.LedCount;i++) colors.Add(c);
-        }
-        return new(PaintKind.Direct,DirectMode,colors.ToArray(),false);
+        var lights=Lights(settings,device,tMs);
+        var tuning=DeviceTunings.Of(settings,device.Key);
+        for(var i=0;i<lights.Length;i++) lights[i]=settings.LightsOn?Tune(lights[i],tuning,settings.Brightness):Rgb.Black;
+        return new(PaintKind.Direct,DirectMode,lights,false);
     }
 }

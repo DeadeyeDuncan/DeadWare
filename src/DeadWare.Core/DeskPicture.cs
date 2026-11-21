@@ -6,13 +6,14 @@ public readonly record struct PicBox(double X,double Y,double W,double H) { publ
 public sealed record PicturePart(string Id,PartKind Kind,PictureView View,PicBox Box,string Label,string DeviceName,bool Prefix,int Ordinal,IReadOnlyList<int> Zones,int ShownZone);
 public sealed record DeskPicture(string Name,IReadOnlyList<string> Signature,PicBox Tower,PicBox Case,IReadOnlyList<PicturePart> Parts,IReadOnlyDictionary<string,string> OffPictureNames);
 public sealed record ResolvedPart(PicturePart Part,string? DeviceKey,IReadOnlyList<string> ZoneKeys,string? ShownZoneKey,bool OwnEffect) { public bool Found=>DeviceKey is not null; }
+public readonly record struct KeyRect(int Light,double X,double Y,double W,double H);
 public sealed record PictureScene(DeskPicture Picture,IReadOnlyList<ResolvedPart> Parts,IReadOnlyList<string> NotInPicture);
 
 // A fixed drawing of one known rig: where each device sits in the 720 by 450 box of the desk and inside views, and how that maps onto the wave's unit square.
 public static class DeskPictures
 {
     public const string OwnerRigName="b650m-link-hub";
-    private const double BoxW=720,BoxH=450,MinTap=28;
+    private const double BoxW=720,BoxH=450,MinTap=28,KeyInset=5;
     private const string Hub="Corsair iCUE Link System Hub",Board="MSI MAG B650M MORTAR WIFI (MS-7D76)",Node="Corsair Lighting Node Pro",Ram="Corsair Vengeance RGB DDR5";
     private static PicturePart P(string id,PartKind kind,PictureView view,double x,double y,double w,double h,string label,string device,bool prefix,int ordinal,int[] zones,int shown)=>new(id,kind,view,new PicBox(x,y,w,h),label,device,prefix,ordinal,zones,shown);
     public static DeskPicture OwnerRig {get;}=new(OwnerRigName,[Board,Hub],new PicBox(40,388,74,56),new PicBox(140,22,440,418),
@@ -30,6 +31,27 @@ public static class DeskPictures
         P("front2",PartKind.FanRing,PictureView.Inside,502,190,52,52,"Front fans",Node,false,0,[0],0),
         P("front3",PartKind.FanRing,PictureView.Inside,502,266,52,52,"Front fans",Node,false,0,[0],0),
     ],new Dictionary<string,string>{[Board]="MSI motherboard headers"});
+
+    // One rectangle per positioned light: the keyboard's lights inside its box inset by KeyInset. Centre at the inset box's origin plus half the key plus position times the room left over (box size minus key size), so a key at 0 or 1 sits whole against the edge,
+    // width KeyWidth of the inset width, height 0.8 of a row (the inset height over the number of distinct Y values), each at least 2 units; the clamp is only a guard.
+    public static IReadOnlyList<KeyRect> KeyRects(PicBox box,KeyMapView keys)
+    {
+        var list=new List<KeyRect>();
+        double x0=box.X+KeyInset,y0=box.Y+KeyInset,w0=Math.Max(0,box.W-2*KeyInset),h0=Math.Max(0,box.H-2*KeyInset);
+        int n=Math.Min(keys.X.Count,keys.Y.Count);
+        bool Has(int i)=>keys.X[i] is double x&&keys.Y[i] is double y&&double.IsFinite(x)&&double.IsFinite(y);
+        var rows=new HashSet<double>();
+        for(int i=0;i<n;i++) if(Has(i)) rows.Add(keys.Y[i]!.Value);
+        if(rows.Count==0) return list;
+        double kw=double.IsFinite(keys.KeyWidth)?Math.Max(0,keys.KeyWidth):0,w=Math.Min(Math.Max(2,kw*w0),w0),h=Math.Min(Math.Max(2,h0/rows.Count*0.8),h0);
+        for(int i=0;i<n;i++)
+        {
+            if(!Has(i)) continue;
+            double cx=x0+w/2+keys.X[i]!.Value*(w0-w),cy=y0+h/2+keys.Y[i]!.Value*(h0-h);
+            list.Add(new(i,Math.Clamp(cx-w/2,x0,x0+w0-w),Math.Clamp(cy-h/2,y0,y0+h0-h),w,h));
+        }
+        return list;
+    }
 
     public static DeskPicture? Named(string? name)=>name==OwnerRigName?OwnerRig:null;
     // A picture applies when all its signature devices are present, or once saved, whatever devices are found: one of them is the PC's own

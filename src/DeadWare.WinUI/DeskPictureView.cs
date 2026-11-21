@@ -1,4 +1,5 @@
 ﻿using System.Numerics;
+using DeadWare.App;
 using DeadWare.Core;
 using Microsoft.Graphics.Canvas;
 using Microsoft.Graphics.Canvas.Brushes;
@@ -54,7 +55,9 @@ internal sealed class DeskPictureView : UserControl
     private readonly record struct TextKey(string Text, float Size, bool Bold, CanvasHorizontalAlignment Align, float Spacing, float Width);
     private readonly Dictionary<TextKey, CanvasTextLayout> texts = [];
     private PictureScene? scene;
-    private IReadOnlyDictionary<string, string>? frame;
+    private PreviewColors? frame;
+    // Device key to its key map, for a device whose lights the keyboard part draws one by one.
+    private IReadOnlyDictionary<string, KeyMapView> keyMaps = new Dictionary<string, KeyMapView>(StringComparer.Ordinal);
     private IReadOnlyDictionary<string, string> stateColors = new Dictionary<string, string>(StringComparer.Ordinal);
     private PictureView view = PictureView.Desk;
     private string? selected, shownName;
@@ -120,11 +123,18 @@ internal sealed class DeskPictureView : UserControl
         Redraw();
     }
 
-    /// <summary>The latest preview frame, zone key to #RRGGBB; null uses the colours given by <see cref="SetStateColors"/>.</summary>
-    public void ShowColors(IReadOnlyDictionary<string, string>? colors)
+    /// <summary>The latest preview frame (zone colours and per-light colours); null uses the colours given by <see cref="SetStateColors"/>.</summary>
+    public void ShowColors(PreviewColors? colors)
     {
         if (colors is null && frame is null) return;
         frame = colors;
+        Redraw();
+    }
+
+    /// <summary>Device key to its key map, for the devices that have one. The keyboard part draws its keys when its device is here.</summary>
+    public void SetKeyMaps(IReadOnlyDictionary<string, KeyMapView> maps)
+    {
+        keyMaps = maps;
         Redraw();
     }
 
@@ -330,7 +340,7 @@ internal sealed class DeskPictureView : UserControl
     /// <summary>The colour of a zone: from the latest frame when it has the zone, else from the state; null when neither has it.</summary>
     private Color? ZoneColor(string key)
     {
-        string? hex = frame is not null && frame.TryGetValue(key, out var shown) ? shown : stateColors.GetValueOrDefault(key);
+        string? hex = frame is not null && frame.Zones.TryGetValue(key, out var shown) ? shown : stateColors.GetValueOrDefault(key);
         return Rgb.TryParse(hex, out var rgb) ? Color.FromArgb(255, rgb.R, rgb.G, rgb.B) : null;
     }
 
@@ -501,7 +511,9 @@ internal sealed class DeskPictureView : UserControl
         }
         if (look == Look.Lit) Glow(ds, box, g => Body(g, color));
         Body(ds, chosen ? Accent : color);
-        if (look != Look.Missing)
+        var keys = look != Look.Missing && part.DeviceKey is { } deviceKey && keyMaps.TryGetValue(deviceKey, out var map) ? map : null;
+        if (keys is not null) DrawKeys(ds, b, keys, part.DeviceKey!, look == Look.Lit ? color : null);
+        else if (look != Look.Missing)
             for (int i = 0; i < 4; i++)
             {
                 float y = (float)(b.Y + 14 + 11 * i);
@@ -509,6 +521,23 @@ internal sealed class DeskPictureView : UserControl
             }
         else NotFoundNote(ds, b.CenterX, b.CenterY, Anchor.Middle);
         Caption(ds, chosen ? part.Part.Label + " · selected" : part.Part.Label, 390, 172, 10.5f, chosen ? Accent : Labels, Anchor.Middle, 200);
+    }
+
+    /// <summary>
+    /// One rounded rectangle per positioned light. Each takes its colour from the frame's packed colours for the device (RRGGBB per light);
+    /// a key the frame has no readable colour for (no frame, no entry for the device, a string that isn't 6 characters per light, or
+    /// a bad hex pair) takes <paramref name="zone"/>, the part's zone colour. A null <paramref name="zone"/> draws every key unlit.
+    /// </summary>
+    private void DrawKeys(CanvasDrawingSession ds, PicBox box, KeyMapView keys, string deviceKey, Color? zone)
+    {
+        string? packed = null;
+        if (zone is not null && frame?.Lights is { } lights && lights.TryGetValue(deviceKey, out var text) && text.Length == 6 * keys.Names.Count) packed = text;
+        foreach (var key in DeskPictures.KeyRects(box, keys))
+        {
+            Color fill = zone ?? Unlit;
+            if (packed is not null && int.TryParse(packed.AsSpan(6 * key.Light, 6), System.Globalization.NumberStyles.AllowHexSpecifier, System.Globalization.CultureInfo.InvariantCulture, out int rgb)) fill = Hex(rgb);
+            ds.FillRoundedRectangle((float)key.X, (float)key.Y, (float)key.W, (float)key.H, 1.5f, 1.5f, fill);
+        }
     }
 
     private void DrawMouse(CanvasDrawingSession ds, ResolvedPart part)

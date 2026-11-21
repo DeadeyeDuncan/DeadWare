@@ -124,17 +124,17 @@ public class LightingSettingsCodecTests
     [Fact]
     public void Newer_version_loads_what_it_can_without_quarantine()
     {
-        var r = LightingSettingsCodec.Read("{\"Version\":2,\"Brightness\":40,\"Effect\":{\"Name\":\"Wave\"}}");
+        var r = LightingSettingsCodec.Read("{\"Version\":3,\"Brightness\":40,\"Effect\":{\"Name\":\"Wave\"}}");
         Assert.True(r.Newer);
         Assert.False(r.Quarantine);
         Assert.Equal(40, r.Settings.Brightness);
-        Assert.Equal(2, r.Settings.Version);
+        Assert.Equal(3, r.Settings.Version);
     }
 
     [Fact]
     public void Newer_version_this_build_cannot_validate_loads_defaults_and_is_not_quarantined()
     {
-        var r = LightingSettingsCodec.Read("{\"Version\":2,\"Brightness\":150}");
+        var r = LightingSettingsCodec.Read("{\"Version\":3,\"Brightness\":150}");
         Assert.True(r.Newer);
         Assert.False(r.Quarantine);
         Assert.Equal(100, r.Settings.Brightness);
@@ -263,29 +263,234 @@ public class LightingSettingsCodecTests
     [Fact] public void Write_refuses_an_invalid_effect()=>Assert.Throws<InvalidDataException>(()=>LightingSettingsCodec.Write(new LightingSettings{Effect=new(){Kind="Plasma"}}));
     [Fact] public void A_newer_file_with_another_layout_shape_is_kept()
     {
-        var r=LightingSettingsCodec.Read("""{"Version":2,"Brightness":40,"DefaultColor":"#112233","Effect":"Plasma","Layout":{"Desk":"L"}}""");
+        var r=LightingSettingsCodec.Read("""{"Version":3,"Brightness":40,"DefaultColor":"#112233","Effect":"Plasma","Layout":{"Desk":"L"}}""");
         Assert.True(r.Newer);Assert.False(r.Quarantine);Assert.Equal(40,r.Settings.Brightness);Assert.Equal("Static",r.Settings.Effect.Kind);Assert.Empty(r.Settings.Layout.Zones);
     }
     [Fact] public void A_newer_file_with_a_wrong_typed_brightness_is_kept_on_defaults()
     {
-        var r=LightingSettingsCodec.Read("""{"Version":2,"Brightness":"high"}""");
+        var r=LightingSettingsCodec.Read("""{"Version":3,"Brightness":"high"}""");
         Assert.True(r.Newer);Assert.False(r.Quarantine);Assert.NotNull(r.Error);Assert.Equal(100,r.Settings.Brightness);
     }
     [Fact] public void A_newer_file_whose_zone_colours_became_a_list_is_kept_on_defaults()
     {
-        var r=LightingSettingsCodec.Read("""{"Version":2,"Brightness":40,"ZoneColors":[]}""");
+        var r=LightingSettingsCodec.Read("""{"Version":3,"Brightness":40,"ZoneColors":[]}""");
         Assert.True(r.Newer);Assert.False(r.Quarantine);Assert.NotNull(r.Error);Assert.Equal(100,r.Settings.Brightness);
     }
     [Fact] public void A_newer_file_with_a_layout_this_build_refuses_keeps_the_rest()
     {
-        var r=LightingSettingsCodec.Read("""{"Version":2,"Brightness":80,"DefaultColor":"#112233","ZoneColors":{"a|1#0":{"Color":"#010203","ZoneName":"Z"}},"HardwareModes":{},"Layout":{"Version":2,"Zones":{},"Tower":{"At":{"X":0.1,"Y":0.3},"Members":[],"Excluded":[]},"Desk":[],"Unplaced":[]}}""");
+        var r=LightingSettingsCodec.Read("""{"Version":3,"Brightness":80,"DefaultColor":"#112233","ZoneColors":{"a|1#0":{"Color":"#010203","ZoneName":"Z"}},"HardwareModes":{},"Layout":{"Version":2,"Zones":{},"Tower":{"At":{"X":0.1,"Y":0.3},"Members":[],"Excluded":[]},"Desk":[],"Unplaced":[]}}""");
         Assert.True(r.Newer);Assert.False(r.Quarantine);Assert.Equal(80,r.Settings.Brightness);Assert.Equal("#010203",r.Settings.ZoneColors["a|1#0"].Color);
         Assert.Equal(1,r.Settings.Layout.Version);Assert.Equal(DeskShape.LLeft,DeskLayouts.ShapeOf(r.Settings.Layout));Assert.Equal(new DeskPoint(0.14,0.3),r.Settings.Layout.Tower.At);
     }
     [Fact] public void A_newer_file_with_nine_wave_colours_keeps_the_rest()
     {
-        var r=LightingSettingsCodec.Read("""{"Version":2,"Brightness":80,"DefaultColor":"#112233","ZoneColors":{},"HardwareModes":{},"Effect":{"Kind":"Wave","Wave":{"Colors":["#112233","#112233","#112233","#112233","#112233","#112233","#112233","#112233","#112233"]}}}""");
+        var r=LightingSettingsCodec.Read("""{"Version":3,"Brightness":80,"DefaultColor":"#112233","ZoneColors":{},"HardwareModes":{},"Effect":{"Kind":"Wave","Wave":{"Colors":["#112233","#112233","#112233","#112233","#112233","#112233","#112233","#112233","#112233"]}}}""");
         Assert.True(r.Newer);Assert.False(r.Quarantine);Assert.Equal(80,r.Settings.Brightness);Assert.Equal("Static",r.Settings.Effect.Kind);Assert.Empty(r.Settings.Effect.Wave.Colors);
     }
     [Fact] public void A_current_file_with_a_layout_version_this_build_refuses_is_still_set_aside()=>Assert.True(LightingSettingsCodec.Read("""{"Version":1,"Brightness":80,"DefaultColor":"#112233","ZoneColors":{},"HardwareModes":{},"Layout":{"Version":2,"Zones":{},"Tower":{"At":{"X":0.1,"Y":0.3},"Members":[],"Excluded":[]},"Desk":[],"Unplaced":[]}}""").Quarantine);
+
+    [Fact]
+    public void A_tuned_file_is_written_as_version_2_and_read_back()
+    {
+        var s=new LightingSettings();
+        s.Devices["k|1"]=new DeviceTuning{Brightness=70,Correction=new(){R=100,G=88,B=112},Mode=new(){Kind="wave",Speed=55}};
+        var r=LightingSettingsCodec.Read(LightingSettingsCodec.Write(s));
+        Assert.False(r.Newer);Assert.False(r.Quarantine);Assert.Null(r.Error);
+        var t=r.Settings.Devices["k|1"];
+        Assert.Equal(2,r.Settings.Version);Assert.Equal(70,t.Brightness);
+        Assert.Equal(88,t.Correction!.G);Assert.Equal(112,t.Correction.B);Assert.Equal(100,t.Correction.R);
+        Assert.Equal("wave",t.Mode!.Kind);Assert.Equal(55,t.Mode.Speed);
+    }
+    [Fact]
+    public void An_untuned_file_is_written_as_version_1()
+    {
+        static int FileVersion(string json)=>System.Text.Json.JsonDocument.Parse(json).RootElement.GetProperty("Version").GetInt32();
+        Assert.Equal(1,FileVersion(LightingSettingsCodec.Write(new LightingSettings())));
+        var r=LightingSettingsCodec.Read("""{"Version":2,"Devices":{"k":{"Brightness":70}}}""");
+        Assert.Equal(2,r.Settings.Version);
+        r.Settings.Devices.Clear();
+        Assert.Equal(1,FileVersion(LightingSettingsCodec.Write(r.Settings)));
+    }
+    [Fact]
+    public void A_version_1_file_loads_with_an_empty_table()
+    {
+        var r=LightingSettingsCodec.Read("""{"Version":1,"Brightness":40}""");
+        Assert.Empty(r.Settings.Devices);Assert.False(r.Quarantine);Assert.False(r.Newer);
+    }
+    [Fact]
+    public void A_null_table_is_defaulted()
+    {
+        var r=LightingSettingsCodec.Read("""{"Version":2,"Devices":null}""");
+        Assert.NotNull(r.Settings.Devices);Assert.Empty(r.Settings.Devices);Assert.False(r.Quarantine);Assert.Null(r.Error);
+    }
+    [Fact]
+    public void A_default_entry_is_dropped_on_read()
+    {
+        var r=LightingSettingsCodec.Read("""{"Version":2,"Devices":{"a":{"Brightness":100,"Correction":{"R":100,"G":100,"B":100}},"b":{"Brightness":70}}}""");
+        Assert.DoesNotContain("a",r.Settings.Devices.Keys);Assert.Equal(70,r.Settings.Devices["b"].Brightness);
+    }
+    [Fact] public void Current_version_2_is_not_newer()=>Assert.False(LightingSettingsCodec.Read("""{"Version":2}""").Newer);
+    [Fact]
+    public void A_null_entry_is_quarantined_not_thrown()
+    {
+        var r=LightingSettingsCodec.Read("""{"Version":2,"Devices":{"k":null}}""");
+        Assert.True(r.Quarantine);Assert.NotNull(r.Error);
+    }
+    [Fact]
+    public void A_later_file_with_a_table_of_another_shape_is_still_read()
+    {
+        var r=LightingSettingsCodec.Read("""{"Version":3,"Brightness":40,"Devices":7}""");
+        Assert.True(r.Newer);Assert.False(r.Quarantine);Assert.Null(r.Error);Assert.Equal(40,r.Settings.Brightness);Assert.Empty(r.Settings.Devices);
+    }
+    [Fact]
+    public void A_later_file_with_an_unknown_mode_keeps_its_other_settings()
+    {
+        var r=LightingSettingsCodec.Read("""{"Version":3,"Brightness":40,"Devices":{"k":{"Mode":{"Kind":"fire"}}}}""");
+        Assert.True(r.Newer);Assert.False(r.Quarantine);Assert.Equal(40,r.Settings.Brightness);Assert.Empty(r.Settings.Devices);
+    }
+    // Whole-branch review 1, D1: when only a later file's device table is refused, its desk effect and layout are kept.
+    [Fact]
+    public void A_later_file_with_an_unknown_mode_keeps_its_effect_and_layout()
+    {
+        var r=LightingSettingsCodec.Read("""{"Version":3,"Brightness":40,"DefaultColor":"#112233","ZoneColors":{},"HardwareModes":{},"Effect":{"Kind":"Wave","Wave":{"Speed":70,"AngleDeg":135,"Spread":20,"Colors":["#FF0000","#0000FF"]}},"Layout":{"Version":1,"Zones":{"a|1#0":{"X":0.25,"Y":0.75}},"Tower":{"At":{"X":0.1,"Y":0.3},"Members":["a|1"],"Excluded":[]},"Desk":[],"Unplaced":[]},"Devices":{"k":{"Mode":{"Kind":"ripple"}}}}""");
+        Assert.True(r.Newer);Assert.False(r.Quarantine);Assert.Null(r.Error);Assert.Equal(40,r.Settings.Brightness);Assert.Empty(r.Settings.Devices);
+        Assert.Equal("Wave",r.Settings.Effect.Kind);Assert.Equal(135,r.Settings.Effect.Wave.AngleDeg);Assert.Equal(new[]{"#FF0000","#0000FF"},r.Settings.Effect.Wave.Colors);
+        Assert.Equal(new DeskPoint(0.25,0.75),r.Settings.Layout.Zones["a|1#0"]);Assert.Equal(new[]{"a|1"},r.Settings.Layout.Tower.Members);
+    }
+
+    // Whole-branch review 1, D10: an empty device table isn't written. GoldenV019 is what 0.19.0 (commit 9de8dea) wrote for UntunedSettings,
+    // taken by running that build's LightingSettingsCodec.Write; it uses the platform's line ending, as Write does.
+    static LightingSettings UntunedSettings()
+    {
+        var s=new LightingSettings{LightsOn=false,Brightness=40,DefaultColor="#112233"};
+        s.ZoneColors["gpu|1#0"]=new ZoneColorEntry{Color="#FF0000",ZoneName="Fan"};
+        s.HardwareModes["node|2"]="Rainbow Wave";
+        s.Effect=new(){Kind="Wave",Wave=new(){Speed=70,AngleDeg=135,Spread=20,Colors={"#FF0000","#0000FF"}}};
+        s.Layout.Zones["gpu|1#0"]=new(0.25,0.75);
+        return s;
+    }
+    const string GoldenV019="""
+        {
+          "Version": 1,
+          "LightsOn": false,
+          "Brightness": 40,
+          "DefaultColor": "#112233",
+          "ZoneColors": {
+            "gpu|1#0": {
+              "Color": "#FF0000",
+              "ZoneName": "Fan"
+            }
+          },
+          "HardwareModes": {
+            "node|2": "Rainbow Wave"
+          },
+          "Effect": {
+            "Kind": "Wave",
+            "Wave": {
+              "Speed": 70,
+              "AngleDeg": 135,
+              "Spread": 20,
+              "Colors": [
+                "#FF0000",
+                "#0000FF"
+              ]
+            },
+            "Breathing": {
+              "Speed": 40,
+              "AngleDeg": 0,
+              "Spread": 50,
+              "Colors": []
+            },
+            "Spectrum": {
+              "Speed": 40,
+              "AngleDeg": 0,
+              "Spread": 50,
+              "Colors": []
+            }
+          },
+          "Layout": {
+            "Version": 1,
+            "Zones": {
+              "gpu|1#0": {
+                "X": 0.25,
+                "Y": 0.75
+              }
+            },
+            "Tower": {
+              "At": {
+                "X": 0.14,
+                "Y": 0.3
+              },
+              "Members": [],
+              "Excluded": []
+            },
+            "Desk": [
+              {
+                "X": 0.28,
+                "Y": 0.55,
+                "W": 0.67,
+                "H": 0.35
+              },
+              {
+                "X": 0.05,
+                "Y": 0.15,
+                "W": 0.23,
+                "H": 0.75
+              }
+            ],
+            "Unplaced": [],
+            "Picture": null
+          }
+        }
+        """;
+    [Fact]
+    public void An_untuned_file_is_written_as_0_19_0_wrote_it_and_reads_back_with_an_empty_table()
+    {
+        var golden=GoldenV019.ReplaceLineEndings(Environment.NewLine);
+        Assert.Equal(golden,LightingSettingsCodec.Write(UntunedSettings()));
+        var r=LightingSettingsCodec.Read(golden);
+        Assert.Null(r.Error);Assert.False(r.Quarantine);Assert.NotNull(r.Settings.Devices);Assert.Empty(r.Settings.Devices);
+        Assert.Equal(golden,LightingSettingsCodec.Write(r.Settings));
+        // A table emptied in use goes back to the 0.19.0 form.
+        var tuned=UntunedSettings();tuned.Devices["k|1"]=new DeviceTuning{Brightness=70};
+        var back=LightingSettingsCodec.Read(LightingSettingsCodec.Write(tuned)).Settings;
+        Assert.Equal(70,back.Devices["k|1"].Brightness);
+        back.Devices.Clear();
+        Assert.Equal(golden,LightingSettingsCodec.Write(back));
+    }
+    // A 0.19.0 file whose written form is exactly 1 MiB under 0.19.0's rules (Write's indented JSON, no Devices member) loads without being
+    // set aside and is saved again to the same bytes.
+    [Fact]
+    public void A_0_19_0_file_at_the_1_MiB_cap_loads_and_saves_cleanly()
+    {
+        var plain=new System.Text.Json.JsonSerializerOptions{WriteIndented=true};
+        string V019Form(LightingSettings s)
+        {
+            var o=System.Text.Json.JsonSerializer.SerializeToNode(s)!.AsObject();
+            o.Remove("Devices");
+            return o.ToJsonString(plain);
+        }
+        long Size(LightingSettings s)=>System.Text.Encoding.UTF8.GetByteCount(V019Form(s));
+        static LightingSettings With(int count)
+        {
+            var s=new LightingSettings();
+            for(int i=0;i<count;i++) s.ZoneColors[$"zone-{i:D5}"]=new ZoneColorEntry{Color="#FF0000",ZoneName=new string('n',LightingSettingsCodec.MaxKeyLength)};
+            return s;
+        }
+        long one=Size(With(1)),each=Size(With(2))-one;
+        var settings=With((int)Math.Ceiling((LightingSettingsCodec.MaxFileBytes-(one-each))/(double)each));
+        var over=Size(settings)-LightingSettingsCodec.MaxFileBytes;
+        foreach(var entry in settings.ZoneColors.Values)
+        {
+            var cut=(int)Math.Min(over,entry.ZoneName.Length);
+            entry.ZoneName=entry.ZoneName[cut..];
+            if((over-=cut)==0) break;
+        }
+        var file=V019Form(settings);
+        Assert.Equal(LightingSettingsCodec.MaxFileBytes,System.Text.Encoding.UTF8.GetByteCount(file));
+        Assert.DoesNotContain("\"Devices\"",file);
+        var r=LightingSettingsCodec.Read(file);
+        Assert.Null(r.Error);Assert.False(r.Quarantine);Assert.Equal(settings.ZoneColors.Count,r.Settings.ZoneColors.Count);
+        Assert.Equal(file,LightingSettingsCodec.Write(r.Settings));
+    }
 }

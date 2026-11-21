@@ -1,0 +1,268 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Lighting step 3a: device card mockup</title>
+<style>
+  :root { --bg:#0b0f17; --card:#111722; --line:#1f2937; --ink:#e6edf6; --mute:#8b98ab; --acc:#5ee0ff; --wood:#2b211a; --woodline:#4b3a2b; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:13px/1.4 "Segoe UI",system-ui,sans-serif; }
+  .page { padding:18px 22px 26px; max-width:1120px; }
+  h1 { font-size:20px; margin:0; font-weight:600; }
+  .sub { color:var(--mute); font-size:12px; margin:2px 0 16px; }
+  .cols { display:grid; grid-template-columns:repeat(3,1fr); gap:14px; align-items:start; }
+  .cap { color:var(--mute); font-size:11.5px; text-transform:uppercase; letter-spacing:.08em; margin:0 0 6px 2px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:13px 15px; }
+  .card h3 { margin:0; font-size:15px; font-weight:600; }
+  .mute { color:var(--mute); font-size:11.5px; }
+  .sec { border-top:1px solid var(--line); margin-top:11px; padding-top:10px; }
+  .sec > b { display:block; font-size:12px; font-weight:600; margin-bottom:6px; letter-spacing:.02em; }
+  .zone { display:flex; align-items:center; justify-content:space-between; padding:5px 8px; border-radius:6px; font-size:12.5px; }
+  .zone.on { background:#12283a; }
+  .sw { width:18px; height:18px; border-radius:5px; display:inline-block; vertical-align:middle; margin-right:8px; border:1px solid #0006; }
+  .line { display:grid; grid-template-columns:76px 1fr 44px; align-items:center; gap:10px; padding:4px 0; font-size:12.5px; }
+  .line label { color:var(--mute); }
+  .line .v { text-align:right; color:var(--ink); font-variant-numeric:tabular-nums; }
+  .sl { height:4px; border-radius:2px; position:relative; background:#2a3444; }
+  .sl i { position:absolute; left:0; top:0; bottom:0; border-radius:2px; background:var(--acc); }
+  .sl u { position:absolute; top:-4px; width:12px; height:12px; border-radius:50%; background:#dfe7f1; margin-left:-6px; }
+  .sl.r i { background:#ff5b6a; } .sl.g i { background:#52e08a; } .sl.b i { background:#5b9dff; }
+  .sl .mid { position:absolute; left:50%; top:-3px; bottom:-3px; width:1px; background:#55637a; }
+  .pick { border:1px solid #33415a; border-radius:7px; padding:5px 26px 5px 10px; background:#131b29; position:relative; display:block; font-size:12.5px; }
+  .pick::after { content:"▾"; position:absolute; right:9px; color:var(--mute); }
+  .menu { border:1px solid #33415a; border-radius:8px; background:#0f1622; margin-top:4px; padding:4px; font-size:12.5px; }
+  .menu div { padding:4px 8px; border-radius:5px; }
+  .menu div.sel { background:#12283a; color:var(--acc); }
+  .menu small { color:var(--mute); margin-left:6px; }
+  .btn { border:1px solid #33415a; border-radius:7px; padding:3px 11px; font-size:12px; color:var(--ink); background:#131b29; display:inline-block; }
+  .rowb { display:flex; justify-content:space-between; align-items:center; margin-bottom:4px; }
+  .note { margin-top:10px; padding:8px 10px; border-radius:8px; background:#0e1520; border:1px dashed #2a3850; color:var(--mute); font-size:11.5px; }
+  .off { opacity:.38; }
+  .strip { margin:18px 0 6px; }
+  .kb { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:12px 15px; }
+  svg text { font-family:"Segoe UI",system-ui,sans-serif; }
+</style>
+</head>
+<body>
+<div class="page">
+  <h1>Lighting · step 3a mockup</h1>
+  <div class="sub">The card beside the desk picture, with the new controls, in three situations. Colours and numbers are examples.</div>
+
+  <div class="cols">
+    <!-- ============ KEYBOARD ============ -->
+    <div>
+      <div class="cap">1 · Keyboard selected</div>
+      <div class="card">
+        <h3>Keyboard · SteelSeries Apex Pro</h3><div class="mute">selected on the desk · 112 keys</div>
+
+        <div class="sec"><b>Colour</b>
+          <div class="zone on"><span><i class="sw" style="background:#22e04a"></i>Keyboard</span><span class="mute">all keys</span></div>
+        </div>
+
+        <div class="sec"><b>Lighting mode</b>
+          <span class="pick">Rainbow wave</span>
+          <div class="menu">
+            <div>Follow the desk effect <small>what the tiles above choose</small></div>
+            <div>Static <small>its saved colour</small></div>
+            <div>Breathing <small>its saved colour, pulsing</small></div>
+            <div>Colour cycle <small>all keys change together</small></div>
+            <div class="sel">Rainbow wave <small>sweeps across the keys</small></div>
+          </div>
+          <div class="line" style="margin-top:8px"><label>Speed</label><div class="sl"><i style="width:40%"></i><u style="left:40%"></u></div><span class="v">40</span></div>
+        </div>
+
+        <div class="sec"><b>Brightness</b>
+          <div class="line"><label>This device</label><div class="sl"><i style="width:70%"></i><u style="left:70%"></u></div><span class="v">70%</span></div>
+          <div class="mute">Works with the page's Brightness: 70% of 100% here.</div>
+        </div>
+
+        <div class="sec">
+          <div class="rowb"><b style="font-size:12px;font-weight:600">Colour correction</b><span class="btn">Reset</span></div>
+          <div class="line"><label>Red</label><div class="sl r"><i style="width:50%"></i><span class="mid"></span><u style="left:50%"></u></div><span class="v">100</span></div>
+          <div class="line"><label>Green</label><div class="sl g"><i style="width:44%"></i><span class="mid"></span><u style="left:44%"></u></div><span class="v">88</span></div>
+          <div class="line"><label>Blue</label><div class="sl b"><i style="width:56%"></i><span class="mid"></span><u style="left:56%"></u></div><span class="v">112</span></div>
+          <div class="mute">For a device whose white looks tinted next to the others. 100 leaves a colour as it is.</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ OTHER DEVICE ============ -->
+    <div>
+      <div class="cap">2 · Any other device (the hub here)</div>
+      <div class="card">
+        <h3>Corsair iCUE LINK hub</h3><div class="mute">radiator fan 2 selected</div>
+
+        <div class="sec"><b>Colour</b>
+          <div class="zone"><span><i class="sw" style="background:#22e04a"></i>Radiator fan 1</span><span class="mute">shared colour</span></div>
+          <div class="zone on"><span><i class="sw" style="background:#ff8a2b"></i>Radiator fan 2</span><span class="mute">own colour</span></div>
+          <div class="zone"><span><i class="sw" style="background:#22e04a"></i>Radiator fan 3</span><span class="mute">shared colour</span></div>
+          <div class="zone"><span><i class="sw" style="background:#22e04a"></i>Pump</span><span class="mute">shared colour</span></div>
+        </div>
+
+        <div class="sec"><b>Brightness</b>
+          <div class="line"><label>This device</label><div class="sl"><i style="width:100%"></i><u style="left:100%"></u></div><span class="v">100%</span></div>
+        </div>
+
+        <div class="sec">
+          <div class="rowb"><b style="font-size:12px;font-weight:600">Colour correction</b><span class="btn">Reset</span></div>
+          <div class="line"><label>Red</label><div class="sl r"><i style="width:50%"></i><span class="mid"></span><u style="left:50%"></u></div><span class="v">100</span></div>
+          <div class="line"><label>Green</label><div class="sl g"><i style="width:50%"></i><span class="mid"></span><u style="left:50%"></u></div><span class="v">100</span></div>
+          <div class="line"><label>Blue</label><div class="sl b"><i style="width:50%"></i><span class="mid"></span><u style="left:50%"></u></div><span class="v">100</span></div>
+        </div>
+
+        <div class="note">Brightness and colour correction apply to the whole device: all three fans and the pump together.</div>
+      </div>
+    </div>
+
+    <!-- ============ HARDWARE MODE ============ -->
+    <div>
+      <div class="cap">3 · A device running its own effect</div>
+      <div class="card">
+        <h3>Front fans · Corsair Lighting Node Pro</h3><div class="mute">selected inside the PC</div>
+
+        <div class="note" style="margin-top:11px;border-style:solid;color:var(--ink)">This device runs its own effect, <b>Rainbow Wave</b>. DeadWare's colours, brightness and colour correction don't reach it while it does.</div>
+
+        <div class="sec off"><b>Colour</b>
+          <div class="zone"><span><i class="sw" style="background:#5a6578"></i>Front fans</span><span class="mute">own effect</span></div>
+        </div>
+        <div class="sec off"><b>Brightness</b>
+          <div class="line"><label>This device</label><div class="sl"><i style="width:100%;background:#55637a"></i><u style="left:100%"></u></div><span class="v">100%</span></div>
+        </div>
+        <div class="sec off">
+          <div class="rowb"><b style="font-size:12px;font-weight:600">Colour correction</b><span class="btn">Reset</span></div>
+          <div class="line"><label>Red</label><div class="sl"><i style="width:50%;background:#55637a"></i><u style="left:50%"></u></div><span class="v">100</span></div>
+          <div class="line"><label>Green</label><div class="sl"><i style="width:50%;background:#55637a"></i><u style="left:50%"></u></div><span class="v">100</span></div>
+          <div class="line"><label>Blue</label><div class="sl"><i style="width:50%;background:#55637a"></i><u style="left:50%"></u></div><span class="v">100</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ KEYBOARD IN THE PICTURE ============ -->
+  <div class="strip cap">4 · The keyboard in the desk picture, drawn key by key (Rainbow wave running)</div>
+  <div class="kb">
+    <svg viewBox="0 0 720 150" width="100%" role="img" aria-label="Keyboard drawn key by key with a rainbow running across it">
+      <defs><filter id="g" x="-10%" y="-30%" width="120%" height="160%"><feGaussianBlur stdDeviation="3.5" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>
+      <rect x="0" y="0" width="720" height="150" fill="#2b211a" stroke="#4b3a2b"/>
+      <rect x="150" y="16" width="420" height="96" rx="9" fill="#0d1622" stroke="#2a3850" stroke-width="1.5"/>
+      <g filter="url(#g)">
+        <rect x="159.0" y="25.0" width="15.7" height="11.3" rx="2" fill="#ff6038"/>
+        <rect x="194.4" y="25.0" width="15.7" height="11.3" rx="2" fill="#ffb638"/>
+        <rect x="212.2" y="25.0" width="15.7" height="11.3" rx="2" fill="#ffe138"/>
+        <rect x="229.9" y="25.0" width="15.7" height="11.3" rx="2" fill="#f1ff38"/>
+        <rect x="247.6" y="25.0" width="15.7" height="11.3" rx="2" fill="#c7ff38"/>
+        <rect x="274.2" y="25.0" width="15.7" height="11.3" rx="2" fill="#87ff38"/>
+        <rect x="291.9" y="25.0" width="15.7" height="11.3" rx="2" fill="#5cff38"/>
+        <rect x="309.6" y="25.0" width="15.7" height="11.3" rx="2" fill="#38ff3e"/>
+        <rect x="327.3" y="25.0" width="15.7" height="11.3" rx="2" fill="#38ff69"/>
+        <rect x="353.9" y="25.0" width="15.7" height="11.3" rx="2" fill="#38ffa9"/>
+        <rect x="371.6" y="25.0" width="15.7" height="11.3" rx="2" fill="#38ffd4"/>
+        <rect x="389.4" y="25.0" width="15.7" height="11.3" rx="2" fill="#38feff"/>
+        <rect x="407.1" y="25.0" width="15.7" height="11.3" rx="2" fill="#38d3ff"/>
+        <rect x="431.9" y="25.0" width="15.7" height="11.3" rx="2" fill="#3897ff"/>
+        <rect x="449.6" y="25.0" width="15.7" height="11.3" rx="2" fill="#386dff"/>
+        <rect x="467.3" y="25.0" width="15.7" height="11.3" rx="2" fill="#3842ff"/>
+        <rect x="492.1" y="25.0" width="15.7" height="11.3" rx="2" fill="#6938ff"/>
+        <rect x="509.8" y="25.0" width="15.7" height="11.3" rx="2" fill="#9438ff"/>
+        <rect x="527.6" y="25.0" width="15.7" height="11.3" rx="2" fill="#bf38ff"/>
+        <rect x="545.3" y="25.0" width="15.7" height="11.3" rx="2" fill="#ea38ff"/>
+        <rect x="159.0" y="38.3" width="15.7" height="11.3" rx="2" fill="#ff6038"/>
+        <rect x="176.7" y="38.3" width="15.7" height="11.3" rx="2" fill="#ff8b38"/>
+        <rect x="194.4" y="38.3" width="15.7" height="11.3" rx="2" fill="#ffb638"/>
+        <rect x="212.2" y="38.3" width="15.7" height="11.3" rx="2" fill="#ffe138"/>
+        <rect x="229.9" y="38.3" width="15.7" height="11.3" rx="2" fill="#f1ff38"/>
+        <rect x="247.6" y="38.3" width="15.7" height="11.3" rx="2" fill="#c7ff38"/>
+        <rect x="265.3" y="38.3" width="15.7" height="11.3" rx="2" fill="#9cff38"/>
+        <rect x="283.0" y="38.3" width="15.7" height="11.3" rx="2" fill="#71ff38"/>
+        <rect x="300.8" y="38.3" width="15.7" height="11.3" rx="2" fill="#46ff38"/>
+        <rect x="318.5" y="38.3" width="15.7" height="11.3" rx="2" fill="#38ff54"/>
+        <rect x="336.2" y="38.3" width="15.7" height="11.3" rx="2" fill="#38ff7e"/>
+        <rect x="353.9" y="38.3" width="15.7" height="11.3" rx="2" fill="#38ffa9"/>
+        <rect x="371.6" y="38.3" width="15.7" height="11.3" rx="2" fill="#38ffd4"/>
+        <rect x="389.4" y="38.3" width="33.4" height="11.3" rx="2" fill="#38e9ff"/>
+        <rect x="431.9" y="38.3" width="15.7" height="11.3" rx="2" fill="#3897ff"/>
+        <rect x="449.6" y="38.3" width="15.7" height="11.3" rx="2" fill="#386dff"/>
+        <rect x="467.3" y="38.3" width="15.7" height="11.3" rx="2" fill="#3842ff"/>
+        <rect x="492.1" y="38.3" width="15.7" height="11.3" rx="2" fill="#6938ff"/>
+        <rect x="509.8" y="38.3" width="15.7" height="11.3" rx="2" fill="#9438ff"/>
+        <rect x="527.6" y="38.3" width="15.7" height="11.3" rx="2" fill="#bf38ff"/>
+        <rect x="545.3" y="38.3" width="15.7" height="11.3" rx="2" fill="#ea38ff"/>
+        <rect x="159.0" y="51.7" width="24.6" height="11.3" rx="2" fill="#ff6b38"/>
+        <rect x="185.6" y="51.7" width="15.7" height="11.3" rx="2" fill="#ffa138"/>
+        <rect x="203.3" y="51.7" width="15.7" height="11.3" rx="2" fill="#ffcb38"/>
+        <rect x="221.0" y="51.7" width="15.7" height="11.3" rx="2" fill="#fff638"/>
+        <rect x="238.7" y="51.7" width="15.7" height="11.3" rx="2" fill="#dcff38"/>
+        <rect x="256.5" y="51.7" width="15.7" height="11.3" rx="2" fill="#b1ff38"/>
+        <rect x="274.2" y="51.7" width="15.7" height="11.3" rx="2" fill="#87ff38"/>
+        <rect x="291.9" y="51.7" width="15.7" height="11.3" rx="2" fill="#5cff38"/>
+        <rect x="309.6" y="51.7" width="15.7" height="11.3" rx="2" fill="#38ff3e"/>
+        <rect x="327.3" y="51.7" width="15.7" height="11.3" rx="2" fill="#38ff69"/>
+        <rect x="345.1" y="51.7" width="15.7" height="11.3" rx="2" fill="#38ff94"/>
+        <rect x="362.8" y="51.7" width="15.7" height="11.3" rx="2" fill="#38ffbf"/>
+        <rect x="380.5" y="51.7" width="15.7" height="11.3" rx="2" fill="#38ffe9"/>
+        <rect x="398.2" y="51.7" width="24.6" height="11.3" rx="2" fill="#38deff"/>
+        <rect x="431.9" y="51.7" width="15.7" height="11.3" rx="2" fill="#3897ff"/>
+        <rect x="449.6" y="51.7" width="15.7" height="11.3" rx="2" fill="#386dff"/>
+        <rect x="467.3" y="51.7" width="15.7" height="11.3" rx="2" fill="#3842ff"/>
+        <rect x="492.1" y="51.7" width="15.7" height="11.3" rx="2" fill="#6938ff"/>
+        <rect x="509.8" y="51.7" width="15.7" height="11.3" rx="2" fill="#9438ff"/>
+        <rect x="527.6" y="51.7" width="15.7" height="11.3" rx="2" fill="#bf38ff"/>
+        <rect x="545.3" y="51.7" width="15.7" height="11.3" rx="2" fill="#ea38ff"/>
+        <rect x="159.0" y="65.0" width="29.0" height="11.3" rx="2" fill="#ff7038"/>
+        <rect x="190.0" y="65.0" width="15.7" height="11.3" rx="2" fill="#ffab38"/>
+        <rect x="207.7" y="65.0" width="15.7" height="11.3" rx="2" fill="#ffd638"/>
+        <rect x="225.4" y="65.0" width="15.7" height="11.3" rx="2" fill="#fcff38"/>
+        <rect x="243.2" y="65.0" width="15.7" height="11.3" rx="2" fill="#d1ff38"/>
+        <rect x="260.9" y="65.0" width="15.7" height="11.3" rx="2" fill="#a7ff38"/>
+        <rect x="278.6" y="65.0" width="15.7" height="11.3" rx="2" fill="#7cff38"/>
+        <rect x="296.3" y="65.0" width="15.7" height="11.3" rx="2" fill="#51ff38"/>
+        <rect x="314.0" y="65.0" width="15.7" height="11.3" rx="2" fill="#38ff49"/>
+        <rect x="331.8" y="65.0" width="15.7" height="11.3" rx="2" fill="#38ff74"/>
+        <rect x="349.5" y="65.0" width="15.7" height="11.3" rx="2" fill="#38ff9f"/>
+        <rect x="367.2" y="65.0" width="15.7" height="11.3" rx="2" fill="#38ffc9"/>
+        <rect x="384.9" y="65.0" width="37.9" height="11.3" rx="2" fill="#38eeff"/>
+        <rect x="492.1" y="65.0" width="15.7" height="11.3" rx="2" fill="#6938ff"/>
+        <rect x="509.8" y="65.0" width="15.7" height="11.3" rx="2" fill="#9438ff"/>
+        <rect x="527.6" y="65.0" width="15.7" height="11.3" rx="2" fill="#bf38ff"/>
+        <rect x="545.3" y="65.0" width="15.7" height="11.3" rx="2" fill="#ea38ff"/>
+        <rect x="159.0" y="78.3" width="37.9" height="11.3" rx="2" fill="#ff7b38"/>
+        <rect x="198.9" y="78.3" width="15.7" height="11.3" rx="2" fill="#ffc138"/>
+        <rect x="216.6" y="78.3" width="15.7" height="11.3" rx="2" fill="#ffeb38"/>
+        <rect x="234.3" y="78.3" width="15.7" height="11.3" rx="2" fill="#e7ff38"/>
+        <rect x="252.0" y="78.3" width="15.7" height="11.3" rx="2" fill="#bcff38"/>
+        <rect x="269.7" y="78.3" width="15.7" height="11.3" rx="2" fill="#91ff38"/>
+        <rect x="287.5" y="78.3" width="15.7" height="11.3" rx="2" fill="#66ff38"/>
+        <rect x="305.2" y="78.3" width="15.7" height="11.3" rx="2" fill="#3cff38"/>
+        <rect x="322.9" y="78.3" width="15.7" height="11.3" rx="2" fill="#38ff5e"/>
+        <rect x="340.6" y="78.3" width="15.7" height="11.3" rx="2" fill="#38ff89"/>
+        <rect x="358.3" y="78.3" width="15.7" height="11.3" rx="2" fill="#38ffb4"/>
+        <rect x="376.1" y="78.3" width="46.7" height="11.3" rx="2" fill="#38f9ff"/>
+        <rect x="449.6" y="78.3" width="15.7" height="11.3" rx="2" fill="#386dff"/>
+        <rect x="492.1" y="78.3" width="15.7" height="11.3" rx="2" fill="#6938ff"/>
+        <rect x="509.8" y="78.3" width="15.7" height="11.3" rx="2" fill="#9438ff"/>
+        <rect x="527.6" y="78.3" width="15.7" height="11.3" rx="2" fill="#bf38ff"/>
+        <rect x="545.3" y="78.3" width="15.7" height="11.3" rx="2" fill="#ea38ff"/>
+        <rect x="159.0" y="91.7" width="20.1" height="11.3" rx="2" fill="#ff6638"/>
+        <rect x="181.1" y="91.7" width="20.1" height="11.3" rx="2" fill="#ff9b38"/>
+        <rect x="203.3" y="91.7" width="20.1" height="11.3" rx="2" fill="#ffd138"/>
+        <rect x="225.4" y="91.7" width="108.7" height="11.3" rx="2" fill="#8cff38"/>
+        <rect x="336.2" y="91.7" width="20.1" height="11.3" rx="2" fill="#38ff84"/>
+        <rect x="358.3" y="91.7" width="20.1" height="11.3" rx="2" fill="#38ffb9"/>
+        <rect x="380.5" y="91.7" width="20.1" height="11.3" rx="2" fill="#38ffef"/>
+        <rect x="402.6" y="91.7" width="20.1" height="11.3" rx="2" fill="#38d9ff"/>
+        <rect x="431.9" y="91.7" width="15.7" height="11.3" rx="2" fill="#3897ff"/>
+        <rect x="449.6" y="91.7" width="15.7" height="11.3" rx="2" fill="#386dff"/>
+        <rect x="467.3" y="91.7" width="15.7" height="11.3" rx="2" fill="#3842ff"/>
+        <rect x="492.1" y="91.7" width="33.4" height="11.3" rx="2" fill="#7f38ff"/>
+        <rect x="527.6" y="91.7" width="15.7" height="11.3" rx="2" fill="#bf38ff"/>
+        <rect x="545.3" y="91.7" width="15.7" height="11.3" rx="2" fill="#ea38ff"/>
+      </g>
+      <text x="360.0" y="132" fill="#e6edf6" font-size="12" text-anchor="middle">Keyboard</text>
+      <rect x="600" y="26" width="100" height="76" rx="6" fill="#1a1612" stroke="#3a3027"/>
+      <ellipse cx="650" cy="64" rx="11" ry="18" fill="#22e04a" filter="url(#g)"/>
+      <text x="650" y="132" fill="#e6edf6" font-size="12" text-anchor="middle">Mouse</text>
+    </svg>
+  </div>
+</div>
+</body>
+</html>

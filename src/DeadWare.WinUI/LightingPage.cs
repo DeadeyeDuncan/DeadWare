@@ -138,10 +138,10 @@ internal sealed class LightingPage : Page, IHeaderTool
     private (bool Wide, bool Picture)? arranged;
     private double deskWidth;
     // The preview frame waiting for the UI thread, at most one: a newer frame replaces it. previewHandler: the handler on the followed client.
-    private sealed record PreviewFrame(DeviceHostClient Source, IReadOnlyDictionary<string, string> Colors);
+    private sealed record PreviewFrame(DeviceHostClient Source, PreviewColors Colors);
     private PreviewFrame? pendingFrame;
     private int frameQueued;
-    private Action<IReadOnlyDictionary<string, string>>? previewHandler;
+    private Action<PreviewColors>? previewHandler;
     // One zone flyout serves every swatch: the swatch that opens it names the zone.
     private readonly Flyout zoneFlyout = new() { Placement = FlyoutPlacementMode.Bottom };
     private readonly StackPanel zoneContent = new() { Spacing = 8 };
@@ -357,6 +357,8 @@ internal sealed class LightingPage : Page, IHeaderTool
         allSends.Flush();
         foreach (var pending in zoneSends.Values) pending.Flush();
         effectBar.Leave();
+        // So do the cards' tuning sliders, which may never get their release either.
+        foreach (var card in cards.Values) card.Leave();
         // Edit layout ends with the page, and the desk forgets edits on their way: it shows the host's layout when it is back.
         DropLayoutDraft();
         SetEditing(false);
@@ -402,7 +404,7 @@ internal sealed class LightingPage : Page, IHeaderTool
     /// A preview frame, raised on the client's read loop, where a slow handler would hold up every reply: it is only kept, replacing
     /// a frame that waits, and at most one show waits on the UI thread.
     /// </summary>
-    private void OnPreview(DeviceHostClient source, IReadOnlyDictionary<string, string> colors)
+    private void OnPreview(DeviceHostClient source, PreviewColors colors)
     {
         Interlocked.Exchange(ref pendingFrame, new PreviewFrame(source, colors));
         if (Interlocked.Exchange(ref frameQueued, 1) == 1) return;
@@ -411,7 +413,7 @@ internal sealed class LightingPage : Page, IHeaderTool
 
     /// <summary>
     /// Shows the waiting frame on the desk. Dropped while the page is hidden, when it came from a client the page no longer follows,
-    /// while the latest state isn't Running, and while it has no effect running: the host can send one frame computed just before a switch to Static or lights
+    /// while the latest state isn't Running, and while nothing animates (no desk effect or device mode running, see LightingPaint.Animating): the host can send one frame computed just before a switch to Static or lights
     /// off, after that state, and no later frame would replace it.
     /// </summary>
     private void ShowFrame()
@@ -420,7 +422,7 @@ internal sealed class LightingPage : Page, IHeaderTool
         Volatile.Write(ref frameQueued, 0);
         if (Interlocked.Exchange(ref pendingFrame, null) is not { } frame || !showing || client is null || !ReferenceEquals(frame.Source, client)) return;
         // Nor while the host isn't running, so a frame can't paint over the colours a non-running state cleared.
-        if (client.State is not { Status: HostStatus.Running, Settings: { } settings } || !LightingPaint.EffectRunning(settings)) return;
+        if (client.State is not { Status: HostStatus.Running, Settings: { } settings } state || !LightingPaint.Animating(settings, state.Devices ?? [])) return;
         ShowDeskColors(frame.Colors);
     }
 
@@ -428,9 +430,9 @@ internal sealed class LightingPage : Page, IHeaderTool
     /// A preview frame to the drawing the mode shows, the plain desk or the picture; null (the state's colours) to both, so neither keeps
     /// a frame that is no longer the lights' colours.
     /// </summary>
-    private void ShowDeskColors(IReadOnlyDictionary<string, string>? colors)
+    private void ShowDeskColors(PreviewColors? colors)
     {
-        if (colors is null || shownPicture is null) desk.ShowColors(colors);
+        if (colors is null || shownPicture is null) desk.ShowColors(colors?.Zones);
         if (colors is null || shownPicture is not null) picture.ShowColors(colors);
     }
 
@@ -471,6 +473,8 @@ internal sealed class LightingPage : Page, IHeaderTool
         snapshot = null;
         sharedShown = null;
         sharedDot.Background = null;
+        // The cards' tuning sliders drop their waiting changes, which would otherwise go to the new client.
+        foreach (var card in cards.Values) card.Disable();
         cards.Clear();
         noneSince = null;
         statePicture = null;
@@ -566,8 +570,8 @@ internal sealed class LightingPage : Page, IHeaderTool
             }
             // Effects go only to a running host whose settings the bar has seen.
             effectBar.Show(shownEffect ?? new EffectSettings(), live && state.Settings is not null);
-            // Without an effect running the desk shows the state's colours, and frames are dropped until one runs again.
-            if (state.Settings is not { } current || !LightingPaint.EffectRunning(current)) ShowDeskColors(null);
+            // While nothing animates (LightingPaint.Animating) the desk shows the state's colours, and frames are dropped until one runs again.
+            if (state.Settings is not { } current || !LightingPaint.Animating(current, state.Devices ?? [])) ShowDeskColors(null);
             ShowDevices(state);
         }
         UpdateFlyouts(resync: live && !wasLive);
@@ -643,7 +647,12 @@ internal sealed class LightingPage : Page, IHeaderTool
         // removes the cards of devices that left; until then every card stays, disabled.
         if (live)
         {
-            foreach (string gone in cards.Keys.Except(list.Select(device => device.Key)).ToArray()) cards.Remove(gone);
+            // A card that goes drops its tuning sliders' waiting changes first: the device isn't there to take them.
+            foreach (string gone in cards.Keys.Except(list.Select(device => device.Key)).ToArray())
+            {
+                cards[gone].Disable();
+                cards.Remove(gone);
+            }
         }
         else foreach (var card in cards.Values) card.Disable();
         // A device that arrived gets a card, which the panel shows while it is selected. The selected card stays in the panel while
@@ -783,6 +792,7 @@ internal sealed class LightingPage : Page, IHeaderTool
             foreach (var zone in device.Zones ?? [])
                 if (zone?.Key is { } key && zone.Color is { } color) colors[key] = color;
         picture.SetStateColors(colors);
+        picture.SetKeyMaps(deskDevices.Where(d => d.Keys is not null).ToDictionary(d => d.Key, d => d.Keys!, StringComparer.Ordinal));
         bool wave = deskLightsOn && deskEffect is { } effect && LightingEffects.KindOf(effect.Kind) == EffectKind.Wave;
         double angle = deskEffect is { } current ? LightingEffects.ParamsFor(current, EffectKind.Wave)?.AngleDeg ?? 0 : 0;
         picture.Show(next, deskLightsOn, live, wave, angle);
@@ -830,12 +840,16 @@ internal sealed class LightingPage : Page, IHeaderTool
         var own = shown.Parts.Where(p => p.DeviceKey == key).ToList();
         var labels = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var p in own) if (p.ZoneKeys.Count == 1) labels[p.ZoneKeys[0]] = p.Part.Label;
-        if (own.Count == 1) return new($"{part.Part.Label} · {device}", part.Part.View == PictureView.Desk ? "selected on the desk" : "selected inside the PC", part.ShownZoneKey, device, labels);
-        return new(device, $"{part.Part.Label.ToLowerInvariant()} selected", part.ShownZoneKey, device, labels);
+        string[] parts = [.. own.Select(p => p.Part.Label)];
+        if (own.Count == 1) return new($"{part.Part.Label} · {device}", part.Part.View == PictureView.Desk ? "selected on the desk" : "selected inside the PC", part.ShownZoneKey, device, labels, parts);
+        return new(device, $"{part.Part.Label.ToLowerInvariant()} selected", part.ShownZoneKey, device, labels, parts);
     }
 
-    /// <summary>A device card's picture-mode look: its heading and sub-line, the zone whose row is highlighted, the device's name and its rows' labels by zone key.</summary>
-    private sealed record PictureMark(string Title, string Sub, string? Zone, string Device, IReadOnlyDictionary<string, string> Labels);
+    /// <summary>
+    /// A device card's picture-mode look: its heading and sub-line, the zone whose row is highlighted, the device's name, its rows' labels by
+    /// zone key, and its parts' labels in the picture's order, which the note under Colour correction names when there is more than one.
+    /// </summary>
+    private sealed record PictureMark(string Title, string Sub, string? Zone, string Device, IReadOnlyDictionary<string, string> Labels, IReadOnlyList<string> Parts);
 
     /// <summary>
     /// The list, Not placed, the panel and the edit tools from the layout the desk edits from: its draft while one is held, so an edit
@@ -1492,8 +1506,9 @@ internal sealed class LightingPage : Page, IHeaderTool
     {
         private readonly LightingPage page;
         private readonly TextBlock title = new() { Style = (Style)Application.Current.Resources["BodyStrongTextBlockStyle"], TextWrapping = TextWrapping.Wrap };
-        private readonly TextBlock effect = Muted(""), staysLit = Muted("Stays lit when lights are off"), ownEffect = Muted("Runs its own effect, so DeadWare's colours don't show on it."),
-            cannotDrive = Muted("DeadWare can't drive this device"), noZones = Muted("This device has no colour zones.");
+        private readonly TextBlock staysLit = Muted("Stays lit when lights are off"), cannotDrive = Muted("DeadWare can't drive this device"), noZones = Muted("This device has no colour zones.");
+        // Lighting mode, Brightness and Colour correction under the zone rows, and the own-effect note that goes first.
+        private readonly DeviceSections sections;
         // The picture's sub-line under the title ("selected on the desk", "radiator fan 2 selected"), collapsed in plain mode.
         private readonly TextBlock subtitle = Muted("");
         private readonly StackPanel zones = new() { Spacing = 4 };
@@ -1507,7 +1522,10 @@ internal sealed class LightingPage : Page, IHeaderTool
             this.page = page;
             Show(subtitle, false);
             var top = new StackPanel { Spacing = 2, Children = { title, subtitle } };
-            Root = Pages.Card(new StackPanel { Spacing = 8, Padding = new Thickness(8), Children = { top, effect, staysLit, ownEffect, cannotDrive, noZones, zones } });
+            sections = new DeviceSections(page.queue, page.Send);
+            var content = new StackPanel { Spacing = 8, Padding = new Thickness(8), Children = { top, sections.Note, staysLit, cannotDrive, noZones, zones } };
+            foreach (var section in sections.Sections) content.Children.Add(section);
+            Root = Pages.Card(content);
         }
 
         public Border Root { get; }
@@ -1525,6 +1543,7 @@ internal sealed class LightingPage : Page, IHeaderTool
             title.Text = next?.Title ?? Name;
             if (subtitle.Text != (next?.Sub ?? "")) subtitle.Text = next?.Sub ?? "";
             Show(subtitle, next is not null);
+            sections.ShowParts(next?.Parts);
             foreach (var (key, row) in rows)
             {
                 row.Rename(next?.Device ?? Name, next?.Labels.GetValueOrDefault(key));
@@ -1543,11 +1562,10 @@ internal sealed class LightingPage : Page, IHeaderTool
             title.Text = mark?.Title ?? name;
             bool hardware = device.Kind == PaintKind.Hardware, unsupported = device.Kind == PaintKind.Unsupported;
             // The device's own effect and whether it stays lit with lights off don't change with Lights on (Ruling AB), so the card
-            // names the effect while the lights are off too, and warns before they go off that the device will stay lit.
-            effect.Text = device.OwnEffect is { Length: > 0 } own ? $"Own hardware effect: {own}" : "Own hardware effect";
-            Show(effect, hardware);
+            // names the effect while the lights are off too, and warns before they go off that the device will stay lit. The note
+            // naming the effect goes first, and the tuning sections show disabled (DeviceSections).
+            sections.Update(device, page.shownState?.Settings?.Brightness ?? 100, mark?.Parts, live);
             Show(staysLit, hardware && device.StaysLitWhenOff);
-            Show(ownEffect, hardware);
             Show(cannotDrive, unsupported);
             // Only a device DeadWare paints lists its zones. One running its own effect keeps its zones' colours, but they don't show on it,
             // so it shows none (polish item 1: a Node Pro's swatches in the shared colour read as its fans' colour); Set all colours still
@@ -1575,10 +1593,14 @@ internal sealed class LightingPage : Page, IHeaderTool
             }
         }
 
-        /// <summary>Disables the swatches while the host isn't running, leaving the card as it was.</summary>
+        /// <summary>Ends the tuning sliders' drags and sends their waiting changes now, as when the page is hidden.</summary>
+        public void Leave() => sections.Leave();
+
+        /// <summary>Disables the swatches and the tuning sections while the host isn't running, leaving the card as it was.</summary>
         public void Disable()
         {
             foreach (var row in rows.Values) row.Swatch.IsEnabled = false;
+            sections.Disable();
         }
     }
 

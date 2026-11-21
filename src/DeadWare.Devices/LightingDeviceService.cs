@@ -25,6 +25,8 @@ internal sealed class LightingDeviceService
     readonly Dictionary<string,(string Mode,Rgb[] Colors)> applied=new();
     readonly Dictionary<string,int> activeMode=new();
     readonly Dictionary<string,string> lastError=new();
+    // modeProblem: why a device's saved mode can't run, as last logged, so it is logged once per change, not per frame (step 3a).
+    readonly Dictionary<string,string> modeProblem=new();
     IReadOnlyList<LightingDevice> devices=[];
     // seeded: a resize held on this connection, so channel 1 isn't sized again until OpenRGB restarts or reconnects. seedFailureLogged: the
     // read straight after a resize on this connection didn't show it. That is logged once, and the retries at later rescans add no further
@@ -33,8 +35,9 @@ internal sealed class LightingDeviceService
     public IReadOnlyList<LightingDevice> Devices{get{lock(gate)return devices;}}
     public LightingDeviceService(IOpenRgbSession session,TimeProvider time,HostLog log){this.session=session;this.time=time;this.log=log;}
 
-    static string Shape(IEnumerable<(string Key,int Index,IReadOnlyList<LightingZone> Zones)> d)
-        =>string.Join(";",d.Select(x=>$"{x.Key}@{x.Index}:"+string.Join(",",x.Zones.Select(z=>$"{z.Index}/{z.Name}/{z.LedCount}"))));
+    // Names the light count and each zone's matrix size too, so a key map arriving or changing size raises a state.
+    static string Shape(IEnumerable<(string Key,int Index,IReadOnlyList<LightingZone> Zones,int Lights)> d)
+        =>string.Join(";",d.Select(x=>$"{x.Key}@{x.Index}/{x.Lights}:"+string.Join(",",x.Zones.Select(z=>$"{z.Index}/{z.Name}/{z.LedCount}/{(z.Matrix is {} m?$"{m.Width}x{m.Height}":"-")}"))));
 
     public bool Rescan()
     {
@@ -72,7 +75,7 @@ internal sealed class LightingDeviceService
         }
         lock(gate)
         {
-            var oldShape=Shape(devices.Select(d=>(d.Key,indexByKey[d.Key],d.Zones)));
+            var oldShape=Shape(devices.Select(d=>(d.Key,indexByKey[d.Key],d.Zones,d.LedNames?.Count??-1)));
             var next=new List<LightingDevice>();
             var idx=new Dictionary<string,int>();
             foreach(var c in read)
@@ -80,7 +83,7 @@ internal sealed class LightingDeviceService
                 var key=LightingKeys.Device(c.Serial,c.Location);
                 if(idx.ContainsKey(key)) continue; // an identical serial+location cannot be told apart
                 idx[key]=c.Index;
-                next.Add(new(key,c.Name,c.Type,c.Zones,c.Modes,c.ActiveMode));
+                next.Add(new(key,c.Name,c.Type,c.Zones,c.Modes,c.ActiveMode,c.LedNames));
                 activeMode[key]=c.ActiveMode;
             }
             devices=next;
@@ -90,8 +93,9 @@ internal sealed class LightingDeviceService
             foreach(var k in applied.Keys.Where(k=>!idx.ContainsKey(k)).ToList()) applied.Remove(k);
             foreach(var k in activeMode.Keys.Where(k=>!idx.ContainsKey(k)).ToList()) activeMode.Remove(k);
             foreach(var k in lastError.Keys.Where(k=>!idx.ContainsKey(k)).ToList()) lastError.Remove(k);
+            foreach(var k in modeProblem.Keys.Where(k=>!idx.ContainsKey(k)).ToList()) modeProblem.Remove(k);
             directSet.RemoveWhere(k=>!idx.ContainsKey(k));
-            return oldShape!=Shape(next.Select(d=>(d.Key,idx[d.Key],d.Zones)));
+            return oldShape!=Shape(next.Select(d=>(d.Key,idx[d.Key],d.Zones,d.LedNames?.Count??-1)));
         }
     }
 
@@ -103,12 +107,12 @@ internal sealed class LightingDeviceService
         log.Write($"sized {node.Name} {zone.Name} to {NodeProLeds} LEDs");
         Forget(key);
     }
-    void Forget(string key){lock(gate){applied.Remove(key);directSet.Remove(key);lastSent.Remove(key);}}
+    void Forget(string key){lock(gate){applied.Remove(key);directSet.Remove(key);lastSent.Remove(key);modeProblem.Remove(key);}}
 
     // After an OpenRGB restart or reconnect the fresh process has received nothing: forget what was sent.
     public void Reset()
     {
-        lock(gate){lastSent.Clear();applied.Clear();directSet.Clear();activeMode.Clear();seeded=false;seedFailureLogged=false;}
+        lock(gate){lastSent.Clear();applied.Clear();directSet.Clear();activeMode.Clear();modeProblem.Clear();seeded=false;seedFailureLogged=false;}
     }
 
     public void Paint(LightingSettings settings,double tMs=0)
@@ -153,6 +157,7 @@ internal sealed class LightingDeviceService
         }
         // Direct: pushFrame.
         applied.Remove(d.Key);
+        NoteModeProblem(settings,d);
         var now=time.GetTimestamp();
         lastSent.TryGetValue(d.Key,out var prev);
         if(prev is not null)
@@ -174,19 +179,54 @@ internal sealed class LightingDeviceService
         lastSent[d.Key]=new(now,paint.Colors);
     }
 
+    // A saved mode the device can't run is painted as Static (LightingPaint.Lights); the reason is logged when it first appears or changes,
+    // and forgotten once the mode runs, so it is logged again if it stops being able to.
+    void NoteModeProblem(LightingSettings settings,LightingDevice d)
+    {
+        var mode=DeviceTunings.Of(settings,d.Key)?.Mode;
+        if(mode is null||DeviceModes.CantRun(d,mode.Kind) is not {} why){modeProblem.Remove(d.Key);return;}
+        if(modeProblem.TryGetValue(d.Key,out var prev)&&prev==why) return;
+        modeProblem[d.Key]=why;
+        log.Write($"saved lighting mode {mode.Kind} can't run on {d.Name} ({d.Key}), so it is painted as Static: {why}");
+    }
+
     public IReadOnlyList<DeviceView> Views(LightingSettings settings)
     {
         lock(gate)return devices.Select(d=>LightingPaint.View(settings,d)).ToList();
     }
 
-    // Zone key -> #RRGGBB as the effect shows it at tMs, before brightness, for Direct devices and zones with LEDs.
+    // Zone key -> #RRGGBB at tMs before tuning and brightness, for Direct devices and zones with LEDs: the colour of the zone's first light in
+    // the device's base frame (its keyboard mode, else the desk effect or static colour), so the picture shows a mode on a device with no key
+    // map too. Without a mode the base frame is each zone's ZoneShown colour, as before step 3a.
     public Dictionary<string,string> Preview(LightingSettings settings,double tMs)
     {
         var r=new Dictionary<string,string>();
         lock(gate)foreach(var d in devices)
         {
             if(LightingPaint.Paint(settings,d,tMs).Kind!=PaintKind.Direct) continue;
-            foreach(var z in d.Zones) if(z.LedCount>0) r[LightingKeys.Zone(d.Key,z.Index)]=LightingPaint.ZoneShown(settings,d,z,tMs).ToHex();
+            var lights=LightingPaint.Lights(settings,d,tMs);
+            var first=0;
+            foreach(var z in d.Zones)
+            {
+                if(z.LedCount>0) r[LightingKeys.Zone(d.Key,z.Index)]=(first<lights.Length?lights[first]:LightingPaint.ZoneShown(settings,d,z,tMs)).ToHex();
+                first+=z.LedCount;
+            }
+        }
+        return r;
+    }
+
+    // Device key -> its lights' colours at tMs before tuning and brightness, packed as upper-case RRGGBB per light, for each Direct device
+    // with a key map; null when there is none.
+    public Dictionary<string,string>? PreviewLights(LightingSettings settings,double tMs)
+    {
+        Dictionary<string,string>? r=null;
+        lock(gate)foreach(var d in devices)
+        {
+            if(KeyMaps.Of(d) is null||LightingPaint.Paint(settings,d,tMs).Kind!=PaintKind.Direct) continue;
+            var lights=LightingPaint.Lights(settings,d,tMs);
+            var bytes=new byte[lights.Length*3];
+            for(var i=0;i<lights.Length;i++){bytes[i*3]=lights[i].R;bytes[i*3+1]=lights[i].G;bytes[i*3+2]=lights[i].B;}
+            (r??=new())[d.Key]=Convert.ToHexString(bytes);
         }
         return r;
     }

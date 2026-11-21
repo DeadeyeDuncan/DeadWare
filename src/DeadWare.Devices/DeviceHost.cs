@@ -21,7 +21,8 @@ internal interface IConflictScanner { IReadOnlyList<LightingConflict> Scan(int? 
 // with the engine's own lock the wrong way round and a slow subscriber cannot stall painting.
 internal sealed class DeviceHost : IAsyncDisposable
 {
-    // FastTick: the paint tick while a desk effect runs with the lights on and the host is Running with a session; Tick otherwise. SlowTick's work keeps its cadence at either.
+    // FastTick: the paint tick while something animates with the lights on (a desk effect, or a painted device's keyboard mode) and the
+    // host is Running with a session; Tick otherwise. SlowTick's work keeps its cadence at either.
     public static readonly TimeSpan Tick=TimeSpan.FromMilliseconds(500),SlowTick=TimeSpan.FromSeconds(5),StartupDelay=TimeSpan.FromSeconds(10);
     public static readonly TimeSpan FastTick=TimeSpan.FromMilliseconds(33);
     public static readonly TimeSpan ConnectDelayMin=TimeSpan.FromSeconds(2),ConnectDelayMax=TimeSpan.FromSeconds(30);
@@ -66,7 +67,8 @@ internal sealed class DeviceHost : IAsyncDisposable
     string message="";
     IReadOnlyList<LightingConflict> conflicts=[];
     public event Action<HostState>? StateChanged;
-    // Preview frames (Task 7): while the window has subscribed and an effect runs, the paint tick takes the effect's colours before
+    // Preview frames (Task 7; step 3a adds device modes and per-light colours for key-map devices): while the window has subscribed and
+    // something animates (LightingPaint.Animating), the paint tick takes the colours before
     // brightness at most once per PreviewGap of the host's time and raises them when they differ from the last frame sent. previewOn, the
     // last frame and its time are guarded by gate; previewGeneration changes with every subscribe and ClientGone, so a frame taken under an
     // older subscription is never raised. Frames are raised outside gate under previewGate, which ClientGone also takes, so once it returns
@@ -77,7 +79,7 @@ internal sealed class DeviceHost : IAsyncDisposable
     bool previewOn;
     int previewGeneration;
     double? lastPreviewMs;
-    Dictionary<string,string>? lastPreview;
+    PreviewEvent? lastPreview;
     // The window is gone: its subscription ends. Called by the pipe server outside its own locks.
     public void ClientGone(){lock(previewGate)lock(gate){previewOn=false;previewGeneration++;lastPreview=null;lastPreviewMs=null;}}
 
@@ -104,7 +106,7 @@ internal sealed class DeviceHost : IAsyncDisposable
         Version=s.Version,LightsOn=s.LightsOn,Brightness=s.Brightness,DefaultColor=s.DefaultColor,
         ZoneColors=(s.ZoneColors??new()).ToDictionary(e=>e.Key,e=>new ZoneColorEntry{Color=e.Value.Color,ZoneName=e.Value.ZoneName}),
         HardwareModes=new(s.HardwareModes??new()),
-        Effect=LightingEffects.Clone(s.Effect),Layout=DeskLayouts.Clone(s.Layout),
+        Effect=LightingEffects.Clone(s.Effect),Layout=DeskLayouts.Clone(s.Layout),Devices=DeviceTunings.Clone(s.Devices),
     };
     double Now()=>time.GetElapsedTime(epoch).TotalMilliseconds;
     void Raise()
@@ -141,10 +143,10 @@ internal sealed class DeviceHost : IAsyncDisposable
             while(true)
             {
                 // Read each turn: an effect chosen or stopped takes effect from the next tick. slow stays timed by elapsed time, so the 5 s
-                // work keeps its cadence at either tick. FastTick only while a frame can be painted: an effect runs, the session is
+                // work keeps its cadence at either tick. FastTick only while a frame can be painted: something animates, the session is
                 // connected and the host is Running (fix wave L1); waiting, blocked or given up, the loop keeps Tick.
                 TimeSpan tick;
-                lock(gate)tick=LightingPaint.EffectRunning(settings)&&sessionOk&&status==HostStatus.Running?FastTick:Tick;
+                lock(gate)tick=LightingPaint.Animating(settings,service.Devices)&&sessionOk&&status==HostStatus.Running?FastTick:Tick;
                 await Task.Delay(tick,time,ct).ConfigureAwait(false);
                 var now=time.GetTimestamp();
                 var slow=time.GetElapsedTime(lastSlow,now)>=SlowTick;
@@ -240,7 +242,7 @@ internal sealed class DeviceHost : IAsyncDisposable
     void TickWork(bool slow)
     {
         var changed=false;
-        Dictionary<string,string>? frame=null;
+        PreviewEvent? frame=null;
         var generation=0;
         lock(gate)
         {
@@ -269,28 +271,29 @@ internal sealed class DeviceHost : IAsyncDisposable
         if(frame is not null) RaisePreview(frame,generation);
     }
 
-    // The frame to send at tMs, or null: none subscribed, no effect running, too soon after the last frame, or the same colours as it.
-    // While no frame is produced (no effect running, or no running session) the window shows the state's colours, so the last frame and
+    // The frame to send at tMs, or null: none subscribed, nothing animating, too soon after the last frame, or the same colours as it.
+    // While no frame is produced (nothing animating, or no running session) the window shows the state's colours, so the last frame and
     // its time are forgotten then: the first frame after a resume is sent even when it equals the last one (fix wave W1).
-    Dictionary<string,string>? PreviewLocked(double tMs)
+    PreviewEvent? PreviewLocked(double tMs)
     {
-        if(!previewOn||!LightingPaint.EffectRunning(settings)){ForgetPreview();return null;}
+        if(!previewOn||!LightingPaint.Animating(settings,service.Devices)){ForgetPreview();return null;}
         if(lastPreviewMs is {} last&&tMs-last<PreviewGap.TotalMilliseconds) return null;
         lastPreviewMs=tMs;
-        var colors=service.Preview(settings,tMs);
-        if(lastPreview is not null&&SameFrame(lastPreview,colors)) return null;
-        lastPreview=colors;
-        return colors;
+        var frame=new PreviewEvent(service.Preview(settings,tMs),service.PreviewLights(settings,tMs));
+        if(lastPreview is not null&&SameFrame(lastPreview,frame)) return null;
+        lastPreview=frame;
+        return frame;
     }
     void ForgetPreview(){lastPreview=null;lastPreviewMs=null;}
-    static bool SameFrame(Dictionary<string,string> a,Dictionary<string,string> b)=>a.Count==b.Count&&a.All(e=>b.TryGetValue(e.Key,out var v)&&v==e.Value);
+    internal static bool SameFrame(PreviewEvent a,PreviewEvent b)=>Same(a.Colors,b.Colors)&&(a.Lights is null?b.Lights is null:b.Lights is not null&&Same(a.Lights,b.Lights));
+    static bool Same(Dictionary<string,string> a,Dictionary<string,string> b)=>a.Count==b.Count&&a.All(e=>b.TryGetValue(e.Key,out var v)&&v==e.Value);
 
-    void RaisePreview(Dictionary<string,string> frame,int generation)
+    void RaisePreview(PreviewEvent frame,int generation)
     {
         lock(previewGate)
         {
             lock(gate)if(!previewOn||previewGeneration!=generation) return;
-            try{PreviewChanged?.Invoke(new PreviewEvent(frame));}catch(Exception e){log.Write("PreviewChanged handler failed: "+e.Message);}
+            try{PreviewChanged?.Invoke(frame);}catch(Exception e){log.Write("PreviewChanged handler failed: "+e.Message);}
         }
     }
 
@@ -438,8 +441,34 @@ internal sealed class DeviceHost : IAsyncDisposable
             case SetLayoutRequest r:return Mutate(request,s=>SetLayout(s,r),out raise);
             // Raises no state. A new subscription clears the last frame and its time, so its first frame goes at the next paint tick.
             case SubscribePreviewRequest r:previewOn=r.On;previewGeneration++;lastPreview=null;lastPreviewMs=null;return Ok(request);
+            case SetDeviceTuningRequest r:return Mutate(request,s=>SetDeviceTuning(s,r),out raise);
+            case SetDeviceModeRequest r:return Mutate(request,s=>SetDeviceMode(s,r),out raise);
             default:return Fail(request,HostReplyCodes.Unsupported);
         }
+    }
+
+    // Step 3a: the device must be one OpenRGB lists now; an entry for one that isn't connected is kept but can't be changed. The edit goes
+    // into the device's entry (made if absent), defaults are dropped and an empty entry removed (Normalize); Mutate's validation then gives
+    // the plain-words range sentences. A change that changes nothing is still saved and raises a state.
+    LightingDevice? Listed(string? key)=>key is null?null:service.Devices.FirstOrDefault(d=>d.Key==key);
+    static DeviceTuning Entry(LightingSettings s,string key)=>s.Devices.TryGetValue(key,out var t)&&t is not null?t:s.Devices[key]=new DeviceTuning();
+    string? SetDeviceTuning(LightingSettings s,SetDeviceTuningRequest r)
+    {
+        if(Listed(r.DeviceKey) is null) return HostReplyCodes.UnknownDevice;
+        var t=Entry(s,r.DeviceKey);
+        if(r.Brightness is {} b) t.Brightness=b;
+        if(r.Correction is {} c) t.Correction=new DeviceCorrection{R=c.R,G=c.G,B=c.B};
+        if(r.ResetCorrection) t.Correction=null;
+        DeviceTunings.Normalize(s);
+        return null;
+    }
+    // A mode the device can't do is refused in plain words (DeviceModes.CantRun); following the desk (Kind null) never is.
+    string? SetDeviceMode(LightingSettings s,SetDeviceModeRequest r)
+    {
+        if(Listed(r.DeviceKey) is not {} device) return HostReplyCodes.UnknownDevice;
+        Entry(s,r.DeviceKey).Mode=r.Kind is null?null:new DeviceMode{Kind=r.Kind,Speed=r.Speed};
+        DeviceTunings.Normalize(s);
+        return r.Kind is null?null:DeviceModes.CantRun(device,r.Kind);
     }
 
     // A kind is known by its exact name only (never a number, as Enum.TryParse would take). Params, when sent, replace that kind's set
@@ -498,7 +527,7 @@ internal sealed class DeviceHost : IAsyncDisposable
             catch(Exception e){log.Write("saving lighting.json failed: "+e.Message);return Fail(request,HostReplyCodes.CouldntSave);}
         }
         settings=candidate;
-        if(!LightingPaint.EffectRunning(settings)) ForgetPreview();
+        if(!LightingPaint.Animating(settings,service.Devices)) ForgetPreview();
         if(engineActive&&sessionOk&&status==HostStatus.Running)
         {
             try
