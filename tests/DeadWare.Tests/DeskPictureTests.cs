@@ -185,4 +185,50 @@ public class DeskPictureTests
         Assert.True(DeskPictures.HitTower(DeskPictures.OwnerRig,PictureView.Desk,77,416));Assert.False(DeskPictures.HitTower(DeskPictures.OwnerRig,PictureView.Desk,390,125));
         Assert.False(DeskPictures.HitTower(DeskPictures.OwnerRig,PictureView.Inside,77,416));         // the tower is hit only in the desk view
     }
+
+    // KeyRects: the keyboard's lights as rectangles in the part's box, inset by 5.
+    static readonly PicBox KeyBox=new(290,96,200,58);
+    static KeyMapView Grid(int cols,int rows,double keyWidth)
+    {
+        var xs=new List<double?>();var ys=new List<double?>();
+        for(var r=0;r<rows;r++) for(var c=0;c<cols;c++){xs.Add(cols==1?0.5:c/(cols-1.0));ys.Add(rows==1?0.5:r/(rows-1.0));}
+        return new(xs.Select((_,i)=>"k"+i).ToList(),xs,ys,keyWidth);
+    }
+    [Fact] public void Key_rects_stay_inside_the_keyboards_box()
+    {
+        var rects=DeskPictures.KeyRects(KeyBox,Grid(15,5,0.06));
+        Assert.Equal(75,rects.Count);
+        foreach(var r in rects)
+        {
+            Assert.True(r.X>=295&&r.Y>=101,$"{r}");
+            Assert.True(r.X+r.W<=485+1e-9&&r.Y+r.H<=149+1e-9,$"{r}");
+        }
+        // Centre at the inset box's origin plus position times its size; the middle key of the middle row is at its centre.
+        var mid=DeskPictures.KeyRects(KeyBox,Grid(3,3,0.1))[4];
+        Assert.Equal(390,mid.X+mid.W/2,6);Assert.Equal(125,mid.Y+mid.H/2,6);
+        Assert.Equal(19,mid.W,6);Assert.Equal(48.0/3*0.8,mid.H,6);
+    }
+    [Fact] public void Key_rects_keep_the_maps_order_left_to_right_and_top_to_bottom()
+    {
+        var rects=DeskPictures.KeyRects(KeyBox,Grid(4,3,0.05));
+        Assert.Equal(Enumerable.Range(0,12),rects.Select(r=>r.Light));
+        for(var i=1;i<rects.Count;i++)
+            if(i%4!=0) Assert.True(rects[i].X>rects[i-1].X);
+            else Assert.True(rects[i].Y>rects[i-1].Y);
+    }
+    [Fact] public void A_light_without_a_position_gets_no_rect()
+    {
+        var keys=new KeyMapView(["a","b","c","d"],[0.0,null,0.5,1.0],[0.0,0.5,null,1.0],0.1);
+        Assert.Equal([0,3],DeskPictures.KeyRects(KeyBox,keys).Select(r=>r.Light));
+        Assert.Empty(DeskPictures.KeyRects(KeyBox,new(["a"],[null],[null],0.1)));
+        Assert.Empty(DeskPictures.KeyRects(KeyBox,new([],[],[],0.1)));
+    }
+    [Fact] public void Key_rects_have_a_minimum_size()
+    {
+        var wide=DeskPictures.KeyRects(KeyBox,Grid(200,1,0.0001));   // 0.0001 of 190 is 0.019 wide
+        Assert.Equal(200,wide.Count);
+        foreach(var r in wide){Assert.Equal(2,r.W,6);Assert.True(r.H>=2);Assert.True(r.X>=295&&r.X+r.W<=485+1e-9);}
+        var tall=DeskPictures.KeyRects(KeyBox,Grid(1,100,0.2));       // 48/100*0.8 is 0.384 high
+        foreach(var r in tall){Assert.Equal(2,r.H,6);Assert.True(r.Y>=101&&r.Y+r.H<=149+1e-9);}
+    }
 }

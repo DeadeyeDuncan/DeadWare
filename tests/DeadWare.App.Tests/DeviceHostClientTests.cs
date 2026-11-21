@@ -438,12 +438,23 @@ public class DeviceHostClientTests:IAsyncLifetime
     [Fact] public async Task A_preview_event_raises_Preview_with_its_colours()
     {
         host.Answer=Subscribe(on=>on?[new PreviewEvent(Frame)]:[]);
-        var client=Make();IReadOnlyDictionary<string,string>? got=null;client.Preview+=c=>Volatile.Write(ref got,c);
+        var client=Make();PreviewColors? got=null;client.Preview+=c=>Volatile.Write(ref got,c);
         await client.StartAsync(false,CancellationToken.None);
         await Until(()=>client.State is not null);
         client.SetPreview(true);
         await Until(()=>Volatile.Read(ref got) is not null,"the preview raised");
-        Assert.Equal(Frame,got!);
+        Assert.Equal(Frame,got!.Zones);Assert.Null(got.Lights);
+    }
+    [Fact] public async Task A_preview_with_lights_reaches_the_subscriber()
+    {
+        var lights=new Dictionary<string,string>{["kb|1"]="FF000000FF00"};
+        host.Answer=Subscribe(on=>on?[new PreviewEvent(Frame,lights)]:[]);
+        var client=Make();PreviewColors? got=null;client.Preview+=c=>Volatile.Write(ref got,c);
+        await client.StartAsync(false,CancellationToken.None);
+        await Until(()=>client.State is not null);
+        client.SetPreview(true);
+        await Until(()=>Volatile.Read(ref got) is not null,"the preview raised");
+        Assert.Equal(Frame,got!.Zones);Assert.Equal(lights,got.Lights);
     }
     [Fact] public async Task SetPreview_sends_a_subscribe_request()
     {

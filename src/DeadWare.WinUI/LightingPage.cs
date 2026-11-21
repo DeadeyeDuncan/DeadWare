@@ -138,10 +138,10 @@ internal sealed class LightingPage : Page, IHeaderTool
     private (bool Wide, bool Picture)? arranged;
     private double deskWidth;
     // The preview frame waiting for the UI thread, at most one: a newer frame replaces it. previewHandler: the handler on the followed client.
-    private sealed record PreviewFrame(DeviceHostClient Source, IReadOnlyDictionary<string, string> Colors);
+    private sealed record PreviewFrame(DeviceHostClient Source, PreviewColors Colors);
     private PreviewFrame? pendingFrame;
     private int frameQueued;
-    private Action<IReadOnlyDictionary<string, string>>? previewHandler;
+    private Action<PreviewColors>? previewHandler;
     // One zone flyout serves every swatch: the swatch that opens it names the zone.
     private readonly Flyout zoneFlyout = new() { Placement = FlyoutPlacementMode.Bottom };
     private readonly StackPanel zoneContent = new() { Spacing = 8 };
@@ -402,7 +402,7 @@ internal sealed class LightingPage : Page, IHeaderTool
     /// A preview frame, raised on the client's read loop, where a slow handler would hold up every reply: it is only kept, replacing
     /// a frame that waits, and at most one show waits on the UI thread.
     /// </summary>
-    private void OnPreview(DeviceHostClient source, IReadOnlyDictionary<string, string> colors)
+    private void OnPreview(DeviceHostClient source, PreviewColors colors)
     {
         Interlocked.Exchange(ref pendingFrame, new PreviewFrame(source, colors));
         if (Interlocked.Exchange(ref frameQueued, 1) == 1) return;
@@ -420,7 +420,7 @@ internal sealed class LightingPage : Page, IHeaderTool
         Volatile.Write(ref frameQueued, 0);
         if (Interlocked.Exchange(ref pendingFrame, null) is not { } frame || !showing || client is null || !ReferenceEquals(frame.Source, client)) return;
         // Nor while the host isn't running, so a frame can't paint over the colours a non-running state cleared.
-        if (client.State is not { Status: HostStatus.Running, Settings: { } settings } || !LightingPaint.EffectRunning(settings)) return;
+        if (client.State is not { Status: HostStatus.Running, Settings: { } settings } state || !LightingPaint.Animating(settings, state.Devices ?? [])) return;
         ShowDeskColors(frame.Colors);
     }
 
@@ -428,9 +428,9 @@ internal sealed class LightingPage : Page, IHeaderTool
     /// A preview frame to the drawing the mode shows, the plain desk or the picture; null (the state's colours) to both, so neither keeps
     /// a frame that is no longer the lights' colours.
     /// </summary>
-    private void ShowDeskColors(IReadOnlyDictionary<string, string>? colors)
+    private void ShowDeskColors(PreviewColors? colors)
     {
-        if (colors is null || shownPicture is null) desk.ShowColors(colors);
+        if (colors is null || shownPicture is null) desk.ShowColors(colors?.Zones);
         if (colors is null || shownPicture is not null) picture.ShowColors(colors);
     }
 
@@ -567,7 +567,7 @@ internal sealed class LightingPage : Page, IHeaderTool
             // Effects go only to a running host whose settings the bar has seen.
             effectBar.Show(shownEffect ?? new EffectSettings(), live && state.Settings is not null);
             // Without an effect running the desk shows the state's colours, and frames are dropped until one runs again.
-            if (state.Settings is not { } current || !LightingPaint.EffectRunning(current)) ShowDeskColors(null);
+            if (state.Settings is not { } current || !LightingPaint.Animating(current, state.Devices ?? [])) ShowDeskColors(null);
             ShowDevices(state);
         }
         UpdateFlyouts(resync: live && !wasLive);
@@ -783,6 +783,7 @@ internal sealed class LightingPage : Page, IHeaderTool
             foreach (var zone in device.Zones ?? [])
                 if (zone?.Key is { } key && zone.Color is { } color) colors[key] = color;
         picture.SetStateColors(colors);
+        picture.SetKeyMaps(deskDevices.Where(d => d.Keys is not null).ToDictionary(d => d.Key, d => d.Keys!, StringComparer.Ordinal));
         bool wave = deskLightsOn && deskEffect is { } effect && LightingEffects.KindOf(effect.Kind) == EffectKind.Wave;
         double angle = deskEffect is { } current ? LightingEffects.ParamsFor(current, EffectKind.Wave)?.AngleDeg ?? 0 : 0;
         picture.Show(next, deskLightsOn, live, wave, angle);

@@ -12,6 +12,8 @@ internal interface IDeviceHostProcess : IDisposable { int Id {get;} bool HasExit
 internal enum ServeEnd { Closed, VersionMismatch, WrongElevation }
 /// <summary>The latest state and how many states the client has stored so far, read together: <see cref="Seq"/> never decreases and survives reconnects.</summary>
 internal readonly record struct HostSnapshot(HostState? State,long Seq);
+/// <summary>A preview frame: zone key to #RRGGBB, and for each painted device with a key map its lights' colours packed as RRGGBB per light, keyed by device key.</summary>
+public sealed record PreviewColors(IReadOnlyDictionary<string,string> Zones,IReadOnlyDictionary<string,string>? Lights);
 /// <summary>
 /// A reply and the client's state count as the read loop read that reply's frame. The host writes a request's reply before the state the
 /// request caused, so once <see cref="DeviceHostClient.Snapshot"/> shows a Seq above <see cref="StatesBefore"/>, that state (or a later one) is in.
@@ -58,8 +60,8 @@ internal sealed class DeviceHostClient : IAsyncDisposable
     public HostSnapshot Snapshot() {lock(gate)return new(state,seq);}
     public string? Problem {get {lock(gate)return problem;}}
     public event Action? Changed;
-    /// <summary>A preview frame, zone key to #RRGGBB, raised on the read loop like <see cref="Changed"/> and only while <see cref="SetPreview"/> wants frames.</summary>
-    public event Action<IReadOnlyDictionary<string,string>>? Preview;
+    /// <summary>A preview frame (zone colours, and per-light colours for key-mapped devices), raised on the read loop like <see cref="Changed"/> and only while <see cref="SetPreview"/> wants frames.</summary>
+    public event Action<PreviewColors>? Preview;
     /// <summary>
     /// Remembers whether the window wants preview frames: sent now when connected (once the connection's state has arrived), and again after every reconnect.
     /// Never blocks and never throws; no reply is awaited, and a failed send is left to the next connection. A repeat of the wanted value sends nothing.
@@ -69,7 +71,7 @@ internal sealed class DeviceHostClient : IAsyncDisposable
     void QueuePreview(Conn c,bool on)=>c.Previews=c.Previews.ContinueWith(_=>SendPreviewAsync(c,on),CancellationToken.None,TaskContinuationOptions.None,TaskScheduler.Default).Unwrap();
     async Task SendPreviewAsync(Conn c,bool on) {try {await SendAsync(c,new SubscribePreviewRequest(on),CancellationToken.None).ConfigureAwait(false);} catch(Exception) {}}
     /// <summary>Raises <see cref="Preview"/> with each subscriber contained, as <see cref="RaiseChanged"/> does.</summary>
-    void RaisePreview(IReadOnlyDictionary<string,string> colors) {if(Preview is {} handlers)foreach(Action<IReadOnlyDictionary<string,string>> handler in handlers.GetInvocationList())try {handler(colors);} catch(Exception) {}}
+    void RaisePreview(PreviewColors colors) {if(Preview is {} handlers)foreach(Action<PreviewColors> handler in handlers.GetInvocationList())try {handler(colors);} catch(Exception) {}}
     /// <summary>Starts the background connection loop and returns at once; <paramref name="startup"/> is true for a Windows sign-in launch and applies to the first launch only.</summary>
     public Task StartAsync(bool startup,CancellationToken token)
     {
@@ -260,7 +262,7 @@ internal sealed class DeviceHostClient : IAsyncDisposable
                     if(first&&windowElevated&&!update.State.Elevated)return ServeEnd.WrongElevation;
                 }
                 // A frame the host queued before an unsubscribe can still arrive after it: dropped while frames aren't wanted.
-                else if(message is PreviewEvent frame) {bool wanted;lock(gate)wanted=previewWanted;if(wanted)RaisePreview(frame.Colors);}
+                else if(message is PreviewEvent frame) {bool wanted;lock(gate)wanted=previewWanted;if(wanted)RaisePreview(new PreviewColors(frame.Colors,frame.Lights));}
             }
             return ServeEnd.Closed;
         }
