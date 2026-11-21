@@ -411,7 +411,7 @@ internal sealed class LightingPage : Page, IHeaderTool
 
     /// <summary>
     /// Shows the waiting frame on the desk. Dropped while the page is hidden, when it came from a client the page no longer follows,
-    /// while the latest state isn't Running, and while it has no effect running: the host can send one frame computed just before a switch to Static or lights
+    /// while the latest state isn't Running, and while nothing animates (no desk effect or device mode running, see LightingPaint.Animating): the host can send one frame computed just before a switch to Static or lights
     /// off, after that state, and no later frame would replace it.
     /// </summary>
     private void ShowFrame()
@@ -566,7 +566,7 @@ internal sealed class LightingPage : Page, IHeaderTool
             }
             // Effects go only to a running host whose settings the bar has seen.
             effectBar.Show(shownEffect ?? new EffectSettings(), live && state.Settings is not null);
-            // Without an effect running the desk shows the state's colours, and frames are dropped until one runs again.
+            // While nothing animates (LightingPaint.Animating) the desk shows the state's colours, and frames are dropped until one runs again.
             if (state.Settings is not { } current || !LightingPaint.Animating(current, state.Devices ?? [])) ShowDeskColors(null);
             ShowDevices(state);
         }

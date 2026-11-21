@@ -32,8 +32,8 @@ public static class DeskPictures
         P("front3",PartKind.FanRing,PictureView.Inside,502,266,52,52,"Front fans",Node,false,0,[0],0),
     ],new Dictionary<string,string>{[Board]="MSI motherboard headers"});
 
-    // One rectangle per positioned light: the keyboard's lights inside its box inset by KeyInset. Centre at the inset box's origin plus position times its size,
-    // width KeyWidth of the inset width, height 0.8 of a row (the inset height over the number of distinct Y values), each at least 2 units and moved to lie within the inset box.
+    // One rectangle per positioned light: the keyboard's lights inside its box inset by KeyInset. Centre at the inset box's origin plus half the key plus position times the room left over (box size minus key size), so a key at 0 or 1 sits whole against the edge,
+    // width KeyWidth of the inset width, height 0.8 of a row (the inset height over the number of distinct Y values), each at least 2 units; the clamp is only a guard.
     public static IReadOnlyList<KeyRect> KeyRects(PicBox box,KeyMapView keys)
     {
         var list=new List<KeyRect>();
@@ -47,7 +47,7 @@ public static class DeskPictures
         for(int i=0;i<n;i++)
         {
             if(!Has(i)) continue;
-            double cx=x0+keys.X[i]!.Value*w0,cy=y0+keys.Y[i]!.Value*h0;
+            double cx=x0+w/2+keys.X[i]!.Value*(w0-w),cy=y0+h/2+keys.Y[i]!.Value*(h0-h);
             list.Add(new(i,Math.Clamp(cx-w/2,x0,x0+w0-w),Math.Clamp(cy-h/2,y0,y0+h0-h),w,h));
         }
         return list;

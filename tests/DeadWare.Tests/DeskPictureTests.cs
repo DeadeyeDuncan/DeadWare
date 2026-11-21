@@ -208,6 +208,24 @@ public class DeskPictureTests
         Assert.Equal(390,mid.X+mid.W/2,6);Assert.Equal(125,mid.Y+mid.H/2,6);
         Assert.Equal(19,mid.W,6);Assert.Equal(48.0/3*0.8,mid.H,6);
     }
+    // A real keyboard map puts its edge columns and rows at exactly 0 and 1: those keys must sit whole inside the box, not be pushed over their neighbours.
+    [Fact] public void Edge_keys_do_not_overlap_their_neighbours()
+    {
+        var rects=DeskPictures.KeyRects(KeyBox,Grid(22,6,0.85/21));
+        Assert.Equal(132,rects.Count);
+        foreach(var row in rects.GroupBy(r=>r.Light/22))
+        {
+            var o=row.OrderBy(r=>r.X).ToList();
+            for(var i=1;i<o.Count;i++) Assert.True(o[i-1].X+o[i-1].W<=o[i].X+1e-9,$"row {row.Key}: {o[i-1]} {o[i]}");
+        }
+        foreach(var col in rects.GroupBy(r=>r.Light%22))
+        {
+            var o=col.OrderBy(r=>r.Y).ToList();
+            for(var i=1;i<o.Count;i++) Assert.True(o[i-1].Y+o[i-1].H<=o[i].Y+1e-9,$"column {col.Key}: {o[i-1]} {o[i]}");
+        }
+        Assert.Equal(295,rects.Min(r=>r.X),9);Assert.Equal(485,rects.Max(r=>r.X+r.W),9);
+        Assert.Equal(101,rects.Min(r=>r.Y),9);Assert.Equal(149,rects.Max(r=>r.Y+r.H),9);
+    }
     [Fact] public void Key_rects_keep_the_maps_order_left_to_right_and_top_to_bottom()
     {
         var rects=DeskPictures.KeyRects(KeyBox,Grid(4,3,0.05));
