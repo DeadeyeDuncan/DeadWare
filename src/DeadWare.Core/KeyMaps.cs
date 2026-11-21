@@ -38,5 +38,7 @@ public static class KeyMaps
         for(var i=1;i<distinct.Length;i++) gap=Math.Min(gap,distinct[i]-distinct[i-1]);
         return Math.Clamp((gap==double.MaxValue?0.04:gap)*0.85,0.008,0.10);
     }
+    // Paint and layers need a keyboard with a map, at least one placed light and a name for every light.
+    public static bool CanPaint(LightingDevice d)=>IsKeyboard(d)&&Of(d) is{} m&&m.X.Any(x=>x is not null)&&d.LedNames is{} n&&n.Count==LightCount(d)&&n.All(x=>!string.IsNullOrEmpty(x));
     public static bool SupportsWave(LightingDevice d)=>IsKeyboard(d)&&Of(d) is{} m&&m.X.Any(x=>x is not null);
 }

@@ -65,10 +65,22 @@ public static class LightingPaint
         byte Ch(byte v,int gain){var n=Math.Min(v*gain,25500);return (byte)Math.Round(n*device*page/1_000_000.0,MidpointRounding.AwayFromZero);}
         return new(Ch(c.R,k?.R??100),Ch(c.G,k?.G??100),Ch(c.B,k?.B??100));
     }
-    private static bool Painted(LightingSettings s,LightingDevice d)=>HardwareModeFor(s,d) is null&&d.Modes.Contains(DirectMode);
-    // Something moves: lights on and a desk effect running, or a painted device running an animated keyboard mode.
-    public static bool Animating(LightingSettings s,IEnumerable<LightingDevice> devices)=>
-        s.LightsOn&&(EffectRunning(s)||devices.Any(d=>Painted(s,d)&&DeviceModes.Animated(DeviceModes.Running(s,d)?.Kind)));
+    internal static bool Painted(LightingSettings s,LightingDevice d)=>HardwareModeFor(s,d) is null&&d.Modes.Contains(DirectMode);
+    // Something moves: lights on and a desk effect running, a painted device running an animated keyboard mode or an effect layer, or a key
+    // press still live for one of its fade or ripple layers.
+    public static bool Animating(LightingSettings s,IEnumerable<LightingDevice> devices,IReadOnlyList<LightPress>? presses=null,double nowMs=0)
+    {
+        if(!s.LightsOn) return false;
+        if(EffectRunning(s)) return true;
+        var list=devices as IReadOnlyCollection<LightingDevice>??devices.ToList();
+        foreach(var d in list)
+        {
+            if(!Painted(s,d)) continue;
+            if(DeviceModes.Animated(DeviceModes.Running(s,d)?.Kind)||LightingLayers.EffectLayerRuns(s,d)) return true;
+            if(presses is not null&&LightingLayers.LongestReactionMs(s,d) is>0 and var ms&&presses.Any(p=>p is not null&&p.DeviceKey==d.Key&&nowMs-p.AtMs<ms)) return true;
+        }
+        return false;
+    }
     // A null view, as a damaged state over the pipe could hold, is skipped as the window's other view code does.
     public static bool Animating(LightingSettings s,IEnumerable<DeviceView?> devices)=>
         s.LightsOn&&(EffectRunning(s)||devices.Any(v=>v is not null&&v.Kind==PaintKind.Direct&&DeviceModes.Animated(v.LightingMode?.Kind)&&v.ModeProblem is null));
@@ -81,7 +93,16 @@ public static class LightingPaint
         if(kind==EffectKind.Static||settings.Layout.Unplaced.Contains(device.Key)||!settings.Layout.Zones.TryGetValue(LightingKeys.Zone(device.Key,zone.Index),out var pt)) return baseColor;
         return LightingEffects.Evaluate(kind,pt,tMs,LightingEffects.ParamsFor(settings.Effect,kind)!,baseColor);
     }
-    public static DevicePaint Paint(LightingSettings settings,LightingDevice device,double tMs=0)
+    // The colours the window shows for a device: its base frame, or key paint and layers after the stage, rounded once and not tuned.
+    public static Rgb[] Shown(LightingSettings s,LightingDevice d,double tMs,IReadOnlyList<LightPress>? presses)
+    {
+        var lights=Lights(s,d,tMs);
+        if(LightingLayers.Compose(s,d,lights,tMs,presses) is not{} f) return lights;
+        var r=new Rgb[lights.Length];
+        for(var i=0;i<r.Length;i++) r[i]=LightingLayers.Round(f[3*i],f[3*i+1],f[3*i+2]);
+        return r;
+    }
+    public static DevicePaint Paint(LightingSettings settings,LightingDevice device,double tMs=0,IReadOnlyList<LightPress>? presses=null)
     {
         var mode=HardwareModeFor(settings,device);
         if(mode is not null)
@@ -92,6 +113,12 @@ public static class LightingPaint
         if(!device.Modes.Contains(DirectMode)) return new(PaintKind.Unsupported,null,[],false);
         var lights=Lights(settings,device,tMs);
         var tuning=DeviceTunings.Of(settings,device.Key);
+        // Key paint and layers carry fractions to one rounding; with none of either (or lights off) the integer loop below is the whole path.
+        if(settings.LightsOn&&LightingLayers.Compose(settings,device,lights,tMs,presses) is{} f)
+        {
+            for(var i=0;i<lights.Length;i++) lights[i]=LightingLayers.TuneExact(f[3*i],f[3*i+1],f[3*i+2],tuning,settings.Brightness);
+            return new(PaintKind.Direct,DirectMode,lights,false);
+        }
         for(var i=0;i<lights.Length;i++) lights[i]=settings.LightsOn?Tune(lights[i],tuning,settings.Brightness):Rgb.Black;
         return new(PaintKind.Direct,DirectMode,lights,false);
     }
