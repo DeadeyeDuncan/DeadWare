@@ -357,6 +357,8 @@ internal sealed class LightingPage : Page, IHeaderTool
         allSends.Flush();
         foreach (var pending in zoneSends.Values) pending.Flush();
         effectBar.Leave();
+        // So do the cards' tuning sliders, which may never get their release either.
+        foreach (var card in cards.Values) card.Leave();
         // Edit layout ends with the page, and the desk forgets edits on their way: it shows the host's layout when it is back.
         DropLayoutDraft();
         SetEditing(false);
@@ -1590,6 +1592,9 @@ internal sealed class LightingPage : Page, IHeaderTool
                 rows[zone.Key].Highlight(mark?.Zone is { } marked && zone.Key == marked);
             }
         }
+
+        /// <summary>Ends the tuning sliders' drags and sends their waiting changes now, as when the page is hidden.</summary>
+        public void Leave() => sections.Leave();
 
         /// <summary>Disables the swatches and the tuning sections while the host isn't running, leaving the card as it was.</summary>
         public void Disable()

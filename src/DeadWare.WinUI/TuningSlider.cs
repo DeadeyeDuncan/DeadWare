@@ -99,6 +99,13 @@ internal sealed class TuningSlider
         sends.Cancel();
     }
 
+    /// <summary>Ends a drag and sends a waiting value now, as when the page is hidden: a drag that never gets its release would hold the slider against every later state.</summary>
+    public void Leave()
+    {
+        dragging = false;
+        sends.Flush();
+    }
+
     private void Send(HostMessage message)
     {
         int sent = posted;

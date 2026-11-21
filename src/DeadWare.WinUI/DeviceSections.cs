@@ -110,16 +110,19 @@ internal sealed class DeviceSections
         LightingPage.Show(Note, hardware);
         if (hardware) ShowNote(next.OwnEffect);
         // A device DeadWare can't drive has no sections; its sliders' waiting changes and drags go with them.
-        LightingPage.Show(modeSection, !unsupported && next.Keyboard);
+        // Lighting mode shows for a keyboard, and for a device with a mode saved while it was one, so that mode can be seen and cleared.
+        LightingPage.Show(modeSection, !unsupported && (next.Keyboard || next.LightingMode is not null));
         LightingPage.Show(brightnessSection, !unsupported);
         LightingPage.Show(correctionSection, !unsupported);
 
-        // Lighting mode: only a keyboard has it (not every device with a key map is one). Rainbow wave needs the key positions.
-        items[4].IsEnabled = next.Wave;
-        mode.IsEnabled = enabled && next.Keyboard;
+        // Lighting mode: only a keyboard has it (not every device with a key map is one). Rainbow wave needs the key positions. A device
+        // that isn't a keyboard but has a saved mode shows that mode with the host's reason under it, and offers only Follow the desk
+        // effect, which clears it; it has no Speed.
+        for (int i = 1; i < items.Length; i++) items[i].IsEnabled = next.Keyboard && (i != 4 || next.Wave);
+        mode.IsEnabled = enabled;
         ApplyMode();
         var lines = new List<string>();
-        if (!next.Wave) lines.Add(WaveText);
+        if (next.Keyboard && !next.Wave) lines.Add(WaveText);
         if (next.ModeProblem is { Length: > 0 } problem && !lines.Contains(problem)) lines.Add(problem);
         modeNote.Text = string.Join("\n", lines);
         LightingPage.Show(modeNote, lines.Count > 0);
@@ -134,8 +137,9 @@ internal sealed class DeviceSections
     /// <summary>The picture's part labels for the note under Colour correction, shown when the device has more than one; null hides it.</summary>
     public void ShowParts(IReadOnlyList<string>? labels)
     {
-        bool shown = labels is { Count: > 1 };
-        if (shown) partsNote.Text = PartsText + string.Join(", ", labels!.Distinct(StringComparer.Ordinal));
+        var distinct = labels?.Distinct(StringComparer.Ordinal).ToArray() ?? [];
+        bool shown = distinct.Length > 1;
+        if (shown) partsNote.Text = PartsText + string.Join(", ", distinct);
         LightingPage.Show(partsNote, shown);
     }
 
@@ -149,6 +153,12 @@ internal sealed class DeviceSections
             slider.Cancel();
             slider.Slider.IsEnabled = false;
         }
+    }
+
+    /// <summary>Ends the sliders' drags and sends their waiting changes now, as when the page is hidden.</summary>
+    public void Leave()
+    {
+        foreach (var slider in new[] { speed, brightness, red, green, blue }) slider.Leave();
     }
 
     /// <summary>A colour channel's slider, 0 to 200 with a tick at 100, whose change sends all three channels as the sliders show them.</summary>
@@ -184,13 +194,13 @@ internal sealed class DeviceSections
             try { mode.SelectedIndex = Math.Max(index, 0); }
             finally { syncing = false; }
         }
-        LightingPage.Show(speed.Root, DeviceModes.Animated(Chosen));
+        LightingPage.Show(speed.Root, device?.Keyboard == true && DeviceModes.Animated(Chosen));
     }
 
     /// <summary>The user's choice goes at once, with the speed the slider shows; a refused one puts the drop-down back to the state's mode.</summary>
     private void PickMode()
     {
-        LightingPage.Show(speed.Root, DeviceModes.Animated(Chosen));
+        LightingPage.Show(speed.Root, device?.Keyboard == true && DeviceModes.Animated(Chosen));
         if (syncing || !enabled || mode.SelectedIndex < 0 || device is null) return;
         string? kind = Chosen;
         modeSending++;
