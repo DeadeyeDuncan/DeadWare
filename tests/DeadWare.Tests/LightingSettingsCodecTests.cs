@@ -569,7 +569,7 @@ public class LightingSettingsCodecTests
               }
             }
             """;
-        Assert.Equal("  "+golden.TrimStart(),text[text.IndexOf("  \"Devices\"",StringComparison.Ordinal)..]);
+        Assert.Equal(("  "+golden.TrimStart()).ReplaceLineEndings("\n"),text[text.IndexOf("  \"Devices\"",StringComparison.Ordinal)..].ReplaceLineEndings("\n"));
         Assert.Equal(2,System.Text.Json.JsonDocument.Parse(text).RootElement.GetProperty("Version").GetInt32());
     }
     [Fact]
@@ -598,10 +598,12 @@ public class LightingSettingsCodecTests
     public void A_painted_table_over_the_size_cap_is_refused_on_write()
     {
         var s=new LightingSettings();
-        DeviceLayer Big()=>new(){Lights=Enumerable.Range(0,4096).Select(i=>new LayerLight{Index=i,Name="a light name"}).ToList()};
-        s.Devices["k|1"]=new DeviceTuning{Looks=Enumerable.Range(0,12).Select(i=>new DeviceLook{Name="Look "+i,Layers=Enumerable.Range(0,8).Select(_=>Big()).ToList()}).ToList()};
+        // Two layers of 4096 lights with 128-character names are over 1 MiB once written, and every limit is met.
+        DeviceLayer Big()=>new(){Lights=Enumerable.Range(0,4096).Select(i=>new LayerLight{Index=i,Name=new string('a',128)}).ToList()};
+        s.Devices["k|1"]=new DeviceTuning{Looks=[new DeviceLook{Name="Look",Layers=[Big(),Big()]}]};
         Assert.Null(DeviceTunings.Validate(s));
-        Assert.Throws<InvalidDataException>(()=>LightingSettingsCodec.Write(s));
-        Assert.NotNull(LightingSettingsCodec.Validate(s));
+        var ex=Assert.Throws<InvalidDataException>(()=>LightingSettingsCodec.Write(s));
+        Assert.Equal("Lighting settings would be larger than 1 MiB when saved.",ex.Message);
+        Assert.Equal("Lighting settings would be larger than 1 MiB when saved.",LightingSettingsCodec.Validate(s));
     }
 }

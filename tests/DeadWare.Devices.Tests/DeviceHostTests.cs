@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using DeadWare.Core;
@@ -1710,16 +1711,17 @@ public sealed class DeviceHostTests : IAsyncLifetime
             Look="Gaming",
         };
         File.WriteAllText(lightingPath,LightingSettingsCodec.Write(seeded));
-        var want=System.Text.Json.JsonSerializer.Serialize(LightingSettingsCodec.Read(File.ReadAllText(lightingPath)).Settings.Devices[ApexKey]);
+        var want=JsonSerializer.Serialize(seeded.Devices[ApexKey]);
         var h=await Running();
         Assert.True((await Send(h,new SetBrightnessRequest(40))).Ok);
         Assert.True((await Send(h,new SetDeviceTuningRequest(ApexKey,50))).Ok);
-        string Paint(DeviceTuning t){t.Brightness=null;return System.Text.Json.JsonSerializer.Serialize(t);}
+        // Compare the paint on copies, with the brightness (which the request changed) cleared; the state's own settings are never touched.
+        string Paint(DeviceTuning t){var c=JsonSerializer.Deserialize<DeviceTuning>(JsonSerializer.Serialize(t))!;c.Brightness=null;return JsonSerializer.Serialize(c);}
         var inState=h.State.Settings.Devices[ApexKey];
         Assert.Equal(50,inState.Brightness);
         var saved=new LightingStore(lightingPath).Load().Settings;
         Assert.Equal(40,saved.Brightness);Assert.Equal(3,saved.Version);Assert.Equal(50,saved.Devices[ApexKey].Brightness);
-        var wantNoBrightness=System.Text.Json.JsonSerializer.Deserialize<DeviceTuning>(want)!;
+        var wantNoBrightness=JsonSerializer.Deserialize<DeviceTuning>(want)!;
         Assert.Equal(Paint(wantNoBrightness),Paint(inState));
         Assert.Equal(Paint(wantNoBrightness),Paint(saved.Devices[ApexKey]));
     }
