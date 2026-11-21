@@ -33,8 +33,9 @@ internal sealed class LightingDeviceService
     public IReadOnlyList<LightingDevice> Devices{get{lock(gate)return devices;}}
     public LightingDeviceService(IOpenRgbSession session,TimeProvider time,HostLog log){this.session=session;this.time=time;this.log=log;}
 
-    static string Shape(IEnumerable<(string Key,int Index,IReadOnlyList<LightingZone> Zones)> d)
-        =>string.Join(";",d.Select(x=>$"{x.Key}@{x.Index}:"+string.Join(",",x.Zones.Select(z=>$"{z.Index}/{z.Name}/{z.LedCount}"))));
+    // Names the light count and each zone's matrix size too, so a key map arriving or changing raises a state.
+    static string Shape(IEnumerable<(string Key,int Index,IReadOnlyList<LightingZone> Zones,int Lights)> d)
+        =>string.Join(";",d.Select(x=>$"{x.Key}@{x.Index}/{x.Lights}:"+string.Join(",",x.Zones.Select(z=>$"{z.Index}/{z.Name}/{z.LedCount}/{(z.Matrix is {} m?$"{m.Width}x{m.Height}":"-")}"))));
 
     public bool Rescan()
     {
@@ -72,7 +73,7 @@ internal sealed class LightingDeviceService
         }
         lock(gate)
         {
-            var oldShape=Shape(devices.Select(d=>(d.Key,indexByKey[d.Key],d.Zones)));
+            var oldShape=Shape(devices.Select(d=>(d.Key,indexByKey[d.Key],d.Zones,d.LedNames?.Count??-1)));
             var next=new List<LightingDevice>();
             var idx=new Dictionary<string,int>();
             foreach(var c in read)
@@ -80,7 +81,7 @@ internal sealed class LightingDeviceService
                 var key=LightingKeys.Device(c.Serial,c.Location);
                 if(idx.ContainsKey(key)) continue; // an identical serial+location cannot be told apart
                 idx[key]=c.Index;
-                next.Add(new(key,c.Name,c.Type,c.Zones,c.Modes,c.ActiveMode));
+                next.Add(new(key,c.Name,c.Type,c.Zones,c.Modes,c.ActiveMode,c.LedNames));
                 activeMode[key]=c.ActiveMode;
             }
             devices=next;
@@ -91,7 +92,7 @@ internal sealed class LightingDeviceService
             foreach(var k in activeMode.Keys.Where(k=>!idx.ContainsKey(k)).ToList()) activeMode.Remove(k);
             foreach(var k in lastError.Keys.Where(k=>!idx.ContainsKey(k)).ToList()) lastError.Remove(k);
             directSet.RemoveWhere(k=>!idx.ContainsKey(k));
-            return oldShape!=Shape(next.Select(d=>(d.Key,idx[d.Key],d.Zones)));
+            return oldShape!=Shape(next.Select(d=>(d.Key,idx[d.Key],d.Zones,d.LedNames?.Count??-1)));
         }
     }
 

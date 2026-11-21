@@ -371,4 +371,41 @@ public sealed class LightingDeviceServiceTests : IDisposable
         Assert.Equal([r,r,r],OpenRgbSession.ModeColors([r],3)!);
         Assert.Equal([r],OpenRgbSession.ModeColors([r,g],1)!);
     }
+
+    [Fact] public void The_keyboards_key_map_reaches_the_device()
+    {
+        var kb=svc.Devices.First(d=>d.Key.StartsWith(Hid+"|"));
+        Assert.Equal(112,kb.LedNames!.Count);
+        Assert.Equal("Key 60",kb.LedNames[60]);
+        Assert.True(KeyMaps.SupportsWave(kb));
+        var map=KeyMaps.Of(kb)!;
+        Assert.All(map.X,x=>Assert.InRange(x!.Value,0,1));
+        Assert.All(map.Y,y=>Assert.InRange(y!.Value,0,1));
+        var m=kb.Zones[0].Matrix!;
+        var cols=Enumerable.Range(0,m.Cells.Count).Where(i=>m.Cells[i]==60).Select(i=>i%m.Width).ToArray();
+        Assert.Equal(2,cols.Length);
+        Assert.Equal(1,cols[1]-cols[0]);
+        Assert.Equal(cols.Average()/(m.Width-1.0),map.X[60]!.Value,9);
+    }
+    [Fact] public void Devices_without_a_matrix_have_no_key_map()
+    {
+        foreach(var serial in new[]{Dram,"SERIAL-5"})
+        {
+            var d=svc.Devices.First(x=>x.Key.StartsWith(serial+"|"));
+            Assert.Null(KeyMaps.Of(d));
+            Assert.False(KeyMaps.SupportsWave(d));
+        }
+    }
+    [Fact] public void A_matrix_arriving_later_changes_the_shape()
+    {
+        var i=IndexOf(Hid);
+        var full=session.Controllers[i];
+        session.Controllers[i]=full with{Zones=full.Zones.Select(z=>z with{Matrix=null}).ToList()};
+        svc.Rescan();
+        Assert.False(svc.Rescan());
+        Assert.False(KeyMaps.SupportsWave(svc.Devices.First(d=>d.Key.StartsWith(Hid+"|"))));
+        session.Controllers[i]=full;
+        Assert.True(svc.Rescan());
+        Assert.True(KeyMaps.SupportsWave(svc.Devices.First(d=>d.Key.StartsWith(Hid+"|"))));
+    }
 }

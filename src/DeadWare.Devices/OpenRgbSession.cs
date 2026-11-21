@@ -3,7 +3,7 @@ using OpenRGB.NET;
 
 namespace DeadWare.Devices;
 
-internal sealed record OpenRgbController(int Index,string Name,int Type,string Serial,string Location,IReadOnlyList<LightingZone> Zones,IReadOnlyList<string> Modes,int ActiveMode);
+internal sealed record OpenRgbController(int Index,string Name,int Type,string Serial,string Location,IReadOnlyList<LightingZone> Zones,IReadOnlyList<string> Modes,int ActiveMode,IReadOnlyList<string>? LedNames=null);
 
 // The seam over OpenRGB.NET so the device service can be tested without a live OpenRGB.
 internal interface IOpenRgbSession : IDisposable
@@ -56,12 +56,21 @@ internal sealed class OpenRgbSession : IOpenRgbSession
         {
             var d=all[i];
             list.Add(new(i,d.Name,(int)d.Type,d.Serial??"",d.Location??"",
-                d.Zones.Select((z,zi)=>new LightingZone(zi,z.Name,(int)z.LedCount)).ToList(),
-                d.Modes.Select(m=>m.Name).ToList(),d.ActiveModeIndex));
+                d.Zones.Select((z,zi)=>new LightingZone(zi,z.Name,(int)z.LedCount,MatrixOf(z.MatrixMap))).ToList(),
+                d.Modes.Select(m=>m.Name).ToList(),d.ActiveModeIndex,d.Leds.Select(l=>l.Name??"").ToList()));
             slots.Add(d.Modes.Select(m=>m.Colors.Length).ToList());
         }
         Volatile.Write(ref modeSlots,slots);
         return list;
+    }
+    // OpenRGB.NET 3.1.1's MatrixMap is Height, Width and a uint[Height,Width] indexed [row,column] (read in the IL of MatrixMapReader.ReadFrom);
+    // a zone that isn't a matrix has none, and one with a zero side or a cell array that doesn't match gets none here.
+    static ZoneMatrix? MatrixOf(MatrixMap? m)
+    {
+        if(m?.Matrix is not {} cells||m.Width==0||m.Height==0||cells.GetLength(0)!=(int)m.Height||cells.GetLength(1)!=(int)m.Width) return null;
+        var flat=new uint[cells.Length];
+        for(var y=0;y<(int)m.Height;y++) for(var x=0;x<(int)m.Width;x++) flat[y*(int)m.Width+x]=cells[y,x];
+        return new((int)m.Width,(int)m.Height,flat);
     }
     public void UpdateLeds(int index,ReadOnlySpan<Rgb> colors)
     {
