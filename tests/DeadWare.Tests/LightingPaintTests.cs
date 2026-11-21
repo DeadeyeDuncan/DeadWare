@@ -194,8 +194,10 @@ public class LightingPaintTests
         var expected=d.Zones.SelectMany(z=>Enumerable.Repeat(LightingPaint.ZoneShown(s,d,z,777).Scale(58),z.LedCount));
         Assert.Equal(expected,LightingPaint.Paint(s,d,777).Colors);
     }
+    // Blue tells one rounding from rounding per stage: 3 at 50% correction is 1.5, then 50% and 50% give 0.375, so 0; rounded after the
+    // correction it is 2, and 0.5 rounds to 1, as it does rounding after each brightness too (2, 1, 0.5 to 1) (whole-branch review 1, D5).
     [Fact] public void Correction_then_brightness_with_one_rounding()=>
-        Assert.Equal(new Rgb(51,13,3),LightingPaint.Tune(new(101,51,21),new DeviceTuning{Brightness=50,Correction=new(){R=200,G=100,B=50}},50));
+        Assert.Equal(new Rgb(51,13,0),LightingPaint.Tune(new(101,51,3),new DeviceTuning{Brightness=50,Correction=new(){R=200,G=100,B=50}},50));
     [Fact] public void Correction_clamps_at_255_before_brightness()=>
         Assert.Equal(new Rgb(128,0,0),LightingPaint.Tune(new(200,0,0),new DeviceTuning{Brightness=50,Correction=new(){R=200}},100));
     [Fact]
@@ -274,6 +276,16 @@ public class LightingPaintTests
         kb=kb with{Zones=[new LightingZone(0,"Keyboard",3)]};Both(false);                                               // saved, but it can't run
         kb=Kb("Direct","Spectrum");Both(true);
         s.Devices[kb.Key].Mode!.Kind=DeviceModes.Static;Both(false);
+    }
+    // Whole-branch review 1, D3: a null view, as a damaged state over the pipe could hold, is skipped, not dereferenced.
+    [Fact]
+    public void Animating_skips_a_null_view()
+    {
+        var kb=Kb();
+        s.Effect.Kind="Static";
+        Assert.False(LightingPaint.Animating(s,new DeviceView?[]{null,LightingPaint.View(s,d)}));
+        s.Devices[kb.Key]=new DeviceTuning{Mode=new(){Kind=DeviceModes.Wave}};
+        Assert.True(LightingPaint.Animating(s,new DeviceView?[]{null,LightingPaint.View(s,kb)}));
     }
     [Fact]
     public void View_carries_tuning_mode_problem_and_keys()

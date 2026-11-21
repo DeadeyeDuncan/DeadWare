@@ -1896,7 +1896,8 @@ public sealed class DeviceHostTests : IAsyncLifetime
         await AdvanceUntil(()=>time.Waiting(DeviceHost.FastTick));
         var seen=FullPreviews(h);
         Assert.True((await Send(h,new SubscribePreviewRequest(true))).Ok);
-        // The zone colours stay the same under a static desk, so a second frame is sent only because the keyboard's lights moved.
+        // A second frame comes as the wave moves. (The keyboard's zone colour moves with its first light, so this alone doesn't show that
+        // a change in the lights by themselves sends a frame; Same_frame_needs_the_same_lights_too does.)
         await AdvanceUntil(()=>CountOf(seen)>=2,tick:DeviceHost.FastTick);
         List<PreviewEvent> frames;
         lock(seen)frames=seen.ToList();
@@ -1910,6 +1911,46 @@ public sealed class DeviceHostTests : IAsyncLifetime
         Assert.Matches("^[0-9A-F]+$",packed.Value);
         Assert.True(Chunks(packed.Value).Distinct().Count()>1); // a rainbow across the keys
         Assert.NotEqual(packed.Value,frames[1].Lights![ApexKey]);
+    }
+
+    // Whole-branch review 1, D7: a frame whose zone colours match the last one but whose lights differ is a new frame, and so is one whose
+    // lights appear or go; the same colours and lights are not.
+    [Fact]
+    public void Same_frame_needs_the_same_lights_too()
+    {
+        static Dictionary<string,string> D(string k,string v)=>new(){[k]=v};
+        var colors=D("z|1#0","#102030");
+        Assert.True(DeviceHost.SameFrame(new(colors,D("k","AABBCC")),new(D("z|1#0","#102030"),D("k","AABBCC"))));
+        Assert.True(DeviceHost.SameFrame(new(colors),new(D("z|1#0","#102030"))));
+        Assert.False(DeviceHost.SameFrame(new(colors,D("k","AABBCC")),new(colors,D("k","AABBCD"))));
+        Assert.False(DeviceHost.SameFrame(new(colors),new(colors,D("k","AABBCC"))));
+        Assert.False(DeviceHost.SameFrame(new(colors,D("k","AABBCC")),new(colors)));
+        Assert.False(DeviceHost.SameFrame(new(colors,D("k","AABBCC")),new(D("z|1#0","#102031"),D("k","AABBCC"))));
+    }
+
+    // Whole-branch review 1, D6: the packed lights are the frame's own base colours, light 0 first, each as R, G, B. The frame is painted at
+    // the host's time when it is raised: the clock moves only while the loop waits on its tick.
+    [Fact]
+    public async Task Preview_lights_pack_each_light_as_RRGGBB_in_light_order()
+    {
+        var start=time.GetUtcNow(); // the host's epoch: it is built before the clock moves
+        var h=await Running();
+        Assert.True((await Send(h,new SetDeviceModeRequest(ApexKey,"wave"))).Ok);
+        await AdvanceUntil(()=>time.Waiting(DeviceHost.FastTick));
+        var seen=new List<(PreviewEvent Frame,double Ms)>();
+        h.PreviewChanged+=e=>{lock(seen)seen.Add((e,(time.GetUtcNow()-start).TotalMilliseconds));};
+        Assert.True((await Send(h,new SubscribePreviewRequest(true))).Ok);
+        await AdvanceUntil(()=>{lock(seen)return seen.Count>=2;},tick:DeviceHost.FastTick);
+        List<(PreviewEvent Frame,double Ms)> frames;
+        lock(seen)frames=seen.ToList();
+        var c=session.Controllers[Apex];
+        var device=new LightingDevice(ApexKey,c.Name,c.Type,c.Zones,c.Modes,c.ActiveMode,c.LedNames);
+        foreach(var (frame,ms) in frames.Take(2))
+        {
+            var expected=string.Concat(LightingPaint.Lights(h.State.Settings,device,ms).Select(x=>x.ToHex()[1..]));
+            Assert.Equal(112*6,expected.Length);
+            Assert.Equal(expected,frame.Lights![ApexKey]);
+        }
     }
 
     [Fact]

@@ -69,8 +69,9 @@ public static class LightingPaint
     // Something moves: lights on and a desk effect running, or a painted device running an animated keyboard mode.
     public static bool Animating(LightingSettings s,IEnumerable<LightingDevice> devices)=>
         s.LightsOn&&(EffectRunning(s)||devices.Any(d=>Painted(s,d)&&DeviceModes.Animated(DeviceModes.Running(s,d)?.Kind)));
-    public static bool Animating(LightingSettings s,IEnumerable<DeviceView> devices)=>
-        s.LightsOn&&(EffectRunning(s)||devices.Any(v=>v.Kind==PaintKind.Direct&&DeviceModes.Animated(v.LightingMode?.Kind)&&v.ModeProblem is null));
+    // A null view, as a damaged state over the pipe could hold, is skipped as the window's other view code does.
+    public static bool Animating(LightingSettings s,IEnumerable<DeviceView?> devices)=>
+        s.LightsOn&&(EffectRunning(s)||devices.Any(v=>v is not null&&v.Kind==PaintKind.Direct&&DeviceModes.Animated(v.LightingMode?.Kind)&&v.ModeProblem is null));
     public static bool EffectRunning(LightingSettings settings)=>settings.LightsOn&&LightingEffects.KindOf(settings.Effect.Kind)!=EffectKind.Static;
     // The zone's colour before brightness: its static colour, unless an effect is selected and the zone's device is placed with a point for the zone.
     public static Rgb ZoneShown(LightingSettings settings,LightingDevice device,LightingZone zone,double tMs)

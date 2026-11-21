@@ -65,12 +65,14 @@ internal sealed class OpenRgbSession : IOpenRgbSession
     }
     // OpenRGB.NET 3.1.1's MatrixMap is Height, Width and a uint[Height,Width] indexed [row,column] (read in the IL of MatrixMapReader.ReadFrom);
     // a zone that isn't a matrix has none, and one with a zero side or a cell array that doesn't match gets none here.
-    static ZoneMatrix? MatrixOf(MatrixMap? m)
+    static ZoneMatrix? MatrixOf(MatrixMap? m)=>m is null?null:MatrixOf(m.Matrix,m.Width,m.Height);
+    // The flattening on its own, so tests reach it without OpenRGB.NET's MatrixMap, which only its reader builds (whole-branch review 1, D8).
+    internal static ZoneMatrix? MatrixOf(uint[,]? cells,uint width,uint height)
     {
-        if(m?.Matrix is not {} cells||m.Width==0||m.Height==0||cells.GetLength(0)!=(int)m.Height||cells.GetLength(1)!=(int)m.Width) return null;
+        if(cells is null||width==0||height==0||cells.GetLength(0)!=(int)height||cells.GetLength(1)!=(int)width) return null;
         var flat=new uint[cells.Length];
-        for(var y=0;y<(int)m.Height;y++) for(var x=0;x<(int)m.Width;x++) flat[y*(int)m.Width+x]=cells[y,x];
-        return new((int)m.Width,(int)m.Height,flat);
+        for(var y=0;y<(int)height;y++) for(var x=0;x<(int)width;x++) flat[y*(int)width+x]=cells[y,x];
+        return new((int)width,(int)height,flat);
     }
     public void UpdateLeds(int index,ReadOnlySpan<Rgb> colors)
     {

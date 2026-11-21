@@ -348,4 +348,149 @@ public class LightingSettingsCodecTests
         var r=LightingSettingsCodec.Read("""{"Version":3,"Brightness":40,"Devices":{"k":{"Mode":{"Kind":"fire"}}}}""");
         Assert.True(r.Newer);Assert.False(r.Quarantine);Assert.Equal(40,r.Settings.Brightness);Assert.Empty(r.Settings.Devices);
     }
+    // Whole-branch review 1, D1: when only a later file's device table is refused, its desk effect and layout are kept.
+    [Fact]
+    public void A_later_file_with_an_unknown_mode_keeps_its_effect_and_layout()
+    {
+        var r=LightingSettingsCodec.Read("""{"Version":3,"Brightness":40,"DefaultColor":"#112233","ZoneColors":{},"HardwareModes":{},"Effect":{"Kind":"Wave","Wave":{"Speed":70,"AngleDeg":135,"Spread":20,"Colors":["#FF0000","#0000FF"]}},"Layout":{"Version":1,"Zones":{"a|1#0":{"X":0.25,"Y":0.75}},"Tower":{"At":{"X":0.1,"Y":0.3},"Members":["a|1"],"Excluded":[]},"Desk":[],"Unplaced":[]},"Devices":{"k":{"Mode":{"Kind":"ripple"}}}}""");
+        Assert.True(r.Newer);Assert.False(r.Quarantine);Assert.Null(r.Error);Assert.Equal(40,r.Settings.Brightness);Assert.Empty(r.Settings.Devices);
+        Assert.Equal("Wave",r.Settings.Effect.Kind);Assert.Equal(135,r.Settings.Effect.Wave.AngleDeg);Assert.Equal(new[]{"#FF0000","#0000FF"},r.Settings.Effect.Wave.Colors);
+        Assert.Equal(new DeskPoint(0.25,0.75),r.Settings.Layout.Zones["a|1#0"]);Assert.Equal(new[]{"a|1"},r.Settings.Layout.Tower.Members);
+    }
+
+    // Whole-branch review 1, D10: an empty device table isn't written. GoldenV019 is what 0.19.0 (commit 9de8dea) wrote for UntunedSettings,
+    // taken by running that build's LightingSettingsCodec.Write; it uses the platform's line ending, as Write does.
+    static LightingSettings UntunedSettings()
+    {
+        var s=new LightingSettings{LightsOn=false,Brightness=40,DefaultColor="#112233"};
+        s.ZoneColors["gpu|1#0"]=new ZoneColorEntry{Color="#FF0000",ZoneName="Fan"};
+        s.HardwareModes["node|2"]="Rainbow Wave";
+        s.Effect=new(){Kind="Wave",Wave=new(){Speed=70,AngleDeg=135,Spread=20,Colors={"#FF0000","#0000FF"}}};
+        s.Layout.Zones["gpu|1#0"]=new(0.25,0.75);
+        return s;
+    }
+    const string GoldenV019="""
+        {
+          "Version": 1,
+          "LightsOn": false,
+          "Brightness": 40,
+          "DefaultColor": "#112233",
+          "ZoneColors": {
+            "gpu|1#0": {
+              "Color": "#FF0000",
+              "ZoneName": "Fan"
+            }
+          },
+          "HardwareModes": {
+            "node|2": "Rainbow Wave"
+          },
+          "Effect": {
+            "Kind": "Wave",
+            "Wave": {
+              "Speed": 70,
+              "AngleDeg": 135,
+              "Spread": 20,
+              "Colors": [
+                "#FF0000",
+                "#0000FF"
+              ]
+            },
+            "Breathing": {
+              "Speed": 40,
+              "AngleDeg": 0,
+              "Spread": 50,
+              "Colors": []
+            },
+            "Spectrum": {
+              "Speed": 40,
+              "AngleDeg": 0,
+              "Spread": 50,
+              "Colors": []
+            }
+          },
+          "Layout": {
+            "Version": 1,
+            "Zones": {
+              "gpu|1#0": {
+                "X": 0.25,
+                "Y": 0.75
+              }
+            },
+            "Tower": {
+              "At": {
+                "X": 0.14,
+                "Y": 0.3
+              },
+              "Members": [],
+              "Excluded": []
+            },
+            "Desk": [
+              {
+                "X": 0.28,
+                "Y": 0.55,
+                "W": 0.67,
+                "H": 0.35
+              },
+              {
+                "X": 0.05,
+                "Y": 0.15,
+                "W": 0.23,
+                "H": 0.75
+              }
+            ],
+            "Unplaced": [],
+            "Picture": null
+          }
+        }
+        """;
+    [Fact]
+    public void An_untuned_file_is_written_as_0_19_0_wrote_it_and_reads_back_with_an_empty_table()
+    {
+        var golden=GoldenV019.ReplaceLineEndings(Environment.NewLine);
+        Assert.Equal(golden,LightingSettingsCodec.Write(UntunedSettings()));
+        var r=LightingSettingsCodec.Read(golden);
+        Assert.Null(r.Error);Assert.False(r.Quarantine);Assert.NotNull(r.Settings.Devices);Assert.Empty(r.Settings.Devices);
+        Assert.Equal(golden,LightingSettingsCodec.Write(r.Settings));
+        // A table emptied in use goes back to the 0.19.0 form.
+        var tuned=UntunedSettings();tuned.Devices["k|1"]=new DeviceTuning{Brightness=70};
+        var back=LightingSettingsCodec.Read(LightingSettingsCodec.Write(tuned)).Settings;
+        Assert.Equal(70,back.Devices["k|1"].Brightness);
+        back.Devices.Clear();
+        Assert.Equal(golden,LightingSettingsCodec.Write(back));
+    }
+    // A 0.19.0 file whose written form is exactly 1 MiB under 0.19.0's rules (Write's indented JSON, no Devices member) loads without being
+    // set aside and is saved again to the same bytes.
+    [Fact]
+    public void A_0_19_0_file_at_the_1_MiB_cap_loads_and_saves_cleanly()
+    {
+        var plain=new System.Text.Json.JsonSerializerOptions{WriteIndented=true};
+        string V019Form(LightingSettings s)
+        {
+            var o=System.Text.Json.JsonSerializer.SerializeToNode(s)!.AsObject();
+            o.Remove("Devices");
+            return o.ToJsonString(plain);
+        }
+        long Size(LightingSettings s)=>System.Text.Encoding.UTF8.GetByteCount(V019Form(s));
+        static LightingSettings With(int count)
+        {
+            var s=new LightingSettings();
+            for(int i=0;i<count;i++) s.ZoneColors[$"zone-{i:D5}"]=new ZoneColorEntry{Color="#FF0000",ZoneName=new string('n',LightingSettingsCodec.MaxKeyLength)};
+            return s;
+        }
+        long one=Size(With(1)),each=Size(With(2))-one;
+        var settings=With((int)Math.Ceiling((LightingSettingsCodec.MaxFileBytes-(one-each))/(double)each));
+        var over=Size(settings)-LightingSettingsCodec.MaxFileBytes;
+        foreach(var entry in settings.ZoneColors.Values)
+        {
+            var cut=(int)Math.Min(over,entry.ZoneName.Length);
+            entry.ZoneName=entry.ZoneName[cut..];
+            if((over-=cut)==0) break;
+        }
+        var file=V019Form(settings);
+        Assert.Equal(LightingSettingsCodec.MaxFileBytes,System.Text.Encoding.UTF8.GetByteCount(file));
+        Assert.DoesNotContain("\"Devices\"",file);
+        var r=LightingSettingsCodec.Read(file);
+        Assert.Null(r.Error);Assert.False(r.Quarantine);Assert.Equal(settings.ZoneColors.Count,r.Settings.ZoneColors.Count);
+        Assert.Equal(file,LightingSettingsCodec.Write(r.Settings));
+    }
 }

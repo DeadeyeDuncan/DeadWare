@@ -126,7 +126,8 @@ internal sealed class DeviceSections
         if (next.ModeProblem is { Length: > 0 } problem && !lines.Contains(problem)) lines.Add(problem);
         modeNote.Text = string.Join("\n", lines);
         LightingPage.Show(modeNote, lines.Count > 0);
-        speed.Show(next.LightingMode?.Speed ?? 40, enabled && next.Keyboard);
+        // A saved mode the device can't run (ModeProblem) would have every Speed change refused, so Speed shows it but is disabled.
+        speed.Show(next.LightingMode?.Speed ?? 40, enabled && next.Keyboard && next.ModeProblem is null);
 
         brightness.Show(next.Brightness, enabled);
         ShowBrightnessNote();

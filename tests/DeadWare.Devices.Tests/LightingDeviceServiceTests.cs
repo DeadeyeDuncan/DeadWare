@@ -363,6 +363,19 @@ public sealed class LightingDeviceServiceTests : IDisposable
         Assert.Throws<InvalidOperationException>(()=>OpenRgbSession.ShapeModeColors(slots,1,0,[r]));
         Assert.Throws<InvalidOperationException>(()=>OpenRgbSession.ShapeModeColors(slots,0,-1,[r]));
     }
+    // Whole-branch review 1, D8: OpenRGB.NET's matrix is [row,column], Height rows of Width cells; it is flattened row by row. A zero side
+    // or cells of another size give no matrix.
+    [Fact] public void A_matrix_is_flattened_row_by_row_from_row_column_cells()
+    {
+        var cells=new uint[2,3]{{0,1,KeyMaps.Empty},{2,3,4}};
+        var m=OpenRgbSession.MatrixOf(cells,3,2)!;
+        Assert.Equal(3,m.Width);Assert.Equal(2,m.Height);
+        Assert.Equal(new uint[]{0,1,KeyMaps.Empty,2,3,4},m.Cells);
+        Assert.Null(OpenRgbSession.MatrixOf(new uint[0,3],3,0));
+        Assert.Null(OpenRgbSession.MatrixOf(new uint[2,0],0,2));
+        Assert.Null(OpenRgbSession.MatrixOf(cells,2,3)); // the sides swapped
+        Assert.Null(OpenRgbSession.MatrixOf(null,3,2));
+    }
     [Fact] public void ModeColors_shapes_to_the_slot_count()
     {
         Rgb r=new(1,2,3),g=new(4,5,6);

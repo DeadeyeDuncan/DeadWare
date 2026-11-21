@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace DeadWare.Core;
 
 public readonly record struct Rgb(byte R,byte G,byte B)
@@ -31,7 +33,11 @@ public sealed class LightingSettings
     public Dictionary<string,string> HardwareModes {get;set;}=new();
     public EffectSettings Effect {get;set;}=new();
     public DeskLayout Layout {get;set;}=DeskLayouts.Empty();
-    public Dictionary<string,DeviceTuning> Devices {get;set;}=new();
+    [JsonIgnore] public Dictionary<string,DeviceTuning> Devices {get;set;}=new();
+    // Devices as JSON (whole-branch review 1, D10): written only while it has entries, so an untuned lighting.json is byte for byte what
+    // 0.19.0 wrote and a file near the 1 MiB cap from it stays under the cap here; a file without the member reads as an empty table.
+    [JsonInclude,JsonPropertyName("Devices"),JsonIgnore(Condition=JsonIgnoreCondition.WhenWritingNull)]
+    internal Dictionary<string,DeviceTuning>? WrittenDevices {get=>Devices is{Count:>0}?Devices:null;set=>Devices=value!;}
 }
 // Newer: the file came from a later DeadWare. It is used as far as this build understands it, never quarantined and never rewritten.
 public sealed record LightingRead(LightingSettings Settings,string? Error,bool Quarantine,bool Newer=false);

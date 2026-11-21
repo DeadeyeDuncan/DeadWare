@@ -285,7 +285,7 @@ internal sealed class DeviceHost : IAsyncDisposable
         return frame;
     }
     void ForgetPreview(){lastPreview=null;lastPreviewMs=null;}
-    static bool SameFrame(PreviewEvent a,PreviewEvent b)=>Same(a.Colors,b.Colors)&&(a.Lights is null?b.Lights is null:b.Lights is not null&&Same(a.Lights,b.Lights));
+    internal static bool SameFrame(PreviewEvent a,PreviewEvent b)=>Same(a.Colors,b.Colors)&&(a.Lights is null?b.Lights is null:b.Lights is not null&&Same(a.Lights,b.Lights));
     static bool Same(Dictionary<string,string> a,Dictionary<string,string> b)=>a.Count==b.Count&&a.All(e=>b.TryGetValue(e.Key,out var v)&&v==e.Value);
 
     void RaisePreview(PreviewEvent frame,int generation)
