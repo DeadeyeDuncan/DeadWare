@@ -60,7 +60,7 @@ public static class LightingSettingsCodec
     // F4 item 2 (whole-branch review D1, D12): settings whose written form, Write's indented JSON in UTF-8, would be longer than MaxFileBytes
     // are invalid too, on every read and every write, so a change that would make lighting.json larger is refused and the host never writes
     // a file its next start would set aside unread. Write serialises once and measures that; Validate serialises once to measure.
-    const string WrittenTooLarge="Lighting settings would be larger than 1 MiB when saved.";
+    internal const string WrittenTooLarge="Lighting settings would be larger than 1 MiB when saved.";
     static readonly JsonSerializerOptions Indented=new(){WriteIndented=true};
     static bool TooLong(string json)=>Encoding.UTF8.GetByteCount(json)>MaxFileBytes;
     public static string Write(LightingSettings settings)

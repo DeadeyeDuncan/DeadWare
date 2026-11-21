@@ -523,7 +523,7 @@ public sealed class DeviceHostTests : IAsyncLifetime
     [Fact]
     public async Task Newer_lighting_json_is_used_but_never_saved()
     {
-        const string json="{\"Version\":3,\"Brightness\":40,\"DefaultColor\":\"#112233\",\"Layout\":{\"Desk\":\"L\"}}";
+        const string json="{\"Version\":4,\"Brightness\":40,\"DefaultColor\":\"#112233\",\"Layout\":{\"Desk\":\"L\"}}";
         File.WriteAllText(lightingPath,json);
         var h=await Running();
         Assert.Equal(40,h.State.Settings.Brightness);
@@ -539,7 +539,7 @@ public sealed class DeviceHostTests : IAsyncLifetime
     [Fact]
     public async Task Newer_lighting_json_this_build_cannot_use_runs_on_defaults_and_says_so()
     {
-        const string json="{\"Version\":3,\"Brightness\":500,\"DefaultColor\":\"#112233\"}";
+        const string json="{\"Version\":4,\"Brightness\":500,\"DefaultColor\":\"#112233\"}";
         File.WriteAllText(lightingPath,json);
         var h=await Running();
         Assert.Contains(DeviceHost.NewerDefaultsNote,h.State.Message);
@@ -1697,6 +1697,32 @@ public sealed class DeviceHostTests : IAsyncLifetime
         return seen;
     }
     static string[] Chunks(string packed)=>Enumerable.Range(0,packed.Length/6).Select(i=>packed.Substring(i*6,6)).ToArray();
+
+    [Fact]
+    public async Task Other_changes_keep_paint_layers_and_looks()
+    {
+        var seeded=new LightingSettings();
+        seeded.Devices[ApexKey]=new DeviceTuning
+        {
+            Keys=new(){[3]=new(){Name="W",Color="#112233"}},
+            Layers=[new(){Kind="ripple",Lights=[new(){Index=3,Name="W"}]}],
+            Looks=[new(){Name="Gaming",Keys=new(){[4]=new(){Name="A",Color="#445566"}}}],
+            Look="Gaming",
+        };
+        File.WriteAllText(lightingPath,LightingSettingsCodec.Write(seeded));
+        var want=System.Text.Json.JsonSerializer.Serialize(LightingSettingsCodec.Read(File.ReadAllText(lightingPath)).Settings.Devices[ApexKey]);
+        var h=await Running();
+        Assert.True((await Send(h,new SetBrightnessRequest(40))).Ok);
+        Assert.True((await Send(h,new SetDeviceTuningRequest(ApexKey,50))).Ok);
+        string Paint(DeviceTuning t){t.Brightness=null;return System.Text.Json.JsonSerializer.Serialize(t);}
+        var inState=h.State.Settings.Devices[ApexKey];
+        Assert.Equal(50,inState.Brightness);
+        var saved=new LightingStore(lightingPath).Load().Settings;
+        Assert.Equal(40,saved.Brightness);Assert.Equal(3,saved.Version);Assert.Equal(50,saved.Devices[ApexKey].Brightness);
+        var wantNoBrightness=System.Text.Json.JsonSerializer.Deserialize<DeviceTuning>(want)!;
+        Assert.Equal(Paint(wantNoBrightness),Paint(inState));
+        Assert.Equal(Paint(wantNoBrightness),Paint(saved.Devices[ApexKey]));
+    }
 
     [Fact]
     public async Task SetDeviceTuning_saves_and_repaints()

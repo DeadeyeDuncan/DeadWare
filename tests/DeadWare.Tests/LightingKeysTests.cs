@@ -169,4 +169,21 @@ public class LightingKeysTests
         var next=DeskLayouts.AutoArrange(s.Layout,[new("|loc","Fans",[0])]);
         Assert.Same(s.Layout,next);Assert.Equal(new DeskPoint(0.4,0.4),next.Zones["|loc#0"]);
     }
+
+    [Fact]
+    public void Remap_carries_paint_layers_and_looks()
+    {
+        var s=new LightingSettings();
+        s.Devices["S1|HID:A"]=new DeviceTuning
+        {
+            Keys=new(){[3]=new(){Name="W",Color="#112233"}},
+            Layers=[new(){Kind="ripple",Lights=[new(){Index=3,Name="W"}]}],
+            Looks=[new(){Name="Gaming",Keys=new(){[4]=new(){Name="A",Color="#445566"}}}],
+            Look="Gaming",
+        };
+        var before=System.Text.Json.JsonSerializer.Serialize(s.Devices["S1|HID:A"]);
+        Assert.True(LightingKeys.Remap(s,["|HID:A"]));
+        Assert.DoesNotContain("S1|HID:A",s.Devices.Keys);
+        Assert.Equal(before,System.Text.Json.JsonSerializer.Serialize(s.Devices["|HID:A"]));
+    }
 }
