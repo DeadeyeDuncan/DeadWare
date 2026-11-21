@@ -198,6 +198,10 @@ public class LightingPaintTests
     // correction it is 2, and 0.5 rounds to 1, as it does rounding after each brightness too (2, 1, 0.5 to 1) (whole-branch review 1, D5).
     [Fact] public void Correction_then_brightness_with_one_rounding()=>
         Assert.Equal(new Rgb(51,13,0),LightingPaint.Tune(new(101,51,3),new DeviceTuning{Brightness=50,Correction=new(){R=200,G=100,B=50}},50));
+    // The design's own case, the part of DeadLight's compose test that needs no key paint or layers. Kept beside the one above, whose blue
+    // input was chosen to tell one rounding from two and so no longer checks a blue channel that survives.
+    [Fact] public void The_designs_reduced_DeadLight_case()=>
+        Assert.Equal(new Rgb(51,13,3),LightingPaint.Tune(new(101,51,21),new DeviceTuning{Brightness=50,Correction=new(){R=200,G=100,B=50}},50));
     [Fact] public void Correction_clamps_at_255_before_brightness()=>
         Assert.Equal(new Rgb(128,0,0),LightingPaint.Tune(new(200,0,0),new DeviceTuning{Brightness=50,Correction=new(){R=200}},100));
     [Fact]
