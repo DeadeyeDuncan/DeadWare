@@ -2074,4 +2074,484 @@ public sealed class DeviceHostTests : IAsyncLifetime
         Assert.False(h.State.Settings.Devices.ContainsKey(ApexKey));
         Assert.Equal(DeviceTunings.MaxEntries,new LightingStore(lightingPath).Load().Settings.Devices.Count);
     }
+    // Lighting 3b, Task 5: key paint, layers and saved looks through the pipe, on the fixture keyboard (lights "Key 0".."Key 111").
+    static PaintedKey PK(string name,string color)=>new(){Name=name,Color=color};
+    static Dictionary<int,PaintedKey> Keys(params (int Index,string Color)[] keys)=>keys.ToDictionary(k=>k.Index,k=>PK("Key "+k.Index,k.Color));
+    DeviceView ApexView(DeviceHost h)=>Assert.Single(h.State.Devices,d=>d.Key==ApexKey);
+    DeviceTuning? ApexEntry(DeviceHost h)=>h.State.Settings.Devices.TryGetValue(ApexKey,out var t)?t:null;
+    LightingSettings SavedSettings()=>new LightingStore(lightingPath).Load().Settings;
+    static string KeysText(Dictionary<int,PaintedKey>? k)=>k is null?"null":string.Join(",",k.OrderBy(e=>e.Key).Select(e=>$"{e.Key}={e.Value.Name}/{e.Value.Color}"));
+    string[] LogLines(string contains)=>File.ReadAllText(Path.Combine(dir,"logs","devices.log")).Split('\n').Where(l=>l.Contains(contains)).ToArray();
+
+    [Fact]
+    public async Task Painting_keys_is_saved_replied_then_stated()
+    {
+        var h=Build();
+        var states=new List<HostState>();
+        h.StateChanged+=s=>{lock(states)states.Add(s);};
+        Start(h);
+        await Until(()=>{lock(states)return states.Any(s=>s.Status==HostStatus.Running);});
+        var pipe="DeadWare.Devices.Test."+Guid.NewGuid().ToString("N");
+        await using var server=new HostPipeServer(pipe,h.HandleAsync,log);
+        h.StateChanged+=st=>_=server.SendAsync(new StateEvent(st));
+        using var cts=new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        var serving=server.RunAsync(cts.Token);
+        await using var client=new System.IO.Pipes.NamedPipeClientStream(".",pipe,System.IO.Pipes.PipeDirection.InOut,System.IO.Pipes.PipeOptions.Asynchronous);
+        await client.ConnectAsync(5000,cts.Token);
+        await DeviceHostProtocol.WriteAsync(client,new SetDeviceKeysRequest(ApexKey,Keys((0,"#FF0000"),(5,"#00FF00"))){Id=7},cts.Token);
+        var first=Assert.IsType<Reply>(await DeviceHostProtocol.ReadAsync(client,cts.Token));
+        Assert.True(first.Ok);Assert.Equal(7,first.Id);
+        var second=Assert.IsType<StateEvent>(await DeviceHostProtocol.ReadAsync(client,cts.Token));
+        Assert.Equal("0=Key 0/#FF0000,5=Key 5/#00FF00",KeysText(Assert.Single(second.State.Devices,d=>d.Key==ApexKey).Paint));
+        Assert.Equal("0=Key 0/#FF0000,5=Key 5/#00FF00",KeysText(second.State.Settings.Devices[ApexKey].Keys));
+        var saved=SavedSettings();
+        Assert.Equal(3,saved.Version);
+        Assert.Equal("0=Key 0/#FF0000,5=Key 5/#00FF00",KeysText(saved.Devices[ApexKey].Keys));
+        cts.Cancel();
+    }
+
+    [Fact]
+    public async Task Painting_replaces_the_whole_set()
+    {
+        var h=await Running();
+        Assert.True((await Send(h,new SetDeviceKeysRequest(ApexKey,Keys((0,"#FF0000"),(1,"#00FF00"))))).Ok);
+        Assert.True((await Send(h,new SetDeviceKeysRequest(ApexKey,Keys((2,"#0000FF"))))).Ok);
+        Assert.Equal("2=Key 2/#0000FF",KeysText(ApexEntry(h)!.Keys));
+        Assert.Equal("2=Key 2/#0000FF",KeysText(ApexView(h).Paint));
+        Assert.Equal("2=Key 2/#0000FF",KeysText(SavedSettings().Devices[ApexKey].Keys));
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task An_empty_set_clears_paint_and_returns_the_file_to_its_earlier_version(bool empty)
+    {
+        var h=await Running();
+        Assert.True((await Send(h,new SetDeviceTuningRequest(ApexKey,50))).Ok);
+        var before=File.ReadAllText(lightingPath);
+        Assert.Equal(2,SavedSettings().Version);
+        Assert.True((await Send(h,new SetDeviceKeysRequest(ApexKey,Keys((0,"#FF0000"))))).Ok);
+        Assert.Equal(3,SavedSettings().Version);
+        Assert.True((await Send(h,new SetDeviceKeysRequest(ApexKey,empty?new():null))).Ok);
+        Assert.Equal(before,File.ReadAllText(lightingPath)); // the file 3a wrote, byte for byte
+        Assert.Null(ApexEntry(h)!.Keys);Assert.Null(ApexView(h).Paint);
+        Assert.True((await Send(h,new SetDeviceKeysRequest(ApexKey,Keys((0,"#FF0000"))))).Ok);
+        Assert.True((await Send(h,new SetDeviceTuningRequest(ApexKey,100))).Ok);
+        Assert.True((await Send(h,new SetDeviceKeysRequest(ApexKey,null))).Ok);
+        Assert.Null(ApexEntry(h)); // nothing left: the entry goes
+        Assert.Equal(1,SavedSettings().Version);
+    }
+
+    [Fact]
+    public async Task A_key_beyond_the_keyboard_is_refused()
+    {
+        var h=await Running(CountingStore());
+        var before=Volatile.Read(ref saves);
+        var a=await Send(h,new SetDeviceKeysRequest(ApexKey,Keys((0,"#FF0000"),(112,"#00FF00"))){Id=5});
+        Assert.False(a.Ok);Assert.Equal(HostReplyCodes.BadKey,a.Error);Assert.Equal(5,a.Id);
+        Assert.Equal(HostReplyCodes.BadKey,(await Send(h,new SetDeviceLayersRequest(ApexKey,[new DeviceLayer{Kind="fade",Lights=[new LayerLight{Index=112,Name="Key 112"}]}]))).Error);
+        // The ValidateSetup sentences, through the validation every change goes through.
+        Assert.Equal("A colour is invalid.",(await Send(h,new SetDeviceKeysRequest(ApexKey,new(){[0]=PK("Key 0","red")}))).Error);
+        Assert.Equal("A light's name must be 1 to 128 characters.",(await Send(h,new SetDeviceKeysRequest(ApexKey,new(){[0]=PK("","#FF0000")}))).Error);
+        Assert.Equal("A light's name must be 1 to 128 characters.",(await Send(h,new SetDeviceKeysRequest(ApexKey,new(){[0]=PK(new string('n',129),"#FF0000")}))).Error);
+        Assert.Equal("Too many painted keys.",(await Send(h,new SetDeviceKeysRequest(ApexKey,Enumerable.Range(0,DeviceLayers.MaxKeys+1).ToDictionary(i=>i,i=>PK("Key "+i,"#FF0000"))))).Error);
+        Assert.Equal("Layer strength must be 0 to 100.",(await Send(h,new SetDeviceLayersRequest(ApexKey,[new DeviceLayer{Kind="color",Strength=101}]))).Error);
+        Assert.Empty(h.State.Settings.Devices);
+        Assert.Equal(before,Volatile.Read(ref saves));
+        Assert.True((await Send(h,new SetDeviceKeysRequest(ApexKey,Keys((111,"#00FF00"))))).Ok); // the last light is on it
+    }
+
+    [Fact]
+    public async Task A_device_that_is_not_a_paintable_keyboard_is_refused()
+    {
+        var h=await Running(CountingStore());
+        var before=Volatile.Read(ref saves);
+        Assert.Equal(HostReplyCodes.NotPaintable,(await Send(h,new SetDeviceKeysRequest(DramKey,new(){[0]=PK("LED 0","#FF0000")}))).Error);
+        Assert.Equal(HostReplyCodes.NotPaintable,(await Send(h,new SetDeviceLayersRequest(DramKey,[new DeviceLayer{Kind="color"}]))).Error);
+        Assert.Equal(HostReplyCodes.NotPaintable,(await Send(h,new SaveLookRequest(DramKey,"Gaming"))).Error);
+        Assert.Equal(HostReplyCodes.NotPaintable,(await Send(h,new ChooseLookRequest(DramKey,"Gaming"))).Error);
+        Assert.Equal(before,Volatile.Read(ref saves));
+        // Clearing, renaming and deleting work on any listed device, so one that lost its names can still be cleaned up.
+        Assert.True((await Send(h,new SetDeviceKeysRequest(DramKey,null))).Ok);
+        Assert.True((await Send(h,new SetDeviceLayersRequest(DramKey,[]))).Ok);
+        Assert.Equal(HostReplyCodes.NoLook,(await Send(h,new RenameLookRequest(DramKey,"Gaming","Work"))).Error);
+        Assert.Equal(HostReplyCodes.NoLook,(await Send(h,new DeleteLookRequest(DramKey,"Gaming"))).Error);
+        Assert.Empty(h.State.Settings.Devices);
+        Assert.False(Assert.Single(h.State.Devices,d=>d.Key==DramKey).CanPaint);
+        Assert.True(ApexView(h).CanPaint);
+    }
+
+    [Fact]
+    public async Task A_keyboard_that_lost_its_names_can_still_be_cleaned_up()
+    {
+        var seeded=new LightingSettings();
+        seeded.Devices[ApexKey]=new DeviceTuning{Keys=Keys((0,"#FF0000")),Layers=[new DeviceLayer{Kind="color"}],Looks=[new DeviceLook{Name="Gaming"},new DeviceLook{Name="Work"}],Look="Gaming"};
+        File.WriteAllText(lightingPath,LightingSettingsCodec.Write(seeded));
+        session.Controllers[Apex]=session.Controllers[Apex] with{LedNames=null};
+        var h=await Running();
+        Assert.False(ApexView(h).CanPaint);
+        Assert.Equal(HostReplyCodes.NotPaintable,(await Send(h,new SetDeviceKeysRequest(ApexKey,Keys((1,"#FF0000"))))).Error);
+        Assert.Equal(HostReplyCodes.NotPaintable,(await Send(h,new ChooseLookRequest(ApexKey,"Work"))).Error);
+        Assert.True((await Send(h,new RenameLookRequest(ApexKey,"Work","Office"))).Ok);
+        Assert.True((await Send(h,new DeleteLookRequest(ApexKey,"Gaming"))).Ok);
+        Assert.True((await Send(h,new SetDeviceKeysRequest(ApexKey,null))).Ok);
+        Assert.True((await Send(h,new SetDeviceLayersRequest(ApexKey,null))).Ok);
+        var t=ApexEntry(h)!;
+        Assert.Null(t.Keys);Assert.Null(t.Layers);Assert.Null(t.Look);Assert.Equal(["Office"],t.Looks!.Select(l=>l.Name));
+    }
+
+    [Fact]
+    public async Task An_unlisted_device_is_refused()
+    {
+        var h=await Running(CountingStore());
+        var before=Volatile.Read(ref saves);
+        const string ghost="ghost|nowhere";
+        HostMessage[] all=[new SetDeviceKeysRequest(ghost,new(){[0]=PK("A","#FF0000")}),new SetDeviceKeysRequest(ghost,null),new SetDeviceLayersRequest(ghost,[new DeviceLayer()]),
+            new SetDeviceLayersRequest(ghost,null),new SaveLookRequest(ghost,"A"),new ChooseLookRequest(ghost,"A"),new RenameLookRequest(ghost,"A","B"),new DeleteLookRequest(ghost,"A")];
+        foreach(var m in all) Assert.Equal(HostReplyCodes.UnknownDevice,(await Send(h,m)).Error);
+        Assert.Empty(h.State.Settings.Devices);
+        Assert.Equal(before,Volatile.Read(ref saves));
+    }
+
+    [Fact]
+    public async Task Layers_are_saved_and_shown()
+    {
+        var h=await Running();
+        List<DeviceLayer> layers=
+        [
+            new(){Kind="color",Color="#102030",Strength=50,Mix="cover",Lights=[new(){Index=0,Name="Key 0"}]},
+            new(){Kind="effect",Effect="breathing",Speed=70,Lights=[]},
+            new(){Kind="fade",Color="#FFFFFF",DurationMs=1200},
+            new(){Kind="ripple",Color="#00FF00",DurationMs=100,Strength=0,Lights=[new(){Index=111,Name="Key 111"},new(){Index=5,Name="Key 5"}]},
+        ];
+        var want=JsonSerializer.Serialize(layers);
+        Assert.True((await Send(h,new SetDeviceLayersRequest(ApexKey,layers))).Ok);
+        layers[0].Color="#FFFFFF"; // the host keeps its own copy
+        Assert.Equal(want,JsonSerializer.Serialize(ApexEntry(h)!.Layers));
+        Assert.Equal(want,JsonSerializer.Serialize(ApexView(h).Layers));
+        Assert.Equal([0,0,0,0],ApexView(h).SkippedLayerLights!);
+        var saved=SavedSettings();
+        Assert.Equal(3,saved.Version);
+        Assert.Equal(want,JsonSerializer.Serialize(saved.Devices[ApexKey].Layers));
+        Assert.True((await Send(h,new SetDeviceLayersRequest(ApexKey,null))).Ok);
+        Assert.Null(ApexEntry(h));Assert.Null(ApexView(h).Layers);
+    }
+
+    [Fact]
+    public async Task Nine_layers_are_refused()
+    {
+        var h=await Running();
+        var reply=await Send(h,new SetDeviceLayersRequest(ApexKey,Enumerable.Range(0,9).Select(_=>new DeviceLayer{Kind="color"}).ToList()));
+        Assert.False(reply.Ok);Assert.Equal(HostReplyCodes.TooManyLayers,reply.Error);
+        Assert.Empty(h.State.Settings.Devices);
+        Assert.True((await Send(h,new SetDeviceLayersRequest(ApexKey,Enumerable.Range(0,8).Select(_=>new DeviceLayer{Kind="color"}).ToList()))).Ok);
+        Assert.Equal(8,ApexEntry(h)!.Layers!.Count);
+    }
+
+    [Fact]
+    public async Task An_unknown_layer_kind_is_refused_in_a_request_but_kept_from_a_file()
+    {
+        var seeded=new LightingSettings();
+        seeded.Devices[ApexKey]=new DeviceTuning{Layers=[new DeviceLayer{Kind="morrowind"}]};
+        File.WriteAllText(lightingPath,LightingSettingsCodec.Write(seeded));
+        var h=await Running(CountingStore());
+        var before=Volatile.Read(ref saves);
+        Assert.Equal(HostReplyCodes.BadLayer,(await Send(h,new SetDeviceLayersRequest(ApexKey,[new DeviceLayer{Kind="morrowind"}]))).Error);
+        Assert.Equal(HostReplyCodes.BadLayer,(await Send(h,new SetDeviceLayersRequest(ApexKey,[new DeviceLayer{Kind="color",Effect="plasma"}]))).Error);
+        Assert.Equal(HostReplyCodes.BadLayer,(await Send(h,new SetDeviceLayersRequest(ApexKey,[new DeviceLayer{Kind="color",Mix="multiply"}]))).Error);
+        Assert.Equal(before,Volatile.Read(ref saves));
+        Assert.True((await Send(h,new SetBrightnessRequest(40))).Ok);
+        Assert.True((await Send(h,new SetDeviceKeysRequest(ApexKey,Keys((0,"#FF0000"))))).Ok);
+        Assert.True((await Send(h,new SaveLookRequest(ApexKey,"Old"))).Ok);
+        var saved=SavedSettings().Devices[ApexKey];
+        Assert.Equal("morrowind",Assert.Single(saved.Layers!).Kind);
+        Assert.Equal("morrowind",Assert.Single(Assert.Single(saved.Looks!).Layers!).Kind);
+        Assert.Equal("morrowind",Assert.Single(ApexView(h).Layers!).Kind);
+    }
+
+    [Fact]
+    public async Task Looks_save_choose_rename_delete()
+    {
+        var h=await Running();
+        Assert.True((await Send(h,new SetDeviceKeysRequest(ApexKey,Keys((0,"#FF0000"))))).Ok);
+        Assert.True((await Send(h,new SetDeviceModeRequest(ApexKey,"breathing",30))).Ok);
+        Assert.True((await Send(h,new SetDeviceLayersRequest(ApexKey,[new DeviceLayer{Kind="fade"}]))).Ok);
+        // Save: copies of the mode, keys and layers, and the look is current.
+        Assert.True((await Send(h,new SaveLookRequest(ApexKey,"  Gaming  "))).Ok);
+        var t=ApexEntry(h)!;var look=Assert.Single(t.Looks!);
+        Assert.Equal("Gaming",look.Name);Assert.Equal("Gaming",t.Look);
+        Assert.Equal(("breathing",30),(look.Mode!.Kind,look.Mode.Speed));Assert.Equal("0=Key 0/#FF0000",KeysText(look.Keys));Assert.Equal("fade",Assert.Single(look.Layers!).Kind);
+        var v=ApexView(h);Assert.Equal(["Gaming"],v.Looks!);Assert.Equal("Gaming",v.Look);Assert.False(v.LookChanged);
+        // A change marks the look changed; the look itself keeps what was saved.
+        Assert.True((await Send(h,new SetDeviceKeysRequest(ApexKey,Keys((1,"#00FF00"))))).Ok);
+        Assert.Equal("0=Key 0/#FF0000",KeysText(ApexEntry(h)!.Looks![0].Keys));
+        v=ApexView(h);Assert.Equal("Gaming",v.Look);Assert.True(v.LookChanged);
+        Assert.True((await Send(h,new SetDeviceModeRequest(ApexKey,null))).Ok);
+        Assert.True((await Send(h,new SetDeviceLayersRequest(ApexKey,null))).Ok);
+        Assert.True((await Send(h,new SaveLookRequest(ApexKey,"Work"))).Ok);
+        v=ApexView(h);Assert.Equal(["Gaming","Work"],v.Looks!);Assert.Equal("Work",v.Look);Assert.False(v.LookChanged);
+        // Choose: the keyboard takes copies of the look's, whatever the case of the name.
+        Assert.True((await Send(h,new ChooseLookRequest(ApexKey,"gaming"))).Ok);
+        t=ApexEntry(h)!;
+        Assert.Equal("0=Key 0/#FF0000",KeysText(t.Keys));Assert.Equal(("breathing",30),(t.Mode!.Kind,t.Mode.Speed));Assert.Equal("fade",Assert.Single(t.Layers!).Kind);
+        Assert.Equal("Gaming",t.Look);
+        v=ApexView(h);Assert.Equal("Gaming",v.Look);Assert.False(v.LookChanged);Assert.Equal("breathing",v.LightingMode!.Kind);
+        Assert.True((await Send(h,new SetDeviceKeysRequest(ApexKey,Keys((0,"#FF0000"),(2,"#0000FF"))))).Ok);
+        Assert.Equal("0=Key 0/#FF0000",KeysText(ApexEntry(h)!.Looks![0].Keys)); // choosing copied, so the look didn't change with it
+        Assert.True(ApexView(h).LookChanged);
+        Assert.True((await Send(h,new ChooseLookRequest(ApexKey,"Work"))).Ok);
+        t=ApexEntry(h)!;Assert.Equal("1=Key 1/#00FF00",KeysText(t.Keys));Assert.Null(t.Mode);Assert.Null(t.Layers);Assert.False(ApexView(h).LookChanged);
+        // Rename: the current look follows.
+        Assert.True((await Send(h,new RenameLookRequest(ApexKey,"work"," Office "))).Ok);
+        v=ApexView(h);Assert.Equal(["Gaming","Office"],v.Looks!);Assert.Equal("Office",v.Look);Assert.False(v.LookChanged);
+        Assert.True((await Send(h,new RenameLookRequest(ApexKey,"Gaming","Games"))).Ok);
+        v=ApexView(h);Assert.Equal(["Games","Office"],v.Looks!);Assert.Equal("Office",v.Look);
+        // Delete: another look leaves the current one; the current one clears Look and leaves the keyboard as it is.
+        Assert.True((await Send(h,new DeleteLookRequest(ApexKey,"Games"))).Ok);
+        v=ApexView(h);Assert.Equal(["Office"],v.Looks!);Assert.Equal("Office",v.Look);
+        Assert.True((await Send(h,new DeleteLookRequest(ApexKey,"OFFICE"))).Ok);
+        t=ApexEntry(h)!;Assert.Null(t.Looks);Assert.Null(t.Look);Assert.Equal("1=Key 1/#00FF00",KeysText(t.Keys));
+        v=ApexView(h);Assert.Null(v.Looks);Assert.Null(v.Look);Assert.False(v.LookChanged);
+        var saved=SavedSettings().Devices[ApexKey];
+        Assert.Null(saved.Looks);Assert.Null(saved.Look);Assert.Equal("1=Key 1/#00FF00",KeysText(saved.Keys));
+    }
+
+    [Fact]
+    public async Task Look_edges()
+    {
+        var h=await Running();
+        Assert.True((await Send(h,new SaveLookRequest(ApexKey,"A"))).Ok);
+        Assert.True((await Send(h,new DeleteLookRequest(ApexKey,"A"))).Ok);
+        Assert.Equal(HostReplyCodes.NoLook,(await Send(h,new ChooseLookRequest(ApexKey,"A"))).Error);
+        Assert.Equal(HostReplyCodes.NoLook,(await Send(h,new RenameLookRequest(ApexKey,"A","B"))).Error);
+        Assert.Equal(HostReplyCodes.NoLook,(await Send(h,new DeleteLookRequest(ApexKey,"A"))).Error);
+        Assert.True((await Send(h,new SaveLookRequest(ApexKey,"A"))).Ok);
+        Assert.True((await Send(h,new SaveLookRequest(ApexKey,"B"))).Ok);
+        Assert.Equal(HostReplyCodes.LookTaken,(await Send(h,new RenameLookRequest(ApexKey,"B","a"))).Error);
+        Assert.True((await Send(h,new RenameLookRequest(ApexKey,"A","a"))).Ok); // its own name in another case
+        Assert.Equal(["a","B"],ApexView(h).Looks!);
+        Assert.Equal(HostReplyCodes.LookName,(await Send(h,new RenameLookRequest(ApexKey,"a","   "))).Error);
+        Assert.Equal(HostReplyCodes.LookName,(await Send(h,new RenameLookRequest(ApexKey,"a",new string('x',41)))).Error);
+        // Save over an existing name only when asked to.
+        Assert.True((await Send(h,new SetDeviceKeysRequest(ApexKey,Keys((0,"#FF0000"))))).Ok);
+        Assert.Equal(HostReplyCodes.LookTaken,(await Send(h,new SaveLookRequest(ApexKey,"b"))).Error);
+        Assert.Null(ApexEntry(h)!.Looks![1].Keys);
+        Assert.True((await Send(h,new SaveLookRequest(ApexKey,"b",true))).Ok);
+        var t=ApexEntry(h)!;
+        Assert.Equal(2,t.Looks!.Count);Assert.Equal("0=Key 0/#FF0000",KeysText(t.Looks[1].Keys));Assert.Equal(t.Looks[1].Name,t.Look);
+        // Names.
+        Assert.Equal(HostReplyCodes.LookName,(await Send(h,new SaveLookRequest(ApexKey,"   "))).Error);
+        Assert.Equal(HostReplyCodes.LookName,(await Send(h,new SaveLookRequest(ApexKey,""))).Error);
+        Assert.Equal(HostReplyCodes.LookName,(await Send(h,new SaveLookRequest(ApexKey,new string('x',41)))).Error);
+        Assert.True((await Send(h,new SaveLookRequest(ApexKey,"  "+new string('x',40)+"  "))).Ok);
+        // Twelve saved: a thirteenth is refused, an overwrite isn't.
+        for(var i=3;i<12;i++) Assert.True((await Send(h,new SaveLookRequest(ApexKey,"Look "+i))).Ok);
+        Assert.Equal(12,ApexEntry(h)!.Looks!.Count);
+        Assert.Equal(HostReplyCodes.TooManyLooks,(await Send(h,new SaveLookRequest(ApexKey,"Thirteen"))).Error);
+        Assert.Equal(HostReplyCodes.TooManyLooks,(await Send(h,new SaveLookRequest(ApexKey,"Thirteen",true))).Error);
+        Assert.True((await Send(h,new SaveLookRequest(ApexKey,"look 5",true))).Ok);
+        Assert.Equal(12,ApexEntry(h)!.Looks!.Count);
+        Assert.Equal(12,SavedSettings().Devices[ApexKey].Looks!.Count);
+    }
+
+    // A 1 MiB file with room for the painted keys but not for a look holding a second copy of them.
+    [Fact]
+    public async Task A_save_past_the_size_cap_is_refused_with_no_room_and_nothing_changes()
+    {
+        var seeded=new LightingSettings();
+        seeded.Devices[ApexKey]=new DeviceTuning{Keys=Enumerable.Range(0,112).ToDictionary(i=>i,i=>PK(new string('k',DeviceLayers.MaxLightName),"#FF0000"))};
+        var withLook=DeviceTunings.Clone(seeded.Devices);
+        withLook[ApexKey].Looks=[new DeviceLook{Name="Big",Keys=DeviceLayers.Clone(seeded.Devices[ApexKey].Keys)}];withLook[ApexKey].Look="Big";
+        var look=Written(new LightingSettings{Devices=withLook})-Written(seeded);
+        ZoneColorEntry Entry()=>new(){Color="#FF0000",ZoneName=new string('n',LightingSettingsCodec.MaxKeyLength)};
+        seeded.ZoneColors["zone-00000"]=Entry();var one=Written(seeded);
+        seeded.ZoneColors["zone-00001"]=Entry();var each=Written(seeded)-one;
+        var count=(int)((LightingSettingsCodec.MaxFileBytes-look/2-one)/each)+1;
+        for(var i=2;i<count;i++) seeded.ZoneColors[$"zone-{i:D5}"]=Entry();
+        var withRoom=Written(seeded);
+        Assert.InRange(withRoom,LightingSettingsCodec.MaxFileBytes-look,LightingSettingsCodec.MaxFileBytes);
+        File.WriteAllText(lightingPath,LightingSettingsCodec.Write(seeded));
+        var h=await Running(CountingStore());
+        var file=File.ReadAllText(lightingPath);
+        var before=Volatile.Read(ref saves);
+        var reply=await Send(h,new SaveLookRequest(ApexKey,"Big"){Id=9});
+        Assert.False(reply.Ok);Assert.Equal(HostReplyCodes.NoRoom,reply.Error);Assert.Equal(9,reply.Id);
+        Assert.Equal(HostReplyCodes.NoRoom,(await Send(h,new SetDeviceLayersRequest(ApexKey,[new DeviceLayer{Kind="fade",Lights=Enumerable.Range(0,112).Select(i=>new LayerLight{Index=i,Name=new string('k',DeviceLayers.MaxLightName)}).ToList()}]))).Error);
+        Assert.Null(ApexEntry(h)!.Looks);Assert.Null(ApexEntry(h)!.Look);Assert.Null(ApexEntry(h)!.Layers);
+        Assert.Equal(before,Volatile.Read(ref saves));
+        Assert.Equal(file,File.ReadAllText(lightingPath));
+        // Other requests still answer the sentence itself.
+        var colors=Enumerable.Range(0,60).ToDictionary(i=>$"more-{i:D5}",_=>Entry());
+        foreach(var e in h.State.Settings.ZoneColors) colors[e.Key]=e.Value;
+        Assert.Equal(LightingSettingsCodec.WrittenTooLarge,(await Send(h,new ReplaceColorsRequest("#123456",colors))).Error);
+        Assert.True((await Send(h,new SetDeviceKeysRequest(ApexKey,null))).Ok); // clearing makes room
+        Assert.True((await Send(h,new SaveLookRequest(ApexKey,"Small"))).Ok);
+    }
+
+    [Fact]
+    public async Task Deleting_the_current_look_keeps_the_keyboard_as_it_is()
+    {
+        var h=await Running();
+        Assert.True((await Send(h,new SetDeviceKeysRequest(ApexKey,Keys((3,"#123456"))))).Ok);
+        Assert.True((await Send(h,new SetDeviceModeRequest(ApexKey,"cycle",80))).Ok);
+        Assert.True((await Send(h,new SetDeviceLayersRequest(ApexKey,[new DeviceLayer{Kind="ripple"}]))).Ok);
+        Assert.True((await Send(h,new SaveLookRequest(ApexKey,"Mine"))).Ok);
+        var want=JsonSerializer.Serialize(new{ApexEntry(h)!.Keys,ApexEntry(h)!.Mode,ApexEntry(h)!.Layers});
+        Assert.True((await Send(h,new DeleteLookRequest(ApexKey,"Mine"))).Ok);
+        var t=ApexEntry(h)!;
+        Assert.Null(t.Look);Assert.Null(t.Looks);
+        Assert.Equal(want,JsonSerializer.Serialize(new{t.Keys,t.Mode,t.Layers}));
+        var saved=SavedSettings().Devices[ApexKey];
+        Assert.Equal(want,JsonSerializer.Serialize(new{saved.Keys,saved.Mode,saved.Layers}));
+    }
+
+    // Review Focus 1: two lights come back with each other's names. The 5 s rescan sees it (the shape names the lights), a state follows
+    // with both keys skipped and both still saved, and the log says so once, not per frame.
+    [Fact]
+    public async Task A_reordered_keyboard_counts_skipped_keys_and_logs_once()
+    {
+        var names=Enumerable.Range(0,112).Select(i=>"Key: K"+i).ToArray();
+        session.Controllers[Apex]=session.Controllers[Apex] with{LedNames=names};
+        var h=await Running();
+        var states=new List<HostState>();
+        h.StateChanged+=s=>{lock(states)states.Add(s);};
+        Assert.True((await Send(h,new SetDeviceKeysRequest(ApexKey,new(){[0]=PK(names[0],"#FF0000"),[1]=PK(names[1],"#00FF00"),[7]=PK(names[7],"#0000FF")}))).Ok);
+        Assert.Equal(0,ApexView(h).SkippedKeys);
+        await RunFor(TimeSpan.FromSeconds(1),DeviceHost.Tick);
+        const string line="SteelSeries Apex Pro: 2 painted or layered keys don't match this keyboard's keys any more and are skipped.";
+        Assert.Empty(LogLines("painted or layered keys"));
+        var swapped=names.ToArray();(swapped[0],swapped[1])=(swapped[1],swapped[0]);
+        session.Controllers[Apex]=session.Controllers[Apex] with{LedNames=swapped};
+        lock(states)states.Clear();
+        await AdvanceUntil(()=>{lock(states)return states.Any(s=>s.Devices.Any(d=>d.Key==ApexKey&&d.SkippedKeys==2));},limit:TimeSpan.FromSeconds(10));
+        Assert.Equal(3,ApexEntry(h)!.Keys!.Count);
+        Assert.Equal(3,SavedSettings().Devices[ApexKey].Keys!.Count);
+        await Elapse(DeviceHost.Tick);await Elapse(DeviceHost.Tick);
+        await Until(()=>time.Waiting(DeviceHost.Tick));
+        Assert.Equal([line],LogLines("painted or layered keys").Select(l=>l[(l.IndexOf("SteelSeries",StringComparison.Ordinal))..].TrimEnd('\r')));
+        // Light 1's paint goes to the light that is named for it now: it still doesn't match light 1, and the light shows the base colour.
+        Assert.Equal(SteelBlue,LastLeds(Apex)[1]);Assert.Equal(new Rgb(0,0,0xFF),LastLeds(Apex)[7]);
+    }
+
+    [Fact]
+    public async Task A_static_paint_change_sends_one_frame_while_subscribed()
+    {
+        var h=await Running();
+        Assert.True((await Send(h,new SetDeviceKeysRequest(ApexKey,Keys((0,"#FF0000"))))).Ok);
+        var seen=FullPreviews(h);
+        Assert.True((await Send(h,new SubscribePreviewRequest(true))).Ok);
+        await AdvanceUntil(()=>CountOf(seen)>=1);
+        await RunFor(TimeSpan.FromSeconds(2),DeviceHost.Tick);
+        Assert.Equal(1,CountOf(seen));
+        Assert.True((await Send(h,new SetDeviceKeysRequest(ApexKey,Keys((0,"#FF0000"),(1,"#00FF00"))))).Ok);
+        await AdvanceUntil(()=>CountOf(seen)>=2);
+        await RunFor(TimeSpan.FromSeconds(2),DeviceHost.Tick);
+        Assert.Equal(2,CountOf(seen));
+        lock(seen)Assert.Equal(["FF0000","00FF00","4682B4"],Chunks(seen[1].Lights![ApexKey]).Take(3));
+        // The same paint again: a state is raised, so a frame goes although the colours are the same. (A static desk forgets its last
+        // frame at each tick, so the SameFrame bypass itself is A_paint_change_inside_the_preview_gap_is_still_sent's.)
+        Assert.True((await Send(h,new SetDeviceKeysRequest(ApexKey,Keys((0,"#FF0000"),(1,"#00FF00"))))).Ok);
+        await AdvanceUntil(()=>CountOf(seen)>=3);
+        lock(seen)Assert.True(DeviceHost.SameFrame(seen[1],seen[2]));
+    }
+
+    // A one-colour wave keeps the fast tick and sends one frame while nothing changes; a paint change right after that frame, inside its
+    // PreviewGap and giving the same colours, still sends one.
+    [Fact]
+    public async Task A_paint_change_inside_the_preview_gap_is_still_sent()
+    {
+        var h=await RunningWave(new EffectParams{Colors=["#FF0000"]});
+        Assert.True((await Send(h,new SetDeviceKeysRequest(ApexKey,Keys((0,"#00FF00"))))).Ok);
+        var seen=new List<(DateTimeOffset At,PreviewEvent Frame)>();
+        h.PreviewChanged+=e=>{lock(seen)seen.Add((time.GetUtcNow(),e));};
+        Assert.True((await Send(h,new SubscribePreviewRequest(true))).Ok);
+        await AdvanceUntil(()=>CountOf(seen)>=1,tick:DeviceHost.FastTick);
+        Assert.True((await Send(h,new SetDeviceKeysRequest(ApexKey,Keys((0,"#00FF00"))))).Ok);
+        await AdvanceUntil(()=>CountOf(seen)>=2,tick:DeviceHost.FastTick,limit:TimeSpan.FromSeconds(2));
+        lock(seen)
+        {
+            Assert.True(seen[1].At-seen[0].At<DeviceHost.PreviewGap,$"{(seen[1].At-seen[0].At).TotalMilliseconds} ms apart");
+            Assert.True(DeviceHost.SameFrame(seen[0].Frame,seen[1].Frame));
+        }
+    }
+
+    [Fact]
+    public async Task A_static_paint_change_sends_no_frame_when_not_subscribed()
+    {
+        var h=await Running();
+        var seen=FullPreviews(h);
+        Assert.True((await Send(h,new SetDeviceKeysRequest(ApexKey,Keys((0,"#FF0000"))))).Ok);
+        await RunFor(TimeSpan.FromSeconds(2),DeviceHost.Tick);
+        Assert.True((await Send(h,new SubscribePreviewRequest(true))).Ok);
+        Assert.True((await Send(h,new SubscribePreviewRequest(false))).Ok);
+        Assert.True((await Send(h,new SetDeviceKeysRequest(ApexKey,Keys((1,"#FF0000"))))).Ok);
+        await RunFor(TimeSpan.FromSeconds(2),DeviceHost.Tick);
+        Assert.Equal(0,CountOf(seen));
+        Assert.False(ApexShows(SteelBlue)); // the keyboard itself is painted all along
+    }
+
+    [Fact]
+    public async Task A_static_painted_desk_sends_no_frames_on_later_ticks()
+    {
+        var h=await Running();
+        Assert.True((await Send(h,new SetDeviceLayersRequest(ApexKey,[new DeviceLayer{Kind="color",Color="#00FF00",Lights=[new(){Index=4,Name="Key 4"}]}]))).Ok);
+        var seen=FullPreviews(h);
+        Assert.True((await Send(h,new SubscribePreviewRequest(true))).Ok);
+        await AdvanceUntil(()=>CountOf(seen)>=1);
+        await RunFor(TimeSpan.FromSeconds(6),DeviceHost.Tick); // across a 5 s rescan too
+        Assert.Equal(1,CountOf(seen));
+        Assert.False(time.Waiting(DeviceHost.FastTick)); // and the tick stays slow
+    }
+
+    [Fact]
+    public async Task Subscribing_sends_a_frame()
+    {
+        var h=await Running();
+        Assert.True((await Send(h,new SetDeviceKeysRequest(ApexKey,Keys((2,"#ABCDEF"))))).Ok);
+        await RunFor(TimeSpan.FromSeconds(1),DeviceHost.Tick);
+        var seen=FullPreviews(h);
+        Assert.True((await Send(h,new SubscribePreviewRequest(true))).Ok);
+        await AdvanceUntil(()=>CountOf(seen)>=1);
+        lock(seen)Assert.Equal("ABCDEF",Chunks(seen[0].Lights![ApexKey])[2]);
+        h.ClientGone(); // a window that comes back gets one again
+        Assert.True((await Send(h,new SubscribePreviewRequest(true))).Ok);
+        await AdvanceUntil(()=>CountOf(seen)>=2);
+    }
+
+    [Fact]
+    public async Task Preview_lights_carry_painted_keys_and_zone_colours_stay_base()
+    {
+        var h=await Running();
+        Assert.True((await Send(h,new SetDeviceKeysRequest(ApexKey,Keys((0,"#FF0000"))))).Ok);
+        Assert.True((await Send(h,new SetDeviceTuningRequest(ApexKey,50))).Ok);
+        var seen=FullPreviews(h);
+        Assert.True((await Send(h,new SubscribePreviewRequest(true))).Ok);
+        await AdvanceUntil(()=>CountOf(seen)>=1);
+        PreviewEvent frame;
+        lock(seen)frame=seen[0];
+        var packed=frame.Lights![ApexKey];
+        Assert.StartsWith("FF0000",packed);                                     // painted, before tuning
+        Assert.Equal(111,Chunks(packed).Skip(1).Count(c=>c=="4682B4"));
+        Assert.Equal("#4682B4",frame.Colors[ApexZone]);                        // the zone's colour is the base frame's, not light 0's
+        Assert.Equal(new Rgb(0xFF,0,0).Scale(50),LastLeds(Apex)[0]);
+    }
+
+    // Controller ruling R4: the frame a state asks for is not sent while the lights are off, so painted colours never reach the window then.
+    [Fact]
+    public async Task Lights_off_sends_no_painted_preview()
+    {
+        var h=await Running();
+        Assert.True((await Send(h,new SetDeviceKeysRequest(ApexKey,Keys((0,"#FF0000"))))).Ok);
+        var seen=FullPreviews(h);
+        Assert.True((await Send(h,new SubscribePreviewRequest(true))).Ok);
+        await AdvanceUntil(()=>CountOf(seen)>=1);
+        Assert.True((await Send(h,new SetLightsOnRequest(false))).Ok);
+        Assert.True((await Send(h,new SetDeviceKeysRequest(ApexKey,Keys((0,"#00FF00"))))).Ok);
+        await RunFor(TimeSpan.FromSeconds(2),DeviceHost.Tick);
+        Assert.Equal(1,CountOf(seen));
+        Assert.All(LastLeds(Apex),c=>Assert.Equal(Rgb.Black,c));
+        Assert.True((await Send(h,new SetLightsOnRequest(true))).Ok);
+        await AdvanceUntil(()=>CountOf(seen)>=2);
+        lock(seen)Assert.StartsWith("00FF00",seen[1].Lights![ApexKey]);
+    }
 }

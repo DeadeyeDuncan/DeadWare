@@ -414,7 +414,8 @@ internal sealed class LightingPage : Page, IHeaderTool
     /// <summary>
     /// Shows the waiting frame on the desk. Dropped while the page is hidden, when it came from a client the page no longer follows,
     /// while the latest state isn't Running, and while nothing animates (no desk effect or device mode running, see LightingPaint.Animating): the host can send one frame computed just before a switch to Static or lights
-    /// off, after that state, and no later frame would replace it.
+    /// off, after that state, and no later frame would replace it. Lighting 3b: a frame is also shown while some painted device has painted
+    /// keys or layers with the lights on (LightingPaint.ShowsLights), since those colours are only in the host's frames, never in the state.
     /// </summary>
     private void ShowFrame()
     {
@@ -422,9 +423,16 @@ internal sealed class LightingPage : Page, IHeaderTool
         Volatile.Write(ref frameQueued, 0);
         if (Interlocked.Exchange(ref pendingFrame, null) is not { } frame || !showing || client is null || !ReferenceEquals(frame.Source, client)) return;
         // Nor while the host isn't running, so a frame can't paint over the colours a non-running state cleared.
-        if (client.State is not { Status: HostStatus.Running, Settings: { } settings } state || !LightingPaint.Animating(settings, state.Devices ?? [])) return;
+        if (client.State is not { Status: HostStatus.Running, Settings: { } settings } state || !ShowsFrames(settings, state.Devices)) return;
         ShowDeskColors(frame.Colors);
     }
+
+    /// <summary>
+    /// Whether the desk draws the host's frames: something animates, or (lighting 3b) painted keys or layers show, whose colours only the
+    /// frames carry.
+    /// </summary>
+    private static bool ShowsFrames(LightingSettings settings, IReadOnlyList<DeviceView>? devices) =>
+        LightingPaint.Animating(settings, devices ?? []) || LightingPaint.ShowsLights(settings, devices ?? []);
 
     /// <summary>
     /// A preview frame to the drawing the mode shows, the plain desk or the picture; null (the state's colours) to both, so neither keeps
@@ -570,8 +578,9 @@ internal sealed class LightingPage : Page, IHeaderTool
             }
             // Effects go only to a running host whose settings the bar has seen.
             effectBar.Show(shownEffect ?? new EffectSettings(), live && state.Settings is not null);
-            // While nothing animates (LightingPaint.Animating) the desk shows the state's colours, and frames are dropped until one runs again.
-            if (state.Settings is not { } current || !LightingPaint.Animating(current, state.Devices ?? [])) ShowDeskColors(null);
+            // While nothing animates (LightingPaint.Animating) and nothing painted shows (LightingPaint.ShowsLights) the desk shows the state's
+            // colours, and frames are dropped until one of them holds again.
+            if (state.Settings is not { } current || !ShowsFrames(current, state.Devices)) ShowDeskColors(null);
             ShowDevices(state);
         }
         UpdateFlyouts(resync: live && !wasLive);

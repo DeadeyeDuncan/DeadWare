@@ -460,4 +460,30 @@ public sealed class LightingDeviceServiceTests : IDisposable
         Assert.True(svc.Rescan());
         Assert.True(KeyMaps.SupportsWave(svc.Devices.First(d=>d.Key.StartsWith(Hid+"|"))));
     }
+    // Lighting 3b: the shape names the lights too, so lights that come back renamed or reordered raise a state.
+    [Fact] public void Renamed_or_reordered_lights_change_the_shape()
+    {
+        var i=IndexOf(Hid);var full=session.Controllers[i];
+        Assert.False(svc.Rescan());
+        var names=full.LedNames!.ToArray();(names[0],names[1])=(names[1],names[0]);
+        session.Controllers[i]=full with{LedNames=names};
+        Assert.True(svc.Rescan());
+        Assert.False(svc.Rescan());
+        names=names.ToArray();names[60]="Key: A";
+        session.Controllers[i]=full with{LedNames=names};
+        Assert.True(svc.Rescan());
+        session.Controllers[i]=full;
+        Assert.True(svc.Rescan());
+        Assert.False(svc.Rescan());
+    }
+    // The per-light preview is the paint stage's: painted keys over the base frame, before tuning; the zone colour stays the base frame's.
+    [Fact] public void Preview_lights_carry_painted_keys_before_tuning()
+    {
+        var kb=svc.Devices.First(d=>d.Key.StartsWith(Hid+"|"));
+        var s=new LightingSettings();
+        s.Devices[kb.Key]=new DeviceTuning{Brightness=10,Keys=new(){[1]=new PaintedKey{Name="Key 1",Color="#FF8000"},[2]=new PaintedKey{Name="Not Key 2",Color="#00FF00"}}};
+        var packed=svc.PreviewLights(s,0)![kb.Key];
+        Assert.Equal("4682B4FF80004682B4",packed[..18]); // light 2's name doesn't match: skipped
+        Assert.Equal("#4682B4",svc.Preview(s,0)[LightingKeys.Zone(kb.Key,0)]);
+    }
 }

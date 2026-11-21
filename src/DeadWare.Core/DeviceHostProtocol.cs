@@ -7,11 +7,16 @@ public sealed record ZoneView(string Key,int Index,string Name,int LedCount,stri
 // Mode: what the device is set to now (a hardware device shows Static while lights are off). OwnEffect: its own hardware effect, and
 // StaysLitWhenOff: whether it stays lit while lights are off (a hardware effect and no Static mode); both hold whatever Lights on is.
 public sealed record DeviceView(string Key,string Name,int Type,PaintKind Kind,string? Mode,string? OwnEffect,bool StaysLitWhenOff,IReadOnlyList<ZoneView> Zones,
-    int Brightness=100,DeviceCorrection? Correction=null,DeviceMode? LightingMode=null,string? ModeProblem=null,bool Keyboard=false,bool Wave=false,KeyMapView? Keys=null);
+    int Brightness=100,DeviceCorrection? Correction=null,DeviceMode? LightingMode=null,string? ModeProblem=null,bool Keyboard=false,bool Wave=false,KeyMapView? Keys=null,
+    // Lighting 3b: whether its keys can be painted one by one, its painted keys, layers, saved look names in saved order, the look last
+    // loaded and whether the keyboard has changed since; the painted keys and each layer's listed lights that no longer match its lights.
+    bool CanPaint=false,Dictionary<int,PaintedKey>? Paint=null,List<DeviceLayer>? Layers=null,IReadOnlyList<string>? Looks=null,string? Look=null,bool LookChanged=false,
+    int SkippedKeys=0,IReadOnlyList<int>? SkippedLayerLights=null);
 // ConflictsChecked: the host has completed a conflict scan since it started, so an empty Conflicts list means nothing was found (polish
 // item 2). One that never scans, such as one whose OpenRGB settings folder was refused, leaves it false. Optional on the wire, and false
 // when absent, so the protocol stays version 1.
-public sealed record HostState(HostStatus Status,string Message,bool Elevated,IReadOnlyList<LightingConflict> Conflicts,IReadOnlyList<DeviceView> Devices,LightingSettings Settings,bool ConflictsChecked=false);
+public sealed record HostState(HostStatus Status,string Message,bool Elevated,IReadOnlyList<LightingConflict> Conflicts,IReadOnlyList<DeviceView> Devices,LightingSettings Settings,bool ConflictsChecked=false,
+    bool KeyHook=false);
 [JsonPolymorphic(TypeDiscriminatorPropertyName="type")]
 [JsonDerivedType(typeof(GetStateRequest),"getState")]
 [JsonDerivedType(typeof(SetLightsOnRequest),"setLightsOn")]
@@ -29,6 +34,12 @@ public sealed record HostState(HostStatus Status,string Message,bool Elevated,IR
 [JsonDerivedType(typeof(PreviewEvent),"preview")]
 [JsonDerivedType(typeof(SetDeviceTuningRequest),"setDeviceTuning")]
 [JsonDerivedType(typeof(SetDeviceModeRequest),"setDeviceMode")]
+[JsonDerivedType(typeof(SetDeviceKeysRequest),"setDeviceKeys")]
+[JsonDerivedType(typeof(SetDeviceLayersRequest),"setDeviceLayers")]
+[JsonDerivedType(typeof(SaveLookRequest),"saveLook")]
+[JsonDerivedType(typeof(ChooseLookRequest),"chooseLook")]
+[JsonDerivedType(typeof(RenameLookRequest),"renameLook")]
+[JsonDerivedType(typeof(DeleteLookRequest),"deleteLook")]
 public abstract record HostMessage
 {
     [JsonRequired] public int Version { get; init; } = DeviceHostProtocol.Version;
@@ -54,6 +65,13 @@ public sealed record PreviewEvent(Dictionary<string,string> Colors,Dictionary<st
 public sealed record SetDeviceTuningRequest(string DeviceKey,int? Brightness=null,DeviceCorrection? Correction=null,bool ResetCorrection=false) : HostMessage;
 // Kind null: follow the desk effect.
 public sealed record SetDeviceModeRequest(string DeviceKey,string? Kind,int Speed=40) : HostMessage;
+// Lighting 3b. Keys and Layers are the whole set; null or empty clears it. A look's name is trimmed and compared ignoring case.
+public sealed record SetDeviceKeysRequest(string DeviceKey,Dictionary<int,PaintedKey>? Keys) : HostMessage;
+public sealed record SetDeviceLayersRequest(string DeviceKey,List<DeviceLayer>? Layers) : HostMessage;
+public sealed record SaveLookRequest(string DeviceKey,string Name,bool Overwrite=false) : HostMessage;
+public sealed record ChooseLookRequest(string DeviceKey,string Name) : HostMessage;
+public sealed record RenameLookRequest(string DeviceKey,string Name,string NewName) : HostMessage;
+public sealed record DeleteLookRequest(string DeviceKey,string Name) : HostMessage;
 [JsonSourceGenerationOptions(UseStringEnumConverter=true)]
 [JsonSerializable(typeof(HostMessage))]
 internal sealed partial class DeviceHostJsonContext : JsonSerializerContext;
@@ -61,6 +79,8 @@ internal sealed partial class DeviceHostJsonContext : JsonSerializerContext;
 public static class HostReplyCodes
 {
     public const string Starting="starting",Unsupported="unsupported",RescanFailed="rescan failed",UnknownZone="unknown zone",CouldntSave="couldn't save settings",Version="version",InternalError="internal error",UnknownDevice="unknown device";
+    public const string NotPaintable="not paintable",BadKey="bad key",BadLayer="bad layer",TooManyLayers="too many layers",TooManyLooks="too many looks",
+        LookName="look name",LookTaken="look taken",NoLook="no look",NoRoom="no room";
     public static string Explain(string why)=>why switch
     {
         Starting=>"The lighting helper is still starting. Try again in a moment.",
@@ -71,6 +91,15 @@ public static class HostReplyCodes
         RescanFailed=>"The lighting helper lost its connection to OpenRGB and is reconnecting.",
         Unsupported=>"The lighting helper didn't recognise the change. Restart DeadWare.",
         Version=>"The lighting helper is a different version. Restart DeadWare.",
+        NotPaintable=>"That device isn't a keyboard DeadWare can paint key by key.",
+        BadKey=>"That key isn't on this keyboard.",
+        BadLayer=>"That layer isn't of a kind DeadWare knows.",
+        TooManyLayers=>"A keyboard can have up to 8 layers.",
+        TooManyLooks=>"A keyboard can have up to 12 saved looks. Delete one first.",
+        LookName=>"A look's name must be 1 to 40 characters.",
+        LookTaken=>"There is already a look with that name.",
+        NoLook=>"That look isn't saved any more.",
+        NoRoom=>"There isn't room to save that. Delete a saved look first.",
         _=>why,
     };
 }

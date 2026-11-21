@@ -39,12 +39,15 @@ public static class LightingPaint
             return new ZoneView(zk,z.Index,z.Name,z.LedCount,ZoneColor(settings,device,z).ToHex(),own);
         }).ToList();
         // Step 3a: the saved tuning and mode, copied so a view never shares the live settings' objects; the mode even when it can't run,
-        // with the reason.
+        // with the reason. Lighting 3b: the painted keys, layers and look names copied the same way, with what no longer matches the lights.
         var t=DeviceTunings.Of(settings,device.Key);
         var c=t?.Correction is{} k?new DeviceCorrection{R=k.R,G=k.G,B=k.B}:null;
         var mode=t?.Mode is{} m?new DeviceMode{Kind=m.Kind,Speed=m.Speed}:null;
         return new DeviceView(device.Key,device.Name,device.Type,p.Kind,p.Mode,own,own is not null&&!device.Modes.Contains(StaticMode),zones,
-            t?.Brightness??100,c,mode,mode is null?null:DeviceModes.CantRun(device,mode.Kind),KeyMaps.IsKeyboard(device),KeyMaps.SupportsWave(device),KeyMaps.Of(device));
+            t?.Brightness??100,c,mode,mode is null?null:DeviceModes.CantRun(device,mode.Kind),KeyMaps.IsKeyboard(device),KeyMaps.SupportsWave(device),KeyMaps.Of(device),
+            CanPaint:KeyMaps.CanPaint(device),Paint:DeviceLayers.Clone(t?.Keys),Layers:DeviceLayers.Clone(t?.Layers),
+            Looks:t?.Looks?.Where(l=>l is not null).Select(l=>l.Name).ToList(),Look:t?.Look,LookChanged:t is not null&&DeviceLayers.Changed(t),
+            SkippedKeys:LightingLayers.SkippedKeys(device,t),SkippedLayerLights:t?.Layers is{Count:>0}?LightingLayers.SkippedLayerLights(device,t):null);
     }
     // The base frame, one colour per light before tuning: the device's running keyboard mode; Static for a saved mode it can't run now
     // (spec: painted as Static, nothing deleted); else each zone's colour as the desk shows it.
@@ -81,9 +84,14 @@ public static class LightingPaint
         }
         return false;
     }
-    // A null view, as a damaged state over the pipe could hold, is skipped as the window's other view code does.
+    // A null view, as a damaged state over the pipe could hold, is skipped as the window's other view code does. Lighting 3b: an effect layer
+    // of some strength over at least one light moves too (its list null is every light).
     public static bool Animating(LightingSettings s,IEnumerable<DeviceView?> devices)=>
-        s.LightsOn&&(EffectRunning(s)||devices.Any(v=>v is not null&&v.Kind==PaintKind.Direct&&DeviceModes.Animated(v.LightingMode?.Kind)&&v.ModeProblem is null));
+        s.LightsOn&&(EffectRunning(s)||devices.Any(v=>v is not null&&v.Kind==PaintKind.Direct&&(DeviceModes.Animated(v.LightingMode?.Kind)&&v.ModeProblem is null||v.Layers is{} l&&l.Any(x=>x is not null&&x.Kind==DeviceLayers.Effect&&x.Strength>0&&x.Lights is null or{Count:>0}))));
+    // Lighting 3b: the host's frames carry lights the state's colours don't (painted keys and layers), so the window draws them although
+    // nothing moves: lights on and some painted device with painted keys or layers.
+    public static bool ShowsLights(LightingSettings s,IEnumerable<DeviceView?> devices)=>
+        s.LightsOn&&devices.Any(v=>v is not null&&v.Kind==PaintKind.Direct&&(v.Paint is{Count:>0}||v.Layers is{Count:>0}));
     public static bool EffectRunning(LightingSettings settings)=>settings.LightsOn&&LightingEffects.KindOf(settings.Effect.Kind)!=EffectKind.Static;
     // The zone's colour before brightness: its static colour, unless an effect is selected and the zone's device is placed with a point for the zone.
     public static Rgb ZoneShown(LightingSettings settings,LightingDevice device,LightingZone zone,double tMs)

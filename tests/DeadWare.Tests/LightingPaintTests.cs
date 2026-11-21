@@ -311,4 +311,70 @@ public class LightingPaintTests
         s.Devices[d.Key]=new DeviceTuning{Mode=new(){Kind=DeviceModes.Breathing}};
         Assert.Equal("Lighting modes are for keyboards.",LightingPaint.View(s,d).ModeProblem);
     }
+    // Lighting 3b: whether the window should draw the host's frames although nothing moves.
+    [Fact]
+    public void ShowsLights_cases()
+    {
+        s.Effect.Kind="Static";
+        var kb=Kb();
+        DeviceView V()=>LightingPaint.View(s,kb);
+        Assert.False(LightingPaint.ShowsLights(s,[V(),LightingPaint.View(s,d)]));                                       // nothing
+        s.Devices[kb.Key]=new DeviceTuning{Keys=new(){[0]=new PaintedKey{Name="A",Color="#FF0000"}}};
+        Assert.True(LightingPaint.ShowsLights(s,[V()]));                                                                 // paint
+        Assert.True(LightingPaint.ShowsLights(s,new DeviceView?[]{null,V()}));                                           // a null view skipped
+        s.LightsOn=false;Assert.False(LightingPaint.ShowsLights(s,[V()]));s.LightsOn=true;                               // lights off
+        s.Devices[kb.Key]=new DeviceTuning{Layers=[new DeviceLayer{Kind="fade"}]};
+        Assert.True(LightingPaint.ShowsLights(s,[V()]));                                                                 // layers
+        s.HardwareModes[kb.Key]="Spectrum";var hw=Kb("Direct","Spectrum");
+        Assert.Equal(PaintKind.Hardware,LightingPaint.View(s,hw).Kind);
+        Assert.False(LightingPaint.ShowsLights(s,[LightingPaint.View(s,hw)]));                                           // a hardware-mode view
+        Assert.False(LightingPaint.ShowsLights(s,new DeviceView?[]{null}));
+        Assert.True(LightingPaint.ShowsLights(s,[V() with{Layers=null,Paint=new(){[1]=new PaintedKey{Name="B",Color="#00FF00"}}}]));
+        Assert.False(LightingPaint.ShowsLights(s,[V() with{Layers=[],Paint=new()}]));                                    // empty is none
+    }
+    [Fact]
+    public void The_view_overload_animates_for_an_effect_layer()
+    {
+        s.Effect.Kind="Static";
+        var kb=Kb();
+        DeviceView With(DeviceLayer l)=>LightingPaint.View(s,kb) with{Layers=[l]};
+        Assert.False(LightingPaint.Animating(s,[LightingPaint.View(s,kb)]));
+        Assert.True(LightingPaint.Animating(s,[With(new DeviceLayer{Kind="effect"})]));                                  // every light
+        Assert.True(LightingPaint.Animating(s,[With(new DeviceLayer{Kind="effect",Lights=[new LayerLight{Index=0,Name="A"}]})]));
+        Assert.False(LightingPaint.Animating(s,[With(new DeviceLayer{Kind="effect",Lights=[]})]));                       // no light
+        Assert.False(LightingPaint.Animating(s,[With(new DeviceLayer{Kind="effect",Strength=0})]));
+        Assert.False(LightingPaint.Animating(s,[With(new DeviceLayer{Kind="color"})]));                                  // a still layer
+        Assert.False(LightingPaint.Animating(s,[With(new DeviceLayer{Kind="fade"})]));                                   // waits for a press
+        Assert.False(LightingPaint.Animating(s,[With(new DeviceLayer{Kind="effect"}) with{Kind=PaintKind.Hardware}]));
+        s.LightsOn=false;Assert.False(LightingPaint.Animating(s,[With(new DeviceLayer{Kind="effect"})]));
+    }
+    // The view carries copies of the entry's paint, layers and looks, never the live objects, and the skipped counts.
+    [Fact]
+    public void View_carries_paint_layers_and_looks_as_copies()
+    {
+        var kb=Kb() with{LedNames=["A","B","C"]};
+        Assert.True(KeyMaps.CanPaint(kb));
+        var plain=LightingPaint.View(s,kb);
+        Assert.True(plain.CanPaint);Assert.Null(plain.Paint);Assert.Null(plain.Layers);Assert.Null(plain.Looks);Assert.Null(plain.Look);
+        Assert.False(plain.LookChanged);Assert.Equal(0,plain.SkippedKeys);Assert.Equal([],plain.SkippedLayerLights??[]);
+        Assert.False(LightingPaint.View(s,Kb()).CanPaint); // no light names
+        var t=new DeviceTuning
+        {
+            Keys=new(){[0]=new PaintedKey{Name="A",Color="#FF0000"},[1]=new PaintedKey{Name="Gone",Color="#00FF00"},[9]=new PaintedKey{Name="X",Color="#0000FF"}},
+            Layers=[new DeviceLayer{Kind="fade",Lights=[new LayerLight{Index=2,Name="C"},new LayerLight{Index=2,Name="Old"}]},new DeviceLayer{Kind="effect"}],
+            Looks=[new DeviceLook{Name="Work"},new DeviceLook{Name="Gaming",Keys=new(){[0]=new PaintedKey{Name="A",Color="#FF0000"}}}],
+            Look="Work",
+        };
+        s.Devices[kb.Key]=t;
+        var v=LightingPaint.View(s,kb);
+        Assert.Equal([0,1,9],v.Paint!.Keys.Order());
+        Assert.NotSame(t.Keys,v.Paint);Assert.NotSame(t.Keys[0],v.Paint[0]);Assert.Equal(("A","#FF0000"),(v.Paint[0].Name,v.Paint[0].Color));
+        Assert.Equal(2,v.Layers!.Count);Assert.NotSame(t.Layers,v.Layers);Assert.NotSame(t.Layers[0],v.Layers[0]);Assert.NotSame(t.Layers[0].Lights,v.Layers[0].Lights);
+        Assert.Equal(["Work","Gaming"],v.Looks!);Assert.Equal("Work",v.Look);
+        Assert.True(v.LookChanged);                                    // Work holds no keys or layers
+        Assert.Equal(2,v.SkippedKeys);                                 // a renamed key and one beyond the keyboard
+        Assert.Equal([1,0],v.SkippedLayerLights!);
+        t.Look="Gaming";t.Keys=new(){[0]=new PaintedKey{Name="A",Color="#FF0000"}};t.Layers=null;
+        Assert.False(LightingPaint.View(s,kb).LookChanged);
+    }
 }

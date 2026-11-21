@@ -142,6 +142,20 @@ public class DeviceHostClientTests:IAsyncLifetime
         Assert.True(reply.Ok);
         lock(host.Received)Assert.Contains(host.Received,m=>m is SetLightsOnRequest{On:false});
     }
+    /// <summary>Lighting 3b: a key paint request travels whole, its painted keys included, and its reply comes back.</summary>
+    [Fact] public async Task Sends_a_key_paint_request_and_gets_its_reply()
+    {
+        var client=Make();
+        await client.StartAsync(false,CancellationToken.None);
+        await Until(()=>client.State is not null);
+        var keys=new Dictionary<int,PaintedKey>{[3]=new PaintedKey{Name="Key: W",Color="#FF0000"},[40]=new PaintedKey{Name="Key: A",Color="#00FF00"}};
+        var reply=await client.SendAsync(new SetDeviceKeysRequest("kb|1",keys),CancellationToken.None).WaitAsync(Bound);
+        Assert.True(reply.Ok);
+        SetDeviceKeysRequest sent;
+        lock(host.Received)sent=Assert.Single(host.Received.OfType<SetDeviceKeysRequest>());
+        Assert.Equal("kb|1",sent.DeviceKey);
+        Assert.Equal(["3=Key: W/#FF0000","40=Key: A/#00FF00"],sent.Keys!.OrderBy(e=>e.Key).Select(e=>$"{e.Key}={e.Value.Name}/{e.Value.Color}"));
+    }
     [Fact] public async Task Connects_to_running_host_without_launching()
     {
         var client=Make();

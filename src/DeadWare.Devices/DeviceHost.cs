@@ -73,15 +73,19 @@ internal sealed class DeviceHost : IAsyncDisposable
     // last frame and its time are guarded by gate; previewGeneration changes with every subscribe and ClientGone, so a frame taken under an
     // older subscription is never raised. Frames are raised outside gate under previewGate, which ClientGone also takes, so once it returns
     // no frame follows.
+    // Lighting 3b: painted keys and layers aren't in the state's colours, so a painted desk that doesn't move still needs a frame. previewDue
+    // is set, while subscribed, by the subscription and by every raised state; the next paint tick then sends one frame whatever animates,
+    // however soon after the last and even when it equals it, if the window would draw it (LightingPaint.ShowsLights: lights on and some
+    // painted device with paint or layers). So with nothing painted the frames are 3a's, and none goes while the lights are off.
     public static readonly TimeSpan PreviewGap=TimeSpan.FromMilliseconds(100);
     public event Action<PreviewEvent>? PreviewChanged;
     readonly object previewGate=new();
-    bool previewOn;
+    bool previewOn,previewDue;
     int previewGeneration;
     double? lastPreviewMs;
     PreviewEvent? lastPreview;
     // The window is gone: its subscription ends. Called by the pipe server outside its own locks.
-    public void ClientGone(){lock(previewGate)lock(gate){previewOn=false;previewGeneration++;lastPreview=null;lastPreviewMs=null;}}
+    public void ClientGone(){lock(previewGate)lock(gate){previewOn=false;previewDue=false;previewGeneration++;lastPreview=null;lastPreviewMs=null;}}
 
     // startupFailure: set when the host could not prepare OpenRGB's config folder; it reports OpenRgbFailed and never starts OpenRGB.
     // callClock: the clock of the bound on OpenRGB calls; real time unless a test supplies one.
@@ -115,7 +119,7 @@ internal sealed class DeviceHost : IAsyncDisposable
         lock(raiseGate)
         {
             HostState state;
-            lock(gate)state=BuildLocked();
+            lock(gate){state=BuildLocked();if(previewOn)previewDue=true;}
             try{StateChanged?.Invoke(state);}catch(Exception e){log.Write("StateChanged handler failed: "+e.Message);}
         }
     }
@@ -273,14 +277,17 @@ internal sealed class DeviceHost : IAsyncDisposable
 
     // The frame to send at tMs, or null: none subscribed, nothing animating, too soon after the last frame, or the same colours as it.
     // While no frame is produced (nothing animating, or no running session) the window shows the state's colours, so the last frame and
-    // its time are forgotten then: the first frame after a resume is sent even when it equals the last one (fix wave W1).
+    // its time are forgotten then: the first frame after a resume is sent even when it equals the last one (fix wave W1). A due frame
+    // (previewDue) skips all three checks.
     PreviewEvent? PreviewLocked(double tMs)
     {
-        if(!previewOn||!LightingPaint.Animating(settings,service.Devices)){ForgetPreview();return null;}
-        if(lastPreviewMs is {} last&&tMs-last<PreviewGap.TotalMilliseconds) return null;
+        var due=previewOn&&previewDue&&LightingPaint.ShowsLights(settings,service.Views(settings));
+        previewDue=false;
+        if(!previewOn||!due&&!LightingPaint.Animating(settings,service.Devices)){ForgetPreview();return null;}
+        if(!due&&lastPreviewMs is {} last&&tMs-last<PreviewGap.TotalMilliseconds) return null;
         lastPreviewMs=tMs;
         var frame=new PreviewEvent(service.Preview(settings,tMs),service.PreviewLights(settings,tMs));
-        if(lastPreview is not null&&SameFrame(lastPreview,frame)) return null;
+        if(!due&&lastPreview is not null&&SameFrame(lastPreview,frame)) return null;
         lastPreview=frame;
         return frame;
     }
@@ -440,9 +447,15 @@ internal sealed class DeviceHost : IAsyncDisposable
             case SetEffectRequest r:return Mutate(request,s=>SetEffect(s,r),out raise);
             case SetLayoutRequest r:return Mutate(request,s=>SetLayout(s,r),out raise);
             // Raises no state. A new subscription clears the last frame and its time, so its first frame goes at the next paint tick.
-            case SubscribePreviewRequest r:previewOn=r.On;previewGeneration++;lastPreview=null;lastPreviewMs=null;return Ok(request);
+            case SubscribePreviewRequest r:previewOn=r.On;previewDue=r.On;previewGeneration++;lastPreview=null;lastPreviewMs=null;return Ok(request);
             case SetDeviceTuningRequest r:return Mutate(request,s=>SetDeviceTuning(s,r),out raise);
             case SetDeviceModeRequest r:return Mutate(request,s=>SetDeviceMode(s,r),out raise);
+            case SetDeviceKeysRequest r:return Mutate(request,s=>SetDeviceKeys(s,r),out raise,noRoom:true);
+            case SetDeviceLayersRequest r:return Mutate(request,s=>SetDeviceLayers(s,r),out raise,noRoom:true);
+            case SaveLookRequest r:return Mutate(request,s=>SaveLook(s,r),out raise,noRoom:true);
+            case ChooseLookRequest r:return Mutate(request,s=>ChooseLook(s,r),out raise,noRoom:true);
+            case RenameLookRequest r:return Mutate(request,s=>RenameLook(s,r),out raise,noRoom:true);
+            case DeleteLookRequest r:return Mutate(request,s=>DeleteLook(s,r),out raise,noRoom:true);
             default:return Fail(request,HostReplyCodes.Unsupported);
         }
     }
@@ -469,6 +482,101 @@ internal sealed class DeviceHost : IAsyncDisposable
         Entry(s,r.DeviceKey).Mode=r.Kind is null?null:new DeviceMode{Kind=r.Kind,Speed=r.Speed};
         DeviceTunings.Normalize(s);
         return r.Kind is null?null:DeviceModes.CantRun(device,r.Kind);
+    }
+
+    // Lighting 3b. Each handler: listed, then (only for one that adds something: paint, layers, a save or a choice) a keyboard DeadWare can
+    // paint key by key, then its own checks, then the edit with Normalize; the ranges are Mutate's validation (DeviceLayers.ValidateSetup's
+    // sentences). Clearing, renaming and deleting work on any listed device, so a keyboard that lost its names can still be cleaned up.
+    string? Paintable(string? key,bool adds,out LightingDevice? device)
+    {
+        device=Listed(key);
+        if(device is null) return HostReplyCodes.UnknownDevice;
+        return adds&&!KeyMaps.CanPaint(device)?HostReplyCodes.NotPaintable:null;
+    }
+    // A set larger than the cap is left to validation's sentence; within it, an index at or beyond the light count isn't on this keyboard.
+    string? SetDeviceKeys(LightingSettings s,SetDeviceKeysRequest r)
+    {
+        if(Paintable(r.DeviceKey,r.Keys is{Count:>0},out var device) is{} why) return why;
+        var n=KeyMaps.LightCount(device!);
+        if(r.Keys is{} keys&&keys.Count<=DeviceLayers.MaxKeys&&keys.Keys.Any(i=>i>=n)) return HostReplyCodes.BadKey;
+        Entry(s,r.DeviceKey).Keys=DeviceLayers.Clone(r.Keys);
+        DeviceTunings.Normalize(s);
+        return null;
+    }
+    string? SetDeviceLayers(LightingSettings s,SetDeviceLayersRequest r)
+    {
+        if(Paintable(r.DeviceKey,r.Layers is{Count:>0},out var device) is{} why) return why;
+        if(r.Layers is{} layers)
+        {
+            if(layers.Count>DeviceLayers.MaxLayers) return HostReplyCodes.TooManyLayers;
+            if(DeviceLayers.CheckNew(layers) is not null) return HostReplyCodes.BadLayer;
+            var n=KeyMaps.LightCount(device!);
+            if(layers.Any(l=>l.Lights is{} g&&g.Count<=DeviceLayers.MaxKeys&&g.Any(x=>x is not null&&x.Index>=n))) return HostReplyCodes.BadKey;
+        }
+        Entry(s,r.DeviceKey).Layers=DeviceLayers.Clone(r.Layers);
+        DeviceTunings.Normalize(s);
+        return null;
+    }
+    static string? LookName(string? name,out string trimmed)
+    {
+        trimmed=name?.Trim()??"";
+        return trimmed.Length is<1 or>DeviceLayers.MaxLookName?HostReplyCodes.LookName:null;
+    }
+    static DeviceMode? CopyMode(DeviceMode? m)=>m is null?null:new(){Kind=m.Kind,Speed=m.Speed};
+    // The keyboard's mode, keys and layers, copied into a new look or over the one of that name (Overwrite, keeping its place); it becomes
+    // the current look.
+    string? SaveLook(LightingSettings s,SaveLookRequest r)
+    {
+        if(Paintable(r.DeviceKey,true,out _) is{} why) return why;
+        if(LookName(r.Name,out var name) is{} bad) return bad;
+        var t=Entry(s,r.DeviceKey);
+        var look=new DeviceLook{Name=name,Mode=CopyMode(t.Mode),Keys=DeviceLayers.Clone(t.Keys),Layers=DeviceLayers.Clone(t.Layers)};
+        var looks=t.Looks??=[];
+        if(DeviceLayers.Find(t,name) is{} old)
+        {
+            if(!r.Overwrite) return HostReplyCodes.LookTaken;
+            looks[looks.IndexOf(old)]=look;
+        }
+        else if(looks.Count>=DeviceLayers.MaxLooks) return HostReplyCodes.TooManyLooks;
+        else looks.Add(look);
+        t.Look=name;
+        DeviceTunings.Normalize(s);
+        return null;
+    }
+    // The keyboard takes copies of the look's mode, keys and layers; a mode it can't run now is still chosen, and painted as Static.
+    string? ChooseLook(LightingSettings s,ChooseLookRequest r)
+    {
+        if(Paintable(r.DeviceKey,true,out _) is{} why) return why;
+        var t=Entry(s,r.DeviceKey);
+        if(DeviceLayers.Find(t,r.Name) is not{} look) return HostReplyCodes.NoLook;
+        t.Mode=CopyMode(look.Mode);t.Keys=DeviceLayers.Clone(look.Keys);t.Layers=DeviceLayers.Clone(look.Layers);t.Look=look.Name;
+        DeviceTunings.Normalize(s);
+        return null;
+    }
+    // Another look of the new name (ignoring case) refuses it; the look itself in another case doesn't. The current look follows.
+    string? RenameLook(LightingSettings s,RenameLookRequest r)
+    {
+        if(Paintable(r.DeviceKey,false,out _) is{} why) return why;
+        var t=Entry(s,r.DeviceKey);
+        if(DeviceLayers.Find(t,r.Name) is not{} look) return HostReplyCodes.NoLook;
+        if(LookName(r.NewName,out var name) is{} bad) return bad;
+        if(DeviceLayers.Find(t,name) is{} other&&!ReferenceEquals(other,look)) return HostReplyCodes.LookTaken;
+        var current=t.Look is not null&&ReferenceEquals(DeviceLayers.Find(t,t.Look),look);
+        look.Name=name;
+        if(current) t.Look=name;
+        DeviceTunings.Normalize(s);
+        return null;
+    }
+    // The keyboard stays as it is; only the current look's name goes when it named this one.
+    string? DeleteLook(LightingSettings s,DeleteLookRequest r)
+    {
+        if(Paintable(r.DeviceKey,false,out _) is{} why) return why;
+        var t=Entry(s,r.DeviceKey);
+        if(DeviceLayers.Find(t,r.Name) is not{} look) return HostReplyCodes.NoLook;
+        if(t.Look is not null&&ReferenceEquals(DeviceLayers.Find(t,t.Look),look)) t.Look=null;
+        t.Looks!.Remove(look);
+        DeviceTunings.Normalize(s);
+        return null;
     }
 
     // A kind is known by its exact name only (never a number, as Enum.TryParse would take). Params, when sent, replace that kind's set
@@ -515,11 +623,13 @@ internal sealed class DeviceHost : IAsyncDisposable
     }
 
     // Edit a copy, validate, save, and only then adopt it: a rejected or unsavable change leaves the live settings untouched.
-    HostMessage Mutate(HostMessage request,Func<LightingSettings,string?> edit,out bool raise)
+    // noRoom (lighting 3b's paint, layer and look requests): a change that would take lighting.json past 1 MiB is answered as NoRoom.
+    HostMessage Mutate(HostMessage request,Func<LightingSettings,string?> edit,out bool raise,bool noRoom=false)
     {
         raise=false;
         var candidate=Clone(settings);
         var error=edit(candidate)??LightingSettingsCodec.Validate(candidate);
+        if(noRoom&&error==LightingSettingsCodec.WrittenTooLarge) error=HostReplyCodes.NoRoom;
         if(error is not null) return Fail(request,error);
         if(saveAllowed)
         {
