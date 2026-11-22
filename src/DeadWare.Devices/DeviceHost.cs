@@ -25,6 +25,7 @@ internal sealed class DeviceHost : IAsyncDisposable
     // host is Running with a session; Tick otherwise. SlowTick's work keeps its cadence at either.
     public static readonly TimeSpan Tick=TimeSpan.FromMilliseconds(500),SlowTick=TimeSpan.FromSeconds(5),StartupDelay=TimeSpan.FromSeconds(10);
     public static readonly TimeSpan FastTick=TimeSpan.FromMilliseconds(33);
+    public static readonly TimeSpan RescanSettle=TimeSpan.FromSeconds(4);
     public static readonly TimeSpan ConnectDelayMin=TimeSpan.FromSeconds(2),ConnectDelayMax=TimeSpan.FromSeconds(30);
     public const string ScanFailedText="DeadWare couldn't check for conflicting programs; it will try again shortly.";
     // Polish round 2, item 8: the host runs on defaults and saves nothing, and the file is read again only when a host starts (Initialize
@@ -443,12 +444,17 @@ internal sealed class DeviceHost : IAsyncDisposable
                 {
                     if(slow) mouse?.Scan();
                     if(slow||rescanPending){rescanPending=false;changed=RescanLocked();}
-                    var t=Now(); // one reading for the paint and the preview
-                    var live=presses.Live();
-                    service.Paint(Shown,t,live);
-                    PaintedLocked();
-                    if(mouse?.Poll(settings.Mouse.SleepMinutes)==true) changed=true;
-                    frame=PreviewLocked(t,live);generation=previewGeneration;
+                    // Task 9: the session was dropped on purpose; this tick paints nothing (ruling P3), since a paint now would fail the session.
+                    if(slow&&mouse?.CableArrived(service.CableKey is not null)==true&&HardwareRescanLocked()) changed=true;
+                    else
+                    {
+                        var t=Now(); // one reading for the paint and the preview
+                        var live=presses.Live();
+                        service.Paint(Shown,t,live);
+                        PaintedLocked();
+                        if(mouse?.Poll(settings.Mouse.SleepMinutes)==true) changed=true;
+                        frame=PreviewLocked(t,live);generation=previewGeneration;
+                    }
                 }
             }
             catch(Exception e){ForgetPreview();changed=FailSession(LostText,e);}
@@ -506,6 +512,20 @@ internal sealed class DeviceHost : IAsyncDisposable
             return true;
         }
         catch(Exception e){return FailSession("Waiting for OpenRGB to accept connections.",e);}
+    }
+
+    // Task 9 (amendments 1 and 2): the mouse cable arrived and OpenRGB doesn't list it. One hardware rescan request, then a deliberate
+    // reconnect: OpenRGB rebuilds every controller, so the session is dropped, everything sent is forgotten, and the connect branch waits
+    // RescanSettle before the existing connect path reads the list again. The status stays Running. A failed request is logged and leaves
+    // the session alone. OpenRGB is never restarted here. Returns whether the session was dropped.
+    bool HardwareRescanLocked()
+    {
+        log.Write("mouse cable seen: asking OpenRGB to look for hardware");
+        try{session.RequestHardwareRescan();}
+        catch(Exception e){log.Write("hardware rescan request failed: "+e.Message);return false;}
+        session.Abort();sessionOk=false;service.Reset();ForgetPreview();
+        nextConnectAt=time.GetTimestamp()+(long)(RescanSettle.TotalSeconds*time.TimestampFrequency);
+        return true;
     }
 
     void ArmBackoff()

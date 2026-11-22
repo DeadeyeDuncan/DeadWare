@@ -637,4 +637,142 @@ public sealed class DeviceHostMouseTests:IAsyncLifetime
         t.UnblockLighting();
         await t.StepUntil(()=>fake.Count(0x92)>=1);               // the cable battery is read once lighting runs
     }
+
+    // Task 9: the cable arriving while OpenRGB doesn't list it asks for one hardware rescan, then reconnects after RescanSettle (P3: the
+    // tick of the request paints nothing, so the status never leaves Running and no session error is logged).
+    OpenRgbController CableDevice=>t.Session.Controllers.First(c=>AeroxIdentity.Is(c.Name));
+    void PlugCable(){var p=new HashSet<int>(fake.Products){AeroxDriver.Cable};fake.Products=p;}     // replaced, never changed in place
+    void UnplugCable(){var p=new HashSet<int>(fake.Products);p.Remove(AeroxDriver.Cable);fake.Products=p;}
+    void List(OpenRgbController cable)=>t.Session.Controllers=[..t.Session.Controllers,cable with{Index=t.Session.Controllers.Count}];
+    void Unlist()=>t.Session.Reorder(l=>l.Where(c=>!AeroxIdentity.Is(c.Name)).ToList());
+    string[] MouseLines(string contains)
+    {
+        using var fs=new FileStream(Path.Combine(dir,"logs","devices.log"),FileMode.Open,FileAccess.Read,FileShare.ReadWrite|FileShare.Delete);
+        using var r=new StreamReader(fs);
+        return r.ReadToEnd().Split('\n').Where(l=>l.Contains(contains)).ToArray();
+    }
+    static List<HostStatus> Statuses(DeviceHost h){var seen=new List<HostStatus>();h.StateChanged+=s=>{lock(seen)seen.Add(s.Status);};return seen;}
+    const string Asking="mouse cable seen: asking OpenRGB to look for hardware";
+
+    [Fact]
+    public async Task The_cable_arriving_asks_once_and_reconnects()
+    {
+        var cable=CableDevice;
+        var node=t.Session.Controllers.First(c=>c.Name=="Corsair Lighting Node Pro");
+        Save(s=>s.HardwareModes[LightingKeys.Device(node.Serial,node.Location)]="Rainbow Wave");
+        int NodeModes()=>t.Session.Modes.Count(m=>m.Index==t.Session.Controllers.FindIndex(c=>c.Name==node.Name)&&m.Mode==1);
+        var h=await Receiver();
+        await t.StepFor(TimeSpan.FromSeconds(6),DeviceHost.Tick);  // past a slow work
+        var statuses=Statuses(h);
+        int connects=t.Session.Connects,aborts=t.Session.Aborts,modes=NodeModes();
+        Assert.Equal(1,modes);
+        await t.StepFor(TimeSpan.FromSeconds(6),DeviceHost.Tick);
+        Assert.Equal(modes,NodeModes());                          // the hardware mode is sent once, not again while nothing changes
+        PlugCable();
+        await t.StepUntil(()=>t.Session.Rescans==1);
+        Assert.Equal(1,t.Session.Aborts-aborts);
+        Assert.Equal(connects,t.Session.Connects);
+        Assert.Single(t.Lines(Asking));
+        List(cable);                                              // OpenRGB lists the cable device after its rescan
+        var waited=await t.StepUntil(()=>t.Session.Connects==connects+1);
+        Assert.True(waited>=DeviceHost.RescanSettle&&waited<=DeviceHost.RescanSettle+DeviceHost.Tick,$"connected after {waited.TotalSeconds:0.#} s");
+        await t.StepUntil(()=>NodeModes()==2);                    // what was sent is forgotten: the unchanged hardware mode is sent again
+        await t.StepUntil(()=>MouseLines("mouse cable listed").Length==1);
+        await t.StepFor(TimeSpan.FromSeconds(12),DeviceHost.Tick);
+        Assert.Equal(1,t.Session.Rescans);
+        Assert.Equal(1,t.Session.Aborts-aborts);
+        Assert.Single(MouseLines("mouse cable listed"));
+        lock(statuses)Assert.All(statuses,s=>Assert.Equal(HostStatus.Running,s));
+        Assert.Equal(HostStatus.Running,h.State.Status);
+        Assert.Empty(t.Lines("session error"));
+        Assert.Contains(h.State.Devices,d=>d.Key==AeroxIdentity.Key&&d.Mouse is{Connection:MouseConnections.Cable});
+    }
+
+    // Plan Review Focus 6: the cable plugged in twice within a minute asks once; an arrival after RescanGap asks again.
+    [Fact]
+    public async Task A_second_arrival_inside_a_minute_does_not_ask_again()
+    {
+        var h=await Receiver();
+        PlugCable();
+        await t.StepUntil(()=>t.Session.Rescans==1);
+        var asked=t.Time.GetUtcNow();
+        var connects=t.Session.Connects;
+        await t.StepUntil(()=>t.Session.Connects==connects+1);
+        UnplugCable();
+        await t.StepFor(TimeSpan.FromSeconds(6),DeviceHost.Tick);  // a slow work sees it leave
+        PlugCable();
+        await t.StepFor(TimeSpan.FromSeconds(12),DeviceHost.Tick);
+        Assert.Equal(1,t.Session.Rescans);
+        Assert.Single(t.Lines(Asking));
+        UnplugCable();
+        while(t.Time.GetUtcNow()-asked<AeroxMouse.RescanGap) await t.StepFor(TimeSpan.FromSeconds(20),DeviceHost.Tick);
+        PlugCable();
+        await t.StepUntil(()=>t.Session.Rescans==2);
+        Assert.Equal(HostStatus.Running,h.State.Status);
+    }
+
+    [Fact]
+    public async Task An_arrival_OpenRGB_already_lists_does_not_ask()
+    {
+        var cable=CableDevice;
+        var h=await Receiver();
+        var aborts=t.Session.Aborts;
+        List(cable);                                              // listed before the slow work that sees the product
+        PlugCable();
+        await t.StepUntil(()=>h.State.Devices.Any(d=>d.Key==AeroxIdentity.Key&&d.Mouse is{Connection:MouseConnections.Cable}));
+        await t.StepFor(TimeSpan.FromSeconds(12),DeviceHost.Tick);
+        Assert.Equal(0,t.Session.Rescans);
+        Assert.Equal(aborts,t.Session.Aborts);
+        Assert.Empty(t.Lines(Asking));
+    }
+
+    [Fact]
+    public async Task The_cable_leaving_does_not_ask()
+    {
+        fake.Products.Add(AeroxDriver.Cable);
+        driver=new AeroxDriver(fake,mouseLog);
+        var h=t.BuildHost(signals,input,mouse:new AeroxMouse(driver,input,t.Time,mouseLog));t.StartHost(h);
+        await Until(()=>h.State.Status==HostStatus.Running);
+        var aborts=t.Session.Aborts;
+        Unlist();
+        UnplugCable();
+        await t.StepUntil(()=>h.State.Devices.Any(d=>d.Key==AeroxIdentity.Key&&d.Mouse is{Connection:MouseConnections.None}));
+        await t.StepFor(TimeSpan.FromSeconds(12),DeviceHost.Tick);
+        Assert.Equal(0,t.Session.Rescans);
+        Assert.Equal(aborts,t.Session.Aborts);
+    }
+
+    // As DeadLight: OpenRGB's own start already looked for hardware, so a cable already in when the host starts is not an arrival.
+    [Fact]
+    public async Task A_cable_in_at_start_does_not_ask()
+    {
+        Unlist();
+        fake.Products.Add(AeroxDriver.Cable);
+        driver=new AeroxDriver(fake,mouseLog);
+        var h=t.BuildHost(signals,input,mouse:new AeroxMouse(driver,input,t.Time,mouseLog));t.StartHost(h);
+        await Until(()=>h.State.Status==HostStatus.Running);
+        await t.StepFor(TimeSpan.FromSeconds(12),DeviceHost.Tick);
+        Assert.Equal(0,t.Session.Rescans);
+    }
+
+    [Fact]
+    public async Task A_failed_request_is_logged_and_the_session_is_left_alone()
+    {
+        var h=await Receiver();
+        var statuses=Statuses(h);
+        int connects=t.Session.Connects,aborts=t.Session.Aborts;
+        t.Session.FailRescan=true;
+        PlugCable();
+        await t.StepUntil(()=>t.Session.Rescans==1);
+        var reads=t.Session.Reads;
+        await t.StepFor(TimeSpan.FromSeconds(12),DeviceHost.Tick);
+        Assert.Equal(1,t.Session.Rescans);                        // nothing more this arrival
+        Assert.Equal(aborts,t.Session.Aborts);
+        Assert.Equal(connects,t.Session.Connects);
+        Assert.True(t.Session.Reads>reads);                       // the session goes on reading OpenRGB's list
+        Assert.Single(t.Lines(Asking));
+        Assert.Single(t.Lines("hardware rescan request failed"));
+        Assert.Empty(t.Lines("session error"));
+        lock(statuses)Assert.All(statuses,s=>Assert.Equal(HostStatus.Running,s));
+    }
 }

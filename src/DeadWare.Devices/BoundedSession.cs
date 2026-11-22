@@ -30,6 +30,9 @@ internal sealed class BoundedSession : IOpenRgbSession
     public void UpdateLeds(int index,ReadOnlySpan<Rgb> colors){var copy=colors.ToArray();Run("LED update",()=>{inner.UpdateLeds(index,copy);return 0;});}
     public void UpdateMode(int index,int modeIndex,IReadOnlyList<Rgb>? colors)=>Run("mode change",()=>{inner.UpdateMode(index,modeIndex,colors);return 0;});
     public void ResizeZone(int index,int zoneIndex,int size)=>Run("zone resize",()=>{inner.ResizeZone(index,zoneIndex,size);return 0;});
+    // Task 9, ruling P3: outside the watchdog. The request runs on a connection of its own within its own limits (OpenRgbSession), so its
+    // failure passes through untouched and never drops this session; the watchdog's abort couldn't end it anyway.
+    public void RequestHardwareRescan()=>inner.RequestHardwareRescan();
     public void Abort(){lost=true;inner.Abort();}
     public void Dispose(){lost=true;inner.DeviceListUpdated-=OnUpdated;inner.Dispose();}
 

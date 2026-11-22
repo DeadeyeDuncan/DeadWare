@@ -15,6 +15,7 @@ namespace DeadWare.Devices;
 internal sealed class AeroxMouse
 {
     public static readonly TimeSpan MoveWindow=TimeSpan.FromSeconds(1);
+    public static readonly TimeSpan RescanGap=TimeSpan.FromSeconds(60);
     readonly AeroxDriver driver;
     readonly IInputClock input;
     readonly TimeProvider time;
@@ -23,6 +24,9 @@ internal sealed class AeroxMouse
     long? movedAt,triedAt;
     Rgb[]? last;                                          // the last frame that reached the mouse
     bool seen,must,silent,stale,holding,heard,receiver,oneTry;
+    bool? cableWas;                                       // the cable as the last Scan saw it; null before the first
+    bool arrived,asked;
+    long? askedAt;
 
     MouseView? shown;                                     // the view as the last Poll saw it
 
@@ -62,9 +66,27 @@ internal sealed class AeroxMouse
         if(now&&(!receiver||stale)) oneTry=true;
         if(!now) last=null;
         receiver=now;stale=false;
+        var cable=driver.CablePresent;
+        if(cable&&cableWas==false) arrived=true;
+        if(!cable) arrived=asked=false;
+        cableWas=cable;
     }
 
     public void Must()=>must=true;
+
+    // Task 9 (amendments 1 and 2): true when the host should ask OpenRGB for one hardware rescan: the cable appeared since the last Scan and
+    // OpenRGB doesn't list its device. Once per arrival, and never within RescanGap of the last true: an arrival inside it is dropped. A cable
+    // already in at the first Scan is no arrival (OpenRGB's own start looked for hardware, as in DeadLight). The cable leaving asks nothing.
+    // After a true, the cable device first listed is logged.
+    public bool CableArrived(bool cableListed)
+    {
+        if(cableListed){if(asked){asked=false;log.Write("mouse cable listed");}arrived=false;return false;}
+        if(!arrived) return false;
+        arrived=false;
+        if(askedAt is long at&&time.GetElapsedTime(at)<RescanGap) return false;
+        askedAt=time.GetTimestamp();asked=true;
+        return true;
+    }
 
     // Task 8, the mouse card: cable if its product is listed; else none without the receiver; else wireless with a fresh reading from a mouse
     // that answers; else receiver. The sleep time is never sent on the cable, so there it is never delivered.
