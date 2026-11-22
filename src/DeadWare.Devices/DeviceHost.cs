@@ -135,6 +135,7 @@ internal sealed class DeviceHost : IAsyncDisposable
         ZoneColors=(s.ZoneColors??new()).ToDictionary(e=>e.Key,e=>new ZoneColorEntry{Color=e.Value.Color,ZoneName=e.Value.ZoneName}),
         HardwareModes=new(s.HardwareModes??new()),
         Effect=LightingEffects.Clone(s.Effect),Layout=DeskLayouts.Clone(s.Layout),Devices=DeviceTunings.Clone(s.Devices),
+        Everyday=Everydays.Clone(s.Everyday),Mouse=new(){SleepMinutes=s.Mouse.SleepMinutes},
     };
     double Now()=>time.GetElapsedTime(epoch).TotalMilliseconds;
     void Raise()

@@ -79,5 +79,5 @@ public static class DeviceTunings
         }
         return null;
     }
-    public static int WrittenVersion(LightingSettings s)=>s.Version>LightingSettings.CurrentVersion?s.Version:s.Devices.Values.Any(t=>t is not null&&DeviceLayers.Has(t))?3:s.Devices.Count>0?2:1;
+    public static int WrittenVersion(LightingSettings s)=>s.Version>LightingSettings.CurrentVersion?s.Version:!Everydays.IsDefault(s.Everyday)||s.Mouse.SleepMinutes is not null?4:s.Devices.Values.Any(t=>t is not null&&DeviceLayers.Has(t))?3:s.Devices.Count>0?2:1;
 }

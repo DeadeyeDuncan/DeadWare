@@ -81,6 +81,7 @@ public static class HostReplyCodes
     public const string Starting="starting",Unsupported="unsupported",RescanFailed="rescan failed",UnknownZone="unknown zone",CouldntSave="couldn't save settings",Version="version",InternalError="internal error",UnknownDevice="unknown device";
     public const string NotPaintable="not paintable",BadKey="bad key",BadLayer="bad layer",TooManyLayers="too many layers",TooManyLooks="too many looks",
         LookName="look name",LookTaken="look taken",NoLook="no look",NoRoom="no room";
+    public const string BadEveryday="bad everyday",BadSleep="bad sleep time",ShortcutSlow="shortcut slow";
     public static string Explain(string why)=>why switch
     {
         Starting=>"The lighting helper is still starting. Try again in a moment.",
@@ -100,6 +101,9 @@ public static class HostReplyCodes
         LookTaken=>"There is already a look with that name.",
         NoLook=>"That look isn't saved any more.",
         NoRoom=>"There isn't room to save that. Delete a saved look first.",
+        BadEveryday=>"Those everyday settings aren't valid.",
+        BadSleep=>"That sleep time isn't one of the choices.",
+        ShortcutSlow=>"Windows didn't answer about the shortcut in time. Try again.",
         _=>why,
     };
 }

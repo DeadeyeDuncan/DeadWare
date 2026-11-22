@@ -448,6 +448,20 @@ public sealed class DeviceHostTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Clone_keeps_everyday_and_mouse()
+    {
+        File.WriteAllText(lightingPath,"{\"Version\":4,\"Everyday\":{\"Shortcut\":null,\"IdleOff\":true,\"IdleMinutes\":30,\"LockOff\":true},\"Mouse\":{\"SleepMinutes\":5}}");
+        var h=await Running();
+        Assert.True((await Send(h,new SetBrightnessRequest(40))).Ok);
+        var state=h.State.Settings;
+        Assert.Null(state.Everyday.Shortcut);Assert.True(state.Everyday.IdleOff);Assert.Equal(30,state.Everyday.IdleMinutes);Assert.True(state.Everyday.LockOff);
+        Assert.Equal(5,state.Mouse.SleepMinutes);
+        var saved=new LightingStore(lightingPath).Load().Settings;
+        Assert.Null(saved.Everyday.Shortcut);Assert.True(saved.Everyday.IdleOff);Assert.Equal(30,saved.Everyday.IdleMinutes);Assert.True(saved.Everyday.LockOff);
+        Assert.Equal(5,saved.Mouse.SleepMinutes);Assert.Equal(4,saved.Version);
+    }
+
+    [Fact]
     public async Task Other_changes_keep_device_tuning()
     {
         File.WriteAllText(lightingPath,"{\"Version\":2,\"Devices\":{\"k|1\":{\"Brightness\":70}}}");
@@ -524,7 +538,7 @@ public sealed class DeviceHostTests : IAsyncLifetime
     [Fact]
     public async Task Newer_lighting_json_is_used_but_never_saved()
     {
-        const string json="{\"Version\":4,\"Brightness\":40,\"DefaultColor\":\"#112233\",\"Layout\":{\"Desk\":\"L\"}}";
+        const string json="{\"Version\":5,\"Brightness\":40,\"DefaultColor\":\"#112233\",\"Layout\":{\"Desk\":\"L\"}}";
         File.WriteAllText(lightingPath,json);
         var h=await Running();
         Assert.Equal(40,h.State.Settings.Brightness);
@@ -540,7 +554,7 @@ public sealed class DeviceHostTests : IAsyncLifetime
     [Fact]
     public async Task Newer_lighting_json_this_build_cannot_use_runs_on_defaults_and_says_so()
     {
-        const string json="{\"Version\":4,\"Brightness\":500,\"DefaultColor\":\"#112233\"}";
+        const string json="{\"Version\":5,\"Brightness\":500,\"DefaultColor\":\"#112233\"}";
         File.WriteAllText(lightingPath,json);
         var h=await Running();
         Assert.Contains(DeviceHost.NewerDefaultsNote,h.State.Message);
