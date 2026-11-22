@@ -29,6 +29,11 @@ public sealed partial class DeviceHostTests
     internal static void TapA(FakeKeys k)=>Tap(k,ScanA);
     internal List<(DateTimeOffset At,Dictionary<string,string> Colors)> PreviewsOf(DeviceHost h)=>Previews(h);
     internal int Scans=>Volatile.Read(ref scans);
+    // Fix round 1: parks the host loop in its next conflict scan (slow work) until released, so presses pile up for one loop turn.
+    Hold? everydayHold;
+    internal void ParkScans(){everydayHold=NewHold();Volatile.Write(ref scanHold,everydayHold);}
+    internal bool ScansParked=>everydayHold?.Parked==true;
+    internal void ReleaseScans(){Volatile.Write(ref scanHold,null);everydayHold?.Release();}
 }
 
 // Lighting 4, Task 4: effective lights in the host. The shortcut flips the saved switch; idle and lock turn the lights off for a while and
@@ -297,6 +302,7 @@ public sealed class DeviceHostEverydayTests:IAsyncLifetime
         signals.Refuse=null;
         await t.StepUntil(()=>h.State.ShortcutProblem is null);
         Assert.Equal([Shortcuts.Default,Shortcuts.Default],signals.Shortcuts);
+        Assert.Equal([DeviceHost.ShortcutWait,DeviceHost.RetryWait],signals.Waits); // the retry holds the lock only briefly
         Assert.Single(t.Lines("shortcut registered: Ctrl + Alt + L"));
     }
 
@@ -351,7 +357,7 @@ public sealed class DeviceHostEverydayTests:IAsyncLifetime
         Assert.Equal(HostReplyCodes.ShortcutSlow,reply.Error);
         Assert.Equal(file,FileText());
         Assert.Equal(Shortcuts.Default,h.State.Settings.Everyday.Shortcut);
-        Assert.Equal(Shortcuts.Default,signals.Shortcuts[^1]); // the old one is asked for again, so a late answer can't leave the new one
+        Assert.Equal([Shortcuts.Default,CtrlShiftK],signals.Shortcuts); // the watcher withdrew the unanswered request, so the old one is not asked for again
     }
 
     // Ruling P14: the old shortcut is registered again when the save fails after the new one was registered.
@@ -381,6 +387,81 @@ public sealed class DeviceHostEverydayTests:IAsyncLifetime
         Assert.True(Saved().Everyday.IdleOff);
         Assert.Equal(Shortcuts.Default,Saved().Everyday.Shortcut);
         Assert.True(h.State.Settings.Everyday.IdleOff);
+    }
+
+    // Fix round 1, I1: while the saved shortcut is taken, the same shortcut is only tried again; the other rules are saved and the reply is
+    // ok. Once another program lets it go, the next try clears the problem.
+    [Fact]
+    public async Task The_same_shortcut_while_it_is_taken_still_saves_the_other_rules()
+    {
+        signals.Refuse=_=>false;
+        var h=await Running();
+        Assert.Equal(Shortcuts.TakenText(Shortcuts.Default),h.State.ShortcutProblem);
+        var reply=await DeviceHostTests.SendTo(h,new SetEverydayRequest(new(){IdleOff=true}));
+        Assert.True(reply.Ok);
+        Assert.True(Saved().Everyday.IdleOff);
+        Assert.Equal(Shortcuts.TakenText(Shortcuts.Default),h.State.ShortcutProblem);
+        signals.Refuse=null;
+        Assert.True((await DeviceHostTests.SendTo(h,new SetEverydayRequest(new(){IdleOff=true,LockOff=true}))).Ok);
+        Assert.Null(h.State.ShortcutProblem);
+        Assert.True(Saved().Everyday.LockOff);
+        Assert.Equal([Shortcuts.Default,Shortcuts.Default,Shortcuts.Default],signals.Shortcuts);
+    }
+
+    [Fact]
+    public async Task The_same_shortcut_while_unanswered_still_saves_the_other_rules()
+    {
+        signals.Refuse=_=>null;
+        var h=await Running();
+        var reply=await DeviceHostTests.SendTo(h,new SetEverydayRequest(new(){LockOff=true}));
+        Assert.True(reply.Ok);
+        Assert.True(Saved().Everyday.LockOff);
+        Assert.Equal(HostReplyCodes.Explain(HostReplyCodes.ShortcutSlow),h.State.ShortcutProblem);
+    }
+
+    // Fix round 1, M1: when the old shortcut is refused too after a new one was refused, the state says so.
+    [Fact]
+    public async Task An_old_shortcut_refused_again_is_reported()
+    {
+        var h=await Running();
+        Assert.Null(h.State.ShortcutProblem);
+        signals.Refuse=_=>false;
+        var states=new List<HostState>();
+        h.StateChanged+=s=>{lock(states)states.Add(s);};
+        var reply=await DeviceHostTests.SendTo(h,new SetEverydayRequest(new(){Shortcut=CtrlShiftK}));
+        Assert.Equal(Shortcuts.TakenText(CtrlShiftK),reply.Error);
+        Assert.Equal(Shortcuts.TakenText(Shortcuts.Default),h.State.ShortcutProblem);
+        lock(states)Assert.Equal(Shortcuts.TakenText(Shortcuts.Default),states[^1].ShortcutProblem); // raised, so the card shows it
+    }
+
+    [Fact]
+    public async Task An_old_shortcut_unanswered_after_a_failed_save_is_reported()
+    {
+        var h=await Running(store:new LightingStore(t.LightingPath,write:(_,_)=>throw new IOException("the disk is full")));
+        signals.Refuse=s=>s==CtrlShiftK?true:null;
+        var reply=await DeviceHostTests.SendTo(h,new SetEverydayRequest(new(){Shortcut=CtrlShiftK}));
+        Assert.Equal(HostReplyCodes.CouldntSave,reply.Error);
+        Assert.Equal(HostReplyCodes.Explain(HostReplyCodes.ShortcutSlow),h.State.ShortcutProblem);
+    }
+
+    // Fix round 1, M5: two presses taken in one loop turn during an idle spell: the first only brings the lights back, the second turns the
+    // switch off. The loop is parked in its slow work while both arrive.
+    [Fact]
+    public async Task Two_presses_in_one_turn_during_an_idle_spell_bring_back_then_turn_off()
+    {
+        SaveFirst(e=>{e.IdleOff=true;e.IdleMinutes=1;});
+        var h=await Running();
+        await Idle(h);
+        t.ParkScans();
+        await t.StepUntil(()=>t.ScansParked);
+        signals.Press();signals.Press();
+        Assert.True(h.State.Settings.LightsOn); // the loop is parked, so neither press is taken yet
+        t.ReleaseScans();
+        await Until(()=>t.Lines("shortcut pressed: ").Length==2);
+        var pressed=t.Lines("shortcut pressed: ").Select(l=>l[l.IndexOf("shortcut pressed: ",StringComparison.Ordinal)..].TrimEnd('\r')).ToArray();
+        Assert.Equal(["shortcut pressed: back from idle","shortcut pressed: lights off"],pressed);
+        Assert.False(h.State.Settings.LightsOn);
+        Assert.False(Saved().LightsOn);
     }
 
     [Fact]

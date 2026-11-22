@@ -115,7 +115,9 @@ internal sealed class DeviceHost : IAsyncDisposable
     // works out why the lights are off beyond the switch (EverydayWork), and everything that paints, previews, watches keys or picks the
     // tick reads Shown: the settings with the lights off while a reason applies. Shown is made at each use, never kept, since a rescan's
     // remap replaces tables on the live settings (ruling P13). shortcutProblem and shortcutRetry are guarded by gate.
-    public static readonly TimeSpan ShortcutWait=TimeSpan.FromSeconds(1);
+    // ShortcutWait: a request waits this long for the watcher's answer; RetryWait: the slow-work retry of the saved shortcut, kept short since it
+    // holds gate while painting may run at the fast tick.
+    public static readonly TimeSpan ShortcutWait=TimeSpan.FromSeconds(1),RetryWait=TimeSpan.FromMilliseconds(250);
     readonly IEverydaySignals? signals;
     readonly IInputClock? input;
     readonly EverydayState everyday;
@@ -265,7 +267,7 @@ internal sealed class DeviceHost : IAsyncDisposable
         log.Write($"host start (openrgb {options.OpenRgbPath}, startup {options.Startup})");
         Initialize();
         // Ruling P10: the saved shortcut is registered before the start-up delay and the start-up failure, so it works during both.
-        lock(gate){everyday.Changed(settings);RegisterSavedLocked();}
+        lock(gate){everyday.Changed(settings);RegisterSavedLocked(ShortcutWait);}
         Raise();
         try
         {
@@ -833,7 +835,7 @@ internal sealed class DeviceHost : IAsyncDisposable
         if(signals is null&&input is null) return false;
         lock(gate)
         {
-            var raise=slow&&shortcutRetry&&RegisterSavedLocked();
+            var raise=slow&&shortcutRetry&&RegisterSavedLocked(RetryWait);
             everyday.Observe(settings,input);
             raise|=PressesLocked();
             if(everyday.Changed(settings)){presses.Clear();raise=true;}
@@ -857,13 +859,13 @@ internal sealed class DeviceHost : IAsyncDisposable
 
     // The saved shortcut, registered at start (ruling P10) and, after no answer in time, again on slow work. Not without a watcher, nor while
     // the watcher reports a problem of its own (the state's EverydayProblem carries that). Returns whether ShortcutProblem changed.
-    bool RegisterSavedLocked()
+    bool RegisterSavedLocked(TimeSpan wait)
     {
         shortcutRetry=false;
         if(signals is null||signals.Problem is not null||settings.Everyday.Shortcut is not{} saved) return false;
         var before=shortcutProblem;
         var text=Shortcuts.Text(saved);
-        switch(signals.SetShortcut(saved,ShortcutWait))
+        switch(signals.SetShortcut(saved,wait))
         {
             case true:shortcutProblem=null;log.Write("shortcut registered: "+text);break;
             case false:shortcutProblem=Shortcuts.TakenText(saved);log.Write("shortcut refused: "+text);break;
@@ -890,21 +892,37 @@ internal sealed class DeviceHost : IAsyncDisposable
         var rules=Everydays.Clone(r.Everyday);
         string? refused=null;
         var registered=false;
-        if(wanted!=old||shortcutProblem is not null)
+        if(wanted!=old)
         {
             if(signals is null||signals.Problem is not null){refused=signals?.Problem??NoWatcherText;rules.Shortcut=old;}
             else switch(signals.SetShortcut(wanted,ShortcutWait))
             {
                 case true:registered=true;break;
-                case false:signals.SetShortcut(old,ShortcutWait);return Fail(r,wanted is null?HostReplyCodes.ShortcutSlow:Shortcuts.TakenText(wanted));
-                // A late answer could still register the new one, so the old one is asked for after it, without waiting again.
-                default:signals.SetShortcut(old,TimeSpan.Zero);return Fail(r,HostReplyCodes.ShortcutSlow);
+                case false:raise=RestoreLocked(old);return Fail(r,wanted is null?HostReplyCodes.ShortcutSlow:Shortcuts.TakenText(wanted));
+                // The watcher withdraws a request it didn't answer in time, so the old shortcut is still the registered one.
+                default:return Fail(r,HostReplyCodes.ShortcutSlow);
             }
         }
+        // Fix round 1, I1: the same shortcut while it has a problem is only tried again: true clears the problem, anything else keeps it,
+        // and the other rules are saved either way.
+        var tried=wanted==old&&shortcutProblem is not null&&RegisterSavedLocked(ShortcutWait);
         var reply=Mutate(r,s=>{s.Everyday=rules;return null;},out raise);
-        if(reply is Reply{Ok:false}){if(registered) signals!.SetShortcut(old,ShortcutWait);return reply;}
+        if(reply is Reply{Ok:false}){raise=tried|(registered&&RestoreLocked(old));return reply;}
         if(registered){shortcutProblem=null;shortcutRetry=false;log.Write(wanted is null?"shortcut cleared":"shortcut registered: "+Shortcuts.Text(wanted));}
         return refused is null?reply:Fail(r,refused);
+    }
+    // The old shortcut asked for again after the new one was refused or its save failed. When that is refused too, or not answered, the
+    // state says so (fix round 1, M1); an unanswered one is retried on slow work. Returns whether ShortcutProblem changed.
+    bool RestoreLocked(Shortcut? old)
+    {
+        var before=shortcutProblem;
+        switch(signals!.SetShortcut(old,ShortcutWait))
+        {
+            case true:break;
+            case false:if(old is not null) shortcutProblem=Shortcuts.TakenText(old);log.Write("shortcut refused: "+Shortcuts.Text(old));break;
+            default:shortcutProblem=HostReplyCodes.Explain(HostReplyCodes.ShortcutSlow);shortcutRetry=old is not null;log.Write("shortcut not answered in time: "+Shortcuts.Text(old));break;
+        }
+        return shortcutProblem!=before;
     }
 
     static Reply Ok(HostMessage r)=>new(true,null){Id=r.Id};

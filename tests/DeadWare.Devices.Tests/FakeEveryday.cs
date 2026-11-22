@@ -8,6 +8,7 @@ sealed class FakeSignals:IEverydaySignals
 {
     readonly object sync=new();
     readonly List<Shortcut?> shortcuts=new();
+    readonly List<TimeSpan> waits=new();
     public event Action? ShortcutPressed;
     public event Action<bool>? LockChanged;
     public event Action? Suspending;
@@ -16,7 +17,8 @@ sealed class FakeSignals:IEverydaySignals
     public volatile string? Trouble;
     public string? Problem=>Trouble;
     public List<Shortcut?> Shortcuts{get{lock(sync)return shortcuts.ToList();}}
-    public bool? SetShortcut(Shortcut? shortcut,TimeSpan wait){lock(sync)shortcuts.Add(shortcut);return Refuse is{} f?f(shortcut):true;}
+    public List<TimeSpan> Waits{get{lock(sync)return waits.ToList();}}
+    public bool? SetShortcut(Shortcut? shortcut,TimeSpan wait){lock(sync){shortcuts.Add(shortcut);waits.Add(wait);}return Refuse is{} f?f(shortcut):true;}
     public void Press()=>ShortcutPressed?.Invoke();
     public void Lock(bool locked)=>LockChanged?.Invoke(locked);
     public void Suspend()=>Suspending?.Invoke();

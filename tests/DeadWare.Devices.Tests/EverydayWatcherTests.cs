@@ -57,8 +57,8 @@ public sealed class EverydayWatcherTests
     public void A_request_taken_late_answers_its_real_result()
     {
         using var w=new EverydayWatcher(new HostLog(null));
-        w.AfterTake=t=>{if(t) Thread.Sleep(300);};
-        Assert.True(w.SetShortcut(null,TimeSpan.FromMilliseconds(50)));
+        w.AfterTake=t=>{if(t) Thread.Sleep(800);};
+        Assert.True(w.SetShortcut(null,TimeSpan.FromMilliseconds(500)));
     }
 
     // Fix round 1, M3, ruling P15: wParam 4 suspend, 7 resume from suspend, 0x12 automatic resume.
