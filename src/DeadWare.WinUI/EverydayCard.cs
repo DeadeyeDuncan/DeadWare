@@ -22,8 +22,10 @@ namespace DeadWare.WinUI;
 /// </summary>
 internal sealed class EverydayCard
 {
-    // Below this width the three columns go one under the other, as the mockup's.
-    private const double WideLayout = 900;
+    // Below this width of the page's panel (the width the page arranges its desk area by) the three columns go one under the other. The
+    // mockup stacks them below a 900 px window; with the navigation pane compact (48 px, as it is below 1008 px) and the page's padding
+    // (2 × 24) that window leaves the panel about 800 px.
+    private const double WideLayout = 800;
 
     private static readonly VirtualKey[] ModifierKeys =
     [
@@ -45,7 +47,8 @@ internal sealed class EverydayCard
     private readonly ToggleSwitch idleOff = Switch(), lockOff = Switch();
     // The state last shown and whether its host is connected; the controls are usable only while it is and its settings are there.
     private HostState? state;
-    private bool connected, recording, syncing;
+    // toCancel: the keys box is losing the focus to Change/Cancel; toBox: Change/Cancel is losing it to the keys box.
+    private bool connected, recording, syncing, toCancel, toBox;
     // Changes on their way, and the last one sent: shown in place of the state's until the state has caught up with it.
     private int sending;
     private EverydaySettings? pending;
@@ -67,6 +70,12 @@ internal sealed class EverydayCard
         AutomationProperties.SetName(keysBox, EverydayTexts.ShortcutLabel);
         AutomationProperties.SetLiveSetting(keysBox, AutomationLiveSetting.Polite);
         keysBox.KeyDown += OnKeyDown;
+        // Focus leaving the keys box ends recording, except when it goes to Change/Cancel, whose own click (or key) then ends it.
+        keysBox.LosingFocus += (_, args) => toCancel = ReferenceEquals(args.NewFocusedElement, change);
+        keysBox.LostFocus += (_, _) => { if (recording && !toCancel) StopRecording(); };
+        // And when the focus moves on from Change/Cancel without its click, other than back to the keys box.
+        change.LosingFocus += (_, args) => toBox = ReferenceEquals(args.NewFocusedElement, keysBox);
+        change.LostFocus += (_, _) => { if (recording && !toBox) StopRecording(); };
         change.Click += (_, _) => ToggleRecording();
         noShortcut.Click += (_, _) => ClearShortcut();
         problem.Foreground = (Brush)Application.Current.Resources["SystemFillColorCriticalBrush"];
@@ -101,7 +110,6 @@ internal sealed class EverydayCard
         parts = [shortcut, idle, locked];
         foreach (var part in parts) columns.Children.Add(part);
         Arrange(true);
-        columns.SizeChanged += (_, args) => Arrange(args.NewSize.Width >= WideLayout);
 
         Root = Pages.Card(new StackPanel
         {
@@ -190,6 +198,14 @@ internal sealed class EverydayCard
         if (recording) keysBox.Focus(FocusState.Programmatic);
     }
 
+    /// <summary>Ends recording, leaving the shortcut as it is.</summary>
+    private void StopRecording()
+    {
+        recording = false;
+        invalid = null;
+        Show();
+    }
+
     /// <summary>No shortcut: ends any recording and sends the settings with none.</summary>
     private void ClearShortcut()
     {
@@ -268,6 +284,10 @@ internal sealed class EverydayCard
         a.Shortcut == b.Shortcut && a.IdleOff == b.IdleOff && a.IdleMinutes == b.IdleMinutes && a.LockOff == b.LockOff;
 
     /// <summary>Wide: three columns side by side. Narrow: one column, the three parts one under the other.</summary>
+    /// <summary>The page's panel changed width: three columns side by side from <see cref="WideLayout"/>, else one under the other.</summary>
+    /// <param name="panelWidth">The width of the page's panel, as the page's own desk arrangement takes it.</param>
+    public void ArrangeFor(double panelWidth) => Arrange(panelWidth >= WideLayout);
+
     private void Arrange(bool wide)
     {
         if (columns.ColumnDefinitions.Count == (wide ? 3 : 1)) return;

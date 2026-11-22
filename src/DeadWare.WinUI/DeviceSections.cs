@@ -50,6 +50,8 @@ internal sealed class DeviceSections
     // note shown while a time is chosen). SleepValues: the drop-down's items' minutes in order, null leaving the mouse as it is.
     private static readonly int?[] SleepValues = [null, .. MouseSleep.Choices.Select(minutes => (int?)minutes)];
     private readonly TextBlock sharedColours = LightingPage.Muted(MouseTexts.SharedColours);
+    // LightingPage.Muted's opacity, which the shared-colours line keeps when the mouse is connected.
+    private const double MutedOpacity = 0.7;
     private readonly ProgressBar batteryBar = new() { Minimum = 0, Maximum = 100, Width = 120, VerticalAlignment = VerticalAlignment.Center };
     private readonly TextBlock batteryLine = new() { VerticalAlignment = VerticalAlignment.Center }, batteryHint = LightingPage.Muted("");
     private readonly ComboBox sleep = new() { VerticalAlignment = VerticalAlignment.Center, MinWidth = 200 };
@@ -207,7 +209,10 @@ internal sealed class DeviceSections
         var shown = device?.Mouse;
         foreach (var element in new UIElement[] { sharedColours, batterySection, sleepSection }) LightingPage.Show(element, shown is not null);
         if (shown is null) return;
-        batterySection.Opacity = sleepSection.Opacity = MouseTexts.Dimmed(shown) ? 0.38 : 1;
+        double dim = MouseTexts.Dimmed(shown) ? 0.38 : 1;
+        batterySection.Opacity = sleepSection.Opacity = dim;
+        // The line under the zone rows is dimmed with them, from its own muted opacity.
+        sharedColours.Opacity = MutedOpacity * dim;
 
         // The bar is greyed while the reading is old or unknown, as the battery line then says.
         bool greyed = shown.Battery is null || shown.Stale || shown.Connection == MouseConnections.None;

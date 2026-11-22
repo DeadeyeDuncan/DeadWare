@@ -332,9 +332,14 @@ internal sealed class LightingPage : Page, IHeaderTool
         deskArea.Children.Add(panelHost);
         leftColumn.Children.Add(listCard);
         ArrangeDesk(0);
-        onPanel.SizeChanged += (_, args) => ArrangeDesk(args.NewSize.Width);
-        onPanel.Children.Add(deskArea);
         everyday = new EverydayCard(Send);
+        // The Everyday card's columns follow the same panel width as the desk area.
+        onPanel.SizeChanged += (_, args) =>
+        {
+            ArrangeDesk(args.NewSize.Width);
+            everyday.ArrangeFor(args.NewSize.Width);
+        };
+        onPanel.Children.Add(deskArea);
         onPanel.Children.Add(everyday.Root);
         Content = new ScrollViewer { Content = new StackPanel { Padding = new Thickness(24), Spacing = 12, Children = { offCard, onPanel } } };
         this.WhileShowing(Attach, Detach);

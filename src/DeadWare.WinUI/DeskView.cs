@@ -66,6 +66,8 @@ internal sealed class DeskView : UserControl
     // held: the last finished edit, drawn until the owner drops it. drag: the drag in progress, drawn over held.
     private DeskLayout? held, drag;
     private bool lightsOn = true, live, towerOpen, editing, moved;
+    // Lighting 4: the devices drawn unlit whatever the lights do, a mouse that isn't connected (MouseTexts.Unlit). Still selectable.
+    private HashSet<string> unlit = new(StringComparer.Ordinal);
 
     public DeskView()
     {
@@ -187,10 +189,12 @@ internal sealed class DeskView : UserControl
         byKey = new(StringComparer.Ordinal);
         names = new(StringComparer.Ordinal);
         zoneColors = new(StringComparer.Ordinal);
+        unlit = new(StringComparer.Ordinal);
         for (int i = 0; i < list.Length; i++)
         {
             if (list[i]?.Key is not { } key || !byKey.TryAdd(key, list[i])) continue;
             names[key] = numbered[i];
+            if (MouseTexts.Unlit(list[i])) unlit.Add(key);
             foreach (var zone in list[i].Zones ?? []) if (zone?.Key is { } zoneKey) zoneColors[zoneKey] = zone.Color;
         }
         Rebuild();
@@ -599,7 +603,7 @@ internal sealed class DeskView : UserControl
         var center = ToPixel(item.At.X, item.At.Y);
         float w = (float)BoxW, h = (float)BoxHeight, x = center.X - w / 2, y = center.Y - h / 2;
         var rect = new Rect(x, y, w, h);
-        if (!lightsOn) { ds.FillRoundedRectangle(rect, 8, 8, Alpha(ink, 0.05)); ds.DrawRoundedRectangle(rect, 8, 8, hairline, 1); }
+        if (!Lit(item)) { ds.FillRoundedRectangle(rect, 8, 8, Alpha(ink, 0.05)); ds.DrawRoundedRectangle(rect, 8, 8, hairline, 1); }
         else if (item.OwnEffect) { ds.FillRoundedRectangle(rect, 8, 8, Alpha(muted, 0.12)); ds.DrawRoundedRectangle(rect, 8, 8, muted, 1); }
         else
         {
@@ -627,13 +631,16 @@ internal sealed class DeskView : UserControl
     {
         var center = ToPixel(item.At.X, item.At.Y);
         float radius = (float)(DotSize / 2);
-        var fill = !lightsOn ? Alpha(ink, 0.08) : item.OwnEffect ? Alpha(muted, 0.4) : Average(item.ZoneKeys) ?? muted;
+        var fill = !Lit(item) ? Alpha(ink, 0.08) : item.OwnEffect ? Alpha(muted, 0.4) : Average(item.ZoneKeys) ?? muted;
         ds.FillCircle(center, radius, fill);
         ds.DrawCircle(center, radius, hairline, 1);
         if (item.DeviceKey is { } key && key == selected) ds.DrawCircle(center, radius + 3, accent, 2);
         var label = Text(creator, item.Label, false, ZoneLabelWidth);
         ds.DrawTextLayout(label, center.X + radius + 4, (float)(center.Y - label.LayoutBounds.Height / 2), ink);
     }
+
+    /// <summary>Whether a box or dot is drawn lit: the lights are on and its device isn't one drawn unlit (lighting 4, an absent mouse).</summary>
+    private bool Lit(DeskItem item) => lightsOn && !(item.DeviceKey is { } key && unlit.Contains(key));
 
     /// <summary>The average of the zones' colours: each from the latest preview frame when it has the zone, else from the state.</summary>
     private Color? Average(IReadOnlyList<string> zoneKeys)
