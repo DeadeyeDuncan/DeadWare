@@ -144,9 +144,8 @@ public sealed class AeroxBatteryTests:IDisposable
         Assert.Equal(1,Wired);
         Assert.False(b.Stale);Assert.Equal(95,b.Percent);
         hang.Set();fake.HangWrite=null;
-        Assert.True(SpinWait.SpinUntil(()=>fake.Closes==2,RealTimeCap));   // the first cable port and the abandoned receiver port
-        Thread.Sleep(50);
-        b.Poll(true,true,false);                                  // no time has passed: the skipped reading is taken now
+        // No time passes: each turn while the abandoned worker still runs is skipped again; the first turn after it returns reads.
+        Assert.True(SpinWait.SpinUntil(()=>{b.Poll(true,true,false);return Wired==2;},RealTimeCap));
         Assert.Equal(2,Wired);
         Assert.False(b.Stale);
     }

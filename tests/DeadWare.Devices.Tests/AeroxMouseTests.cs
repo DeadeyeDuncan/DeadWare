@@ -553,13 +553,14 @@ public sealed class DeviceHostMouseTests:IAsyncLifetime
     {
         var h=await Receiver();
         await t.StepUntil(()=>fake.Count(0x63)==1);
-        var earlier=File.Exists(t.LightingPath)?Saved().Version:1;
+        Assert.True(File.Exists(t.LightingPath));                 // the host saved it at start (the mouse's layout points)
+        Assert.Equal(1,Saved().Version);                          // no tunings, no layers, no step 4 settings
         Assert.True((await DeviceHostTests.SendTo(h,new SetMouseSleepRequest(10))).Ok);
         Assert.Equal(4,Saved().Version);
         await t.StepUntil(()=>fake.Count(0x69)==1);
         Assert.True((await DeviceHostTests.SendTo(h,new SetMouseSleepRequest(null))).Ok);
         var file=Saved();
-        Assert.Equal(earlier,file.Version);Assert.Null(file.Mouse.SleepMinutes);
+        Assert.Equal(1,file.Version);Assert.Null(file.Mouse.SleepMinutes);
         Assert.DoesNotContain("\"Mouse\"",File.ReadAllText(t.LightingPath));
         await t.StepFor(TimeSpan.FromSeconds(6),DeviceHost.Tick);
         Assert.Equal(1,fake.Count(0x69));                         // nothing more is sent about the sleep time
