@@ -558,8 +558,8 @@ public sealed class DeviceHostEverydayTests:IAsyncLifetime
         var h=await Running();
         await t.StepUntil(()=>All(0,SteelBlue));
         signals.Suspend();
-        var from=Writes();
         await Until(()=>h.State.LightsOffReason==LightsOff.Waking);
+        var from=Writes(); // taken once the loop has seen the suspend, so a paint that began before the signal has finished
         await t.StepFor(TimeSpan.FromSeconds(6),DeviceHost.Tick); // past slow work too, so no rescan either
         Assert.Equal(from,Writes());
         Assert.Equal(LightsOff.Waking,h.State.LightsOffReason);
@@ -604,6 +604,50 @@ public sealed class DeviceHostEverydayTests:IAsyncLifetime
         Assert.True(moved<=TimeSpan.FromSeconds(4.5),$"woke {moved.TotalSeconds} s after the second resume");
         await t.StepFor(TimeSpan.FromSeconds(11),DeviceHost.Tick);
         Assert.Equal(1,Volatile.Read(ref woke)); // the hook point is raised once per wake
+    }
+
+    // Modern Standby can resume with no suspend before it: the same wait, then the same repaint.
+    [Fact]
+    public async Task A_resume_with_no_suspend_before_it_waits_the_same_way()
+    {
+        var h=await Running();
+        await t.StepUntil(()=>All(0,SteelBlue));
+        await t.StepFor(TimeSpan.FromSeconds(1),DeviceHost.Tick);
+        await Resume();
+        await Until(()=>h.State.LightsOffReason==LightsOff.Waking);
+        var from=Writes();
+        await t.StepFor(TimeSpan.FromSeconds(9),DeviceHost.Tick);
+        Assert.Equal(from,Writes());
+        Assert.Equal(LightsOff.Waking,h.State.LightsOffReason);
+        await t.StepUntil(()=>h.State.LightsOffReason is null);
+        await t.StepUntil(()=>t.Lines("wake repaint done").Length==1);
+        Assert.True(Writes().Modes>from.Modes); // the service forgot what it sent, so the modes went again
+        await t.StepUntil(()=>All(0,SteelBlue));
+        Assert.Empty(t.Lines(" suspend"));
+    }
+
+    // A suspend during the wait puts the host back to sleep: it stays quiet past the first resume's ten seconds, and the next resume starts a
+    // wait of its own.
+    [Fact]
+    public async Task A_suspend_during_the_wait_keeps_the_host_quiet_until_the_next_resume()
+    {
+        var h=await Running();
+        await t.StepUntil(()=>All(0,SteelBlue));
+        await Suspend(h);
+        await Resume();
+        var from=Writes();
+        await t.StepFor(TimeSpan.FromSeconds(6),DeviceHost.Tick);
+        signals.Suspend();
+        await Until(()=>t.Lines(" suspend").Length==2);
+        await t.StepFor(TimeSpan.FromSeconds(8),DeviceHost.Tick); // 14 s after the first resume
+        Assert.Equal(from,Writes());
+        Assert.Equal(LightsOff.Waking,h.State.LightsOffReason);
+        Assert.Empty(t.Lines("wake repaint done"));
+        await Resume(2);
+        var moved=await t.StepUntil(()=>h.State.LightsOffReason is null);
+        Assert.True(moved>=TimeSpan.FromSeconds(9.5),$"woke {moved.TotalSeconds} s after the second resume");
+        await t.StepUntil(()=>t.Lines("wake repaint done").Length==1);
+        Assert.True(Writes().Leds>from.Leds);
     }
 
     // Review focus 5: lights off by the switch when the PC slept stay off; no reason is shown at any point.
