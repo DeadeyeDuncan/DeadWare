@@ -194,6 +194,7 @@ The device host is a separate executable, not a mode of `DeadWare.exe`. That giv
 - **Events:**
   - `StateChanged`: devices, zones, statuses and warnings
   - `BatteryChanged`
+    - *Note, 2026-11-22 (step 4):* no `BatteryChanged` event was built. The battery reading, the charging state and the mouse's connection travel in the state, as one optional trailing member `Mouse` on the Aerox's device entry in `StateChanged`.
   - `HubReadings`: coolant temperature and fan/pump RPM, every 2–3 s once the hub driver lands
   - `PreviewFrame`: current zone colours at 10 fps or less, sent only while a window has subscribed
 - Effects run inside the host, so no per-frame traffic crosses the pipe except the optional preview.
@@ -238,6 +239,7 @@ The device host is a separate executable, not a mode of `DeadWare.exe`. That giv
   Lights-off on a device in Direct mode therefore means refreshing black, not sending nothing. The idle-gated Aerox is the exception.
 - **Apex Pro keyboard** goes through OpenRGB: Direct only, 112 LEDs, the real matrix map from the zone's matrix.
 - **Aerox 9:** wired (`1038:1858`) through OpenRGB. Wireless (`1038:185A`) uses DeadWare's own 2.4 GHz dongle driver on HidSharp, ported from `aerox-wireless.ts`:
+  - *Note, 2026-11-22 (step 4):* the product IDs above are the wrong way round. The receiver (wireless) is `1038:1858` and the cable is `1038:185A`. Step 4 builds the mouse as one device, `aerox9`, for both.
   - wireless opcodes are the wired opcode OR `0x40`, each with a readback
   - battery is polled only while the mouse is in use, and replies are matched to battery requests by opcode
   - there is a sleep-timer command
