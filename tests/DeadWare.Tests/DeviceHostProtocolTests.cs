@@ -45,6 +45,13 @@ public class DeviceHostProtocolTests
         var st=State();
         yield return [new StateEvent(st with{KeyHook=true,Devices=[st.Devices[0] with{CanPaint=true,Paint=new(){[3]=new PaintedKey{Name="Key: W",Color="#FF0000"}},
             Layers=[new DeviceLayer{Kind="fade",Lights=[new LayerLight{Index=3,Name="Key: W"}]}],Looks=["Gaming","Work"],Look="Gaming",LookChanged=true,SkippedKeys=2,SkippedLayerLights=[1]}]}){Id=49}];
+        // Lighting 4.
+        yield return [new SetEverydayRequest(new EverydaySettings{Shortcut=new Shortcut(3,76),IdleOff=true,IdleMinutes=5,LockOff=true}){Id=50}];
+        yield return [new SetEverydayRequest(new EverydaySettings{Shortcut=null}){Id=51}];
+        yield return [new SetMouseSleepRequest(15){Id=52}];
+        yield return [new SetMouseSleepRequest(null){Id=53}];
+        yield return [new StateEvent(st with{LightsOffReason=LightsOff.Idle,ShortcutProblem="in use",EverydayProblem="no hook",
+            Devices=[st.Devices[0] with{Mouse=new MouseView(MouseConnections.Receiver,80,true,false,15,true)}]}){Id=54}];
     }
     static async Task<HostMessage?> RoundTrip(HostMessage m)
     {
@@ -85,12 +92,17 @@ public class DeviceHostProtocolTests
                 // Lighting 3b: the state with every new member set.
                 var sent=((StateEvent)m).State;
                 Assert.Equal(sent.KeyHook,s.KeyHook);
+                Assert.Equal((sent.LightsOffReason,sent.ShortcutProblem,sent.EverydayProblem),(s.LightsOffReason,s.ShortcutProblem,s.EverydayProblem));
+                Assert.Equal(sent.Devices[0].Mouse,d.Mouse);
                 if(!sent.KeyHook){Assert.False(d.CanPaint);Assert.Null(d.Paint);Assert.Null(d.Layers);Assert.Null(d.Looks);Assert.Null(d.Look);Assert.False(d.LookChanged);Assert.Equal(0,d.SkippedKeys);Assert.Null(d.SkippedLayerLights);break;}
                 Assert.True(d.CanPaint);
                 var key=Assert.Single(d.Paint!);Assert.Equal((3,"Key: W","#FF0000"),(key.Key,key.Value.Name,key.Value.Color));
                 var layer=Assert.Single(d.Layers!);Assert.Equal("fade",layer.Kind);Assert.Equal((3,"Key: W"),(Assert.Single(layer.Lights!).Index,layer.Lights![0].Name));
                 Assert.Equal(["Gaming","Work"],d.Looks!);Assert.Equal("Gaming",d.Look);Assert.True(d.LookChanged);
                 Assert.Equal(2,d.SkippedKeys);Assert.Equal([1],d.SkippedLayerLights!);
+                break;
+            case SetEverydayRequest ev:
+                Assert.Equal(System.Text.Json.JsonSerializer.Serialize(ev.Everyday),System.Text.Json.JsonSerializer.Serialize(Assert.IsType<SetEverydayRequest>(back).Everyday));
                 break;
             case SetDeviceKeysRequest k:
                 var kb=Assert.IsType<SetDeviceKeysRequest>(back);
@@ -307,6 +319,19 @@ public class DeviceHostProtocolTests
             var ms=new MemoryStream(BitConverter.GetBytes(len));
             await Assert.ThrowsAsync<InvalidDataException>(()=>DeviceHostProtocol.ReadAsync(ms,default));
         }
+    }
+    // Lighting 4: a literal 0.21.0 state, without the new members, reads with nulls.
+    [Fact] public async Task A_state_without_the_new_members_reads_with_nulls()
+    {
+        const string json="""{"type":"state","Version":1,"Id":1,"State":{"Status":2,"Message":"","Elevated":false,"Conflicts":[],"Devices":[{"Key":"k","Name":"K","Type":5,"Kind":1,"Mode":null,"OwnEffect":null,"StaysLitWhenOff":false,"Zones":[]}],"Settings":{"LightsOn":true},"ConflictsChecked":true,"KeyHook":true}}""";
+        var st=Assert.IsType<StateEvent>(await DeviceHostProtocol.ReadAsync(Frame(json),default)).State;
+        Assert.Null(st.LightsOffReason);Assert.Null(st.ShortcutProblem);Assert.Null(st.EverydayProblem);
+        Assert.Null(Assert.Single(st.Devices).Mouse);
+    }
+    [Fact] public async Task The_everyday_and_sleep_requests_use_their_discriminators()
+    {
+        Assert.Equal(20,Assert.IsType<SetMouseSleepRequest>(await DeviceHostProtocol.ReadAsync(Frame("""{"type":"setMouseSleep","Version":1,"Minutes":20}"""),default)).Minutes);
+        Assert.Equal(7,Assert.IsType<SetEverydayRequest>(await DeviceHostProtocol.ReadAsync(Frame("""{"type":"setEveryday","Version":1,"Everyday":{"IdleOff":true,"IdleMinutes":7}}"""),default)).Everyday.IdleMinutes);
     }
     static Stream Frame(string json)
     {

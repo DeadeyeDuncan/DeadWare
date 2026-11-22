@@ -11,12 +11,20 @@ public sealed record DeviceView(string Key,string Name,int Type,PaintKind Kind,s
     // Lighting 3b: whether its keys can be painted one by one, its painted keys, layers, saved look names in saved order, the look last
     // loaded and whether the keyboard has changed since; the painted keys and each layer's listed lights that no longer match its lights.
     bool CanPaint=false,Dictionary<int,PaintedKey>? Paint=null,List<DeviceLayer>? Layers=null,IReadOnlyList<string>? Looks=null,string? Look=null,bool LookChanged=false,
-    int SkippedKeys=0,IReadOnlyList<int>? SkippedLayerLights=null);
+    int SkippedKeys=0,IReadOnlyList<int>? SkippedLayerLights=null,
+    // Lighting 4: the mouse's connection, battery and sleep time, for a device that is the Aerox 9 mouse.
+    MouseView? Mouse=null);
+// Connection is one of MouseConnections. Battery is a percentage and Charging whether it is charging, null while unknown; Stale: the reading is old.
+// SleepMinutes is the mouse's own sleep time when known; SleepSent: the host has sent the chosen one.
+public sealed record MouseView(string Connection,int? Battery,bool? Charging,bool Stale,int? SleepMinutes,bool SleepSent);
+public static class MouseConnections{public const string Cable="cable",Wireless="wireless",Receiver="receiver",None="none";}
 // ConflictsChecked: the host has completed a conflict scan since it started, so an empty Conflicts list means nothing was found (polish
 // item 2). One that never scans, such as one whose OpenRGB settings folder was refused, leaves it false. Optional on the wire, and false
 // when absent, so the protocol stays version 1.
 public sealed record HostState(HostStatus Status,string Message,bool Elevated,IReadOnlyList<LightingConflict> Conflicts,IReadOnlyList<DeviceView> Devices,LightingSettings Settings,bool ConflictsChecked=false,
-    bool KeyHook=false);
+    bool KeyHook=false,
+    // Lighting 4: why the lights are off beyond the saved switch (LightsOff.Idle, Locked or Waking), and plain-words problems with the shortcut and with everyday rules.
+    string? LightsOffReason=null,string? ShortcutProblem=null,string? EverydayProblem=null);
 [JsonPolymorphic(TypeDiscriminatorPropertyName="type")]
 [JsonDerivedType(typeof(GetStateRequest),"getState")]
 [JsonDerivedType(typeof(SetLightsOnRequest),"setLightsOn")]
@@ -40,6 +48,8 @@ public sealed record HostState(HostStatus Status,string Message,bool Elevated,IR
 [JsonDerivedType(typeof(ChooseLookRequest),"chooseLook")]
 [JsonDerivedType(typeof(RenameLookRequest),"renameLook")]
 [JsonDerivedType(typeof(DeleteLookRequest),"deleteLook")]
+[JsonDerivedType(typeof(SetEverydayRequest),"setEveryday")]
+[JsonDerivedType(typeof(SetMouseSleepRequest),"setMouseSleep")]
 public abstract record HostMessage
 {
     [JsonRequired] public int Version { get; init; } = DeviceHostProtocol.Version;
@@ -47,6 +57,8 @@ public abstract record HostMessage
 }
 public sealed record GetStateRequest : HostMessage;
 public sealed record SetLightsOnRequest(bool On) : HostMessage;
+public sealed record SetEverydayRequest(EverydaySettings Everyday) : HostMessage;
+public sealed record SetMouseSleepRequest(int? Minutes) : HostMessage;
 public sealed record SetBrightnessRequest(int Percent) : HostMessage;
 public sealed record SetAllColorsRequest(string Color) : HostMessage;
 public sealed record SetZoneColorRequest(string ZoneKey,string? Color) : HostMessage;
