@@ -23,6 +23,7 @@ public sealed partial class DeviceHostTests
     internal int ApexIndex=>Apex;
     internal string[] Lines(string contains)=>LogLines(contains);
     internal void BlockLighting(){lock(conflicts)conflicts.Add(DeadLight);}
+    internal void UnblockLighting(){lock(conflicts)conflicts.Remove(DeadLight);}
     internal void NameKeys()=>NameApexKeys();
     internal static DeviceLayer RippleLayer()=>Ripple();
     internal static string ApexDevice=>ApexKey;

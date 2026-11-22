@@ -267,6 +267,108 @@ public sealed class AeroxMouseTests:IDisposable
         Assert.Equal(2,LogCount("mouse: holding frames (still)"));
         Assert.Equal(0,LogCount("mouse: released"));
     }
+
+    // Task 8: cable if its product is listed; else none without the receiver; else wireless with a fresh reading from an answering mouse;
+    // else receiver.
+    static byte[]? Battery75(byte[] w)=>w[1] switch{0xD2=>[0xD2,16],0x92=>[0x92,0x94],_=>[0x61]};
+    [Theory]
+    [InlineData("cable",MouseConnections.Cable)]
+    [InlineData("none",MouseConnections.None)]
+    [InlineData("no reading",MouseConnections.Receiver)]
+    [InlineData("fresh",MouseConnections.Wireless)]
+    [InlineData("stale",MouseConnections.Receiver)]
+    public void The_connection_follows_the_rule(string when,string connection)
+    {
+        fake.Reply=Battery75;
+        switch(when)
+        {
+            case "cable":fake.Products.Add(AeroxDriver.Cable);mouse.Scan();break;
+            case "none":fake.Products.Clear();mouse.Scan();break;
+            case "fresh":Move();Step();mouse.Poll(null);break;
+            case "stale":Move();Step();mouse.Poll(null);Assert.Equal(MouseConnections.Wireless,mouse.View(null).Connection);Step(120_001);mouse.Poll(null);break;
+        }
+        var v=mouse.View(null);
+        Assert.Equal(connection,v.Connection);
+        if(when is "fresh" or "stale"){Assert.Equal(75,v.Battery);Assert.Equal(false,v.Charging);Assert.Equal(when=="stale",v.Stale);}
+        else{Assert.Null(v.Battery);Assert.Null(v.Charging);Assert.True(v.Stale);}
+    }
+
+    [Fact]
+    public void The_view_says_whether_the_sleep_time_was_delivered()
+    {
+        Assert.False(mouse.View(5).SleepSent);
+        Deliver(5);
+        Assert.True(mouse.View(5).SleepSent);
+        Assert.Equal(5,mouse.View(5).SleepMinutes);
+        Assert.False(mouse.View(10).SleepSent);
+        fake.Products.Add(AeroxDriver.Cable);mouse.Scan();
+        Assert.False(mouse.View(5).SleepSent);                    // never on the cable
+    }
+
+    [Fact]
+    public void Poll_says_when_the_view_changed()
+    {
+        fake.Reply=Battery75;
+        Assert.False(mouse.Poll(null));                           // still: nothing asked, nothing changed
+        Move();Step();
+        Assert.True(mouse.Poll(null));                            // the first reading
+        Assert.False(mouse.Poll(null));
+        Assert.True(mouse.Poll(5));                               // a sleep time chosen, not delivered
+        Assert.False(mouse.Poll(5));
+        Assert.True(mouse.Paint(Four(1),5));                      // the sleep time delivered
+        Assert.True(mouse.Poll(5));
+        Assert.False(mouse.Poll(5));
+    }
+
+    // Ruling P6 on the battery path: a battery read that finds the mouse answering again makes the next frame a must-send, without a Tick.
+    [Fact]
+    public void A_battery_read_that_hears_the_mouse_again_makes_a_must_send()
+    {
+        Deliver(null,3);
+        fake.Reply=_=>null;
+        Assert.False(mouse.Paint(Four(4),null));                  // silent
+        Assert.False(mouse.Paint(Four(3),null));                  // back to the delivered colours: unchanged, nothing to send
+        Step(2000);
+        fake.Reply=Battery75;
+        Move();Step();
+        var before=Writes;
+        mouse.Poll(null);
+        Assert.Equal(before+1,Writes);                            // the battery request, answered
+        Assert.True(mouse.Paint(Four(3),null));                   // the unchanged frame goes as a must-send
+        Assert.Equal(before+6,Writes);
+    }
+
+    // Ruling P1 on the battery path: a battery request with no reply silences the receiver as a frame's would.
+    [Fact]
+    public void A_battery_request_with_no_reply_silences_the_frames()
+    {
+        Deliver(null);
+        fake.Reply=_=>null;
+        Move();Step();
+        mouse.Poll(null);
+        Assert.Equal(5+1,Writes);
+        Step(1000);
+        for(var v=2;v<40;v++){Assert.False(mouse.Paint(Four(v),null));Step();}   // still: nothing goes, though the colours change
+        Assert.Equal(6,Writes);
+    }
+
+    // Ruling P1: while silent the frame and the battery share one attempt per MoveWindow.
+    [Fact]
+    public void A_silent_mouse_gets_one_attempt_a_second_counting_the_battery()
+    {
+        fake.Reply=_=>null;
+        Assert.False(mouse.Paint(Four(1),null));
+        Step(2000);
+        Move();Step();
+        Assert.False(mouse.Paint(Four(2),null));                  // this window's attempt
+        mouse.Poll(null);
+        Assert.Equal(2,Writes);                                   // no battery request in the same window
+        Step(1000);Move();Step();
+        mouse.Poll(null);                                         // the next window's attempt is the battery's
+        Assert.Equal(3,Writes);
+        Assert.False(mouse.Paint(Four(3),null));
+        Assert.Equal(3,Writes);
+    }
 }
 
 // Lighting 4, Task 7: the receiver mouse in the host (rulings P1, P5, R2) and the copy of the cable's colours, through DeviceHostTests'
@@ -407,5 +509,131 @@ public sealed class DeviceHostMouseTests:IAsyncLifetime
         }
         Assert.Contains(file.Layout.Zones.Keys,k=>k.StartsWith(AeroxIdentity.Key+"#"));
         Assert.DoesNotContain(file.Layout.Zones.Keys,k=>k.StartsWith(CableKey));
+    }
+
+    // Task 8: the sleep time request, the mouse view and the battery in the host.
+    LightingSettings Saved()=>new LightingStore(t.LightingPath).Load().Settings;
+    static MouseView? MouseOf(HostState s)=>s.Devices.FirstOrDefault(d=>d.Key==AeroxIdentity.Key)?.Mouse;
+    static byte[]? Battery75(byte[] w)=>w[1] switch{0xD2=>[0xD2,16],0x92=>[0x92,0x94],_=>[0x61]};
+
+    [Fact]
+    public async Task Set_mouse_sleep_saves_writes_version_4_and_reaches_the_mouse()
+    {
+        var h=await Receiver();
+        await t.StepUntil(()=>fake.Count(0x63)==1);
+        Assert.Equal(0,fake.Count(0x69));
+        Assert.True((await DeviceHostTests.SendTo(h,new SetMouseSleepRequest(5))).Ok);
+        var file=Saved();
+        Assert.Equal(4,file.Version);Assert.Equal(5,file.Mouse.SleepMinutes);
+        await t.StepUntil(()=>fake.Count(0x69)==1);
+        var w=fake.Writes;
+        var sleep=w.FindIndex(p=>p[1]==0x69);
+        Assert.Equal([0,0x69,0xE0,0x93,0x04],w[sleep][..5]);    // 300 000 ms
+        Assert.Equal([0,0x51,0],w[sleep+1][..3]);                 // then the save
+        var v=MouseOf(h.State)!;
+        Assert.Equal(5,v.SleepMinutes);Assert.True(v.SleepSent);
+        Assert.Equal(5,h.State.Settings.Mouse.SleepMinutes);
+    }
+
+    [Fact]
+    public async Task A_sleep_time_not_on_the_list_is_refused()
+    {
+        var h=await Receiver();
+        await t.StepUntil(()=>fake.Count(0x63)==1);
+        var text=File.Exists(t.LightingPath)?File.ReadAllText(t.LightingPath):null;
+        var reply=await DeviceHostTests.SendTo(h,new SetMouseSleepRequest(4));
+        Assert.False(reply.Ok);Assert.Equal(HostReplyCodes.BadSleep,reply.Error);
+        Assert.Equal(text,File.Exists(t.LightingPath)?File.ReadAllText(t.LightingPath):null);
+        Assert.Null(h.State.Settings.Mouse.SleepMinutes);
+        Assert.Equal(0,fake.Count(0x69));
+    }
+
+    [Fact]
+    public async Task Leave_as_the_mouse_is_can_be_chosen_again()
+    {
+        var h=await Receiver();
+        await t.StepUntil(()=>fake.Count(0x63)==1);
+        var earlier=File.Exists(t.LightingPath)?Saved().Version:1;
+        Assert.True((await DeviceHostTests.SendTo(h,new SetMouseSleepRequest(10))).Ok);
+        Assert.Equal(4,Saved().Version);
+        await t.StepUntil(()=>fake.Count(0x69)==1);
+        Assert.True((await DeviceHostTests.SendTo(h,new SetMouseSleepRequest(null))).Ok);
+        var file=Saved();
+        Assert.Equal(earlier,file.Version);Assert.Null(file.Mouse.SleepMinutes);
+        Assert.DoesNotContain("\"Mouse\"",File.ReadAllText(t.LightingPath));
+        await t.StepFor(TimeSpan.FromSeconds(6),DeviceHost.Tick);
+        Assert.Equal(1,fake.Count(0x69));                         // nothing more is sent about the sleep time
+        Assert.Null(MouseOf(h.State)!.SleepMinutes);
+    }
+
+    [Fact]
+    public async Task On_the_cable_the_sleep_time_is_saved_and_waits()
+    {
+        fake.Products.Add(AeroxDriver.Cable);
+        driver=new AeroxDriver(fake,mouseLog);
+        var h=t.BuildHost(signals,input,mouse:new AeroxMouse(driver,input,t.Time,mouseLog));t.StartHost(h);
+        await Until(()=>h.State.Status==HostStatus.Running);
+        Assert.True((await DeviceHostTests.SendTo(h,new SetMouseSleepRequest(5))).Ok);
+        Assert.Equal(5,Saved().Mouse.SleepMinutes);
+        await t.StepFor(TimeSpan.FromSeconds(6),DeviceHost.Tick);
+        var v=MouseOf(h.State)!;
+        Assert.Equal(MouseConnections.Cable,v.Connection);
+        Assert.Equal(5,v.SleepMinutes);Assert.False(v.SleepSent);
+        Assert.Equal(0,fake.Count(0x69));
+        Assert.DoesNotContain(AeroxDriver.Receiver,fake.Opened);
+    }
+
+    [Fact]
+    public async Task A_battery_change_raises_a_state()
+    {
+        fake.Reply=Battery75;
+        var h=await Receiver();
+        await t.StepUntil(()=>fake.Count(0x63)==1);
+        await t.StepFor(TimeSpan.FromSeconds(1),DeviceHost.Tick);
+        var states=new List<HostState>();
+        h.StateChanged+=s=>{lock(states)states.Add(s);};
+        Assert.Null(MouseOf(h.State)!.Battery);
+        input.At=Tuple.Create(5,5);
+        await t.StepUntil(()=>{lock(states)return states.Any(s=>MouseOf(s) is{Battery:75,Stale:false,Connection:MouseConnections.Wireless});});
+        for(var k=0;k<5;k++) await t.StepFor(TimeSpan.FromSeconds(25),DeviceHost.Tick);   // the harness steps at most 30 s at a time
+        await t.StepUntil(()=>{lock(states)return states.Any(s=>MouseOf(s) is{Battery:75,Stale:true,Connection:MouseConnections.Receiver});});   // 120 s later
+    }
+
+    // Ruling R2: the wake's end marks the reading stale (keeping it as last known), and the next movement reads it again at once.
+    [Fact]
+    public async Task The_wake_marks_the_battery_stale()
+    {
+        fake.Reply=Battery75;
+        var h=await Receiver();
+        await t.StepFor(TimeSpan.FromSeconds(1),DeviceHost.Tick);   // the loop's first turns take the pointer's starting point
+        input.At=Tuple.Create(5,5);
+        await t.StepUntil(()=>MouseOf(h.State) is{Battery:75,Stale:false});
+        signals.Suspend();
+        await Until(()=>h.State.LightsOffReason==LightsOff.Waking);
+        signals.Resume();
+        await t.StepUntil(()=>h.State.LightsOffReason is null);
+        await t.StepUntil(()=>fake.Count(0x63)==2);               // the wake's repaint
+        Assert.True(MouseOf(h.State) is{Battery:75,Stale:true});
+        Assert.Equal(1,fake.Count(0xD2));
+        input.At=Tuple.Create(6,5);
+        await t.StepUntil(()=>MouseOf(h.State) is{Battery:75,Stale:false});
+        Assert.Equal(2,fake.Count(0xD2));                         // well within the minute
+    }
+
+    [Fact]
+    public async Task The_mouse_is_not_polled_while_lighting_is_blocked()
+    {
+        t.BlockLighting();
+        fake.Products.Add(AeroxDriver.Cable);
+        fake.Reply=Battery75;
+        driver=new AeroxDriver(fake,mouseLog);
+        driver.Scan();                                            // the cable known from the start, so only the host's state can hold the poll back
+        var h=t.BuildHost(signals,input,mouse:new AeroxMouse(driver,input,t.Time,mouseLog));t.StartHost(h);
+        await Until(()=>h.State.Status==HostStatus.Blocked);
+        input.At=Tuple.Create(5,5);
+        await t.StepFor(TimeSpan.FromSeconds(30),DeviceHost.Tick);
+        Assert.Empty(fake.Writes);
+        t.UnblockLighting();
+        await t.StepUntil(()=>fake.Count(0x92)>=1);               // the cable battery is read once lighting runs
     }
 }

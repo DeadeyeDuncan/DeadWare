@@ -134,6 +134,7 @@ internal sealed class DeviceHost : IAsyncDisposable
     LightingSettings Shown=>everyday.Reason(settings) is null?settings:settings.WithLightsOff();
     // Lighting 4, Task 7: the Aerox 9 on its receiver (none: the receiver is never used). Every call to it is made under gate: Tick each loop
     // turn, Scan in slow work and before a connect's rescan, Must on a change of effective lights or settings, Reopen at the wake's end.
+    // Task 8: Poll (the battery and the view) in TickWork while lighting runs, and the battery's Invalidate at the wake's end.
     readonly AeroxMouse? mouse;
 
     // startupFailure: set when the host could not prepare OpenRGB's config folder; it reports OpenRgbFailed and never starts OpenRGB.
@@ -446,6 +447,7 @@ internal sealed class DeviceHost : IAsyncDisposable
                     var live=presses.Live();
                     service.Paint(Shown,t,live);
                     PaintedLocked();
+                    if(mouse?.Poll(settings.Mouse.SleepMinutes)==true) changed=true;
                     frame=PreviewLocked(t,live);generation=previewGeneration;
                 }
             }
@@ -665,6 +667,10 @@ internal sealed class DeviceHost : IAsyncDisposable
             case RenameLookRequest r:return Mutate(request,s=>RenameLook(s,r),out raise,noRoom:true);
             case DeleteLookRequest r:return Mutate(request,s=>DeleteLook(s,r),out raise,noRoom:true);
             case SetEverydayRequest r:return SetEveryday(r,out raise);
+            // Task 8: Mutate's must-send carries the new value out with the next receiver frame; on the cable it waits.
+            case SetMouseSleepRequest r:
+                if(!MouseSleep.Valid(r.Minutes)) return Fail(request,HostReplyCodes.BadSleep);
+                return Mutate(request,s=>{s.Mouse.SleepMinutes=r.Minutes;return null;},out raise);
             default:return Fail(request,HostReplyCodes.Unsupported);
         }
     }
@@ -896,7 +902,7 @@ internal sealed class DeviceHost : IAsyncDisposable
 
     // The wake's end: the one place where everything remembered about every device is forgotten after sleep, as after a reconnect. The
     // next TickWork rescans and paints, or connects when the session was lost across sleep; its first paint is logged (ruling P17).
-    void WakeEndLocked(){service.Reset();mouse?.Reopen();ForgetPreview();rescanPending=true;wakePaint=true;}
+    void WakeEndLocked(){service.Reset();mouse?.Reopen();mouse?.Battery.Invalidate();ForgetPreview();rescanPending=true;wakePaint=true;}
     void PaintedLocked(){if(!wakePaint) return;wakePaint=false;log.Write($"wake repaint done: {service.Devices.Count} devices");}
     void RaiseWoke(){try{Woke?.Invoke();}catch(Exception e){log.Write("Woke handler failed: "+e.Message);}}
 

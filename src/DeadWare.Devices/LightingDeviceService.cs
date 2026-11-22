@@ -255,9 +255,10 @@ internal sealed class LightingDeviceService
         log.Write($"{d.Name}: {n} painted or layered keys don't match this keyboard's keys any more and are skipped.");
     }
 
+    // Lighting 4, Task 8: the Aerox 9's view carries the mouse card's facts, whichever way it is listed (none without a mouse).
     public IReadOnlyList<DeviceView> Views(LightingSettings settings)
     {
-        lock(gate)return devices.Select(d=>LightingPaint.View(settings,d)).ToList();
+        lock(gate)return devices.Select(d=>d.Key==AeroxIdentity.Key&&mouse is not null?LightingPaint.View(settings,d) with{Mouse=mouse.View(settings.Mouse.SleepMinutes)}:LightingPaint.View(settings,d)).ToList();
     }
 
     // Zone key -> #RRGGBB at tMs before tuning and brightness, for Direct devices and zones with LEDs: the colour of the zone's first light in
