@@ -5,7 +5,7 @@ namespace DeadWare.WinUI;
 
 /// <summary>
 /// A notification-area icon through Shell_NotifyIcon, with no library. Left click shows the dashboard; right click
-/// offers Show dashboard and Quit DeadWare; balloons carry alerts, and clicking one runs its action.
+/// offers Show dashboard, the lights line and Quit DeadWare; balloons carry alerts, and clicking one runs its action.
 /// It owns a hidden top-level window (not a message-only one, which cannot take the foreground and so could not
 /// dismiss its menu on an outside click).
 /// </summary>
@@ -13,17 +13,26 @@ internal sealed class Tray : IDisposable
 {
     private const uint CallbackMessage = 0x8000 + 1; // WM_APP + 1
     private const uint OpenCommand = 1, QuitCommand = 2;
+    private const uint LightsCommand = 3;
 
     private readonly Action open, quit;
+    private readonly Func<(string Label, bool Enabled, bool Target)> lights;
+    private readonly Action<bool> setLights;
     private Action? balloonClick;
     private readonly WindowProcedure procedure; // kept alive for the native window class
     private readonly nint window, icon;
     private bool disposed;
 
-    public Tray(Action open, Action quit)
+    /// <param name="open">Shows the dashboard.</param>
+    /// <param name="quit">Ends the app.</param>
+    /// <param name="lights">Read each time the menu is built: the lights line's label, whether it can be clicked, and the switch value a click sets.</param>
+    /// <param name="setLights">Called with that target when the lights line is clicked.</param>
+    public Tray(Action open, Action quit, Func<(string Label, bool Enabled, bool Target)> lights, Action<bool> setLights)
     {
         this.open = open;
         this.quit = quit;
+        this.lights = lights;
+        this.setLights = setLights;
         procedure = Procedure;
         try
         {
@@ -108,6 +117,9 @@ internal sealed class Tray : IDisposable
         try
         {
             AppendMenuW(menu, 0, OpenCommand, "Show dashboard");
+            // The line is read once, here: a click acts on what the menu showed, even if the state changes while it is open.
+            var (label, enabled, target) = lights();
+            AppendMenuW(menu, enabled ? 0u : 0x1u /* MF_GRAYED */, LightsCommand, label);
             AppendMenuW(menu, 0x800 /* MF_SEPARATOR */, 0, "");
             AppendMenuW(menu, 0, QuitCommand, "Quit DeadWare");
             GetCursorPos(out var point);
@@ -115,6 +127,7 @@ internal sealed class Tray : IDisposable
             uint command = TrackPopupMenuEx(menu, 0x0100 | 0x0002 /* TPM_RETURNCMD | TPM_RIGHTBUTTON */, point.X, point.Y, window, 0);
             PostMessageW(window, 0, 0, 0);
             if (command == OpenCommand) open();
+            else if (command == LightsCommand) setLights(target);
             else if (command == QuitCommand) quit();
         }
         finally { DestroyMenu(menu); }
