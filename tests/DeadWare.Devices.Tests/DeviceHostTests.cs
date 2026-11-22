@@ -2678,6 +2678,9 @@ public sealed class DeviceHostTests : IAsyncLifetime
         Assert.True(keys.Installed);
         lock(conflicts)conflicts.Add(DeadLight);
         await AdvanceUntil(()=>h.State.Status==HostStatus.Blocked);
+        // The status is set under the gate and the hook is stopped by the Raise that follows it, so a poll of State can land between the
+        // two (seen on CI). Every raised state already has the hook stopped; wait for that Raise before asserting.
+        await Until(()=>!keys.Installed&&!h.State.KeyHook);
         Assert.False(keys.Installed);Assert.False(h.State.KeyHook);
         lock(conflicts)conflicts.Clear();
         await AdvanceUntil(()=>h.State.Status==HostStatus.Running);
