@@ -19,7 +19,7 @@ internal sealed class UsagePage : Page
     [
         ("cpu", "CPU usage", "%", 100), ("cputemp", "CPU temperature", "°C", null),
         ("gpu", "GPU usage", "%", 100), ("gputemp", "GPU temperature", "°C", null),
-        ("memory", "RAM usage", "%", 100), ("network", "Network download / upload", "B/s", null),
+        ("memory", "RAM usage", "%", 100), ("network", "Network download / upload", HistoryChartModel.NetworkRateLabel, null),
     ];
     // Click a moment: the CPU, RAM and GPU charts list a slot's busiest apps under Application resources, ranked by their own metric.
     // Every metric is read with the CPU chart's point count, so the three share one slot grid.

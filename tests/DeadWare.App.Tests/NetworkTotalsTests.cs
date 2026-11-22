@@ -37,6 +37,19 @@ public class NetworkTotalsTests
         Assert.Equal(1500,second.Down);Assert.Equal(150,second.Up);Assert.Equal("2 active interfaces"+Note,second.Status);
     }
 
+    [Fact] public void Virtual_adapters_are_left_out_only_when_asked()
+    {
+        var a=new FakeAdapter("a");var v=new FakeAdapter("vpn");
+        using var totals=new NetworkTotals(()=>[a.Adapter,v.Adapter with {Virtual=true}]);
+        totals.Read(0);totals.Read(0,excludeVirtual:true);
+        a.Received=1000;a.Sent=100;v.Received=1000;v.Sent=100;
+        var all=totals.Read(1);
+        Assert.Equal(2000,all.Down);Assert.Equal("2 active interfaces"+Note,all.Status);
+        a.Received=2000;a.Sent=200;v.Received=5000;v.Sent=500;
+        var physical=totals.Read(2,excludeVirtual:true);
+        Assert.Equal(1000,physical.Down);Assert.Equal(100,physical.Up);Assert.Equal("1 active interface · 1 virtual adapter excluded",physical.Status);
+    }
+
     [Fact] public void The_adapter_list_is_kept_between_polls_and_listed_again_every_30_seconds()
     {
         int lists=0;var a=new FakeAdapter("a");

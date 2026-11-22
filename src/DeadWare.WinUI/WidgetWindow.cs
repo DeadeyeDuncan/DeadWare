@@ -220,12 +220,12 @@ internal sealed class WidgetGraph : UserControl
         if (kind == "network")
         {
             title.Text = "Network";
-            ToolTipService.SetToolTip(title, $"Network download ({Pattern("download")}) and upload ({Pattern("upload", dashed: true)}), in bytes per second");
-            primary.Text = "↓ " + HistoryChartModel.Bytes(Live("network/download"), true);
-            secondary.Text = "↑ " + HistoryChartModel.Bytes(Live("network/upload"), true);
+            ToolTipService.SetToolTip(title, $"Network download ({Pattern("download")}) and upload ({Pattern("upload", dashed: true)}), in the Settings network rate unit");
+            primary.Text = "↓ " + HistoryChartModel.Rate(Live("network/download"));
+            secondary.Text = "↑ " + HistoryChartModel.Rate(Live("network/upload"));
             double? localDown = Live("network/download/local");
             local.Visibility = localDown is null ? Visibility.Collapsed : Visibility.Visible;
-            if (localDown is not null) local.Text = $"· local ↓ {HistoryChartModel.Bytes(localDown, true)} ↑ {HistoryChartModel.Bytes(session.Value("network/upload/local"), true)}";
+            if (localDown is not null) local.Text = $"· local ↓ {HistoryChartModel.Rate(localDown)} ↑ {HistoryChartModel.Rate(session.Value("network/upload/local"))}";
         }
         else if (kind == "disk")
         {

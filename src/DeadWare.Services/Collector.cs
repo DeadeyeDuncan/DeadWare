@@ -90,7 +90,7 @@ public sealed class Collector : IAsyncDisposable
     public Collector(CollectorOptions? options=null):this(options,options is {HardwareEnabled:false}?null:new WindowsStorage(),processes:new WindowsProcesses(),gpuCounters:new WindowsGpuCounters()) {}
     internal Collector(CollectorOptions? options,IStorageFastSource? storage,IStorageHealthSource? healthSource=null,TimeSpan? healthPeriod=null,IProcessSource? processes=null,Func<IDiskTrace>? diskTrace=null,IGpuCounterSource? gpuCounters=null)
     {
-        this.storage=storage;this.healthSource=healthSource;this.healthPeriod=healthPeriod??StorageHealthPeriod;this.processes=processes??new WindowsProcesses();gpu=gpuCounters;this.options=options??new();SetPollingInterval(this.options.PollingIntervalSeconds);SetProcessMonitoring(this.options.ProcessMonitoring);etw=new(this.options.DiagnosticTimings);
+        this.storage=storage;this.healthSource=healthSource;this.healthPeriod=healthPeriod??StorageHealthPeriod;this.processes=processes??new WindowsProcesses();gpu=gpuCounters;this.options=options??new();SetPollingInterval(this.options.PollingIntervalSeconds);SetProcessMonitoring(this.options.ProcessMonitoring);SetExcludeVirtualAdapters(this.options.ExcludeVirtualAdapters);etw=new(this.options.DiagnosticTimings);
         // ProcessDiskTracing only permits a session; it runs while monitoring is on.
         if(this.options.ProcessDiskTracing)disk=new(diskTrace??(()=>new EtwDisk(EtwDisk.BufferSizeMB)));
     }
@@ -101,6 +101,10 @@ public sealed class Collector : IAsyncDisposable
     /// <summary>Read once at the start of each pass, so a change applies from the next poll.</summary>
     public bool ProcessMonitoring=>processMonitoring;
     public void SetProcessMonitoring(bool enabled)=>processMonitoring=enabled;
+    private volatile bool excludeVirtualAdapters;
+    /// <summary>Read at each network read, so a change applies from the next poll.</summary>
+    public bool ExcludeVirtualAdapters=>excludeVirtualAdapters;
+    public void SetExcludeVirtualAdapters(bool enabled)=>excludeVirtualAdapters=enabled;
     /// <summary>
     /// Held by a page or window while it shows live per-app GPU values (the Processes page). With <see cref="CollectorOptions.IdleGpuCadence"/>
     /// the GPU counters are read at the full cadence (every poll, or once a second in their own loop) only while one is held, and every
@@ -275,7 +279,7 @@ public sealed class Collector : IAsyncDisposable
                     providerStarted=Stopwatch.GetTimestamp();var memory=windows.Memory();values["memory/used"]=memory.Used;values["memory/total"]=memory.Total;
                     values["memory/usage"]=MemoryUsage.Percentage(memory.Used,memory.Total);
                     if(timings is not null)timings["windows/memory"]=Stopwatch.GetElapsedTime(providerStarted).TotalMilliseconds;
-                    providerStarted=Stopwatch.GetTimestamp();var network=windows.Network(clock.Elapsed.TotalSeconds);
+                    providerStarted=Stopwatch.GetTimestamp();var network=windows.Network(clock.Elapsed.TotalSeconds,excludeVirtualAdapters);
                     if(timings is not null)timings["windows/network"]=Stopwatch.GetElapsedTime(providerStarted).TotalMilliseconds;
                     values["network/download"]=network.Down;values["network/upload"]=network.Up;
                     stage="Reading storage counters";
@@ -666,7 +670,7 @@ internal sealed class WindowsCounters : IDisposable
         var state=new MemoryStatus {Length=(uint)Marshal.SizeOf<MemoryStatus>()};
         return GlobalMemoryStatusEx(ref state)?(state.TotalPhysical-state.AvailablePhysical,state.TotalPhysical):(null,null);
     }
-    public (double? Down,double? Up,string Status) Network(double now)=>network.Read(now);
+    public (double? Down,double? Up,string Status) Network(double now,bool excludeVirtual=false)=>network.Read(now,excludeVirtual);
     /// <summary>Stops listening for address changes. Idempotent.</summary>
     public void Dispose()=>network.Dispose();
     [DllImport("kernel32.dll",SetLastError=true)] [return:MarshalAs(UnmanagedType.Bool)] private static extern bool GetSystemTimes(out ulong idle,out ulong kernel,out ulong user);

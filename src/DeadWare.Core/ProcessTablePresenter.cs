@@ -96,6 +96,7 @@ public static class ProcessTablePresenter
         "memory"=>HistoryChartModel.Bytes(value),
         // A known zero reads "0 B", not "0.0 B".
         "gpumemory" or "gpushared"=>value==0?"0 B":HistoryChartModel.Bytes(value),
+        "network" or "download" or "upload"=>HistoryChartModel.Rate(value),
         _=>HistoryChartModel.Bytes(value,true),
     };
 }

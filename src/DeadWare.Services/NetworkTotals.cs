@@ -5,7 +5,7 @@ namespace DeadWare.App;
 
 /// <summary>One adapter that counts toward the interface totals, and how to read its byte counters. A read throws
 /// <see cref="NetworkInformationException"/> once the adapter is gone.</summary>
-internal sealed record NetworkAdapter(string Id,Func<(long Received,long Sent)> Read);
+internal sealed record NetworkAdapter(string Id,Func<(long Received,long Sent)> Read,bool Virtual=false);
 
 /// <summary>
 /// The interface totals. Listing the adapters is the costly part: .NET rebuilds every interface's addresses, gateways and DNS
@@ -36,9 +36,10 @@ internal sealed class NetworkTotals : IDisposable
     /// <summary>The adapter list may have changed: the next read lists the adapters again. Safe from any thread.</summary>
     internal void MarkChanged()=>Interlocked.Exchange(ref changed,1);
 
-    public (double? Down,double? Up,string Status) Read(double now)
+    /// <summary>With <paramref name="excludeVirtual"/>, adapters recognized by <see cref="VirtualAdapters"/> are left out of the totals and counted in the status.</summary>
+    public (double? Down,double? Up,string Status) Read(double now,bool excludeVirtual=false)
     {
-        double down=0,up=0;bool valid=true;int count=0;
+        double down=0,up=0;bool valid=true;int count=0,excluded=0;
         try
         {
             // Cleared before listing, so a change Windows reports while the list is being built lists again on the next poll.
@@ -51,6 +52,7 @@ internal sealed class NetworkTotals : IDisposable
             }
             foreach(var adapter in adapters)
             {
+                if(excludeVirtual&&adapter.Virtual){excluded++;continue;}
                 count++;
                 if(!rates.TryGetValue(adapter.Id,out var rate))rates[adapter.Id]=rate=(new(),new());
                 try
@@ -61,7 +63,7 @@ internal sealed class NetworkTotals : IDisposable
                 // A removed adapter: the next poll lists the adapters again.
                 catch(NetworkInformationException){rates.Remove(adapter.Id);valid=false;MarkChanged();}
             }
-            return count==0?(null,null,"No active network interface"):(valid?down:null,valid?up:null,$"{count} active interface{(count==1?"":"s")} · totals include virtual adapters; VPN traffic can be counted twice{(!valid?" · waiting for counter baseline / reset":"")}");
+            return count==0?(null,null,excluded>0?$"No active physical network interface · {excluded} virtual excluded":"No active network interface"):(valid?down:null,valid?up:null,$"{count} active interface{(count==1?"":"s")} · {(excludeVirtual?$"{excluded} virtual adapter{(excluded==1?"":"s")} excluded":"totals include virtual adapters; VPN traffic can be counted twice")}{(!valid?" · waiting for counter baseline / reset":"")}");
         }
         catch(Exception e) {adapters=null;return (null,null,$"Interface counters unavailable ({e.GetType().Name})");}
     }
@@ -84,6 +86,6 @@ internal sealed class NetworkTotals : IDisposable
 
     private static IReadOnlyList<NetworkAdapter> ListAdapters()=>NetworkInterface.GetAllNetworkInterfaces()
         .Where(n=>Counted(n.OperationalStatus,n.NetworkInterfaceType,n.GetIPProperties().UnicastAddresses.Count))
-        .Select(n=>new NetworkAdapter(n.Id,()=>{var s=n.GetIPStatistics();return (s.BytesReceived,s.BytesSent);}))
+        .Select(n=>new NetworkAdapter(n.Id,()=>{var s=n.GetIPStatistics();return (s.BytesReceived,s.BytesSent);},VirtualAdapters.IsVirtual(n.NetworkInterfaceType,n.Name,n.Description)))
         .ToArray();
 }

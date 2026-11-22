@@ -270,7 +270,7 @@ public sealed class TrafficStripModel(TrafficStripKind page)
         else if (slot.RecordedSeconds > 0)
         {
             long total = SlotTotal(slot, data.Applications.Count, data.Measure);
-            lines.Add($"{HistoryChartModel.Bytes(total)} · {HistoryChartModel.Bytes((double)total / slot.RecordedSeconds, true)} average");
+            lines.Add($"{HistoryChartModel.Bytes(total)} · {HistoryChartModel.Rate((double)total / slot.RecordedSeconds)} average");
         }
         if (!TrafficStrips.IsFull(slot))
         {
@@ -326,7 +326,7 @@ public sealed class TrafficStripModel(TrafficStripKind page)
 
     /// <summary>The y-axis labels at 0, half and the maximum.</summary>
     public IReadOnlyList<(double Y, string Label)> AxisLabels() =>
-        new[] { 0d, .5, 1 }.Select(f => (Y(Maximum * f), HistoryChartModel.Bytes(Maximum * f, true))).ToArray();
+        new[] { 0d, .5, 1 }.Select(f => (Y(Maximum * f), HistoryChartModel.Rate(Maximum * f))).ToArray();
 
     /// <summary>The labels under the plot's two ends.</summary>
     public (string From, string To) DateLabels()

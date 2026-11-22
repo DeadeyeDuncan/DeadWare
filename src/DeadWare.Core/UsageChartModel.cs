@@ -30,6 +30,7 @@ public static class UsageChartModel
     {
         "%"=>value.ToString(tenths&&Math.Abs(value)<10?"0.#":"0",CultureInfo.CurrentCulture)+"%",
         "°C"=>string.Create(CultureInfo.CurrentCulture,$"{value:0}°C"),
+        HistoryChartModel.NetworkRateLabel=>HistoryChartModel.Rate(value),
         "B/s"=>HistoryChartModel.Bytes(value,true),
         "B"=>HistoryChartModel.Bytes(value),
         _=>string.Create(CultureInfo.CurrentCulture,$"{value:0.#} {unit}"),
@@ -129,7 +130,7 @@ public static class UsagePresenter
     public static string Statistics(UsageHistoryView view,string unit)
     {
         if(view.Minutes==0||view.Statistics.Average is null)return "No readings in this period.";
-        string Format(double? value)=>unit=="B/s"?HistoryChartModel.Bytes(value,true):Number(value,unit=="%"?"%":" "+unit);
+        string Format(double? value)=>unit==HistoryChartModel.NetworkRateLabel?HistoryChartModel.Rate(value):unit=="B/s"?HistoryChartModel.Bytes(value,true):Number(value,unit=="%"?"%":" "+unit);
         return string.Create(CultureInfo.CurrentCulture,$"MIN {Format(view.Statistics.Minimum)}    AVG {Format(view.Statistics.Average)}    MAX {Format(view.Statistics.Maximum)}    ·    {view.Minutes:N0} minutes");
     }
 

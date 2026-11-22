@@ -97,7 +97,7 @@ internal sealed class NetworkPage : Page
             .Select(process => new TableRow($"{process.Pid}/{process.Generation}",
             [
                 session.IsExcluded(process.Name) ? process.Name + ProcessCopy.NotRecordedSuffix : process.Name, process.Pid.ToString(),
-                HistoryChartModel.Bytes(session.Stale ? null : process.DownloadBytesPerSecond, true), HistoryChartModel.Bytes(session.Stale ? null : process.UploadBytesPerSecond, true),
+                HistoryChartModel.Rate(session.Stale ? null : process.DownloadBytesPerSecond), HistoryChartModel.Rate(session.Stale ? null : process.UploadBytesPerSecond),
                 HistoryChartModel.Bytes(process.ReceivedBytes), HistoryChartModel.Bytes(process.SentBytes),
             ]))
             .ToArray();
