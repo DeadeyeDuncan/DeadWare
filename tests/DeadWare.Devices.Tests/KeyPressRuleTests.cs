@@ -10,7 +10,15 @@ namespace DeadWare.Devices.Tests;
 // DeadWare.Devices and DeadWare.Core.
 public sealed class KeyPressRuleTests
 {
-    static readonly string[] Allowed=["SetWindowsHookEx","UnhookWindowsHookEx","CallNextHookEx","GetMessage","PostThreadMessage","GetModuleHandle","GetCurrentThreadId"];
+    // Lighting 4: every file that may import Windows functions, with exactly the functions it may import (a trailing W is stripped).
+    static readonly Dictionary<string,string[]> Pinned=new()
+    {
+        ["DeadWare.Devices/KeyPressHook.cs"]=["SetWindowsHookEx","UnhookWindowsHookEx","CallNextHookEx","GetMessage","PostThreadMessage","GetModuleHandle","GetCurrentThreadId"],
+        ["DeadWare.Devices/EverydayWatcher.cs"]=["RegisterClassEx","UnregisterClass","CreateWindowEx","DestroyWindow","DefWindowProc","GetMessage","DispatchMessage","PostMessage","PostQuitMessage",
+            "RegisterHotKey","UnregisterHotKey","WTSRegisterSessionNotification","WTSUnRegisterSessionNotification","RegisterSuspendResumeNotification","UnregisterSuspendResumeNotification","GetModuleHandle",
+            "SetTimer","KillTimer"],
+        ["DeadWare.Devices/InputClock.cs"]=["GetLastInputInfo","GetTickCount","GetCursorPos"],
+    };
     static readonly string[] Dynamic=["NativeLibrary","GetProcAddress","delegate* unmanaged","delegate*unmanaged"];
     static readonly string[] Forbidden=["ToUnicode","ToAscii","MapVirtualKey","VkKeyScan","GetKeyState","GetAsyncKeyState","GetKeyboardState","GetKeyNameText","GetKeyboardLayout","GetRawInputData","RegisterRawInputDevices","Console.ReadKey"];
 
@@ -99,12 +107,47 @@ public sealed class KeyPressRuleTests
                 Assert.False(text.Contains(word,StringComparison.Ordinal),$"{name} binds a function by other means: {word}");
         var hook=all.Single(s=>s.Name=="DeadWare.Devices/KeyPressHook.cs").Text;
         Assert.DoesNotContain("vkCode",hook);
-        // Each imported entry point: the method declared after a DllImport or LibraryImport attribute, or its EntryPoint when one is given.
-        var imports=Regex.Matches(hook,@"\[(?:DllImport|LibraryImport)\((?<args>[^\]]*)\)\][^;]*?\bextern\s+[\w<>\[\],\s]+?\s(?<name>\w+)\s*\(",RegexOptions.Singleline)
-            .Select(m=>Regex.Match(m.Groups["args"].Value,@"EntryPoint\s*=\s*""(?<e>\w+)""") is{Success:true} e?e.Groups["e"].Value:m.Groups["name"].Value)
-            .Select(n=>n.EndsWith('W')?n[..^1]:n).OrderBy(x=>x,StringComparer.Ordinal).ToArray();
-        Assert.Equal(Allowed.OrderBy(x=>x,StringComparer.Ordinal),imports);
-        // Every import attribute in the file was counted by the pattern above.
-        Assert.Equal(Regex.Matches(hook,@"\[(?:DllImport|LibraryImport)\(").Count,imports.Length);
+        Assert.Equal(Pinned["DeadWare.Devices/KeyPressHook.cs"].OrderBy(x=>x,StringComparer.Ordinal),Imports(hook));
+        // Every import attribute in the file was counted by the pattern.
+        Assert.Equal(Regex.Matches(hook,@"\[(?:DllImport|LibraryImport)\(").Count,Imports(hook).Length);
+    }
+
+    // Each imported entry point: the method declared after a DllImport or LibraryImport attribute, or its EntryPoint when one is given.
+    static string[] Imports(string text)=>Regex.Matches(text,@"\[(?:DllImport|LibraryImport)\((?<args>[^\]]*)\)\][^;]*?\bextern\s+[\w<>\[\],\s]+?\s(?<name>\w+)\s*\(",RegexOptions.Singleline)
+        .Select(m=>Regex.Match(m.Groups["args"].Value,@"EntryPoint\s*=\s*""(?<e>\w+)""") is{Success:true} e?e.Groups["e"].Value:m.Groups["name"].Value)
+        .Select(n=>n.EndsWith('W')?n[..^1]:n).OrderBy(x=>x,StringComparer.Ordinal).ToArray();
+
+    // Lighting 4: each pinned file imports exactly its list, and every import attribute in it is counted.
+    [Fact]
+    public void Each_pinned_file_imports_exactly_its_list()
+    {
+        var all=Sources();
+        foreach(var (file,list) in Pinned)
+        {
+            var text=Assert.Single(all,s=>s.Name==file).Text;
+            var imports=Imports(text);
+            Assert.True(list.OrderBy(x=>x,StringComparer.Ordinal).SequenceEqual(imports),$"{file} imports [{string.Join(",",imports)}], allowed [{string.Join(",",list.OrderBy(x=>x,StringComparer.Ordinal))}]");
+            Assert.Equal(Regex.Matches(text,@"\[(?:DllImport|LibraryImport)\(").Count,imports.Length);
+        }
+    }
+
+    // Lighting 4: no mouse hook, by any spelling of its constant.
+    [Fact]
+    public void No_file_names_a_mouse_hook()
+    {
+        foreach(var (name,text) in Sources())
+            Assert.False(text.Contains("WH_MOUSE",StringComparison.Ordinal),$"{name} mentions WH_MOUSE");
+    }
+
+    // Lighting 4, ruling P8: the shortcut, idle and pointer calls are named only in their own files, comments included.
+    [Fact]
+    public void The_shortcut_idle_and_pointer_calls_live_in_their_own_files()
+    {
+        var all=Sources();
+        static string File(string n)=>n[(n.LastIndexOf('/')+1)..];
+        string[] Where(string word)=>all.Where(s=>s.Text.Contains(word,StringComparison.Ordinal)).Select(s=>File(s.Name)).ToArray();
+        Assert.Equal(["EverydayWatcher.cs"],Where("RegisterHotKey"));
+        Assert.Equal(["InputClock.cs"],Where("GetLastInputInfo"));
+        Assert.Equal(["InputClock.cs"],Where("GetCursorPos"));
     }
 }
