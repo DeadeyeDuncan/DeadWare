@@ -80,6 +80,8 @@ internal sealed class LightingPage : Page, IHeaderTool
     private const string InsideHint = "side window, front on the right · tap a part to change its colours";
     private const string KeepColourText = " · they keep your saved colour during effects";
     private readonly DeskPictureView picture = new();
+    // Lighting 3b: the large keyboard view's tools, for the picture's keyboard view: its switch and Done in the header, its card in the panel.
+    private readonly KeyboardEditor keyEditor;
     private readonly Grid pictureHeader = new() { ColumnSpacing = 10 };
     private readonly TextBlock pictureTitle = Heading("Desk"), pictureHint = Muted(DeskHint);
     private readonly Button backToDesk = new() { Content = "← Back to desk", VerticalAlignment = VerticalAlignment.Center };
@@ -134,6 +136,8 @@ internal sealed class LightingPage : Page, IHeaderTool
     private DeskLayout deskLayout = DeskLayouts.Empty();
     private DeviceView[] deskDevices = [];
     private bool deskLightsOn = true, listSyncing;
+    // The running state's KeyHook as the desk last showed it, for the layers editor's note.
+    private bool deskKeyHook;
     // How the desk area was last arranged, and the page's width then: the mode changes the arrangement too.
     private (bool Wide, bool Picture)? arranged;
     private double deskWidth;
@@ -279,6 +283,13 @@ internal sealed class LightingPage : Page, IHeaderTool
         pictureHeader.Children.Add(pictureHint);
         pictureHeader.Children.Add(backToDesk);
         backToDesk.Click += (_, _) => ShowPictureView(PictureView.Desk);
+        // The keyboard view's switch and Done sit where Back to desk does; only one of them shows.
+        keyEditor = new KeyboardEditor(queue, SendTracked, picture);
+        keyEditor.DoneRequested += () => LeaveKeys(sendWaiting: true);
+        keyEditor.PartChanged += ShowPictureHeader;
+        Grid.SetColumn(keyEditor.Bar, 2);
+        Show(keyEditor.Bar, false);
+        pictureHeader.Children.Add(keyEditor.Bar);
         notInPicture.Inlines.Add(new Run { Text = "Not in the picture:", FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
         notInPictureList.Foreground = (Brush)Application.Current.Resources["TextFillColorSecondaryBrush"];
         notInPicture.Inlines.Add(notInPictureList);
@@ -359,6 +370,8 @@ internal sealed class LightingPage : Page, IHeaderTool
         effectBar.Leave();
         // So do the cards' tuning sliders, which may never get their release either.
         foreach (var card in cards.Values) card.Leave();
+        // The large keyboard view closes with the page, as Done closes it, its waiting change sent.
+        LeaveKeys(sendWaiting: true);
         // Edit layout ends with the page, and the desk forgets edits on their way: it shows the host's layout when it is back.
         DropLayoutDraft();
         SetEditing(false);
@@ -414,7 +427,8 @@ internal sealed class LightingPage : Page, IHeaderTool
     /// <summary>
     /// Shows the waiting frame on the desk. Dropped while the page is hidden, when it came from a client the page no longer follows,
     /// while the latest state isn't Running, and while nothing animates (no desk effect or device mode running, see LightingPaint.Animating): the host can send one frame computed just before a switch to Static or lights
-    /// off, after that state, and no later frame would replace it.
+    /// off, after that state, and no later frame would replace it. Lighting 3b: a frame is also shown while some painted device has painted
+    /// keys or layers with the lights on (LightingPaint.ShowsLights), since those colours are only in the host's frames, never in the state.
     /// </summary>
     private void ShowFrame()
     {
@@ -422,9 +436,16 @@ internal sealed class LightingPage : Page, IHeaderTool
         Volatile.Write(ref frameQueued, 0);
         if (Interlocked.Exchange(ref pendingFrame, null) is not { } frame || !showing || client is null || !ReferenceEquals(frame.Source, client)) return;
         // Nor while the host isn't running, so a frame can't paint over the colours a non-running state cleared.
-        if (client.State is not { Status: HostStatus.Running, Settings: { } settings } state || !LightingPaint.Animating(settings, state.Devices ?? [])) return;
+        if (client.State is not { Status: HostStatus.Running, Settings: { } settings } state || !ShowsFrames(settings, state.Devices)) return;
         ShowDeskColors(frame.Colors);
     }
+
+    /// <summary>
+    /// Whether the desk draws the host's frames: something animates, or (lighting 3b) painted keys or layers show, whose colours only the
+    /// frames carry.
+    /// </summary>
+    private static bool ShowsFrames(LightingSettings settings, IReadOnlyList<DeviceView>? devices) =>
+        LightingPaint.Animating(settings, devices ?? []) || LightingPaint.ShowsLights(settings, devices ?? []);
 
     /// <summary>
     /// A preview frame to the drawing the mode shows, the plain desk or the picture; null (the state's colours) to both, so neither keeps
@@ -489,6 +510,7 @@ internal sealed class LightingPage : Page, IHeaderTool
         deskLayout = DeskLayouts.Empty();
         deskDevices = [];
         deskLightsOn = true;
+        deskKeyHook = false;
         deskEffect = null;
         desk.Selected = null;
         ShowDeskColors(null);
@@ -570,8 +592,9 @@ internal sealed class LightingPage : Page, IHeaderTool
             }
             // Effects go only to a running host whose settings the bar has seen.
             effectBar.Show(shownEffect ?? new EffectSettings(), live && state.Settings is not null);
-            // While nothing animates (LightingPaint.Animating) the desk shows the state's colours, and frames are dropped until one runs again.
-            if (state.Settings is not { } current || !LightingPaint.Animating(current, state.Devices ?? [])) ShowDeskColors(null);
+            // While nothing animates (LightingPaint.Animating) and nothing painted shows (LightingPaint.ShowsLights) the desk shows the state's
+            // colours, and frames are dropped until one of them holds again.
+            if (state.Settings is not { } current || !ShowsFrames(current, state.Devices)) ShowDeskColors(null);
             ShowDevices(state);
         }
         UpdateFlyouts(resync: live && !wasLive);
@@ -678,6 +701,7 @@ internal sealed class LightingPage : Page, IHeaderTool
                 deskLightsOn = settings.LightsOn;
                 deskEffect = settings.Effect;
             }
+            deskKeyHook = shown.State.KeyHook;
             deskDevices = shown.Devices;
             if (desk.Selected is { } key && key != DeskView.Tower && !deskDevices.Any(device => device.Key == key)) desk.Selected = null;
             // A Place on desk whose reply came is over once a newer state than the one at its reply is shown.
@@ -750,9 +774,13 @@ internal sealed class LightingPage : Page, IHeaderTool
         ShowPanel();
     }
 
-    /// <summary>The picture's view back to the desk with nothing selected.</summary>
+    /// <summary>
+    /// The picture's view back to the desk with nothing selected. The large keyboard view closes with its waiting change dropped: this runs
+    /// for a new client, a change of mode and the page shown again (leaving the page already closed it, sending that change).
+    /// </summary>
     private void ResetPictureView()
     {
+        keyEditor.Close(sendWaiting: false);
         selectedDevice = null;
         picture.SelectedPart = null;
         picture.View = PictureView.Desk;
@@ -760,13 +788,74 @@ internal sealed class LightingPage : Page, IHeaderTool
         ShowPictureHeader();
     }
 
-    /// <summary>The desk card's title and hint for the picture's view, with Back to desk in the inside view.</summary>
+    /// <summary>
+    /// The desk card's title and hint for the picture's view, with Back to desk in the inside view; in the keyboard view "Painting keys" or
+    /// "Layers" by the editor's part, the keyboard's name, and the editor's switch and Done.
+    /// </summary>
     private void ShowPictureHeader()
     {
-        bool inside = picture.View == PictureView.Inside;
-        pictureTitle.Text = inside ? "Inside the PC" : "Desk";
-        pictureHint.Text = inside ? InsideHint : DeskHint;
+        bool inside = picture.View == PictureView.Inside, keys = picture.View == PictureView.Keys;
+        pictureTitle.Text = keys ? (keyEditor.Part == KeyboardEditor.EditorPart.Layers ? "Layers" : "Painting keys") : inside ? "Inside the PC" : "Desk";
+        pictureHint.Text = keys ? keyEditor.Title : inside ? InsideHint : DeskHint;
         Show(backToDesk, inside);
+        Show(keyEditor.Bar, keys);
+    }
+
+    /// <summary>
+    /// Opens the large keyboard view for a keyboard of the running host's list, on one part: the picture's keyboard view through
+    /// <see cref="ShowPictureView"/>, the editor's card in the panel. The keyboard stays the selected device. Only in picture mode, whose
+    /// picture the view takes the place of; false when it can't open (plain mode, the host not running, or not a keyboard with keys).
+    /// </summary>
+    internal bool OpenKeyboard(string deviceKey, KeyboardEditor.EditorPart part)
+    {
+        if (shownPicture is null || !live || scene is null) return false;
+        if (deskDevices.FirstOrDefault(d => d.Key == deviceKey) is not { Keyboard: true, Keys: not null } keyboard) return false;
+        if (selectedDevice != deviceKey)
+        {
+            // Selected as a tap on its part selects it, so the card's heading and the selection follow the keyboard.
+            selectedDevice = deviceKey;
+            picture.SelectedPart = scene.Parts.FirstOrDefault(p => p.Found && p.DeviceKey == deviceKey)?.Part.Id;
+        }
+        keyEditor.Open(keyboard, KeyboardHeading(keyboard), part, shownSeq, live, deskLightsOn, deskKeyHook);
+        ShowPictureView(PictureView.Keys);
+        return true;
+    }
+
+    /// <summary>
+    /// Closes the large keyboard view, if it is open, back to the desk view with the keyboard still selected: Done and leaving the page
+    /// (its waiting change sent), the keyboard gone or another device selected (dropped).
+    /// </summary>
+    private void LeaveKeys(bool sendWaiting)
+    {
+        if (!keyEditor.IsOpen && picture.View != PictureView.Keys) return;
+        keyEditor.Close(sendWaiting);
+        if (picture.View == PictureView.Keys) picture.View = PictureView.Desk;
+        ShowPictureHeader();
+        SyncList();
+        ShowPanel();
+    }
+
+    /// <summary>The editor card's heading: the picture's for the keyboard's part ("Keyboard · SteelSeries Apex Pro"), else the device's name as the page shows it.</summary>
+    private string KeyboardHeading(DeviceView keyboard)
+    {
+        if (selectedDevice == keyboard.Key && MarkFor() is { } mark) return mark.Title;
+        int at = Array.FindIndex(deskDevices, d => d.Key == keyboard.Key);
+        return at >= 0 ? Names(deskDevices)[at] : keyboard.Name ?? "";
+    }
+
+    /// <summary>
+    /// The open keyboard view from the devices the desk last showed: the editor follows its keyboard, and the view closes when a running
+    /// host no longer lists it as a keyboard with keys. While the host isn't running the list is the last running one, and the view stays, disabled.
+    /// </summary>
+    private void UpdateKeys()
+    {
+        if (keyEditor.DeviceKey is not { } key) return;
+        if (deskDevices.FirstOrDefault(d => d.Key == key) is { Keyboard: true, Keys: not null } keyboard)
+        {
+            keyEditor.Update(keyboard, KeyboardHeading(keyboard), shownSeq, live, deskLightsOn, deskKeyHook);
+            if (picture.View == PictureView.Keys && pictureHint.Text != keyEditor.Title) pictureHint.Text = keyEditor.Title;
+        }
+        else LeaveKeys(sendWaiting: false);
     }
 
     /// <summary>
@@ -796,6 +885,7 @@ internal sealed class LightingPage : Page, IHeaderTool
         bool wave = deskLightsOn && deskEffect is { } effect && LightingEffects.KindOf(effect.Kind) == EffectKind.Wave;
         double angle = deskEffect is { } current ? LightingEffects.ParamsFor(current, EffectKind.Wave)?.AngleDeg ?? 0 : 0;
         picture.Show(next, deskLightsOn, live, wave, angle);
+        UpdateKeys();
         if (next.NotInPicture.Count > 0) notInPictureList.Text = " " + string.Join(" · ", next.NotInPicture) + KeepColourText;
         Show(notInPicture, next.NotInPicture.Count > 0);
     }
@@ -805,18 +895,28 @@ internal sealed class LightingPage : Page, IHeaderTool
     {
         if (shownPicture is null) return;
         bool found = part is { Found: true };
+        // Selecting another device closes the large keyboard view, as Done does but dropping a waiting change. (The keyboard view itself
+        // raises no part taps, so this guards any other way of selecting.)
+        if (keyEditor.IsOpen && (!found || part!.DeviceKey != keyEditor.DeviceKey)) LeaveKeys(sendWaiting: false);
         picture.SelectedPart = found ? part!.Part.Id : null;
         selectedDevice = found ? part!.DeviceKey : null;
         SyncList();
         ShowPanel();
     }
 
-    /// <summary>The desk or the inside view, with nothing selected.</summary>
+    /// <summary>
+    /// The desk or the inside view, with nothing selected (the large keyboard view, if open, closes first, its waiting change sent); or the
+    /// keyboard view, which <see cref="OpenKeyboard"/> opens with its keyboard still selected.
+    /// </summary>
     private void ShowPictureView(PictureView view)
     {
         if (shownPicture is null) return;
-        selectedDevice = null;
-        picture.SelectedPart = null;
+        if (view != PictureView.Keys)
+        {
+            keyEditor.Close(sendWaiting: true);
+            selectedDevice = null;
+            picture.SelectedPart = null;
+        }
         picture.View = view;
         ShowPictureHeader();
         SyncList();
@@ -1152,7 +1252,8 @@ internal sealed class LightingPage : Page, IHeaderTool
     private void ShowPanel()
     {
         DeviceCard? card = Selected is { } key && key != DeskView.Tower && cards.TryGetValue(key, out var found) ? found : null;
-        UIElement next = card?.Root ?? emptyPanel;
+        // The large keyboard view's card takes the panel while the view is open.
+        UIElement next = keyEditor.IsOpen ? keyEditor.Root : card?.Root ?? emptyPanel;
         bool tower = shownPicture is null && desk.Selected == DeskView.Tower;
         bool pictureOn = shownPicture is not null;
         Show(emptyHeading, tower || pictureOn);
@@ -1163,6 +1264,7 @@ internal sealed class LightingPage : Page, IHeaderTool
         if (markedCard is not null && !ReferenceEquals(markedCard, card)) markedCard.Mark(null);
         markedCard = card;
         card?.Mark(pictureOn ? MarkFor() : null);
+        card?.ShowViewable(pictureOn);
         ShowLayoutPanel();
         if (ReferenceEquals(panelSlot.Child, next)) return;
         if (zoneFlyout.IsOpen) zoneFlyout.Hide();
@@ -1507,7 +1609,8 @@ internal sealed class LightingPage : Page, IHeaderTool
         private readonly LightingPage page;
         private readonly TextBlock title = new() { Style = (Style)Application.Current.Resources["BodyStrongTextBlockStyle"], TextWrapping = TextWrapping.Wrap };
         private readonly TextBlock staysLit = Muted("Stays lit when lights are off"), cannotDrive = Muted("DeadWare can't drive this device"), noZones = Muted("This device has no colour zones.");
-        // Lighting mode, Brightness and Colour correction under the zone rows, and the own-effect note that goes first.
+        // A keyboard's Saved looks above the zone rows; Key colours, Lighting mode, Layers, Brightness and Colour correction under them;
+        // and the own-effect note that goes first.
         private readonly DeviceSections sections;
         // The picture's sub-line under the title ("selected on the desk", "radiator fan 2 selected"), collapsed in plain mode.
         private readonly TextBlock subtitle = Muted("");
@@ -1522,8 +1625,8 @@ internal sealed class LightingPage : Page, IHeaderTool
             this.page = page;
             Show(subtitle, false);
             var top = new StackPanel { Spacing = 2, Children = { title, subtitle } };
-            sections = new DeviceSections(page.queue, page.Send);
-            var content = new StackPanel { Spacing = 8, Padding = new Thickness(8), Children = { top, sections.Note, staysLit, cannotDrive, noZones, zones } };
+            sections = new DeviceSections(page.queue, page.Send, page.OpenKeyboard);
+            var content = new StackPanel { Spacing = 8, Padding = new Thickness(8), Children = { top, sections.Note, staysLit, cannotDrive, sections.Looks, noZones, zones } };
             foreach (var section in sections.Sections) content.Children.Add(section);
             Root = Pages.Card(content);
         }
@@ -1564,7 +1667,7 @@ internal sealed class LightingPage : Page, IHeaderTool
             // The device's own effect and whether it stays lit with lights off don't change with Lights on (Ruling AB), so the card
             // names the effect while the lights are off too, and warns before they go off that the device will stay lit. The note
             // naming the effect goes first, and the tuning sections show disabled (DeviceSections).
-            sections.Update(device, page.shownState?.Settings?.Brightness ?? 100, mark?.Parts, live);
+            sections.Update(device, page.shownState?.Settings?.Brightness ?? 100, mark?.Parts, live, page.shownPicture is not null);
             Show(staysLit, hardware && device.StaysLitWhenOff);
             Show(cannotDrive, unsupported);
             // Only a device DeadWare paints lists its zones. One running its own effect keeps its zones' colours, but they don't show on it,
@@ -1595,6 +1698,9 @@ internal sealed class LightingPage : Page, IHeaderTool
 
         /// <summary>Ends the tuning sliders' drags and sends their waiting changes now, as when the page is hidden.</summary>
         public void Leave() => sections.Leave();
+
+        /// <summary>Whether the page is in picture mode, which Paint keys… and Edit layers… need, as the card is shown.</summary>
+        public void ShowViewable(bool on) => sections.ShowViewable(on);
 
         /// <summary>Disables the swatches and the tuning sections while the host isn't running, leaving the card as it was.</summary>
         public void Disable()

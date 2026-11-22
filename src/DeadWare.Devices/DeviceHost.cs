@@ -67,28 +67,56 @@ internal sealed class DeviceHost : IAsyncDisposable
     string message="";
     IReadOnlyList<LightingConflict> conflicts=[];
     public event Action<HostState>? StateChanged;
+    // Lighting 3b, the key-press rule: keys is the source of key presses (the low-level hook in the process; a fake in tests; none, never
+    // watched). It runs only while the host is Running with a session and some keyboard needs key presses (Watch). The gate turns its events
+    // into LightPress records and is the only thing the source is given. A press wakes the loop through wake, a TaskCompletionSource whose
+    // continuations run on the thread pool, never on the hook's thread; the loop makes a fresh one each turn. Never cancel a token from the
+    // press callback: the cancellation would run the loop's continuation, the paint tick and its OpenRGB calls, on the hook thread.
+    // watchGate orders Watch, its refresh and the stop at the end: raiseGate, then watchGate, then gate. watchStarted, watchLogged (how many
+    // keyboards the last "watching" line named, 0 once "not watching" was logged or a start failed), watchFailLogged and refreshAt are
+    // guarded by watchGate; keyHook (the state's KeyHook) and namesLogged (keyboards whose light names were logged since the device list
+    // last changed) by gate.
+    public static readonly TimeSpan KeyRefresh=TimeSpan.FromMinutes(5);
+    const string StartRefused="Windows didn't install the keyboard hook";
+    readonly IKeyPressSource? keys;
+    readonly KeyPressGate presses;
+    TaskCompletionSource wake=new(TaskCreationOptions.RunContinuationsAsynchronously);
+    readonly object watchGate=new();
+    bool watchStarted,watchFailLogged,keyHook;
+    int watchLogged;
+    long refreshAt;
+    readonly HashSet<string> namesLogged=new();
     // Preview frames (Task 7; step 3a adds device modes and per-light colours for key-map devices): while the window has subscribed and
     // something animates (LightingPaint.Animating), the paint tick takes the colours before
     // brightness at most once per PreviewGap of the host's time and raises them when they differ from the last frame sent. previewOn, the
     // last frame and its time are guarded by gate; previewGeneration changes with every subscribe and ClientGone, so a frame taken under an
     // older subscription is never raised. Frames are raised outside gate under previewGate, which ClientGone also takes, so once it returns
     // no frame follows.
+    // Lighting 3b: painted keys and layers aren't in the state's colours, so a painted desk that doesn't move still needs a frame. previewDue
+    // is set, while subscribed, by the subscription and by every raised state; the next paint tick then sends one frame whatever animates,
+    // however soon after the last and even when it equals it, if the window would draw it (LightingPaint.ShowsLights: lights on and some
+    // painted device with paint or layers). So with nothing painted the frames are 3a's, and none goes while the lights are off.
     public static readonly TimeSpan PreviewGap=TimeSpan.FromMilliseconds(100);
     public event Action<PreviewEvent>? PreviewChanged;
     readonly object previewGate=new();
-    bool previewOn;
+    bool previewOn,previewDue;
+    // wbr-1 D1: the last preview tick found something moving. When that stops (a key press's fade or ring ends, with nothing else moving),
+    // the next tick sends one closing frame like a due one, so the window, which keeps drawing the last frame while it shows painted
+    // lights, doesn't keep the press lit.
+    bool previewMoving;
     int previewGeneration;
     double? lastPreviewMs;
     PreviewEvent? lastPreview;
     // The window is gone: its subscription ends. Called by the pipe server outside its own locks.
-    public void ClientGone(){lock(previewGate)lock(gate){previewOn=false;previewGeneration++;lastPreview=null;lastPreviewMs=null;}}
+    public void ClientGone(){lock(previewGate)lock(gate){previewOn=false;previewDue=false;previewGeneration++;lastPreview=null;lastPreviewMs=null;}}
 
     // startupFailure: set when the host could not prepare OpenRGB's config folder; it reports OpenRgbFailed and never starts OpenRGB.
     // callClock: the clock of the bound on OpenRGB calls; real time unless a test supplies one.
-    public DeviceHost(HostOptions options,LightingStore store,OpenRgbEngine engine,Func<IOpenRgbSession> sessionFactory,IConflictScanner conflicts,TimeProvider time,HostLog log,string? startupFailure=null,TimeProvider? callClock=null)
+    public DeviceHost(HostOptions options,LightingStore store,OpenRgbEngine engine,Func<IOpenRgbSession> sessionFactory,IConflictScanner conflicts,TimeProvider time,HostLog log,string? startupFailure=null,TimeProvider? callClock=null,IKeyPressSource? keys=null)
     {
         this.options=options;this.store=store;this.engine=engine;scanner=conflicts;this.time=time;this.log=log;this.startupFailure=startupFailure;
         epoch=time.GetTimestamp();
+        this.keys=keys;presses=new(Now,Wake);
         session=new BoundedSession(sessionFactory(),callClock);
         service=new(session,time,log);
         session.DeviceListUpdated+=OnDeviceListUpdated;
@@ -99,7 +127,7 @@ internal sealed class DeviceHost : IAsyncDisposable
     HostState BuildLocked()
     {
         var text=note is null?message:message.Length==0?note:message+" "+note;
-        return new(status,text,Environment.IsPrivilegedProcess,conflicts,service.Views(settings),Clone(settings),conflictsChecked);
+        return new(status,text,Environment.IsPrivilegedProcess,conflicts,service.Views(settings),Clone(settings),conflictsChecked,keyHook);
     }
     static LightingSettings Clone(LightingSettings s)=>new()
     {
@@ -112,11 +140,100 @@ internal sealed class DeviceHost : IAsyncDisposable
     void Raise()
     {
         // Build and deliver under one gate: concurrent raises reach subscribers in build order, so the last delivered state is the newest.
+        // Every state follows a change of settings, devices or status, so the keyboards to watch are worked out first and the state says
+        // whether the hook is installed. Controller ruling R8: the frame the state asks for (previewDue) is asked for only after the state
+        // has been handed on, so it can't reach the pipe first, and the loop is woken for it at once rather than at its next tick.
         lock(raiseGate)
         {
+            Watch();
             HostState state;
             lock(gate)state=BuildLocked();
             try{StateChanged?.Invoke(state);}catch(Exception e){log.Write("StateChanged handler failed: "+e.Message);}
+            bool due;
+            lock(gate){due=previewOn;if(due)previewDue=true;}
+            if(due) Wake();
+        }
+    }
+    void Wake()=>Volatile.Read(ref wake).TrySetResult();
+
+    // The keyboards whose key presses matter: lights on, painted, a fade or ripple layer of some strength over at least one light
+    // (LightingLayers.NeedsKeys), and at least one light named for a known key. Each such keyboard's light names are logged once per
+    // device-list change: facts about the device, never about what was pressed. At most MaxNamesLogged unknown names are listed.
+    List<(string DeviceKey,IReadOnlyList<string> LightNames)> WatchedLocked()
+    {
+        var r=new List<(string,IReadOnlyList<string>)>();
+        foreach(var d in service.Devices)
+        {
+            if(d.LedNames is not{Count:>0} names||!LightingLayers.NeedsKeys(settings,d)) continue;
+            var unknown=KeyPressTable.Unrecognised(names);
+            if(namesLogged.Add(d.Key)) log.Write($"{d.Name}: {names.Count-unknown.Count} of {names.Count} light names are known keys; not known: {UnknownText(unknown)}.");
+            if(unknown.Count<names.Count) r.Add((d.Key,names));
+        }
+        return r;
+    }
+
+    const int MaxNamesLogged=20;
+    static string UnknownText(IReadOnlyList<string> unknown)=>unknown.Count==0?"none"
+        :string.Join(", ",unknown.Take(MaxNamesLogged))+(unknown.Count>MaxNamesLogged?$" and {unknown.Count-MaxNamesLogged} more":"");
+    static void StopQuietly(IKeyPressSource keys){try{keys.Stop();}catch(Exception){}}
+
+    // The key-press rule, point 7: the source runs only while the host is Running with a session and some keyboard needs key presses. With
+    // none it is stopped and the gate forgets every press and held key; with some the gate gets their table and the source is started if it
+    // isn't. A start that fails is logged once and tried again at the next call. refresh (every KeyRefresh while started): stop, forget held
+    // keys, start again, silently unless Installed changes. A source that was started but is no longer installed (Windows removed the hook,
+    // or its thread ended) counts as not started, so it is started again here. Returns whether Installed changed.
+    bool Watch(bool refresh=false)
+    {
+        if(keys is null) return false;
+        lock(watchGate)
+        {
+            List<(string DeviceKey,IReadOnlyList<string> LightNames)> want;
+            bool before;
+            lock(gate){before=keyHook;want=engineActive&&sessionOk&&status==HostStatus.Running?WatchedLocked():[];}
+            if(want.Count==0)
+            {
+                if(watchStarted){StopQuietly(keys);watchStarted=false;}
+                presses.Prepare([]);
+                watchFailLogged=false;
+                if(watchLogged>0){watchLogged=0;log.Write("Key presses: not watching.");}
+            }
+            else
+            {
+                presses.Prepare(want);
+                if(watchStarted&&(refresh||!keys.Installed)){StopQuietly(keys);watchStarted=false;presses.Released();}
+                if(!watchStarted)
+                {
+                    string? why=null;
+                    try{watchStarted=keys.Start(presses);}catch(Exception e){watchStarted=false;why=e.Message;}
+                    if(watchStarted){watchFailLogged=false;refreshAt=time.GetTimestamp()+(long)(KeyRefresh.TotalSeconds*time.TimestampFrequency);}
+                    else
+                    {
+                        StopQuietly(keys);
+                        watchLogged=0;
+                        if(!watchFailLogged){watchFailLogged=true;log.Write($"Key presses: couldn't watch for key presses ({why??StartRefused}).");}
+                    }
+                }
+                if(watchStarted&&watchLogged!=want.Count){watchLogged=want.Count;log.Write($"Key presses: watching, for {want.Count} keyboard(s).");}
+            }
+            var now=keys.Installed;
+            lock(gate)keyHook=now;
+            return now!=before;
+        }
+    }
+    bool RefreshDue(){if(keys is null) return false;lock(watchGate)return watchStarted&&time.GetTimestamp()>=refreshAt;}
+    // The source's Installed differs from what the last state said (fix round 1, M4): a hook whose thread died, or that Windows removed, is
+    // noticed at the next tick, and the Raise this brings tries it again and makes the state truthful.
+    bool KeyHookStale(){if(keys is null) return false;var now=keys.Installed;lock(gate)return now!=keyHook;}
+    void StopWatching()
+    {
+        if(keys is null) return;
+        lock(watchGate)
+        {
+            StopQuietly(keys);
+            watchStarted=false;
+            presses.Prepare([]);
+            if(watchLogged>0){watchLogged=0;log.Write("Key presses: not watching.");}
+            lock(gate)keyHook=false;
         }
     }
 
@@ -140,24 +257,37 @@ internal sealed class DeviceHost : IAsyncDisposable
             if(options.Startup) await Task.Delay(StartupDelay,time,ct).ConfigureAwait(false);
             var lastSlow=time.GetTimestamp();
             await CheckConflictsAsync(ct).ConfigureAwait(false);
+            var signal=Volatile.Read(ref wake);
             while(true)
             {
                 // Read each turn: an effect chosen or stopped takes effect from the next tick. slow stays timed by elapsed time, so the 5 s
                 // work keeps its cadence at either tick. FastTick only while a frame can be painted: something animates, the session is
                 // connected and the host is Running (fix wave L1); waiting, blocked or given up, the loop keeps Tick.
                 TimeSpan tick;
-                lock(gate)tick=LightingPaint.Animating(settings,service.Devices)&&sessionOk&&status==HostStatus.Running?FastTick:Tick;
-                await Task.Delay(tick,time,ct).ConfigureAwait(false);
+                // Lighting 3b: a key press still live for a fade or ripple layer moves too, and a press (or a frame a state asks for) ends
+                // the wait at once. The next wait's signal is made before this turn's work, so a wake during the work isn't lost. A wait
+                // ended by the signal cancels its timer here, on the loop's own thread.
+                lock(gate)tick=LightingPaint.Animating(settings,service.Devices,presses.Live(),Now())&&sessionOk&&status==HostStatus.Running?FastTick:Tick;
+                using(var turn=CancellationTokenSource.CreateLinkedTokenSource(ct))
+                {
+                    var delay=Task.Delay(tick,time,turn.Token);
+                    if(await Task.WhenAny(delay,signal.Task).ConfigureAwait(false)!=delay) turn.Cancel();
+                }
+                ct.ThrowIfCancellationRequested();
+                signal=new(TaskCreationOptions.RunContinuationsAsynchronously);
+                Volatile.Write(ref wake,signal);
                 var now=time.GetTimestamp();
                 var slow=time.GetElapsedTime(lastSlow,now)>=SlowTick;
                 if(slow){lastSlow=now;await CheckConflictsAsync(ct).ConfigureAwait(false);}
                 TickWork(slow);
+                if(RefreshDue()?Watch(refresh:true):KeyHookStale()) Raise();
             }
         }
         catch(OperationCanceledException){}
         finally
         {
             lock(gate){status=HostStatus.Stopping;engineActive=false;}
+            StopWatching();
             log.Write("host stopping");
             session.Abort();
             try{await engine.StopAsync().ConfigureAwait(false);}catch(Exception e){log.Write("engine stop failed: "+e.Message);}
@@ -261,8 +391,9 @@ internal sealed class DeviceHost : IAsyncDisposable
                 {
                     if(slow||rescanPending){rescanPending=false;changed=RescanLocked();}
                     var t=Now(); // one reading for the paint and the preview
-                    service.Paint(settings,t);
-                    frame=PreviewLocked(t);generation=previewGeneration;
+                    var live=presses.Live();
+                    service.Paint(settings,t,live);
+                    frame=PreviewLocked(t,live);generation=previewGeneration;
                 }
             }
             catch(Exception e){ForgetPreview();changed=FailSession(LostText,e);}
@@ -273,18 +404,23 @@ internal sealed class DeviceHost : IAsyncDisposable
 
     // The frame to send at tMs, or null: none subscribed, nothing animating, too soon after the last frame, or the same colours as it.
     // While no frame is produced (nothing animating, or no running session) the window shows the state's colours, so the last frame and
-    // its time are forgotten then: the first frame after a resume is sent even when it equals the last one (fix wave W1).
-    PreviewEvent? PreviewLocked(double tMs)
+    // its time are forgotten then: the first frame after a resume is sent even when it equals the last one (fix wave W1). A due frame
+    // (previewDue) skips all three checks, and so does the closing frame on the first tick after movement stops (previewMoving).
+    PreviewEvent? PreviewLocked(double tMs,IReadOnlyList<LightPress> live)
     {
-        if(!previewOn||!LightingPaint.Animating(settings,service.Devices)){ForgetPreview();return null;}
-        if(lastPreviewMs is {} last&&tMs-last<PreviewGap.TotalMilliseconds) return null;
+        var moving=previewOn&&LightingPaint.Animating(settings,service.Devices,live,tMs);
+        var due=previewOn&&(previewDue||previewMoving&&!moving)&&LightingPaint.ShowsLights(settings,service.Views(settings));
+        previewDue=false;
+        if(!due&&!moving){ForgetPreview();return null;}
+        previewMoving=moving;
+        if(!due&&lastPreviewMs is {} last&&tMs-last<PreviewGap.TotalMilliseconds) return null;
         lastPreviewMs=tMs;
-        var frame=new PreviewEvent(service.Preview(settings,tMs),service.PreviewLights(settings,tMs));
-        if(lastPreview is not null&&SameFrame(lastPreview,frame)) return null;
+        var frame=new PreviewEvent(service.Preview(settings,tMs,live),service.PreviewLights(settings,tMs,live));
+        if(!due&&lastPreview is not null&&SameFrame(lastPreview,frame)) return null;
         lastPreview=frame;
         return frame;
     }
-    void ForgetPreview(){lastPreview=null;lastPreviewMs=null;}
+    void ForgetPreview(){lastPreview=null;lastPreviewMs=null;previewMoving=false;}
     internal static bool SameFrame(PreviewEvent a,PreviewEvent b)=>Same(a.Colors,b.Colors)&&(a.Lights is null?b.Lights is null:b.Lights is not null&&Same(a.Lights,b.Lights));
     static bool Same(Dictionary<string,string> a,Dictionary<string,string> b)=>a.Count==b.Count&&a.All(e=>b.TryGetValue(e.Key,out var v)&&v==e.Value);
 
@@ -307,7 +443,7 @@ internal sealed class DeviceHost : IAsyncDisposable
             session.Connect();
             sessionOk=true;
             RescanLocked();
-            service.Paint(settings,Now());
+            service.Paint(settings,Now(),presses.Live());
             status=HostStatus.Running;message="";lastSessionError=null;connectDelay=ConnectDelayMin;nextConnectAt=0;
             return true;
         }
@@ -342,6 +478,7 @@ internal sealed class DeviceHost : IAsyncDisposable
     {
         var changed=service.Rescan();
         if(!changed) return false;
+        namesLogged.Clear();
         log.Write($"devices changed: {service.Devices.Count} device(s)");
         var save=LightingKeys.Remap(settings,service.Devices.Select(d=>d.Key).ToList());
         var views=service.Views(settings);
@@ -422,7 +559,7 @@ internal sealed class DeviceHost : IAsyncDisposable
                 return Ok(request);
             case RescanRequest:
                 if(!engineActive||!sessionOk||status!=HostStatus.Running) return Fail(request,"OpenRGB is not running.");
-                try{RescanLocked();service.Paint(settings,Now());raise=true;return Ok(request);}
+                try{RescanLocked();service.Paint(settings,Now(),presses.Live());raise=true;return Ok(request);}
                 catch(Exception e){FailSession(LostText,e);raise=true;return Fail(request,HostReplyCodes.RescanFailed);}
             case SetLightsOnRequest r:return Mutate(request,s=>{s.LightsOn=r.On;return null;},out raise);
             case SetBrightnessRequest r:return Mutate(request,s=>{if(r.Percent is<0 or>100) return "Brightness must be 0 to 100.";s.Brightness=r.Percent;return null;},out raise);
@@ -439,10 +576,17 @@ internal sealed class DeviceHost : IAsyncDisposable
                 },out raise);
             case SetEffectRequest r:return Mutate(request,s=>SetEffect(s,r),out raise);
             case SetLayoutRequest r:return Mutate(request,s=>SetLayout(s,r),out raise);
-            // Raises no state. A new subscription clears the last frame and its time, so its first frame goes at the next paint tick.
-            case SubscribePreviewRequest r:previewOn=r.On;previewGeneration++;lastPreview=null;lastPreviewMs=null;return Ok(request);
+            // Raises no state. A new subscription clears the last frame and its time, so its first frame goes at the next paint tick, as before:
+            // unlike a raised state (R8) it doesn't wake the loop, since a test pins that the first frame comes with the device already painted.
+            case SubscribePreviewRequest r:previewOn=r.On;previewDue=r.On;previewGeneration++;lastPreview=null;lastPreviewMs=null;return Ok(request);
             case SetDeviceTuningRequest r:return Mutate(request,s=>SetDeviceTuning(s,r),out raise);
             case SetDeviceModeRequest r:return Mutate(request,s=>SetDeviceMode(s,r),out raise);
+            case SetDeviceKeysRequest r:return Mutate(request,s=>SetDeviceKeys(s,r),out raise,noRoom:true);
+            case SetDeviceLayersRequest r:return Mutate(request,s=>SetDeviceLayers(s,r),out raise,noRoom:true);
+            case SaveLookRequest r:return Mutate(request,s=>SaveLook(s,r),out raise,noRoom:true);
+            case ChooseLookRequest r:return Mutate(request,s=>ChooseLook(s,r),out raise,noRoom:true);
+            case RenameLookRequest r:return Mutate(request,s=>RenameLook(s,r),out raise,noRoom:true);
+            case DeleteLookRequest r:return Mutate(request,s=>DeleteLook(s,r),out raise,noRoom:true);
             default:return Fail(request,HostReplyCodes.Unsupported);
         }
     }
@@ -469,6 +613,101 @@ internal sealed class DeviceHost : IAsyncDisposable
         Entry(s,r.DeviceKey).Mode=r.Kind is null?null:new DeviceMode{Kind=r.Kind,Speed=r.Speed};
         DeviceTunings.Normalize(s);
         return r.Kind is null?null:DeviceModes.CantRun(device,r.Kind);
+    }
+
+    // Lighting 3b. Each handler: listed, then (only for one that adds something: paint, layers, a save or a choice) a keyboard DeadWare can
+    // paint key by key, then its own checks, then the edit with Normalize; the ranges are Mutate's validation (DeviceLayers.ValidateSetup's
+    // sentences). Clearing, renaming and deleting work on any listed device, so a keyboard that lost its names can still be cleaned up.
+    string? Paintable(string? key,bool adds,out LightingDevice? device)
+    {
+        device=Listed(key);
+        if(device is null) return HostReplyCodes.UnknownDevice;
+        return adds&&!KeyMaps.CanPaint(device)?HostReplyCodes.NotPaintable:null;
+    }
+    // A set larger than the cap is left to validation's sentence; within it, an index at or beyond the light count isn't on this keyboard.
+    string? SetDeviceKeys(LightingSettings s,SetDeviceKeysRequest r)
+    {
+        if(Paintable(r.DeviceKey,r.Keys is{Count:>0},out var device) is{} why) return why;
+        var n=KeyMaps.LightCount(device!);
+        if(r.Keys is{} keys&&keys.Count<=DeviceLayers.MaxKeys&&keys.Keys.Any(i=>i>=n)) return HostReplyCodes.BadKey;
+        Entry(s,r.DeviceKey).Keys=DeviceLayers.Clone(r.Keys);
+        DeviceTunings.Normalize(s);
+        return null;
+    }
+    string? SetDeviceLayers(LightingSettings s,SetDeviceLayersRequest r)
+    {
+        if(Paintable(r.DeviceKey,r.Layers is{Count:>0},out var device) is{} why) return why;
+        if(r.Layers is{} layers)
+        {
+            if(layers.Count>DeviceLayers.MaxLayers) return HostReplyCodes.TooManyLayers;
+            if(DeviceLayers.CheckNew(layers) is not null) return HostReplyCodes.BadLayer;
+            var n=KeyMaps.LightCount(device!);
+            if(layers.Any(l=>l.Lights is{} g&&g.Count<=DeviceLayers.MaxKeys&&g.Any(x=>x is not null&&x.Index>=n))) return HostReplyCodes.BadKey;
+        }
+        Entry(s,r.DeviceKey).Layers=DeviceLayers.Clone(r.Layers);
+        DeviceTunings.Normalize(s);
+        return null;
+    }
+    static string? LookName(string? name,out string trimmed)
+    {
+        trimmed=name?.Trim()??"";
+        return trimmed.Length is<1 or>DeviceLayers.MaxLookName?HostReplyCodes.LookName:null;
+    }
+    static DeviceMode? CopyMode(DeviceMode? m)=>m is null?null:new(){Kind=m.Kind,Speed=m.Speed};
+    // The keyboard's mode, keys and layers, copied into a new look or over the one of that name (Overwrite, keeping its place); it becomes
+    // the current look.
+    string? SaveLook(LightingSettings s,SaveLookRequest r)
+    {
+        if(Paintable(r.DeviceKey,true,out _) is{} why) return why;
+        if(LookName(r.Name,out var name) is{} bad) return bad;
+        var t=Entry(s,r.DeviceKey);
+        var look=new DeviceLook{Name=name,Mode=CopyMode(t.Mode),Keys=DeviceLayers.Clone(t.Keys),Layers=DeviceLayers.Clone(t.Layers)};
+        var looks=t.Looks??=[];
+        if(DeviceLayers.Find(t,name) is{} old)
+        {
+            if(!r.Overwrite) return HostReplyCodes.LookTaken;
+            looks[looks.IndexOf(old)]=look;
+        }
+        else if(looks.Count>=DeviceLayers.MaxLooks) return HostReplyCodes.TooManyLooks;
+        else looks.Add(look);
+        t.Look=name;
+        DeviceTunings.Normalize(s);
+        return null;
+    }
+    // The keyboard takes copies of the look's mode, keys and layers; a mode it can't run now is still chosen, and painted as Static.
+    string? ChooseLook(LightingSettings s,ChooseLookRequest r)
+    {
+        if(Paintable(r.DeviceKey,true,out _) is{} why) return why;
+        var t=Entry(s,r.DeviceKey);
+        if(DeviceLayers.Find(t,r.Name) is not{} look) return HostReplyCodes.NoLook;
+        t.Mode=CopyMode(look.Mode);t.Keys=DeviceLayers.Clone(look.Keys);t.Layers=DeviceLayers.Clone(look.Layers);t.Look=look.Name;
+        DeviceTunings.Normalize(s);
+        return null;
+    }
+    // Another look of the new name (ignoring case) refuses it; the look itself in another case doesn't. The current look follows.
+    string? RenameLook(LightingSettings s,RenameLookRequest r)
+    {
+        if(Paintable(r.DeviceKey,false,out _) is{} why) return why;
+        var t=Entry(s,r.DeviceKey);
+        if(DeviceLayers.Find(t,r.Name) is not{} look) return HostReplyCodes.NoLook;
+        if(LookName(r.NewName,out var name) is{} bad) return bad;
+        if(DeviceLayers.Find(t,name) is{} other&&!ReferenceEquals(other,look)) return HostReplyCodes.LookTaken;
+        var current=t.Look is not null&&ReferenceEquals(DeviceLayers.Find(t,t.Look),look);
+        look.Name=name;
+        if(current) t.Look=name;
+        DeviceTunings.Normalize(s);
+        return null;
+    }
+    // The keyboard stays as it is; only the current look's name goes when it named this one.
+    string? DeleteLook(LightingSettings s,DeleteLookRequest r)
+    {
+        if(Paintable(r.DeviceKey,false,out _) is{} why) return why;
+        var t=Entry(s,r.DeviceKey);
+        if(DeviceLayers.Find(t,r.Name) is not{} look) return HostReplyCodes.NoLook;
+        if(t.Look is not null&&ReferenceEquals(DeviceLayers.Find(t,t.Look),look)) t.Look=null;
+        t.Looks!.Remove(look);
+        DeviceTunings.Normalize(s);
+        return null;
     }
 
     // A kind is known by its exact name only (never a number, as Enum.TryParse would take). Params, when sent, replace that kind's set
@@ -515,11 +754,13 @@ internal sealed class DeviceHost : IAsyncDisposable
     }
 
     // Edit a copy, validate, save, and only then adopt it: a rejected or unsavable change leaves the live settings untouched.
-    HostMessage Mutate(HostMessage request,Func<LightingSettings,string?> edit,out bool raise)
+    // noRoom (lighting 3b's paint, layer and look requests): a change that would take lighting.json past 1 MiB is answered as NoRoom.
+    HostMessage Mutate(HostMessage request,Func<LightingSettings,string?> edit,out bool raise,bool noRoom=false)
     {
         raise=false;
         var candidate=Clone(settings);
         var error=edit(candidate)??LightingSettingsCodec.Validate(candidate);
+        if(noRoom&&error==LightingSettingsCodec.WrittenTooLarge) error=HostReplyCodes.NoRoom;
         if(error is not null) return Fail(request,error);
         if(saveAllowed)
         {
@@ -527,7 +768,7 @@ internal sealed class DeviceHost : IAsyncDisposable
             catch(Exception e){log.Write("saving lighting.json failed: "+e.Message);return Fail(request,HostReplyCodes.CouldntSave);}
         }
         settings=candidate;
-        if(!LightingPaint.Animating(settings,service.Devices)) ForgetPreview();
+        if(!LightingPaint.Animating(settings,service.Devices,presses.Live(),Now())) ForgetPreview();
         if(engineActive&&sessionOk&&status==HostStatus.Running)
         {
             try
@@ -536,7 +777,7 @@ internal sealed class DeviceHost : IAsyncDisposable
                 // at its new index, never a stale one. OpenRGB.NET 3.1.1 never raises that event (O21), so with it the 5 s rescan is what
                 // finds a change, and a change made in between still meets the old indexes.
                 if(rescanPending){rescanPending=false;RescanLocked();}
-                service.Paint(settings,Now());
+                service.Paint(settings,Now(),presses.Live());
             }
             catch(Exception e){FailSession(LostText,e);}
         }

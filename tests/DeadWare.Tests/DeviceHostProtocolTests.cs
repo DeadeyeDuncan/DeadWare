@@ -32,6 +32,19 @@ public class DeviceHostProtocolTests
         yield return [new SetDeviceModeRequest("k","wave",70){Id=32}];
         yield return [new SetDeviceModeRequest("k",null){Id=33}];
         yield return [new PreviewEvent(new(){["k#0"]="#010203"},new(){["k"]="0A0B0CFFFFFF"}){Id=34}];
+        // Lighting 3b.
+        yield return [new SetDeviceKeysRequest("k",new(){[3]=new PaintedKey{Name="Key: W",Color="#FF0000"},[17]=new PaintedKey{Name="Key: A",Color="#00FF00"}}){Id=40}];
+        yield return [new SetDeviceKeysRequest("k",null){Id=41}];
+        yield return [new SetDeviceLayersRequest("k",[new DeviceLayer{Kind="ripple",Color="#112233",DurationMs=900,Strength=70,Mix="cover",Lights=[new LayerLight{Index=3,Name="Key: W"}]},new DeviceLayer{Kind="effect",Effect="breathing",Speed=12}]){Id=42}];
+        yield return [new SetDeviceLayersRequest("k",null){Id=43}];
+        yield return [new SaveLookRequest("k","Gaming",true){Id=44}];
+        yield return [new SaveLookRequest("k","Work"){Id=45}];
+        yield return [new ChooseLookRequest("k","Gaming"){Id=46}];
+        yield return [new RenameLookRequest("k","Gaming","Games"){Id=47}];
+        yield return [new DeleteLookRequest("k","Games"){Id=48}];
+        var st=State();
+        yield return [new StateEvent(st with{KeyHook=true,Devices=[st.Devices[0] with{CanPaint=true,Paint=new(){[3]=new PaintedKey{Name="Key: W",Color="#FF0000"}},
+            Layers=[new DeviceLayer{Kind="fade",Lights=[new LayerLight{Index=3,Name="Key: W"}]}],Looks=["Gaming","Work"],Look="Gaming",LookChanged=true,SkippedKeys=2,SkippedLayerLights=[1]}]}){Id=49}];
     }
     static async Task<HostMessage?> RoundTrip(HostMessage m)
     {
@@ -69,6 +82,25 @@ public class DeviceHostProtocolTests
                 Assert.Equal(40,s.Settings.Brightness);
                 Assert.Equal("#010203",s.Settings.ZoneColors["k:0"].Color);
                 Assert.Equal("Direct",s.Settings.HardwareModes["k"]);
+                // Lighting 3b: the state with every new member set.
+                var sent=((StateEvent)m).State;
+                Assert.Equal(sent.KeyHook,s.KeyHook);
+                if(!sent.KeyHook){Assert.False(d.CanPaint);Assert.Null(d.Paint);Assert.Null(d.Layers);Assert.Null(d.Looks);Assert.Null(d.Look);Assert.False(d.LookChanged);Assert.Equal(0,d.SkippedKeys);Assert.Null(d.SkippedLayerLights);break;}
+                Assert.True(d.CanPaint);
+                var key=Assert.Single(d.Paint!);Assert.Equal((3,"Key: W","#FF0000"),(key.Key,key.Value.Name,key.Value.Color));
+                var layer=Assert.Single(d.Layers!);Assert.Equal("fade",layer.Kind);Assert.Equal((3,"Key: W"),(Assert.Single(layer.Lights!).Index,layer.Lights![0].Name));
+                Assert.Equal(["Gaming","Work"],d.Looks!);Assert.Equal("Gaming",d.Look);Assert.True(d.LookChanged);
+                Assert.Equal(2,d.SkippedKeys);Assert.Equal([1],d.SkippedLayerLights!);
+                break;
+            case SetDeviceKeysRequest k:
+                var kb=Assert.IsType<SetDeviceKeysRequest>(back);
+                Assert.Equal(k.DeviceKey,kb.DeviceKey);
+                Assert.Equal(k.Keys?.Select(e=>(e.Key,e.Value.Name,e.Value.Color)),kb.Keys?.Select(e=>(e.Key,e.Value.Name,e.Value.Color)));
+                break;
+            case SetDeviceLayersRequest l:
+                var lb=Assert.IsType<SetDeviceLayersRequest>(back);
+                Assert.Equal(l.DeviceKey,lb.DeviceKey);
+                Assert.Equal(System.Text.Json.JsonSerializer.Serialize(l.Layers),System.Text.Json.JsonSerializer.Serialize(lb.Layers));
                 break;
             // Step 3a: these carry a class or dictionaries, which a record compares by reference.
             case SetDeviceTuningRequest t:
@@ -186,6 +218,47 @@ public class DeviceHostProtocolTests
         Assert.Equal(100,old.Brightness);
         Assert.Null(old.Correction);Assert.Null(old.LightingMode);Assert.Null(old.ModeProblem);Assert.Null(old.Keys);
         Assert.False(old.Keyboard);Assert.False(old.Wave);
+    }
+    // Lighting 3b: a state from a 3a host, without the new members, reads with their defaults.
+    [Fact] public async Task Old_views_read_without_the_new_members()
+    {
+        var ms=new MemoryStream();
+        await DeviceHostProtocol.WriteAsync(ms,new StateEvent(State()){Id=50},default);
+        var node=System.Text.Json.Nodes.JsonNode.Parse(ms.ToArray().AsSpan(4))!;
+        var state=node["State"]!.AsObject();
+        var dv=state["Devices"]![0]!.AsObject();
+        // The defaults are written today, so each is removed to stand for the form a 3a host writes.
+        Assert.True(state.Remove("KeyHook"));
+        foreach(var name in new[]{"CanPaint","Paint","Layers","Looks","Look","LookChanged","SkippedKeys","SkippedLayerLights"}) Assert.True(dv.Remove(name),name);
+        var back=Assert.IsType<StateEvent>(await DeviceHostProtocol.ReadAsync(Frame(node.ToJsonString()),default)).State;
+        Assert.False(back.KeyHook);
+        var d=Assert.Single(back.Devices);
+        Assert.False(d.CanPaint);Assert.Null(d.Paint);Assert.Null(d.Layers);Assert.Null(d.Looks);Assert.Null(d.Look);Assert.False(d.LookChanged);
+        Assert.Equal(0,d.SkippedKeys);Assert.Null(d.SkippedLayerLights);
+        Assert.Equal("Static",d.Mode);
+    }
+    [Fact] public void The_3b_reply_codes_have_their_plain_words()
+    {
+        Assert.Equal("That device isn't a keyboard DeadWare can paint key by key.",HostReplyCodes.Explain(HostReplyCodes.NotPaintable));
+        Assert.Equal("That key isn't on this keyboard.",HostReplyCodes.Explain(HostReplyCodes.BadKey));
+        Assert.Equal("That layer isn't of a kind DeadWare knows.",HostReplyCodes.Explain(HostReplyCodes.BadLayer));
+        Assert.Equal("A keyboard can have up to 8 layers.",HostReplyCodes.Explain(HostReplyCodes.TooManyLayers));
+        Assert.Equal("A keyboard can have up to 12 saved looks. Delete one first.",HostReplyCodes.Explain(HostReplyCodes.TooManyLooks));
+        Assert.Equal("A look's name must be 1 to 40 characters.",HostReplyCodes.Explain(HostReplyCodes.LookName));
+        Assert.Equal("There is already a look with that name.",HostReplyCodes.Explain(HostReplyCodes.LookTaken));
+        Assert.Equal("That look isn't saved any more.",HostReplyCodes.Explain(HostReplyCodes.NoLook));
+        Assert.Equal("There isn't room to save that. Delete a saved look first.",HostReplyCodes.Explain(HostReplyCodes.NoRoom));
+        Assert.Equal(("not paintable","bad key","bad layer","too many layers","too many looks"),(HostReplyCodes.NotPaintable,HostReplyCodes.BadKey,HostReplyCodes.BadLayer,HostReplyCodes.TooManyLayers,HostReplyCodes.TooManyLooks));
+        Assert.Equal(("look name","look taken","no look","no room"),(HostReplyCodes.LookName,HostReplyCodes.LookTaken,HostReplyCodes.NoLook,HostReplyCodes.NoRoom));
+    }
+    [Fact] public async Task The_3b_requests_use_their_discriminators()
+    {
+        Assert.IsType<SetDeviceKeysRequest>(await DeviceHostProtocol.ReadAsync(Frame("""{"type":"setDeviceKeys","Version":1,"DeviceKey":"k","Keys":{"3":{"Name":"W","Color":"#FF0000"}}}"""),default));
+        Assert.IsType<SetDeviceLayersRequest>(await DeviceHostProtocol.ReadAsync(Frame("""{"type":"setDeviceLayers","Version":1,"DeviceKey":"k","Layers":[]}"""),default));
+        Assert.False(Assert.IsType<SaveLookRequest>(await DeviceHostProtocol.ReadAsync(Frame("""{"type":"saveLook","Version":1,"DeviceKey":"k","Name":"A"}"""),default)).Overwrite);
+        Assert.IsType<ChooseLookRequest>(await DeviceHostProtocol.ReadAsync(Frame("""{"type":"chooseLook","Version":1,"DeviceKey":"k","Name":"A"}"""),default));
+        Assert.IsType<RenameLookRequest>(await DeviceHostProtocol.ReadAsync(Frame("""{"type":"renameLook","Version":1,"DeviceKey":"k","Name":"A","NewName":"B"}"""),default));
+        Assert.IsType<DeleteLookRequest>(await DeviceHostProtocol.ReadAsync(Frame("""{"type":"deleteLook","Version":1,"DeviceKey":"k","Name":"A"}"""),default));
     }
     [Fact] public async Task State_event_carries_effect_and_layout()
     {

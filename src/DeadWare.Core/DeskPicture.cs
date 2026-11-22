@@ -1,6 +1,6 @@
 namespace DeadWare.Core;
 
-public enum PictureView { Desk, Inside }
+public enum PictureView { Desk, Inside, Keys }
 public enum PartKind { Keyboard, Mouse, FanBar, FanRing, PumpRing, RamStick, Card }
 public readonly record struct PicBox(double X,double Y,double W,double H) { public double CenterX=>X+W/2; public double CenterY=>Y+H/2; }
 public sealed record PicturePart(string Id,PartKind Kind,PictureView View,PicBox Box,string Label,string DeviceName,bool Prefix,int Ordinal,IReadOnlyList<int> Zones,int ShownZone);
@@ -38,6 +38,13 @@ public static class DeskPictures
     {
         var list=new List<KeyRect>();
         double x0=box.X+KeyInset,y0=box.Y+KeyInset,w0=Math.Max(0,box.W-2*KeyInset),h0=Math.Max(0,box.H-2*KeyInset);
+        if(KeyShapes.Of(keys) is { Standard: true } set)
+        {
+            // The real shapes scaled to fit the inset box, aspect kept and centred, each shrunk by 6 % of a key unit on every side.
+            double scale=Math.Min(w0/set.Width,h0/set.Height),ox=x0+(w0-set.Width*scale)/2,oy=y0+(h0-set.Height*scale)/2,g=0.06;
+            foreach(var k in set.Keys) list.Add(new(k.Light,ox+(k.X+g)*scale,oy+(k.Y+g)*scale,(k.W-2*g)*scale,(k.H-2*g)*scale));
+            return list;
+        }
         int n=Math.Min(keys.X.Count,keys.Y.Count);
         bool Has(int i)=>keys.X[i] is double x&&keys.Y[i] is double y&&double.IsFinite(x)&&double.IsFinite(y);
         var rows=new HashSet<double>();

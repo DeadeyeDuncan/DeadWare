@@ -241,6 +241,16 @@ public class DeskPictureTests
         Assert.Empty(DeskPictures.KeyRects(KeyBox,new(["a"],[null],[null],0.1)));
         Assert.Empty(DeskPictures.KeyRects(KeyBox,new([],[],[],0.1)));
     }
+    [Fact] public void KeyRects_uses_real_shapes_for_a_named_board()
+    {
+        var m=new KeyMapView(["Key: A","Key: Space","Key: B","Key: C","Key: D","Key: E","Key: F","Key: G"],new double?[8],new double?[8],0.05);
+        var rects=DeskPictures.KeyRects(KeyBox,m);
+        Assert.Equal(8,rects.Count);
+        var a=rects.Single(r=>r.Light==0);var space=rects.Single(r=>r.Light==1);
+        Assert.True(space.W>5*a.W,$"{space} {a}");
+        foreach(var r in rects) Assert.True(r.X>=295-1e-9&&r.Y>=101-1e-9&&r.X+r.W<=485+1e-9&&r.Y+r.H<=149+1e-9,$"{r}");
+        Assert.Equal(a.W,a.H,6);   // aspect kept: a standard key is square
+    }
     [Fact] public void Key_rects_have_a_minimum_size()
     {
         var wide=DeskPictures.KeyRects(KeyBox,Grid(200,1,0.0001));   // 0.0001 of 190 is 0.019 wide

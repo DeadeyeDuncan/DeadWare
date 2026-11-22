@@ -24,7 +24,7 @@ public sealed class ZoneColorEntry
 public sealed class LightingSettings
 {
     // The lighting.json format this build writes. A file with a higher Version comes from a later DeadWare (after a rollback, say).
-    public const int CurrentVersion=2;
+    public const int CurrentVersion=3;
     public int Version {get;set;}=1;
     public bool LightsOn {get;set;}=true;
     public int Brightness {get;set;}=100;
