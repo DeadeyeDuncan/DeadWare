@@ -589,12 +589,6 @@ public class LightingSettingsCodecTests
         Assert.Equal("W",r.Settings.Devices["k"].Keys![3].Name);
     }
     [Fact]
-    public void A_version_4_file_is_newer_and_not_quarantined()
-    {
-        var r=LightingSettingsCodec.Read("""{"Version":5,"Brightness":40,"Devices":{"k":{"Keys":{"3":{"Name":"W","Color":"#112233"}}}}}""");
-        Assert.True(r.Newer);Assert.False(r.Quarantine);
-    }
-    [Fact]
     public void A_painted_table_over_the_size_cap_is_refused_on_write()
     {
         var s=new LightingSettings();
@@ -745,7 +739,7 @@ public class LightingSettingsCodecTests
     [Fact]
     public void A_version_5_file_is_newer_and_not_quarantined()
     {
-        var r=LightingSettingsCodec.Read("""{"Version":5,"Brightness":40,"Everyday":{"IdleOff":true},"Mouse":{"SleepMinutes":5}}""");
+        var r=LightingSettingsCodec.Read("""{"Version":5,"Brightness":40,"Devices":{"k":{"Keys":{"3":{"Name":"W","Color":"#112233"}}}},"Everyday":{"IdleOff":true},"Mouse":{"SleepMinutes":5}}""");
         Assert.True(r.Newer);Assert.False(r.Quarantine);Assert.Null(r.Error);
         Assert.True(r.Settings.Everyday.IdleOff);Assert.Equal(5,r.Settings.Mouse.SleepMinutes);
     }
@@ -769,6 +763,23 @@ public class LightingSettingsCodecTests
         Assert.True(LightingSettingsCodec.Read("""{"Version":4,"Everyday":{"IdleMinutes":3}}""").Quarantine);
         Assert.True(LightingSettingsCodec.Read("""{"Version":4,"Mouse":{"SleepMinutes":4}}""").Quarantine);
         Assert.Throws<InvalidDataException>(()=>LightingSettingsCodec.Write(new LightingSettings{Mouse=new MouseSettings{SleepMinutes=4}}));
+    }
+    [Fact]
+    public void A_newer_file_with_a_bad_idle_time_keeps_its_device_table()
+    {
+        var r=LightingSettingsCodec.Read("""{"Version":5,"Brightness":40,"Devices":{"k":{"Brightness":70}},"Everyday":{"IdleMinutes":3}}""");
+        Assert.True(r.Newer);Assert.Null(r.Error);
+        Assert.Equal(70,r.Settings.Devices["k"].Brightness);Assert.True(Everydays.IsDefault(r.Settings.Everyday));
+    }
+    // Order of resets is Everyday and Mouse, then Devices, then Effect and Layout: a bad device table costs the (valid) Everyday and Mouse too,
+    // since they were reset first; the brightness and the Effect still count.
+    [Fact]
+    public void A_newer_file_with_a_bad_device_table_loses_Everyday_and_Mouse_but_keeps_the_rest()
+    {
+        var r=LightingSettingsCodec.Read("""{"Version":5,"Brightness":40,"Devices":{"k":{"Mode":{"Kind":"fire"}}},"Everyday":{"IdleOff":true},"Mouse":{"SleepMinutes":5}}""");
+        Assert.True(r.Newer);Assert.Null(r.Error);
+        Assert.Equal(40,r.Settings.Brightness);Assert.Empty(r.Settings.Devices);
+        Assert.True(Everydays.IsDefault(r.Settings.Everyday));Assert.Null(r.Settings.Mouse.SleepMinutes);
     }
     [Fact]
     public void WithLightsOff_shares_tables_and_leaves_the_original_on()

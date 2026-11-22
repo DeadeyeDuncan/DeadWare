@@ -35,14 +35,10 @@ public class EverydayTests
     }
 
     [Theory]
-    [InlineData(0,false)]
-    [InlineData(3,false)]
-    [InlineData(61,false)]
-    public void Idle_minutes_must_be_on_the_list(int minutes,bool ok)
-    {
-        Assert.Equal(HostReplyCodes.BadEveryday,Everydays.Validate(new EverydaySettings{IdleMinutes=minutes}));
-        Assert.False(ok);
-    }
+    [InlineData(0)]
+    [InlineData(3)]
+    [InlineData(61)]
+    public void Idle_minutes_off_the_list_are_refused(int minutes)=>Assert.Equal(HostReplyCodes.BadEveryday,Everydays.Validate(new EverydaySettings{IdleMinutes=minutes}));
 
     [Fact]
     public void Every_idle_choice_is_valid()

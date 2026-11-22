@@ -17,9 +17,9 @@ public static class LightingSettingsCodec
         if(s is null) return new(new(),"Lighting settings were empty.",true);
         return Finish(s);
     }
-    // Defaults for null members, normalise, validate. A newer file (Ruling AS) that this build refuses gets its Devices reset and is checked
-    // again; if that still fails, its Effect and Layout too, and once more (whole-branch review 1, D1: a device table alone no longer costs the
-    // desk effect and layout). So its colours, brightness and modes still count; only a last failure drops it to defaults. Never quarantined.
+    // Defaults for null members, normalise, validate. A newer file (Ruling AS) that this build refuses gets its Everyday and Mouse reset and is checked
+    // again; if that still fails, its Devices too, then its Effect and Layout (Ruling P12; whole-branch review 1, D1: a device table alone no longer costs the
+    // desk effect and layout, and a bad Everyday or Mouse no longer costs the device table). So its colours, brightness and modes still count; only a last failure drops it to defaults. Never quarantined.
     static LightingRead Finish(LightingSettings s)
     {
         s.Effect??=new();s.Layout??=DeskLayouts.Empty();s.Devices??=new();s.Everyday??=new();s.Mouse??=new();
@@ -29,15 +29,16 @@ public static class LightingSettingsCodec
         {
             if(error is not null)
             {
-                s.Devices=new();s.Everyday=new();s.Mouse=new();if(Validate(s) is null) return new(s,null,false,true);
+                s.Everyday=new();s.Mouse=new();if(Validate(s) is null) return new(s,null,false,true);
+                s.Devices=new();if(Validate(s) is null) return new(s,null,false,true);
                 s.Effect=new();s.Layout=DeskLayouts.Empty();if(Validate(s) is null) return new(s,null,false,true);
             }
             return new(error is null?s:new(),error,false,true);
         }
         return error is null?new(s,null,false):new(new(),error,true);
     }
-    // A wrong JSON type in Effect, Layout or Devices is a JsonException, which would set a later DeadWare's file aside (Ruling AS). When its
-    // Version is above ours, drop those three members, which may have another shape there, and read the rest once; null when the file isn't
+    // A wrong JSON type in Effect, Layout, Devices, Everyday or Mouse is a JsonException, which would set a later DeadWare's file aside (Ruling AS). When its
+    // Version is above ours, drop those five members, which may have another shape there, and read the rest once; null when the file isn't
     // such a file.
     // Version is read as an int only: "Version": 2.0 is still a type error and quarantines.
     static LightingRead? NewerShape(string json)
