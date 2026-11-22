@@ -2095,7 +2095,15 @@ public sealed partial class DeviceHostTests : IAsyncLifetime
     DeviceTuning? ApexEntry(DeviceHost h)=>h.State.Settings.Devices.TryGetValue(ApexKey,out var t)?t:null;
     LightingSettings SavedSettings()=>new LightingStore(lightingPath).Load().Settings;
     static string KeysText(Dictionary<int,PaintedKey>? k)=>k is null?"null":string.Join(",",k.OrderBy(e=>e.Key).Select(e=>$"{e.Key}={e.Value.Name}/{e.Value.Color}"));
-    string[] LogLines(string contains)=>File.ReadAllText(Path.Combine(dir,"logs","devices.log")).Split('\n').Where(l=>l.Contains(contains)).ToArray();
+    // Read sharing write (and delete, for a roll-over). HostLog appends with FileShare.Read only, so File.ReadAllText's FileShare.Read made
+    // the host's write fail while the test read, and HostLog drops a line it can't write (a "suspend" line lost: a 15 s wait that fails);
+    // or the read failed while a write was open (IOException).
+    string[] LogLines(string contains)
+    {
+        using var fs=new FileStream(Path.Combine(dir,"logs","devices.log"),FileMode.Open,FileAccess.Read,FileShare.ReadWrite|FileShare.Delete);
+        using var r=new StreamReader(fs);
+        return r.ReadToEnd().Split('\n').Where(l=>l.Contains(contains)).ToArray();
+    }
 
     [Fact]
     public async Task Painting_keys_is_saved_replied_then_stated()
