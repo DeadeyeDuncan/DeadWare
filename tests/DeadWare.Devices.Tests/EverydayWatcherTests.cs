@@ -32,6 +32,59 @@ public sealed class EverydayWatcherTests
         w.Dispose();
         Assert.Null(w.SetShortcut(null,TimeSpan.FromSeconds(1)));
     }
+
+    // Fix round 1, I1: a request that got no answer in time is withdrawn, so the thread never applies it later. The request is a clear
+    // (null), so nothing ever reaches a real global-key registration; whether the thread took it is read from the test seam.
+    [Fact]
+    public void A_request_that_timed_out_is_never_applied_later()
+    {
+        using var w=new EverydayWatcher(new HostLog(null));
+        using var gate=new ManualResetEventSlim();
+        using var handled=new ManualResetEventSlim();
+        var took=new List<bool>();
+        var first=true;
+        w.BeforeTake=()=>{if(first){first=false;gate.Wait(TimeSpan.FromSeconds(5));}};
+        w.AfterTake=t=>{lock(took)took.Add(t);handled.Set();};
+        Assert.Null(w.SetShortcut(null,TimeSpan.FromMilliseconds(100)));
+        gate.Set();
+        Assert.True(handled.Wait(TimeSpan.FromSeconds(5)));
+        lock(took) Assert.Equal([false],took);
+        Assert.True(w.SetShortcut(null,TimeSpan.FromSeconds(1)));
+    }
+
+    // Fix round 1, I1: a request the thread took just after the caller's wait ran out answers its real result, not null.
+    [Fact]
+    public void A_request_taken_late_answers_its_real_result()
+    {
+        using var w=new EverydayWatcher(new HostLog(null));
+        w.AfterTake=t=>{if(t) Thread.Sleep(300);};
+        Assert.True(w.SetShortcut(null,TimeSpan.FromMilliseconds(50)));
+    }
+
+    // Fix round 1, M3, ruling P15: wParam 4 suspend, 7 resume from suspend, 0x12 automatic resume.
+    [Theory]
+    [InlineData(false,4,true,true)]       // suspend raised
+    [InlineData(true,4,false,true)]       // a second suspend is not
+    [InlineData(false,7,false,false)]     // resume from suspend with no suspend since the last wake: ignored
+    [InlineData(true,7,true,false)]       // resume from suspend after a suspend: raised
+    [InlineData(false,0x12,true,false)]   // automatic resume: always raised
+    [InlineData(true,0x12,true,false)]
+    [InlineData(true,10,false,true)]      // anything else changes nothing
+    [InlineData(false,10,false,false)]
+    public void Power_follows_the_sleep_rule(bool suspended,int e,bool raise,bool after)
+        =>Assert.Equal((raise,after),EverydayWatcher.Power(suspended,e));
+
+    [Fact]
+    public void Suspend_twice_then_both_resumes_raise_once_each()
+    {
+        var s=false;var raised=new List<int>();
+        foreach(var e in new[]{4,4,0x12,7})
+        {
+            var (r,now)=EverydayWatcher.Power(s,e);s=now;
+            if(r) raised.Add(e);
+        }
+        Assert.Equal([4,0x12],raised);
+    }
 }
 
 public sealed class InputClockTests

@@ -16,7 +16,7 @@ internal sealed class EverydayWatcher:IEverydaySignals
     const int HotkeyId=1,RetryTimer=1,RetryMs=5000,RetryTries=12;
     const uint NoRepeat=0x4000;                            // MOD_NOREPEAT
     const string Unavailable="Shortcut and lock are unavailable: ";
-    static readonly TimeSpan StartWait=TimeSpan.FromSeconds(2),StopWait=TimeSpan.FromSeconds(2);
+    static readonly TimeSpan StartWait=TimeSpan.FromSeconds(2),StopWait=TimeSpan.FromSeconds(2),LateWait=TimeSpan.FromSeconds(1);
     static int classes;
 
     sealed class Request{public Shortcut? Shortcut;public volatile int Result=-1;public readonly ManualResetEventSlim Done=new();}
@@ -41,6 +41,9 @@ internal sealed class EverydayWatcher:IEverydaySignals
     public event Action? Suspending;
     public event Action? Resumed;
     public string? Problem=>problem;
+    // Test seams, on the watcher thread: before and after it takes the pending shortcut request (true = there was one to take).
+    internal Action? BeforeTake;
+    internal Action<bool>? AfterTake;
 
     public EverydayWatcher(HostLog log)
     {
@@ -57,10 +60,16 @@ internal sealed class EverydayWatcher:IEverydaySignals
         {
             if(stopped||window==IntPtr.Zero) return null;
             var r=new Request{Shortcut=shortcut};
-            Volatile.Write(ref pending,r);
-            if(!PostMessageW(window,SetMessage,IntPtr.Zero,IntPtr.Zero)) return null;
-            if(!r.Done.Wait(wait)) return null;
-            return r.Result switch{1=>true,0=>false,_=>null};
+            try
+            {
+                Volatile.Write(ref pending,r);
+                if(!PostMessageW(window,SetMessage,IntPtr.Zero,IntPtr.Zero)){Interlocked.CompareExchange(ref pending,null,r);return null;}
+                // No answer in time: withdraw the request, so a change the caller is told failed never takes effect later. If the thread
+                // has already taken it, it is being applied now: wait a little longer for its real answer.
+                if(!r.Done.Wait(wait)&&(Interlocked.CompareExchange(ref pending,null,r)==r||!r.Done.Wait(LateWait))) return null;
+                return r.Result switch{1=>true,0=>false,_=>null};
+            }
+            finally{r.Done.Dispose();}
         }
     }
 
@@ -70,7 +79,6 @@ internal sealed class EverydayWatcher:IEverydaySignals
     {
         lock(sync)
         {
-            if(stopped&&!thread.IsAlive) return;
             stopped=true;
             var until=Environment.TickCount64+(long)StopWait.TotalMilliseconds;
             while(!thread.Join(0))
@@ -78,6 +86,7 @@ internal sealed class EverydayWatcher:IEverydaySignals
                 if(window is var w&&w!=IntPtr.Zero) PostMessageW(w,StopMessage,IntPtr.Zero,IntPtr.Zero);
                 if(thread.Join(50)||Environment.TickCount64>=until) break;
             }
+            if(!thread.IsAlive) ready.Dispose();
         }
     }
 
@@ -107,7 +116,7 @@ internal sealed class EverydayWatcher:IEverydaySignals
             if(window is var w&&w!=IntPtr.Zero){TearDown(w);window=IntPtr.Zero;}
             if(registered) UnregisterClassW(className,module);
             stopped=true;
-            if(!ready.IsSet) ready.Set();
+            try{if(!ready.IsSet) ready.Set();}catch(ObjectDisposedException){}
         }
     }
 
@@ -160,7 +169,10 @@ internal sealed class EverydayWatcher:IEverydaySignals
                     else if(sessionTries>=RetryTries){KillTimer(w,(UIntPtr)RetryTimer);log.Write("Lock signals unavailable: gave up trying");}
                     return IntPtr.Zero;
                 case SetMessage:
-                    if(Interlocked.Exchange(ref pending,null) is{} r) Apply(w,r);
+                    BeforeTake?.Invoke();
+                    var r=Interlocked.Exchange(ref pending,null);
+                    AfterTake?.Invoke(r is not null);
+                    if(r is not null) Apply(w,r);
                     return IntPtr.Zero;
                 case StopMessage:
                     TearDown(w);
@@ -175,10 +187,17 @@ internal sealed class EverydayWatcher:IEverydaySignals
     // always raised, and a resume from suspend after it is then ignored.
     void OnPower(int e)
     {
-        if(e==Suspend){if(!suspended){suspended=true;Suspending?.Invoke();}}
-        else if(e==ResumeAutomatic){suspended=false;Resumed?.Invoke();}
-        else if(e==ResumeSuspend&&suspended){suspended=false;Resumed?.Invoke();}
+        var (raise,now)=Power(suspended,e);
+        suspended=now;
+        if(raise){if(e==Suspend) Suspending?.Invoke();else Resumed?.Invoke();}
     }
+    internal static (bool Raise,bool Suspended) Power(bool suspended,int e)=>e switch
+    {
+        Suspend=>(!suspended,true),
+        ResumeAutomatic=>(true,false),
+        ResumeSuspend=>(suspended,false),
+        _=>(false,suspended),
+    };
 
     void Apply(IntPtr w,Request r)
     {
