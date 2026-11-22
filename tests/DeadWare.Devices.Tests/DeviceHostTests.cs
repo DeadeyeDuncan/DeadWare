@@ -8,7 +8,7 @@ using static DeadWare.Devices.Tests.Waits;
 
 namespace DeadWare.Devices.Tests;
 
-public sealed class DeviceHostTests : IAsyncLifetime
+public sealed partial class DeviceHostTests : IAsyncLifetime
 {
     readonly string dir=Path.Combine(Path.GetTempPath(),"dw-host-"+Guid.NewGuid().ToString("N"));
     readonly string exe,lightingPath;
@@ -83,7 +83,7 @@ public sealed class DeviceHostTests : IAsyncLifetime
     // The scanner sees the fake OpenRGB processes that are still running, through the real classification (F15): one whose id isn't the
     // pid the host passes counts as another OpenRGB. So a host that stopped passing its own pid, or kept a scan that raced a relaunch,
     // would block itself. The test's own conflicts are added after a park, which a test can hold the loop in.
-    DeviceHost Build(bool startup=false,string? exePath=null,Action<OpenRgbEngine>? beforeHost=null,Func<string,DeadWare.UpdateCore.LocationProtection>? folderCheck=null,string? startupFailure=null,LightingStore? store=null,HostLog? hostLog=null,IKeyPressSource? keys=null)
+    DeviceHost Build(bool startup=false,string? exePath=null,Action<OpenRgbEngine>? beforeHost=null,Func<string,DeadWare.UpdateCore.LocationProtection>? folderCheck=null,string? startupFailure=null,LightingStore? store=null,HostLog? hostLog=null,IKeyPressSource? keys=null,IEverydaySignals? signals=null,IInputClock? input=null)
     {
         var log=hostLog??this.log;
         var engine=new OpenRgbEngine(exePath??exe,@"C:\cfg\openrgb",runner,(_,_)=>Task.FromResult(true),time,log,folderCheck);
@@ -97,7 +97,7 @@ public sealed class DeviceHostTests : IAsyncLifetime
             return found;
         });
         var options=new HostOptions(exePath??exe,@"C:\cfg\openrgb",lightingPath,Path.Combine(dir,"logs"),startup,"S-1-5-21-1",1);
-        return host=new DeviceHost(options,store??new LightingStore(lightingPath),engine,()=>session,scanner,time,log,startupFailure,keys:keys);
+        return host=new DeviceHost(options,store??new LightingStore(lightingPath),engine,()=>session,scanner,time,log,startupFailure,keys:keys,signals:signals,input:input);
     }
     void Start(DeviceHost h)=>run=h.RunAsync(CancellationToken.None);
     // Fake time AdvanceUntil may move without its condition before it fails, so a host cadence that slows down fails the test instead of
@@ -2610,7 +2610,7 @@ public sealed class DeviceHostTests : IAsyncLifetime
     }
 
     // Lighting 3b, Task 6: the key-press hook, through a fake source that keeps the gate it was given, so a test presses keys itself.
-    sealed class FakeKeys(TimeProvider time):IKeyPressSource
+    internal sealed class FakeKeys(TimeProvider time):IKeyPressSource
     {
         readonly object sync=new();
         bool installed;

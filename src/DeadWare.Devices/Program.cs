@@ -61,7 +61,9 @@ internal static class Program
             // Lighting 3b: the key-press hook. The host starts it only while a keyboard's fade or ripple layer needs key presses and stops it
             // when it stops; it is disposed after the host.
             using IKeyPressSource keys=new KeyPressHook();
-            await using var host=new DeviceHost(options,new LightingStore(lightingPath,guardLinks:Environment.IsPrivilegedProcess),engine,()=>new OpenRgbSession(),new ProcessConflictScanner(),TimeProvider.System,log,failure,keys:keys);
+            // Lighting 4: the everyday watcher (shortcut, lock, sleep) and the idle clock; the watcher is disposed after the host.
+            using IEverydaySignals signals=new EverydayWatcher(log);
+            await using var host=new DeviceHost(options,new LightingStore(lightingPath,guardLinks:Environment.IsPrivilegedProcess),engine,()=>new OpenRgbSession(),new ProcessConflictScanner(),TimeProvider.System,log,failure,keys:keys,signals:signals,input:new InputClock());
             await using var server=new HostPipeServer(DeviceHostProtocol.PipeName(sid),host.HandleAsync,log,clientGone:host.ClientGone);
             host.Initialize(); // settings are loaded before the pipe accepts a single request
             try{server.Open();}

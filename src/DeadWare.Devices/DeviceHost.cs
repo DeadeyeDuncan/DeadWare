@@ -110,13 +110,31 @@ internal sealed class DeviceHost : IAsyncDisposable
     // The window is gone: its subscription ends. Called by the pipe server outside its own locks.
     public void ClientGone(){lock(previewGate)lock(gate){previewOn=false;previewDue=false;previewGeneration++;lastPreview=null;lastPreviewMs=null;}}
 
+    // Lighting 4, everyday: signals (the watcher: shortcut, lock, sleep; a fake in tests; none, and nothing changes) and input (idle time,
+    // read only while the idle rule is on). Their events only set flags in everyday and wake the loop; they never take a lock here. The loop
+    // works out why the lights are off beyond the switch (EverydayWork), and everything that paints, previews, watches keys or picks the
+    // tick reads Shown: the settings with the lights off while a reason applies. Shown is made at each use, never kept, since a rescan's
+    // remap replaces tables on the live settings (ruling P13). shortcutProblem and shortcutRetry are guarded by gate.
+    public static readonly TimeSpan ShortcutWait=TimeSpan.FromSeconds(1);
+    readonly IEverydaySignals? signals;
+    readonly IInputClock? input;
+    readonly EverydayState everyday;
+    readonly Action onPress,onSuspend,onResume;
+    readonly Action<bool> onLock;
+    string? shortcutProblem;
+    bool shortcutRetry;
+    LightingSettings Shown=>everyday.Reason(settings) is null?settings:settings.WithLightsOff();
+
     // startupFailure: set when the host could not prepare OpenRGB's config folder; it reports OpenRgbFailed and never starts OpenRGB.
     // callClock: the clock of the bound on OpenRGB calls; real time unless a test supplies one.
-    public DeviceHost(HostOptions options,LightingStore store,OpenRgbEngine engine,Func<IOpenRgbSession> sessionFactory,IConflictScanner conflicts,TimeProvider time,HostLog log,string? startupFailure=null,TimeProvider? callClock=null,IKeyPressSource? keys=null)
+    public DeviceHost(HostOptions options,LightingStore store,OpenRgbEngine engine,Func<IOpenRgbSession> sessionFactory,IConflictScanner conflicts,TimeProvider time,HostLog log,string? startupFailure=null,TimeProvider? callClock=null,IKeyPressSource? keys=null,IEverydaySignals? signals=null,IInputClock? input=null)
     {
         this.options=options;this.store=store;this.engine=engine;scanner=conflicts;this.time=time;this.log=log;this.startupFailure=startupFailure;
         epoch=time.GetTimestamp();
         this.keys=keys;presses=new(Now,Wake);
+        this.signals=signals;this.input=input;everyday=new(log,time);
+        onPress=()=>{everyday.Press();Wake();};onLock=l=>{everyday.SetLocked(l);Wake();};onSuspend=everyday.SetSuspended;onResume=everyday.SetResumed;
+        if(signals is not null){signals.ShortcutPressed+=onPress;signals.LockChanged+=onLock;signals.Suspending+=onSuspend;signals.Resumed+=onResume;}
         session=new BoundedSession(sessionFactory(),callClock);
         service=new(session,time,log);
         session.DeviceListUpdated+=OnDeviceListUpdated;
@@ -127,7 +145,8 @@ internal sealed class DeviceHost : IAsyncDisposable
     HostState BuildLocked()
     {
         var text=note is null?message:message.Length==0?note:message+" "+note;
-        return new(status,text,Environment.IsPrivilegedProcess,conflicts,service.Views(settings),Clone(settings),conflictsChecked,keyHook);
+        return new(status,text,Environment.IsPrivilegedProcess,conflicts,service.Views(Shown),Clone(settings),conflictsChecked,keyHook,
+            everyday.Reason(settings),shortcutProblem,signals?.Problem);
     }
     static LightingSettings Clone(LightingSettings s)=>new()
     {
@@ -163,9 +182,10 @@ internal sealed class DeviceHost : IAsyncDisposable
     List<(string DeviceKey,IReadOnlyList<string> LightNames)> WatchedLocked()
     {
         var r=new List<(string,IReadOnlyList<string>)>();
+        var shown=Shown;
         foreach(var d in service.Devices)
         {
-            if(d.LedNames is not{Count:>0} names||!LightingLayers.NeedsKeys(settings,d)) continue;
+            if(d.LedNames is not{Count:>0} names||!LightingLayers.NeedsKeys(shown,d)) continue;
             var unknown=KeyPressTable.Unrecognised(names);
             if(namesLogged.Add(d.Key)) log.Write($"{d.Name}: {names.Count-unknown.Count} of {names.Count} light names are known keys; not known: {UnknownText(unknown)}.");
             if(unknown.Count<names.Count) r.Add((d.Key,names));
@@ -244,6 +264,8 @@ internal sealed class DeviceHost : IAsyncDisposable
         var ct=linked.Token;
         log.Write($"host start (openrgb {options.OpenRgbPath}, startup {options.Startup})");
         Initialize();
+        // Ruling P10: the saved shortcut is registered before the start-up delay and the start-up failure, so it works during both.
+        lock(gate){everyday.Changed(settings);RegisterSavedLocked();}
         Raise();
         try
         {
@@ -252,8 +274,17 @@ internal sealed class DeviceHost : IAsyncDisposable
                 lock(gate){status=HostStatus.OpenRgbFailed;message=startupFailure;}
                 log.Write("host cannot start openrgb: "+startupFailure);
                 Raise();
-                await Task.Delay(Timeout.InfiniteTimeSpan,ct).ConfigureAwait(false);
-                return;
+                // The loop never runs, so a press is applied here, woken by the press itself: it flips and saves the switch (ruling P10).
+                var woken=Volatile.Read(ref wake);
+                while(true)
+                {
+                    bool pressed;
+                    lock(gate)pressed=PressesLocked();
+                    if(pressed) Raise();
+                    await woken.Task.WaitAsync(ct).ConfigureAwait(false);
+                    woken=new(TaskCreationOptions.RunContinuationsAsynchronously);
+                    Volatile.Write(ref wake,woken);
+                }
             }
             if(options.Startup) await Task.Delay(StartupDelay,time,ct).ConfigureAwait(false);
             var lastSlow=time.GetTimestamp();
@@ -268,7 +299,7 @@ internal sealed class DeviceHost : IAsyncDisposable
                 // Lighting 3b: a key press still live for a fade or ripple layer moves too, and a press (or a frame a state asks for) ends
                 // the wait at once. The next wait's signal is made before this turn's work, so a wake during the work isn't lost. A wait
                 // ended by the signal cancels its timer here, on the loop's own thread.
-                lock(gate)tick=LightingPaint.Animating(settings,service.Devices,presses.Live(),Now())&&sessionOk&&status==HostStatus.Running?FastTick:Tick;
+                lock(gate)tick=LightingPaint.Animating(Shown,service.Devices,presses.Live(),Now())&&sessionOk&&status==HostStatus.Running?FastTick:Tick;
                 using(var turn=CancellationTokenSource.CreateLinkedTokenSource(ct))
                 {
                     var delay=Task.Delay(tick,time,turn.Token);
@@ -279,6 +310,7 @@ internal sealed class DeviceHost : IAsyncDisposable
                 Volatile.Write(ref wake,signal);
                 var now=time.GetTimestamp();
                 var slow=time.GetElapsedTime(lastSlow,now)>=SlowTick;
+                if(EverydayWork(slow)) Raise();
                 if(slow){lastSlow=now;await CheckConflictsAsync(ct).ConfigureAwait(false);}
                 TickWork(slow);
                 if(RefreshDue()?Watch(refresh:true):KeyHookStale()) Raise();
@@ -393,7 +425,7 @@ internal sealed class DeviceHost : IAsyncDisposable
                     if(slow||rescanPending){rescanPending=false;changed=RescanLocked();}
                     var t=Now(); // one reading for the paint and the preview
                     var live=presses.Live();
-                    service.Paint(settings,t,live);
+                    service.Paint(Shown,t,live);
                     frame=PreviewLocked(t,live);generation=previewGeneration;
                 }
             }
@@ -409,14 +441,15 @@ internal sealed class DeviceHost : IAsyncDisposable
     // (previewDue) skips all three checks, and so does the closing frame on the first tick after movement stops (previewMoving).
     PreviewEvent? PreviewLocked(double tMs,IReadOnlyList<LightPress> live)
     {
-        var moving=previewOn&&LightingPaint.Animating(settings,service.Devices,live,tMs);
-        var due=previewOn&&(previewDue||previewMoving&&!moving)&&LightingPaint.ShowsLights(settings,service.Views(settings));
+        var shown=Shown;
+        var moving=previewOn&&LightingPaint.Animating(shown,service.Devices,live,tMs);
+        var due=previewOn&&(previewDue||previewMoving&&!moving)&&LightingPaint.ShowsLights(shown,service.Views(shown));
         previewDue=false;
         if(!due&&!moving){ForgetPreview();return null;}
         previewMoving=moving;
         if(!due&&lastPreviewMs is {} last&&tMs-last<PreviewGap.TotalMilliseconds) return null;
         lastPreviewMs=tMs;
-        var frame=new PreviewEvent(service.Preview(settings,tMs,live),service.PreviewLights(settings,tMs,live));
+        var frame=new PreviewEvent(service.Preview(shown,tMs,live),service.PreviewLights(shown,tMs,live));
         if(!due&&lastPreview is not null&&SameFrame(lastPreview,frame)) return null;
         lastPreview=frame;
         return frame;
@@ -444,7 +477,7 @@ internal sealed class DeviceHost : IAsyncDisposable
             session.Connect();
             sessionOk=true;
             RescanLocked();
-            service.Paint(settings,Now(),presses.Live());
+            service.Paint(Shown,Now(),presses.Live());
             status=HostStatus.Running;message="";lastSessionError=null;connectDelay=ConnectDelayMin;nextConnectAt=0;
             return true;
         }
@@ -560,7 +593,7 @@ internal sealed class DeviceHost : IAsyncDisposable
                 return Ok(request);
             case RescanRequest:
                 if(!engineActive||!sessionOk||status!=HostStatus.Running) return Fail(request,"OpenRGB is not running.");
-                try{RescanLocked();service.Paint(settings,Now(),presses.Live());raise=true;return Ok(request);}
+                try{RescanLocked();service.Paint(Shown,Now(),presses.Live());raise=true;return Ok(request);}
                 catch(Exception e){FailSession(LostText,e);raise=true;return Fail(request,HostReplyCodes.RescanFailed);}
             case SetLightsOnRequest r:return Mutate(request,s=>{s.LightsOn=r.On;return null;},out raise);
             case SetBrightnessRequest r:return Mutate(request,s=>{if(r.Percent is<0 or>100) return "Brightness must be 0 to 100.";s.Brightness=r.Percent;return null;},out raise);
@@ -588,6 +621,7 @@ internal sealed class DeviceHost : IAsyncDisposable
             case ChooseLookRequest r:return Mutate(request,s=>ChooseLook(s,r),out raise,noRoom:true);
             case RenameLookRequest r:return Mutate(request,s=>RenameLook(s,r),out raise,noRoom:true);
             case DeleteLookRequest r:return Mutate(request,s=>DeleteLook(s,r),out raise,noRoom:true);
+            case SetEverydayRequest r:return SetEveryday(r,out raise);
             default:return Fail(request,HostReplyCodes.Unsupported);
         }
     }
@@ -759,17 +793,24 @@ internal sealed class DeviceHost : IAsyncDisposable
     HostMessage Mutate(HostMessage request,Func<LightingSettings,string?> edit,out bool raise,bool noRoom=false)
     {
         raise=false;
+        if(Change(edit,noRoom) is{} error) return Fail(request,error);
+        raise=true;
+        return Ok(request);
+    }
+    // Mutate's work, shared with the shortcut press: why the change was refused, or null once it is saved, adopted and painted.
+    string? Change(Func<LightingSettings,string?> edit,bool noRoom=false)
+    {
         var candidate=Clone(settings);
         var error=edit(candidate)??LightingSettingsCodec.Validate(candidate);
         if(noRoom&&error==LightingSettingsCodec.WrittenTooLarge) error=HostReplyCodes.NoRoom;
-        if(error is not null) return Fail(request,error);
+        if(error is not null) return error;
         if(saveAllowed)
         {
             try{store.Save(candidate);}
-            catch(Exception e){log.Write("saving lighting.json failed: "+e.Message);return Fail(request,HostReplyCodes.CouldntSave);}
+            catch(Exception e){log.Write("saving lighting.json failed: "+e.Message);return HostReplyCodes.CouldntSave;}
         }
         settings=candidate;
-        if(!LightingPaint.Animating(settings,service.Devices,presses.Live(),Now())) ForgetPreview();
+        if(!LightingPaint.Animating(Shown,service.Devices,presses.Live(),Now())) ForgetPreview();
         if(engineActive&&sessionOk&&status==HostStatus.Running)
         {
             try
@@ -778,13 +819,94 @@ internal sealed class DeviceHost : IAsyncDisposable
                 // at its new index, never a stale one. OpenRGB.NET 3.1.1 never raises that event (O21), so with it the 5 s rescan is what
                 // finds a change, and a change made in between still meets the old indexes.
                 if(rescanPending){rescanPending=false;RescanLocked();}
-                service.Paint(settings,Now(),presses.Live());
+                service.Paint(Shown,Now(),presses.Live());
             }
             catch(Exception e){FailSession(LostText,e);}
         }
-        raise=true;
-        return Ok(request);
+        return null;
     }
+    // Lighting 4, everyday: one loop turn's work, ahead of TickWork so it is never behind its early return while OpenRGB isn't running.
+    // Presses flip the saved switch through Change; idle and lock change only the reason. When the reason or the switch changed, live
+    // presses go, and the state that follows (raised by the caller, outside the lock) works out the hook again. Returns whether one is due.
+    bool EverydayWork(bool slow)
+    {
+        if(signals is null&&input is null) return false;
+        lock(gate)
+        {
+            var raise=slow&&shortcutRetry&&RegisterSavedLocked();
+            everyday.Observe(settings,input);
+            raise|=PressesLocked();
+            if(everyday.Changed(settings)){presses.Clear();raise=true;}
+            return raise;
+        }
+    }
+
+    // Each pending press flips the saved switch, unless it only ends an idle spell (EverydayState.PressTarget), which saves nothing.
+    // Returns whether any press came.
+    bool PressesLocked()
+    {
+        var n=everyday.TakePresses();
+        for(var i=0;i<n;i++)
+        {
+            var target=everyday.PressTarget(settings,out var back);
+            var error=target==settings.LightsOn?null:Change(s=>{s.LightsOn=target;return null;});
+            log.Write("shortcut pressed: "+(error is not null?"not changed ("+error+")":back?"back from idle":target?"lights on":"lights off"));
+        }
+        return n>0;
+    }
+
+    // The saved shortcut, registered at start (ruling P10) and, after no answer in time, again on slow work. Not without a watcher, nor while
+    // the watcher reports a problem of its own (the state's EverydayProblem carries that). Returns whether ShortcutProblem changed.
+    bool RegisterSavedLocked()
+    {
+        shortcutRetry=false;
+        if(signals is null||signals.Problem is not null||settings.Everyday.Shortcut is not{} saved) return false;
+        var before=shortcutProblem;
+        var text=Shortcuts.Text(saved);
+        switch(signals.SetShortcut(saved,ShortcutWait))
+        {
+            case true:shortcutProblem=null;log.Write("shortcut registered: "+text);break;
+            case false:shortcutProblem=Shortcuts.TakenText(saved);log.Write("shortcut refused: "+text);break;
+            default:
+                shortcutProblem=HostReplyCodes.Explain(HostReplyCodes.ShortcutSlow);shortcutRetry=true;
+                if(before is null) log.Write("shortcut not answered in time: "+text);
+                break;
+        }
+        return shortcutProblem!=before;
+    }
+
+    // Ruling P14's refusal of a shortcut change when there is no watcher at all; the real host always has one, so only tests meet it.
+    public const string NoWatcherText="Shortcut and lock are unavailable: this lighting helper doesn't watch for them.";
+    // setEveryday: checked, then a changed shortcut (or the saved one again while it has a problem) is registered before anything is saved,
+    // and the old one is asked for again when Windows refuses the new one, gives no answer in time, or the save fails. Then it is saved as
+    // any change. Without a watcher, or with one that reports a problem, a shortcut change is refused in its words while the other rules are
+    // still saved (ruling P14). The wait for the watcher's answer (ShortcutWait) is under the lock, as every request is.
+    HostMessage SetEveryday(SetEverydayRequest r,out bool raise)
+    {
+        raise=false;
+        if(r.Everyday is null||Everydays.Validate(r.Everyday) is not null) return Fail(r,HostReplyCodes.BadEveryday);
+        var old=settings.Everyday.Shortcut;
+        var wanted=r.Everyday.Shortcut;
+        var rules=Everydays.Clone(r.Everyday);
+        string? refused=null;
+        var registered=false;
+        if(wanted!=old||shortcutProblem is not null)
+        {
+            if(signals is null||signals.Problem is not null){refused=signals?.Problem??NoWatcherText;rules.Shortcut=old;}
+            else switch(signals.SetShortcut(wanted,ShortcutWait))
+            {
+                case true:registered=true;break;
+                case false:signals.SetShortcut(old,ShortcutWait);return Fail(r,wanted is null?HostReplyCodes.ShortcutSlow:Shortcuts.TakenText(wanted));
+                // A late answer could still register the new one, so the old one is asked for after it, without waiting again.
+                default:signals.SetShortcut(old,TimeSpan.Zero);return Fail(r,HostReplyCodes.ShortcutSlow);
+            }
+        }
+        var reply=Mutate(r,s=>{s.Everyday=rules;return null;},out raise);
+        if(reply is Reply{Ok:false}){if(registered) signals!.SetShortcut(old,ShortcutWait);return reply;}
+        if(registered){shortcutProblem=null;shortcutRetry=false;log.Write(wanted is null?"shortcut cleared":"shortcut registered: "+Shortcuts.Text(wanted));}
+        return refused is null?reply:Fail(r,refused);
+    }
+
     static Reply Ok(HostMessage r)=>new(true,null){Id=r.Id};
     static Reply Fail(HostMessage r,string why)=>new(false,why){Id=r.Id};
 
@@ -792,6 +914,7 @@ internal sealed class DeviceHost : IAsyncDisposable
     {
         lock(gate){if(disposed) return;disposed=true;}
         try{stopCts.Cancel();}catch(ObjectDisposedException){}
+        if(signals is not null){signals.ShortcutPressed-=onPress;signals.LockChanged-=onLock;signals.Suspending-=onSuspend;signals.Resumed-=onResume;}
         engine.Changed-=OnEngineChanged;
         session.DeviceListUpdated-=OnDeviceListUpdated;
         await engine.DisposeAsync().ConfigureAwait(false);
