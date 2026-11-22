@@ -124,12 +124,16 @@ internal sealed class KeyPressHook:IKeyPressSource
             else if(l.Gate is{} gate)
             {
                 var e=Marshal.PtrToStructure<KeyEvent>(lParam);
-                gate.OnKey((int)e.ScanCode,(e.Flags&Extended)!=0,(e.Flags&(Injected|LowerInjected))!=0,(e.Flags&Up)!=0);
+                var (extended,sentBySoftware,up)=Decode(e.Flags);
+                gate.OnKey((int)e.ScanCode,extended,sentBySoftware,up);
             }
         }
         catch{}
         return CallNextHookEx(IntPtr.Zero,nCode,wParam,lParam);
     }
+
+    // The three flags the gate is given: extended, sent by software (either injected flag) and key up. Nothing else in the flags is read.
+    internal static (bool Extended,bool SentBySoftware,bool Up) Decode(uint flags)=>((flags&Extended)!=0,(flags&(Injected|LowerInjected))!=0,(flags&Up)!=0);
 
 #pragma warning disable CS0169,CS0649 // filled by Windows; the fields that aren't read are padding so they can't be read by name
     // KBDLLHOOKSTRUCT. The first field, the virtual-key code, is padding.

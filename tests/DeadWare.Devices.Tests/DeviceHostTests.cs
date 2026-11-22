@@ -2810,7 +2810,69 @@ public sealed class DeviceHostTests : IAsyncLifetime
         Tap(keys,ScanA);
         var live=keys.Gate.Live();
         Assert.Equal([1],live[^1].Lights); // A is light 1 now; light 0 is W
-        Assert.DoesNotContain(live.Skip(1),p=>p.Lights.Contains(0));
+        Assert.DoesNotContain(live,p=>p.Lights.Contains(0)); // wbr-1 D3: the press made under the old order is gone too
+    }
+
+    // wbr-1 D1: when the last live press ends, one closing frame shows the keyboard with the press gone, so the window's picture doesn't
+    // keep the last fade or ring lit; later still ticks send nothing.
+    [Theory]
+    [InlineData("ripple",600)]
+    [InlineData("fade",600)]
+    [InlineData("ripple",100)]
+    [InlineData("fade",100)]
+    public async Task The_last_frame_after_a_press_shows_the_keyboard_unpressed(string kind,int ms)
+    {
+        var (h,keys)=await Watching(new DeviceLayer{Kind=kind,Color="#FF0000",Strength=100,DurationMs=ms});
+        var seen=FullPreviews(h);
+        Assert.True((await Send(h,new SubscribePreviewRequest(true))).Ok);
+        await AdvanceUntil(()=>CountOf(seen)>=1);
+        await RunFor(TimeSpan.FromSeconds(1),DeviceHost.Tick); // a still tick forgets the last frame
+        string unpressed;int before;
+        lock(seen){unpressed=seen[^1].Lights![ApexKey];before=seen.Count;}
+        time.Advance(TimeSpan.FromMilliseconds(40));
+        Tap(keys,ScanA);
+        await Until(()=>{lock(seen)return seen.Skip(before).Any(f=>f.Lights![ApexKey].StartsWith("FF82B4",StringComparison.Ordinal));});
+        await UntilReactionEnds();
+        await RunFor(TimeSpan.FromSeconds(1),DeviceHost.Tick);
+        int after;
+        lock(seen){after=seen.Count;Assert.Equal(unpressed,seen[^1].Lights![ApexKey]);}
+        await RunFor(TimeSpan.FromSeconds(6),DeviceHost.Tick); // across a 5 s rescan too
+        Assert.Equal(after,CountOf(seen));
+    }
+
+    [Fact]
+    public async Task No_closing_frame_after_the_window_unsubscribes()
+    {
+        var (h,keys)=await Watching(Ripple());
+        var seen=FullPreviews(h);
+        Assert.True((await Send(h,new SubscribePreviewRequest(true))).Ok);
+        await AdvanceUntil(()=>CountOf(seen)>=1);
+        await RunFor(TimeSpan.FromSeconds(1),DeviceHost.Tick);
+        time.Advance(TimeSpan.FromMilliseconds(40));
+        Tap(keys,ScanA);
+        await Until(()=>{lock(seen)return seen.Any(f=>f.Lights![ApexKey].StartsWith("FF82B4",StringComparison.Ordinal));});
+        Assert.True((await Send(h,new SubscribePreviewRequest(false))).Ok);
+        var n=CountOf(seen);
+        await UntilReactionEnds();
+        await RunFor(TimeSpan.FromSeconds(2),DeviceHost.Tick);
+        Assert.Equal(n,CountOf(seen));
+    }
+
+    // wbr-1 D8: overwriting a look replaces it where it is.
+    [Fact]
+    public async Task Overwriting_a_look_keeps_its_place()
+    {
+        var h=await Running();
+        foreach(var name in new[]{"A","B","C"}) Assert.True((await Send(h,new SaveLookRequest(ApexKey,name))).Ok);
+        Assert.True((await Send(h,new SetDeviceKeysRequest(ApexKey,Keys((0,"#FF0000"))))).Ok);
+        Assert.True((await Send(h,new SaveLookRequest(ApexKey,"B",true))).Ok);
+        var t=ApexEntry(h)!;var looks=t.Looks!;
+        Assert.Equal(["A","B","C"],looks.Select(l=>l.Name));
+        Assert.Equal("0=Key 0/#FF0000",KeysText(looks[1].Keys));
+        Assert.Null(looks[0].Keys);Assert.Null(looks[2].Keys);
+        Assert.Equal("B",t.Look);
+        Assert.Equal(["A","B","C"],ApexView(h).Looks!);
+        Assert.Equal(["A","B","C"],SavedSettings().Devices[ApexKey].Looks!.Select(l=>l.Name));
     }
 
     [Fact]

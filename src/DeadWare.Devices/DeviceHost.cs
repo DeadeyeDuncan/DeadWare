@@ -100,6 +100,10 @@ internal sealed class DeviceHost : IAsyncDisposable
     public event Action<PreviewEvent>? PreviewChanged;
     readonly object previewGate=new();
     bool previewOn,previewDue;
+    // wbr-1 D1: the last preview tick found something moving. When that stops (a key press's fade or ring ends, with nothing else moving),
+    // the next tick sends one closing frame like a due one, so the window, which keeps drawing the last frame while it shows painted
+    // lights, doesn't keep the press lit.
+    bool previewMoving;
     int previewGeneration;
     double? lastPreviewMs;
     PreviewEvent? lastPreview;
@@ -401,12 +405,14 @@ internal sealed class DeviceHost : IAsyncDisposable
     // The frame to send at tMs, or null: none subscribed, nothing animating, too soon after the last frame, or the same colours as it.
     // While no frame is produced (nothing animating, or no running session) the window shows the state's colours, so the last frame and
     // its time are forgotten then: the first frame after a resume is sent even when it equals the last one (fix wave W1). A due frame
-    // (previewDue) skips all three checks.
+    // (previewDue) skips all three checks, and so does the closing frame on the first tick after movement stops (previewMoving).
     PreviewEvent? PreviewLocked(double tMs,IReadOnlyList<LightPress> live)
     {
-        var due=previewOn&&previewDue&&LightingPaint.ShowsLights(settings,service.Views(settings));
+        var moving=previewOn&&LightingPaint.Animating(settings,service.Devices,live,tMs);
+        var due=previewOn&&(previewDue||previewMoving&&!moving)&&LightingPaint.ShowsLights(settings,service.Views(settings));
         previewDue=false;
-        if(!previewOn||!due&&!LightingPaint.Animating(settings,service.Devices,live,tMs)){ForgetPreview();return null;}
+        if(!due&&!moving){ForgetPreview();return null;}
+        previewMoving=moving;
         if(!due&&lastPreviewMs is {} last&&tMs-last<PreviewGap.TotalMilliseconds) return null;
         lastPreviewMs=tMs;
         var frame=new PreviewEvent(service.Preview(settings,tMs,live),service.PreviewLights(settings,tMs,live));
@@ -414,7 +420,7 @@ internal sealed class DeviceHost : IAsyncDisposable
         lastPreview=frame;
         return frame;
     }
-    void ForgetPreview(){lastPreview=null;lastPreviewMs=null;}
+    void ForgetPreview(){lastPreview=null;lastPreviewMs=null;previewMoving=false;}
     internal static bool SameFrame(PreviewEvent a,PreviewEvent b)=>Same(a.Colors,b.Colors)&&(a.Lights is null?b.Lights is null:b.Lights is not null&&Same(a.Lights,b.Lights));
     static bool Same(Dictionary<string,string> a,Dictionary<string,string> b)=>a.Count==b.Count&&a.All(e=>b.TryGetValue(e.Key,out var v)&&v==e.Value);
 

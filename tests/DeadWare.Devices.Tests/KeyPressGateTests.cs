@@ -211,4 +211,58 @@ public sealed class KeyPressGateTests
         stop.Cancel();await preparing;
         Assert.Equal(20_000,Volatile.Read(ref count));
     }
+
+    // wbr-1 D3: a keyboard whose light names changed loses its live presses, which hold the old light numbers; a keyboard whose names
+    // are the same keeps its own.
+    [Fact]
+    public void A_keyboard_whose_names_changed_loses_its_live_presses()
+    {
+        var g=Gate();
+        g.Prepare([Kb("kb1",Board),Kb("kb2",["Key: W","Key: A"])]);
+        Tap(g,A);
+        Assert.Equal(2,g.Live().Count);
+        g.Prepare([Kb("kb1",["Key: W","Key: A","Key: Left Control","Key: Right Control","Key 4"]),Kb("kb2",["Key: W","Key: A"])]);
+        var live=g.Live();
+        Assert.Equal("kb2",Assert.Single(live).DeviceKey);
+        Assert.Equal([1],live[0].Lights);
+        now=10;Tap(g,A);
+        live=g.Live();
+        Assert.Equal(3,live.Count);
+        Assert.Equal([1],live.Single(p=>p.DeviceKey=="kb1").Lights); // the new press uses the new numbers
+    }
+
+    // wbr-1 D9: a held key whose release was missed is forgotten HeldMs after it was last seen, with no further key events.
+    [Fact]
+    public void A_held_key_whose_release_was_missed_is_forgotten_after_two_seconds()
+    {
+        var g=Gate();
+        g.Prepare([Kb("kb1",Board)]);
+        g.OnKey(A,false,false,false);
+        g.OnKey(W,false,false,false);
+        now=1500;g.OnKey(W,false,false,false); // a repeat: W last seen at 1500
+        now=1999;g.Live();
+        Assert.Equal(2,g.HeldCount);
+        now=2000;g.Live();
+        Assert.Equal(1,g.HeldCount);            // A is gone; W was seen 500 ms ago
+        now=3500;g.Live();
+        Assert.Equal(0,g.HeldCount);
+        Assert.Empty(g.Live());                 // no live press left either
+        // With no live press at all, the paint loop's read still forgets.
+        g.OnKey(A,false,false,false);          // a press at 3500
+        now=5000;g.OnKey(A,false,false,false); // a repeat: held, no press
+        now=6600;Assert.Empty(g.Live());       // the press has expired; A, seen 1600 ms ago, is still held
+        Assert.Equal(1,g.HeldCount);
+        now=7000;Assert.Empty(g.Live());
+        Assert.Equal(0,g.HeldCount);
+    }
+
+    [Fact]
+    public void A_key_event_forgets_stale_held_keys()
+    {
+        var g=Gate();
+        g.Prepare([Kb("kb1",Board)]);
+        g.OnKey(A,false,false,false);
+        now=2500;g.OnKey(W,false,false,true); // an up for another key, with nothing held for it
+        Assert.Equal(0,g.HeldCount);
+    }
 }

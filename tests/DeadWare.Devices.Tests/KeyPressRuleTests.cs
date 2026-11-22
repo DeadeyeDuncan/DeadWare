@@ -39,6 +39,24 @@ public sealed class KeyPressRuleTests
         Assert.False(typeof(IKeyPressSource).IsVisible);
     }
 
+    // wbr-1 D5: KBDLLHOOKSTRUCT.flags as the callback reads them. Win32 values: LLKHF_EXTENDED 0x01, LLKHF_LOWER_IL_INJECTED 0x02,
+    // LLKHF_INJECTED 0x10, LLKHF_ALTDOWN 0x20, LLKHF_UP 0x80. Either injected flag means sent by software; Alt down changes nothing.
+    [Theory]
+    [InlineData(0x00u,false,false,false)]
+    [InlineData(0x01u,true,false,false)]
+    [InlineData(0x02u,false,true,false)]
+    [InlineData(0x10u,false,true,false)]
+    [InlineData(0x80u,false,false,true)]
+    [InlineData(0x20u,false,false,false)]
+    [InlineData(0x11u,true,true,false)]
+    [InlineData(0x81u,true,false,true)]
+    [InlineData(0x92u,false,true,true)]
+    [InlineData(0x12u,false,true,false)]
+    [InlineData(0xA1u,true,false,true)]
+    [InlineData(0xFFu,true,true,true)]
+    public void The_hook_decodes_the_flags(uint flags,bool extended,bool sentBySoftware,bool up)
+        =>Assert.Equal((extended,sentBySoftware,up),KeyPressHook.Decode(flags));
+
     static string Root()
     {
         var d=new DirectoryInfo(AppContext.BaseDirectory);

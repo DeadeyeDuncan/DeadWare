@@ -199,6 +199,32 @@ public class LightingLayersTests
         Assert.False(KeyMaps.CanPaint(Kb() with{LedNames=["Key: A",""]}));
         Assert.False(KeyMaps.CanPaint(Kb() with{Zones=[new LightingZone(0,"Keys",2)]}));
     }
+    // wbr-1 D4: an effect layer runs at its own speed.
+    [Fact] public void An_effect_layer_runs_at_its_own_speed()
+    {
+        var kb=Kb();var f=new Rgb[]{Base,Base};var got=new List<Rgb>();
+        foreach(var speed in new[]{0,90})
+        {
+            s.Devices.Clear();var l=Add(L("effect","#C80000",100,"cover",effect:"wave"));l.Speed=speed;
+            var c=LightingLayers.Compose(s,kb,f,777,null)!;
+            var want=LightingEffects.Evaluate(EffectKind.Wave,new DeskPoint(1,0.5),777,new EffectParams{Speed=speed},Red);
+            Assert.Equal(want,LightingLayers.Round(c[3],c[4],c[5]));
+            got.Add(want);
+        }
+        Assert.NotEqual(got[0],got[1]);
+    }
+    // wbr-1 D6: a layer of a kind or mix this version doesn't know (kept from a file) is skipped when painting.
+    [Fact] public void Layers_of_unknown_kind_or_mix_are_skipped()
+    {
+        var kb=Kb();
+        Add(L("color","#141414",50,"add"));
+        var press=Press(500,0);
+        var without=Painted(kb,500,press);
+        Add(L("morrowind"));                     // with the press, a kind that fell through to the ripple would light key A
+        Add(L("color","#00FF00",100,"blend"));   // mixed as cover or add, this would turn both keys green
+        Assert.Equal(without,Painted(kb,500,press));
+        Assert.Equal(without,Painted(kb,700,press));
+    }
     [Fact] public void LightPress_has_exactly_three_members()
     {
         var names=typeof(LightPress).GetProperties(System.Reflection.BindingFlags.Public|System.Reflection.BindingFlags.Instance).Select(p=>p.Name).Order().ToArray();
