@@ -52,4 +52,13 @@ public class LookNamesTests
         Assert.False(LookNames.Unsaved(Keyboard(paint:[],layers:[])));
         Assert.False(LookNames.Unsaved(Keyboard(look:"Gaming",paint:new(){[3]=new PaintedKey{Name="W",Color="#FF0000"}},mode:new DeviceMode{Kind=DeviceModes.Static,Speed=40})));
     }
+
+    [Fact] public void A_change_not_yet_in_the_state_counts_as_unsaved()
+    {
+        // The state says the keyboard matches its look (or has nothing), but a paint or layer change the window holds hasn't reached it.
+        Assert.True(LookNames.Unsaved(Keyboard(look:"Gaming"),pending:true));
+        Assert.True(LookNames.Unsaved(Keyboard(),pending:true));
+        Assert.False(LookNames.Unsaved(Keyboard(look:"Gaming"),pending:false));
+        Assert.True(LookNames.Unsaved(Keyboard(look:"Gaming",changed:true),pending:false));
+    }
 }

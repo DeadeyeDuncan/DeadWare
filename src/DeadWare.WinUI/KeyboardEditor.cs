@@ -124,12 +124,13 @@ internal sealed class KeyboardEditor
         LightingPage.Show(layers.Root, false);
 
         // A save or a choice takes the keyboard as it is, so a paint or layer change still waiting goes first (else it would land after the
-        // look and change it); a look chosen forgets Undo.
+        // look and change it); a look chosen forgets Undo. A paint or layer change held (waiting, on its way, or not yet in a state shown)
+        // isn't in the state the control has, so choosing a look counts it as unsaved and asks first.
         looks = new SavedLooks((request, done) => send(request, done is null ? null : tracked => done(tracked.Reply)), before: () =>
         {
             paint.Flush();
             layers.Flush();
-        }, chosen: ForgetHistory);
+        }, chosen: ForgetHistory, pending: () => paint.Held || layers.Held);
         looksSlot.Child = looks.Root;
 
         Root = Pages.Card(new StackPanel { Spacing = 10, Padding = new Thickness(8), Children = { title, keyColoursPart, layers.Root, looksSlot } });

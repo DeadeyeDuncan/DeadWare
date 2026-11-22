@@ -39,6 +39,12 @@ internal sealed class HeldRequest<T> where T : class
     /// <summary>A change waits in the throttle for its interval.</summary>
     public bool Pending => sends.Pending;
 
+    /// <summary>
+    /// A value asked for is held: it waits to be sent, is on its way, or was taken but no state shown yet carries it. The last state
+    /// then doesn't have it, so choosing a look treats it as unsaved.
+    /// </summary>
+    public bool Held => held.Held;
+
     /// <summary>Shows <paramref name="value"/> from now on, for a request that goes another way (a slider's own throttle, then <see cref="Send"/>).</summary>
     public void Ask(T? value) => held.Ask(value);
 

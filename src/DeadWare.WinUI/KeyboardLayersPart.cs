@@ -172,6 +172,9 @@ internal sealed class KeyboardLayersPart
     /// <summary>The host stopped running: a list waiting is dropped.</summary>
     public void Cancel() => layers.Cancel();
 
+    /// <summary>A list asked for (by a change or a slider's value) isn't in the last state yet: it waits, is on its way or is not yet shown.</summary>
+    public bool Held => layers.Held;
+
     /// <summary>
     /// Sends a slider value and a list change still waiting now, as a release and Done do (a slider's drag ends), without ending picking:
     /// a look saved or chosen next then takes, or replaces, the list as the view shows it. At most one of them waits (<see cref="SetLayers"/>

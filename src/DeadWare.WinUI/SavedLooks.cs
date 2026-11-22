@@ -9,7 +9,8 @@ namespace DeadWare.WinUI;
 /// A keyboard's Saved looks section (lighting 3b, mockup key-painting.html), the one control the device card and the large keyboard view's
 /// card both show: a drop-down of the looks with the current one chosen ("Gaming (changed)" when the keyboard no longer matches it), and
 /// Save changes (only when changed), Save as a new look…, Rename and Delete; with no looks saved, only Save as a new look…. Choosing a look
-/// switches the keyboard to it, asking first when the keyboard's setup is in no look (<see cref="LookNames.Unsaved"/>). The names asked for
+/// switches the keyboard to it, asking first when the keyboard's setup is in no look (<see cref="LookNames.Unsaved"/>), counting a change
+/// the owner of the control still holds (a paint or layer change of the large keyboard view not yet in the state). The names asked for
 /// in its dialogs are checked with <see cref="LookNames.Problem"/> as they are typed. Requests go through the page's send, whose refusals show
 /// in the page's status line; after a refusal the control shows the state again. Rename and Delete act on the current look.
 /// </summary>
@@ -19,6 +20,7 @@ internal sealed class SavedLooks
 
     private readonly Action<HostMessage, Action<Reply>?> send;
     private readonly Action? before, chosen;
+    private readonly Func<bool>? pending;
     private readonly ComboBox box = new() { HorizontalAlignment = HorizontalAlignment.Left, MinWidth = 240, MaxWidth = TuningSlider.MaxRowWidth };
     private readonly Button saveChanges = new() { Content = "Save changes" }, saveNew = new() { Content = "Save as a new look…" };
     private readonly Button rename = new() { Content = "Rename" }, delete = new() { Content = "Delete" };
@@ -34,11 +36,16 @@ internal sealed class SavedLooks
     /// <param name="send">The page's send: the reply comes back on the UI thread, and not at all from a client the page no longer follows.</param>
     /// <param name="before">Run before each request, so a change of the keyboard's still waiting goes first and the look takes it.</param>
     /// <param name="chosen">Told when the host has taken a choice of look.</param>
-    public SavedLooks(Action<HostMessage, Action<Reply>?> send, Action? before = null, Action? chosen = null)
+    /// <param name="pending">
+    /// Whether a change of the keyboard's that the last state doesn't carry yet is held (waiting, on its way, or taken but not yet shown):
+    /// choosing a look then asks first, as for a setup in no look.
+    /// </param>
+    public SavedLooks(Action<HostMessage, Action<Reply>?> send, Action? before = null, Action? chosen = null, Func<bool>? pending = null)
     {
         this.send = send;
         this.before = before;
         this.chosen = chosen;
+        this.pending = pending;
         AutomationProperties.SetName(box, "Saved looks");
         box.SelectionChanged += (_, _) => Pick();
         saveChanges.Click += (_, _) => SaveChanges();
@@ -147,7 +154,9 @@ internal sealed class SavedLooks
             Apply();
             return;
         }
-        if (LookNames.Unsaved(shown))
+        // A change still held isn't in the state, so the state alone could call the setup saved and the look would replace it unasked.
+        // It goes before the look (Request's before) only once the user has chosen Switch, or when nothing was unsaved.
+        if (LookNames.Unsaved(shown, pending?.Invoke() == true))
         {
             int asked = ticket;
             bool yes = await Ask(new ContentDialog

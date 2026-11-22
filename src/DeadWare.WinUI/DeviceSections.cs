@@ -22,6 +22,7 @@ internal sealed class DeviceSections
 {
     private const string WaveText = "This keyboard doesn't report its key positions.";
     private const string NamesText = "This keyboard doesn't report its keys' names.";
+    private const string PictureText = "Painting keys and layers need the desk picture, which this PC doesn't have yet.";
     private const string CorrectionText = "For a device whose white looks tinted next to the others. 100 leaves a colour as it is.";
     private const string PartsText = "Brightness and colour correction apply to the whole device: ";
 
@@ -297,7 +298,8 @@ internal sealed class DeviceSections
     /// <summary>
     /// Key colours' and Layers' counts ("1 key painted", "3 layers", "No layers"), and their buttons: usable when DeadWare paints the
     /// keyboard, the host runs, the keyboard reports its key positions and names, and the page is in picture mode. A keyboard that doesn't
-    /// report them says which under each button; plain mode leaves them disabled without a line.
+    /// report them says which under each button; otherwise, in plain mode, a keyboard DeadWare paints says under each that the desk picture
+    /// is needed. A keyboard running its own effect has the card's note instead.
     /// </summary>
     private void ShowKeyboard()
     {
@@ -307,7 +309,8 @@ internal sealed class DeviceSections
         string layers = layered switch { 0 => "No layers", 1 => "1 layer", _ => $"{layered} layers" };
         if (keysCount.Text != keys) keysCount.Text = keys;
         if (layersCount.Text != layers) layersCount.Text = layers;
-        string? why = shown.CanPaint ? null : shown.Keys is null ? WaveText : NamesText;
+        string? why = !shown.CanPaint ? (shown.Keys is null ? WaveText : NamesText)
+            : !viewable && shown.Kind == PaintKind.Direct ? PictureText : null;
         foreach (var note in new[] { keysNote, layersNote })
         {
             note.Text = why ?? "";

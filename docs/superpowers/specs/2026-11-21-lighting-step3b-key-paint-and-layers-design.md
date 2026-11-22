@@ -65,7 +65,7 @@ In order (new parts marked):
 5. **Layers** (new): "N layers" (or "No layers") and an **Edit layers…** button.
 6. **Brightness**, **Colour correction**: as 3a.
 
-"Paint keys…" and "Edit layers…" need the keyboard to report its key positions and its keys' names; otherwise they are disabled with "This keyboard doesn't report its key positions." or "This keyboard doesn't report its keys' names." A keyboard running its own hardware effect has the new sections disabled with 3a's note.
+"Paint keys…" and "Edit layers…" need the keyboard to report its key positions and its keys' names; otherwise they are disabled with "This keyboard doesn't report its key positions." or "This keyboard doesn't report its keys' names." On a PC without the desk picture (the Lighting page shows the plain desk) both are disabled, with "Painting keys and layers need the desk picture, which this PC doesn't have yet." under each. A keyboard running its own hardware effect has the new sections disabled with 3a's note.
 
 ### The large keyboard view
 

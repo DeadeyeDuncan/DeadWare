@@ -14,6 +14,7 @@ public static class LookNames
         if(renaming is not null&&Same(renaming)) return null;
         return existing.Any(Same)?$"There is already a look called {n}.":null;
     }
-    // The keyboard has changed since its look was chosen or saved, or it has paint, layers or a lighting mode and no look.
-    public static bool Unsaved(DeviceView d)=>d.LookChanged||d.Look is null&&(d.Paint is{Count:>0}||d.Layers is{Count:>0}||d.LightingMode is not null);
+    // The keyboard has changed since its look was chosen or saved, or it has paint, layers or a lighting mode and no look. pending: a
+    // change the window asked for (painted keys, layers) isn't in the state d yet, so the state can't say it is saved.
+    public static bool Unsaved(DeviceView d,bool pending=false)=>pending||d.LookChanged||d.Look is null&&(d.Paint is{Count:>0}||d.Layers is{Count:>0}||d.LightingMode is not null);
 }
