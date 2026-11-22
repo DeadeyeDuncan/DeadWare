@@ -1264,6 +1264,7 @@ internal sealed class LightingPage : Page, IHeaderTool
         if (markedCard is not null && !ReferenceEquals(markedCard, card)) markedCard.Mark(null);
         markedCard = card;
         card?.Mark(pictureOn ? MarkFor() : null);
+        card?.ShowViewable(pictureOn);
         ShowLayoutPanel();
         if (ReferenceEquals(panelSlot.Child, next)) return;
         if (zoneFlyout.IsOpen) zoneFlyout.Hide();
@@ -1608,7 +1609,8 @@ internal sealed class LightingPage : Page, IHeaderTool
         private readonly LightingPage page;
         private readonly TextBlock title = new() { Style = (Style)Application.Current.Resources["BodyStrongTextBlockStyle"], TextWrapping = TextWrapping.Wrap };
         private readonly TextBlock staysLit = Muted("Stays lit when lights are off"), cannotDrive = Muted("DeadWare can't drive this device"), noZones = Muted("This device has no colour zones.");
-        // Lighting mode, Brightness and Colour correction under the zone rows, and the own-effect note that goes first.
+        // A keyboard's Saved looks above the zone rows; Key colours, Lighting mode, Layers, Brightness and Colour correction under them;
+        // and the own-effect note that goes first.
         private readonly DeviceSections sections;
         // The picture's sub-line under the title ("selected on the desk", "radiator fan 2 selected"), collapsed in plain mode.
         private readonly TextBlock subtitle = Muted("");
@@ -1623,8 +1625,8 @@ internal sealed class LightingPage : Page, IHeaderTool
             this.page = page;
             Show(subtitle, false);
             var top = new StackPanel { Spacing = 2, Children = { title, subtitle } };
-            sections = new DeviceSections(page.queue, page.Send);
-            var content = new StackPanel { Spacing = 8, Padding = new Thickness(8), Children = { top, sections.Note, staysLit, cannotDrive, noZones, zones } };
+            sections = new DeviceSections(page.queue, page.Send, page.OpenKeyboard);
+            var content = new StackPanel { Spacing = 8, Padding = new Thickness(8), Children = { top, sections.Note, staysLit, cannotDrive, sections.Looks, noZones, zones } };
             foreach (var section in sections.Sections) content.Children.Add(section);
             Root = Pages.Card(content);
         }
@@ -1665,7 +1667,7 @@ internal sealed class LightingPage : Page, IHeaderTool
             // The device's own effect and whether it stays lit with lights off don't change with Lights on (Ruling AB), so the card
             // names the effect while the lights are off too, and warns before they go off that the device will stay lit. The note
             // naming the effect goes first, and the tuning sections show disabled (DeviceSections).
-            sections.Update(device, page.shownState?.Settings?.Brightness ?? 100, mark?.Parts, live);
+            sections.Update(device, page.shownState?.Settings?.Brightness ?? 100, mark?.Parts, live, page.shownPicture is not null);
             Show(staysLit, hardware && device.StaysLitWhenOff);
             Show(cannotDrive, unsupported);
             // Only a device DeadWare paints lists its zones. One running its own effect keeps its zones' colours, but they don't show on it,
@@ -1696,6 +1698,9 @@ internal sealed class LightingPage : Page, IHeaderTool
 
         /// <summary>Ends the tuning sliders' drags and sends their waiting changes now, as when the page is hidden.</summary>
         public void Leave() => sections.Leave();
+
+        /// <summary>Whether the page is in picture mode, which Paint keys… and Edit layers… need, as the card is shown.</summary>
+        public void ShowViewable(bool on) => sections.ShowViewable(on);
 
         /// <summary>Disables the swatches and the tuning sections while the host isn't running, leaving the card as it was.</summary>
         public void Disable()

@@ -19,7 +19,8 @@ namespace DeadWare.WinUI;
 /// paint changes made since the view opened. Every change sends the whole painted set as a <see cref="SetDeviceKeysRequest"/> through the
 /// page's send (held as the view shows it by a <see cref="HeldRequest{T}"/>), whose refusals show in the page's status line; a refused
 /// change shows the state's paint again. The Layers part is <see cref="KeyboardLayersPart"/>, to which this routes the drawing's presses and
-/// the group buttons while it picks a layer's keys. The saved looks control goes in <see cref="looksSlot"/>.
+/// the group buttons while it picks a layer's keys. The device card's Saved looks control (<see cref="SavedLooks"/>) shows in
+/// <see cref="looksSlot"/>; choosing a look there forgets the paint history.
 /// </summary>
 internal sealed class KeyboardEditor
 {
@@ -51,6 +52,7 @@ internal sealed class KeyboardEditor
     private readonly KeyboardLayersPart layers;
     // Where the saved looks control goes, shown on the card in both parts as the mockup shows it on the normal card.
     private readonly Border looksSlot = new();
+    private readonly SavedLooks looks;
     private readonly KeyPick pick = new();
     private readonly PaintHistory history = new();
     // The painted set: changes go at most once per 100 ms (the picker fires continuously while it is dragged, and its last colour goes when
@@ -121,6 +123,15 @@ internal sealed class KeyboardEditor
         layers = new KeyboardLayersPart(queue, send, FlowOf(layerGroupButtons), Refresh);
         LightingPage.Show(layers.Root, false);
 
+        // A save or a choice takes the keyboard as it is, so a paint or layer change still waiting goes first (else it would land after the
+        // look and change it); a look chosen forgets Undo.
+        looks = new SavedLooks((request, done) => send(request, done is null ? null : tracked => done(tracked.Reply)), before: () =>
+        {
+            paint.Flush();
+            layers.Flush();
+        }, chosen: ForgetHistory);
+        looksSlot.Child = looks.Root;
+
         Root = Pages.Card(new StackPanel { Spacing = 10, Padding = new Thickness(8), Children = { title, keyColoursPart, layers.Root, looksSlot } });
 
         picture.KeyPickDown += light => OnKey(p => p.Down(light));
@@ -188,6 +199,7 @@ internal sealed class KeyboardEditor
     {
         paint.Reset(sendWaiting);
         layers.Close(sendWaiting);
+        looks.Reset();
         deviceKey = null;
         device = null;
         pickerBase = null;
@@ -225,12 +237,14 @@ internal sealed class KeyboardEditor
         if (!ReferenceEquals(groupsFor, keyboard.Keys)) ShowGroups(keyboard.Keys);
         paint.Shown(seq);
         layers.Shown(seq);
+        looks.Update(keyboard, live && keyboard.Kind == PaintKind.Direct);
         Refresh();
     }
 
     /// <summary>Forgets the paint history, as choosing a look does.</summary>
     public void ForgetHistory()
     {
+        if (deviceKey is null) return;
         history.Clear();
         Refresh();
     }

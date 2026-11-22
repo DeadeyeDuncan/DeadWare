@@ -172,6 +172,17 @@ internal sealed class KeyboardLayersPart
     /// <summary>The host stopped running: a list waiting is dropped.</summary>
     public void Cancel() => layers.Cancel();
 
+    /// <summary>
+    /// Sends a slider value and a list change still waiting now, as a release and Done do (a slider's drag ends), without ending picking:
+    /// a look saved or chosen next then takes, or replaces, the list as the view shows it. At most one of them waits (<see cref="SetLayers"/>
+    /// sends the sliders' values first, and a slider's request sends the list first), so their order here doesn't matter.
+    /// </summary>
+    public void Flush()
+    {
+        foreach (var slider in Sliders) slider.Tuning.Leave();
+        layers.Flush();
+    }
+
     /// <summary>A pick that is no longer one of the keyboard's lights goes.</summary>
     public void KeepPicks(int lights)
     {
