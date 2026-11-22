@@ -22,13 +22,15 @@ internal sealed class AeroxDriver:IDisposable
     IAeroxPort? port;                                     // the receiver port; touched by the running worker, or under gate while none runs
     int saved=NoValue;                                    // the sleep time last saved (0x51), once per changed value per driver lifetime
     volatile int sent=NoValue;                            // the sleep time delivered on the current port
-    volatile bool receiver,cable,answering,dropRequested,silent;
+    volatile bool receiver,cable,answering,dropRequested,silent,timedOut;
 
     public AeroxDriver(IAeroxTransport transport,HostLog log,TimeSpan? deadline=null){this.transport=transport;this.log=log;this.deadline=deadline??Deadline;}
 
     public bool ReceiverPresent=>receiver;
     public bool CablePresent=>cable;
     public bool Answering=>answering;
+    // The last exchange ended Failed at the deadline (its port abandoned), not by a throw.
+    public bool TimedOut=>timedOut;
     public bool SleepSent(int? minutes)=>minutes is not int m||sent==m;
 
     // Re-reads which products are present; a vanished receiver closes its port.
@@ -183,6 +185,7 @@ internal sealed class AeroxDriver:IDisposable
         {
             if(job is{IsCompleted:false}) return AeroxResult.Busy;
             if(dropRequested){dropRequested=false;ClosePort();}
+            timedOut=false;
             var j=new Job();
             var name=onReceiver?"receiver":"mouse cable";
             var t=Task.Run(()=>
@@ -209,6 +212,7 @@ internal sealed class AeroxDriver:IDisposable
             if(t.Wait(deadline)) return t.Result;
             if(Interlocked.CompareExchange(ref j.Phase,Expired,Running)==Done){t.Wait();return t.Result;}
             if(onReceiver) answering=false;
+            timedOut=true;
             log.Write($"{name} failed: no answer within {(int)deadline.TotalMilliseconds} ms; the port is abandoned");
             return AeroxResult.Failed;
         }

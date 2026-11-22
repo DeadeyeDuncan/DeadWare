@@ -26,7 +26,7 @@ public sealed class AeroxMouseTests:IDisposable
         mouse=new AeroxMouse(driver,input,time,log);
         mouse.Tick();mouse.Scan();
     }
-    public void Dispose(){driver.Dispose();log.Dispose();try{Directory.Delete(dir,true);}catch{}}
+    public void Dispose(){fake.HangWrite?.Set();driver.Dispose();log.Dispose();try{Directory.Delete(dir,true);}catch{}}
 
     static Rgb[] Four(int v){var c=new Rgb((byte)v,(byte)(v>>8),7);return [c,c,c,c];}
     void Step(int ms=33){time.Advance(TimeSpan.FromMilliseconds(ms));mouse.Tick();}
@@ -193,6 +193,80 @@ public sealed class AeroxMouseTests:IDisposable
         Assert.True(mouse.Paint(Four(3),null));                   // the colours last delivered, sent again while still
         Assert.Equal(before+5,Writes);
     }
+
+    // Fix round 1, R14: a port (re)opened gets one attempt while the mouse is silent, without movement; a missing reply silences it again.
+    [Fact]
+    public void A_reopened_port_gets_one_attempt_while_silent()
+    {
+        Deliver(null);
+        fake.Reply=_=>null;
+        Assert.False(mouse.Paint(Four(2),null));                  // silent
+        Step(2000);
+        mouse.Reopen();                                           // wake
+        Assert.False(mouse.Paint(Four(2),null));
+        Assert.Equal(5+2,Writes);                                 // one attempt, on a fresh port
+        Assert.Equal(2,fake.Opens);
+        for(var k=0;k<90;k++){Assert.False(mouse.Paint(Four(2),null));Step();}
+        Assert.Equal(7,Writes);                                   // silent again until the pointer moves
+        Move();Step();
+        Assert.False(mouse.Paint(Four(2),null));
+        Assert.Equal(8,Writes);
+        // A thrown failure closes the port; the slow work's Scan reopens it, and that reopen gets its one attempt too.
+        Step(2000);Move();Step();
+        fake.ThrowOnWrite=true;
+        Assert.False(mouse.Paint(Four(2),null));
+        fake.ThrowOnWrite=false;
+        Step(2000);
+        var before=Writes;
+        Assert.False(mouse.Paint(Four(2),null));
+        Assert.Equal(before,Writes);                              // nothing before the Scan
+        mouse.Scan();
+        Assert.False(mouse.Paint(Four(2),null));
+        Assert.False(mouse.Paint(Four(2),null));
+        Assert.Equal(before+1,Writes);
+    }
+
+    // Fix round 1, R17: an exchange that runs into the driver's deadline counts as a missing reply: later ticks and Scans send nothing until
+    // the pointer moves, so a HID call that hangs and returns can't hold the host's lock every 5 s.
+    [Fact]
+    public void A_timed_out_exchange_silences_like_a_missing_reply()
+    {
+        using var slow=new AeroxDriver(fake,log,TimeSpan.FromMilliseconds(100));
+        var m=new AeroxMouse(slow,input,time,log);
+        m.Tick();m.Scan();
+        var hang=new ManualResetEventSlim(false);
+        fake.HangWrite=hang;
+        Assert.False(m.Paint(Four(1),null));                      // Failed at the deadline
+        Assert.True(slow.TimedOut);
+        hang.Set();fake.HangWrite=null;
+        Assert.True(SpinWait.SpinUntil(()=>fake.Closes==1,RealTimeCap));   // the worker returned and disposed the abandoned port
+        Thread.Sleep(50);
+        var before=Writes;
+        for(var k=0;k<200;k++)
+        {
+            time.Advance(TimeSpan.FromMilliseconds(33));m.Tick();
+            if(k%150==0) m.Scan();
+            Assert.False(m.Paint(Four(1),null));
+        }
+        Assert.Equal(before,Writes);
+        var a=input.At;input.At=Tuple.Create(a.Item1+1,a.Item2);
+        time.Advance(TimeSpan.FromMilliseconds(33));m.Tick();
+        Assert.True(m.Paint(Four(1),null));                       // movement: one attempt, answered
+        Assert.Equal(before+5,Writes);
+    }
+
+    // Fix round 1, minor 2: a release that isn't for a must-send or movement (the sleep time due again, the gate switched off) logs no reason.
+    [Fact]
+    public void A_release_for_another_reason_logs_none()
+    {
+        Deliver(5);
+        Assert.False(mouse.Paint(Four(2),5));
+        Assert.True(mouse.Paint(Four(2),10));                     // a new sleep time goes out at once
+        Assert.False(mouse.Paint(Four(3),10));
+        Assert.True(mouse.Paint(Four(3),null));                   // the gate is off
+        Assert.Equal(2,LogCount("mouse: holding frames (still)"));
+        Assert.Equal(0,LogCount("mouse: released"));
+    }
 }
 
 // Lighting 4, Task 7: the receiver mouse in the host (rulings P1, P5, R2) and the copy of the cable's colours, through DeviceHostTests'
@@ -255,6 +329,25 @@ public sealed class DeviceHostMouseTests:IAsyncLifetime
     }
 
     // Ruling R2: the wake's end reopens the receiver and sends a frame while the mouse lies still.
+    // Fix round 1, R14: a mouse silent before sleep gets exactly one attempt after the wake without movement, then silence until it moves.
+    [Fact]
+    public async Task After_wake_a_silent_mouse_gets_one_attempt()
+    {
+        fake.Reply=_=>null;
+        var h=await Receiver();
+        await t.StepUntil(()=>fake.Writes.Count==1);
+        signals.Suspend();
+        await Until(()=>h.State.LightsOffReason==LightsOff.Waking);
+        signals.Resume();
+        await t.StepUntil(()=>h.State.LightsOffReason is null);
+        await t.StepUntil(()=>fake.Writes.Count==2);
+        Assert.Equal(2,fake.Opens);
+        await t.StepFor(TimeSpan.FromSeconds(6),DeviceHost.Tick);   // past slow work too
+        Assert.Equal(2,fake.Writes.Count);
+        input.At=Tuple.Create(5,5);
+        await t.StepUntil(()=>fake.Writes.Count==3);
+    }
+
     [Fact]
     public async Task The_wake_reopens_the_receiver_and_repaints_it()
     {

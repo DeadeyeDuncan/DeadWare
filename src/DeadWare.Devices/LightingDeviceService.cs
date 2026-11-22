@@ -50,7 +50,7 @@ internal sealed class LightingDeviceService
 
     // Names the light count and each zone's matrix size too, so a key map arriving or changing size raises a state; and (lighting 3b) a hash
     // of the light names in order, so lights that come back renamed or reordered raise one too, and the skipped counts follow.
-    // A device with no OpenRGB index (the receiver or absent mouse) is named at index -1, and the mouse's route is named last.
+    // A device with no OpenRGB index (the receiver or absent mouse) is named at index -1, and the mouse's route is named first.
     static string Shape(IEnumerable<(string Key,int Index,IReadOnlyList<LightingZone> Zones,IReadOnlyList<string>? Names)> d,MouseRoute route)
         =>"mouse:"+route+";"+string.Join(";",d.Select(x=>$"{x.Key}@{x.Index}/{x.Names?.Count??-1}/{NamesHash(x.Names):X16}:"+string.Join(",",x.Zones.Select(z=>$"{z.Index}/{z.Name}/{z.LedCount}/{(z.Matrix is {} m?$"{m.Width}x{m.Height}":"-")}"))));
     // FNV-1a over each name's characters, with a step between names that no character gives, so ["ab","c"] and ["a","bc"] differ.

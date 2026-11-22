@@ -41,6 +41,13 @@ public static class AeroxIdentity
         return r;
     }
 
+    // Whether Adopt could copy anything: some kind is missing under the key and some old entry exists. Cheap, so a caller can skip its copy.
+    public static bool CanAdopt(LightingSettings s,string? cableKey)
+    {
+        if(s.ZoneColors?.Keys.Any(Mine)!=false&&s.Devices?.ContainsKey(Key)!=false&&s.HardwareModes?.ContainsKey(Key)!=false) return false;
+        return Candidates(s,cableKey).Count>0;
+    }
+
     // True when anything was copied.
     public static bool Adopt(LightingSettings s,string? cableKey)
     {

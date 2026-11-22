@@ -106,6 +106,21 @@ public class AeroxIdentityTests
         Assert.False(AeroxIdentity.HasSaved(new LightingSettings()));
     }
 
+    // Fix round 1, minor 3: the cheap check the host makes before it clones the settings.
+    [Fact]
+    public void CanAdopt_says_whether_anything_could_be_copied()
+    {
+        var s=new LightingSettings();
+        Assert.False(AeroxIdentity.CanAdopt(s,null));            // no old entry
+        Mouse(s,Cable,"#112233");
+        Assert.True(AeroxIdentity.CanAdopt(s,null));
+        Assert.True(AeroxIdentity.CanAdopt(new LightingSettings(),Cable));   // a listed cable device is a candidate itself
+        Mouse(s,AeroxIdentity.Key,"#445566");
+        Assert.True(AeroxIdentity.CanAdopt(s,null));             // tuning and hardware mode still missing
+        s.Devices[AeroxIdentity.Key]=new DeviceTuning{Brightness=50};s.HardwareModes[AeroxIdentity.Key]="Direct";
+        Assert.False(AeroxIdentity.CanAdopt(s,Cable));           // every kind present
+    }
+
     [Fact]
     public void Adopt_twice_copies_once()
     {

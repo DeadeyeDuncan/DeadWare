@@ -565,6 +565,7 @@ internal sealed class DeviceHost : IAsyncDisposable
     // AeroxIdentity.Adopt on a copy, adopted only when the settings with it stay valid and savable. Returns whether anything was copied.
     bool AdoptLocked(string? cableKey)
     {
+        if(!AeroxIdentity.CanAdopt(settings,cableKey)) return false;
         var candidate=Clone(settings);
         if(!AeroxIdentity.Adopt(candidate,cableKey)) return false;
         if(LightingSettingsCodec.Validate(candidate) is{} error){log.Write("mouse colours not copied: "+error);return false;}
