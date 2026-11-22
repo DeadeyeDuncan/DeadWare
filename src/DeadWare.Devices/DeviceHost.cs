@@ -132,10 +132,13 @@ internal sealed class DeviceHost : IAsyncDisposable
     internal event Action? Woke;
     bool wakePaint;
     LightingSettings Shown=>everyday.Reason(settings) is null?settings:settings.WithLightsOff();
+    // Lighting 4, Task 7: the Aerox 9 on its receiver (none: the receiver is never used). Every call to it is made under gate: Tick each loop
+    // turn, Scan in slow work and before a connect's rescan, Must on a change of effective lights or settings, Reopen at the wake's end.
+    readonly AeroxMouse? mouse;
 
     // startupFailure: set when the host could not prepare OpenRGB's config folder; it reports OpenRgbFailed and never starts OpenRGB.
     // callClock: the clock of the bound on OpenRGB calls; real time unless a test supplies one.
-    public DeviceHost(HostOptions options,LightingStore store,OpenRgbEngine engine,Func<IOpenRgbSession> sessionFactory,IConflictScanner conflicts,TimeProvider time,HostLog log,string? startupFailure=null,TimeProvider? callClock=null,IKeyPressSource? keys=null,IEverydaySignals? signals=null,IInputClock? input=null)
+    public DeviceHost(HostOptions options,LightingStore store,OpenRgbEngine engine,Func<IOpenRgbSession> sessionFactory,IConflictScanner conflicts,TimeProvider time,HostLog log,string? startupFailure=null,TimeProvider? callClock=null,IKeyPressSource? keys=null,IEverydaySignals? signals=null,IInputClock? input=null,AeroxMouse? mouse=null)
     {
         this.options=options;this.store=store;this.engine=engine;scanner=conflicts;this.time=time;this.log=log;this.startupFailure=startupFailure;
         epoch=time.GetTimestamp();
@@ -144,7 +147,8 @@ internal sealed class DeviceHost : IAsyncDisposable
         onPress=()=>{everyday.Press();Wake();};onLock=l=>{everyday.SetLocked(l);Wake();};onSuspend=()=>{everyday.SetSuspended();Wake();};onResume=()=>{everyday.SetResumed();Wake();};
         if(signals is not null){signals.ShortcutPressed+=onPress;signals.LockChanged+=onLock;signals.Suspending+=onSuspend;signals.Resumed+=onResume;}
         session=new BoundedSession(sessionFactory(),callClock);
-        service=new(session,time,log);
+        this.mouse=mouse;
+        service=new(session,time,log,mouse);
         session.DeviceListUpdated+=OnDeviceListUpdated;
         engine.Changed+=OnEngineChanged;
     }
@@ -318,6 +322,7 @@ internal sealed class DeviceHost : IAsyncDisposable
                 Volatile.Write(ref wake,signal);
                 var now=time.GetTimestamp();
                 var slow=time.GetElapsedTime(lastSlow,now)>=SlowTick;
+                if(mouse is not null) lock(gate)mouse.Tick();
                 var raise=EverydayWork(slow,out var suspended,out var woke);
                 if(suspended) StopWatching();
                 if(woke) RaiseWoke();
@@ -359,6 +364,7 @@ internal sealed class DeviceHost : IAsyncDisposable
                     saveAllowed=false;note=read.Error is null?NewerNote:NewerDefaultsNote;
                     log.Write("lighting.json comes from a newer DeadWare; it won't be saved"+(read.Error is null?"":" (using defaults: "+read.Error+")"));
                 }
+                if(AdoptLocked(null)) SaveQuietly();
             }
             catch(LinkedPathException e)
             {
@@ -434,6 +440,7 @@ internal sealed class DeviceHost : IAsyncDisposable
                 }
                 else
                 {
+                    if(slow) mouse?.Scan();
                     if(slow||rescanPending){rescanPending=false;changed=RescanLocked();}
                     var t=Now(); // one reading for the paint and the preview
                     var live=presses.Live();
@@ -489,6 +496,7 @@ internal sealed class DeviceHost : IAsyncDisposable
         {
             session.Connect();
             sessionOk=true;
+            mouse?.Scan();
             RescanLocked();
             service.Paint(Shown,Now(),presses.Live());
             status=HostStatus.Running;message="";lastSessionError=null;connectDelay=ConnectDelayMin;nextConnectAt=0;
@@ -522,13 +530,16 @@ internal sealed class DeviceHost : IAsyncDisposable
     // covers both. On the owner's rig the layout is the built-in picture's (DeskPictures), not an arranged one, over the devices found so
     // far: a saved picture is never left because devices are missing (OpenRGB lists them a few at a time at each start). Only a saved name
     // this build has no picture for is reset: auto-arranged afresh, its desk shape kept, the name cleared.
+    // Lighting 4: the mouse's old cable entries are copied under its fixed key before the re-keying and the arrange (AdoptLocked).
     bool RescanLocked()
     {
+        service.MouseSaved=AeroxIdentity.HasSaved(settings);
         var changed=service.Rescan();
         if(!changed) return false;
         namesLogged.Clear();
         log.Write($"devices changed: {service.Devices.Count} device(s)");
-        var save=LightingKeys.Remap(settings,service.Devices.Select(d=>d.Key).ToList());
+        var save=AdoptLocked(service.CableKey);
+        save|=LightingKeys.Remap(settings,service.Devices.Select(d=>d.Key).ToList());
         var views=service.Views(settings);
         var picture=DeskPictures.Applies(views.Select(v=>v.Name),settings.Layout.Picture);
         DeskLayout arranged;
@@ -548,6 +559,17 @@ internal sealed class DeviceHost : IAsyncDisposable
             else if(error!=lastArrangeError){lastArrangeError=error;log.Write("desk layout not arranged: "+error);}
         }
         if(save) SaveQuietly();
+        return true;
+    }
+
+    // AeroxIdentity.Adopt on a copy, adopted only when the settings with it stay valid and savable. Returns whether anything was copied.
+    bool AdoptLocked(string? cableKey)
+    {
+        var candidate=Clone(settings);
+        if(!AeroxIdentity.Adopt(candidate,cableKey)) return false;
+        if(LightingSettingsCodec.Validate(candidate) is{} error){log.Write("mouse colours not copied: "+error);return false;}
+        settings=candidate;
+        log.Write("mouse settings copied to "+AeroxIdentity.Key);
         return true;
     }
 
@@ -830,6 +852,7 @@ internal sealed class DeviceHost : IAsyncDisposable
             catch(Exception e){log.Write("saving lighting.json failed: "+e.Message);return HostReplyCodes.CouldntSave;}
         }
         settings=candidate;
+        mouse?.Must();
         if(!LightingPaint.Animating(Shown,service.Devices,presses.Live(),Now())) ForgetPreview();
         if(engineActive&&sessionOk&&status==HostStatus.Running&&!everyday.Quiet)
         {
@@ -865,14 +888,14 @@ internal sealed class DeviceHost : IAsyncDisposable
             if(everyday.WakeDue(WakeDelay)){WakeEndLocked();woke=true;raise=true;}
             everyday.Observe(settings,input);
             raise|=PressesLocked();
-            if(everyday.Changed(settings)){presses.Clear();raise=true;}
+            if(everyday.Changed(settings)){presses.Clear();mouse?.Must();raise=true;}
             return raise;
         }
     }
 
     // The wake's end: the one place where everything remembered about every device is forgotten after sleep, as after a reconnect. The
     // next TickWork rescans and paints, or connects when the session was lost across sleep; its first paint is logged (ruling P17).
-    void WakeEndLocked(){service.Reset();ForgetPreview();rescanPending=true;wakePaint=true;}
+    void WakeEndLocked(){service.Reset();mouse?.Reopen();ForgetPreview();rescanPending=true;wakePaint=true;}
     void PaintedLocked(){if(!wakePaint) return;wakePaint=false;log.Write($"wake repaint done: {service.Devices.Count} devices");}
     void RaiseWoke(){try{Woke?.Invoke();}catch(Exception e){log.Write("Woke handler failed: "+e.Message);}}
 

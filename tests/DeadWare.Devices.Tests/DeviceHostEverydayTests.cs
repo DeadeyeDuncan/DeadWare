@@ -12,8 +12,8 @@ public sealed partial class DeviceHostTests
     internal string LightingPath=>lightingPath;
     internal Clock Time=>time;
     internal FakeOpenRgbSession Session=>session;
-    internal DeviceHost BuildHost(IEverydaySignals? signals,IInputClock? input,bool startup=false,string? startupFailure=null,IKeyPressSource? keys=null,LightingStore? store=null)
-        =>Build(startup:startup,startupFailure:startupFailure,keys:keys,signals:signals,input:input,store:store);
+    internal DeviceHost BuildHost(IEverydaySignals? signals,IInputClock? input,bool startup=false,string? startupFailure=null,IKeyPressSource? keys=null,LightingStore? store=null,AeroxMouse? mouse=null)
+        =>Build(startup:startup,startupFailure:startupFailure,keys:keys,signals:signals,input:input,store:store,mouse:mouse);
     internal void StartHost(DeviceHost h)=>Start(h);
     internal Task ElapseBy(TimeSpan delay)=>Elapse(delay);
     internal Task<TimeSpan> StepUntil(Func<bool> cond,TimeSpan? tick=null,[CallerArgumentExpression(nameof(cond))] string what="")=>AdvanceUntil(cond,tick:tick,what:what);
@@ -595,6 +595,7 @@ public sealed class DeviceHostEverydayTests:IAsyncLifetime
         var h=await Running();
         var woke=0;
         h.Woke+=()=>Interlocked.Increment(ref woke);
+        await t.StepUntil(()=>All(0,SteelBlue)); // the loop is past start-up and waiting on its tick before the signal
         await Suspend(h);
         await Resume();
         await t.StepFor(TimeSpan.FromSeconds(6),DeviceHost.Tick);
@@ -677,6 +678,7 @@ public sealed class DeviceHostEverydayTests:IAsyncLifetime
     {
         SaveFirst(e=>e.LockOff=true);
         var h=await Running();
+        await t.StepUntil(()=>All(0,SteelBlue)); // the loop is past start-up and waiting on its tick before the signal
         await Suspend(h);
         signals.Lock(true);
         await Resume();

@@ -36,12 +36,23 @@ internal sealed class LightingDeviceService
     // line (B9); a later read that shows 48 counts as the resize holding late (polish round 2, item 9).
     bool seeded,seedFailureLogged;
     public IReadOnlyList<LightingDevice> Devices{get{lock(gate)return devices;}}
-    public LightingDeviceService(IOpenRgbSession session,TimeProvider time,HostLog log){this.session=session;this.time=time;this.log=log;}
+    // Lighting 4, one mouse two ways in: the Aerox 9 is listed under AeroxIdentity.Key. On its cable OpenRGB lists and lights it (CableKey is
+    // its own serial|location key); with no cable device listed and the receiver present the helper lists AeroxIdentity.Receiver() and
+    // paints it through mouse, never through an OpenRGB index; else, while it was seen in this run or anything is saved under the key
+    // (MouseSaved, set by the host before each Rescan), it is listed absent: never painted and without preview colours.
+    readonly AeroxMouse? mouse;
+    enum MouseRoute{None,Cable,Receiver,Absent}
+    MouseRoute route;
+    public bool MouseSaved{get;set;}
+    public string? CableKey{get;private set;}
+    public bool MouseAbsent=>route==MouseRoute.Absent;
+    public LightingDeviceService(IOpenRgbSession session,TimeProvider time,HostLog log,AeroxMouse? mouse=null){this.session=session;this.time=time;this.log=log;this.mouse=mouse;}
 
     // Names the light count and each zone's matrix size too, so a key map arriving or changing size raises a state; and (lighting 3b) a hash
     // of the light names in order, so lights that come back renamed or reordered raise one too, and the skipped counts follow.
-    static string Shape(IEnumerable<(string Key,int Index,IReadOnlyList<LightingZone> Zones,IReadOnlyList<string>? Names)> d)
-        =>string.Join(";",d.Select(x=>$"{x.Key}@{x.Index}/{x.Names?.Count??-1}/{NamesHash(x.Names):X16}:"+string.Join(",",x.Zones.Select(z=>$"{z.Index}/{z.Name}/{z.LedCount}/{(z.Matrix is {} m?$"{m.Width}x{m.Height}":"-")}"))));
+    // A device with no OpenRGB index (the receiver or absent mouse) is named at index -1, and the mouse's route is named last.
+    static string Shape(IEnumerable<(string Key,int Index,IReadOnlyList<LightingZone> Zones,IReadOnlyList<string>? Names)> d,MouseRoute route)
+        =>"mouse:"+route+";"+string.Join(";",d.Select(x=>$"{x.Key}@{x.Index}/{x.Names?.Count??-1}/{NamesHash(x.Names):X16}:"+string.Join(",",x.Zones.Select(z=>$"{z.Index}/{z.Name}/{z.LedCount}/{(z.Matrix is {} m?$"{m.Width}x{m.Height}":"-")}"))));
     // FNV-1a over each name's characters, with a step between names that no character gives, so ["ab","c"] and ["a","bc"] differ.
     static ulong NamesHash(IReadOnlyList<string>? names)
     {
@@ -91,17 +102,30 @@ internal sealed class LightingDeviceService
         }
         lock(gate)
         {
-            var oldShape=Shape(devices.Select(d=>(d.Key,indexByKey[d.Key],d.Zones,d.LedNames)));
+            var oldShape=Shape(devices.Select(d=>(d.Key,indexByKey.TryGetValue(d.Key,out var i)?i:-1,d.Zones,d.LedNames)),route);
             var next=new List<LightingDevice>();
             var idx=new Dictionary<string,int>();
+            string? cable=null;
             foreach(var c in read)
             {
-                var key=LightingKeys.Device(c.Serial,c.Location);
-                if(idx.ContainsKey(key)) continue; // an identical serial+location cannot be told apart
+                var own=LightingKeys.Device(c.Serial,c.Location);
+                var aerox=AeroxIdentity.Is(c.Name);
+                var key=aerox?AeroxIdentity.Key:own;
+                if(idx.ContainsKey(key)) continue; // an identical serial+location cannot be told apart; a second Aerox cable device neither
+                if(aerox) cable=own;
                 idx[key]=c.Index;
                 next.Add(new(key,c.Name,c.Type,c.Zones,c.Modes,c.ActiveMode,c.LedNames));
                 activeMode[key]=c.ActiveMode;
             }
+            var was=route;
+            route=cable is not null?MouseRoute.Cable
+                :mouse?.ReceiverPresent==true?MouseRoute.Receiver
+                :mouse is not null&&(mouse.Seen||MouseSaved)?MouseRoute.Absent:MouseRoute.None;
+            if(route is MouseRoute.Receiver or MouseRoute.Absent) next.Add(AeroxIdentity.Receiver());
+            if(route==MouseRoute.Receiver&&was!=MouseRoute.Receiver) mouse!.Must();
+            // Another cable device (a new port gives a new location) is another OpenRGB controller: what was sent to the old one is forgotten.
+            if(cable!=CableKey&&cable is not null) Forget(AeroxIdentity.Key);
+            CableKey=cable;
             devices=next;
             indexByKey.Clear();
             foreach(var e in idx) indexByKey[e.Key]=e.Value;
@@ -112,7 +136,7 @@ internal sealed class LightingDeviceService
             foreach(var k in modeProblem.Keys.Where(k=>!idx.ContainsKey(k)).ToList()) modeProblem.Remove(k);
             directSet.RemoveWhere(k=>!idx.ContainsKey(k));
             foreach(var k in skipped.Keys.Where(k=>!idx.ContainsKey(k)).ToList()) skipped.Remove(k);
-            return oldShape!=Shape(next.Select(d=>(d.Key,idx[d.Key],d.Zones,d.LedNames)));
+            return oldShape!=Shape(next.Select(d=>(d.Key,idx.TryGetValue(d.Key,out var i)?i:-1,d.Zones,d.LedNames)),route);
         }
     }
 
@@ -160,7 +184,7 @@ internal sealed class LightingDeviceService
     {
         var paint=LightingPaint.Paint(settings,d,tMs,presses);
         if(paint.Kind==PaintKind.Unsupported) return;
-        var index=indexByKey[d.Key];
+        if(!indexByKey.TryGetValue(d.Key,out var index)){PaintMouse(settings,d,paint);return;}
         if(paint.Kind==PaintKind.Hardware)
         {
             var mi=d.Modes.ToList().IndexOf(paint.Mode!);
@@ -198,6 +222,16 @@ internal sealed class LightingDeviceService
         lastSent[d.Key]=new(now,paint.Colors);
     }
 
+    // The receiver mouse (amendment 11): a frame only when its colours change or one is a must-send, through AeroxMouse's sleep gate;
+    // never the 400 ms refresh. An absent mouse is never painted.
+    void PaintMouse(LightingSettings settings,LightingDevice d,DevicePaint paint)
+    {
+        if(d.Key!=AeroxIdentity.Key||route!=MouseRoute.Receiver||mouse is null||paint.Kind!=PaintKind.Direct||paint.Colors.Length!=4) return;
+        NoteModeProblem(settings,d);
+        mouse.Paint(paint.Colors,settings.Mouse.SleepMinutes);
+    }
+    bool Unlit(LightingDevice d)=>route==MouseRoute.Absent&&d.Key==AeroxIdentity.Key;
+
     // A saved mode the device can't run is painted as Static (LightingPaint.Lights); the reason is logged when it first appears or changes,
     // and forgotten once the mode runs, so it is logged again if it stops being able to.
     void NoteModeProblem(LightingSettings settings,LightingDevice d)
@@ -234,7 +268,7 @@ internal sealed class LightingDeviceService
         var r=new Dictionary<string,string>();
         lock(gate)foreach(var d in devices)
         {
-            if(LightingPaint.Paint(settings,d,tMs,presses).Kind!=PaintKind.Direct) continue;
+            if(Unlit(d)||LightingPaint.Paint(settings,d,tMs,presses).Kind!=PaintKind.Direct) continue;
             var lights=LightingPaint.Lights(settings,d,tMs);
             var first=0;
             foreach(var z in d.Zones)
@@ -254,7 +288,7 @@ internal sealed class LightingDeviceService
         Dictionary<string,string>? r=null;
         lock(gate)foreach(var d in devices)
         {
-            if(KeyMaps.Of(d) is null||LightingPaint.Paint(settings,d,tMs,presses).Kind!=PaintKind.Direct) continue;
+            if(Unlit(d)||KeyMaps.Of(d) is null||LightingPaint.Paint(settings,d,tMs,presses).Kind!=PaintKind.Direct) continue;
             var lights=LightingPaint.Shown(settings,d,tMs,presses);
             var bytes=new byte[lights.Length*3];
             for(var i=0;i<lights.Length;i++){bytes[i*3]=lights[i].R;bytes[i*3+1]=lights[i].G;bytes[i*3+2]=lights[i].B;}

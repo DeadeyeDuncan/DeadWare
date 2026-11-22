@@ -83,7 +83,7 @@ public sealed partial class DeviceHostTests : IAsyncLifetime
     // The scanner sees the fake OpenRGB processes that are still running, through the real classification (F15): one whose id isn't the
     // pid the host passes counts as another OpenRGB. So a host that stopped passing its own pid, or kept a scan that raced a relaunch,
     // would block itself. The test's own conflicts are added after a park, which a test can hold the loop in.
-    DeviceHost Build(bool startup=false,string? exePath=null,Action<OpenRgbEngine>? beforeHost=null,Func<string,DeadWare.UpdateCore.LocationProtection>? folderCheck=null,string? startupFailure=null,LightingStore? store=null,HostLog? hostLog=null,IKeyPressSource? keys=null,IEverydaySignals? signals=null,IInputClock? input=null)
+    DeviceHost Build(bool startup=false,string? exePath=null,Action<OpenRgbEngine>? beforeHost=null,Func<string,DeadWare.UpdateCore.LocationProtection>? folderCheck=null,string? startupFailure=null,LightingStore? store=null,HostLog? hostLog=null,IKeyPressSource? keys=null,IEverydaySignals? signals=null,IInputClock? input=null,AeroxMouse? mouse=null)
     {
         var log=hostLog??this.log;
         var engine=new OpenRgbEngine(exePath??exe,@"C:\cfg\openrgb",runner,(_,_)=>Task.FromResult(true),time,log,folderCheck);
@@ -97,7 +97,7 @@ public sealed partial class DeviceHostTests : IAsyncLifetime
             return found;
         });
         var options=new HostOptions(exePath??exe,@"C:\cfg\openrgb",lightingPath,Path.Combine(dir,"logs"),startup,"S-1-5-21-1",1);
-        return host=new DeviceHost(options,store??new LightingStore(lightingPath),engine,()=>session,scanner,time,log,startupFailure,keys:keys,signals:signals,input:input);
+        return host=new DeviceHost(options,store??new LightingStore(lightingPath),engine,()=>session,scanner,time,log,startupFailure,keys:keys,signals:signals,input:input,mouse:mouse);
     }
     void Start(DeviceHost h)=>run=h.RunAsync(CancellationToken.None);
     // Fake time AdvanceUntil may move without its condition before it fails, so a host cadence that slows down fails the test instead of
@@ -1700,7 +1700,7 @@ public sealed partial class DeviceHostTests : IAsyncLifetime
     // Step 3a, Task 4: device tuning and keyboard modes through the pipe.
     static readonly string ApexKey=LightingKeys.Device("SERIAL-4",@"HID: \\?\HID#FAKE-1");
     static readonly string DramKey=LightingKeys.Device("SERIAL-1","I2C: FAKE-1");
-    static readonly string MouseKey=LightingKeys.Device("SERIAL-5",@"HID: \\?\HID#FAKE-2");
+    static readonly string MouseKey=AeroxIdentity.Key;   // lighting 4: the cable mouse is listed under its fixed key
     static readonly string NodeKey=LightingKeys.Device("SERIAL-7",@"HID: \\?\HID#FAKE-4");
     bool ApexShows(Rgb c){try{return LastLeds(Apex).All(x=>x==c);}catch(InvalidOperationException){return false;}}
     void DropApexMatrix()=>session.Controllers[Apex]=session.Controllers[Apex] with{Zones=session.Controllers[Apex].Zones.Select(z=>z with{Matrix=null}).ToList()};
