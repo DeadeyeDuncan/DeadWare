@@ -34,6 +34,9 @@ public sealed partial class DeviceHostTests
     internal void ParkScans(){everydayHold=NewHold();Volatile.Write(ref scanHold,everydayHold);}
     internal bool ScansParked=>everydayHold?.Parked==true;
     internal void ReleaseScans(){Volatile.Write(ref scanHold,null);everydayHold?.Release();}
+    // Task 5: OpenRGB exits (the engine relaunches it after its backoff), and how many times it was started.
+    internal void ExitOpenRgb(int i)=>runner.At(i).Exit();
+    internal int OpenRgbStarts=>runner.Count;
 }
 
 // Lighting 4, Task 4: effective lights in the host. The shortcut flips the saved switch; idle and lock turn the lights off for a while and
@@ -540,6 +543,164 @@ public sealed class DeviceHostEverydayTests:IAsyncLifetime
         Assert.Single(t.Lines(" unlocked"));
         Assert.Single(t.Lines("shortcut pressed: lights off"));
         Assert.Single(t.Lines("shortcut pressed: lights on"));
+    }
+
+    // Task 5, sleep and wake: from the suspend signal until WakeDelay after the first resume signal the host neither paints nor connects
+    // (amendment 4); the reason is waking. Writes counts every LED and mode write OpenRGB received.
+    (int Leds,int Modes) Writes()=>(t.Session.LedCount,t.Session.Modes.Count);
+    static string ModeText((int Index,int Mode,Rgb[]? Colors) m)=>m.Mode+":"+(m.Colors is null?"-":string.Join(",",m.Colors));
+    async Task Suspend(DeviceHost h){signals.Suspend();await Until(()=>t.Lines(" suspend").Length>=1);}
+    async Task Resume(int seen=1){signals.Resume();await Until(()=>t.Lines(" resume").Length>=seen);}
+
+    [Fact]
+    public async Task Suspend_writes_nothing_and_shows_waking()
+    {
+        var h=await Running();
+        await t.StepUntil(()=>All(0,SteelBlue));
+        signals.Suspend();
+        var from=Writes();
+        await Until(()=>h.State.LightsOffReason==LightsOff.Waking);
+        await t.StepFor(TimeSpan.FromSeconds(6),DeviceHost.Tick); // past slow work too, so no rescan either
+        Assert.Equal(from,Writes());
+        Assert.Equal(LightsOff.Waking,h.State.LightsOffReason);
+        Assert.True(h.State.Settings.LightsOn);
+    }
+
+    // Every device gets its frame again after the wait, the ones whose colour never changed too: the service forgot what it sent, so even a
+    // hardware-mode device, which is otherwise sent its mode only once, is sent it again.
+    [Fact]
+    public async Task Nothing_is_written_until_ten_seconds_after_resume()
+    {
+        var h=await Running();
+        await t.StepUntil(()=>All(0,SteelBlue));
+        await t.StepFor(TimeSpan.FromSeconds(1),DeviceHost.Tick);
+        var lastLeds=t.Session.Leds.GroupBy(l=>l.Index).ToDictionary(g=>g.Key,g=>string.Join(",",g.Last().Colors));
+        var lastModes=t.Session.Modes.GroupBy(m=>m.Index).ToDictionary(g=>g.Key,g=>ModeText(g.Last()));
+        Assert.NotEmpty(lastModes);
+        await Suspend(h);
+        await Resume();
+        var from=Writes();
+        await t.StepFor(TimeSpan.FromSeconds(9),DeviceHost.Tick);
+        Assert.Equal(from,Writes());
+        Assert.Equal(LightsOff.Waking,h.State.LightsOffReason);
+        await t.StepUntil(()=>h.State.LightsOffReason is null);
+        await t.StepUntil(()=>lastLeds.All(e=>t.Session.Leds.Skip(from.Leds).Any(l=>l.Index==e.Key&&string.Join(",",l.Colors)==e.Value))
+            &&lastModes.All(e=>t.Session.Modes.Skip(from.Modes).Any(m=>m.Index==e.Key&&ModeText(m)==e.Value)));
+    }
+
+    // The real watcher can raise Resumed twice (task 3): the wait runs from the first.
+    [Fact]
+    public async Task A_second_resume_signal_does_not_restart_the_wait()
+    {
+        var h=await Running();
+        var woke=0;
+        h.Woke+=()=>Interlocked.Increment(ref woke);
+        await Suspend(h);
+        await Resume();
+        await t.StepFor(TimeSpan.FromSeconds(6),DeviceHost.Tick);
+        await Resume(2);
+        Assert.Equal(LightsOff.Waking,h.State.LightsOffReason);
+        var moved=await t.StepUntil(()=>h.State.LightsOffReason is null);
+        Assert.True(moved<=TimeSpan.FromSeconds(4.5),$"woke {moved.TotalSeconds} s after the second resume");
+        await t.StepFor(TimeSpan.FromSeconds(11),DeviceHost.Tick);
+        Assert.Equal(1,Volatile.Read(ref woke)); // the hook point is raised once per wake
+    }
+
+    // Review focus 5: lights off by the switch when the PC slept stay off; no reason is shown at any point.
+    [Fact]
+    public async Task Lights_off_by_the_switch_stay_off_after_wake()
+    {
+        var h=await Running();
+        Assert.True((await DeviceHostTests.SendTo(h,new SetLightsOnRequest(false))).Ok);
+        await t.StepUntil(()=>All(0,Rgb.Black));
+        await Suspend(h);
+        Assert.Null(h.State.LightsOffReason);
+        await Resume();
+        var from=t.Session.LedCount;
+        await t.StepUntil(()=>t.Lines("wake repaint done").Length==1);
+        await t.StepFor(TimeSpan.FromSeconds(1),DeviceHost.Tick);
+        Assert.Null(h.State.LightsOffReason);
+        Assert.False(h.State.Settings.LightsOn);
+        Assert.False(Saved().LightsOn);
+        var after=t.Session.Leds.Skip(from).ToList();
+        Assert.NotEmpty(after);
+        Assert.All(after,w=>Assert.All(w.Colors,c=>Assert.Equal(Rgb.Black,c)));
+    }
+
+    // Review focus 5: locked while asleep, the reason is waking during the wait (it comes first) and locked after it.
+    [Fact]
+    public async Task Locked_at_wake_shows_locked_after_the_wait()
+    {
+        SaveFirst(e=>e.LockOff=true);
+        var h=await Running();
+        await Suspend(h);
+        signals.Lock(true);
+        await Resume();
+        await t.StepFor(TimeSpan.FromSeconds(2),DeviceHost.Tick);
+        Assert.Equal(LightsOff.Waking,h.State.LightsOffReason);
+        var from=t.Session.LedCount;
+        await t.StepUntil(()=>h.State.LightsOffReason!=LightsOff.Waking);
+        Assert.Equal(LightsOff.Locked,h.State.LightsOffReason);
+        await t.StepUntil(()=>t.Session.LedCount>from&&All(0,Rgb.Black));
+    }
+
+    [Fact]
+    public async Task The_hook_returns_after_wake_when_a_layer_needs_it()
+    {
+        t.NameKeys();
+        var keys=new DeviceHostTests.FakeKeys(t.Time);
+        var h=await Running(keys);
+        Assert.True((await DeviceHostTests.SendTo(h,new SetDeviceLayersRequest(DeviceHostTests.ApexDevice,[DeviceHostTests.RippleLayer()]))).Ok);
+        Assert.True(keys.Installed);
+        DeviceHostTests.TapA(keys);
+        await Suspend(h);
+        await Until(()=>!keys.Installed&&!h.State.KeyHook);
+        Assert.Empty(keys.Gate!.Live());
+        await Resume();
+        await t.StepUntil(()=>h.State.LightsOffReason is null);
+        await Until(()=>keys.Installed&&h.State.KeyHook);
+        Assert.Equal(2,keys.Starts);
+    }
+
+    [Fact]
+    public async Task Suspend_and_wake_leave_their_log_lines()
+    {
+        var h=await Running();
+        await t.StepFor(TimeSpan.FromSeconds(1),DeviceHost.Tick); // a few ordinary paints, which log nothing
+        await Suspend(h);
+        await Resume();
+        Assert.Empty(t.Lines("wake repaint done"));
+        await t.StepUntil(()=>t.Lines("wake repaint done").Length==1);
+        await t.StepFor(TimeSpan.FromSeconds(1),DeviceHost.Tick);
+        Assert.Single(t.Lines(" suspend"));
+        Assert.Single(t.Lines(" resume"));
+        Assert.Single(t.Lines($"wake repaint done: {h.State.Devices.Count} devices"));
+    }
+
+    // Ruling P4: a change is saved but not painted, a rescan request is left for the wake, and OpenRGB coming back is not connected to.
+    // Ruling P17: a session lost across sleep is connected again after the wait, and that connect's paint is the wake repaint.
+    [Fact]
+    public async Task A_request_while_waking_saves_but_writes_nothing()
+    {
+        var h=await Running();
+        await t.StepUntil(()=>All(0,SteelBlue));
+        await Suspend(h);
+        var from=Writes();
+        var (connects,reads)=(t.Session.Connects,t.Session.Reads);
+        Assert.True((await DeviceHostTests.SendTo(h,new SetAllColorsRequest("#FF0000"))).Ok);
+        Assert.Equal("#FF0000",Saved().DefaultColor);
+        Assert.Equal("#FF0000",h.State.Settings.DefaultColor);
+        Assert.True((await DeviceHostTests.SendTo(h,new RescanRequest())).Ok);
+        t.ExitOpenRgb(0);
+        await t.StepUntil(()=>t.OpenRgbStarts==2);
+        await t.StepFor(TimeSpan.FromSeconds(2),DeviceHost.Tick);
+        Assert.Equal(from,Writes());
+        Assert.Equal((connects,reads),(t.Session.Connects,t.Session.Reads));
+        await Resume();
+        await t.StepUntil(()=>t.Lines("wake repaint done").Length==1);
+        Assert.Equal(connects+1,t.Session.Connects);
+        Assert.Equal(HostStatus.Running,h.State.Status);
+        await t.StepUntil(()=>All(0,new Rgb(0xFF,0,0)));
     }
 
     [Fact]

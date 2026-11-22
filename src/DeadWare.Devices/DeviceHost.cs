@@ -125,6 +125,12 @@ internal sealed class DeviceHost : IAsyncDisposable
     readonly Action<bool> onLock;
     string? shortcutProblem;
     bool shortcutRetry;
+    // Task 5, sleep and wake (amendment 4): from the suspend signal until WakeDelay after the first resume signal (everyday.Quiet) nothing
+    // paints or connects: not the tick, a change, a rescan request or OpenRGB coming back. The reason is waking. The wake's end is taken on
+    // the loop (WakeEndLocked); Woke is raised once after it, outside every lock. wakePaint (under gate): the wake's repaint isn't logged yet.
+    public static readonly TimeSpan WakeDelay=TimeSpan.FromSeconds(10);
+    internal event Action? Woke;
+    bool wakePaint;
     LightingSettings Shown=>everyday.Reason(settings) is null?settings:settings.WithLightsOff();
 
     // startupFailure: set when the host could not prepare OpenRGB's config folder; it reports OpenRgbFailed and never starts OpenRGB.
@@ -135,7 +141,7 @@ internal sealed class DeviceHost : IAsyncDisposable
         epoch=time.GetTimestamp();
         this.keys=keys;presses=new(Now,Wake);
         this.signals=signals;this.input=input;everyday=new(log,time);
-        onPress=()=>{everyday.Press();Wake();};onLock=l=>{everyday.SetLocked(l);Wake();};onSuspend=everyday.SetSuspended;onResume=everyday.SetResumed;
+        onPress=()=>{everyday.Press();Wake();};onLock=l=>{everyday.SetLocked(l);Wake();};onSuspend=()=>{everyday.SetSuspended();Wake();};onResume=()=>{everyday.SetResumed();Wake();};
         if(signals is not null){signals.ShortcutPressed+=onPress;signals.LockChanged+=onLock;signals.Suspending+=onSuspend;signals.Resumed+=onResume;}
         session=new BoundedSession(sessionFactory(),callClock);
         service=new(session,time,log);
@@ -312,7 +318,10 @@ internal sealed class DeviceHost : IAsyncDisposable
                 Volatile.Write(ref wake,signal);
                 var now=time.GetTimestamp();
                 var slow=time.GetElapsedTime(lastSlow,now)>=SlowTick;
-                if(EverydayWork(slow)) Raise();
+                var raise=EverydayWork(slow,out var suspended,out var woke);
+                if(suspended) StopWatching();
+                if(woke) RaiseWoke();
+                if(raise) Raise();
                 if(slow){lastSlow=now;await CheckConflictsAsync(ct).ConfigureAwait(false);}
                 TickWork(slow);
                 if(RefreshDue()?Watch(refresh:true):KeyHookStale()) Raise();
@@ -412,6 +421,7 @@ internal sealed class DeviceHost : IAsyncDisposable
         lock(gate)
         {
             if(!engineActive||status is HostStatus.Blocked or HostStatus.Stopping||engine.Status!=EngineStatus.Running){ForgetPreview();return;}
+            if(everyday.Quiet){ForgetPreview();return;}
             try
             {
                 if(!sessionOk)
@@ -428,6 +438,7 @@ internal sealed class DeviceHost : IAsyncDisposable
                     var t=Now(); // one reading for the paint and the preview
                     var live=presses.Live();
                     service.Paint(Shown,t,live);
+                    PaintedLocked();
                     frame=PreviewLocked(t,live);generation=previewGeneration;
                 }
             }
@@ -481,6 +492,7 @@ internal sealed class DeviceHost : IAsyncDisposable
             RescanLocked();
             service.Paint(Shown,Now(),presses.Live());
             status=HostStatus.Running;message="";lastSessionError=null;connectDelay=ConnectDelayMin;nextConnectAt=0;
+            PaintedLocked();
             return true;
         }
         catch(Exception e){return FailSession("Waiting for OpenRGB to accept connections.",e);}
@@ -560,7 +572,11 @@ internal sealed class DeviceHost : IAsyncDisposable
             {
                 // sessionOk is cleared whenever OpenRGB stops, so if it is set here a loop tick has already connected to this process: connect
                 // once. The connect is bounded like every OpenRGB call, so the supervisor waits here at most a few seconds.
-                case EngineStatus.Running:connectDelay=ConnectDelayMin;nextConnectAt=0;if(!sessionOk) ConnectLocked();if(!sessionOk) ArmBackoff();break;
+                // While quiet the connect waits for the wake's end, and the tick after it connects at once (nextConnectAt 0).
+                case EngineStatus.Running:
+                    connectDelay=ConnectDelayMin;nextConnectAt=0;
+                    if(!sessionOk&&!everyday.Quiet){ConnectLocked();if(!sessionOk) ArmBackoff();}
+                    break;
                 case EngineStatus.Restarting:
                     sessionOk=false;status=HostStatus.Waiting;message="OpenRGB is restarting. Lighting will resume in a moment.";break;
                 case EngineStatus.Failed:
@@ -595,7 +611,9 @@ internal sealed class DeviceHost : IAsyncDisposable
                 return Ok(request);
             case RescanRequest:
                 if(!engineActive||!sessionOk||status!=HostStatus.Running) return Fail(request,"OpenRGB is not running.");
-                try{RescanLocked();service.Paint(Shown,Now(),presses.Live());raise=true;return Ok(request);}
+                // While quiet the rescan is left to the wake's end, which rescans anyway.
+                if(everyday.Quiet){rescanPending=true;return Ok(request);}
+                try{RescanLocked();service.Paint(Shown,Now(),presses.Live());PaintedLocked();raise=true;return Ok(request);}
                 catch(Exception e){FailSession(LostText,e);raise=true;return Fail(request,HostReplyCodes.RescanFailed);}
             case SetLightsOnRequest r:return Mutate(request,s=>{s.LightsOn=r.On;return null;},out raise);
             case SetBrightnessRequest r:return Mutate(request,s=>{if(r.Percent is<0 or>100) return "Brightness must be 0 to 100.";s.Brightness=r.Percent;return null;},out raise);
@@ -813,7 +831,7 @@ internal sealed class DeviceHost : IAsyncDisposable
         }
         settings=candidate;
         if(!LightingPaint.Animating(Shown,service.Devices,presses.Live(),Now())) ForgetPreview();
-        if(engineActive&&sessionOk&&status==HostStatus.Running)
+        if(engineActive&&sessionOk&&status==HostStatus.Running&&!everyday.Quiet)
         {
             try
             {
@@ -822,6 +840,7 @@ internal sealed class DeviceHost : IAsyncDisposable
                 // finds a change, and a change made in between still meets the old indexes.
                 if(rescanPending){rescanPending=false;RescanLocked();}
                 service.Paint(Shown,Now(),presses.Live());
+                PaintedLocked();
             }
             catch(Exception e){FailSession(LostText,e);}
         }
@@ -830,18 +849,32 @@ internal sealed class DeviceHost : IAsyncDisposable
     // Lighting 4, everyday: one loop turn's work, ahead of TickWork so it is never behind its early return while OpenRGB isn't running.
     // Presses flip the saved switch through Change; idle and lock change only the reason. When the reason or the switch changed, live
     // presses go, and the state that follows (raised by the caller, outside the lock) works out the hook again. Returns whether one is due.
-    bool EverydayWork(bool slow)
+    // Task 5: a suspend clears live presses (suspended: the caller stops the hook, outside the lock); suspend and resume are logged and raise
+    // a state; the first turn at least WakeDelay after the first resume ends the wake (woke: the caller raises Woke), before the readings,
+    // so the reason is worked out again at once and the TickWork that follows rescans and paints.
+    bool EverydayWork(bool slow,out bool suspended,out bool woke)
     {
+        suspended=woke=false;
         if(signals is null&&input is null) return false;
         lock(gate)
         {
             var raise=slow&&shortcutRetry&&RegisterSavedLocked(RetryWait);
+            var (sleeps,resumes)=everyday.TakePower();
+            if(sleeps>0){suspended=true;presses.Clear();log.Write("suspend");raise=true;}
+            if(resumes>0){log.Write("resume");raise=true;}
+            if(everyday.WakeDue(WakeDelay)){WakeEndLocked();woke=true;raise=true;}
             everyday.Observe(settings,input);
             raise|=PressesLocked();
             if(everyday.Changed(settings)){presses.Clear();raise=true;}
             return raise;
         }
     }
+
+    // The wake's end: the one place where everything remembered about every device is forgotten after sleep, as after a reconnect. The
+    // next TickWork rescans and paints, or connects when the session was lost across sleep; its first paint is logged (ruling P17).
+    void WakeEndLocked(){service.Reset();ForgetPreview();rescanPending=true;wakePaint=true;}
+    void PaintedLocked(){if(!wakePaint) return;wakePaint=false;log.Write($"wake repaint done: {service.Devices.Count} devices");}
+    void RaiseWoke(){try{Woke?.Invoke();}catch(Exception e){log.Write("Woke handler failed: "+e.Message);}}
 
     // Each pending press flips the saved switch, unless it only ends an idle spell (EverydayState.PressTarget), which saves nothing.
     // Returns whether any press came.
