@@ -311,6 +311,24 @@ Each of these must follow the effective value. The plan re-checks the list again
 
 `DeviceHost.cs:562` is the `setLightsOn` request itself and keeps writing the saved value.
 
+## Amendments after plan research (2026-11-22, Claude's calls; where they differ from the text above, these win)
+
+1. **The hardware rescan is feasible but unproven until the hardware check.** OpenRGB 1.0rc3 honours packet 140 (`NET_PACKET_ID_REQUEST_RESCAN_DEVICES`) with no protocol-version check. OpenRGB.NET cannot send it, so the helper opens a short second connection of its own to `127.0.0.1:6744`, sends the 16 bytes `4F 52 47 42 | 00 00 00 00 | 8C 00 00 00 | 00 00 00 00`, shuts down sending, drains for at most 2 s and closes. The elevated helper's port lock allows a second connection from the helper itself.
+2. **A rescan is treated as a deliberate reconnect.** OpenRGB deletes and re-adds every controller with no end marker, and a call that hits a vanished index would hang until the 3 s bound drops the session. So after sending the request the helper aborts its own session, forgets everything remembered about every device (`service.Reset()`), waits 4 s, and reconnects through the existing connect path, which already copes with devices appearing a few at a time. At most one request per cable arrival and never within 60 s of the last.
+3. **Hardware check item 7 (added):** plug in the mouse cable while DeadWare is running. Log: cable seen, rescan requested, cable device listed. The owner looks at whether the mouse is lit on the cable.
+4. **Sleep and wake send nothing at all**: while suspended or waking the helper neither paints nor connects (it does not paint black). The page shows the waking line and a dark picture from the state.
+5. **A shortcut pressed during the 10 s start-up delay** (only when the helper starts with Windows) is remembered and applied when the run loop starts, not at once. The start-up delay is one fixed timer the test harness depends on.
+6. **The receiver device is named** "SteelSeries Aerox 9 Wireless" in DeadWare (the same words as OpenRGB's switched-off detector, a different thing). The cable device is recognised by a name starting "SteelSeries Aerox 9", always, and presented under `aerox9`.
+7. **The mouse card has no Lighting mode section today** (it shows for keyboards only) and no request sets a hardware mode or resizes a zone, so those two sentences above need no code.
+8. **There is no window test project.** Every text and state rule the window shows lives in a public pure class in `DeadWare.Core` with tests; the WinUI files get a hand trace with file:line, as in 3b.
+9. **The reason line is its own line** above the page's alert line, so the muted status line ("N devices · lights off") still shows beside it.
+10. **No changelog entry**: `CHANGELOG.md` stopped at 0.18.0; lighting releases only have `docs/releases/vX.md`. Step 4 writes `docs/releases/v0.22.0.md`.
+11. **The receiver mouse is sent a frame only when its colours change or a frame is a must-send**; the 400 ms refresh of an unchanged frame that OpenRGB devices get is not applied to it.
+13. **A silent mouse must never slow the other devices.** Painting runs under the host's lock on every tick and each receiver write waits up to 250 ms for a reply, so after any missing reply the helper sends the receiver nothing at all until the pointer next moves, then at most one attempt a second.
+14. **The shortcut during an idle spell is judged by time**: a press within 2 s of an idle spell ending only brings the lights back (holding Ctrl or Alt ends the spell before the letter arrives). The saved shortcut is registered before the helper's start-up delay.
+15. **Two more must-send frames:** the receiver port was reopened, and the mouse started answering again.
+12. In the appendix, `DeviceHost.cs:562` is the rescan request's paint (it follows the effective value); `setLightsOn` is `:564`.
+
 ## Constraints carried from the hand-over
 
 - Never launch DeadWare, its helper, OpenRGB or DeadLight except through an owner-approved elevated script. Never run git or dotnet in `I:\DeadWare` itself (work in the `lighting-step4` worktree). Never tag without asking.
