@@ -13,11 +13,12 @@ public class TrayLightsTests
     [Fact]
     public void No_state_is_unavailable()=>Assert.Equal((TrayLights.Unavailable,false,false),TrayLights.Line(true,null,null));
     [Fact]
+    public void A_starting_helper_is_unavailable()=>Assert.Equal((TrayLights.Unavailable,false,false),TrayLights.Line(true,State(HostStatus.Starting,true),null));
+    [Fact]
     public void A_client_problem_is_unavailable()=>Assert.Equal((TrayLights.Unavailable,false,false),TrayLights.Line(true,State(HostStatus.Running,true),"pipe refused"));
     // Fix wave 1, F6 (spec line 126): a connected helper takes the switch whatever OpenRGB is doing, as the page's switch does, so the line
-    // is live while OpenRGB starts, waits, is blocked, missing or failed.
+    // is live while OpenRGB waits, is blocked, missing or failed. The helper starting is the spec's one exception.
     [Theory]
-    [InlineData(HostStatus.Starting)]
     [InlineData(HostStatus.Waiting)]
     [InlineData(HostStatus.Blocked)]
     [InlineData(HostStatus.OpenRgbMissing)]
