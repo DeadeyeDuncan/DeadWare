@@ -63,7 +63,7 @@ public sealed class BoundedSessionTests
     // Task 9: the rescan request runs on its own short connection, outside the watchdog (P3): its failure passes through, the session stays up
     // and is never aborted for it, and a request still running past the bound doesn't drop the session. Its own limits sum well under the bound.
     [Fact]
-    public async Task BoundedSession_bounds_the_request()
+    public async Task The_rescan_request_is_outside_the_watchdog()
     {
         Assert.True(OpenRgbSession.RescanConnectLimit+OpenRgbSession.RescanDrainLimit<=BoundedSession.CallBound-TimeSpan.FromSeconds(1));
         var s=Bounded();

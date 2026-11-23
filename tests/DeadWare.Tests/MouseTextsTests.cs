@@ -17,6 +17,9 @@ public class MouseTextsTests
     [InlineData(MouseConnections.Cable,null,true,false,"On its cable · Charging","Battery unknown","Charging. Read every 10 seconds on the cable.")]
     [InlineData(MouseConnections.Receiver,85,null,true,"Receiver plugged in · mouse asleep or out of reach","85% · last known","Last known reading. Move the mouse to refresh it.")]
     [InlineData(MouseConnections.Receiver,null,null,true,"Receiver plugged in · mouse asleep or out of reach","Battery unknown","Last known reading. Move the mouse to refresh it.")]
+    // Fix wave 1, F4: a reading under two minutes old from a mouse that stopped answering is last known too (the row follows answering).
+    [InlineData(MouseConnections.Receiver,85,null,false,"Receiver plugged in · mouse asleep or out of reach","85% · last known","Last known reading. Move the mouse to refresh it.")]
+    [InlineData(MouseConnections.Receiver,null,null,false,"Receiver plugged in · mouse asleep or out of reach","Battery unknown","Last known reading. Move the mouse to refresh it.")]
     [InlineData(MouseConnections.None,null,null,false,"Not connected","Battery unknown","Plug in the receiver or the cable.")]
     [InlineData(MouseConnections.None,85,null,true,"Not connected","Battery unknown","Plug in the receiver or the cable.")]
     public void The_table_rows(string connection,int? battery,bool? charging,bool stale,string sub,string line,string hint)

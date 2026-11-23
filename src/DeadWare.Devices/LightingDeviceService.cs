@@ -36,8 +36,8 @@ internal sealed class LightingDeviceService
     // line (B9); a later read that shows 48 counts as the resize holding late (polish round 2, item 9).
     bool seeded,seedFailureLogged;
     public IReadOnlyList<LightingDevice> Devices{get{lock(gate)return devices;}}
-    // Lighting 4, one mouse two ways in: the Aerox 9 is listed under AeroxIdentity.Key. On its cable OpenRGB lists and lights it (CableKey is
-    // its own serial|location key); with no cable device listed and the receiver present the helper lists AeroxIdentity.Receiver() and
+    // Lighting 4, one mouse two ways in: the Aerox 9 is listed under AeroxIdentity.Key. On its cable (HID lists the cable product and OpenRGB
+    // its device) OpenRGB lights it (CableKey is its own serial|location key); with no such cable device and the receiver present the helper lists AeroxIdentity.Receiver() and
     // paints it through mouse, never through an OpenRGB index; else, while it was seen in this run or anything is saved under the key
     // (MouseSaved, set by the host before each Rescan), it is listed absent: never painted and without preview colours.
     readonly AeroxMouse? mouse;
@@ -110,6 +110,9 @@ internal sealed class LightingDeviceService
             {
                 var own=LightingKeys.Device(c.Serial,c.Location);
                 var aerox=AeroxIdentity.Is(c.Name);
+                // Fix wave 1, F1 (spec: presence is what HID lists): OpenRGB keeps listing the cable device after the cable leaves, so with
+                // the receiver driver that device counts only while HID lists the cable product; else it is neither listed nor painted.
+                if(aerox&&mouse is not null&&!mouse.CablePresent) continue;
                 var key=aerox?AeroxIdentity.Key:own;
                 if(idx.ContainsKey(key)) continue; // an identical serial+location cannot be told apart; a second Aerox cable device neither
                 if(aerox) cable=own;
@@ -231,6 +234,17 @@ internal sealed class LightingDeviceService
         mouse.Paint(paint.Colors,settings.Mouse.SleepMinutes);
     }
     bool Unlit(LightingDevice d)=>route==MouseRoute.Absent&&d.Key==AeroxIdentity.Key;
+    // Fix wave 1, F3 (spec line 232): whether an edit changes the receiver mouse's frame at tMs (the effective lights, its colours, tuning or
+    // mode), which makes its next frame a must-send. An edit of other devices, looks, the layout or the everyday rules leaves it as it was.
+    public bool MouseFrameDiffers(LightingSettings before,LightingSettings after,double tMs)
+    {
+        lock(gate)
+        {
+            if(route!=MouseRoute.Receiver||devices.FirstOrDefault(d=>d.Key==AeroxIdentity.Key) is not{} d) return false;
+            var a=LightingPaint.Paint(before,d,tMs);var b=LightingPaint.Paint(after,d,tMs);
+            return a.Kind!=b.Kind||a.Mode!=b.Mode||!a.Colors.AsSpan().SequenceEqual(b.Colors);
+        }
+    }
 
     // A saved mode the device can't run is painted as Static (LightingPaint.Lights); the reason is logged when it first appears or changes,
     // and forgotten once the mode runs, so it is logged again if it stops being able to.

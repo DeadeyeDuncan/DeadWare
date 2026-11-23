@@ -83,10 +83,10 @@ public sealed partial class DeviceHostTests : IAsyncLifetime
     // The scanner sees the fake OpenRGB processes that are still running, through the real classification (F15): one whose id isn't the
     // pid the host passes counts as another OpenRGB. So a host that stopped passing its own pid, or kept a scan that raced a relaunch,
     // would block itself. The test's own conflicts are added after a park, which a test can hold the loop in.
-    DeviceHost Build(bool startup=false,string? exePath=null,Action<OpenRgbEngine>? beforeHost=null,Func<string,DeadWare.UpdateCore.LocationProtection>? folderCheck=null,string? startupFailure=null,LightingStore? store=null,HostLog? hostLog=null,IKeyPressSource? keys=null,IEverydaySignals? signals=null,IInputClock? input=null,AeroxMouse? mouse=null)
+    DeviceHost Build(bool startup=false,string? exePath=null,Action<OpenRgbEngine>? beforeHost=null,Func<string,DeadWare.UpdateCore.LocationProtection>? folderCheck=null,string? startupFailure=null,LightingStore? store=null,HostLog? hostLog=null,IKeyPressSource? keys=null,IEverydaySignals? signals=null,IInputClock? input=null,AeroxMouse? mouse=null,Func<int,CancellationToken,Task<bool>>? portOpen=null)
     {
         var log=hostLog??this.log;
-        var engine=new OpenRgbEngine(exePath??exe,@"C:\cfg\openrgb",runner,(_,_)=>Task.FromResult(true),time,log,folderCheck);
+        var engine=new OpenRgbEngine(exePath??exe,@"C:\cfg\openrgb",runner,portOpen??((_,_)=>Task.FromResult(true)),time,log,folderCheck);
         beforeHost?.Invoke(engine);
         var scanner=new Scanner(pid=>
         {

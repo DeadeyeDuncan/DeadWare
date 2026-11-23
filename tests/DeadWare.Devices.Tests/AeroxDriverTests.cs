@@ -44,7 +44,7 @@ public sealed class AeroxDriverTests:IDisposable
         Assert.All(w,p=>Assert.Equal(64,p.Length));
         Assert.All(w,p=>Assert.All(p.Skip(7),b=>Assert.Equal(0,b)));
         Assert.Equal(5,fake.Reads);
-        Assert.All(fake.Limits,l=>Assert.Equal(AeroxDriver.ReadLimitMs,l));
+        Assert.All(fake.Limits,l=>Assert.Equal(250,l));
         Assert.True(d.Answering);
         Assert.Equal(1,LogCount("receiver opened"));
     }
@@ -184,14 +184,17 @@ public sealed class AeroxDriverTests:IDisposable
     [Fact]
     public async Task A_stuck_write_fails_at_the_deadline_and_later_calls_are_busy()
     {
-        using var d=Driver(TimeSpan.FromMilliseconds(100));
+        // Fix wave 1, T-I2: a 1 s deadline, so a thread-pool worker that starts late on a loaded machine still writes before it; the hang is
+        // the HangWrite event's. The call still returns at the deadline, not at the hang's end.
+        var deadline=TimeSpan.FromSeconds(1);
+        using var d=Driver(deadline);
         fake.HangWrite=new ManualResetEventSlim(false);
         var clock=Stopwatch.StartNew();
         Assert.Equal(AeroxResult.Failed,d.Paint(Four,null));
         Assert.Equal(AeroxResult.Busy,d.Paint(Four,null));
         Assert.Equal(AeroxResult.Busy,d.Battery(false,out _,out _));
         Assert.Single(fake.Writes);
-        Assert.True(clock.Elapsed<TimeSpan.FromSeconds(2),$"took {clock.Elapsed}");
+        Assert.True(clock.Elapsed<deadline+TimeSpan.FromSeconds(2),$"took {clock.Elapsed}");
         Assert.Equal(0,fake.Closes);                 // the abandoned port is not disposed on the caller's thread
         Assert.Equal(1,LogCount("receiver failed:"));
         fake.HangWrite.Set();
@@ -264,7 +267,7 @@ public sealed class AeroxDriverTests:IDisposable
         Assert.True(c);
         Assert.Single(fake.Writes);
         Assert.Equal(3,fake.Reads);
-        Assert.All(fake.Limits,l=>Assert.InRange(l,1,AeroxDriver.ReadLimitMs));
+        Assert.All(fake.Limits,l=>Assert.InRange(l,1,250));
     }
 
     [Fact]
@@ -274,7 +277,18 @@ public sealed class AeroxDriverTests:IDisposable
         fake.Reply=_=>[0x61,0];
         Assert.Equal(AeroxResult.Failed,d.Battery(false,out _,out _));
         Assert.Single(fake.Writes);
-        Assert.True(fake.Reads<=1+AeroxDriver.MaxSkipped,$"{fake.Reads} reads");
+        Assert.Equal(17,fake.Reads);                 // fix wave 1, D5: the spec's 16 skipped replies after the first, written out
+    }
+
+    // D5: the skips share one 250 ms window. Each read here takes 100 ms, so the window is spent after about three reads, far short of 17.
+    [Fact]
+    public void Battery_skipping_stops_once_its_250_ms_are_spent()
+    {
+        using var d=Driver();
+        fake.Reply=_=>{Thread.Sleep(100);return [0x61,0];};
+        Assert.Equal(AeroxResult.Failed,d.Battery(false,out _,out _));
+        Assert.InRange(fake.Reads,1,4);
+        Assert.All(fake.Limits,l=>Assert.InRange(l,1,250));
     }
 
     [Fact]

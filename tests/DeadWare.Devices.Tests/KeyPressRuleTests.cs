@@ -20,7 +20,8 @@ public sealed class KeyPressRuleTests
         ["DeadWare.Devices/InputClock.cs"]=["GetLastInputInfo","GetTickCount","GetCursorPos"],
     };
     static readonly string[] Dynamic=["NativeLibrary","GetProcAddress","delegate* unmanaged","delegate*unmanaged"];
-    static readonly string[] Forbidden=["ToUnicode","ToAscii","MapVirtualKey","VkKeyScan","GetKeyState","GetAsyncKeyState","GetKeyboardState","GetKeyNameText","GetKeyboardLayout","GetRawInputData","RegisterRawInputDevices","Console.ReadKey"];
+    static readonly string[] Forbidden=["ToUnicode","ToAscii","MapVirtualKey","VkKeyScan","GetKeyState","GetAsyncKeyState","GetKeyboardState","GetKeyNameText","GetKeyboardLayout","GetRawInputData","RegisterRawInputDevices","Console.ReadKey",
+        "GetCursorInfo","GetPhysicalCursorPos","GetMouseMovePointsEx"];      // fix wave 1, T-M1: other ways of reading the pointer
 
     [Fact]
     public void The_press_record_holds_only_a_device_lights_and_a_time()
@@ -137,6 +138,17 @@ public sealed class KeyPressRuleTests
     {
         foreach(var (name,text) in Sources())
             Assert.False(text.Contains("WH_MOUSE",StringComparison.Ordinal),$"{name} mentions WH_MOUSE");
+    }
+
+    // Fix wave 1, T-I1: no mouse hook by number either. The hook-install function is named only in KeyPressHook.cs (above), is called
+    // there once, and with the keyboard low-level type, 13; a call with another type (14 or 7), or that constant changed, fails here.
+    [Fact]
+    public void The_one_hook_installed_is_the_keyboard_one()
+    {
+        var hook=Sources().Single(s=>s.Name=="DeadWare.Devices/KeyPressHook.cs").Text;
+        var calls=Regex.Matches(hook,@"(?<!\bextern\s+[\w.]+\s+)\bSetWindowsHookExW?\s*\((?<first>[^,)]*)").Select(m=>m.Groups["first"].Value.Trim()).ToArray();
+        Assert.Equal(["KeyboardLowLevel"],calls);
+        Assert.Equal(13,typeof(KeyPressHook).GetField("KeyboardLowLevel",BindingFlags.NonPublic|BindingFlags.Static)!.GetRawConstantValue());
     }
 
     // Lighting 4, ruling P8: the shortcut, idle and pointer calls are named only in their own files, comments included.

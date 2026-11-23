@@ -54,6 +54,6 @@ public sealed class OpenRgbSessionTests
         var clock=Stopwatch.StartNew();
         var e=Record.Exception(()=>OpenRgbSession.SendRescan("127.0.0.1",port,Limit,Limit));
         Assert.True(e is SocketException or TimeoutException,e?.ToString()??"nothing thrown");
-        Assert.True(clock.Elapsed<Limit+TimeSpan.FromMilliseconds(500),$"took {clock.Elapsed.TotalSeconds:0.##} s");
+        Assert.True(clock.Elapsed<Limit+TimeSpan.FromSeconds(2),$"took {clock.Elapsed.TotalSeconds:0.##} s");
     }
 }

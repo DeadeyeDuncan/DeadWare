@@ -131,7 +131,9 @@ public sealed class AeroxBatteryTests:IDisposable
     [Fact]
     public void A_busy_driver_is_skipped_and_retried_next_turn()
     {
-        using var slow=new AeroxDriver(fake,log,TimeSpan.FromMilliseconds(100));
+        // Fix wave 1, T-I2: a 1 s deadline, so a thread-pool worker that starts late on a loaded machine still writes before it (the hang is
+        // the HangWrite event's, so the deadline's length proves nothing more).
+        using var slow=new AeroxDriver(fake,log,TimeSpan.FromSeconds(1));
         fake.Products.Add(AeroxDriver.Cable);slow.Scan();
         var b=new AeroxBattery(slow,time,log);
         b.Poll(true,true,false);

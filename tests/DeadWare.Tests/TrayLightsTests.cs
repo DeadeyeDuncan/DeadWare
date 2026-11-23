@@ -14,12 +14,19 @@ public class TrayLightsTests
     public void No_state_is_unavailable()=>Assert.Equal((TrayLights.Unavailable,false,false),TrayLights.Line(true,null,null));
     [Fact]
     public void A_client_problem_is_unavailable()=>Assert.Equal((TrayLights.Unavailable,false,false),TrayLights.Line(true,State(HostStatus.Running,true),"pipe refused"));
+    // Fix wave 1, F6 (spec line 126): a connected helper takes the switch whatever OpenRGB is doing, as the page's switch does, so the line
+    // is live while OpenRGB starts, waits, is blocked, missing or failed.
     [Theory]
     [InlineData(HostStatus.Starting)]
     [InlineData(HostStatus.Waiting)]
     [InlineData(HostStatus.Blocked)]
+    [InlineData(HostStatus.OpenRgbMissing)]
     [InlineData(HostStatus.OpenRgbFailed)]
-    public void A_host_that_is_not_running_is_unavailable(HostStatus status)=>Assert.Equal((TrayLights.Unavailable,false,false),TrayLights.Line(true,State(status,true),null));
+    public void A_connected_host_that_is_not_running_is_live(HostStatus status)
+    {
+        Assert.Equal((TrayLights.Off,true,false),TrayLights.Line(true,State(status,true),null));
+        Assert.Equal((TrayLights.On,true,true),TrayLights.Line(true,State(status,false),null));
+    }
     [Fact]
     public void Running_with_the_switch_on_offers_off()=>Assert.Equal((TrayLights.Off,true,false),TrayLights.Line(true,State(HostStatus.Running,true),null));
     [Fact]

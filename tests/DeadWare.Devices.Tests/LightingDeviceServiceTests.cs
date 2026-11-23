@@ -593,21 +593,53 @@ public sealed class LightingDeviceServiceTests : IDisposable
         Assert.DoesNotContain(session.Leds,l=>l.Colors.Contains(Odd)||l.Colors.Contains(new Rgb(0x65,0x43,0x21)));
         Assert.Equal(3*5,fake.Writes.Count);
     }
-    // The mouse showed the cable's frames meanwhile, so the receiver's first frame after the cable goes is a must-send, unchanged or not.
+    // Fix wave 1, F1 (spec line 214): the route follows HID. The mouse showed the cable's frames meanwhile, so the receiver's first frame
+    // after the cable goes is a must-send, unchanged or not.
     [Fact] public void When_the_cable_goes_the_receiver_gets_the_frame_again()
     {
-        var cable=session.Controllers.Single(c=>AeroxIdentity.Is(c.Name));
         var s=WithMouse(receiver:true,listCable:false);
         var colours=MouseColour("#123456");
         s.Paint(colours);
         Assert.Equal(5,fake.Writes.Count);
-        session.Controllers=[..session.Controllers,cable with{Index=session.Controllers.Count}];
+        fake.Products.Add(AeroxDriver.Cable);mouse!.Scan();
+        session.Reorder(_=>FakeOpenRgbSession.FromFixture().Controllers.ToList());       // OpenRGB lists the cable device after its rescan
         Assert.True(s.Rescan());Assert.Equal(CableKey,s.CableKey);
         Ms(500);s.Paint(colours);
+        Assert.Equal(5,fake.Writes.Count);
+        fake.Products.Remove(AeroxDriver.Cable);mouse.Scan();
         session.Reorder(l=>l.Where(c=>!AeroxIdentity.Is(c.Name)).ToList());
         Assert.True(s.Rescan());Assert.Null(s.CableKey);
         Ms(500);s.Paint(colours);
         Assert.Equal(10,fake.Writes.Count);
+    }
+    // F1: OpenRGB doesn't notice the cable leaving and keeps listing its device. HID no longer lists the cable, so the receiver is the route:
+    // its frames are written and the stale OpenRGB device is neither listed nor painted. With the receiver gone too, the mouse is absent.
+    [Fact] public void A_cable_device_OpenRGB_still_lists_after_HID_lost_the_cable_is_not_the_route()
+    {
+        var s=WithMouse(receiver:true,cable:true);
+        var colours=MouseColour("#123456");
+        var stale=IndexOf("SERIAL-5");
+        s.Paint(colours);
+        Assert.Single(session.Leds,l=>l.Index==stale);
+        Assert.Empty(fake.Writes);
+        fake.Products.Remove(AeroxDriver.Cable);mouse!.Scan();                          // OpenRGB still lists the cable device
+        Assert.True(s.Rescan());
+        Assert.Null(s.CableKey);Assert.False(s.MouseAbsent);
+        var m=Assert.Single(s.Devices,d=>d.Key==AeroxIdentity.Key);
+        Assert.Equal(AeroxIdentity.ReceiverName,m.Name);
+        Assert.DoesNotContain(s.Devices,d=>d.Name=="SteelSeries Aerox 9 Wireless Wired");
+        for(var k=0;k<3;k++){Ms(500);s.Paint(colours);}
+        Assert.Equal(5,fake.Writes.Count);
+        Assert.Equal(Odd,new Rgb(fake.Writes[1][4],fake.Writes[1][5],fake.Writes[1][6]));
+        Assert.Single(session.Leds,l=>l.Index==stale);
+        Assert.DoesNotContain(s.Preview(colours,0).Keys,k=>k.StartsWith("SERIAL-5|"));
+        fake.Products.Remove(AeroxDriver.Receiver);mouse.Scan();
+        Assert.True(s.Rescan());
+        Assert.True(s.MouseAbsent);Assert.Null(s.CableKey);
+        Assert.Equal(MouseConnections.None,s.Views(colours).Single(v=>v.Key==AeroxIdentity.Key).Mouse!.Connection);
+        for(var k=0;k<3;k++){Ms(500);s.Paint(colours);}
+        Assert.Equal(5,fake.Writes.Count);
+        Assert.Single(session.Leds,l=>l.Index==stale);
     }
     [Fact] public void An_unchanged_colour_is_not_resent_to_the_receiver()
     {

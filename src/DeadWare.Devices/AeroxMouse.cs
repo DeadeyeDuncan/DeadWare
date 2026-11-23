@@ -89,13 +89,14 @@ internal sealed class AeroxMouse
     }
 
     // Task 8, the mouse card: cable if its product is listed; else none without the receiver; else wireless with a fresh reading from a mouse
-    // that answers; else receiver. The sleep time is never sent on the cable, so there it is never delivered.
+    // that answers; else receiver. The sleep time is never sent on the cable, so there it is never delivered. On the receiver a reading is
+    // stale (last known, grey) however young, since the mouse isn't answering (fix wave 1, F4).
     public MouseView View(int? sleepMinutes)
     {
         var cable=driver.CablePresent;
         var connection=cable?MouseConnections.Cable:!driver.ReceiverPresent?MouseConnections.None
             :Battery.Percent is not null&&!Battery.Stale&&driver.Answering?MouseConnections.Wireless:MouseConnections.Receiver;
-        return new(connection,Battery.Percent,Battery.Charging,Battery.Stale,sleepMinutes,!cable&&driver.SleepSent(sleepMinutes));
+        return new(connection,Battery.Percent,Battery.Charging,Battery.Stale||connection==MouseConnections.Receiver,sleepMinutes,!cable&&driver.SleepSent(sleepMinutes));
     }
 
     // Each loop turn while lighting runs: the battery, then whether the view changed since the last Poll. The receiver is asked only as a

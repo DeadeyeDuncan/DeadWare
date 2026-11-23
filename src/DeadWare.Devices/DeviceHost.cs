@@ -63,6 +63,8 @@ internal sealed class DeviceHost : IAsyncDisposable
     string? note,lastConflictKey,lastSessionError,lastScanError,lastArrangeError;
     readonly object raiseGate=new();
     long nextConnectAt;
+    // starting: OpenRGB's start while it is pending (fix wave 1, F2); only the run loop touches it.
+    Task? starting;
     TimeSpan connectDelay=ConnectDelayMin;
     HostStatus status=HostStatus.Starting;
     string message="";
@@ -134,7 +136,8 @@ internal sealed class DeviceHost : IAsyncDisposable
     bool wakePaint;
     LightingSettings Shown=>everyday.Reason(settings) is null?settings:settings.WithLightsOff();
     // Lighting 4, Task 7: the Aerox 9 on its receiver (none: the receiver is never used). Every call to it is made under gate: Tick each loop
-    // turn, Scan in slow work and before a connect's rescan, Must on a change of effective lights or settings, Reopen at the wake's end.
+    // turn, Scan in slow work and before a connect's rescan, Must on a change of effective lights or of the mouse's own frame or sleep time
+    // (fix wave 1, F3), Reopen at the wake's end.
     // Task 8: Poll (the battery and the view) in TickWork while lighting runs, and the battery's Invalidate at the wake's end.
     readonly AeroxMouse? mouse;
 
@@ -329,8 +332,15 @@ internal sealed class DeviceHost : IAsyncDisposable
                 if(suspended) StopWatching();
                 if(woke) RaiseWoke();
                 if(raise) Raise();
-                if(slow){lastSlow=now;await CheckConflictsAsync(ct).ConfigureAwait(false);}
-                TickWork(slow);
+                // Fix wave 1, F2: while OpenRGB's start is pending the everyday part above keeps running each turn; nothing is scanned,
+                // started again or painted until it resolves, and a start that threw throws here as it did when it was awaited.
+                if(starting is{IsCompleted:true} done){starting=null;await done.ConfigureAwait(false);}
+                if(slow) lastSlow=now;
+                if(starting is null)
+                {
+                    if(slow) await CheckConflictsAsync(ct).ConfigureAwait(false);
+                    TickWork(slow);
+                }
                 if(RefreshDue()?Watch(refresh:true):KeyHookStale()) Raise();
             }
         }
@@ -418,7 +428,9 @@ internal sealed class DeviceHost : IAsyncDisposable
         // history (F4 item 3, whole-branch review D8, D9): it counts towards the give-up, the start once the gate opens again waits out the
         // backoff from the stop, and after a give-up only lighting turned off and on starts OpenRGB again.
         if(stop){session.Abort();await engine.StopAsync(keepHistory:true).ConfigureAwait(false);}
-        if(start) await engine.StartAsync(ct).ConfigureAwait(false);
+        // F2 (spec: a press while OpenRGB is still starting is applied at once): the first launch can take up to PortWait, so it isn't
+        // awaited here; the loop carries on and wakes once it resolves.
+        if(start){starting=engine.StartAsync(ct);_=starting.ContinueWith(s=>{_=s.Exception;Wake();},CancellationToken.None,TaskContinuationOptions.ExecuteSynchronously,TaskScheduler.Default);}
     }
 
     void TickWork(bool slow)
@@ -878,8 +890,11 @@ internal sealed class DeviceHost : IAsyncDisposable
             try{store.Save(candidate);}
             catch(Exception e){log.Write("saving lighting.json failed: "+e.Message);return HostReplyCodes.CouldntSave;}
         }
+        // Fix wave 1, F3: a must-send only for an edit that changes the receiver mouse's frame, or its sleep time (sent with a frame).
+        var shownBefore=Shown;
+        var sleepBefore=settings.Mouse.SleepMinutes;
         settings=candidate;
-        mouse?.Must();
+        if(mouse is not null&&(sleepBefore!=settings.Mouse.SleepMinutes||service.MouseFrameDiffers(shownBefore,Shown,Now()))) mouse.Must();
         if(!LightingPaint.Animating(Shown,service.Devices,presses.Live(),Now())) ForgetPreview();
         if(engineActive&&sessionOk&&status==HostStatus.Running&&!everyday.Quiet)
         {
@@ -941,17 +956,21 @@ internal sealed class DeviceHost : IAsyncDisposable
     }
 
     // The saved shortcut, registered at start (ruling P10) and, after no answer in time, again on slow work. Not without a watcher, nor while
-    // the watcher reports a problem of its own (the state's EverydayProblem carries that). Returns whether ShortcutProblem changed.
+    // the watcher reports a problem of its own (the state's EverydayProblem carries that). With no shortcut saved only a retry asks: it
+    // clears one Windows may hold from a request answered late (fix wave 1, F5). Returns whether ShortcutProblem changed.
     bool RegisterSavedLocked(TimeSpan wait)
     {
+        var retry=shortcutRetry;
         shortcutRetry=false;
-        if(signals is null||signals.Problem is not null||settings.Everyday.Shortcut is not{} saved) return false;
+        if(signals is null||signals.Problem is not null) return false;
+        var saved=settings.Everyday.Shortcut;
+        if(saved is null&&!retry) return false;
         var before=shortcutProblem;
         var text=Shortcuts.Text(saved);
         switch(signals.SetShortcut(saved,wait))
         {
-            case true:shortcutProblem=null;log.Write("shortcut registered: "+text);break;
-            case false:shortcutProblem=Shortcuts.TakenText(saved);log.Write("shortcut refused: "+text);break;
+            case true:shortcutProblem=null;log.Write(saved is null?"shortcut cleared":"shortcut registered: "+text);break;
+            case false:shortcutProblem=saved is null?null:Shortcuts.TakenText(saved);log.Write("shortcut refused: "+text);break;
             default:
                 shortcutProblem=HostReplyCodes.Explain(HostReplyCodes.ShortcutSlow);shortcutRetry=true;
                 if(before is null) log.Write("shortcut not answered in time: "+text);
@@ -982,8 +1001,16 @@ internal sealed class DeviceHost : IAsyncDisposable
             {
                 case true:registered=true;break;
                 case false:raise=RestoreLocked(old);return Fail(r,wanted is null?HostReplyCodes.ShortcutSlow:Shortcuts.TakenText(wanted));
-                // The watcher withdraws a request it didn't answer in time, so the old shortcut is still the registered one.
-                default:return Fail(r,HostReplyCodes.ShortcutSlow);
+                // The watcher withdraws a request it didn't take in time, but one it took and answered late may already be applied (fix
+                // wave 1, F5): the problem is shown and slow work registers the saved shortcut again, which restores the match either way.
+                default:
+                {
+                    var before=shortcutProblem;
+                    shortcutProblem=HostReplyCodes.Explain(HostReplyCodes.ShortcutSlow);shortcutRetry=true;
+                    log.Write("shortcut not answered in time: "+Shortcuts.Text(wanted));
+                    raise=shortcutProblem!=before;
+                    return Fail(r,HostReplyCodes.ShortcutSlow);
+                }
             }
         }
         // Fix round 1, I1: the same shortcut while it has a problem is only tried again: true clears the problem, anything else keeps it,
@@ -1003,7 +1030,7 @@ internal sealed class DeviceHost : IAsyncDisposable
         {
             case true:break;
             case false:if(old is not null) shortcutProblem=Shortcuts.TakenText(old);log.Write("shortcut refused: "+Shortcuts.Text(old));break;
-            default:shortcutProblem=HostReplyCodes.Explain(HostReplyCodes.ShortcutSlow);shortcutRetry=old is not null;log.Write("shortcut not answered in time: "+Shortcuts.Text(old));break;
+            default:shortcutProblem=HostReplyCodes.Explain(HostReplyCodes.ShortcutSlow);shortcutRetry=true;log.Write("shortcut not answered in time: "+Shortcuts.Text(old));break;
         }
         return shortcutProblem!=before;
     }

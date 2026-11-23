@@ -16,7 +16,9 @@ public static class MouseTexts
             _=>"Not connected"
         };
     }
-    public static string BatteryLine(MouseView m)=>m.Battery is{} b&&m.Connection!=MouseConnections.None?m.Stale?$"{b}% · last known":$"{b}%":"Battery unknown";
+    // On the receiver with the mouse not answering, a reading is last known whatever its age (fix wave 1, F4).
+    public static string BatteryLine(MouseView m)=>m.Battery is{} b&&m.Connection!=MouseConnections.None
+        ?m.Stale||m.Connection==MouseConnections.Receiver?$"{b}% · last known":$"{b}%":"Battery unknown";
     public static string Hint(MouseView m)=>m.Connection switch
     {
         MouseConnections.Wireless=>"On battery. Read while you use the mouse.",

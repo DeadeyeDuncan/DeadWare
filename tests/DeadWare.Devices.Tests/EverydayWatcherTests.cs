@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using DeadWare.Devices;
 using Xunit;
 
@@ -57,8 +58,8 @@ public sealed class EverydayWatcherTests
     public void A_request_taken_late_answers_its_real_result()
     {
         using var w=new EverydayWatcher(new HostLog(null));
-        w.AfterTake=t=>{if(t) Thread.Sleep(800);};
-        Assert.True(w.SetShortcut(null,TimeSpan.FromMilliseconds(500)));
+        w.AfterTake=t=>{if(t) Thread.Sleep(300);};             // fix wave 1, T-M10: well inside the caller's 100 ms plus the 1 s late wait
+        Assert.True(w.SetShortcut(null,TimeSpan.FromMilliseconds(100)));
     }
 
     // Fix round 1, M3, ruling P15: wParam 4 suspend, 7 resume from suspend, 0x12 automatic resume.
@@ -87,13 +88,22 @@ public sealed class EverydayWatcherTests
     }
 }
 
+// Fix wave 1, D7: the real clock against live Windows state, so only bounds a broken body would break: idle time no longer than the time
+// since boot (operands swapped, the unsigned difference wraps to about 49 days), and the pointer on the virtual screen.
 public sealed class InputClockTests
 {
+    [DllImport("user32.dll")] static extern int GetSystemMetrics(int index);
+    const int VirtualLeft=76,VirtualTop=77,VirtualWidth=78,VirtualHeight=79;
+
     [Fact]
-    public void Idle_time_is_not_negative_and_the_pointer_reads()
+    public void Idle_time_is_within_the_uptime_and_the_pointer_is_on_the_virtual_screen()
     {
         var c=new InputClock();
-        Assert.True(c.IdleMs()>=0);
-        _=c.Pointer();
+        Assert.InRange(c.IdleMs(),0,Environment.TickCount64+1000);
+        var (x,y)=c.Pointer();
+        int left=GetSystemMetrics(VirtualLeft),top=GetSystemMetrics(VirtualTop),width=GetSystemMetrics(VirtualWidth),height=GetSystemMetrics(VirtualHeight);
+        if(width<=0||height<=0) return;                          // no desktop to point at (a service session): nothing to compare
+        Assert.InRange(x,left,left+width);
+        Assert.InRange(y,top,top+height);
     }
 }

@@ -12,8 +12,8 @@ public sealed partial class DeviceHostTests
     internal string LightingPath=>lightingPath;
     internal Clock Time=>time;
     internal FakeOpenRgbSession Session=>session;
-    internal DeviceHost BuildHost(IEverydaySignals? signals,IInputClock? input,bool startup=false,string? startupFailure=null,IKeyPressSource? keys=null,LightingStore? store=null,AeroxMouse? mouse=null)
-        =>Build(startup:startup,startupFailure:startupFailure,keys:keys,signals:signals,input:input,store:store,mouse:mouse);
+    internal DeviceHost BuildHost(IEverydaySignals? signals,IInputClock? input,bool startup=false,string? startupFailure=null,IKeyPressSource? keys=null,LightingStore? store=null,AeroxMouse? mouse=null,Func<int,CancellationToken,Task<bool>>? portOpen=null)
+        =>Build(startup:startup,startupFailure:startupFailure,keys:keys,signals:signals,input:input,store:store,mouse:mouse,portOpen:portOpen);
     internal void StartHost(DeviceHost h)=>Start(h);
     internal Task ElapseBy(TimeSpan delay)=>Elapse(delay);
     internal Task<TimeSpan> StepUntil(Func<bool> cond,TimeSpan? tick=null,[CallerArgumentExpression(nameof(cond))] string what="")=>AdvanceUntil(cond,tick:tick,what:what);
@@ -89,7 +89,7 @@ public sealed class DeviceHostEverydayTests:IAsyncLifetime
     }
 
     [Fact]
-    public async Task Three_presses_before_a_tick_compose()
+    public async Task Three_presses_flip_the_switch_three_times()
     {
         var h=await Running();
         signals.Press();signals.Press();signals.Press();
@@ -306,7 +306,7 @@ public sealed class DeviceHostEverydayTests:IAsyncLifetime
         signals.Refuse=null;
         await t.StepUntil(()=>h.State.ShortcutProblem is null);
         Assert.Equal([Shortcuts.Default,Shortcuts.Default],signals.Shortcuts);
-        Assert.Equal([DeviceHost.ShortcutWait,DeviceHost.RetryWait],signals.Waits); // the retry holds the lock only briefly
+        Assert.Equal([DeviceHost.ShortcutWait,DeviceHost.RetryWait],signals.Waits); // the retry asks with the shorter wait; the fake never blocks, so the real hold isn't measured here
         Assert.Single(t.Lines("shortcut registered: Ctrl + Alt + L"));
     }
 
@@ -361,7 +361,39 @@ public sealed class DeviceHostEverydayTests:IAsyncLifetime
         Assert.Equal(HostReplyCodes.ShortcutSlow,reply.Error);
         Assert.Equal(file,FileText());
         Assert.Equal(Shortcuts.Default,h.State.Settings.Everyday.Shortcut);
-        Assert.Equal([Shortcuts.Default,CtrlShiftK],signals.Shortcuts); // the watcher withdrew the unanswered request, so the old one is not asked for again
+        Assert.Equal([Shortcuts.Default,CtrlShiftK],signals.Shortcuts); // the old one is not asked for again at once; slow work does (F5)
+    }
+
+    // Fix wave 1, F5: the watcher took the request and applied it, but answered after the wait. The reply is ShortcutSlow and the saved
+    // shortcut stays; the problem is shown and slow work registers the saved shortcut again, so Windows matches it once more.
+    [Fact]
+    public async Task A_shortcut_applied_but_answered_late_is_put_back_on_slow_work()
+    {
+        var h=await Running();
+        Shortcut? windows=Shortcuts.Default;
+        signals.Refuse=s=>{windows=s;return s==CtrlShiftK?null:true;};   // applied, then no answer in time
+        var reply=await DeviceHostTests.SendTo(h,new SetEverydayRequest(new(){Shortcut=CtrlShiftK}));
+        Assert.Equal(HostReplyCodes.ShortcutSlow,reply.Error);
+        Assert.Equal(Shortcuts.Default,h.State.Settings.Everyday.Shortcut);
+        Assert.Equal(HostReplyCodes.Explain(HostReplyCodes.ShortcutSlow),h.State.ShortcutProblem);
+        await t.StepUntil(()=>h.State.ShortcutProblem is null);
+        Assert.Equal(Shortcuts.Default,windows);
+        Assert.Equal([Shortcuts.Default,CtrlShiftK,Shortcuts.Default],signals.Shortcuts);
+        Assert.Equal(Shortcuts.Default,Saved().Everyday.Shortcut);
+    }
+    // F5 with no shortcut saved: the retry clears the one Windows may hold.
+    [Fact]
+    public async Task With_no_shortcut_saved_one_applied_late_is_cleared_on_slow_work()
+    {
+        SaveFirst(e=>e.Shortcut=null);
+        var h=await Running();
+        Assert.Empty(signals.Shortcuts);
+        signals.Refuse=s=>s==CtrlShiftK?null:true;
+        var reply=await DeviceHostTests.SendTo(h,new SetEverydayRequest(new(){Shortcut=CtrlShiftK}));
+        Assert.Equal(HostReplyCodes.ShortcutSlow,reply.Error);
+        Assert.Null(h.State.Settings.Everyday.Shortcut);
+        await t.StepUntil(()=>h.State.ShortcutProblem is null);
+        Assert.Equal([CtrlShiftK,null],signals.Shortcuts);
     }
 
     // Ruling P14: the old shortcut is registered again when the save fails after the new one was registered.
@@ -505,6 +537,76 @@ public sealed class DeviceHostEverydayTests:IAsyncLifetime
         await t.ElapseBy(DeviceHost.StartupDelay);
         await Until(()=>!h.State.Settings.LightsOn);
         Assert.False(Saved().LightsOn);
+    }
+
+    // Fix wave 1, F2 (spec line 153): OpenRGB's launch waits on its port, here parked until the test opens it. Each press flips and saves
+    // the switch at once, one at a time, while the start is pending; nothing connects and OpenRGB isn't started twice.
+    [Fact]
+    public async Task A_press_while_OpenRGB_is_starting_flips_and_saves_the_switch_at_once()
+    {
+        var port=new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var h=t.BuildHost(signals,input,portOpen:(_,_)=>port.Task);t.StartHost(h);
+        try
+        {
+            await Until(()=>t.OpenRgbStarts==1);                  // the launch waits on the port
+            signals.Press();
+            await t.StepUntil(()=>!h.State.Settings.LightsOn);
+            Assert.False(Saved().LightsOn);
+            signals.Press();
+            await t.StepUntil(()=>h.State.Settings.LightsOn);
+            Assert.True(Saved().LightsOn);
+            var pressed=t.Lines("shortcut pressed: ").Select(l=>l[l.IndexOf("shortcut pressed: ",StringComparison.Ordinal)..].TrimEnd('\r')).ToArray();
+            Assert.Equal(["shortcut pressed: lights off","shortcut pressed: lights on"],pressed);
+            Assert.Equal(HostStatus.Starting,h.State.Status);
+            Assert.Equal(0,t.Session.Connects);
+            Assert.Equal(1,t.OpenRgbStarts);
+        }
+        finally{port.TrySetResult(true);}
+        await t.StepUntil(()=>h.State.Status==HostStatus.Running);
+        Assert.Equal(1,t.OpenRgbStarts);
+    }
+
+    // F2: idle and lock are worked out while the launch is pending, as the shortcut is.
+    [Fact]
+    public async Task Idle_and_lock_are_worked_out_while_OpenRGB_is_starting()
+    {
+        SaveFirst(e=>{e.IdleOff=true;e.IdleMinutes=1;e.LockOff=true;});
+        var port=new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var h=t.BuildHost(signals,input,portOpen:(_,_)=>port.Task);t.StartHost(h);
+        try
+        {
+            await Until(()=>t.OpenRgbStarts==1);
+            input.Idle=60_000;
+            await t.StepUntil(()=>h.State.LightsOffReason==LightsOff.Idle);
+            input.Idle=0;
+            await t.StepUntil(()=>h.State.LightsOffReason is null);
+            signals.Lock(true);
+            await t.StepUntil(()=>h.State.LightsOffReason==LightsOff.Locked);
+            Assert.Equal(HostStatus.Starting,h.State.Status);
+            Assert.Equal(0,t.Session.Connects);
+        }
+        finally{port.TrySetResult(true);}
+    }
+
+    // F2: the same when a program that blocked lighting closes and the slow work starts OpenRGB.
+    [Fact]
+    public async Task A_press_while_OpenRGB_starts_after_a_blocking_program_closes_is_applied_at_once()
+    {
+        t.BlockLighting();
+        var port=new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var h=t.BuildHost(signals,input,portOpen:(_,_)=>port.Task);t.StartHost(h);
+        try
+        {
+            await Until(()=>h.State.Status==HostStatus.Blocked);
+            t.UnblockLighting();
+            await t.StepUntil(()=>t.OpenRgbStarts==1);
+            signals.Press();
+            await t.StepUntil(()=>!h.State.Settings.LightsOn);
+            Assert.False(Saved().LightsOn);
+            Assert.Equal(HostStatus.Starting,h.State.Status);
+        }
+        finally{port.TrySetResult(true);}
+        await t.StepUntil(()=>h.State.Status==HostStatus.Running);
     }
 
     // Ruling P10: after a start-up failure the loop never runs, and a press still flips and saves the switch.

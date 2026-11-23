@@ -231,7 +231,7 @@ public sealed class AeroxMouseTests:IDisposable
     [Fact]
     public void A_timed_out_exchange_silences_like_a_missing_reply()
     {
-        using var slow=new AeroxDriver(fake,log,TimeSpan.FromMilliseconds(100));
+        using var slow=new AeroxDriver(fake,log,TimeSpan.FromSeconds(1));   // T-I2: wide enough for a late thread-pool start
         var m=new AeroxMouse(slow,input,time,log);
         m.Tick();m.Scan();
         var hang=new ManualResetEventSlim(false);
@@ -291,6 +291,23 @@ public sealed class AeroxMouseTests:IDisposable
         Assert.Equal(connection,v.Connection);
         if(when is "fresh" or "stale"){Assert.Equal(75,v.Battery);Assert.Equal(false,v.Charging);Assert.Equal(when=="stale",v.Stale);}
         else{Assert.Null(v.Battery);Assert.Null(v.Charging);Assert.True(v.Stale);}
+    }
+
+    // Fix wave 1, F4 (spec line 106): a mouse that stops answering within two minutes of a good reading shows that reading as last known.
+    [Fact]
+    public void A_fresh_reading_from_a_mouse_that_stopped_answering_is_last_known()
+    {
+        fake.Reply=Battery75;
+        Move();Step();mouse.Poll(null);
+        Assert.Equal((MouseConnections.Wireless,false),(mouse.View(null).Connection,mouse.View(null).Stale));
+        fake.Reply=_=>null;
+        Assert.False(mouse.Paint(Four(9),null));                  // no reply: the mouse went quiet
+        Step(1000);
+        var v=mouse.View(null);
+        Assert.Equal(MouseConnections.Receiver,v.Connection);
+        Assert.Equal(75,v.Battery);
+        Assert.True(v.Stale);
+        Assert.Equal("75% · last known",MouseTexts.BatteryLine(v));
     }
 
     [Fact]
@@ -403,7 +420,7 @@ public sealed class DeviceHostMouseTests:IAsyncLifetime
     int ApexLeds=>t.Session.Leds.Count(l=>l.Index==t.ApexIndex);
 
     [Fact]
-    public async Task A_silent_mouse_does_not_slow_the_keyboard()
+    public async Task A_silent_mouse_is_tried_once_not_every_tick()
     {
         Save(Wave);
         fake.Reply=_=>null;
@@ -491,6 +508,26 @@ public sealed class DeviceHostMouseTests:IAsyncLifetime
         Assert.All(fake.Writes.TakeLast(4),w=>Assert.Equal([0,255,0],w[4..7]));
     }
     bool Black()=>fake.Writes.TakeLast(4).All(w=>w[1] is 0x61 or 0x66&&w[4]==0&&w[5]==0&&w[6]==0);
+    // Fix wave 1, F3 (spec line 232): with the sleep time delivered and the pointer still, an edit that touches only the keyboard is no
+    // must-send, so the receiver gets nothing; an edit of the mouse's own colour is, and goes as one frame.
+    [Fact]
+    public async Task A_keyboard_edit_sends_a_still_mouse_nothing_and_a_mouse_colour_edit_one_frame()
+    {
+        Save(s=>s.Mouse.SleepMinutes=5);
+        var h=await Receiver();
+        await t.StepUntil(()=>fake.Count(0x69)==1);
+        await t.StepFor(TimeSpan.FromSeconds(6),DeviceHost.Tick);   // past slow work too
+        var before=fake.Writes.Count;
+        Assert.True((await DeviceHostTests.SendTo(h,new SetZoneColorRequest(LightingKeys.Zone(DeviceHostTests.ApexDevice,0),"#00FF00"))).Ok);
+        Assert.True((await DeviceHostTests.SendTo(h,new SetDeviceTuningRequest(DeviceHostTests.ApexDevice,Brightness:50))).Ok);
+        await t.StepFor(TimeSpan.FromSeconds(2),DeviceHost.Tick);
+        Assert.Equal(before,fake.Writes.Count);
+        var frames=fake.Count(0x63);
+        Assert.True((await DeviceHostTests.SendTo(h,new SetZoneColorRequest(LightingKeys.Zone(AeroxIdentity.Key,0),"#00FF00"))).Ok);
+        await t.StepUntil(()=>fake.Count(0x63)==frames+1);
+        await t.StepFor(TimeSpan.FromSeconds(2),DeviceHost.Tick);
+        Assert.Equal(frames+1,fake.Count(0x63));
+    }
 
     [Fact]
     public async Task The_cable_colours_are_adopted_before_the_layout_is_arranged()
@@ -675,7 +712,8 @@ public sealed class DeviceHostMouseTests:IAsyncLifetime
         Assert.Single(t.Lines(Asking));
         List(cable);                                              // OpenRGB lists the cable device after its rescan
         var waited=await t.StepUntil(()=>t.Session.Connects==connects+1);
-        Assert.True(waited>=DeviceHost.RescanSettle&&waited<=DeviceHost.RescanSettle+DeviceHost.Tick,$"connected after {waited.TotalSeconds:0.#} s");
+        // Fix wave 1, D6: the spec's 4 s, written out, so a changed constant fails here.
+        Assert.True(waited>=TimeSpan.FromSeconds(4)&&waited<=TimeSpan.FromSeconds(4)+DeviceHost.Tick,$"connected after {waited.TotalSeconds:0.#} s");
         await t.StepUntil(()=>NodeModes()==2);                    // what was sent is forgotten: the unchanged hardware mode is sent again
         await t.StepUntil(()=>MouseLines("mouse cable listed").Length==1);
         await t.StepFor(TimeSpan.FromSeconds(12),DeviceHost.Tick);
@@ -705,7 +743,7 @@ public sealed class DeviceHostMouseTests:IAsyncLifetime
         Assert.Equal(1,t.Session.Rescans);
         Assert.Single(t.Lines(Asking));
         UnplugCable();
-        while(t.Time.GetUtcNow()-asked<AeroxMouse.RescanGap) await t.StepFor(TimeSpan.FromSeconds(20),DeviceHost.Tick);
+        while(t.Time.GetUtcNow()-asked<TimeSpan.FromSeconds(60)) await t.StepFor(TimeSpan.FromSeconds(20),DeviceHost.Tick);   // the spec's 60 s (D6)
         PlugCable();
         await t.StepUntil(()=>t.Session.Rescans==2);
         Assert.Equal(HostStatus.Running,h.State.Status);
