@@ -24,7 +24,7 @@ public sealed class ZoneColorEntry
 public sealed class LightingSettings
 {
     // The lighting.json format this build writes. A file with a higher Version comes from a later DeadWare (after a rollback, say).
-    public const int CurrentVersion=3;
+    public const int CurrentVersion=4;
     public int Version {get;set;}=1;
     public bool LightsOn {get;set;}=true;
     public int Brightness {get;set;}=100;
@@ -38,6 +38,15 @@ public sealed class LightingSettings
     // 0.19.0 wrote and a file near the 1 MiB cap from it stays under the cap here; a file without the member reads as an empty table.
     [JsonInclude,JsonPropertyName("Devices"),JsonIgnore(Condition=JsonIgnoreCondition.WhenWritingNull)]
     internal Dictionary<string,DeviceTuning>? WrittenDevices {get=>Devices is{Count:>0}?Devices:null;set=>Devices=value!;}
+    [JsonIgnore] public EverydaySettings Everyday {get;set;}=new();
+    [JsonIgnore] public MouseSettings Mouse {get;set;}=new();
+    // Everyday and Mouse as JSON: written only while they differ from their defaults, so an untouched 0.21.0 file is written byte for byte as before.
+    [JsonInclude,JsonPropertyName("Everyday"),JsonIgnore(Condition=JsonIgnoreCondition.WhenWritingNull)]
+    internal EverydaySettings? WrittenEveryday {get=>Everydays.IsDefault(Everyday)?null:Everyday;set=>Everyday=value??new();}
+    [JsonInclude,JsonPropertyName("Mouse"),JsonIgnore(Condition=JsonIgnoreCondition.WhenWritingNull)]
+    internal MouseSettings? WrittenMouse {get=>Mouse.SleepMinutes is null?null:Mouse;set=>Mouse=value??new();}
+    // A shallow copy sharing every table, with the lights off: the engine paints it for lights-off without touching the saved settings.
+    public LightingSettings WithLightsOff(){var s=(LightingSettings)MemberwiseClone();s.LightsOn=false;return s;}
 }
 // Newer: the file came from a later DeadWare. It is used as far as this build understands it, never quarantined and never rewritten.
 public sealed record LightingRead(LightingSettings Settings,string? Error,bool Quarantine,bool Newer=false);

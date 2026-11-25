@@ -17,6 +17,8 @@ namespace DeadWare.WinUI;
 /// to the lighting host as <see cref="SetDeviceModeRequest"/> and <see cref="SetDeviceTuningRequest"/> through the page's send, whose
 /// failures show in the page's status line; Paint keys… and Edit layers… open the large keyboard view through the page. A device running
 /// its own effect shows the sections disabled; one DeadWare can't drive shows none. Everything is disabled while the host isn't running.
+/// Lighting 4: the Aerox 9 mouse (a view with <see cref="DeviceView.Mouse"/>) has a line under its zone rows, then Battery and Sleep
+/// first among the sections, all in <see cref="MouseTexts"/>' words; a sleep time goes as <see cref="SetMouseSleepRequest"/>.
 /// </summary>
 internal sealed class DeviceSections
 {
@@ -44,6 +46,19 @@ internal sealed class DeviceSections
     private readonly TextBlock modeNote = LightingPage.Muted(""), brightnessNote = LightingPage.Muted(""), partsNote = LightingPage.Muted("");
     private readonly TextBlock noteText = new() { TextWrapping = TextWrapping.Wrap };
     private readonly Border modeSection, brightnessSection, correctionSection, keyColoursSection, layersSection;
+    // Lighting 4, the mouse: the line under its zone rows, Battery (bar, reading and hint) and Sleep (the drop-down, its status and the
+    // note shown while a time is chosen). SleepValues: the drop-down's items' minutes in order, null leaving the mouse as it is.
+    private static readonly int?[] SleepValues = [null, .. MouseSleep.Choices.Select(minutes => (int?)minutes)];
+    private readonly TextBlock sharedColours = LightingPage.Muted(MouseTexts.SharedColours);
+    // LightingPage.Muted's opacity, which the shared-colours line keeps when the mouse is connected.
+    private const double MutedOpacity = 0.7;
+    private readonly ProgressBar batteryBar = new() { Minimum = 0, Maximum = 100, Width = 120, VerticalAlignment = VerticalAlignment.Center };
+    private readonly TextBlock batteryLine = new() { VerticalAlignment = VerticalAlignment.Center }, batteryHint = LightingPage.Muted("");
+    private readonly ComboBox sleep = new() { VerticalAlignment = VerticalAlignment.Center, MinWidth = 200 };
+    private readonly TextBlock sleepStatus = LightingPage.Muted("");
+    private readonly Border sleepNote, batterySection, sleepSection;
+    // sleepSending: sleep time changes on their way, while which a state doesn't move the drop-down.
+    private int sleepSending;
     // Key colours and Layers: the count, the button that opens the large keyboard view on that part, and why it can't be used.
     private readonly TextBlock keysCount = new() { VerticalAlignment = VerticalAlignment.Center }, layersCount = new() { VerticalAlignment = VerticalAlignment.Center };
     private readonly TextBlock keysNote = LightingPage.Muted(""), layersNote = LightingPage.Muted("");
@@ -97,19 +112,35 @@ internal sealed class DeviceSections
         header.Children.Add(reset);
         correctionSection = Section(header, red.Root, green.Root, blue.Root, LightingPage.Muted(CorrectionText), partsNote);
 
-        Note = new Border
-        {
-            Child = noteText, Padding = new Thickness(10, 8, 10, 8), CornerRadius = new CornerRadius(8), BorderThickness = new Thickness(1),
-            BorderBrush = (Brush)Application.Current.Resources["CardStrokeColorDefaultBrush"],
-        };
+        Note = NoteBox(noteText);
+
+        // The mouse's Battery and Sleep.
+        AutomationProperties.SetName(batteryBar, MouseTexts.Battery);
+        batterySection = Section(Label(MouseTexts.Battery), new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10, Children = { batteryBar, batteryLine } }, batteryHint);
+        foreach (int? minutes in SleepValues) sleep.Items.Add(new ComboBoxItem { Content = MouseTexts.SleepChoice(minutes) });
+        AutomationProperties.SetName(sleep, MouseTexts.SleepRow);
+        sleep.SelectionChanged += (_, _) => PickSleep();
+        var sleepWords = new TextBlock { Text = MouseTexts.SleepRow, VerticalAlignment = VerticalAlignment.Center, TextWrapping = TextWrapping.Wrap };
+        var sleepRow = new Grid { ColumnSpacing = 12, MaxWidth = TuningSlider.MaxRowWidth, HorizontalAlignment = HorizontalAlignment.Stretch };
+        sleepRow.ColumnDefinitions.Add(new ColumnDefinition());
+        sleepRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        Grid.SetColumn(sleep, 1);
+        sleepRow.Children.Add(sleepWords);
+        sleepRow.Children.Add(sleep);
+        sleepNote = NoteBox(new TextBlock { Text = MouseTexts.Note, TextWrapping = TextWrapping.Wrap });
+        sleepSection = Section(Label(MouseTexts.Sleep), sleepRow, sleepStatus, sleepNote);
+
         foreach (var element in Sections.Append(Note).Append(Looks)) LightingPage.Show(element, false);
     }
 
     /// <summary>The note that goes first on the card of a device running its own effect; collapsed otherwise.</summary>
     public Border Note { get; }
 
-    /// <summary>The sections in order, which go under the card's zone rows: Key colours, Lighting mode, Layers, Brightness, Colour correction.</summary>
-    public IEnumerable<UIElement> Sections => [keyColoursSection, modeSection, layersSection, brightnessSection, correctionSection];
+    /// <summary>
+    /// The sections in order, which go under the card's zone rows: the mouse's line, Battery and Sleep (lighting 4), then Key colours,
+    /// Lighting mode, Layers, Brightness, Colour correction.
+    /// </summary>
+    public IEnumerable<UIElement> Sections => [sharedColours, batterySection, sleepSection, keyColoursSection, modeSection, layersSection, brightnessSection, correctionSection];
 
     /// <summary>A keyboard's Saved looks section, which goes above the card's zone rows; collapsed for any other device.</summary>
     public Border Looks => looks.Root;
@@ -165,6 +196,62 @@ internal sealed class DeviceSections
         ShowBrightnessNote();
         ShowCorrection();
         ShowParts(labels);
+        ShowMouse(live);
+    }
+
+    /// <summary>
+    /// Lighting 4: the mouse's line under its zone rows, Battery and Sleep, shown only for a view with <see cref="DeviceView.Mouse"/>. A
+    /// mouse that isn't connected has both sections dimmed but usable: a sleep time chosen then is saved for when it is back. The drop-down
+    /// works while the host runs, and shows the state's choice except while a change of the user's is on its way.
+    /// </summary>
+    private void ShowMouse(bool live)
+    {
+        var shown = device?.Mouse;
+        foreach (var element in new UIElement[] { sharedColours, batterySection, sleepSection }) LightingPage.Show(element, shown is not null);
+        if (shown is null) return;
+        double dim = MouseTexts.Dimmed(shown) ? 0.38 : 1;
+        batterySection.Opacity = sleepSection.Opacity = dim;
+        // The line under the zone rows is dimmed with them, from its own muted opacity.
+        sharedColours.Opacity = MutedOpacity * dim;
+
+        // The bar is greyed while the reading is old or unknown, as the battery line then says.
+        bool greyed = shown.Battery is null || shown.Stale || shown.Connection == MouseConnections.None;
+        batteryBar.Value = Math.Clamp(shown.Battery ?? 0, 0, 100);
+        if (greyed) batteryBar.Foreground = (Brush)Application.Current.Resources["TextFillColorDisabledBrush"];
+        else batteryBar.ClearValue(Control.ForegroundProperty);
+        batteryLine.Text = MouseTexts.BatteryLine(shown);
+        batteryHint.Text = MouseTexts.Hint(shown);
+
+        sleep.IsEnabled = live;
+        ApplySleep();
+        sleepStatus.Text = MouseTexts.SleepStatus(shown);
+        LightingPage.Show(sleepNote, MouseTexts.ShowNote(shown));
+    }
+
+    /// <summary>Shows the state's sleep time in the drop-down, except while a change of the user's is on its way.</summary>
+    private void ApplySleep()
+    {
+        if (sleepSending > 0 || device?.Mouse is not { } shown) return;
+        int index = Math.Max(Array.IndexOf(SleepValues, shown.SleepMinutes), 0);
+        if (sleep.SelectedIndex == index) return;
+        syncing = true;
+        try { sleep.SelectedIndex = index; }
+        finally { syncing = false; }
+    }
+
+    /// <summary>The user's sleep time goes at once; a refused one puts the drop-down back to the state's.</summary>
+    private void PickSleep()
+    {
+        if (syncing || !sleep.IsEnabled || sleep.SelectedIndex < 0 || device?.Mouse is not { } shown) return;
+        int? minutes = SleepValues[sleep.SelectedIndex];
+        if (minutes == shown.SleepMinutes) return;
+        sleepSending++;
+        send(new SetMouseSleepRequest(minutes), reply =>
+        {
+            sleepSending--;
+            // The state carrying an accepted change follows its reply; until it is here the older one would put the drop-down back.
+            if (!reply.Ok || device?.Mouse?.SleepMinutes == minutes) ApplySleep();
+        });
     }
 
     /// <summary>The picture's part labels for the note under Colour correction, shown when the device has more than one; null hides it.</summary>
@@ -194,7 +281,7 @@ internal sealed class DeviceSections
     public void Disable()
     {
         enabled = false;
-        mode.IsEnabled = reset.IsEnabled = paintKeys.IsEnabled = editLayers.IsEnabled = false;
+        mode.IsEnabled = reset.IsEnabled = paintKeys.IsEnabled = editLayers.IsEnabled = sleep.IsEnabled = false;
         looks.Disable();
         foreach (var slider in new[] { speed, brightness, red, green, blue })
         {
@@ -339,6 +426,13 @@ internal sealed class DeviceSections
     }
 
     private static TextBlock Label(string text) => new() { Text = text, FontSize = 12, FontWeight = FontWeights.SemiBold };
+
+    /// <summary>A note in a bordered box: the own-effect note, and the mouse's sleep note.</summary>
+    private static Border NoteBox(UIElement child) => new()
+    {
+        Child = child, Padding = new Thickness(10, 8, 10, 8), CornerRadius = new CornerRadius(8), BorderThickness = new Thickness(1),
+        BorderBrush = (Brush)Application.Current.Resources["CardStrokeColorDefaultBrush"],
+    };
 
     /// <summary>A section: a line above it, then its rows.</summary>
     private static Border Section(params UIElement[] rows)

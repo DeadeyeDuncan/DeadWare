@@ -61,7 +61,14 @@ internal static class Program
             // Lighting 3b: the key-press hook. The host starts it only while a keyboard's fade or ripple layer needs key presses and stops it
             // when it stops; it is disposed after the host.
             using IKeyPressSource keys=new KeyPressHook();
-            await using var host=new DeviceHost(options,new LightingStore(lightingPath,guardLinks:Environment.IsPrivilegedProcess),engine,()=>new OpenRgbSession(),new ProcessConflictScanner(),TimeProvider.System,log,failure,keys:keys);
+            // Lighting 4: the everyday watcher (shortcut, lock, sleep) and the idle clock; the watcher is disposed after the host.
+            using IEverydaySignals signals=new EverydayWatcher(log);
+            var input=new InputClock();
+            // Lighting 4: the Aerox 9 on its receiver, through the same input clock (its pointer is the sleep gate's movement); the driver is
+            // disposed after the host.
+            using var aerox=new AeroxDriver(new HidAeroxTransport(),log);
+            var mouse=new AeroxMouse(aerox,input,TimeProvider.System,log);
+            await using var host=new DeviceHost(options,new LightingStore(lightingPath,guardLinks:Environment.IsPrivilegedProcess),engine,()=>new OpenRgbSession(),new ProcessConflictScanner(),TimeProvider.System,log,failure,keys:keys,signals:signals,input:input,mouse:mouse);
             await using var server=new HostPipeServer(DeviceHostProtocol.PipeName(sid),host.HandleAsync,log,clientGone:host.ClientGone);
             host.Initialize(); // settings are loaded before the pipe accepts a single request
             try{server.Open();}

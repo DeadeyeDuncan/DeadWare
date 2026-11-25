@@ -1,3 +1,5 @@
+using System.Diagnostics;
+using System.Net.Sockets;
 using DeadWare.Core;
 using OpenRGB.NET;
 
@@ -17,6 +19,8 @@ internal interface IOpenRgbSession : IDisposable
     void ResizeZone(int index,int zoneIndex,int size);
     // Drops the connection from any thread, without the host's lock: a call waiting on OpenRGB fails at once. Safe to call again.
     void Abort();
+    // Task 9: asks OpenRGB for one real hardware rescan on a short connection of its own; the session's connection is never touched.
+    void RequestHardwareRescan();
     event Action? DeviceListUpdated;
 }
 
@@ -105,6 +109,34 @@ internal sealed class OpenRgbSession : IOpenRgbSession
         c.UpdateMode(index,modeIndex,colors:shaped?.Select(x=>new Color(x.R,x.G,x.B)).ToArray());
     }
     public void ResizeZone(int index,int zoneIndex,int size)=>Client.ResizeZone(index,zoneIndex,size);
+    // Task 9 (amendment 1): OpenRGB 1.0rc3 honours packet 140 (NET_PACKET_ID_REQUEST_RESCAN_DEVICES) with no protocol-version check, and
+    // OpenRGB.NET 3.1.1 can't send it, so it goes on a short connection of its own: magic "ORGB", device 0, id 140, no data. The limits sum
+    // well under BoundedSession.CallBound (ruling P3), since the host makes the request under its lock.
+    internal static readonly byte[] RescanPacket=[0x4F,0x52,0x47,0x42,0,0,0,0,0x8C,0,0,0,0,0,0,0];
+    internal static readonly TimeSpan RescanConnectLimit=TimeSpan.FromSeconds(1),RescanDrainLimit=TimeSpan.FromSeconds(1);
+    public void RequestHardwareRescan()=>SendRescan(OpenRgbEngine.Host,Port,RescanConnectLimit,RescanDrainLimit);
+    // Connects within connectLimit, sends the packet, shuts down sending, then reads and discards until the server closes or drainLimit
+    // passes. Any failure goes to the caller; the session's own client is never touched.
+    internal static void SendRescan(string host,int port,TimeSpan connectLimit,TimeSpan drainLimit)
+    {
+        using var c=new TcpClient{NoDelay=true};
+        using(var limit=new CancellationTokenSource(connectLimit))
+        {
+            try{c.ConnectAsync(host,port,limit.Token).AsTask().GetAwaiter().GetResult();}
+            catch(OperationCanceledException){throw new TimeoutException($"OpenRGB didn't accept the rescan connection within {connectLimit.TotalSeconds:0.#} s.");}
+        }
+        var s=c.Client;
+        s.Send(RescanPacket);
+        s.Shutdown(SocketShutdown.Send);
+        var end=Stopwatch.GetTimestamp()+(long)(drainLimit.TotalSeconds*Stopwatch.Frequency);
+        var buffer=new byte[256];
+        while(true)
+        {
+            var left=end-Stopwatch.GetTimestamp();
+            if(left<=0||!s.Poll((int)Math.Max(1,left*1_000_000/Stopwatch.Frequency),SelectMode.SelectRead)) return;
+            if(s.Receive(buffer)==0) return;
+        }
+    }
     // Exactly one caller takes a client out, so each is disposed once; a second Dispose of OpenRGB.NET's connection would throw.
     public void Abort()
     {

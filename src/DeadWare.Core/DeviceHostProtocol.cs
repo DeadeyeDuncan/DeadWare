@@ -11,12 +11,20 @@ public sealed record DeviceView(string Key,string Name,int Type,PaintKind Kind,s
     // Lighting 3b: whether its keys can be painted one by one, its painted keys, layers, saved look names in saved order, the look last
     // loaded and whether the keyboard has changed since; the painted keys and each layer's listed lights that no longer match its lights.
     bool CanPaint=false,Dictionary<int,PaintedKey>? Paint=null,List<DeviceLayer>? Layers=null,IReadOnlyList<string>? Looks=null,string? Look=null,bool LookChanged=false,
-    int SkippedKeys=0,IReadOnlyList<int>? SkippedLayerLights=null);
+    int SkippedKeys=0,IReadOnlyList<int>? SkippedLayerLights=null,
+    // Lighting 4: the mouse's connection, battery and sleep time, for a device that is the Aerox 9 mouse.
+    MouseView? Mouse=null);
+// Connection is one of MouseConnections. Battery is a percentage and Charging whether it is charging, null while unknown; Stale: the reading is old.
+// SleepMinutes is the mouse's own sleep time when known; SleepSent: the host has sent the chosen one.
+public sealed record MouseView(string Connection,int? Battery,bool? Charging,bool Stale,int? SleepMinutes,bool SleepSent);
+public static class MouseConnections{public const string Cable="cable",Wireless="wireless",Receiver="receiver",None="none";}
 // ConflictsChecked: the host has completed a conflict scan since it started, so an empty Conflicts list means nothing was found (polish
 // item 2). One that never scans, such as one whose OpenRGB settings folder was refused, leaves it false. Optional on the wire, and false
 // when absent, so the protocol stays version 1.
 public sealed record HostState(HostStatus Status,string Message,bool Elevated,IReadOnlyList<LightingConflict> Conflicts,IReadOnlyList<DeviceView> Devices,LightingSettings Settings,bool ConflictsChecked=false,
-    bool KeyHook=false);
+    bool KeyHook=false,
+    // Lighting 4: why the lights are off beyond the saved switch (LightsOff.Idle, Locked or Waking), and plain-words problems with the shortcut and with everyday rules.
+    string? LightsOffReason=null,string? ShortcutProblem=null,string? EverydayProblem=null);
 [JsonPolymorphic(TypeDiscriminatorPropertyName="type")]
 [JsonDerivedType(typeof(GetStateRequest),"getState")]
 [JsonDerivedType(typeof(SetLightsOnRequest),"setLightsOn")]
@@ -40,6 +48,8 @@ public sealed record HostState(HostStatus Status,string Message,bool Elevated,IR
 [JsonDerivedType(typeof(ChooseLookRequest),"chooseLook")]
 [JsonDerivedType(typeof(RenameLookRequest),"renameLook")]
 [JsonDerivedType(typeof(DeleteLookRequest),"deleteLook")]
+[JsonDerivedType(typeof(SetEverydayRequest),"setEveryday")]
+[JsonDerivedType(typeof(SetMouseSleepRequest),"setMouseSleep")]
 public abstract record HostMessage
 {
     [JsonRequired] public int Version { get; init; } = DeviceHostProtocol.Version;
@@ -47,6 +57,8 @@ public abstract record HostMessage
 }
 public sealed record GetStateRequest : HostMessage;
 public sealed record SetLightsOnRequest(bool On) : HostMessage;
+public sealed record SetEverydayRequest(EverydaySettings Everyday) : HostMessage;
+public sealed record SetMouseSleepRequest(int? Minutes) : HostMessage;
 public sealed record SetBrightnessRequest(int Percent) : HostMessage;
 public sealed record SetAllColorsRequest(string Color) : HostMessage;
 public sealed record SetZoneColorRequest(string ZoneKey,string? Color) : HostMessage;
@@ -81,6 +93,7 @@ public static class HostReplyCodes
     public const string Starting="starting",Unsupported="unsupported",RescanFailed="rescan failed",UnknownZone="unknown zone",CouldntSave="couldn't save settings",Version="version",InternalError="internal error",UnknownDevice="unknown device";
     public const string NotPaintable="not paintable",BadKey="bad key",BadLayer="bad layer",TooManyLayers="too many layers",TooManyLooks="too many looks",
         LookName="look name",LookTaken="look taken",NoLook="no look",NoRoom="no room";
+    public const string BadEveryday="bad everyday",BadSleep="bad sleep time",ShortcutSlow="shortcut slow";
     public static string Explain(string why)=>why switch
     {
         Starting=>"The lighting helper is still starting. Try again in a moment.",
@@ -100,6 +113,9 @@ public static class HostReplyCodes
         LookTaken=>"There is already a look with that name.",
         NoLook=>"That look isn't saved any more.",
         NoRoom=>"There isn't room to save that. Delete a saved look first.",
+        BadEveryday=>"Those everyday settings aren't valid.",
+        BadSleep=>"That sleep time isn't one of the choices.",
+        ShortcutSlow=>"Windows didn't answer about the shortcut in time. Try again.",
         _=>why,
     };
 }

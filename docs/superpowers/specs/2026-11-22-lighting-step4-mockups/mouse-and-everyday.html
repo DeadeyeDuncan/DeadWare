@@ -1,0 +1,393 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Lighting step 4: mouse and everyday mockup</title>
+<style>
+  :root { --bg:#0b0f17; --card:#111722; --line:#1f2937; --ink:#e6edf6; --mute:#8b98ab; --acc:#5ee0ff; --warn:#ffcf5e; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:13px/1.4 "Segoe UI",system-ui,sans-serif; }
+  .page { padding:18px 22px 40px; max-width:1120px; }
+  h1 { font-size:20px; margin:0; font-weight:600; }
+  h2 { font-size:15px; margin:26px 0 4px; font-weight:600; }
+  .sub { color:var(--mute); font-size:12px; margin:2px 0 14px; }
+  .cap { color:var(--mute); font-size:11.5px; text-transform:uppercase; letter-spacing:.08em; margin:0 0 6px 2px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:13px 15px; }
+  .card h3 { margin:0; font-size:15px; font-weight:600; }
+  .mute { color:var(--mute); font-size:11.5px; }
+  .sec { border-top:1px solid var(--line); margin-top:11px; padding-top:10px; }
+  .sec > b { display:block; font-size:12px; font-weight:600; margin-bottom:6px; letter-spacing:.02em; }
+  .btn { border:1px solid #33415a; border-radius:7px; padding:4px 11px; font:inherit; font-size:12px; color:var(--ink); background:#131b29; cursor:pointer; }
+  .btn:hover { border-color:#4a5d80; }
+  .btn.on { border-color:var(--acc); color:var(--acc); background:#12283a; }
+  .note { margin-top:10px; padding:8px 10px; border-radius:8px; background:#0e1520; border:1px dashed #2a3850; color:var(--mute); font-size:11.5px; }
+  .dim { opacity:.38; pointer-events:none; }
+  select { font:inherit; font-size:12.5px; color:var(--ink); background:#131b29; border:1px solid #33415a; border-radius:7px; padding:4px 8px; }
+
+  /* the mockup's own controls, not part of the app */
+  .try { border:1px dashed #3a4a66; border-radius:10px; padding:9px 12px; margin:0 0 12px; display:flex; flex-wrap:wrap; gap:8px; align-items:center; background:#0d131d; }
+  .try > span { color:var(--warn); font-size:11.5px; font-weight:600; margin-right:4px; }
+
+  /* imitation of the app window */
+  .app { border:1px solid var(--line); border-radius:12px; padding:14px 16px 16px; background:#0d121b; }
+  .head { display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; flex-wrap:wrap; gap:10px; }
+  .head .t { font-size:18px; font-weight:600; }
+  .tools { display:flex; align-items:center; gap:16px; font-size:12.5px; }
+  .switch { width:38px; height:20px; border-radius:10px; background:#2a3444; position:relative; cursor:pointer; flex:none; display:inline-block; vertical-align:middle; border:0; padding:0; }
+  .switch::after { content:""; position:absolute; top:3px; left:3px; width:14px; height:14px; border-radius:50%; background:#aab6c8; transition:left .12s; }
+  .switch.on { background:var(--acc); }
+  .switch.on::after { left:21px; background:#06202b; }
+  .reason { border:1px solid #5a4a1c; background:#231d0c; color:#ffe3a0; border-radius:8px; padding:7px 10px; margin-bottom:10px; font-size:12.5px; }
+  .cols { display:grid; grid-template-columns:1fr 320px; gap:14px; align-items:start; }
+  @media (max-width:900px) { .cols { grid-template-columns:1fr; } }
+  .desk { height:210px; border-radius:10px; background:#17120e; border:1px solid #3a2d21; position:relative; margin-top:8px; overflow:hidden; }
+  .thing { position:absolute; border-radius:8px; border:1px solid #0008; display:flex; align-items:center; justify-content:center; font-size:11px; color:#041018; font-weight:600; transition:background .15s, box-shadow .15s, color .15s; }
+  .thing.dark { background:#1d232e !important; box-shadow:none !important; color:#5d6a7d; }
+  #desk .lit { transition:opacity .15s; }
+  #desk.lightsoff .lit { opacity:0; }
+  svg text { font-family:"Segoe UI",system-ui,sans-serif; }
+  .row { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:6px 0; font-size:12.5px; }
+  .row .l small { display:block; color:var(--mute); font-size:11.5px; }
+  .keys { font-family:"Segoe UI",system-ui,sans-serif; border:1px solid #33415a; border-radius:7px; padding:4px 10px; background:#0f1622; min-width:108px; text-align:center; display:inline-block; }
+  .keys.rec { border-color:var(--acc); color:var(--acc); }
+  .err { color:#ff9aa5; font-size:11.5px; margin-top:2px; }
+  .ev { display:grid; grid-template-columns:repeat(3,1fr); gap:18px; }
+  @media (max-width:900px) { .ev { grid-template-columns:1fr; } }
+  .ev .col b { display:block; font-size:12.5px; font-weight:600; margin-bottom:4px; }
+  .zone { display:flex; align-items:center; justify-content:space-between; padding:5px 8px; border-radius:6px; font-size:12.5px; }
+  .sw { width:18px; height:18px; border-radius:5px; display:inline-block; vertical-align:middle; margin-right:8px; border:1px solid #0006; }
+  .bat { display:flex; align-items:center; gap:10px; }
+  .batbar { width:120px; height:14px; border:1px solid #55637a; border-radius:4px; position:relative; padding:1px; }
+  .batbar::after { content:""; position:absolute; right:-5px; top:3px; width:3px; height:6px; background:#55637a; border-radius:0 2px 2px 0; }
+  .batbar i { display:block; height:100%; border-radius:2px; background:#52e08a; }
+  .batbar.old i { background:#55637a; }
+  .tray { width:230px; background:#1a2130; border:1px solid #33415a; border-radius:8px; padding:5px; font-size:12.5px; box-shadow:0 8px 24px #0008; }
+  .tray div { padding:6px 12px; border-radius:5px; cursor:pointer; }
+  .tray div:hover { background:#26314a; }
+  .tray hr { border:0; border-top:1px solid #33415a; margin:4px 6px; }
+  .tray .grey { color:#66748a; cursor:default; }
+  .tray .grey:hover { background:none; }
+  ol.calls { margin:6px 0 0; padding-left:20px; }
+  ol.calls li { margin:5px 0; }
+  .two { display:grid; grid-template-columns:260px 1fr; gap:18px; align-items:start; }
+  @media (max-width:900px) { .two { grid-template-columns:1fr; } }
+</style>
+</head>
+<body>
+<div class="page">
+  <h1>Lighting · step 4 mockup · mouse and everyday</h1>
+  <div class="sub">This page works. Use the yellow "Try it" bars to act out what would happen on your PC; everything else is how the app would look. Colours and numbers are examples. The dashed yellow bars are not part of the app.</div>
+
+  <!-- ================= PART 1 ================= -->
+  <h2>1 · The Lighting page, with the new Everyday card</h2>
+  <div class="sub">The Everyday card is new. Everything above it is the page as it is today.</div>
+
+  <div class="try"><span>Try it</span>
+    <button class="btn" id="tryKey">Press the shortcut</button>
+    <button class="btn" id="tryIdle">Pretend the PC has sat unused</button>
+    <button class="btn" id="tryBack">Move the mouse (come back)</button>
+    <button class="btn" id="tryLock">Lock the PC</button>
+    <button class="btn" id="tryUnlock">Unlock</button>
+    <span style="color:var(--mute);font-weight:400" id="tryMsg"></span>
+  </div>
+
+  <div class="app">
+    <div class="head">
+      <div><div class="t">Lighting</div><div class="mute">Colours and effects for everything on the desk</div></div>
+      <div class="tools">
+        <span><button class="switch on" id="swLights" aria-label="Lights on"></button> &nbsp;Lights on</span>
+        <span>Brightness · 80% <input type="range" value="80" style="accent-color:#5ee0ff;vertical-align:middle;width:110px"></span>
+      </div>
+    </div>
+
+    <div class="reason" id="reason" hidden></div>
+
+    <div class="cols">
+      <div>
+        <div class="card">
+          <h3>Desk</h3><div class="mute">tap a device to change its colours · tap the PC to see inside</div>
+          <svg id="desk" viewBox="0 0 720 450" width="100%" style="display:block;margin-top:6px">
+            <defs>
+              <linearGradient id="wave" x1="0" x2="1"><stop offset="0" stop-color="#4fd8ff" stop-opacity="0"/><stop offset=".5" stop-color="#4fd8ff" stop-opacity=".22"/><stop offset="1" stop-color="#4fd8ff" stop-opacity="0"/></linearGradient>
+              <filter id="glow" x="-40%" y="-40%" width="180%" height="180%"><feGaussianBlur stdDeviation="5" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+            </defs>
+            <path d="M22 22 H698 V178 H176 V372 H22 Z" fill="#2b211a" stroke="#4b3a2b" stroke-width="2"/>
+            <text x="360" y="13" text-anchor="middle" font-size="9" fill="#5d6b80" letter-spacing="1.5">BACK OF DESK</text>
+            <path d="M250 52 Q360 30 470 52" fill="none" stroke="#9aa6b6" stroke-width="6" stroke-linecap="round"/>
+            <text x="360" y="72" text-anchor="middle" font-size="9.5" fill="#7c899b">main monitor</text>
+            <rect x="196" y="34" width="24" height="20" rx="3" fill="#3a4556"/><rect x="640" y="34" width="24" height="20" rx="3" fill="#3a4556"/>
+            <rect x="38" y="70" width="7" height="150" rx="3.5" fill="#9aa6b6"/>
+            <text x="62" y="150" font-size="9.5" fill="#7c899b" transform="rotate(-90 62 150)" text-anchor="middle">second monitor</text>
+            <rect x="42" y="322" width="26" height="26" rx="4" fill="#3a4556"/><circle cx="96" cy="335" r="13" fill="#3a4556"/>
+            <rect class="lit" x="318" y="0" width="150" height="450" fill="url(#wave)"/>
+            <!-- keyboard -->
+            <rect x="290" y="96" width="200" height="58" rx="7" fill="#0c1a22" stroke="#2a3a48" stroke-width="2"/>
+            <g class="lit"><g filter="url(#glow)"><rect x="290" y="96" width="200" height="58" rx="7" fill="#0c2733" stroke="#4fd8ff" stroke-width="2.5"/></g>
+            <g stroke="#4fd8ff" stroke-opacity=".75" stroke-width="2" stroke-dasharray="9 5"><path d="M304 110H476M304 121H476M304 132H476M304 143H476"/></g></g>
+            <text x="390" y="172" text-anchor="middle" font-size="10.5" fill="#c9d3e0">Keyboard</text>
+            <!-- mouse on its mat -->
+            <rect x="512" y="92" width="120" height="68" rx="6" fill="#1a1512" stroke="#3b2e23"/>
+            <ellipse cx="566" cy="126" rx="11" ry="18" fill="#232a36"/>
+            <g class="lit" filter="url(#glow)"><ellipse cx="566" cy="126" rx="11" ry="18" fill="#9a6bff"/></g>
+            <text x="572" y="172" text-anchor="middle" font-size="10.5" fill="#c9d3e0">Mouse</text>
+            <circle cx="390" cy="290" r="46" fill="#121a27" stroke="#263247"/><text x="390" y="294" text-anchor="middle" font-size="10" fill="#6c7a8f">you</text>
+            <!-- PC tower on the floor -->
+            <rect x="40" y="388" width="74" height="56" rx="6" fill="#0c1a26" stroke="#2a3a48" stroke-width="2"/>
+            <g class="lit"><g filter="url(#glow)"><rect x="40" y="388" width="74" height="56" rx="6" fill="#0c1a26" stroke="#4fd8ff" stroke-width="2"/></g>
+            <rect x="50" y="398" width="16" height="6" rx="3" fill="#4fd8ff"/><rect x="70" y="398" width="16" height="6" rx="3" fill="#4fd8ff"/>
+            <circle cx="64" cy="424" r="8" fill="none" stroke="#4fd8ff" stroke-width="2.5"/><rect x="80" y="414" width="3" height="20" fill="#bff3ff"/><rect x="86" y="414" width="3" height="20" fill="#bff3ff"/></g>
+            <rect x="90" y="398" width="16" height="6" rx="3" fill="#b46bff"/>
+            <text x="126" y="412" font-size="11.5" fill="#e6edf6">PC tower</text><text x="126" y="427" font-size="10" fill="#4fd8ff">tap to see inside ↗</text>
+          </svg>
+          <div class="mute" id="ownNote" style="margin-top:6px" hidden>The front fans (the purple bar on the tower) stay lit: they run their own effect and DeadWare cannot switch them off.</div>
+        </div>
+
+        <!-- EVERYDAY CARD -->
+        <div class="card" style="margin-top:14px" id="everyday">
+          <h3>Everyday</h3><div class="mute">ways to turn the lights off without opening this page</div>
+          <div class="sec ev">
+            <div class="col">
+              <b>Lights on/off shortcut</b>
+              <span class="keys" id="keys">Ctrl + Alt + L</span>
+              <div style="margin-top:6px">
+                <button class="btn" id="keyChange">Change</button>
+                <button class="btn" id="keyClear">No shortcut</button>
+              </div>
+              <div class="mute" id="keyHint" style="margin-top:4px">Works anywhere in Windows. Same as the Lights on switch.</div>
+              <div class="err" id="keyErr" hidden></div>
+            </div>
+            <div class="col">
+              <b>Off when the PC sits unused</b>
+              <div class="row" style="padding-top:0"><span class="l">After
+                <select id="idleMin"><option>1</option><option>2</option><option>5</option><option selected>10</option><option>15</option><option>30</option><option>60</option></select> minutes</span>
+                <button class="switch" id="swIdle" aria-label="Off when idle"></button></div>
+              <div class="mute">Lights come back the moment you touch the mouse or keyboard.</div>
+            </div>
+            <div class="col">
+              <b>Off when the PC is locked</b>
+              <div class="row" style="padding-top:0"><span class="l">Lights off at the lock screen</span>
+                <button class="switch" id="swLock" aria-label="Off when locked"></button></div>
+              <div class="mute">Lights come back when you sign back in.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- MOUSE CARD -->
+      <div>
+        <div class="try" style="margin-bottom:8px"><span>Try it · the mouse is…</span>
+          <button class="btn on" data-m="wireless">wireless</button>
+          <button class="btn" data-m="cable">on its cable</button>
+          <button class="btn" data-m="asleep">asleep</button>
+          <button class="btn" data-m="gone">not connected</button>
+        </div>
+        <div class="card" id="mouse">
+          <h3>Mouse · SteelSeries Aerox 9</h3><div class="mute" id="mSub"></div>
+
+          <div id="mBody">
+            <div class="sec"><b>Colour</b>
+              <div class="zone"><span><i class="sw" style="background:#5ee0ff"></i>Front</span><span class="mute">own colour</span></div>
+              <div class="zone"><span><i class="sw" style="background:#22e04a"></i>Middle</span><span class="mute">shared colour</span></div>
+              <div class="zone"><span><i class="sw" style="background:#22e04a"></i>Rear</span><span class="mute">shared colour</span></div>
+              <div class="zone"><span><i class="sw" style="background:#22e04a"></i>Reactive</span><span class="mute">shared colour</span></div>
+              <div class="mute" style="margin-top:4px">The same colours are used on the cable and wireless.</div>
+            </div>
+
+            <div class="sec"><b>Battery</b>
+              <div class="bat"><div class="batbar" id="mBar"><i id="mFill"></i></div><span id="mPct"></span></div>
+              <div class="mute" id="mBatHint" style="margin-top:4px"></div>
+            </div>
+
+            <div class="sec"><b>Sleep</b>
+              <div class="row" style="padding-top:0"><span class="l">Mouse sleeps after</span>
+                <select id="mSleep">
+                  <option value="keep" selected>Leave as the mouse is</option>
+                  <option value="0">Never</option>
+                  <option>1 minute</option><option>2 minutes</option><option>3 minutes</option><option>5 minutes</option>
+                  <option>10 minutes</option><option>15 minutes</option><option>20 minutes</option>
+                </select></div>
+              <div class="mute" id="mSleepStatus"></div>
+              <div class="note" id="mSleepNote" hidden>While the mouse lies still its lights hold steady, so it can fall asleep and save battery. Moving, clicking or scrolling brings the effect back.</div>
+            </div>
+
+            <div class="sec dim"><b>Brightness</b><div class="mute">as today</div></div>
+            <div class="sec dim"><b>Colour correction</b><div class="mute">as today</div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= PART 2 ================= -->
+  <h2>2 · The tray menu</h2>
+  <div class="sub">Right-click the DeadWare icon by the clock. One new line; click it to try.</div>
+  <div class="two">
+    <div class="tray" id="tray">
+      <div class="grey" style="cursor:default" id="trayShow">Show dashboard</div>
+      <div id="trayLights">Turn lights off</div>
+      <hr>
+      <div class="grey" id="trayQuit">Quit DeadWare</div>
+    </div>
+    <div class="mute" style="font-size:12.5px">
+      The line reads <b style="color:var(--ink)">Turn lights off</b> while the lights are on and <b style="color:var(--ink)">Turn lights on</b> while they are off. It is the same switch as on the page and the shortcut.<br><br>
+      If lighting is switched off in Settings, or the lighting helper is not running, the line is greyed out and reads <b style="color:var(--ink)">Lights (not available)</b>.
+    </div>
+  </div>
+
+  <!-- ================= PART 3 ================= -->
+  <h2>3 · Sleep and wake (nothing to look at)</h2>
+  <div class="card" style="max-width:760px">
+    <div><b>When the PC goes to sleep:</b> DeadWare stops sending anything to the lights.</div>
+    <div style="margin-top:6px"><b>When it wakes:</b> DeadWare waits about 10 seconds for the devices to come back, looks for them again, and repaints everything the way it was. If the lights were off (switch, idle or lock), they stay off.</div>
+    <div class="note">The page would show "Waking up… lights return in a few seconds" during those 10 seconds.</div>
+  </div>
+
+  <!-- ================= CALLS ================= -->
+  <h2>Choices I made for you (say a number to change one)</h2>
+  <div class="card" style="max-width:860px">
+    <ol class="calls">
+      <li><b>Everyday card sits under the desk picture</b>, full width, on the Lighting page. The other place would be Settings → Lighting; I chose the page so the shortcut is easy to find.</li>
+      <li><b>The shortcut turns lights off and on</b> (not only off), and you change it by clicking Change and pressing the new keys. "No shortcut" removes it. If another program already owns the keys, a red line says so.</li>
+      <li><b>Idle time is a short list</b> (1, 2, 5, 10, 15, 30, 60 minutes) rather than a number box, and starts at 10 when you switch it on. Idle and lock both start switched off.</li>
+      <li><b>While idle or lock has the lights off, the Lights on switch stays on</b> and a yellow line on the page says why the lights are dark. Idle and lock never change your saved choice.</li>
+      <li><b>Lights cut off and on at once</b>, no fade (as DeadLight).</li>
+      <li><b>One mouse card</b> for cable and wireless, one set of colours and settings for both.</li>
+      <li><b>Battery shows a bar, a percentage and "Charging" / "On battery"</b>. Wireless, it is read only while you use the mouse (reading it would otherwise keep the mouse awake). No low-battery warning in this step.</li>
+      <li><b>Mouse sleep time applies as soon as you pick it</b> (no Apply button). It starts on "Leave as the mouse is", so DeadWare changes nothing on the mouse until you choose.</li>
+      <li><b>Turning lights off also darkens a sleeping-soon mouse straight away.</b> DeadLight left it lit until you moved it.</li>
+      <li><b>Tray line says what clicking it will do</b> ("Turn lights off" / "Turn lights on") rather than a tick mark.</li>
+    </ol>
+  </div>
+</div>
+
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  var s = { on: true, idle: false, locked: false, idleRule: false, lockRule: false,
+            keys: 'Ctrl + Alt + L', rec: false, mouse: 'wireless', sleep: 'keep' };
+
+  function dark() { return !s.on || (s.idle && s.idleRule) || (s.locked && s.lockRule); }
+
+  function say(t) { $('tryMsg').textContent = t || ''; }
+
+  function draw() {
+    var d = dark();
+    $('swLights').classList.toggle('on', s.on);
+    $('swIdle').classList.toggle('on', s.idleRule);
+    $('swLock').classList.toggle('on', s.lockRule);
+    $('desk').classList.toggle('lightsoff', d);
+    $('ownNote').hidden = !d;
+    var r = $('reason');
+    if (s.on && s.locked && s.lockRule) { r.hidden = false; r.textContent = 'Lights are off because the PC is locked. They come back when you sign in. (You would not see this page while locked; it is shown here so you can see what happens.)'; }
+    else if (s.on && s.idle && s.idleRule) { r.hidden = false; r.textContent = 'Lights are off because the PC has sat unused for ' + $('idleMin').value + ' minutes. They come back when you touch the mouse or keyboard.'; }
+    else { r.hidden = true; }
+    $('trayLights').textContent = s.on ? 'Turn lights off' : 'Turn lights on';
+    $('keys').textContent = s.rec ? 'Press the new keys…' : (s.keys || 'None');
+    $('keys').classList.toggle('rec', s.rec);
+    $('keyChange').textContent = s.rec ? 'Cancel' : 'Change';
+    drawMouse();
+  }
+
+  function drawMouse() {
+    var m = s.mouse, sub, pct = 85, hint, old = false;
+    var btns = document.querySelectorAll('[data-m]');
+    for (var i = 0; i < btns.length; i++) btns[i].classList.toggle('on', btns[i].getAttribute('data-m') === m);
+    $('mBody').classList.toggle('dim', m === 'gone');
+    if (m === 'wireless') { sub = 'Wireless · Battery 85%'; hint = 'On battery. Read while you use the mouse.'; }
+    else if (m === 'cable') { pct = 60; sub = 'On its cable · Battery 60% · Charging'; hint = 'Charging. Read every 10 seconds on the cable.'; }
+    else if (m === 'asleep') { old = true; sub = 'Receiver plugged in · mouse asleep or out of reach'; hint = 'Last known reading. Move the mouse to refresh it.'; }
+    else { old = true; sub = 'Not connected'; hint = 'Plug in the receiver or the cable.'; }
+    $('mSub').textContent = sub;
+    $('mFill').style.width = pct + '%';
+    $('mBar').classList.toggle('old', old);
+    $('mPct').textContent = (m === 'gone') ? 'Battery unknown' : (pct + '%' + (old ? ' · last known' : ''));
+    $('mBatHint').textContent = hint;
+    var v = s.sleep, st;
+    if (v === 'keep') st = 'DeadWare has not changed the mouse\'s own sleep time.';
+    else if (m === 'wireless') st = 'Saved and sent to the mouse.';
+    else if (m === 'cable') st = 'Saved. It is sent over the wireless receiver, so it reaches the mouse next time you use it wireless.';
+    else st = 'Saved. Waiting for the mouse.';
+    $('mSleepStatus').textContent = st;
+    $('mSleepNote').hidden = (v === 'keep' || v === '0');
+  }
+
+  function toggleLights(how) {
+    // Pressing a key or clicking counts as "using the PC", so it ends an idle spell first.
+    if (s.on && s.idle && s.idleRule) { s.idle = false; say('The PC was idle: ' + how + ' counted as coming back, so the lights are simply on again.'); draw(); return; }
+    s.idle = false;
+    s.on = !s.on;
+    say(how + ': lights ' + (s.on ? 'on' : 'off') + '. The page switch and the tray line follow.');
+    draw();
+  }
+
+  $('swLights').onclick = function () { toggleLights('The page switch'); };
+  $('trayLights').onclick = function () { toggleLights('The tray line'); };
+  $('tryKey').onclick = function () {
+    if (!s.keys) { say('There is no shortcut set, so nothing happens.'); return; }
+    if (s.locked) { say('The PC is locked, so the shortcut does nothing until you sign in.'); return; }
+    toggleLights('The shortcut');
+  };
+  $('swIdle').onclick = function () { s.idleRule = !s.idleRule; if (!s.idleRule) s.idle = false; say(''); draw(); };
+  $('swLock').onclick = function () { s.lockRule = !s.lockRule; say(''); draw(); };
+  $('idleMin').onchange = draw;
+  $('tryIdle').onclick = function () {
+    s.idle = true;
+    if (!s.idleRule) say('"Off when the PC sits unused" is switched off, so the lights stay as they are.');
+    else if (!s.on) say('The lights were already off by the switch; nothing changes.');
+    else say('Idle for ' + $('idleMin').value + ' minutes: lights off, the switch stays on.');
+    draw();
+  };
+  $('tryBack').onclick = function () {
+    var was = s.idle && s.idleRule && s.on;
+    s.idle = false;
+    say(was ? 'You are back: lights on again at once.' : (s.on ? 'Nothing to bring back.' : 'The switch is off, so the lights stay off until you turn them on.'));
+    draw();
+  };
+  $('tryLock').onclick = function () {
+    s.locked = true;
+    say(s.lockRule ? (s.on ? 'Locked: lights off, the switch stays on.' : 'Locked. The lights were already off.') : '"Off when the PC is locked" is switched off, so the lights stay as they are.');
+    draw();
+  };
+  $('tryUnlock').onclick = function () {
+    var was = s.locked && s.lockRule && s.on;
+    s.locked = false; s.idle = false;
+    say(was ? 'Signed in: lights on again.' : 'Signed in.');
+    draw();
+  };
+
+  $('keyChange').onclick = function () { s.rec = !s.rec; $('keyErr').hidden = true; draw(); };
+  $('keyClear').onclick = function () { s.rec = false; s.keys = ''; $('keyErr').hidden = true; $('keyHint').textContent = 'No shortcut. Use the switch or the tray instead.'; draw(); };
+  document.addEventListener('keydown', function (e) {
+    if (!s.rec) return;
+    e.preventDefault();
+    if (e.key === 'Escape') { s.rec = false; draw(); return; }
+    if (['Control', 'Alt', 'Shift', 'Meta'].indexOf(e.key) >= 0) return;
+    var parts = [];
+    if (e.ctrlKey) parts.push('Ctrl');
+    if (e.altKey) parts.push('Alt');
+    if (e.shiftKey) parts.push('Shift');
+    if (e.metaKey) parts.push('Win');
+    var err = $('keyErr');
+    if (!e.ctrlKey && !e.altKey && !e.metaKey) {
+      err.hidden = false; err.textContent = 'Hold Ctrl, Alt or the Windows key together with another key.'; return;
+    }
+    var k = e.key.length === 1 ? e.key.toUpperCase() : e.key;
+    parts.push(k);
+    var combo = parts.join(' + ');
+    if (combo === 'Ctrl + Alt + P') {   // example of a clash, so the red line can be seen
+      err.hidden = false; err.textContent = 'Another program already uses Ctrl + Alt + P. Choose different keys. (Example: this mockup pretends that one is taken.)'; return;
+    }
+    s.keys = combo; s.rec = false; err.hidden = true;
+    $('keyHint').textContent = 'Works anywhere in Windows. Same as the Lights on switch.';
+    draw();
+  });
+
+  var mb = document.querySelectorAll('[data-m]');
+  for (var i = 0; i < mb.length; i++) mb[i].onclick = function () { s.mouse = this.getAttribute('data-m'); draw(); };
+  $('mSleep').onchange = function () { s.sleep = this.value; draw(); };
+
+  draw();
+})();
+</script>
+</body>
+</html>

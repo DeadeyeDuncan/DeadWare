@@ -45,6 +45,11 @@ internal sealed class LightingPage : Page, IHeaderTool
     private readonly StackPanel onPanel = new() { Spacing = 12, Visibility = Visibility.Collapsed };
     // The status line in two parts: what went wrong, in the caution colour, then progress and the administrator note, muted.
     private readonly TextBlock alert = Caution(), status = new() { TextWrapping = TextWrapping.Wrap, Opacity = 0.7 };
+    // Lighting 4: why the lights are off beyond the switch (idle, locked or waking), in the caution colour above the status line. It is a
+    // line of its own, not one of the alerts, so the muted status line ("… · lights off") still shows under it.
+    private readonly TextBlock reason = Caution();
+    // Lighting 4: the Everyday card (shortcut, idle and lock), under the desk area in both modes.
+    private readonly EverydayCard everyday;
     private readonly Button setAll = new();
     private readonly Border sharedDot = new() { Width = 14, Height = 14, CornerRadius = new CornerRadius(7), VerticalAlignment = VerticalAlignment.Center };
     private readonly Flyout setAllFlyout = new() { Placement = FlyoutPlacementMode.Bottom };
@@ -251,8 +256,10 @@ internal sealed class LightingPage : Page, IHeaderTool
         // Polite live regions, so a screen reader reads a new status without moving focus.
         AutomationProperties.SetLiveSetting(alert, AutomationLiveSetting.Polite);
         AutomationProperties.SetLiveSetting(status, AutomationLiveSetting.Polite);
-        alert.Visibility = status.Visibility = Visibility.Collapsed;
+        AutomationProperties.SetLiveSetting(reason, AutomationLiveSetting.Polite);
+        reason.Visibility = alert.Visibility = status.Visibility = Visibility.Collapsed;
         noDevices.Visibility = Visibility.Collapsed;
+        onPanel.Children.Add(reason);
         onPanel.Children.Add(alert);
         onPanel.Children.Add(status);
         onPanel.Children.Add(effectCard);
@@ -325,8 +332,15 @@ internal sealed class LightingPage : Page, IHeaderTool
         deskArea.Children.Add(panelHost);
         leftColumn.Children.Add(listCard);
         ArrangeDesk(0);
-        onPanel.SizeChanged += (_, args) => ArrangeDesk(args.NewSize.Width);
+        everyday = new EverydayCard(Send);
+        // The Everyday card's columns follow the same panel width as the desk area.
+        onPanel.SizeChanged += (_, args) =>
+        {
+            ArrangeDesk(args.NewSize.Width);
+            everyday.ArrangeFor(args.NewSize.Width);
+        };
         onPanel.Children.Add(deskArea);
+        onPanel.Children.Add(everyday.Root);
         Content = new ScrollViewer { Content = new StackPanel { Padding = new Thickness(24), Spacing = 12, Children = { offCard, onPanel } } };
         this.WhileShowing(Attach, Detach);
     }
@@ -436,7 +450,7 @@ internal sealed class LightingPage : Page, IHeaderTool
         Volatile.Write(ref frameQueued, 0);
         if (Interlocked.Exchange(ref pendingFrame, null) is not { } frame || !showing || client is null || !ReferenceEquals(frame.Source, client)) return;
         // Nor while the host isn't running, so a frame can't paint over the colours a non-running state cleared.
-        if (client.State is not { Status: HostStatus.Running, Settings: { } settings } state || !ShowsFrames(settings, state.Devices)) return;
+        if (client.State is not { Status: HostStatus.Running, Settings: not null } state || !ShowsFrames(Effective(state), state.Devices)) return;
         ShowDeskColors(frame.Colors);
     }
 
@@ -446,6 +460,12 @@ internal sealed class LightingPage : Page, IHeaderTool
     /// </summary>
     private static bool ShowsFrames(LightingSettings settings, IReadOnlyList<DeviceView>? devices) =>
         LightingPaint.Animating(settings, devices ?? []) || LightingPaint.ShowsLights(settings, devices ?? []);
+
+    /// <summary>
+    /// Lighting 4: the state's settings as the lights really are: with Lights on off while a reason (idle, locked, waking) holds them off
+    /// (<see cref="EverydayTexts.Lit"/>), so the pictures and frames go dark although the saved switch stays on. Needs the state's settings.
+    /// </summary>
+    private static LightingSettings Effective(HostState state) => EverydayTexts.Lit(state) ? state.Settings : state.Settings.WithLightsOff();
 
     /// <summary>
     /// A preview frame to the drawing the mode shows, the plain desk or the picture; null (the state's colours) to both, so neither keeps
@@ -499,6 +519,7 @@ internal sealed class LightingPage : Page, IHeaderTool
         cards.Clear();
         noneSince = null;
         statePicture = null;
+        everyday.Reset();
         if (zoneFlyout.IsOpen) zoneFlyout.Hide();
         if (setAllFlyout.IsOpen) setAllFlyout.Hide();
         // The desk, list, selection and Place on desk sends belonged to the old client too.
@@ -573,6 +594,7 @@ internal sealed class LightingPage : Page, IHeaderTool
         Show(headerTool, seenState);
         lightsOn.IsEnabled = brightness.IsEnabled = connected;
         setAll.IsEnabled = live;
+        everyday.Update(state, connected);
         if (state is null)
         {
             // The host is connecting or relaunching: the cards and header controls stay as they were, disabled, until its state is back.
@@ -594,7 +616,7 @@ internal sealed class LightingPage : Page, IHeaderTool
             effectBar.Show(shownEffect ?? new EffectSettings(), live && state.Settings is not null);
             // While nothing animates (LightingPaint.Animating) and nothing painted shows (LightingPaint.ShowsLights) the desk shows the state's
             // colours, and frames are dropped until one of them holds again.
-            if (state.Settings is not { } current || !ShowsFrames(current, state.Devices)) ShowDeskColors(null);
+            if (state.Settings is null || !ShowsFrames(Effective(state), state.Devices)) ShowDeskColors(null);
             ShowDevices(state);
         }
         UpdateFlyouts(resync: live && !wasLive);
@@ -628,18 +650,26 @@ internal sealed class LightingPage : Page, IHeaderTool
             if (!state.Elevated) notes.Add(ElevationText);
         }
         if (sendError is not null) alerts.Add(sendError);
+        // The reason line is its own: it never counts as an alert, so the running text below still shows.
+        string? why = shownState is { Settings.Everyday: { } rules } reasoned ? EverydayTexts.ReasonLine(reasoned.LightsOffReason, rules.IdleMinutes) : null;
+        ShowLines(reason, why is null ? [] : [why]);
         // A running host with no problem to report: how many devices and what the lights are doing, above the administrator note.
         if (alerts.Count == 0 && shownState is { Status: HostStatus.Running, Settings: { } running } runningState) notes.Insert(0, RunningText(runningState, running));
         ShowLines(alert, alerts);
         ShowLines(status, notes);
     }
 
-    /// <summary>"8 devices through OpenRGB · Wave is running", "… · Static is on", or "… · lights off" whenever Lights on is off.</summary>
+    /// <summary>
+    /// "8 devices through OpenRGB · Wave is running", "… · Static is on", or "… · lights off" whenever the lights are off: the switch, or
+    /// (lighting 4) a reason holding them off (<see cref="EverydayTexts.Lit"/>). The mouse counts only on its cable, the one way it comes
+    /// through OpenRGB: on its receiver or not connected it is DeadWare's own (ruling P16).
+    /// </summary>
     private static string RunningText(HostState state, LightingSettings settings)
     {
-        int count = (state.Devices ?? []).Where(device => device is { Key: not null }).Select(device => device.Key).Distinct(StringComparer.Ordinal).Count();
+        int count = (state.Devices ?? []).Where(device => device is { Key: not null } && device.Mouse is null or { Connection: MouseConnections.Cable })
+            .Select(device => device.Key).Distinct(StringComparer.Ordinal).Count();
         string devices = count == 1 ? "1 device through OpenRGB" : $"{count} devices through OpenRGB";
-        if (!settings.LightsOn) return $"{devices} · lights off";
+        if (!EverydayTexts.Lit(state)) return $"{devices} · lights off";
         var kind = LightingEffects.KindOf(settings.Effect?.Kind);
         return kind == EffectKind.Static ? $"{devices} · Static is on" : $"{devices} · {kind} is running";
     }
@@ -698,7 +728,8 @@ internal sealed class LightingPage : Page, IHeaderTool
             if (shown.State.Settings is { } settings)
             {
                 deskLayout = settings.Layout ?? deskLayout;
-                deskLightsOn = settings.LightsOn;
+                // Lighting 4: the lights as they really are, so the pictures go dark while a reason holds them off.
+                deskLightsOn = EverydayTexts.Lit(shown.State);
                 deskEffect = settings.Effect;
             }
             deskKeyHook = shown.State.KeyHook;
@@ -877,7 +908,8 @@ internal sealed class LightingPage : Page, IHeaderTool
             }
         }
         var colors = new Dictionary<string, string>(StringComparer.Ordinal);
-        foreach (var device in deskDevices)
+        // Lighting 4 (ruling P7): a mouse that isn't connected gives no colours, so it is drawn unlit, still found and selectable.
+        foreach (var device in deskDevices.Where(device => !MouseTexts.Unlit(device)))
             foreach (var zone in device.Zones ?? [])
                 if (zone?.Key is { } key && zone.Color is { } color) colors[key] = color;
         picture.SetStateColors(colors);
@@ -1619,6 +1651,8 @@ internal sealed class LightingPage : Page, IHeaderTool
         private string[] zoneKeys = [];
         // Picture mode's heading, row names and highlighted row; null in plain mode.
         private PictureMark? mark;
+        // Lighting 4: the mouse's connection and battery when the device is the Aerox 9 mouse, whose card has its own heading and sub-line.
+        private MouseView? mouse;
 
         public DeviceCard(LightingPage page)
         {
@@ -1643,9 +1677,7 @@ internal sealed class LightingPage : Page, IHeaderTool
         public void Mark(PictureMark? next)
         {
             mark = next;
-            title.Text = next?.Title ?? Name;
-            if (subtitle.Text != (next?.Sub ?? "")) subtitle.Text = next?.Sub ?? "";
-            Show(subtitle, next is not null);
+            ShowTitle();
             sections.ShowParts(next?.Parts);
             foreach (var (key, row) in rows)
             {
@@ -1656,13 +1688,27 @@ internal sealed class LightingPage : Page, IHeaderTool
 
         public ZoneRow? Find(string zoneKey) => rows.GetValueOrDefault(zoneKey);
 
+        /// <summary>
+        /// The heading and sub-line: the picture's while it marks the card, else the name and none. The mouse's are its own in either mode
+        /// (lighting 4): <see cref="MouseTexts.Heading"/> over how it is connected and its battery (<see cref="MouseTexts.SubLine"/>).
+        /// </summary>
+        private void ShowTitle()
+        {
+            string heading = mouse is not null ? MouseTexts.Heading : mark?.Title ?? Name;
+            string? sub = mouse is { } shown ? MouseTexts.SubLine(shown) : mark?.Sub;
+            if (title.Text != heading) title.Text = heading;
+            if (subtitle.Text != (sub ?? "")) subtitle.Text = sub ?? "";
+            Show(subtitle, sub is not null);
+        }
+
         /// <param name="device">The device as the host lists it.</param>
         /// <param name="name">Its name as the page shows it, numbered when another device has the same one.</param>
         /// <param name="live">The host is running, so the swatches of a device DeadWare paints can be used.</param>
         public void Update(DeviceView device, string name, bool live)
         {
             Name = name;
-            title.Text = mark?.Title ?? name;
+            mouse = device.Mouse;
+            ShowTitle();
             bool hardware = device.Kind == PaintKind.Hardware, unsupported = device.Kind == PaintKind.Unsupported;
             // The device's own effect and whether it stays lit with lights off don't change with Lights on (Ruling AB), so the card
             // names the effect while the lights are off too, and warns before they go off that the device will stay lit. The note
@@ -1677,6 +1723,8 @@ internal sealed class LightingPage : Page, IHeaderTool
             var list = paints ? (device.Zones ?? []).Where(zone => zone is { Key: not null }).DistinctBy(zone => zone.Key, StringComparer.Ordinal).ToArray() : [];
             Show(zones, paints);
             Show(noZones, paints && list.Length == 0);
+            // A mouse that isn't connected shows its rows dimmed; they stay usable, and its colours are saved for when it is back.
+            zones.Opacity = mouse is { } dimmed && MouseTexts.Dimmed(dimmed) ? 0.38 : 1;
             if (!list.Select(zone => zone.Key).SequenceEqual(zoneKeys))
             {
                 zoneKeys = [.. list.Select(zone => zone.Key)];

@@ -85,7 +85,9 @@ public partial class App : Application
             window.RememberPlacement(Popouts);
             sessionEnd = new SessionEndHook(WindowHandle, OnSessionEnding);
             if (startPage is not null) window.Navigate(startPage);
-            tray = new Tray(ShowDashboard, RequestQuit);
+            tray = new Tray(ShowDashboard, RequestQuit,
+                () => TrayLights.Line(session.Settings.LightingEnabled, session.Lighting?.State, session.Lighting?.Problem),
+                on => _ = session.Lighting?.SendAsync(new SetLightsOnRequest(on), CancellationToken.None));
             if (!tray.Available) window.SetTrayUnavailable();
             Subscribe(session);
             session.Changed += () => { if (session.Current is not null) Interlocked.Increment(ref TicksWithReading); };

@@ -60,6 +60,30 @@ public sealed class BoundedSessionTests
         Assert.Equal(0,fake.Aborts);
     }
 
+    // Task 9: the rescan request runs on its own short connection, outside the watchdog (P3): its failure passes through, the session stays up
+    // and is never aborted for it, and a request still running past the bound doesn't drop the session. Its own limits sum well under the bound.
+    [Fact]
+    public async Task The_rescan_request_is_outside_the_watchdog()
+    {
+        Assert.True(OpenRgbSession.RescanConnectLimit+OpenRgbSession.RescanDrainLimit<=BoundedSession.CallBound-TimeSpan.FromSeconds(1));
+        var s=Bounded();
+        fake.FailRescan=true;
+        Assert.Throws<System.Net.Sockets.SocketException>(()=>s.RequestHardwareRescan());
+        Assert.Equal(0,fake.Aborts);
+        Assert.True(s.Connected);
+        Assert.Equal(8,s.ReadControllers().Count);
+        fake.FailRescan=false;
+        fake.HangWhen=call=>call=="RequestHardwareRescan";
+        var ask=Task.Run(()=>s.RequestHardwareRescan());
+        await Until(()=>fake.Hanging);
+        clock.Advance(BoundedSession.CallBound*2);
+        await Task.Delay(50);
+        Assert.Equal(0,fake.Aborts);
+        Assert.True(s.Connected);
+        fake.Abort();                                             // releases the hung fake
+        await Assert.ThrowsAsync<OperationCanceledException>(()=>ask.WaitAsync(RealTimeCap));
+    }
+
     [Fact]
     public async Task Abort_from_another_thread_fails_a_waiting_call_as_a_lost_session()
     {

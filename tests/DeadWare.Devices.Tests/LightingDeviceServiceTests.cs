@@ -13,7 +13,7 @@ public sealed class LightingDeviceServiceTests : IDisposable
     readonly HostLog log;
     readonly LightingDeviceService svc;
     public LightingDeviceServiceTests(){log=new HostLog(dir);svc=new(session,time,log);svc.Rescan();}
-    public void Dispose(){log.Dispose();try{Directory.Delete(dir,true);}catch{}}
+    public void Dispose(){driver?.Dispose();log.Dispose();try{Directory.Delete(dir,true);}catch{}}
 
     int IndexOf(string serial)=>session.Controllers.First(c=>c.Serial==serial).Index;
     const string Dram="SERIAL-1",Hid="SERIAL-4",Node="SERIAL-7";
@@ -404,7 +404,7 @@ public sealed class LightingDeviceServiceTests : IDisposable
     {
         foreach(var serial in new[]{Dram,"SERIAL-5"})
         {
-            var d=svc.Devices.First(x=>x.Key.StartsWith(serial+"|"));
+            var d=svc.Devices.First(x=>x.Key.StartsWith(serial+"|")||serial=="SERIAL-5"&&x.Key==AeroxIdentity.Key);
             Assert.Null(KeyMaps.Of(d));
             Assert.False(KeyMaps.SupportsWave(d));
         }
@@ -416,7 +416,7 @@ public sealed class LightingDeviceServiceTests : IDisposable
         var i=IndexOf(Hid);var full=session.Controllers[i];
         var flat=full with{Zones=full.Zones.Select(z=>z with{Matrix=null}).ToList()};
         session.Controllers[i]=flat;svc.Rescan();
-        var kb=svc.Devices.First(d=>d.Key.StartsWith(Hid+"|")).Key;var mouse=svc.Devices.First(d=>d.Key.StartsWith("SERIAL-5|")).Key;
+        var kb=svc.Devices.First(d=>d.Key.StartsWith(Hid+"|")).Key;var mouse=svc.Devices.First(d=>d.Key==AeroxIdentity.Key).Key;
         var s=new LightingSettings();
         s.Devices[kb]=new DeviceTuning{Mode=new DeviceMode{Kind="wave"}};
         s.Devices[mouse]=new DeviceTuning{Mode=new DeviceMode{Kind="breathing"}};
@@ -485,5 +485,166 @@ public sealed class LightingDeviceServiceTests : IDisposable
         var packed=svc.PreviewLights(s,0)![kb.Key];
         Assert.Equal("4682B4FF80004682B4",packed[..18]); // light 2's name doesn't match: skipped
         Assert.Equal("#4682B4",svc.Preview(s,0)[LightingKeys.Zone(kb.Key,0)]);
+    }
+
+    // Lighting 4, Task 7: one mouse, two ways in. The fixture's cable device is SteelSeries Aerox 9 Wireless Wired (SERIAL-5).
+    const string CableKey=@"SERIAL-5|HID: \\?\HID#FAKE-2";
+    readonly FakeAeroxTransport fake=new();
+    readonly FakeInput input=new();
+    AeroxDriver? driver;
+    AeroxMouse? mouse;
+    // A service with the receiver mouse; the products HID lists are the receiver and/or the cable, and Scan has run as the host runs it.
+    LightingDeviceService WithMouse(bool receiver,bool cable=false,bool listCable=true)
+    {
+        if(receiver) fake.Products.Add(AeroxDriver.Receiver);
+        if(cable) fake.Products.Add(AeroxDriver.Cable);
+        if(!listCable) session.Reorder(l=>l.Where(c=>!AeroxIdentity.Is(c.Name)).ToList());
+        driver=new AeroxDriver(fake,log);
+        mouse=new AeroxMouse(driver,input,time,log);
+        mouse.Tick();mouse.Scan();
+        var s=new LightingDeviceService(session,time,log,mouse);
+        s.Rescan();
+        return s;
+    }
+    static LightingSettings MouseColour(string hex)
+    {
+        var s=new LightingSettings();
+        for(var i=0;i<4;i++) s.ZoneColors[LightingKeys.Zone(AeroxIdentity.Key,i)]=new ZoneColorEntry{Color=hex,ZoneName=AeroxIdentity.Zones[i]};
+        return s;
+    }
+    static readonly Rgb Odd=new(0x12,0x34,0x56);
+
+    [Fact] public void The_cable_mouse_is_listed_under_the_fixed_key()
+    {
+        var m=Assert.Single(svc.Devices,d=>d.Key==AeroxIdentity.Key);
+        Assert.Equal("SteelSeries Aerox 9 Wireless Wired",m.Name);
+        Assert.Equal(CableKey,svc.CableKey);
+        Assert.DoesNotContain(svc.Devices,d=>d.Key.StartsWith("SERIAL-5|"));
+        Assert.False(svc.MouseAbsent);
+        svc.Paint(MouseColour("#123456"));
+        Assert.Equal([Odd,Odd,Odd,Odd],session.Leds.Single(l=>l.Index==IndexOf("SERIAL-5")).Colors);
+    }
+    [Fact] public void With_no_cable_and_a_receiver_the_receiver_mouse_is_listed()
+    {
+        var s=WithMouse(receiver:true,listCable:false);
+        var m=Assert.Single(s.Devices,d=>d.Key==AeroxIdentity.Key);
+        Assert.Equal(AeroxIdentity.ReceiverName,m.Name);
+        Assert.Null(s.CableKey);Assert.False(s.MouseAbsent);
+        s.Paint(MouseColour("#123456"));
+        Assert.Equal(5,fake.Writes.Count);
+        Assert.Equal(Odd,new Rgb(fake.Writes[1][4],fake.Writes[1][5],fake.Writes[1][6]));
+        Assert.Equal("#123456",s.Preview(MouseColour("#123456"),0)[LightingKeys.Zone(AeroxIdentity.Key,0)]);
+        Assert.Equal(PaintKind.Direct,s.Views(new LightingSettings()).Single(v=>v.Key==AeroxIdentity.Key).Kind);
+    }
+    [Fact] public void With_both_only_the_cable_mouse_is_listed_and_the_receiver_gets_no_frame()
+    {
+        var s=WithMouse(receiver:true,cable:true);
+        var m=Assert.Single(s.Devices,d=>d.Key==AeroxIdentity.Key);
+        Assert.Equal("SteelSeries Aerox 9 Wireless Wired",m.Name);
+        for(var k=0;k<5;k++){s.Paint(MouseColour(k%2==0?"#123456":"#654321"));Ms(500);}
+        Assert.Empty(fake.Writes);
+        Assert.Equal(5,session.Leds.Count(l=>l.Index==IndexOf("SERIAL-5")));
+    }
+    [Fact] public void With_neither_a_seen_or_saved_mouse_is_listed_absent_and_never_painted()
+    {
+        var saved=WithMouse(receiver:false,listCable:false);
+        saved.MouseSaved=true;
+        Assert.True(saved.Rescan());
+        Assert.True(saved.MouseAbsent);
+        Assert.Single(saved.Devices,d=>d.Key==AeroxIdentity.Key);
+        saved.Paint(MouseColour("#123456"));
+        Assert.DoesNotContain(saved.Preview(MouseColour("#123456"),0).Keys,k=>k.StartsWith(AeroxIdentity.Key));
+        // Seen earlier in this run: the receiver goes away and the mouse stays listed, absent.
+        fake.Products.Add(AeroxDriver.Receiver);
+        var seen=new AeroxMouse(driver!,input,time,log);seen.Tick();seen.Scan();
+        var s=new LightingDeviceService(session,time,log,seen);
+        s.Rescan();
+        Assert.False(s.MouseAbsent);
+        fake.Products.Clear();seen.Scan();
+        Assert.True(s.Rescan());
+        Assert.True(s.MouseAbsent);
+        Assert.Single(s.Devices,d=>d.Key==AeroxIdentity.Key);
+        var before=fake.Writes.Count;
+        for(var k=0;k<5;k++){s.Paint(MouseColour(k%2==0?"#123456":"#654321"));Ms(500);}
+        Assert.Equal(before,fake.Writes.Count);
+        Assert.Null(s.PreviewLights(MouseColour("#123456"),0)?.GetValueOrDefault(AeroxIdentity.Key));
+    }
+    [Fact] public void With_neither_and_nothing_saved_no_mouse_is_listed()
+    {
+        var s=WithMouse(receiver:false,listCable:false);
+        Assert.DoesNotContain(s.Devices,d=>d.Key==AeroxIdentity.Key);
+        Assert.False(s.MouseAbsent);
+        var plain=new LightingDeviceService(session,time,log);
+        plain.MouseSaved=true;plain.Rescan();
+        Assert.DoesNotContain(plain.Devices,d=>d.Key==AeroxIdentity.Key);   // without the receiver driver the mouse is OpenRGB's alone
+    }
+    [Fact] public void An_OpenRGB_hotplug_cannot_move_a_mouse_frame_onto_another_device()
+    {
+        var s=WithMouse(receiver:true,listCable:false);
+        var colours=MouseColour("#123456");
+        s.Paint(colours);
+        session.Reorder(l=>Enumerable.Reverse(l).ToList());       // OpenRGB re-indexes every controller; the service hasn't read it yet
+        Ms(500);s.Paint(colours);
+        colours.ZoneColors[LightingKeys.Zone(AeroxIdentity.Key,0)].Color="#654321";
+        Ms(500);s.Paint(colours);
+        s.Rescan();Ms(500);
+        colours.ZoneColors[LightingKeys.Zone(AeroxIdentity.Key,0)].Color="#123456";
+        s.Paint(colours);
+        Assert.DoesNotContain(session.Leds,l=>l.Colors.Contains(Odd)||l.Colors.Contains(new Rgb(0x65,0x43,0x21)));
+        Assert.Equal(3*5,fake.Writes.Count);
+    }
+    // Fix wave 1, F1 (spec line 214): the route follows HID. The mouse showed the cable's frames meanwhile, so the receiver's first frame
+    // after the cable goes is a must-send, unchanged or not.
+    [Fact] public void When_the_cable_goes_the_receiver_gets_the_frame_again()
+    {
+        var s=WithMouse(receiver:true,listCable:false);
+        var colours=MouseColour("#123456");
+        s.Paint(colours);
+        Assert.Equal(5,fake.Writes.Count);
+        fake.Products.Add(AeroxDriver.Cable);mouse!.Scan();
+        session.Reorder(_=>FakeOpenRgbSession.FromFixture().Controllers.ToList());       // OpenRGB lists the cable device after its rescan
+        Assert.True(s.Rescan());Assert.Equal(CableKey,s.CableKey);
+        Ms(500);s.Paint(colours);
+        Assert.Equal(5,fake.Writes.Count);
+        fake.Products.Remove(AeroxDriver.Cable);mouse.Scan();
+        session.Reorder(l=>l.Where(c=>!AeroxIdentity.Is(c.Name)).ToList());
+        Assert.True(s.Rescan());Assert.Null(s.CableKey);
+        Ms(500);s.Paint(colours);
+        Assert.Equal(10,fake.Writes.Count);
+    }
+    // F1: OpenRGB doesn't notice the cable leaving and keeps listing its device. HID no longer lists the cable, so the receiver is the route:
+    // its frames are written and the stale OpenRGB device is neither listed nor painted. With the receiver gone too, the mouse is absent.
+    [Fact] public void A_cable_device_OpenRGB_still_lists_after_HID_lost_the_cable_is_not_the_route()
+    {
+        var s=WithMouse(receiver:true,cable:true);
+        var colours=MouseColour("#123456");
+        var stale=IndexOf("SERIAL-5");
+        s.Paint(colours);
+        Assert.Single(session.Leds,l=>l.Index==stale);
+        Assert.Empty(fake.Writes);
+        fake.Products.Remove(AeroxDriver.Cable);mouse!.Scan();                          // OpenRGB still lists the cable device
+        Assert.True(s.Rescan());
+        Assert.Null(s.CableKey);Assert.False(s.MouseAbsent);
+        var m=Assert.Single(s.Devices,d=>d.Key==AeroxIdentity.Key);
+        Assert.Equal(AeroxIdentity.ReceiverName,m.Name);
+        Assert.DoesNotContain(s.Devices,d=>d.Name=="SteelSeries Aerox 9 Wireless Wired");
+        for(var k=0;k<3;k++){Ms(500);s.Paint(colours);}
+        Assert.Equal(5,fake.Writes.Count);
+        Assert.Equal(Odd,new Rgb(fake.Writes[1][4],fake.Writes[1][5],fake.Writes[1][6]));
+        Assert.Single(session.Leds,l=>l.Index==stale);
+        Assert.DoesNotContain(s.Preview(colours,0).Keys,k=>k.StartsWith("SERIAL-5|"));
+        fake.Products.Remove(AeroxDriver.Receiver);mouse.Scan();
+        Assert.True(s.Rescan());
+        Assert.True(s.MouseAbsent);Assert.Null(s.CableKey);
+        Assert.Equal(MouseConnections.None,s.Views(colours).Single(v=>v.Key==AeroxIdentity.Key).Mouse!.Connection);
+        for(var k=0;k<3;k++){Ms(500);s.Paint(colours);}
+        Assert.Equal(5,fake.Writes.Count);
+        Assert.Single(session.Leds,l=>l.Index==stale);
+    }
+    [Fact] public void An_unchanged_colour_is_not_resent_to_the_receiver()
+    {
+        var s=WithMouse(receiver:true,listCable:false);
+        for(var k=0;k<10;k++){s.Paint(MouseColour("#123456"));Ms(500);}   // past the 400 ms refresh each time
+        Assert.Equal(5,fake.Writes.Count);
     }
 }

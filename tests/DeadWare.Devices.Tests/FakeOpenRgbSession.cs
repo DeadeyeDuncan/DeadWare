@@ -1,3 +1,4 @@
+using System.Net.Sockets;
 using System.Text.Json;
 using DeadWare.Core;
 using DeadWare.Devices;
@@ -14,13 +15,22 @@ sealed class FakeOpenRgbSession:IOpenRgbSession
     readonly List<(int Index,int Zone,int Size)> resizes=new();
     readonly List<string> calls=new();
     TaskCompletionSource? hang;
-    int hanging,aborts;
+    int hanging,aborts,rescans;
     public List<OpenRgbController> Controllers=new();
     public Func<int,bool>? FailLeds;
     public bool Connected{get;private set;}
     public int Connects,Reads;
     public event Action? DeviceListUpdated;
     public bool FailConnect;
+    // Task 9: hardware rescan requests, counted whether or not they fail; FailRescan refuses them as a closed port would.
+    public volatile bool FailRescan;
+    public int Rescans=>Volatile.Read(ref rescans);
+    public void RequestHardwareRescan()
+    {
+        Interlocked.Increment(ref rescans);
+        Hang("RequestHardwareRescan");
+        if(FailRescan) throw new SocketException((int)SocketError.ConnectionRefused);
+    }
     // Calls named here (Connect, ReadControllers, UpdateLeds, UpdateMode) hang as OpenRGB.NET's do when OpenRGB never answers: only Abort,
     // which is what disposing the real client does, releases them, by failing them.
     public volatile Func<string,bool>? HangWhen;

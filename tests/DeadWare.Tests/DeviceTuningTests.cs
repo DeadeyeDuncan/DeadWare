@@ -68,8 +68,8 @@ public class DeviceTuningTests
         Assert.Equal(1,DeviceTunings.WrittenVersion(s));
         s.Devices["k"]=new(){Brightness=5};
         Assert.Equal(2,DeviceTunings.WrittenVersion(s));
-        s.Version=4;
-        Assert.Equal(4,DeviceTunings.WrittenVersion(s));
+        s.Version=5;
+        Assert.Equal(5,DeviceTunings.WrittenVersion(s));
     }
 
     static DeviceLook Lk(string name)=>new(){Name=name,Keys=new(){[1]=new(){Name="W",Color="#010203"}}};
@@ -152,8 +152,8 @@ public class DeviceTuningTests
         Assert.Equal(3,DeviceTunings.WrittenVersion(s));
         s.Devices["k"]=new(){Look="A"};
         Assert.Equal(3,DeviceTunings.WrittenVersion(s));
-        s.Version=4;
-        Assert.Equal(4,DeviceTunings.WrittenVersion(s));
+        s.Version=5;
+        Assert.Equal(5,DeviceTunings.WrittenVersion(s));
         s.Version=1;s.Devices.Clear();
         Assert.Equal(1,DeviceTunings.WrittenVersion(s));
     }

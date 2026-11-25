@@ -17,18 +17,19 @@ public static class LightingSettingsCodec
         if(s is null) return new(new(),"Lighting settings were empty.",true);
         return Finish(s);
     }
-    // Defaults for null members, normalise, validate. A newer file (Ruling AS) that this build refuses gets its Devices reset and is checked
-    // again; if that still fails, its Effect and Layout too, and once more (whole-branch review 1, D1: a device table alone no longer costs the
-    // desk effect and layout). So its colours, brightness and modes still count; only a last failure drops it to defaults. Never quarantined.
+    // Defaults for null members, normalise, validate. A newer file (Ruling AS) that this build refuses gets its Everyday and Mouse reset and is checked
+    // again; if that still fails, its Devices too, then its Effect and Layout (Ruling P12; whole-branch review 1, D1: a device table alone no longer costs the
+    // desk effect and layout, and a bad Everyday or Mouse no longer costs the device table). So its colours, brightness and modes still count; only a last failure drops it to defaults. Never quarantined.
     static LightingRead Finish(LightingSettings s)
     {
-        s.Effect??=new();s.Layout??=DeskLayouts.Empty();s.Devices??=new();
+        s.Effect??=new();s.Layout??=DeskLayouts.Empty();s.Devices??=new();s.Everyday??=new();s.Mouse??=new();
         LightingEffects.Normalize(s.Effect);DeviceTunings.Normalize(s);
         var error=Validate(s);
         if(s.Version>LightingSettings.CurrentVersion)
         {
             if(error is not null)
             {
+                s.Everyday=new();s.Mouse=new();if(Validate(s) is null) return new(s,null,false,true);
                 s.Devices=new();if(Validate(s) is null) return new(s,null,false,true);
                 s.Effect=new();s.Layout=DeskLayouts.Empty();if(Validate(s) is null) return new(s,null,false,true);
             }
@@ -36,8 +37,8 @@ public static class LightingSettingsCodec
         }
         return error is null?new(s,null,false):new(new(),error,true);
     }
-    // A wrong JSON type in Effect, Layout or Devices is a JsonException, which would set a later DeadWare's file aside (Ruling AS). When its
-    // Version is above ours, drop those three members, which may have another shape there, and read the rest once; null when the file isn't
+    // A wrong JSON type in Effect, Layout, Devices, Everyday or Mouse is a JsonException, which would set a later DeadWare's file aside (Ruling AS). When its
+    // Version is above ours, drop those five members, which may have another shape there, and read the rest once; null when the file isn't
     // such a file.
     // Version is read as an int only: "Version": 2.0 is still a type error and quarantines.
     static LightingRead? NewerShape(string json)
@@ -45,7 +46,7 @@ public static class LightingSettingsCodec
         try
         {
             if(System.Text.Json.Nodes.JsonNode.Parse(json) is not System.Text.Json.Nodes.JsonObject o||!o.TryGetPropertyValue("Version",out var v)||v is null||v.GetValueKind()!=JsonValueKind.Number||!v.AsValue().TryGetValue<int>(out var version)||version<=LightingSettings.CurrentVersion) return null;
-            o.Remove("Effect");o.Remove("Layout");o.Remove("Devices");
+            o.Remove("Effect");o.Remove("Layout");o.Remove("Devices");o.Remove("Everyday");o.Remove("Mouse");
             LightingSettings? s;
             try{s=JsonSerializer.Deserialize<LightingSettings>(o.ToJsonString());}
             catch(JsonException e){return new(new(),$"Lighting settings are not valid JSON: {e.Message}",false,true);}
@@ -90,6 +91,8 @@ public static class LightingSettingsCodec
         }
         foreach(var (key,mode) in settings.HardwareModes)
             if(key.Length>MaxKeyLength||mode is null||mode.Length>MaxKeyLength) return "A hardware mode entry is invalid.";
+        if(Everydays.Validate(settings.Everyday) is{} badEveryday) return HostReplyCodes.Explain(badEveryday);
+        if(!MouseSleep.Valid(settings.Mouse.SleepMinutes)) return HostReplyCodes.Explain(HostReplyCodes.BadSleep);
         var devices=DeviceTunings.Validate(settings);
         if(devices is not null) return devices;
         return (settings.Effect is null?null:LightingEffects.Validate(settings.Effect))??(settings.Layout is null?null:DeskLayouts.Validate(settings.Layout));

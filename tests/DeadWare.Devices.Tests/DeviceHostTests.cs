@@ -8,7 +8,7 @@ using static DeadWare.Devices.Tests.Waits;
 
 namespace DeadWare.Devices.Tests;
 
-public sealed class DeviceHostTests : IAsyncLifetime
+public sealed partial class DeviceHostTests : IAsyncLifetime
 {
     readonly string dir=Path.Combine(Path.GetTempPath(),"dw-host-"+Guid.NewGuid().ToString("N"));
     readonly string exe,lightingPath;
@@ -83,10 +83,10 @@ public sealed class DeviceHostTests : IAsyncLifetime
     // The scanner sees the fake OpenRGB processes that are still running, through the real classification (F15): one whose id isn't the
     // pid the host passes counts as another OpenRGB. So a host that stopped passing its own pid, or kept a scan that raced a relaunch,
     // would block itself. The test's own conflicts are added after a park, which a test can hold the loop in.
-    DeviceHost Build(bool startup=false,string? exePath=null,Action<OpenRgbEngine>? beforeHost=null,Func<string,DeadWare.UpdateCore.LocationProtection>? folderCheck=null,string? startupFailure=null,LightingStore? store=null,HostLog? hostLog=null,IKeyPressSource? keys=null)
+    DeviceHost Build(bool startup=false,string? exePath=null,Action<OpenRgbEngine>? beforeHost=null,Func<string,DeadWare.UpdateCore.LocationProtection>? folderCheck=null,string? startupFailure=null,LightingStore? store=null,HostLog? hostLog=null,IKeyPressSource? keys=null,IEverydaySignals? signals=null,IInputClock? input=null,AeroxMouse? mouse=null,Func<int,CancellationToken,Task<bool>>? portOpen=null)
     {
         var log=hostLog??this.log;
-        var engine=new OpenRgbEngine(exePath??exe,@"C:\cfg\openrgb",runner,(_,_)=>Task.FromResult(true),time,log,folderCheck);
+        var engine=new OpenRgbEngine(exePath??exe,@"C:\cfg\openrgb",runner,portOpen??((_,_)=>Task.FromResult(true)),time,log,folderCheck);
         beforeHost?.Invoke(engine);
         var scanner=new Scanner(pid=>
         {
@@ -97,7 +97,7 @@ public sealed class DeviceHostTests : IAsyncLifetime
             return found;
         });
         var options=new HostOptions(exePath??exe,@"C:\cfg\openrgb",lightingPath,Path.Combine(dir,"logs"),startup,"S-1-5-21-1",1);
-        return host=new DeviceHost(options,store??new LightingStore(lightingPath),engine,()=>session,scanner,time,log,startupFailure,keys:keys);
+        return host=new DeviceHost(options,store??new LightingStore(lightingPath),engine,()=>session,scanner,time,log,startupFailure,keys:keys,signals:signals,input:input,mouse:mouse);
     }
     void Start(DeviceHost h)=>run=h.RunAsync(CancellationToken.None);
     // Fake time AdvanceUntil may move without its condition before it fails, so a host cadence that slows down fails the test instead of
@@ -448,6 +448,20 @@ public sealed class DeviceHostTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Clone_keeps_everyday_and_mouse()
+    {
+        File.WriteAllText(lightingPath,"{\"Version\":4,\"Everyday\":{\"Shortcut\":null,\"IdleOff\":true,\"IdleMinutes\":30,\"LockOff\":true},\"Mouse\":{\"SleepMinutes\":5}}");
+        var h=await Running();
+        Assert.True((await Send(h,new SetBrightnessRequest(40))).Ok);
+        var state=h.State.Settings;
+        Assert.Null(state.Everyday.Shortcut);Assert.True(state.Everyday.IdleOff);Assert.Equal(30,state.Everyday.IdleMinutes);Assert.True(state.Everyday.LockOff);
+        Assert.Equal(5,state.Mouse.SleepMinutes);
+        var saved=new LightingStore(lightingPath).Load().Settings;
+        Assert.Null(saved.Everyday.Shortcut);Assert.True(saved.Everyday.IdleOff);Assert.Equal(30,saved.Everyday.IdleMinutes);Assert.True(saved.Everyday.LockOff);
+        Assert.Equal(5,saved.Mouse.SleepMinutes);Assert.Equal(4,saved.Version);
+    }
+
+    [Fact]
     public async Task Other_changes_keep_device_tuning()
     {
         File.WriteAllText(lightingPath,"{\"Version\":2,\"Devices\":{\"k|1\":{\"Brightness\":70}}}");
@@ -524,7 +538,7 @@ public sealed class DeviceHostTests : IAsyncLifetime
     [Fact]
     public async Task Newer_lighting_json_is_used_but_never_saved()
     {
-        const string json="{\"Version\":4,\"Brightness\":40,\"DefaultColor\":\"#112233\",\"Layout\":{\"Desk\":\"L\"}}";
+        const string json="{\"Version\":5,\"Brightness\":40,\"DefaultColor\":\"#112233\",\"Layout\":{\"Desk\":\"L\"}}";
         File.WriteAllText(lightingPath,json);
         var h=await Running();
         Assert.Equal(40,h.State.Settings.Brightness);
@@ -540,7 +554,7 @@ public sealed class DeviceHostTests : IAsyncLifetime
     [Fact]
     public async Task Newer_lighting_json_this_build_cannot_use_runs_on_defaults_and_says_so()
     {
-        const string json="{\"Version\":4,\"Brightness\":500,\"DefaultColor\":\"#112233\"}";
+        const string json="{\"Version\":5,\"Brightness\":500,\"DefaultColor\":\"#112233\"}";
         File.WriteAllText(lightingPath,json);
         var h=await Running();
         Assert.Contains(DeviceHost.NewerDefaultsNote,h.State.Message);
@@ -1686,7 +1700,7 @@ public sealed class DeviceHostTests : IAsyncLifetime
     // Step 3a, Task 4: device tuning and keyboard modes through the pipe.
     static readonly string ApexKey=LightingKeys.Device("SERIAL-4",@"HID: \\?\HID#FAKE-1");
     static readonly string DramKey=LightingKeys.Device("SERIAL-1","I2C: FAKE-1");
-    static readonly string MouseKey=LightingKeys.Device("SERIAL-5",@"HID: \\?\HID#FAKE-2");
+    static readonly string MouseKey=AeroxIdentity.Key;   // lighting 4: the cable mouse is listed under its fixed key
     static readonly string NodeKey=LightingKeys.Device("SERIAL-7",@"HID: \\?\HID#FAKE-4");
     bool ApexShows(Rgb c){try{return LastLeds(Apex).All(x=>x==c);}catch(InvalidOperationException){return false;}}
     void DropApexMatrix()=>session.Controllers[Apex]=session.Controllers[Apex] with{Zones=session.Controllers[Apex].Zones.Select(z=>z with{Matrix=null}).ToList()};
@@ -2081,7 +2095,15 @@ public sealed class DeviceHostTests : IAsyncLifetime
     DeviceTuning? ApexEntry(DeviceHost h)=>h.State.Settings.Devices.TryGetValue(ApexKey,out var t)?t:null;
     LightingSettings SavedSettings()=>new LightingStore(lightingPath).Load().Settings;
     static string KeysText(Dictionary<int,PaintedKey>? k)=>k is null?"null":string.Join(",",k.OrderBy(e=>e.Key).Select(e=>$"{e.Key}={e.Value.Name}/{e.Value.Color}"));
-    string[] LogLines(string contains)=>File.ReadAllText(Path.Combine(dir,"logs","devices.log")).Split('\n').Where(l=>l.Contains(contains)).ToArray();
+    // Read sharing write (and delete, for a roll-over). HostLog appends with FileShare.Read only, so File.ReadAllText's FileShare.Read made
+    // the host's write fail while the test read, and HostLog drops a line it can't write (a "suspend" line lost: a 15 s wait that fails);
+    // or the read failed while a write was open (IOException).
+    string[] LogLines(string contains)
+    {
+        using var fs=new FileStream(Path.Combine(dir,"logs","devices.log"),FileMode.Open,FileAccess.Read,FileShare.ReadWrite|FileShare.Delete);
+        using var r=new StreamReader(fs);
+        return r.ReadToEnd().Split('\n').Where(l=>l.Contains(contains)).ToArray();
+    }
 
     [Fact]
     public async Task Painting_keys_is_saved_replied_then_stated()
@@ -2596,7 +2618,7 @@ public sealed class DeviceHostTests : IAsyncLifetime
     }
 
     // Lighting 3b, Task 6: the key-press hook, through a fake source that keeps the gate it was given, so a test presses keys itself.
-    sealed class FakeKeys(TimeProvider time):IKeyPressSource
+    internal sealed class FakeKeys(TimeProvider time):IKeyPressSource
     {
         readonly object sync=new();
         bool installed;
