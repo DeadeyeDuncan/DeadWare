@@ -254,12 +254,12 @@ DeadWare's own code for the Nuvoton NCT6687D with the plain register layout. Any
   |---|---|
   | identify | read the chip id and revision and confirm a supported chip before anything else |
   | read mode, read duty, read speed | for one control: its manual bit, its duty, and its fan's RPM |
-  | take | put one control in manual mode at the duty it is running at right now, so nothing audible changes |
+  | take | put one control in manual mode at the duty it is running at right now, so nothing audible changes. The duty is written, never assumed: sources disagree on what a control does when only its manual bit is set. The duty command the control held before is remembered, in the lease too, for the release |
   | set duty | write a duty, then read it back; up to three tries, then a fault |
-  | release | clear the control's manual bit, then read it back; up to three tries, 100 ms apart |
+  | release | put back the duty command the control held before DeadWare took it, as the Linux driver does, if the handshake for that works; then clear the control's manual bit and read it back, up to three tries, 100 ms apart. The bit is cleared even when the first part fails: the bit is what hands the fan back |
   | release all | release every control it was told about, even ones this process did not take; then, if the chip's request register still shows an open request because a writer died in the middle of a write, close it |
 
-- **An allow-list in code** names the only registers the driver may write (the mode register, the duty registers, the request register). A test proves no other register can be written and that no duty under 20% can be sent.
+- **An allow-list in code** names the only chip registers the driver may write: the mode register, the duty registers and the request register, plus the `0xFF` written to the page register to free the bus after each access. To find the chip it also runs, once for each handle it opens, the configuration sequence the sensor library runs at every open (enter, identify, let the module record the allowed ports, select the EC's device, read the base address, exit); nothing else is written to the configuration ports. A test proves no other register can be written and that no duty under 20% can be sent.
 - **Only case-fan headers are offered:** controls 2 to 7 of this chip, which the sensor library names "System Fan". The CPU Fan and Pump Fan headers (controls 0 and 1) are never offered and never taken, whatever is plugged into them, and neither is a control with no fan. A CPU cooler's fan or pump stays on the BIOS, which watches the CPU itself. If the library's board table shows a board where controls 0 and 1 are something else, that board is unsupported.
 
 **Taking a board fan:**
@@ -287,7 +287,7 @@ At sign-out both processes end together, so the helper's own release, started th
 
 Started by the cooling part before it takes anything, as a child process, so it has the helper's rights. The window's forced end of a stuck helper leaves it running (see "Starting the helper").
 
-- **The lease** is a small record the helper keeps current and the guard can read after the helper is dead: the helper's process id, a heartbeat renewed every second, a "stopped cleanly" flag, and the list of what is taken (chip and control numbers; "hub held"). A process without administrator rights cannot write it. How it is stored is the builder's choice within those rules.
+- **The lease** is a small record the helper keeps current and the guard can read after the helper is dead: the helper's process id, a heartbeat renewed every second, a "stopped cleanly" flag, and the list of what is taken (chip and control numbers, each with the duty command it held before; "hub held"). A process without administrator rights cannot write it. How it is stored is the builder's choice within those rules.
 - **The heartbeat is renewed by the cooling loop itself**, not by a timer of its own, so a loop stuck in a sensor read or a chip write shows as a stale heartbeat.
 - **The guard does nothing while the lease lists nothing taken.**
 - **The guard acts** when something is listed and the helper's process has ended without the flag, or the heartbeat is more than 5 s old. It then:
@@ -474,6 +474,12 @@ The overheat rule and the lost-reading rule are checked by tests only. Nothing i
 22. The readout's "about N RPM" is learned from what DeadWare has seen, and shows only the percentage until then.
 23. The rows of fans in Settings appear after the main switch is on, each with its own switch off; nothing is written until a fan's own switch is on.
 24. **A frozen Windows is accepted as a limit.** Neither the helper nor the guard can run then, so board fans hold the speed they had when it froze. This PC freezes about once a week, so it will happen. The alternative is to keep Quiet's board fan speeds no lower than today's, which gives up most of what Quiet is for.
+
+## Changes since approval
+
+- **2026-11-26, the board driver's take and release.** Filling the hardware notes' gaps from the sources showed two things. The Linux driver hands a header back by first restoring the duty command it found there and then clearing the manual bit, and sources disagree on what a control does when only its manual bit is set. So "take" now always writes the duty and remembers the earlier duty command, and "release" puts that command back before clearing the bit. Nothing the owner sees changes.
+- **2026-11-26, the allow-list's wording.** A PawnIO handle starts with no chip selected and no ports allowed, so DeadWare's driver has to run the same configuration sequence as the sensor library before it can reach a register. The allow-list now says so, and names the page register's `0xFF`. What the driver may write to the fan registers is unchanged.
+- **2026-11-26, the hardware notes.** The gaps named under "To verify first in the plan" are settled from the sources and written into the notes: the chip's port order and base address, the tachometer registers, the LpcIO functions and the Linux driver's licence. The notes end with their own list of what is still not settled on paper; one item bears on the plan: no source states which PawnIO driver version the module needs.
 
 ## Constraints carried
 
