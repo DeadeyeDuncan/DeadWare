@@ -165,6 +165,10 @@ sealed class FakeHubTransport:IHubTransport
     // While HangRead is set to an unset event, each read waits for it, setting ReadEntered first; a waiting read ends with ObjectDisposedException
     // when its port is disposed. A test that hangs a read must set the event or dispose the port in its cleanup.
     public volatile ManualResetEventSlim? HangRead,ReadEntered;
+    // Task 6 fix round 1: while StuckRead is set to an unset event, each read waits for it, setting ReadEntered first, and disposing its port does
+    // not end the wait (a call the driver never returns); once the event is set, a read whose port was disposed meanwhile ends with
+    // ObjectDisposedException. A test that sets it must set the event in its cleanup.
+    public volatile ManualResetEventSlim? StuckRead;
     // Reports another program left in the queue (a speeds reply of 26 entries at 1 RPM), handed out by the coming reads before any reply.
     public int Stale{get{lock(sync)return stale;}set{lock(sync)stale=value;}}
     // How many coming opens (endpoint or colour) answer 03 although the hub is held.
@@ -384,6 +388,13 @@ sealed class FakeHubTransport:IHubTransport
                 t.ReadEntered?.Set();
                 try{hang.Wait(gone.Token);}
                 catch(OperationCanceledException){throw new ObjectDisposedException(nameof(Port),"the port was closed while a read waited");}
+            }
+            var stuck=t.StuckRead;
+            if(stuck is not null&&!stuck.IsSet)
+            {
+                t.ReadEntered?.Set();
+                stuck.Wait();
+                ObjectDisposedException.ThrowIf(Volatile.Read(ref disposed)!=0,this);
             }
             var latency=t.Latency;
             if(latency>TimeSpan.Zero) t.time.Advance(latency);

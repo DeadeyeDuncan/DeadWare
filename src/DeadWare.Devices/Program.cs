@@ -10,7 +10,8 @@ internal static class Program
     // handle when the host ends, however it ends, and that ends OpenRGB with it.
     static ProcessJob? job;
 
-    // Exit codes: 0 after Stop, 1 unexpected failure, 2 bad arguments, 3 another host already runs in this session, 4 the pipe could not be created.
+    // Exit codes: 0 after Stop, 1 unexpected failure, 2 bad arguments, 3 another host already runs in this session, 4 the pipe could not be created,
+    // 5 the hub's USB call was stuck.
     private static async Task<int> Main(string[] args)
     {
         string? openRgb=null;var startup=false;
@@ -68,6 +69,12 @@ internal static class Program
             // disposed after the host.
             using var aerox=new AeroxDriver(new HidAeroxTransport(),log);
             var mouse=new AeroxMouse(aerox,input,TimeProvider.System,log);
+            // Lighting 5: the hub's worker on its own thread, with the watchdog that ends the helper (exit code 5) when a USB call stays stuck
+            // under the shared Corsair lock. Declared before the host, so they are disposed after it. Until the host is given the core nothing
+            // allows holding: the thread idles and never opens the hub.
+            using var hubLock=new CorsairLock(log);
+            var hubCore=new HubCore(new HidHubTransport(),hubLock,TimeProvider.System,log);
+            using var hub=new HubWorker(hubCore,log,()=>Environment.Exit(HubWorker.ExitCode));
             await using var host=new DeviceHost(options,new LightingStore(lightingPath,guardLinks:Environment.IsPrivilegedProcess),engine,()=>new OpenRgbSession(),new ProcessConflictScanner(),TimeProvider.System,log,failure,keys:keys,signals:signals,input:input,mouse:mouse);
             await using var server=new HostPipeServer(DeviceHostProtocol.PipeName(sid),host.HandleAsync,log,clientGone:host.ClientGone);
             host.Initialize(); // settings are loaded before the pipe accepts a single request
