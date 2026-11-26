@@ -240,6 +240,173 @@ public sealed class OpenRgbEngineTests : IAsyncLifetime
         await Until(()=>runner.Count==2&&e.Status==EngineStatus.Running);
     }
 
+    // Lighting 5: the take-over of the hub stops OpenRGB on purpose. That stop arms the 4 s floor, counts nothing towards the give-up
+    // and says whether OpenRGB is really gone.
+    [Fact]
+    public async Task A_deliberate_stop_arms_four_seconds()
+    {
+        var clock=new Clock();
+        var e=Track(new OpenRgbEngine(exe,@"C:\cfg\openrgb",runner,(_,_)=>Task.FromResult(true),clock,log));
+        await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
+        Assert.True(await e.StopForRestartAsync().WaitAsync(RealTimeCap));
+        Assert.True(runner.At(0).Killed);
+        await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
+        Assert.Equal(EngineStatus.Restarting,e.Status);
+        Assert.True(clock.Waiting(TimeSpan.FromSeconds(4)));
+        clock.Advance(TimeSpan.FromSeconds(4)-TimeSpan.FromTicks(1));
+        await Task.Delay(100);
+        Assert.Equal(1,runner.Count);
+        clock.Advance(TimeSpan.FromTicks(1));
+        await Until(()=>runner.Count==2&&e.Status==EngineStatus.Running);
+    }
+
+    [Fact]
+    public async Task Five_deliberate_stops_never_give_up()
+    {
+        var clock=new Clock();
+        var e=Track(new OpenRgbEngine(exe,@"C:\cfg\openrgb",runner,(_,_)=>Task.FromResult(true),clock,log));
+        for(var i=0;i<5;i++)
+        {
+            await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
+            if(i>0)
+            {
+                Assert.Equal(EngineStatus.Restarting,e.Status);
+                await Until(()=>clock.Waiting(TimeSpan.FromSeconds(4)));
+                clock.Advance(TimeSpan.FromSeconds(4));
+            }
+            await Until(()=>runner.Count==i+1&&e.Status==EngineStatus.Running);
+            Assert.True(await e.StopForRestartAsync().WaitAsync(RealTimeCap));
+        }
+        await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
+        Assert.Equal(EngineStatus.Restarting,e.Status); // not Failed with the give-up text
+        Assert.Equal(5,runner.Count);
+    }
+
+    [Fact]
+    public async Task A_deliberate_stop_leaves_the_failure_count_alone()
+    {
+        var clock=new Clock();
+        var e=Track(new OpenRgbEngine(exe,@"C:\cfg\openrgb",runner,(_,_)=>Task.FromResult(true),clock,log));
+        await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
+        runner.At(0).Exit();
+        await Until(()=>e.Status==EngineStatus.Restarting&&clock.Waiting(TimeSpan.FromSeconds(4)));
+        clock.Advance(TimeSpan.FromSeconds(4));
+        await Until(()=>runner.Count==2&&e.Status==EngineStatus.Running);
+        runner.At(1).Exit();
+        await Until(()=>e.Status==EngineStatus.Restarting&&clock.Waiting(TimeSpan.FromSeconds(8)));
+        clock.Advance(TimeSpan.FromSeconds(8));
+        await Until(()=>runner.Count==3&&e.Status==EngineStatus.Running);
+        Assert.True(await e.StopForRestartAsync().WaitAsync(RealTimeCap));
+        await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
+        Assert.Equal(EngineStatus.Restarting,e.Status);
+        Assert.True(clock.Waiting(TimeSpan.FromSeconds(4)));
+        clock.Advance(TimeSpan.FromSeconds(4));
+        await Until(()=>runner.Count==4&&e.Status==EngineStatus.Running);
+        runner.At(3).Exit(); // the third crash: 16 s, as if the deliberate stop had not been counted
+        await Until(()=>e.Status==EngineStatus.Restarting&&clock.Waiting(TimeSpan.FromSeconds(16)));
+    }
+
+    [Fact]
+    public async Task A_deliberate_stop_during_a_crash_wait_keeps_that_wait()
+    {
+        var clock=new Clock();
+        var e=Track(new OpenRgbEngine(exe,@"C:\cfg\openrgb",runner,(_,_)=>Task.FromResult(true),clock,log));
+        await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
+        runner.At(0).Exit();
+        await Until(()=>e.Status==EngineStatus.Restarting&&clock.Waiting(TimeSpan.FromSeconds(4)));
+        clock.Advance(TimeSpan.FromSeconds(4));
+        await Until(()=>runner.Count==2&&e.Status==EngineStatus.Running);
+        runner.At(1).Exit();
+        await Until(()=>e.Status==EngineStatus.Restarting&&clock.Waiting(TimeSpan.FromSeconds(8)));
+        clock.Advance(TimeSpan.FromSeconds(1));
+        Assert.True(await e.StopForRestartAsync().WaitAsync(RealTimeCap)); // nothing was running
+        await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
+        Assert.Equal(EngineStatus.Restarting,e.Status);
+        Assert.True(clock.Waiting(TimeSpan.FromSeconds(7)));
+        clock.Advance(TimeSpan.FromSeconds(7)-TimeSpan.FromTicks(1));
+        await Task.Delay(100);
+        Assert.Equal(2,runner.Count);
+        clock.Advance(TimeSpan.FromTicks(1));
+        await Until(()=>runner.Count==3&&e.Status==EngineStatus.Running);
+    }
+
+    // The rule is "the later of what is armed and now + 4 s" for an OpenRGB a deliberate stop ends; with none running nothing is touched, so
+    // a crash wait with 2 s left still has 2 s left (4 s after the exit, not 4 s after the stop).
+    [Fact]
+    public async Task A_deliberate_stop_during_a_crash_wait_with_under_four_seconds_left_does_not_lengthen_it()
+    {
+        var clock=new Clock();
+        var e=Track(new OpenRgbEngine(exe,@"C:\cfg\openrgb",runner,(_,_)=>Task.FromResult(true),clock,log));
+        await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
+        runner.At(0).Exit();
+        await Until(()=>e.Status==EngineStatus.Restarting&&clock.Waiting(TimeSpan.FromSeconds(4)));
+        clock.Advance(TimeSpan.FromSeconds(2));
+        Assert.True(await e.StopForRestartAsync().WaitAsync(RealTimeCap));
+        await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
+        Assert.Equal(EngineStatus.Restarting,e.Status);
+        Assert.True(clock.Waiting(TimeSpan.FromSeconds(2)));
+        clock.Advance(TimeSpan.FromSeconds(2)-TimeSpan.FromTicks(1));
+        await Task.Delay(100);
+        Assert.Equal(1,runner.Count);
+        clock.Advance(TimeSpan.FromTicks(1));
+        await Until(()=>runner.Count==2&&e.Status==EngineStatus.Running);
+    }
+
+    // One OpenRGB that would not die must not make every later stop answer false.
+    [Fact]
+    public async Task A_stop_answers_true_again_once_the_stubborn_OpenRGB_is_gone()
+    {
+        var clock=new Clock();
+        runner.SlowToDie=true;
+        var e=Track(new OpenRgbEngine(exe,@"C:\cfg\openrgb",runner,(_,_)=>Task.FromResult(true),clock,log));
+        await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
+        var first=e.StopForRestartAsync();
+        await Until(()=>clock.Waiting(TimeSpan.FromSeconds(5)));
+        clock.Advance(TimeSpan.FromSeconds(5));
+        Assert.False(await first.WaitAsync(RealTimeCap));
+        runner.SlowToDie=false;
+        await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
+        Assert.Equal(EngineStatus.Restarting,e.Status);
+        await Until(()=>clock.Waiting(TimeSpan.FromSeconds(4)));
+        clock.Advance(TimeSpan.FromSeconds(4));
+        await Until(()=>runner.Count==2&&e.Status==EngineStatus.Running);
+        Assert.True(await e.StopForRestartAsync().WaitAsync(RealTimeCap));
+    }
+
+    [Fact]
+    public async Task A_full_stop_after_a_deliberate_one_clears_the_delay()
+    {
+        var e=Engine();
+        await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
+        Assert.True(await e.StopForRestartAsync().WaitAsync(RealTimeCap));
+        await e.StopAsync().WaitAsync(RealTimeCap);
+        await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
+        Assert.Equal(EngineStatus.Running,e.Status);
+        Assert.Equal(2,runner.Count);
+    }
+
+    [Fact]
+    public async Task A_deliberate_stop_that_cannot_end_OpenRGB_says_so()
+    {
+        var clock=new Clock();
+        runner.SlowToDie=true; // the kill ends nothing
+        var e=Track(new OpenRgbEngine(exe,@"C:\cfg\openrgb",runner,(_,_)=>Task.FromResult(true),clock,log));
+        await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
+        var stop=e.StopForRestartAsync();
+        await Until(()=>clock.Waiting(OpenRgbEngine.ExitWait));
+        Assert.False(stop.IsCompleted);
+        clock.Advance(TimeSpan.FromSeconds(5));
+        Assert.False(await stop.WaitAsync(RealTimeCap));
+        Assert.True(runner.At(0).Killed);
+
+        // One that exits on the kill: true. None running: true.
+        var other=Track(new OpenRgbEngine(exe,@"C:\cfg\openrgb",new FakeRunner(),(_,_)=>Task.FromResult(true),new Clock(),log));
+        await other.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
+        Assert.True(await other.StopForRestartAsync().WaitAsync(RealTimeCap));
+        var idle=Engine();
+        Assert.True(await idle.StopForRestartAsync().WaitAsync(RealTimeCap));
+    }
+
     // F5 item 3c (whole-branch review R4-D4): a conflict stop that lands while a crash's restart delay runs keeps that delay, counted from
     // the crash: the start after it waits out what is left of it.
     [Fact]

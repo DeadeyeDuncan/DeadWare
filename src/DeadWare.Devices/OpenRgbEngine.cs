@@ -27,7 +27,9 @@ internal sealed class OpenRgbEngine : IAsyncDisposable
     readonly object gate=new();
     IRunningProcess? current;
     Task? supervisor;
-    volatile bool quitting;
+    volatile bool quitting,deliberate;
+    // Lighting 5: false once an OpenRGB the supervisor ended had not exited by the end of its wait; StopForRestartAsync's answer.
+    bool allGone=true;
     bool started;
     // F4 item 3 (whole-branch review D8, D9): the restart history a conflict stop keeps and a full stop clears, with the backoff's count.
     // resumeAt: the earliest the next launch may start, armed with each restart delay. gaveUp: the backoff gave up, so a start fails at once.
@@ -165,14 +167,29 @@ internal sealed class OpenRgbEngine : IAsyncDisposable
                 catch(Exception e) when(e is not OperationCanceledException){log.Write("openrgb launch failed: "+e.Message);}
                 finally
                 {
-                    if(proc is not null){try{proc.KillTree();}catch{}await Exited(proc).ConfigureAwait(false);try{proc.Dispose();}catch{}}
-                    lock(gate){current=null;processId=null;}
+                    if(proc is not null)
+                    {
+                        try{proc.KillTree();}catch{}
+                        await Exited(proc).ConfigureAwait(false);
+                        bool gone;try{gone=proc.HasExited;}catch{gone=false;}
+                        // One block: a stop either still sees this process in current (and this false lands after its reset) or sees none.
+                        lock(gate){allGone=allGone&&gone;current=null;processId=null;}
+                        try{proc.Dispose();}catch{}
+                    }
+                    else lock(gate){current=null;processId=null;}
                 }
                 // F4 item 3 (whole-branch review D8): every OpenRGB that was launched and ended counts, one a stop ended included, so a program
                 // that comes and goes can't cycle OpenRGB faster or longer than crashes can. A full stop clears the count after it.
                 if(quitting&&proc is null) break;
+                // Lighting 5: a deliberate stop (the hub's take-over) counts nothing, so no number of them reaches the give-up, but it arms
+                // the 4 s floor, or keeps a longer delay already armed.
+                if(deliberate)
+                {
+                    lock(gate){var floor=Deadline(RestartBackoff.Base);resumeAt=resumeAt is {} armed&&armed>floor?armed:floor;}
+                    break;
+                }
                 var delay=backoff.RecordFailure(time); // on the monotonic clock, as resumeAt is (F6 item 4, whole-branch review D4)
-                lock(gate){if(delay is null) gaveUp=true;else resumeAt=time.GetTimestamp()+(long)(delay.Value.Ticks*(double)time.TimestampFrequency/TimeSpan.TicksPerSecond);}
+                lock(gate){if(delay is null) gaveUp=true;else resumeAt=Deadline(delay.Value);}
                 if(quitting) break;
                 if(delay is null){Set(EngineStatus.Failed,GaveUpText);return;}
                 var wait=Task.Delay(delay.Value,time,ct); // registered before the status change so a clock advance can't miss it
@@ -184,6 +201,9 @@ internal sealed class OpenRgbEngine : IAsyncDisposable
         catch(OperationCanceledException){}
         finally{firstAttempt.TrySetResult();}
     }
+
+    // The time.GetTimestamp() value a delay from now ends at, in the timestamp units Left reads.
+    long Deadline(TimeSpan delay)=>time.GetTimestamp()+(long)(delay.Ticks*(double)time.TimestampFrequency/TimeSpan.TicksPerSecond);
 
     // F5 item 3b (whole-branch review R4-D2): what is left until a deadline on the monotonic clock (a time.GetTimestamp() value), never
     // more than the backoff's cap.
@@ -279,22 +299,33 @@ internal sealed class OpenRgbEngine : IAsyncDisposable
     // keepHistory: a conflict stop (F4 item 3, whole-branch review D8): the OpenRGB it ends counts towards the give-up, and the next start
     // waits out the delay that armed and fails at once after a give-up. A full stop, the host stopping for lighting turned off or Quit,
     // clears all of that.
-    public async Task StopAsync(bool keepHistory=false)
+    public Task StopAsync(bool keepHistory=false)=>Stop(keepHistory,false);
+
+    // Lighting 5: the stop before DeadWare's own driver takes the hub. It counts nothing towards the give-up, arms the 4 s floor for the next
+    // launch (or keeps a longer delay already armed) and keeps the history as a conflict stop does. True when no OpenRGB of this engine
+    // remains; false when one had not exited by the end of the supervisor's wait, which the caller must treat as a hub still in use.
+    public Task<bool> StopForRestartAsync()=>Stop(true,true);
+
+    async Task<bool> Stop(bool keepHistory,bool isDeliberate)
     {
+        deliberate=isDeliberate; // before the cancel: the supervisor reads it once the process has ended
         quitting=true;
         Task? sup;
         IRunningProcess? proc;
-        lock(gate){sup=supervisor;proc=current;}
+        lock(gate){sup=supervisor;proc=current;allGone=true;}
         try{cts.Cancel();}catch(ObjectDisposedException){}
         try{proc?.KillTree();}catch{}
         if(sup is not null){try{await sup.ConfigureAwait(false);}catch{}}
+        bool gone;
         // Re-arm so the host can start the engine again after a conflict clears; disposal cancels the fresh token below.
         lock(gate)
         {
-            started=false;supervisor=null;cts.Dispose();cts=new();firstAttempt=new(TaskCreationOptions.RunContinuationsAsynchronously);quitting=false;
+            gone=allGone;
+            started=false;supervisor=null;cts.Dispose();cts=new();firstAttempt=new(TaskCreationOptions.RunContinuationsAsynchronously);quitting=false;deliberate=false;
             if(!keepHistory){backoff.Reset();resumeAt=null;gaveUp=false;}
         }
         Set(EngineStatus.Stopped,null);
+        return gone;
     }
     public async ValueTask DisposeAsync(){await StopAsync().ConfigureAwait(false);lock(gate)cts.Dispose();}
 

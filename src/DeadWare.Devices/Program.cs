@@ -58,7 +58,9 @@ internal static class Program
             // that choice and gives the engine the lock's guard, its filters and then its self-check (F6 items 1 and 3).
             var portGuard=OpenRgbPortLock.GuardFor(Environment.IsPrivilegedProcess,log.Write,out var portLock);
             using var heldLock=portLock;
-            var engine=new OpenRgbEngine(options.OpenRgbPath,configDir,new SystemProcessRunner(job,log),OpenRgbEngine.ProbePort,TimeProvider.System,log,ProtectedFolders.OpenRgbFolderCheck(Environment.IsPrivilegedProcess),dir=>OpenRgbConfig.Prepare(dir,log),portGuard);
+            // Lighting 5: one read of the detector's On per launch, recorded as LaunchedOn. Nothing sets On to false before the host does.
+            var detector=new HubDetector();
+            var engine=new OpenRgbEngine(options.OpenRgbPath,configDir,new SystemProcessRunner(job,log),OpenRgbEngine.ProbePort,TimeProvider.System,log,ProtectedFolders.OpenRgbFolderCheck(Environment.IsPrivilegedProcess),dir=>OpenRgbConfig.Prepare(dir,log,detector.Launching()),portGuard);
             // Lighting 3b: the key-press hook. The host starts it only while a keyboard's fade or ripple layer needs key presses and stops it
             // when it stops; it is disposed after the host.
             using IKeyPressSource keys=new KeyPressHook();
