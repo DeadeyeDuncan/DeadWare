@@ -1,6 +1,6 @@
 # Fan control
 
-Status: design, written 2026-11-25. **Not approved yet.** Mockups approved by the owner the same day.
+Status: design, written 2026-11-25. **Approved by the owner on 2026-11-25** ("Approve design"), after the mockups ("Approve mockups") the same day. Nothing in it is built yet.
 
 Companion files:
 - Mockups: [`2026-11-25-fan-control-mockups/fan-control.html`](2026-11-25-fan-control-mockups/fan-control.html) and its three PNG renders. The yellow numbers 1 to 14 in them are referred to below as "mockup 1" and so on.
