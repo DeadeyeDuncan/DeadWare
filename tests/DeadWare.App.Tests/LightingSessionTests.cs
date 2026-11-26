@@ -20,6 +20,30 @@ public class LightingSessionTests
     [InlineData(HostStatus.Waiting)]
     public void Same_path_keeps_a_client_that_works(HostStatus? status)=>Assert.True(MonitorSession.KeepsLightingClient(false,null,status));
 
+    /// <summary>
+    /// Lighting 5, Task 9 (ruling P30): at the Windows session ending the window waits for the lighting stop only for what is left of 2 s;
+    /// a stop that has finished, or none, is done at once, and one that hangs is left without a throw.
+    /// </summary>
+    [Fact]
+    public void A_finished_stop_is_waited_for_and_a_hanging_one_is_left()
+    {
+        Assert.True(MonitorSession.WaitBriefly(Task.CompletedTask,TimeSpan.FromSeconds(2)));
+        Assert.True(MonitorSession.WaitBriefly(null,TimeSpan.FromSeconds(2)));
+        Assert.True(MonitorSession.WaitBriefly(Task.FromException(new InvalidOperationException("the stop failed")),TimeSpan.Zero));
+        var hanging=new TaskCompletionSource().Task;
+        Assert.False(MonitorSession.WaitBriefly(hanging,TimeSpan.Zero));
+        Assert.False(MonitorSession.WaitBriefly(hanging,TimeSpan.FromMilliseconds(-300)));
+        Assert.False(MonitorSession.WaitBriefly(hanging,TimeSpan.FromMilliseconds(50)));
+    }
+
+    /// <summary>Without lighting the session ending's stop is a finished task.</summary>
+    [Fact]
+    public void Without_lighting_the_session_ending_stop_is_already_done()
+    {
+        var session=(MonitorSession)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(MonitorSession));
+        Assert.True(session.StopLightingForSessionEnding().IsCompletedSuccessfully);
+    }
+
     [Fact]
     public void A_new_path_or_a_client_problem_restarts()
     {

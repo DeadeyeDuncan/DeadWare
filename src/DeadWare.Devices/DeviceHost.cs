@@ -140,20 +140,41 @@ internal sealed class DeviceHost : IAsyncDisposable
     // (fix wave 1, F3), Reopen at the wake's end.
     // Task 8: Poll (the battery and the view) in TickWork while lighting runs, and the battery's Invalidate at the wake's end.
     readonly AeroxMouse? mouse;
+    // Lighting 5, the hub (none: no HubHost, no hub step and HostState.Hub null, as in 0.22). The host's hub state is in hubHost, under gate;
+    // the logic is in HubHold and HubHost, and this class only wires it. Nothing on the loop or under gate waits for the hub: HubWork looks at
+    // the worker's snapshot turn by turn, and the one wait is the hand-back of at most HubHost.HandBack at the stop, off the lock. The worker's
+    // Changed only wakes the loop. Under gate: connectedOnce (ConnectLocked has succeeded in this run; never cleared), hubWhy (the forbid last
+    // sent, or Starting before the first), lastHubView (the hub view of the last raised state), hubStateDue (SetHubModeLocked changed the
+    // settings), hubScanFailed (the loop's last scan failed), ownScan (the hub step's own scan, newer than the loop's last one, for the facts
+    // only; it stands until CheckConflictsAsync assigns conflicts again).
+    // startDue (the loop only): StartOpenRgb came while a start was pending.
+    readonly IHub? hub;
+    readonly HubHost? hubHost;
+    bool connectedOnce,hubStateDue,hubScanFailed,startDue;
+    (string? Reason,string? Detail) hubWhy=(HubReasons.Starting,null);
+    HubView? lastHubView;
+    (IReadOnlyList<LightingConflict> Found,bool Failed)? ownScan;
+    public event Action<HubReadingsEvent>? HubReadingsChanged;
+    const string RestartingText="OpenRGB is restarting. Lighting will resume in a moment.";
 
     // startupFailure: set when the host could not prepare OpenRGB's config folder; it reports OpenRgbFailed and never starts OpenRGB.
     // callClock: the clock of the bound on OpenRGB calls; real time unless a test supplies one.
-    public DeviceHost(HostOptions options,LightingStore store,OpenRgbEngine engine,Func<IOpenRgbSession> sessionFactory,IConflictScanner conflicts,TimeProvider time,HostLog log,string? startupFailure=null,TimeProvider? callClock=null,IKeyPressSource? keys=null,IEverydaySignals? signals=null,IInputClock? input=null,AeroxMouse? mouse=null)
+    // hub, detector (lighting 5): the hub's worker and OpenRGB's hub detector as Program's launches read it.
+    public DeviceHost(HostOptions options,LightingStore store,OpenRgbEngine engine,Func<IOpenRgbSession> sessionFactory,IConflictScanner conflicts,TimeProvider time,HostLog log,string? startupFailure=null,TimeProvider? callClock=null,IKeyPressSource? keys=null,IEverydaySignals? signals=null,IInputClock? input=null,AeroxMouse? mouse=null,IHub? hub=null,HubDetector? detector=null)
     {
         this.options=options;this.store=store;this.engine=engine;scanner=conflicts;this.time=time;this.log=log;this.startupFailure=startupFailure;
         epoch=time.GetTimestamp();
         this.keys=keys;presses=new(Now,Wake);
         this.signals=signals;this.input=input;everyday=new(log,time);
-        onPress=()=>{everyday.Press();Wake();};onLock=l=>{everyday.SetLocked(l);Wake();};onSuspend=()=>{everyday.SetSuspended();Wake();};onResume=()=>{everyday.SetResumed();Wake();};
+        // Lighting 5: the hub goes quiet from the suspend signal itself (safe from any thread), not at the loop's next turn, which may be
+        // inside an awaited engine stop for up to 5 s when the PC suspends.
+        onPress=()=>{everyday.Press();Wake();};onLock=l=>{everyday.SetLocked(l);Wake();};onSuspend=()=>{hub?.Quiet();everyday.SetSuspended();Wake();};onResume=()=>{everyday.SetResumed();Wake();};
         if(signals is not null){signals.ShortcutPressed+=onPress;signals.LockChanged+=onLock;signals.Suspending+=onSuspend;signals.Resumed+=onResume;}
         session=new BoundedSession(sessionFactory(),callClock);
         this.mouse=mouse;
-        service=new(session,time,log,mouse);
+        this.hub=hub;
+        service=new(session,time,log,mouse,hub);
+        if(hub is not null){hubHost=new(hub,detector,time,log);hub.Changed+=Wake;}
         session.DeviceListUpdated+=OnDeviceListUpdated;
         engine.Changed+=OnEngineChanged;
     }
@@ -163,7 +184,7 @@ internal sealed class DeviceHost : IAsyncDisposable
     {
         var text=note is null?message:message.Length==0?note:message+" "+note;
         return new(status,text,Environment.IsPrivilegedProcess,conflicts,service.Views(Shown),Clone(settings),conflictsChecked,keyHook,
-            everyday.Reason(settings),shortcutProblem,signals?.Problem);
+            everyday.Reason(settings),shortcutProblem,signals?.Problem,hubHost?.View(settings,hubWhy));
     }
     static LightingSettings Clone(LightingSettings s)=>new()
     {
@@ -184,7 +205,7 @@ internal sealed class DeviceHost : IAsyncDisposable
         {
             Watch();
             HostState state;
-            lock(gate)state=BuildLocked();
+            lock(gate){state=BuildLocked();lastHubView=state.Hub;}
             try{StateChanged?.Invoke(state);}catch(Exception e){log.Write("StateChanged handler failed: "+e.Message);}
             bool due;
             lock(gate){due=previewOn;if(due)previewDue=true;}
@@ -282,13 +303,14 @@ internal sealed class DeviceHost : IAsyncDisposable
         log.Write($"host start (openrgb {options.OpenRgbPath}, startup {options.Startup})");
         Initialize();
         // Ruling P10: the saved shortcut is registered before the start-up delay and the start-up failure, so it works during both.
-        lock(gate){everyday.Changed(settings);RegisterSavedLocked(ShortcutWait);}
+        // Lighting 5: the hub's dark once before the loop.
+        lock(gate){everyday.Changed(settings);RegisterSavedLocked(ShortcutWait);HubDarkLocked();}
         Raise();
         try
         {
             if(startupFailure is not null)
             {
-                lock(gate){status=HostStatus.OpenRgbFailed;message=startupFailure;}
+                lock(gate){status=HostStatus.OpenRgbFailed;message=startupFailure;if(hubHost is not null) HubAllowLocked(false);}
                 log.Write("host cannot start openrgb: "+startupFailure);
                 Raise();
                 // The loop never runs, so a press is applied here, woken by the press itself: it flips and saves the switch (ruling P10).
@@ -305,6 +327,9 @@ internal sealed class DeviceHost : IAsyncDisposable
             }
             if(options.Startup) await Task.Delay(StartupDelay,time,ct).ConfigureAwait(false);
             var lastSlow=time.GetTimestamp();
+            // Lighting 5 (ruling P3): the first launch comes from this scan, before the loop's first turn, and OpenRGB's settings are written on
+            // the supervisor's thread at launch: the detector and the listing follow the saved mode first, so mode driven never launches it on.
+            lock(gate)HubSyncLocked();
             await CheckConflictsAsync(ct).ConfigureAwait(false);
             var signal=Volatile.Read(ref wake);
             while(true)
@@ -332,9 +357,12 @@ internal sealed class DeviceHost : IAsyncDisposable
                 if(suspended) StopWatching();
                 if(woke) RaiseWoke();
                 if(raise) Raise();
+                // Lighting 5: the hub's turn runs every turn, also while a start is pending.
+                await HubWorkAsync(slow,ct).ConfigureAwait(false);
                 // Fix wave 1, F2: while OpenRGB's start is pending the everyday part above keeps running each turn; nothing is scanned,
                 // started again or painted until it resolves, and a start that threw throws here as it did when it was awaited.
                 if(starting is{IsCompleted:true} done){starting=null;await done.ConfigureAwait(false);}
+                if(starting is null&&startDue){startDue=false;StartOpenRgb(ct);}
                 if(slow) lastSlow=now;
                 if(starting is null)
                 {
@@ -350,6 +378,14 @@ internal sealed class DeviceHost : IAsyncDisposable
             lock(gate){status=HostStatus.Stopping;engineActive=false;}
             StopWatching();
             log.Write("host stopping");
+            // Lighting 5: the hand-back comes first, since the window ends the helper 5 s after Stop and OpenRGB's exit wait alone can take
+            // 5 s; then OpenRGB's hub detector goes back on, in every mode, so a start by 0.22 finds the hub.
+            if(hubHost is not null)
+            {
+                lock(gate){hubWhy=(HubReasons.NoLighting,null);hubHost.Allow(HubReasons.NoLighting);}
+                await hubHost.LetGoAsync().ConfigureAwait(false);
+            }
+            OpenRgbConfig.HubDetectorOn(options.ConfigDir,log);
             session.Abort();
             try{await engine.StopAsync().ConfigureAwait(false);}catch(Exception e){log.Write("engine stop failed: "+e.Message);}
             log.Write("host stopped");
@@ -388,6 +424,8 @@ internal sealed class DeviceHost : IAsyncDisposable
                 settings=new();saveAllowed=false;note=UnreadableNote;
                 log.Write("lighting.json could not be read; saving disabled: "+e.Message);
             }
+            // Lighting 5 (ruling P3), on every path out of the try: OpenRGB's hub detector and the hub's listing follow the settings read.
+            HubSyncLocked();
         }
     }
 
@@ -413,7 +451,8 @@ internal sealed class DeviceHost : IAsyncDisposable
                 lastConflictKey=key;changed=true;
                 log.Write(scanFailed?"conflict gate closed: scan failed":found.Count==0?"conflicts cleared":"conflicts: "+string.Join(" ",found.Select(c=>c.Kind+(c.BlocksLighting?" (blocks)":""))));
             }
-            conflicts=found;
+            // The loop's own scan replaces the hub step's (fix round 1, I1): until now that one was the newer.
+            conflicts=found;hubScanFailed=scanFailed;ownScan=null;
             if(!scanFailed&&!conflictsChecked){conflictsChecked=true;changed=true;}
             if(blocking.Count>0||scanFailed)
             {
@@ -422,6 +461,8 @@ internal sealed class DeviceHost : IAsyncDisposable
                 if(status!=HostStatus.Blocked||message!=text){status=HostStatus.Blocked;message=text;changed=true;}
             }
             else if(!engineActive){engineActive=true;start=true;status=HostStatus.Starting;message="";changed=true;}
+            // Lighting 5: the worker lets go before OpenRGB is stopped, with the blocking conflict's reason (noLighting for a failed scan).
+            if(stop&&hubHost is not null) HubAllowLocked(false);
         }
         if(changed) Raise();
         // The client goes before the OpenRGB it talks to, so nothing waits on a process being killed. The stop keeps OpenRGB's restart
@@ -430,7 +471,123 @@ internal sealed class DeviceHost : IAsyncDisposable
         if(stop){session.Abort();await engine.StopAsync(keepHistory:true).ConfigureAwait(false);}
         // F2 (spec: a press while OpenRGB is still starting is applied at once): the first launch can take up to PortWait, so it isn't
         // awaited here; the loop carries on and wakes once it resolves.
-        if(start){starting=engine.StartAsync(ct);_=starting.ContinueWith(s=>{_=s.Exception;Wake();},CancellationToken.None,TaskContinuationOptions.ExecuteSynchronously,TaskScheduler.Default);}
+        if(start) Launch(ct);
+    }
+    void Launch(CancellationToken ct){starting=engine.StartAsync(ct);_=starting.ContinueWith(s=>{_=s.Exception;Wake();},CancellationToken.None,TaskContinuationOptions.ExecuteSynchronously,TaskScheduler.Default);}
+
+    // Lighting 5: the hub's loop step, after EverydayWork and before the starting check, so it also runs while an OpenRGB start is pending.
+    // First, off the lock, the hub step's own scan: on slow turns while a start is pending (ruling P24), and before a take, that is when the
+    // facts would allow holding after a forbid (ruling R30); a turn whose scan did not stand keeps the forbid. Under gate: the saved parts and
+    // the stopped pump follow the snapshot, then the facts decide the Allow (Force wins), the detector and the listing follow the mode, and a
+    // state is due whenever the hub view differs from the last one raised (ruling P18). Outside it: the state, the readings event, and the one
+    // restart for an OpenRGB that still has the hub (rulings P3, P21, P32), whose stop comes after the Allow that forbids holding, sent in this
+    // same turn.
+    async Task HubWorkAsync(bool slow,CancellationToken ct)
+    {
+        if(hubHost is null) return;
+        var scanned=slow&&starting is{IsCompleted:false}&&ScanForHub();
+        if(!scanned)
+        {
+            bool take;
+            lock(gate)take=hubHost.Force is null&&!hubHost.Allowing&&HubHold.Why(HubFactsLocked()).Reason is null;
+            if(take) scanned=ScanForHub();
+        }
+        bool raise,restart;
+        HubReadingsEvent? readings;
+        lock(gate)
+        {
+            var snap=hubHost.Hub.Snapshot;
+            if(hubHost.NewParts(settings,snap) is{} parts) SetHubModeLocked(parts,"hub parts saved");
+            if(hubHost.StoppedPump(settings,snap) is{} stopped) SetHubModeLocked(stopped,"hub mode settled: driven -> stopped (the pump read 0 RPM)");
+            var held=HubAllowLocked(scanned);
+            HubSyncLocked();
+            if(hubHost.Moved(snap,service.Hub)) rescanPending=true;
+            if(slow&&hubHost.Mode(settings)==HubModes.Driven&&snap.State!=HubStates.Driving) hubHost.Hub.Recheck();
+            raise=hubStateDue||!HubHost.Same(hubHost.View(settings,hubWhy),lastHubView);
+            hubStateDue=false;
+            readings=hubHost.Readings(snap);
+            restart=held.Reason==HubReasons.OpenRgbHasIt&&!hubHost.Restarted&&!hubHost.Switching;
+            if(restart){hubHost.Restarted=hubHost.Restarting=true;log.Write("OpenRGB still has the hub: restarting it without");}
+        }
+        if(raise) Raise();
+        if(readings is not null) try{HubReadingsChanged?.Invoke(readings);}catch(Exception e){log.Write("HubReadingsChanged handler failed: "+e.Message);}
+        if(restart){await StopOpenRgbForRestartAsync().ConfigureAwait(false);StartOpenRgb(ct);}
+    }
+
+    // The hub step's own scan, in mode driven, off the lock, for the facts only (rulings P24, R30); it stands until CheckConflictsAsync assigns
+    // conflicts again. A pending start is when OpenRGB is launched, and its new process would count as another OpenRGB: a result during which
+    // our process id changed is dropped, as CheckConflictsAsync drops it. A scan that throws counts as a failed scan. True when a result stands.
+    bool ScanForHub()
+    {
+        lock(gate)if(hubHost!.Mode(settings)!=HubModes.Driven) return false;
+        var pid=engine.ProcessId;
+        IReadOnlyList<LightingConflict> found;
+        var failed=false;
+        try{found=scanner.Scan(pid);}catch(Exception){found=[];failed=true;}
+        if(!failed&&engine.ProcessId!=pid) return false;
+        lock(gate)ownScan=(found,failed);
+        return true;
+    }
+
+    // The facts as the host knows them now. LaunchedWithHub also holds while the restart for a detector left on is under way, until the
+    // relaunched OpenRGB has connected (HubHost.Restarting), and the restart is spent only once it has.
+    HubFacts HubFactsLocked()
+    {
+        var own=ownScan;
+        return new(hubHost!.Mode(settings),status==HostStatus.Stopping,everyday.Quiet,engineActive,connectedOnce,status,own?.Found??conflicts,own?.Failed??hubScanFailed,
+            service.OpenRgbListsHub,hubHost.Restarting||engine.ProcessId is not null&&hubHost.LaunchedOn,hubHost.Restarted&&!hubHost.Restarting);
+    }
+
+    // Sends the forbid (Force wins) and returns the facts' own answer. Ruling R30: after a forbid, or before any Allow in this run, holding is
+    // allowed only on a turn whose fresh scan stood (scanned); without one the last forbid is kept for this turn.
+    (string? Reason,string? Detail) HubAllowLocked(bool scanned)
+    {
+        var held=HubHold.Why(HubFactsLocked());
+        (string? Reason,string? Detail) why=hubHost!.Force is{} force?(force,hubHost.ForceDetail):held;
+        if(why.Reason is null&&!hubHost.Allowing&&!scanned) return held;
+        hubWhy=why;
+        hubHost.Allow(why.Reason,why.Detail);
+        return held;
+    }
+
+    void HubSyncLocked(){if(hubHost is null) return;hubHost.SyncDetector(settings);service.Hub=hubHost.Listing(settings);}
+    void HubDarkLocked()=>hub?.SetDark(!LightsOff.Effective(settings,everyday.Reason(settings)));
+
+    // How the host itself sets the hub mode and its saved parts (the stopped pump, new parts; Task 10's verdict). Unlike Change it adopts the
+    // candidate even when the save throws (ruling P17): the mode then holds for this run, and a later successful save of any change writes it.
+    void SetHubModeLocked(HubSettings next,string logLine)
+    {
+        var candidate=Clone(settings);candidate.Hub=next;
+        if(LightingSettingsCodec.Validate(candidate) is{} error){log.Write("hub settings not changed: "+error);return;}
+        if(saveAllowed)
+        {
+            try{store.Save(candidate);}
+            catch(Exception e){log.Write("saving the hub mode failed: "+e.Message);}
+        }
+        settings=candidate;
+        log.Write(logLine);
+        hubStateDue=true;
+    }
+
+    // Lighting 5: OpenRGB stopped on purpose, to start again without the hub. The session is dropped as HardwareRescanLocked does, since
+    // OnEngineChanged leaves it set on Stopped, and the status says OpenRGB is restarting; engineActive stays true, so the conflict check
+    // starts nothing by itself. The stop can last ExitWait: before every such stop the last Allow sent forbids holding, so a Stop request
+    // arriving during it is safe. False when OpenRGB did not exit.
+    async Task<bool> StopOpenRgbForRestartAsync()
+    {
+        lock(gate){session.Abort();sessionOk=false;service.Reset();ForgetPreview();status=HostStatus.Waiting;message=RestartingText;}
+        Raise();
+        return await engine.StopForRestartAsync().ConfigureAwait(false);
+    }
+
+    // OpenRGB's start after a deliberate stop, as CheckConflictsAsync starts it. Never over a start that is still pending: the loop issues it on
+    // the first turn after that one resolved. Not while lighting is blocked (the conflict check starts it once that clears) or stopping.
+    void StartOpenRgb(CancellationToken ct)
+    {
+        if(ct.IsCancellationRequested) return;
+        lock(gate)if(!engineActive||status==HostStatus.Stopping) return;
+        if(starting is not null){startDue=true;return;}
+        Launch(ct);
     }
 
     void TickWork(bool slow)
@@ -520,6 +677,9 @@ internal sealed class DeviceHost : IAsyncDisposable
             RescanLocked();
             service.Paint(Shown,Now(),presses.Live());
             status=HostStatus.Running;message="";lastSessionError=null;connectDelay=ConnectDelayMin;nextConnectAt=0;
+            // Lighting 5: connected once in this run (never cleared); a restart for a detector left on has run its course.
+            connectedOnce=true;
+            if(hubHost is not null) hubHost.Restarting=false;
             PaintedLocked();
             return true;
         }
@@ -648,7 +808,7 @@ internal sealed class DeviceHost : IAsyncDisposable
                     if(!sessionOk&&!everyday.Quiet){ConnectLocked();if(!sessionOk) ArmBackoff();}
                     break;
                 case EngineStatus.Restarting:
-                    sessionOk=false;status=HostStatus.Waiting;message="OpenRGB is restarting. Lighting will resume in a moment.";break;
+                    sessionOk=false;status=HostStatus.Waiting;message=RestartingText;break;
                 case EngineStatus.Failed:
                     sessionOk=false;
                     if(!File.Exists(options.OpenRgbPath)){status=HostStatus.OpenRgbMissing;message=engine.FailureReason??"OpenRGB.exe was not found.";}
@@ -907,6 +1067,7 @@ internal sealed class DeviceHost : IAsyncDisposable
         var shownBefore=Shown;
         var sleepBefore=settings.Mouse.SleepMinutes;
         settings=candidate;
+        HubDarkLocked();
         if(mouse is not null&&(sleepBefore!=settings.Mouse.SleepMinutes||service.MouseFrameDiffers(shownBefore,Shown,Now()))) mouse.Must();
         if(!LightingPaint.Animating(Shown,service.Devices,presses.Live(),Now())) ForgetPreview();
         if(engineActive&&sessionOk&&status==HostStatus.Running&&!everyday.Quiet)
@@ -943,14 +1104,16 @@ internal sealed class DeviceHost : IAsyncDisposable
             if(everyday.WakeDue(WakeDelay)){WakeEndLocked();woke=true;raise=true;}
             everyday.Observe(settings,input);
             raise|=PressesLocked();
-            if(everyday.Changed(settings)){presses.Clear();mouse?.Must();raise=true;}
+            // The effective lights changed: the hub's dark follows here too, which runs while OpenRGB is away (a press during a restart).
+            if(everyday.Changed(settings)){presses.Clear();mouse?.Must();HubDarkLocked();raise=true;}
             return raise;
         }
     }
 
     // The wake's end: the one place where everything remembered about every device is forgotten after sleep, as after a reconnect. The
     // next TickWork rescans and paints, or connects when the session was lost across sleep; its first paint is logged (ruling P17).
-    void WakeEndLocked(){service.Reset();mouse?.Reopen();mouse?.Battery.Invalidate();ForgetPreview();rescanPending=true;wakePaint=true;}
+    // Lighting 5: the hub resumes here, and HubWork stops forbidding with waking in this same loop turn, since quiet has just ended.
+    void WakeEndLocked(){service.Reset();mouse?.Reopen();mouse?.Battery.Invalidate();ForgetPreview();rescanPending=true;wakePaint=true;hub?.Resume();}
     void PaintedLocked(){if(!wakePaint) return;wakePaint=false;log.Write($"wake repaint done: {service.Devices.Count} devices");}
     void RaiseWoke(){try{Woke?.Invoke();}catch(Exception e){log.Write("Woke handler failed: "+e.Message);}}
 
@@ -1058,6 +1221,7 @@ internal sealed class DeviceHost : IAsyncDisposable
         if(signals is not null){signals.ShortcutPressed-=onPress;signals.LockChanged-=onLock;signals.Suspending-=onSuspend;signals.Resumed-=onResume;}
         engine.Changed-=OnEngineChanged;
         session.DeviceListUpdated-=OnDeviceListUpdated;
+        if(hub is not null) hub.Changed-=Wake;
         await engine.DisposeAsync().ConfigureAwait(false);
         session.Dispose();
     }

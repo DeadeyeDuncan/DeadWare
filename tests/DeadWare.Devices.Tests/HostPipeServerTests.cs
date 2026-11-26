@@ -223,6 +223,30 @@ public sealed class HostPipeServerTests : IDisposable
         Assert.False(run.IsCompleted);
     }
 
+    // Lighting 5, Task 9 (amendment 5): hub readings have a latest-wins slot of their own, written after a waiting state and preview.
+    [Fact]
+    public async Task A_readings_event_never_replaces_a_waiting_state_or_preview()
+    {
+        var held=new Held();
+        await using var server=new HostPipeServer(name,held.Handle,log,elevated:false);
+        var run=server.RunAsync(cts.Token);
+        await using var client=await Connect();
+        await DeviceHostProtocol.WriteAsync(client,new GetStateRequest{Id=1},cts.Token);
+        await held.Entered.Task.WaitAsync(cts.Token);
+        var state=server.SendAsync(new StateEvent(Sample()));
+        var preview=server.SendAsync(Frame("#FF0000"));
+        var readings=server.SendAsync(new HubReadingsEvent(new HubReadings([new HubPartReading(13,"pump","iCUE LINK TITAN 360",2774,43.7)],1200)));
+        held.Go.SetResult();
+        Assert.Equal(1,Assert.IsType<Reply>(await DeviceHostProtocol.ReadAsync(client,cts.Token)).Id);
+        Assert.IsType<StateEvent>(await DeviceHostProtocol.ReadAsync(client,cts.Token));
+        Assert.Equal("#FF0000",Assert.IsType<PreviewEvent>(await DeviceHostProtocol.ReadAsync(client,cts.Token)).Colors["zone#0"]);
+        var hub=Assert.IsType<HubReadingsEvent>(await DeviceHostProtocol.ReadAsync(client,cts.Token));
+        Assert.Equal(1200,hub.Readings.AgeMs);
+        Assert.Equal(2774,hub.Readings.Parts.Single().Rpm);
+        await state;await preview;await readings;
+        Assert.False(run.IsCompleted);
+    }
+
     // Once for a client that hangs up, and once for a client dropped because a broadcast to it timed out (one larger than the pipe's buffer
     // that it never reads).
     [Fact]

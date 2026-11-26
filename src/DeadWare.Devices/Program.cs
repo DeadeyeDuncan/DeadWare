@@ -72,18 +72,19 @@ internal static class Program
             using var aerox=new AeroxDriver(new HidAeroxTransport(),log);
             var mouse=new AeroxMouse(aerox,input,TimeProvider.System,log);
             // Lighting 5: the hub's worker on its own thread, with the watchdog that ends the helper (exit code 5) when a USB call stays stuck
-            // under the shared Corsair lock. Declared before the host, so they are disposed after it. Until the host is given the core nothing
-            // allows holding: the thread idles and never opens the hub.
+            // under the shared Corsair lock. Declared before the host, so they are disposed after it. Until the host allows holding (mode driven,
+            // lighting connected, nothing else wanting the hub) the thread idles and never opens the hub.
             using var hubLock=new CorsairLock(log);
             var hubCore=new HubCore(new HidHubTransport(),hubLock,TimeProvider.System,log);
             using var hub=new HubWorker(hubCore,log,()=>Environment.Exit(HubWorker.ExitCode));
-            await using var host=new DeviceHost(options,new LightingStore(lightingPath,guardLinks:Environment.IsPrivilegedProcess),engine,()=>new OpenRgbSession(),new ProcessConflictScanner(),TimeProvider.System,log,failure,keys:keys,signals:signals,input:input,mouse:mouse);
+            await using var host=new DeviceHost(options,new LightingStore(lightingPath,guardLinks:Environment.IsPrivilegedProcess),engine,()=>new OpenRgbSession(),new ProcessConflictScanner(),TimeProvider.System,log,failure,keys:keys,signals:signals,input:input,mouse:mouse,hub:hubCore,detector:detector);
             await using var server=new HostPipeServer(DeviceHostProtocol.PipeName(sid),host.HandleAsync,log,clientGone:host.ClientGone);
             host.Initialize(); // settings are loaded before the pipe accepts a single request
             try{server.Open();}
             catch(Exception e){log.Write("pipe could not be created: "+e.Message);return 4;}
             host.StateChanged+=state=>_=server.SendAsync(new StateEvent(state));
             host.PreviewChanged+=e=>_=server.SendAsync(e);
+            host.HubReadingsChanged+=e=>_=server.SendAsync(e);
             using var pipeCts=new CancellationTokenSource();
             using var hostCts=new CancellationTokenSource();
             var serving=server.RunAsync(pipeCts.Token);

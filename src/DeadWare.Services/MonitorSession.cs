@@ -543,6 +543,28 @@ public sealed class MonitorSession
         catch(TimeoutException e) {diagnostics?.Record("session_end_collector_stop_timeout",new {DeadlineSeconds=SessionEndingDeadline.TotalSeconds},e);}
         catch(Exception e) {diagnostics?.Record("session_end_collector_stop_failed",error:e);}
     }
+    /// <summary>How long the Windows session ending waits, in all, for the lighting stop it started first (lighting 5, ruling P30).</summary>
+    internal static readonly TimeSpan SessionEndingLightingWait=TimeSpan.FromSeconds(2);
+    /// <summary>
+    /// The Windows session ending's lighting stop: starts the lighting client's ordinary Stop, which hands a held Corsair hub back, and returns
+    /// it without waiting (a finished task without lighting). Never throws. The client's own 5 s window carries on behind any wait.
+    /// </summary>
+    internal Task StopLightingForSessionEnding()
+    {
+        try {return Lighting?.StopAsync()??Task.CompletedTask;}
+        catch(Exception e) {return Task.FromException(e);}
+    }
+    /// <summary>
+    /// Waits for <paramref name="stop"/> at most <paramref name="limit"/>: true when it has finished (or there is none), false when the limit ran
+    /// out, a zero or negative limit included. Never throws.
+    /// </summary>
+    internal static bool WaitBriefly(Task? stop,TimeSpan limit)
+    {
+        if(stop is null||stop.IsCompleted)return true;
+        if(limit<=TimeSpan.Zero)return false;
+        try {return stop.Wait(limit);}
+        catch(Exception) {return stop.IsCompleted;}
+    }
     public Task ShutdownAsync()=>shutdown??=ShutdownCoreAsync();
     private async Task ShutdownCoreAsync()
     {

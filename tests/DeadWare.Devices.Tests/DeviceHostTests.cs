@@ -83,10 +83,13 @@ public sealed partial class DeviceHostTests : IAsyncLifetime
     // The scanner sees the fake OpenRGB processes that are still running, through the real classification (F15): one whose id isn't the
     // pid the host passes counts as another OpenRGB. So a host that stopped passing its own pid, or kept a scan that raced a relaunch,
     // would block itself. The test's own conflicts are added after a park, which a test can hold the loop in.
-    DeviceHost Build(bool startup=false,string? exePath=null,Action<OpenRgbEngine>? beforeHost=null,Func<string,DeadWare.UpdateCore.LocationProtection>? folderCheck=null,string? startupFailure=null,LightingStore? store=null,HostLog? hostLog=null,IKeyPressSource? keys=null,IEverydaySignals? signals=null,IInputClock? input=null,AeroxMouse? mouse=null,Func<int,CancellationToken,Task<bool>>? portOpen=null)
+    // Lighting 5: with a detector, each launch records what it read (launchDetector) after beforeLaunch, which a test may set. ConfigDir is
+    // configDir ("" unless a test gives a temp folder), so no host test can reach a real OpenRGB.json at its stop; the engine's folder stays.
+    DeviceHost Build(bool startup=false,string? exePath=null,Action<OpenRgbEngine>? beforeHost=null,Func<string,DeadWare.UpdateCore.LocationProtection>? folderCheck=null,string? startupFailure=null,LightingStore? store=null,HostLog? hostLog=null,IKeyPressSource? keys=null,IEverydaySignals? signals=null,IInputClock? input=null,AeroxMouse? mouse=null,Func<int,CancellationToken,Task<bool>>? portOpen=null,IHub? hub=null,HubDetector? detector=null,string configDir="")
     {
         var log=hostLog??this.log;
-        var engine=new OpenRgbEngine(exePath??exe,@"C:\cfg\openrgb",runner,portOpen??((_,_)=>Task.FromResult(true)),time,log,folderCheck);
+        Action<string>? prepare=detector is null?null:_=>{Volatile.Read(ref beforeLaunch)?.Invoke();var on=detector.Launching();lock(launchDetector)launchDetector.Add(on);};
+        var engine=new OpenRgbEngine(exePath??exe,@"C:\cfg\openrgb",runner,portOpen??((_,_)=>Task.FromResult(true)),time,log,folderCheck,prepareConfig:prepare);
         beforeHost?.Invoke(engine);
         var scanner=new Scanner(pid=>
         {
@@ -96,8 +99,8 @@ public sealed partial class DeviceHostTests : IAsyncLifetime
             lock(conflicts)found.AddRange(conflicts);
             return found;
         });
-        var options=new HostOptions(exePath??exe,@"C:\cfg\openrgb",lightingPath,Path.Combine(dir,"logs"),startup,"S-1-5-21-1",1);
-        return host=new DeviceHost(options,store??new LightingStore(lightingPath),engine,()=>session,scanner,time,log,startupFailure,keys:keys,signals:signals,input:input,mouse:mouse);
+        var options=new HostOptions(exePath??exe,configDir,lightingPath,Path.Combine(dir,"logs"),startup,"S-1-5-21-1",1);
+        return host=new DeviceHost(options,store??new LightingStore(lightingPath),engine,()=>session,scanner,time,log,startupFailure,keys:keys,signals:signals,input:input,mouse:mouse,hub:hub,detector:detector);
     }
     void Start(DeviceHost h)=>run=h.RunAsync(CancellationToken.None);
     // Fake time AdvanceUntil may move without its condition before it fails, so a host cadence that slows down fails the test instead of
@@ -786,7 +789,7 @@ public sealed partial class DeviceHostTests : IAsyncLifetime
     {
         var failing=true;
         var engine=new OpenRgbEngine(exe,@"C:\cfg\openrgb",runner,(_,_)=>Task.FromResult(true),time,log);
-        var options=new HostOptions(exe,@"C:\cfg\openrgb",lightingPath,Path.Combine(dir,"logs"),false,"S-1-5-21-1",1);
+        var options=new HostOptions(exe,"",lightingPath,Path.Combine(dir,"logs"),false,"S-1-5-21-1",1);
         var h=host=new DeviceHost(options,new LightingStore(lightingPath),engine,()=>session,new Scanner(_=>failing?throw new InvalidOperationException("scan broke"):[]),time,log);
         Start(h);
         await Until(()=>h.State.Status==HostStatus.Blocked);
@@ -981,7 +984,7 @@ public sealed partial class DeviceHostTests : IAsyncLifetime
     {
         var failing=false;
         var engine=new OpenRgbEngine(exe,@"C:\cfg\openrgb",runner,(_,_)=>Task.FromResult(true),time,log);
-        var options=new HostOptions(exe,@"C:\cfg\openrgb",lightingPath,Path.Combine(dir,"logs"),false,"S-1-5-21-1",1);
+        var options=new HostOptions(exe,"",lightingPath,Path.Combine(dir,"logs"),false,"S-1-5-21-1",1);
         var h=host=new DeviceHost(options,new LightingStore(lightingPath),engine,()=>session,new Scanner(_=>Volatile.Read(ref failing)?throw new InvalidOperationException("scan broke"):[]),time,log);
         h.Initialize();
         Assert.False(h.State.ConflictsChecked);
@@ -998,7 +1001,7 @@ public sealed partial class DeviceHostTests : IAsyncLifetime
     public async Task Persistent_scan_failure_is_logged_once()
     {
         var engine=new OpenRgbEngine(exe,@"C:\cfg\openrgb",runner,(_,_)=>Task.FromResult(true),time,log);
-        var options=new HostOptions(exe,@"C:\cfg\openrgb",lightingPath,Path.Combine(dir,"logs"),false,"S-1-5-21-1",1);
+        var options=new HostOptions(exe,"",lightingPath,Path.Combine(dir,"logs"),false,"S-1-5-21-1",1);
         var h=host=new DeviceHost(options,new LightingStore(lightingPath),engine,()=>session,new Scanner(_=>{Interlocked.Increment(ref scans);throw new InvalidOperationException("scan broke");}),time,log);
         Start(h);
         await Until(()=>h.State.Status==HostStatus.Blocked);
