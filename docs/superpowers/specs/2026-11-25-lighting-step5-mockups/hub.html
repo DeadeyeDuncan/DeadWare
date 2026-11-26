@@ -1,0 +1,483 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lighting step 5: the hub mockup</title>
+<style>
+  :root { --bg:#0b0f17; --card:#111722; --line:#1f2937; --ink:#e6edf6; --mute:#8b98ab; --acc:#5ee0ff; --warn:#ffcf5e; --good:#52e08a; --bad:#ff9aa5; --cool:#3fe0c5; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:13px/1.4 "Segoe UI",system-ui,sans-serif; }
+  .page { padding:18px 22px 40px; max-width:1120px; margin:0 auto; }
+  h1 { font-size:20px; margin:0; font-weight:600; }
+  h2 { font-size:15px; margin:30px 0 4px; font-weight:600; }
+  .sub { color:var(--mute); font-size:12px; margin:2px 0 14px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:13px 15px; }
+  .card h3 { margin:0; font-size:15px; font-weight:600; }
+  .mute { color:var(--mute); font-size:11.5px; }
+  .sec { border-top:1px solid var(--line); margin-top:11px; padding-top:10px; }
+  .sec > b { display:block; font-size:12px; font-weight:600; margin-bottom:6px; letter-spacing:.02em; }
+  .btn { border:1px solid #33415a; border-radius:7px; padding:4px 11px; font:inherit; font-size:12px; color:var(--ink); background:#131b29; cursor:pointer; }
+  .btn:hover { border-color:#4a5d80; }
+  .btn.on { border-color:var(--acc); color:var(--acc); background:#12283a; }
+  .btn.main { border-color:var(--acc); color:#06202b; background:var(--acc); font-weight:600; }
+  .note { margin-top:10px; padding:8px 10px; border-radius:8px; background:#0e1520; border:1px dashed #2a3850; color:var(--mute); font-size:11.5px; }
+  .dim { opacity:.38; }
+  .new { display:inline-block; font-size:10px; font-weight:700; letter-spacing:.06em; color:#06202b; background:var(--acc); border-radius:4px; padding:0 5px; margin-left:8px; vertical-align:2px; }
+
+  /* the mockup's own controls, not part of the app */
+  .try { border:1px dashed #3a4a66; border-radius:10px; padding:9px 12px; margin:0 0 12px; display:flex; flex-wrap:wrap; gap:8px; align-items:center; background:#0d131d; }
+  .try > span { color:var(--warn); font-size:11.5px; font-weight:600; margin-right:4px; }
+  .try > em { color:var(--mute); font-style:normal; font-size:11.5px; flex-basis:100%; }
+
+  /* imitation of the app window */
+  .app { border:1px solid var(--line); border-radius:12px; padding:14px 16px 16px; background:#0d121b; position:relative; }
+  .head { display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; flex-wrap:wrap; gap:10px; }
+  .head .t { font-size:18px; font-weight:600; }
+  .tools { display:flex; align-items:center; gap:16px; font-size:12.5px; flex-wrap:wrap; }
+  .switch { width:38px; height:20px; border-radius:10px; background:#2a3444; position:relative; cursor:pointer; flex:none; display:inline-block; vertical-align:middle; border:0; padding:0; }
+  .switch::after { content:""; position:absolute; top:3px; left:3px; width:14px; height:14px; border-radius:50%; background:#aab6c8; transition:left .12s; }
+  .switch.on { background:var(--acc); }
+  .switch.on::after { left:21px; background:#06202b; }
+  .switch.fixed { cursor:default; }
+  .reason { border:1px solid #5a4a1c; background:#231d0c; color:#ffe3a0; border-radius:8px; padding:7px 10px; margin-bottom:10px; font-size:12.5px; }
+  .cols { display:grid; grid-template-columns:1fr 320px; gap:14px; align-items:start; }
+  @media (max-width:900px) { .cols { grid-template-columns:1fr; } }
+  svg text { font-family:"Segoe UI",system-ui,sans-serif; }
+  svg [hidden] { display:none; }
+  .zone { display:flex; align-items:center; justify-content:space-between; padding:7px 0; border-top:1px solid var(--line); font-size:12.5px; }
+  .zone:first-of-type { border-top:0; }
+  .sw { width:18px; height:18px; border-radius:5px; display:inline-block; vertical-align:middle; margin-right:8px; border:1px solid #0006; }
+  .read { display:flex; justify-content:space-between; padding:3px 0; font-size:12.5px; }
+  .read span:last-child { font-variant-numeric:tabular-nums; }
+
+  /* Settings imitation */
+  .tabs { display:flex; flex-wrap:wrap; gap:16px; border-bottom:1px solid var(--line); margin-bottom:12px; font-size:12.5px; color:var(--mute); }
+  .tabs span { padding:0 0 7px; }
+  .tabs .sel { color:var(--ink); border-bottom:2px solid var(--acc); }
+  .set h4 { font-size:13px; font-weight:600; margin:18px 0 6px; }
+  .set .line { display:flex; gap:9px; align-items:flex-start; padding:3px 0; font-size:12.5px; }
+  .set .how { margin:2px 0 6px 25px; color:var(--mute); font-size:11.5px; }
+  .mk { flex:none; width:16px; height:16px; border-radius:50%; font-size:10.5px; font-weight:700; line-height:16px; text-align:center; margin-top:1px; }
+  .mk.ok { background:#123a25; color:var(--good); }
+  .mk.no { background:#3d1a20; color:var(--bad); }
+  .mk.wa { background:#3a2f10; color:var(--warn); }
+  .err { color:var(--bad); font-size:12px; margin-top:6px; }
+  .box { border:1px solid #33415a; border-radius:7px; padding:5px 9px; background:#0f1622; color:var(--mute); font-size:12px; display:inline-block; min-width:240px; }
+  .outcome { border:1px solid #6a3a3f; background:#261316; color:#ffd5d9; border-radius:8px; padding:9px 11px; margin-top:8px; font-size:12.5px; }
+  .outcome .btn { margin:8px 6px 0 0; }
+
+  /* dialog */
+  .veil { position:fixed; inset:0; background:#000a; display:flex; align-items:center; justify-content:center; padding:16px; z-index:10; }
+  .veil[hidden] { display:none; }
+  .dlg { background:#151c29; border:1px solid #33415a; border-radius:12px; padding:18px 20px; max-width:480px; width:100%; box-shadow:0 18px 60px #000c; }
+  .dlg h3 { margin:0 0 8px; font-size:16px; font-weight:600; }
+  .dlg p { margin:8px 0; font-size:12.5px; }
+  .dlg .vals { background:#0e1520; border:1px solid var(--line); border-radius:8px; padding:7px 10px; margin:8px 0; }
+  .dlg .foot { display:flex; gap:8px; justify-content:flex-end; margin-top:14px; flex-wrap:wrap; }
+
+  /* tables */
+  .tbl { width:100%; border-collapse:collapse; font-size:12.5px; }
+  .tbl th { text-align:left; color:var(--mute); font-weight:600; font-size:11.5px; padding:5px 8px; border-bottom:1px solid var(--line); }
+  .tbl td { padding:5px 8px; border-bottom:1px solid #161e2b; }
+  .tbl th.n, .tbl td.n { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+  .tbl tr.old td { color:#66748a; }
+  .scroll { overflow-x:auto; }
+  .when td:first-child { font-weight:600; width:34%; vertical-align:top; }
+  .when td { vertical-align:top; }
+
+  ol.calls { margin:6px 0 0; padding-left:20px; }
+  ol.calls li { margin:6px 0; }
+  .chk { display:flex; gap:8px; align-items:flex-start; font-size:12.5px; cursor:pointer; }
+  .chk i { flex:none; width:16px; height:16px; border:1px solid #55637a; border-radius:3px; margin-top:1px; text-align:center; line-height:14px; font-style:normal; font-size:11px; color:#06202b; }
+  .chk.on i { background:var(--acc); border-color:var(--acc); }
+</style>
+</head>
+<body>
+<div class="page">
+  <h1>Lighting · step 5 mockup · the hub</h1>
+  <div class="sub">This page works. Use the yellow "Try it" bars to act out what would happen on your PC; everything else is how the app would look. Numbers and colours are examples. The dashed yellow bars and the blue NEW tags are not part of the app.</div>
+
+  <!-- ================= PART 1 ================= -->
+  <h2>1 · Settings → Lighting, with the hub switch</h2>
+  <div class="sub">New: the Corsair hub switch, the iCUE lines and the DeadLight lines. The rest of this page is as it is today.</div>
+
+  <div class="try"><span>Try it · iCUE on this PC is…</span>
+    <button class="btn on" data-ic="today">as it is today</button>
+    <button class="btn" data-ic="done">switched off by you</button>
+    <button class="btn" id="tryIcue">Start iCUE (pretend)</button>
+    <em>Then click the hub switch below. With iCUE's service still running, DeadWare refuses; after you have switched it off, DeadWare asks first.</em>
+  </div>
+  <div class="try"><span>Try it · after the take-over the pump…</span>
+    <button class="btn on" data-sl="0">runs as before</button>
+    <button class="btn" data-sl="1">runs slower (pretend)</button>
+  </div>
+  <div class="try"><span>Try it · DeadLight on this PC is…</span>
+    <button class="btn on" data-dl="retired">as it is today (start-up task already off)</button>
+    <button class="btn" data-dl="active">still starting at sign-in</button>
+  </div>
+
+  <div class="app set">
+    <div class="head"><div><div class="t">Settings</div></div></div>
+    <div class="tabs"><span>Monitoring</span><span>Appearance</span><span>Widget</span><span>Pop-outs</span><span>Startup</span><span>History and alerts</span><span class="sel">Lighting</span></div>
+
+    <div class="line"><i class="switch on fixed"></i><span>Enable lighting</span></div>
+
+    <h4 class="dim">OpenRGB location</h4>
+    <div class="dim"><span class="box">C:\Program Files\OpenRGB\OpenRGB.exe</span> <span class="btn">Browse…</span>
+      <div class="mute" style="margin-top:5px">DeadWare is tested with OpenRGB 1.0rc3.</div></div>
+
+    <!-- HUB -->
+    <h4>Corsair iCUE LINK hub <span class="new">NEW</span></h4>
+    <div class="line"><button class="switch" id="swHub" aria-label="DeadWare drives the hub"></button><span><span id="hubLabel">DeadWare drives the hub</span>
+      <div class="mute" id="hubState"></div></span></div>
+    <div class="mute" style="margin-top:4px">When this is on, DeadWare lights the hub itself and reads its coolant temperature and its fan and pump speeds. DeadWare never sets fan or pump speeds.</div>
+    <div class="err" id="hubErr" hidden></div>
+    <div class="reason" id="hubLetGo" style="margin:8px 0 0" hidden></div>
+    <div class="outcome" id="hubOutcome" hidden></div>
+
+    <!-- ICUE -->
+    <h4>iCUE <span class="new">NEW</span></h4>
+    <div class="mute">iCUE and DeadWare can't both drive the hub. iCUE stays installed; these three things only need to be off. DeadWare shows them and never changes them for you.</div>
+    <div id="icueLines" style="margin-top:6px"></div>
+
+    <!-- DEADLIGHT -->
+    <h4>DeadLight <span class="new">NEW</span></h4>
+    <div id="dlLines"></div>
+
+    <h4 class="dim">Conflicts</h4>
+    <div class="mute dim">The list of programs that are running right now and would fight DeadWare over the lights, as today.</div>
+  </div>
+
+  <!-- ================= PART 2 ================= -->
+  <h2>2 · The Lighting page: the hub's card shows its readings</h2>
+  <div class="sub">The inside-the-PC picture and the hub's card are the ones you approved. New: the line under the title, and the Readings section on the card. Both follow the switch in part 1.</div>
+
+  <div class="app">
+    <div class="head">
+      <div><div class="t">Lighting</div><div class="mute" id="statusLine"></div></div>
+      <div class="tools">
+        <span><i class="switch on fixed"></i> &nbsp;Lights on</span>
+        <span>Brightness · 80% <input type="range" value="80" style="accent-color:#5ee0ff;vertical-align:middle;width:110px"></span>
+      </div>
+    </div>
+    <div class="reason" id="pageReason" hidden></div>
+
+    <div class="cols">
+      <div class="card">
+        <h3>Inside the PC</h3><div class="mute">side window, front on the right · tap a part to change its colours</div>
+        <svg viewBox="0 0 720 450" width="100%" style="display:block;margin-top:6px">
+          <defs>
+            <filter id="glow2" x="-40%" y="-40%" width="180%" height="180%"><feGaussianBlur stdDeviation="5" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+          </defs>
+          <text x="150" y="16" font-size="9.5" fill="#6c7a8f">rear</text><text x="566" y="16" font-size="9.5" fill="#6c7a8f" text-anchor="end">front</text>
+          <rect x="140" y="22" width="440" height="418" rx="10" fill="#090d14" stroke="#33415a" stroke-width="2.5"/>
+          <!-- radiator fans: lit -->
+          <g id="hubLit">
+            <g filter="url(#glow2)"><rect x="160" y="38" width="118" height="26" rx="6" fill="#4fd8ff"/><rect x="290" y="38" width="118" height="26" rx="6" fill="#7aa2ff" stroke="#fff" stroke-width="2"/><rect x="420" y="38" width="118" height="26" rx="6" fill="#9a6bff"/></g>
+          </g>
+          <!-- radiator fans: on their own -->
+          <g id="hubOwn" fill="none" stroke="#5b6778" stroke-width="4" hidden>
+            <rect x="162" y="40" width="114" height="22" rx="6"/><rect x="292" y="40" width="114" height="22" rx="6"/><rect x="422" y="40" width="114" height="22" rx="6"/>
+          </g>
+          <text x="160" y="80" font-size="10" fill="#8b98ab" id="fanCap">radiator fans 1–3 · Corsair iCUE LINK hub</text>
+          <circle cx="186" cy="150" r="30" fill="none" stroke="#33415a" stroke-width="3"/><circle cx="186" cy="150" r="5" fill="#33415a"/>
+          <text x="186" y="198" font-size="9.5" fill="#6c7a8f" text-anchor="middle">rear fan, unlit</text>
+          <rect x="236" y="100" width="210" height="150" rx="6" fill="#0e131c" stroke="#232f42"/>
+          <g id="pumpLit" filter="url(#glow2)"><circle cx="306" cy="168" r="30" fill="#0b1118" stroke="#6fb4ff" stroke-width="7"/></g>
+          <circle id="pumpOwn" cx="306" cy="168" r="30" fill="#0b1118" stroke="#5b6778" stroke-width="6" hidden/>
+          <text x="306" y="222" font-size="10" fill="#c9d3e0" text-anchor="middle">pump</text>
+          <text x="306" y="235" font-size="9" fill="#8b98ab" text-anchor="middle" id="pumpCap" hidden>own effect</text>
+          <g filter="url(#glow2)"><rect x="392" y="112" width="8" height="112" rx="2" fill="#a98bff"/><rect x="408" y="112" width="8" height="112" rx="2" fill="#a98bff"/></g>
+          <text x="404" y="240" font-size="10" fill="#c9d3e0" text-anchor="middle">RAM ×2</text>
+          <rect x="170" y="270" width="290" height="50" rx="6" fill="#141b27" stroke="#2b384d"/>
+          <g filter="url(#glow2)"><text x="250" y="302" font-size="17" font-weight="700" fill="#b38cff" letter-spacing="1.5">GIGABYTE</text></g>
+          <text x="172" y="336" font-size="10" fill="#c9d3e0">graphics card</text>
+          <g fill="none" stroke="#5b6778" stroke-width="6"><circle cx="528" cy="140" r="26"/><circle cx="528" cy="216" r="26"/><circle cx="528" cy="292" r="26"/></g>
+          <text x="528" y="336" font-size="10" fill="#c9d3e0" text-anchor="middle">front fans ×3</text>
+          <text x="528" y="349" font-size="9" fill="#8b98ab" text-anchor="middle">own effect</text>
+          <rect x="150" y="372" width="420" height="58" rx="6" fill="#0d121a" stroke="#1e2939"/><text x="360" y="405" font-size="10" fill="#465367" text-anchor="middle">power supply</text>
+        </svg>
+      </div>
+
+      <div class="card" id="hubCard">
+        <h3>Corsair iCUE LINK hub</h3><div class="mute" id="cardSub"></div>
+        <div style="margin-top:10px" id="zones">
+          <div class="zone"><span><i class="sw" style="background:#4682b4"></i>Radiator fan 1</span><span class="mute">shared colour</span></div>
+          <div class="zone" style="background:#0f2230;margin:0 -6px;padding:7px 6px;border-radius:6px"><span><i class="sw" style="background:#ff8a3d"></i>Radiator fan 2</span><span class="mute">own colour</span></div>
+          <div class="zone"><span><i class="sw" style="background:#4682b4"></i>Radiator fan 3</span><span class="mute">shared colour</span></div>
+          <div class="zone"><span><i class="sw" style="background:#4682b4"></i>Pump</span><span class="mute">shared colour</span></div>
+        </div>
+        <div class="sec"><b>Readings <span class="new">NEW</span></b>
+          <div id="readOn">
+            <div class="read"><span>Coolant</span><span id="rCool"></span></div>
+            <div class="read"><span>Pump</span><span id="rPump"></span></div>
+            <div class="read"><span>Radiator fans</span><span id="rFans"></span></div>
+            <div class="mute" style="margin-top:4px">Read from the hub every few seconds. DeadWare shows these speeds; it never sets them.</div>
+          </div>
+          <div class="mute" id="readOff"></div>
+        </div>
+        <div class="sec dim"><b>Brightness</b><div class="mute">as today</div></div>
+        <div class="sec dim"><b>Colour correction</b><div class="mute">as today</div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= PART 3 ================= -->
+  <h2>3 · The Sensors page: five new rows</h2>
+  <div class="sub">The grey rows are examples of what is there today. The hub's rows are there only while DeadWare drives the hub.</div>
+  <div class="app">
+    <div class="head"><div><div class="t">Sensors</div></div></div>
+    <span class="box" style="margin-bottom:10px">Search hardware or sensor</span>
+    <div class="card scroll" style="padding:6px 8px">
+      <table class="tbl">
+        <thead><tr><th>Hardware / sensor</th><th class="n">Current</th><th class="n">Min</th><th class="n">Average</th><th class="n">Max</th></tr></thead>
+        <tbody id="sensRows"></tbody>
+      </table>
+    </div>
+    <div class="mute" style="margin-top:6px" id="sensCount"></div>
+    <div class="note">The pump is listed twice: once from the motherboard, as today, and once from the hub. The CPU pump line on graphs and Cooling Health keep using the motherboard's reading, so nothing you have recorded changes.</div>
+  </div>
+
+  <!-- ================= PART 4 ================= -->
+  <h2>4 · Coolant temperature on the CPU temperature graph</h2>
+  <div class="sub">One new tick box in Settings → Appearance, under the pump one. Tick it to see the line. The same graph is on Overview, in pop-outs and in the widget.</div>
+  <div class="app">
+    <div class="card" style="margin-bottom:12px">
+      <div class="mute dim" style="margin-bottom:6px">Settings → Appearance</div>
+      <div class="chk on dim" style="cursor:default"><i>✓</i><span>Show CPU pump speed on CPU temperature graphs</span></div>
+      <div class="chk" id="chkCool" style="margin-top:8px"><i></i><span>Show coolant temperature on CPU temperature graphs <span class="new">NEW</span>
+        <div class="mute">Adds the Corsair hub's coolant temperature on the same °C scale, dashed and teal by default. It is drawn only while DeadWare drives the hub.</div></span></div>
+    </div>
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <b style="font-size:13px">CPU temperature</b>
+        <span><i class="sw" style="background:#ff6b7a;border-radius:50%;width:11px;height:11px;margin:0 3px"></i><i class="sw" style="background:#7aa2ff;border-radius:50%;width:11px;height:11px;margin:0 3px"></i><i class="sw" id="dotCool" style="background:var(--cool);border-radius:50%;width:11px;height:11px;margin:0 3px"></i></span>
+      </div>
+      <div style="margin-top:4px"><span style="font-size:24px;color:#ff6b7a">76.3 °C</span> <span class="mute">&nbsp;MIN 54.9°C &nbsp;AVG 69.0°C &nbsp;MAX 79.9°C</span></div>
+      <div class="mute">AMD Ryzen 7 7700X</div>
+      <div style="font-size:11.5px;color:#7aa2ff">CPU pump · 2777 RPM · dotted · left RPM</div>
+      <div style="font-size:11.5px;color:var(--cool)" id="coolLegend"></div>
+      <svg viewBox="0 0 720 180" width="100%" style="display:block;margin-top:4px">
+        <g stroke="#1b2432" stroke-width="1"><path d="M60 24H670M60 87H670M60 150H670"/></g>
+        <g font-size="9" fill="#6c7a8f"><text x="62" y="20">3000 RPM</text><text x="62" y="83">1500 RPM</text><text x="62" y="146">0 RPM</text>
+          <text x="690" y="27" text-anchor="end">100°</text><text x="690" y="90" text-anchor="end">50°</text><text x="690" y="153" text-anchor="end">0°</text>
+          <text x="110" y="170">18:47:30</text><text x="270" y="170">18:47:45</text><text x="430" y="170">18:48:00</text><text x="590" y="170">18:48:15</text><text x="668" y="170" text-anchor="end">Now</text></g>
+        <path d="M60 33 H670" fill="none" stroke="#7aa2ff" stroke-width="1.6" stroke-dasharray="2 4"/>
+        <path d="M60 62 C120 62 150 60 200 58 S300 57 350 55 S440 52 500 54 S610 55 670 54" fill="none" stroke="#ff6b7a" stroke-width="1.8"/>
+        <path id="coolLine" d="M60 103 C200 103 330 102.5 460 102 S620 101.6 670 101.6" fill="none" stroke="#3fe0c5" stroke-width="1.8" stroke-dasharray="7 4"/>
+        <path id="coolGap" d="M60 103 C120 103 160 102.9 210 102.8" fill="none" stroke="#3fe0c5" stroke-width="1.8" stroke-dasharray="7 4" hidden/>
+      </svg>
+    </div>
+  </div>
+
+  <!-- ================= PART 5 ================= -->
+  <h2>5 · What DeadWare does with the hub, moment by moment (nothing to look at)</h2>
+  <div class="card scroll">
+    <table class="tbl when">
+      <tbody>
+        <tr><td>Lights off: the switch, the shortcut, idle or lock</td><td>The hub's lights go dark. DeadWare keeps hold of the hub, so nothing blinks and the readings carry on.</td></tr>
+        <tr><td>Quit DeadWare, lighting switched off, or Update &amp; restart</td><td>DeadWare first gives the hub back to its own built-in mode. The hub then shows its own stored light effect and runs its own stored fan settings until DeadWare starts again. Today nothing gives it back.</td></tr>
+        <tr><td>The PC sleeps</td><td>DeadWare sends nothing. After waking it waits about 10 seconds, as today, then takes the hub again and repaints it.</td></tr>
+        <tr><td>iCUE or a Corsair service starts</td><td>DeadWare lets go of the hub at once and says why. When they are gone it takes the hub again by itself.</td></tr>
+        <tr><td>DeadWare's window crashes</td><td>Nothing changes: the background helper keeps driving the hub, as it keeps the other lights on today.</td></tr>
+        <tr><td>The background helper itself dies</td><td>The hub is expected to fall back to its own mode after about 10 seconds of silence. That is one of the things to confirm on your PC. DeadWare restarts the helper, which takes the hub again.</td></tr>
+        <tr><td>Going back to 0.22</td><td>DeadWare hands the hub's lights back to OpenRGB whenever it stops, so the older version finds things as it expects.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- ================= CALLS ================= -->
+  <h2>Choices I made for you (say a number to change one)</h2>
+  <div class="card" style="max-width:900px">
+    <ol class="calls">
+      <li><b>The switch is in Settings → Lighting and is off after the update.</b> Switching it on always asks first and shows the hub's readings. Switching it off gives the hub's lights back to OpenRGB. Either way all lights blink once, because OpenRGB has to restart.</li>
+      <li><b>The check after the take-over: more than 10% slower means stop.</b> DeadWare compares pump and fan speeds from just before with those about 15 seconds after. If any is more than 10% slower, it gives the hub back to its own built-in mode, switches itself off and waits for you to choose: back to OpenRGB, or try again.</li>
+      <li><b>A stopped pump also makes DeadWare let go.</b> While it drives the hub, if the pump reads 0 RPM for about 10 seconds, DeadWare gives the hub back to its own built-in mode and says so. It does not take it again by itself.</li>
+      <li><b>Dark is not the same as let go.</b> Lights off, idle and lock make the hub dark while DeadWare keeps hold. Only Quit, lighting off, an update, iCUE appearing or a failed check hand the hub back.</li>
+      <li><b>Each fan and the pump stay one colour each</b>, as today, and your hub colours are carried over once. Lighting single lights inside a fan is not part of this step.</li>
+      <li><b>Readings show in three places:</b> the hub's card, five rows on Sensors, and the optional coolant line. They exist only while DeadWare drives the hub, so the coolant line needs lighting on and the switch on.</li>
+      <li><b>The coolant line starts unticked</b>, like the pump and GPU fan lines, and is saved in the 6-hour graph history like the others.</li>
+      <li><b>Cooling Health is left as it is.</b> It keeps using the motherboard's pump reading and does not use coolant temperature yet; its wording is corrected to say that.</li>
+      <li><b>iCUE running, or a Corsair service running, blocks the take-over</b> (red mark). "Starts with Windows" alone is a warning (yellow mark): DeadWare would simply let go at the next sign-in until it is gone.</li>
+      <li><b>Retire DeadLight switches off its start-up task and stops it, and deletes nothing.</b> The button shows only when there is something to retire, and needs DeadWare running as administrator. On your PC today there is nothing left to retire.</li>
+      <li><b>A hub with a part DeadWare doesn't know</b> (another fan or pump model it can't identify for certain) is refused: the switch stays off, with the reason, and the hub stays on OpenRGB.</li>
+      <li><b>Not included: a third position, "leave the hub alone".</b> That would let the hub run its own stored fan settings and lights all the time, with DeadWare not lighting it. Say if you want it; my advice is to wait for fan control instead.</li>
+      <li><b>This would be version 0.23.0.</b></li>
+      <li><b>The front three fans are not part of this step.</b> They are Corsair too, but they plug into a different Corsair box, the Lighting Node Pro, not the iCUE LINK hub. They stay as today: lit through OpenRGB, on their own Rainbow Wave. That box only lights the fans; it does not set their speeds.</li>
+    </ol>
+  </div>
+
+  <h2>Three things I will ask your approval for separately</h2>
+  <div class="card" style="max-width:900px">
+    <ol class="calls">
+      <li><b>One read-only reading of the hub, before the build.</b> The same kind as on 15 November, but keeping every byte, so the tests can use real data. It changes nothing on the hub.</li>
+      <li><b>The take-over itself</b>, on the hardware check, with the before and after readings.</li>
+      <li><b>The silence test, once:</b> does the hub fall back by itself after about 10 seconds without DeadWare?</li>
+    </ol>
+    <div class="note">A correction to what I said earlier: the order of the single lights inside a fan does not need finding out, because each fan stays one colour.</div>
+  </div>
+</div>
+
+<!-- dialog -->
+<div class="veil" id="veil" hidden>
+  <div class="dlg" role="dialog" aria-modal="true">
+    <h3 id="dlgT"></h3>
+    <div id="dlgB"></div>
+    <div class="foot"><button class="btn" id="dlgNo">Cancel</button><button class="btn main" id="dlgYes"></button></div>
+  </div>
+</div>
+
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  // hub: off = lights through OpenRGB; on = DeadWare drives; letgo = on, but let go while iCUE runs; gaveback = failed check, waiting for a choice
+  var s = { hub: 'off', icueRun: false, svc: true, entry: true, slow: false, dl: 'retired', dlNote: '', cool: false, err: '' };
+  var before = { cool: '38.4 °C', pump: '2,716 RPM', fans: '1,337 · 1,326 · 1,337 RPM' };
+  var after = { cool: '38.5 °C', pump: '2,709 RPM', fans: '1,331 · 1,326 · 1,340 RPM' };
+  var onYes = null;
+
+  function mark(kind) { return '<i class="mk ' + kind + '">' + (kind === 'ok' ? '✓' : kind === 'no' ? '✕' : '!') + '</i>'; }
+  function line(kind, text, how) {
+    return '<div class="line">' + mark(kind) + '<span>' + text + '</span></div>' + (how ? '<div class="how">' + how + '</div>' : '');
+  }
+  function ask(title, body, yes, then) {
+    $('dlgT').textContent = title; $('dlgB').innerHTML = body; $('dlgYes').textContent = yes; onYes = then; $('veil').hidden = false;
+  }
+  function blockers() {
+    var b = [];
+    if (s.icueRun) b.push('iCUE is running');
+    if (s.svc) b.push('the Corsair service is running');
+    if (s.dl === 'active') b.push('DeadLight is running');
+    return b;
+  }
+  function takeOver() {
+    var b = blockers();
+    if (b.length) { s.err = 'DeadWare can\'t take the hub yet: ' + b.join(', and ') + '. See below for what to do, then try again.'; draw(); return; }
+    s.err = '';
+    ask('Let DeadWare drive the Corsair hub?',
+      '<p>This changes which program is in charge of a cooling device, so DeadWare asks first.</p>' +
+      '<p>OpenRGB restarts without the hub, so all lights blink once. DeadWare then takes the hub and lights it.</p>' +
+      '<div class="vals"><div class="mute">Read from the hub just now</div>' +
+      '<div class="read"><span>Coolant</span><span>' + before.cool + '</span></div>' +
+      '<div class="read"><span>Pump</span><span>' + before.pump + '</span></div>' +
+      '<div class="read"><span>Radiator fans</span><span>' + before.fans + '</span></div></div>' +
+      '<p>After taking over, DeadWare reads the speeds again. If the pump or a fan runs more than 10% slower than above, DeadWare gives the hub back to its own built-in settings and tells you.</p>' +
+      '<p class="mute">DeadWare never sets fan or pump speeds.</p>',
+      'Take over the hub',
+      function () { s.hub = s.slow ? 'gaveback' : (s.icueRun ? 'letgo' : 'on'); draw(); });
+  }
+
+  function draw() {
+    var driving = s.hub === 'on', own = s.hub === 'letgo' || s.hub === 'gaveback';
+    // ---- Settings: hub
+    $('swHub').classList.toggle('on', s.hub === 'on' || s.hub === 'letgo');
+    $('hubState').innerHTML =
+      s.hub === 'off' ? 'Off. The hub\'s lights go through OpenRGB, as they do today.' :
+      s.hub === 'on' ? 'On. DeadWare is driving the hub. &nbsp;Coolant ' + after.cool + ' · Pump ' + after.pump + ' · Fans ' + after.fans +
+        '<br>Taken over today at 19:42. Before: pump ' + before.pump + ', fans ' + before.fans + '.' :
+      s.hub === 'letgo' ? 'On, but DeadWare has let go for now.' : 'Off. The hub is on its own.';
+    $('hubErr').hidden = !s.err; $('hubErr').textContent = s.err;
+    $('hubLetGo').hidden = s.hub !== 'letgo';
+    $('hubLetGo').textContent = 'DeadWare has let go of the hub because iCUE is running. The hub is on its own built-in lights and fan settings. DeadWare takes it again once iCUE has quit.';
+    var o = $('hubOutcome'); o.hidden = s.hub !== 'gaveback';
+    if (s.hub === 'gaveback') {
+      o.innerHTML = '<b>DeadWare gave the hub back.</b> After the take-over the pump ran at 2,010 RPM, down from 2,716 RPM before. ' +
+        'The hub is now on its own built-in lights and fan settings, and stays that way until you choose.<br>' +
+        '<button class="btn" id="oBack">Back to OpenRGB, as before</button><button class="btn" id="oAgain">Try the take-over again</button>';
+      $('oBack').onclick = function () { s.hub = 'off'; draw(); };
+      $('oAgain').onclick = takeOver;
+    }
+    // ---- Settings: iCUE
+    var h = '';
+    h += s.icueRun ? line('no', 'iCUE is running.', 'Quit it from its icon by the clock: right-click the icon and choose Quit.') : line('ok', 'iCUE is not running.');
+    h += s.svc ? line('no', 'The Corsair service is running, and starts with Windows.',
+        'Press Win + R, type services.msc and press Enter. Find Corsair Service, right-click it and choose Stop. Then double-click it and set Startup type to Manual.')
+      : line('ok', 'The Corsair service is not running and does not start with Windows.');
+    h += s.entry ? line('wa', 'iCUE starts when you sign in.',
+        'Open Task Manager (Ctrl + Shift + Esc), choose Startup apps, find Corsair iCUE5 Software and choose Disable.')
+      : line('ok', 'iCUE does not start when you sign in.');
+    $('icueLines').innerHTML = h;
+    // ---- Settings: DeadLight
+    var d = '';
+    if (s.dl === 'active') {
+      d += line('no', 'DeadLight is running.');
+      d += line('wa', 'DeadLight starts when you sign in (the Task Scheduler task "DeadLight").');
+      d += '<div style="margin-top:6px"><button class="btn" id="dlBtn">Retire DeadLight</button></div>';
+    } else {
+      d += line('ok', 'DeadLight is not running.');
+      d += line('ok', 'DeadLight\'s start-up task is switched off.');
+      d += '<div class="mute" style="margin-top:4px">' + (s.dlNote ? s.dlNote + ' ' : '') + 'DeadLight is retired. Its folder and its settings are still on this PC; delete them yourself whenever you like.</div>';
+    }
+    $('dlLines').innerHTML = d;
+    if ($('dlBtn')) $('dlBtn').onclick = function () {
+      ask('Retire DeadLight?',
+        '<p>DeadWare will:</p><p>• switch off DeadLight\'s start-up task. It is not deleted, so you can switch it back on in Task Scheduler;</p>' +
+        '<p>• stop DeadLight and the OpenRGB it started, if they are running.</p><p class="mute">Nothing is deleted.</p>',
+        'Retire DeadLight', function () { s.dl = 'retired'; s.dlNote = 'Retired just now.'; s.err = ''; setBtns('data-dl', 'retired'); draw(); });
+    };
+    // ---- Lighting page
+    $('statusLine').textContent = (s.hub === 'off' ? '8 devices through OpenRGB' :
+      '7 devices through OpenRGB · the Corsair hub is ' + (driving ? 'driven by DeadWare' : 'on its own')) + ' · Wave is running';
+    var pr = $('pageReason'); pr.hidden = !own;
+    pr.textContent = s.hub === 'letgo' ? 'DeadWare has let go of the Corsair hub because iCUE is running. The hub shows its own built-in effect until iCUE has quit.'
+      : 'DeadWare gave the Corsair hub back because the pump ran slower after the take-over. Choose what to do in Settings → Lighting.';
+    $('hubLit').toggleAttribute('hidden', own); $('hubOwn').toggleAttribute('hidden', !own);
+    $('pumpLit').toggleAttribute('hidden', own); $('pumpOwn').toggleAttribute('hidden', !own); $('pumpCap').toggleAttribute('hidden', !own);
+    $('fanCap').textContent = 'radiator fans 1–3 · Corsair iCUE LINK hub' + (own ? ' · own effect' : '');
+    $('cardSub').textContent = s.hub === 'off' ? 'lit through OpenRGB · radiator fan 2 selected' : driving ? 'driven by DeadWare · radiator fan 2 selected' : 'on its own · DeadWare is not lighting it';
+    $('zones').classList.toggle('dim', own);
+    $('readOn').hidden = !driving; $('readOff').hidden = driving;
+    $('rCool').textContent = after.cool; $('rPump').textContent = after.pump; $('rFans').textContent = after.fans;
+    $('readOff').textContent = s.hub === 'off' ? 'Readings appear here once DeadWare drives the hub. Switch that on in Settings → Lighting.' : 'No readings while the hub is on its own.';
+    // ---- Sensors
+    var rows = '<tr class="old"><td>AMD Ryzen 7 7700X  /  Core (Tctl/Tdie)</td><td class="n">76.3 °C</td><td class="n">54.9 °C</td><td class="n">69.0 °C</td><td class="n">79.9 °C</td></tr>' +
+      '<tr class="old"><td>Nuvoton NCT6687D  /  Pump Fan</td><td class="n">2,777 RPM</td><td class="n">2,760 RPM</td><td class="n">2,771 RPM</td><td class="n">2,783 RPM</td></tr>';
+    if (driving) rows +=
+      '<tr><td>Corsair iCUE LINK hub  /  Coolant</td><td class="n">38.5 °C</td><td class="n">37.9 °C</td><td class="n">38.2 °C</td><td class="n">38.6 °C</td></tr>' +
+      '<tr><td>Corsair iCUE LINK hub  /  Pump</td><td class="n">2,709 RPM</td><td class="n">2,702 RPM</td><td class="n">2,712 RPM</td><td class="n">2,721 RPM</td></tr>' +
+      '<tr><td>Corsair iCUE LINK hub  /  Radiator fan 1</td><td class="n">1,331 RPM</td><td class="n">1,322 RPM</td><td class="n">1,334 RPM</td><td class="n">1,341 RPM</td></tr>' +
+      '<tr><td>Corsair iCUE LINK hub  /  Radiator fan 2</td><td class="n">1,326 RPM</td><td class="n">1,318 RPM</td><td class="n">1,327 RPM</td><td class="n">1,335 RPM</td></tr>' +
+      '<tr><td>Corsair iCUE LINK hub  /  Radiator fan 3</td><td class="n">1,340 RPM</td><td class="n">1,329 RPM</td><td class="n">1,336 RPM</td><td class="n">1,344 RPM</td></tr>';
+    else rows += '<tr><td colspan="5" class="mute">No hub rows: ' + (s.hub === 'off' ? 'DeadWare is not driving the hub. Switch that on in part 1 to see them.' : 'the hub is on its own.') + '</td></tr>';
+    $('sensRows').innerHTML = rows;
+    $('sensCount').textContent = (driving ? 326 : 321) + ' sensors · statistics over 1 min · — means unavailable';
+    // ---- Graph
+    $('chkCool').classList.toggle('on', s.cool); $('chkCool').querySelector('i').textContent = s.cool ? '✓' : '';
+    $('dotCool').style.display = s.cool ? '' : 'none';
+    $('coolLine').toggleAttribute('hidden', !(s.cool && driving));
+    $('coolGap').toggleAttribute('hidden', !(s.cool && own));
+    $('coolLegend').textContent = !s.cool ? '' : driving ? 'Coolant · 38.5 °C · dashed' :
+      s.hub === 'off' ? 'Coolant · no reading (DeadWare is not driving the hub)' : 'Coolant · no reading (the hub is on its own) · the line stops where DeadWare let go';
+  }
+
+  function setBtns(attr, value) {
+    var b = document.querySelectorAll('[' + attr + ']');
+    for (var i = 0; i < b.length; i++) b[i].classList.toggle('on', b[i].getAttribute(attr) === value);
+  }
+  function wire(attr, apply) {
+    var b = document.querySelectorAll('[' + attr + ']');
+    for (var i = 0; i < b.length; i++) b[i].onclick = function () { var v = this.getAttribute(attr); setBtns(attr, v); apply(v); s.err = ''; draw(); };
+  }
+  wire('data-ic', function (v) { s.svc = s.entry = (v === 'today'); });
+  wire('data-sl', function (v) { s.slow = (v === '1'); });
+  wire('data-dl', function (v) { s.dl = v; s.dlNote = ''; });
+
+  $('tryIcue').onclick = function () {
+    s.icueRun = !s.icueRun; this.textContent = s.icueRun ? 'Quit iCUE (pretend)' : 'Start iCUE (pretend)'; this.classList.toggle('on', s.icueRun);
+    if (s.icueRun && s.hub === 'on') s.hub = 'letgo'; else if (!s.icueRun && s.hub === 'letgo') s.hub = 'on';
+    s.err = ''; draw();
+  };
+  $('swHub').onclick = function () {
+    if (s.hub === 'on' || s.hub === 'letgo') { s.hub = 'off'; s.err = ''; draw(); return; }
+    takeOver();
+  };
+  $('chkCool').onclick = function () { s.cool = !s.cool; draw(); };
+  $('dlgNo').onclick = function () { $('veil').hidden = true; };
+  $('dlgYes').onclick = function () { $('veil').hidden = true; if (onYes) onYes(); };
+
+  draw();
+})();
+</script>
+</body>
+</html>
