@@ -376,7 +376,7 @@ internal sealed class DeviceHost : IAsyncDisposable
                     saveAllowed=false;note=read.Error is null?NewerNote:NewerDefaultsNote;
                     log.Write("lighting.json comes from a newer DeadWare; it won't be saved"+(read.Error is null?"":" (using defaults: "+read.Error+")"));
                 }
-                if(AdoptLocked(null)) SaveQuietly();
+                if(AdoptLocked(null)|AdoptHubLocked(null)) SaveQuietly();
             }
             catch(LinkedPathException e)
             {
@@ -573,6 +573,7 @@ internal sealed class DeviceHost : IAsyncDisposable
         namesLogged.Clear();
         log.Write($"devices changed: {service.Devices.Count} device(s)");
         var save=AdoptLocked(service.CableKey);
+        save|=AdoptHubLocked(service.HubOldKey);
         save|=LightingKeys.Remap(settings,service.Devices.Select(d=>d.Key).ToList());
         var views=service.Views(settings);
         var picture=DeskPictures.Applies(views.Select(v=>v.Name),settings.Layout.Picture);
@@ -605,6 +606,18 @@ internal sealed class DeviceHost : IAsyncDisposable
         if(LightingSettingsCodec.Validate(candidate) is{} error){log.Write("mouse colours not copied: "+error);return false;}
         settings=candidate;
         log.Write("mouse settings copied to "+AeroxIdentity.Key);
+        return true;
+    }
+
+    // HubIdentity.Adopt on a copy, the same shape as AdoptLocked.
+    bool AdoptHubLocked(string? oldKey)
+    {
+        if(!HubIdentity.CanAdopt(settings,oldKey)) return false;
+        var candidate=Clone(settings);
+        if(!HubIdentity.Adopt(candidate,oldKey)) return false;
+        if(LightingSettingsCodec.Validate(candidate) is{} error){log.Write("hub colours not copied: "+error);return false;}
+        settings=candidate;
+        log.Write("hub settings copied to "+HubIdentity.Key);
         return true;
     }
 

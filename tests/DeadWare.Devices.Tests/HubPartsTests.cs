@@ -114,4 +114,25 @@ public sealed class HubPartsTests
         var r=HubParts.Readings(HubParts.Build(One(0x0F,0x00,1)).Parts,[],speeds);
         Assert.Equal(62000,Assert.Single(r.Parts).Rpm);
     }
+
+    static List<HubSavedPart> Saved(params (int Channel,int Type,int Model)[] e)=>e.Select(x=>new HubSavedPart{Channel=x.Channel,Type=x.Type,Model=x.Model}).ToList();
+
+    [Fact] public void Saved_parts_round_trip_through_the_table()
+    {
+        var saved=HubParts.ToSaved(Owners().Parts);
+        Assert.Equal([(1,15,0),(2,15,0),(3,15,0),(13,17,2)],saved.Select(p=>(p.Channel,p.Type,p.Model)).ToArray());
+        var parts=HubParts.FromSaved(saved)!;
+        Assert.Equal(["iCUE LINK RX RGB","iCUE LINK RX RGB","iCUE LINK RX RGB","iCUE LINK TITAN 360"],parts.Select(p=>p.Name).ToArray());
+        Assert.Equal([8,8,8,20],parts.Select(p=>p.Leds).ToArray());
+        Assert.Equal([false,false,false,true],parts.Select(p=>p.Coolant).ToArray());
+        Assert.Equal(["fan","fan","fan","pump"],parts.Select(p=>p.Kind).ToArray());
+    }
+
+    [Fact] public void Saved_parts_with_a_row_the_table_lacks_give_nothing()
+    {
+        Assert.Null(HubParts.FromSaved(Saved((1,15,0),(5,26,1))));
+        Assert.Null(HubParts.FromSaved(Saved((1,300,0))));
+        Assert.Null(HubParts.FromSaved(null));
+        Assert.Null(HubParts.FromSaved([]));
+    }
 }

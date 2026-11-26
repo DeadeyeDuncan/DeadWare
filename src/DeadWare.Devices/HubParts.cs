@@ -53,5 +53,20 @@ internal static class HubParts
         return new HubReadings(list);
     }
 
+    // The saved parts by the table, in the saved order; all or nothing (null when there are none or an entry has no row now).
+    public static IReadOnlyList<HubPart>? FromSaved(IReadOnlyList<HubSavedPart>? saved)
+    {
+        if(saved is null||saved.Count==0) return null;
+        var parts=new List<HubPart>();
+        foreach(var p in saved)
+        {
+            if(p.Type is<0 or>255||p.Model is<0 or>255||!Table.TryGetValue(((byte)p.Type,(byte)p.Model),out var row)) return null;
+            parts.Add(new HubPart(p.Channel,(byte)p.Type,(byte)p.Model,row.Name,row.Leds,row.Coolant,row.Coolant?HubPartKinds.Pump:HubPartKinds.Fan));
+        }
+        return parts;
+    }
+
+    public static List<HubSavedPart> ToSaved(IReadOnlyList<HubPart> parts)=>parts.Select(p=>new HubSavedPart{Channel=p.Channel,Type=p.Type,Model=p.Model}).ToList();
+
     public static int Leds(IReadOnlyList<HubPart> parts)=>parts.Sum(p=>p.Leds);
 }

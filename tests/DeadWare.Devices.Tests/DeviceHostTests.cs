@@ -1477,7 +1477,7 @@ public sealed partial class DeviceHostTests : IAsyncLifetime
 
     // Lighting desk picture, Task 2: on the owner's rig the device host lays the desk out from its built-in picture.
     const string Board="MSI MAG B650M MORTAR WIFI (MS-7D76)";
-    static readonly string HubKey=LightingKeys.Device("SERIAL-6",@"HID: \\?\HID#FAKE-3");
+    const string HubKey="linkhub";   // the literal, not HubIdentity.Key: a test never expects a constant it shares with the code
     const string PictureRefused="This PC's layout comes from its built-in picture.",PictureNamed="A window can't choose the desk picture.";
     void UseOwnerRig()=>session=FakeOpenRgbSession.FromFixture(owner:true);
     int Hub=>session.Controllers.FindIndex(c=>c.Name==FakeOpenRgbSession.OwnerHub);
