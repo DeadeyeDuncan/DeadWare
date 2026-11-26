@@ -46,10 +46,12 @@ public sealed partial class DeviceHostTests : IAsyncLifetime
     {
         readonly TaskCompletionSource exit=new(TaskCreationOptions.RunContinuationsAsynchronously);
         public bool Killed;
+        // Lighting 5, Task 10: an OpenRGB that does not exit when it is ended, until the test calls Exit.
+        public volatile bool IgnoresKill;
         public int Id=>id;
         public bool HasExited=>exit.Task.IsCompleted;
         public Task WaitForExitAsync(CancellationToken token)=>exit.Task.WaitAsync(token);
-        public void KillTree(){Killed=true;exit.TrySetResult();}
+        public void KillTree(){Killed=true;if(!IgnoresKill) exit.TrySetResult();}
         public void Exit()=>exit.TrySetResult();
         public void Dispose(){}
     }

@@ -18,10 +18,7 @@ internal static class HubHold
         if(f.Mode!=HubModes.Driven) return (HubReasons.Off,null);
         if(f.Stopping) return (HubReasons.NoLighting,null);
         if(f.Quiet) return (HubReasons.Waking,null);
-        if(Has(f,ConflictKind.ICue)) return (HubReasons.ICue,null);
-        if(Has(f,ConflictKind.CorsairService)||Has(f,ConflictKind.LegacyCorsairService)) return (HubReasons.Service,null);
-        if(Has(f,ConflictKind.DeadLight)) return (HubReasons.DeadLight,null);
-        if(Has(f,ConflictKind.ForeignOpenRgb)) return (HubReasons.OtherOpenRgb,null);
+        foreach(var reason in ConflictOrder) if(f.Conflicts.Any(c=>Conflict(c.Kind)==reason)) return (reason,null);
         if(f.ScanFailed||!f.EngineActive||f.Status is HostStatus.Blocked or HostStatus.OpenRgbMissing or HostStatus.OpenRgbFailed) return (HubReasons.NoLighting,null);
         // Ruling R4 (P33): not a fault, the hub is taken in a moment.
         if(!f.ConnectedOnce) return (HubReasons.Starting,null);
@@ -29,5 +26,15 @@ internal static class HubHold
         return (null,null);
     }
 
-    static bool Has(HubFacts f,ConflictKind kind)=>f.Conflicts.Any(c=>c.Kind==kind);
+    // The one mapping of a conflict kind to its HubReasons code (null: none), for the hold and for the hub requests' blockers (Task 10 review, M6);
+    // the legacy Corsair service doesn't block lighting but is the service all the same. ConflictOrder: which wins when several are found.
+    public static string? Conflict(ConflictKind kind)=>kind switch
+    {
+        ConflictKind.ICue=>HubReasons.ICue,
+        ConflictKind.CorsairService or ConflictKind.LegacyCorsairService=>HubReasons.Service,
+        ConflictKind.DeadLight=>HubReasons.DeadLight,
+        ConflictKind.ForeignOpenRgb=>HubReasons.OtherOpenRgb,
+        _=>null,
+    };
+    static readonly string[] ConflictOrder=[HubReasons.ICue,HubReasons.Service,HubReasons.DeadLight,HubReasons.OtherOpenRgb];
 }

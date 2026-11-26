@@ -141,15 +141,19 @@ internal sealed class DeviceHost : IAsyncDisposable
     // Task 8: Poll (the battery and the view) in TickWork while lighting runs, and the battery's Invalidate at the wake's end.
     readonly AeroxMouse? mouse;
     // Lighting 5, the hub (none: no HubHost, no hub step and HostState.Hub null, as in 0.22). The host's hub state is in hubHost, under gate;
-    // the logic is in HubHold and HubHost, and this class only wires it. Nothing on the loop or under gate waits for the hub: HubWork looks at
-    // the worker's snapshot turn by turn, and the one wait is the hand-back of at most HubHost.HandBack at the stop, off the lock. The worker's
-    // Changed only wakes the loop. Under gate: connectedOnce (ConnectLocked has succeeded in this run; never cleared), hubWhy (the forbid last
+    // the logic is in HubHold, HubHost and HubTakeover, and this class only wires it. Nothing on the loop or under gate waits for the hub:
+    // HubWork looks at the worker's snapshot turn by turn, and the one wait is the hand-back of at most HubHost.HandBack at the stop, off the
+    // lock. The worker's Changed only wakes the loop. Under gate: connectedOnce (ConnectLocked has succeeded in this run; never cleared), hubWhy (the forbid last
     // sent, or Starting before the first), lastHubView (the hub view of the last raised state), hubStateDue (SetHubModeLocked changed the
     // settings), hubScanFailed (the loop's last scan failed), ownScan (the hub step's own scan, newer than the loop's last one, for the facts
     // only; it stands until CheckConflictsAsync assigns conflicts again).
     // startDue (the loop only): StartOpenRgb came while a start was pending.
+    // Task 10: the hub's requests and the take-over are in HubTakeover (under gate, as hubHost); HubWorkAsync drives it and does its work off the
+    // lock. settleMode is SetHubModeLocked, the one way the take-over sets the hub mode.
     readonly IHub? hub;
     readonly HubHost? hubHost;
+    readonly HubTakeover? takeover;
+    readonly Action<HubSettings,string> settleMode;
     bool connectedOnce,hubStateDue,hubScanFailed,startDue;
     (string? Reason,string? Detail) hubWhy=(HubReasons.Starting,null);
     HubView? lastHubView;
@@ -174,7 +178,8 @@ internal sealed class DeviceHost : IAsyncDisposable
         this.mouse=mouse;
         this.hub=hub;
         service=new(session,time,log,mouse,hub);
-        if(hub is not null){hubHost=new(hub,detector,time,log);hub.Changed+=Wake;}
+        if(hub is not null){hubHost=new(hub,detector,time,log);takeover=new(hubHost,time,log);hub.Changed+=Wake;}
+        settleMode=SetHubModeLocked;
         session.DeviceListUpdated+=OnDeviceListUpdated;
         engine.Changed+=OnEngineChanged;
     }
@@ -482,23 +487,30 @@ internal sealed class DeviceHost : IAsyncDisposable
     // state is due whenever the hub view differs from the last one raised (ruling P18). Outside it: the state, the readings event, and the one
     // restart for an OpenRGB that still has the hub (rulings P3, P21, P32), whose stop comes after the Allow that forbids holding, sent in this
     // same turn.
+    // Task 10: the take-over's turn comes under gate before the Allow, so a step that forbids (Force, Taking) is sent in the same turn; its Scan
+    // step's fresh scan is made first, off the lock (amendment 4); its chore (OpenRGB's stop, start or restart) is done last, off the lock, after
+    // this turn's Allow; a stop's answer goes back to it, and a back-out or switch-off that issued its restart ends after that (Issued).
     async Task HubWorkAsync(bool slow,CancellationToken ct)
     {
         if(hubHost is null) return;
-        var scanned=slow&&starting is{IsCompleted:false}&&ScanForHub();
-        if(!scanned)
+        bool fresh;
+        lock(gate)fresh=takeover!.Step==HubStep.Scan&&status!=HostStatus.Stopping;
+        var scanned=fresh?ScanForHub(always:true):slow&&starting is{IsCompleted:false}&&ScanForHub();
+        if(!scanned&&!fresh)
         {
             bool take;
             lock(gate)take=hubHost.Force is null&&!hubHost.Allowing&&HubHold.Why(HubFactsLocked()).Reason is null;
             if(take) scanned=ScanForHub();
         }
         bool raise,restart;
+        HubChore chore;
         HubReadingsEvent? readings;
         lock(gate)
         {
             var snap=hubHost.Hub.Snapshot;
             if(hubHost.NewParts(settings,snap) is{} parts) SetHubModeLocked(parts,"hub parts saved");
             if(hubHost.StoppedPump(settings,snap) is{} stopped) SetHubModeLocked(stopped,"hub mode settled: driven -> stopped (the pump read 0 RPM)");
+            chore=takeover!.Turn(new(snap,HubFactsLocked(),scanned,settings.Hub.Mode),settleMode);
             var held=HubAllowLocked(scanned);
             HubSyncLocked();
             if(hubHost.Moved(snap,service.Hub)) rescanPending=true;
@@ -512,14 +524,33 @@ internal sealed class DeviceHost : IAsyncDisposable
         if(raise) Raise();
         if(readings is not null) try{HubReadingsChanged?.Invoke(readings);}catch(Exception e){log.Write("HubReadingsChanged handler failed: "+e.Message);}
         if(restart){await StopOpenRgbForRestartAsync().ConfigureAwait(false);StartOpenRgb(ct);}
+        if(chore!=HubChore.None&&!ct.IsCancellationRequested)
+        {
+            if(chore==HubChore.StopOpenRgb)
+            {
+                var exited=await StopOpenRgbForRestartAsync().ConfigureAwait(false);
+                lock(gate)takeover.Stopped(exited);
+            }
+            else
+            {
+                // Ruling P19: an OpenRGB of ours that exists, Starting included (launched, its port not open yet), is stopped first. With none,
+                // StartOpenRgb alone; a launch still in its floor wait reads the detector by itself, and the engine starts nothing twice.
+                if(chore==HubChore.Restart&&engine.ProcessId is not null) await StopOpenRgbForRestartAsync().ConfigureAwait(false);
+                StartOpenRgb(ct);
+            }
+        }
+        bool ended;
+        lock(gate)ended=takeover.Issued();
+        if(ended) Raise();
     }
 
     // The hub step's own scan, in mode driven, off the lock, for the facts only (rulings P24, R30); it stands until CheckConflictsAsync assigns
     // conflicts again. A pending start is when OpenRGB is launched, and its new process would count as another OpenRGB: a result during which
     // our process id changed is dropped, as CheckConflictsAsync drops it. A scan that throws counts as a failed scan. True when a result stands.
-    bool ScanForHub()
+    // always (Task 10): the take-over's Scan step, made in mode openrgb too.
+    bool ScanForHub(bool always=false)
     {
-        lock(gate)if(hubHost!.Mode(settings)!=HubModes.Driven) return false;
+        lock(gate)if(!always&&hubHost!.Mode(settings)!=HubModes.Driven) return false;
         var pid=engine.ProcessId;
         IReadOnlyList<LightingConflict> found;
         var failed=false;
@@ -876,8 +907,30 @@ internal sealed class DeviceHost : IAsyncDisposable
             case SetMouseSleepRequest r:
                 if(!MouseSleep.Valid(r.Minutes)) return Fail(request,HostReplyCodes.BadSleep);
                 return Mutate(request,s=>{s.Mouse.SleepMinutes=r.Minutes;return null;},out raise);
+            // Lighting 5, Task 10: judged from the last scan; they never scan, wait for the hub or await, and the state they cause follows the reply.
+            case ReadHubRequest:return HubRequest(request,t=>t.Read(HubAskLocked()),out raise);
+            case SetHubModeRequest r:return HubRequest(request,t=>t.SetMode(r.Mode,HubAskLocked()),out raise);
             default:return Fail(request,HostReplyCodes.Unsupported);
         }
+    }
+
+    // A hub request: unsupported without a hub; a state is due when the hub view changed (a mode change began, a problem was cleared).
+    HostMessage HubRequest(HostMessage request,Func<HubTakeover,string?> ask,out bool raise)
+    {
+        raise=false;
+        if(takeover is null) return Fail(request,HostReplyCodes.Unsupported);
+        var before=hubHost!.View(settings,hubWhy);
+        if(ask(takeover) is{} why) return Fail(request,why);
+        raise=!HubHost.Same(before,hubHost.View(settings,hubWhy));
+        return Ok(request);
+    }
+    // What a hub request is judged by: the conflicts of the newest scan (the hub step's own while it stands, as in HubFactsLocked) and fields
+    // written under gate only, so it is safe on the pipe's thread (Task 9 review, M6).
+    HubAsk HubAskLocked()
+    {
+        var own=ownScan;
+        return new(everyday.Quiet,saveAllowed,settings.Hub.Mode,own?.Found??conflicts,own?.Failed??hubScanFailed,engineActive&&sessionOk&&status==HostStatus.Running,
+            service.TwoHubs,time.GetUtcNow());
     }
 
     // Step 3a: the device must be one OpenRGB lists now; an entry for one that isn't connected is kept but can't be changed. The edit goes
