@@ -150,6 +150,10 @@ public sealed class Collector : IAsyncDisposable
     private bool lowLevelAvailable;
     private Task? worker;
     private Reading? latest;
+    private sealed record HubHeld(HubReadings Readings,TimeSpan Age,long At,bool RadiatorNames);
+    private HubHeld? hubHeld;
+    /// <summary>Hands the collector the hub's last readings and their age now, and whether the saved picture names the radiator fans; any thread, the newest wins. Null clears them.</summary>
+    public void SetHub((HubReadings Readings,TimeSpan Age)? hub,bool radiatorNames)=>Volatile.Write(ref hubHeld,hub is {} h?new HubHeld(h.Readings,h.Age,Stopwatch.GetTimestamp(),radiatorNames):null);
     public Reading? Latest=>Volatile.Read(ref latest);
     public double ElapsedSeconds=>clock.Elapsed.TotalSeconds;
     public SampleHistory History {get;}=new();
@@ -260,6 +264,11 @@ public sealed class Collector : IAsyncDisposable
                         zoneTemp=ThermalZones.CpuFallback(zones,ThermalZones.IsPortable(battery.PowerState));
                         cpuTemp=zoneTemp?.Celsius;
                     }
+                    // The hub's rows, as old as the reading was when it was handed over plus the time since; too old, and there are none.
+                    HubReadings? hubReadings=null;TimeSpan hubAge=default;bool hubRadiators=false;
+                    if(Volatile.Read(ref hubHeld) is {} held){hubReadings=held.Readings;hubAge=held.Age+Stopwatch.GetElapsedTime(held.At);hubRadiators=held.RadiatorNames;}
+                    var hubRows=HubSensors.Sensors(hubReadings,hubAge,hubRadiators);
+                    sensors.AddRange(hubRows);fresh.AddRange(hubRows);
                     stage="Reading Windows counters";
                     long providerStarted=Stopwatch.GetTimestamp();var fallbackCpu=windows.Cpu();
                     if(timings is not null)timings["windows/cpu"]=Stopwatch.GetElapsedTime(providerStarted).TotalMilliseconds;
@@ -269,6 +278,7 @@ public sealed class Collector : IAsyncDisposable
                     cores=HoldCores(cores,ref heldCores);
                     PublishCores(values,cores);
                     values["cpu/temperature"]=cpuTemp;
+                    values[HubSensors.CoolantKey]=HubSensors.Coolant(hubReadings,hubAge);
                     values["cpu/pump"]=cpuPumpSpeed.Read(sensors,sensors.Where(s=>s.HardwareType=="Cpu"&&s.HardwareId.Length>0).Select(s=>s.HardwareId).Distinct(StringComparer.Ordinal).Count());
                     // The chip the pump reading comes from keeps updating every poll, whatever else is slow.
                     hardwareCadence.PumpHardwareId=cpuPumpSpeed.HardwareId;

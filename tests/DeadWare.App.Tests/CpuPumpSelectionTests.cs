@@ -58,5 +58,16 @@ public class CpuPumpSelectionTests
         Assert.Equal("cpu/usage",mappings[prefix+"usage"]);
     }
 
+    [Fact]
+    public void Graph_mapping_adds_coolant_to_the_existing_cpu_identity()
+    {
+        var reading=new Reading(new(DateTimeOffset.UtcNow,1,new Dictionary<string,double?>()),[],
+            [new("/cpu/0/temperature/0","Test CPU","CPU Package","°C",60,"/cpu/0","Cpu","Temperature")],[],"Test CPU","","","",false);
+        var mappings=GraphHistoryProjection.Mappings(reading,"machine");
+        string prefix=Assert.Single(mappings,p=>p.Value=="cpu/temperature").Key[..^"temperature".Length];
+        Assert.Equal("cpu/coolant",mappings[prefix+"coolant"]);
+        Assert.Equal("cpu/pump",mappings[prefix+"pump"]);
+    }
+
     private static SensorReading Fan(string id,string name,double? value)=>new(id,"Nuvoton NCT6687D",name,"RPM",value,"/lpc/nct6687d/0","SuperIO","Fan");
 }

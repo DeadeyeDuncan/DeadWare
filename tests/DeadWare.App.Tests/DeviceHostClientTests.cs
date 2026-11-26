@@ -370,6 +370,35 @@ public class DeviceHostClientTests:IAsyncLifetime
         await host.Push(new StateEvent(Sample)).WaitAsync(Bound); // a client that stopped reading would otherwise hang the run
         await Until(()=>client.State is not null&&Volatile.Read(ref changed)==1);
     }
+    [Fact] public async Task Hub_readings_keep_their_age_and_go_with_the_connection()
+    {
+        var client=Make();
+        await client.StartAsync(false,CancellationToken.None);
+        await Until(()=>client.State is not null);
+        Assert.Null(client.Hub);
+        await host.Push(new HubReadingsEvent(new HubReadings([new(13,"pump","Pump",2774,43.7)],300))).WaitAsync(Bound);
+        await Until(()=>client.Hub is not null);
+        var (readings,age)=client.Hub!.Value;
+        Assert.Equal(2774,Assert.Single(readings.Parts).Rpm);Assert.Equal(TimeSpan.FromMilliseconds(300),age);
+        time.Advance(TimeSpan.FromSeconds(2));
+        Assert.Equal(TimeSpan.FromMilliseconds(2300),client.Hub!.Value.Age);
+        host.Close();
+        await Until(()=>client.Hub is null,"the readings gone with the connection");
+    }
+    [Fact] public async Task A_readings_event_raises_only_its_own_event()
+    {
+        var client=Make();int changed=0,hub=0;
+        client.Changed+=()=>Interlocked.Increment(ref changed);client.HubReadingsChanged+=()=>Interlocked.Increment(ref hub);
+        await client.StartAsync(false,CancellationToken.None);
+        await Until(()=>client.State is not null&&Volatile.Read(ref changed)==1);
+        await host.Push(new HubReadingsEvent(new HubReadings([new(1,"fan","Fan",1660)]))).WaitAsync(Bound);
+        await Until(()=>Volatile.Read(ref hub)==1);
+        Assert.Equal(1,Volatile.Read(ref changed));
+        // A state pushed after the readings is read after them, so the readings' own raise has already been counted.
+        await host.Push(new StateEvent(Sample)).WaitAsync(Bound);
+        await Until(()=>Volatile.Read(ref changed)==2);
+        Assert.Equal(1,Volatile.Read(ref hub));
+    }
     [Fact] public async Task GetState_completes_when_its_state_event_arrives()
     {
         host.Answer=m=>m is GetStateRequest?[new StateEvent(Sample with {Message="state "+m.Id}){Id=m.Id}]:FakeHost.Answers(m);

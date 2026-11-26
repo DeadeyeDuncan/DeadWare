@@ -34,6 +34,12 @@ public sealed class MonitorSession
     public UserSettings Settings {get;}
     /// <summary>The lighting host's client; null while lighting is off or no OpenRGB path is set.</summary>
     internal DeviceHostClient? Lighting {get;private set;}
+    /// <summary>The hub's last readings on the lighting client, with their age; null without a client or before any arrive.</summary>
+    public (HubReadings Readings,TimeSpan Age)? HubReadings=>Lighting?.Hub;
+    /// <summary>What the hub's state says, or null without a state.</summary>
+    public HubView? Hub=>Lighting?.State?.Hub;
+    /// <summary>The owner's desk picture applies to the devices listed now; false without a state. A picture that does not apply names no radiator fans.</summary>
+    public bool PictureApplies=>Lighting?.State is {} state&&DeskPictures.Applies(state.Devices.Select(v=>v.Name),state.Settings.Layout.Picture) is not null;
     private readonly SemaphoreSlim lightingGate=new(1,1);
     // Shared by every lighting client, so a host is never launched within 4 s of the previous one's exit, even across a toggle or a new path.
     private readonly HostLaunchPacer lightingPacer=new(TimeProvider.System);
@@ -125,6 +131,7 @@ public sealed class MonitorSession
             if(Settings.SelectedGpuId is null && Current is {Gpus.Count:>0} reading)
             {Settings.SelectedGpuId=DeviceSelection.Resolve(null,reading.Gpus);_ = SaveAsync();}
             CheckClearStates();
+            Collector.SetHub(Lighting?.Hub,PictureApplies);
             Changed?.Invoke();
         };
     }
@@ -250,6 +257,11 @@ public sealed class MonitorSession
     {
         if(Settings.ShowGpuFanSpeed==enabled)return;
         Settings.ShowGpuFanSpeed=enabled;Changed?.Invoke();_ = SaveAsync();
+    }
+    public void SetCoolantTemperature(bool enabled)
+    {
+        if(Settings.ShowCoolantTemperature==enabled)return;
+        Settings.ShowCoolantTemperature=enabled;Changed?.Invoke();_ = SaveAsync();
     }
     public void SetCpuPumpSpeed(bool enabled)
     {
@@ -441,7 +453,7 @@ public sealed class MonitorSession
         Cooling.Configure(Settings.CoolingRecording,Settings.CoolingNotifications,Settings.CoolingDetailedDays,Settings.CoolingSummaryDays,Settings.CoolingConfigurationId);
         _ = SaveAsync();
     }
-    public string MetricId(string kind)=>kind switch {"cpu"=>"cpu/usage","cputemp"=>"cpu/temperature","cpupump"=>"cpu/pump","gpu"=>(SelectedGpuId??"unavailable")+"/usage","gputemp"=>(SelectedGpuId??"unavailable")+"/temperature","gpufan"=>(SelectedGpuId??"unavailable")+"/fan","memory"=>"memory/usage","storage"=>"storage/total/read",_=>"network/download"};
+    public string MetricId(string kind)=>kind switch {"cpu"=>"cpu/usage","cputemp"=>"cpu/temperature","cpupump"=>"cpu/pump","cpucoolant"=>"cpu/coolant","gpu"=>(SelectedGpuId??"unavailable")+"/usage","gputemp"=>(SelectedGpuId??"unavailable")+"/temperature","gpufan"=>(SelectedGpuId??"unavailable")+"/fan","memory"=>"memory/usage","storage"=>"storage/total/read",_=>"network/download"};
     // The front end's pop-out windows. Until a front end adopts the layout, saves leave Settings.OpenWindows as loaded.
     private bool managesWindows;
     private Action? captureWindows;

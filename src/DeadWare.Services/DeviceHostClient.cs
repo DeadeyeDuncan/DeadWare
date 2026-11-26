@@ -49,7 +49,7 @@ internal sealed class DeviceHostClient : IAsyncDisposable
     readonly CancellationTokenSource lifetime=new();readonly CancellationTokenSource pacing;readonly TaskCompletionSource disposed=new(TaskCreationOptions.RunContinuationsAsynchronously);
     CancellationTokenRegistration startToken;
     // stopWindow: the running stop's 5 s window; stopSent: its one StopRequest has been claimed, by the stop or by a connection registered after it began.
-    IDeviceHostProcess? process;Conn? conn;HostState? state;string? problem;Task? loop,stopTask;CancellationTokenSource? stopWindow;bool stopping,stopSent,disposing,startupPending,previewWanted;long nextId;
+    IDeviceHostProcess? process;Conn? conn;HostState? state;HubReadings? hubReadings;long hubArrived;string? problem;Task? loop,stopTask;CancellationTokenSource? stopWindow;bool stopping,stopSent,disposing,startupPending,previewWanted;long nextId;
     // seq: the states stored so far, from StateEvents and GetState answers alike, counted on the read loop under the lock; never reset.
     long seq;
     /// <param name="pacer">Shared by the session's clients so that no launch follows a host's exit within 4 s; a client of its own by default.</param>
@@ -59,7 +59,11 @@ internal sealed class DeviceHostClient : IAsyncDisposable
     /// <summary>The latest state and the count of states stored so far, read together under the lock.</summary>
     public HostSnapshot Snapshot() {lock(gate)return new(state,seq);}
     public string? Problem {get {lock(gate)return problem;}}
+    /// <summary>The last hubReadings event on this connection, with its age: the event's AgeMs plus the time since it arrived. Null before one arrives and after the connection ends.</summary>
+    public (HubReadings Readings,TimeSpan Age)? Hub {get {lock(gate)return hubReadings is {} r?(r,TimeSpan.FromMilliseconds(r.AgeMs)+time.GetElapsedTime(hubArrived)):null;}}
     public event Action? Changed;
+    /// <summary>A hubReadings event arrived; raised on the read loop, apart from <see cref="Changed"/>.</summary>
+    public event Action? HubReadingsChanged;
     /// <summary>A preview frame (zone colours, and per-light colours for key-mapped devices), raised on the read loop like <see cref="Changed"/> and only while <see cref="SetPreview"/> wants frames.</summary>
     public event Action<PreviewColors>? Preview;
     /// <summary>
@@ -87,6 +91,7 @@ internal sealed class DeviceHostClient : IAsyncDisposable
     bool IsStopping {get {lock(gate)return stopping;}}
     IDeviceHostProcess? CurrentProcess {get {lock(gate)return process;}}
     /// <summary>Raises <see cref="Changed"/>, never under the lock. A subscriber that throws is contained, so it can neither end the connection loop nor starve the others.</summary>
+    void RaiseHubReadingsChanged() {if(HubReadingsChanged is {} handlers)foreach(Action handler in handlers.GetInvocationList())try {handler();} catch(Exception) {}}
     void RaiseChanged() {if(Changed is {} handlers)foreach(Action handler in handlers.GetInvocationList())try {handler();} catch(Exception) {}}
     void SetProblem(string? value) {lock(gate){if(problem==value)return;problem=value;}RaiseChanged();}
     async Task<bool> Pause(TimeSpan delay,CancellationToken ct)
@@ -201,7 +206,7 @@ internal sealed class DeviceHostClient : IAsyncDisposable
         finally
         {
             List<TaskCompletionSource<TrackedReply>> orphaned;bool cleared;long now;
-            lock(gate){c.Dead=true;if(conn==c)conn=null;orphaned=[..c.Pending.Values];c.Pending.Clear();cleared=state is not null;state=null;now=seq;}
+            lock(gate){c.Dead=true;if(conn==c)conn=null;orphaned=[..c.Pending.Values];c.Pending.Clear();cleared=state is not null;state=null;hubReadings=null;now=seq;}
             foreach(var p in orphaned)p.TrySetResult(new(NotConnected,now));
             stream.Dispose();
             await stopSend.ConfigureAwait(false);
@@ -261,6 +266,7 @@ internal sealed class DeviceHostClient : IAsyncDisposable
                     RaiseChanged();
                     if(first&&windowElevated&&!update.State.Elevated)return ServeEnd.WrongElevation;
                 }
+                else if(message is HubReadingsEvent readings) {lock(gate){hubReadings=readings.Readings;hubArrived=time.GetTimestamp();}RaiseHubReadingsChanged();}
                 // A frame the host queued before an unsubscribe can still arrive after it: dropped while frames aren't wanted.
                 else if(message is PreviewEvent frame) {bool wanted;lock(gate)wanted=previewWanted;if(wanted)RaisePreview(new PreviewColors(frame.Colors,frame.Lights));}
             }

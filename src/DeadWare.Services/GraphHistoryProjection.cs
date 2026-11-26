@@ -29,7 +29,7 @@ public static class GraphHistoryProjection
         // CPU graph values are machine-wide. Multiple sockets cannot be assigned a
         // physical identity from the collector's single current CPU label.
         if(cpus.Length==1)
-            Add("Cpu",cpus[0].First().Hardware,"cpu","usage","temperature","pump");
+            Add("Cpu",cpus[0].First().Hardware,"cpu","usage","temperature","pump","coolant");
         foreach(var gpu in reading.Gpus.Take(16))
         {
             if(string.IsNullOrWhiteSpace(gpu.Name)||reading.Gpus.Count(g=>g.Name.Equals(gpu.Name,StringComparison.OrdinalIgnoreCase))!=1)continue;

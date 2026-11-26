@@ -16,7 +16,7 @@ public static class OverviewPresenter
 
     public static string Title(string kind) => kind switch
     {
-        "cpu" => "CPU usage", "cputemp" => "CPU temperature", "cpupump" => "CPU pump speed", "gpu" => "GPU usage", "gputemp" => "GPU temperature",
+        "cpu" => "CPU usage", "cputemp" => "CPU temperature", "cpupump" => "CPU pump speed", "cpucoolant" => "Coolant temperature", "gpu" => "GPU usage", "gputemp" => "GPU temperature",
         "gpufan" => "GPU fan speed", "usage" => "CPU / GPU usage", "temperature" => "CPU / GPU temperature", "memory" => "RAM usage", "storage" => "Disk activity",
         _ => "Network activity",
     };
