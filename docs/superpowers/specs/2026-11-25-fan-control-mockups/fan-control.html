@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fan control: mockup</title>
+<style>
+  :root { --bg:#0b0f17; --card:#111722; --line:#1f2937; --ink:#e6edf6; --mute:#8b98ab; --acc:#5ee0ff; --warn:#ffcf5e; --good:#52e08a; --bad:#ff9aa5;
+          /* the three modes: one fixed colour each, checked against the card surface */
+          --quiet:#3987e5; --bal:#d95926; --perf:#199e70; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:13px/1.4 "Segoe UI",system-ui,sans-serif; }
+  .page { padding:18px 22px 40px; max-width:1120px; margin:0 auto; }
+  h1 { font-size:20px; margin:0; font-weight:600; }
+  h2 { font-size:15px; margin:26px 0 4px; font-weight:600; }
+  .sub { color:var(--mute); font-size:12px; margin:2px 0 14px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:13px 15px; }
+  .mute { color:var(--mute); font-size:11.5px; }
+  .btn { border:1px solid #33415a; border-radius:7px; padding:4px 11px; font:inherit; font-size:12px; color:var(--ink); background:#131b29; }
+  .note { margin-top:10px; padding:8px 10px; border-radius:8px; background:#0e1520; border:1px dashed #2a3850; color:var(--mute); font-size:11.5px; }
+  .dim { opacity:.42; }
+  /* numbered choices: part of the mockup, not of the app */
+  .q { display:inline-block; min-width:18px; height:18px; border-radius:9px; background:var(--warn); color:#231d0c; font-size:11px; font-weight:700; line-height:18px; text-align:center; padding:0 5px; margin-left:6px; vertical-align:1px; }
+  svg text { font-family:"Segoe UI",system-ui,sans-serif; }
+
+  /* imitation of the app window */
+  .app { border:1px solid var(--line); border-radius:12px; padding:14px 16px 16px; background:#0d121b; }
+  .head { display:flex; align-items:center; justify-content:space-between; margin-bottom:6px; flex-wrap:wrap; gap:10px; }
+  .head .t { font-size:18px; font-weight:600; }
+  .tools { display:flex; align-items:center; gap:10px; font-size:12.5px; }
+  .seg { display:inline-flex; border:1px solid #33415a; border-radius:8px; overflow:hidden; }
+  .seg span { padding:5px 14px; font-size:12.5px; color:var(--mute); background:#131b29; border-left:1px solid #33415a; }
+  .seg span:first-child { border-left:0; }
+  .seg span.on { color:#06202b; background:var(--acc); font-weight:600; }
+  .modeline { color:var(--mute); font-size:12px; margin-bottom:10px; }
+  .status { border:1px solid #1d3b2a; background:#0e1c15; border-radius:8px; padding:7px 10px; margin-bottom:12px; font-size:12.5px; display:flex; gap:8px; align-items:flex-start; }
+  .mk { flex:none; width:16px; height:16px; border-radius:50%; font-size:10.5px; font-weight:700; line-height:16px; text-align:center; margin-top:1px; }
+  .mk.ok { background:#123a25; color:var(--good); }
+  .mk.no { background:#3d1a20; color:var(--bad); }
+  .mk.wa { background:#3a2f10; color:var(--warn); }
+  .cols { display:grid; grid-template-columns:330px 1fr; gap:14px; align-items:start; }
+  .fan { display:grid; grid-template-columns:1fr 124px; gap:8px; align-items:center; margin-bottom:10px; }
+  .fan.sel { border-color:var(--acc); box-shadow:0 0 0 1px var(--acc) inset; }
+  .fan h3 { margin:0; font-size:14px; font-weight:600; }
+  .fan .big { font-size:19px; font-weight:600; font-variant-numeric:tabular-nums; margin-top:3px; }
+  .fan .big small { font-size:12px; font-weight:400; color:var(--mute); margin-left:6px; }
+  .ctl { display:flex; flex-wrap:wrap; gap:14px; align-items:center; margin-top:10px; font-size:12.5px; }
+  .box { border:1px solid #33415a; border-radius:7px; padding:4px 9px; background:#0f1622; font-size:12px; display:inline-block; }
+  .edhead { display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; }
+  .edhead b { font-size:14px; }
+
+  /* defaults */
+  .legend { display:flex; gap:18px; align-items:center; font-size:12.5px; margin:8px 0 10px; }
+  .legend i { display:inline-block; width:22px; height:0; border-top:3px solid; vertical-align:middle; margin-right:6px; border-radius:2px; }
+  .four { display:grid; grid-template-columns:repeat(2,1fr); gap:12px; }
+  .four .card { padding:10px 12px 6px; }
+  .four b { font-size:13px; }
+  .four polyline { fill:none; stroke-width:2; }
+  .tbl { width:100%; border-collapse:collapse; margin-top:12px; font-size:12.5px; }
+  .tbl th { text-align:left; color:var(--mute); font-weight:600; font-size:11.5px; padding:6px 8px; border-bottom:1px solid var(--line); }
+  .tbl td { padding:7px 8px; border-bottom:1px solid var(--line); vertical-align:top; }
+  .tbl td:first-child { font-weight:600; white-space:nowrap; }
+  .rules { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:12px; }
+  .rules ul { margin:6px 0 0; padding-left:18px; }
+  .rules li { margin:3px 0; }
+
+  /* other states */
+  .three { display:grid; grid-template-columns:420px 1fr; gap:14px; align-items:start; }
+  .menu { background:#161d2a; border:1px solid #2a3850; border-radius:9px; padding:5px 0; width:230px; font-size:12.5px; }
+  .menu div { padding:6px 14px; display:flex; justify-content:space-between; }
+  .menu div.hot { background:#1d2a3f; }
+  .menu hr { border:0; border-top:1px solid #2a3850; margin:4px 0; }
+  .menu.subm { width:170px; margin:-76px 0 0 236px; }
+  .ban { border-radius:8px; padding:8px 10px; margin-bottom:8px; font-size:12.5px; display:flex; gap:8px; align-items:flex-start; border:1px solid var(--line); background:#0e1520; }
+  .ban.w { border-color:#5a4a1c; background:#231d0c; color:#ffe3a0; }
+  .ban.b { border-color:#6a3a3f; background:#261316; color:#ffd5d9; }
+  .set .line { display:flex; gap:9px; align-items:flex-start; padding:3px 0; font-size:12.5px; }
+  .set h4 { font-size:13px; font-weight:600; margin:14px 0 6px; }
+  .switch { width:38px; height:20px; border-radius:10px; background:#2a3444; position:relative; flex:none; display:inline-block; vertical-align:middle; }
+  .switch::after { content:""; position:absolute; top:3px; left:3px; width:14px; height:14px; border-radius:50%; background:#aab6c8; }
+  .switch.on { background:var(--acc); }
+  .switch.on::after { left:21px; background:#06202b; }
+  .row { display:grid; grid-template-columns:44px 170px 1fr; gap:8px; align-items:center; padding:5px 0; border-top:1px solid var(--line); font-size:12.5px; }
+</style>
+</head>
+<body>
+<div class="page">
+  <h1>Fan control: mockup</h1>
+  <p class="sub">Numbers in yellow circles are the choices to approve or correct. Readings are examples taken from this PC's history; speeds are starting points to be measured at the hardware check.</p>
+
+  <!-- ============ PART 1: the page ============ -->
+  <section id="p1">
+  <h2>The page, shown in Quiet during light use</h2>
+  <div class="app">
+    <div class="head">
+      <div class="t">Fan control <span class="q">1</span></div>
+      <div class="tools"><span class="mute">Mode</span>
+        <span class="seg"><span class="on">Quiet</span><span>Balanced</span><span>Performance</span></span><span class="q">2</span></div>
+    </div>
+    <div class="modeline">Quiet: fans and pump sit at their lowest steady speeds and wait for a sustained rise before speeding up.</div>
+    <div class="status"><span class="mk ok">&#10003;</span><span>DeadWare is driving every fan listed here. The guard is running. On quit, sleep, log-off or update the fans go back to the BIOS and the hub.<span class="q">3</span></span></div>
+
+    <div class="cols">
+      <div>
+        <div class="card fan">
+          <div><h3>Radiator fans <span class="q">4</span></h3><div class="mute">3 fans &middot; on the hub</div>
+            <div class="big">34%<small>700 RPM</small></div><div class="mute">follows Coolant &middot; 38.4 &deg;C</div></div>
+          <svg viewBox="0 0 120 34" width="124" height="35" role="img" aria-label="Quiet curve for the radiator fans"><polyline points="4,24.8 32.8,24.8 58.4,18.3 74.4,11.8 90.4,4 116,4" fill="none" stroke="#3987e5" stroke-width="2"/><circle cx="46.9" cy="21.2" r="4" fill="#111722" stroke="#e6edf6" stroke-width="2"/></svg>
+        </div>
+        <div class="card fan">
+          <div><h3>Pump</h3><div class="mute">on the hub</div>
+            <div class="big">60%<small>2,090 RPM</small></div><div class="mute">follows Coolant &middot; 38.4 &deg;C</div></div>
+          <svg viewBox="0 0 120 34" width="124" height="35" role="img" aria-label="Quiet curve for the pump"><polyline points="4,14.4 52,14.4 84,4 116,4" fill="none" stroke="#3987e5" stroke-width="2"/><circle cx="46.9" cy="14.4" r="4" fill="#111722" stroke="#e6edf6" stroke-width="2"/></svg>
+        </div>
+        <div class="card fan sel">
+          <div><h3>Main Intake Fans</h3><div class="mute">System Fan #1 header</div>
+            <div class="big">25%<small>540 RPM</small></div><div class="mute">follows Graphics card &middot; 51 &deg;C</div></div>
+          <svg viewBox="0 0 120 34" width="124" height="35" role="img" aria-label="Quiet curve for the intakes"><polyline points="4,23.5 44,23.5 68,17 116,17" fill="none" stroke="#3987e5" stroke-width="2"/><circle cx="37.6" cy="23.5" r="4" fill="#111722" stroke="#e6edf6" stroke-width="2"/></svg>
+        </div>
+        <div class="card fan" style="margin-bottom:0">
+          <div><h3>Exhaust Fan</h3><div class="mute">System Fan #2 header</div>
+            <div class="big">40%<small>920 RPM</small></div><div class="mute">follows Graphics card &middot; 51 &deg;C</div></div>
+          <svg viewBox="0 0 120 34" width="124" height="35" role="img" aria-label="Quiet curve for the exhaust"><polyline points="4,19.6 44,19.6 76,4 116,4" fill="none" stroke="#3987e5" stroke-width="2"/><circle cx="37.6" cy="19.6" r="4" fill="#111722" stroke="#e6edf6" stroke-width="2"/></svg>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="edhead"><b>Main Intake Fans &middot; Quiet curve <span class="q">5</span></b><span class="btn">Reset to default</span></div>
+        <svg viewBox="0 0 560 300" width="100%" role="img" aria-label="Curve editor: intake speed against graphics card temperature">
+          <defs><pattern id="hatch" width="7" height="7" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="7" stroke="#8b98ab" stroke-width="1" opacity=".35"/></pattern></defs>
+          <g stroke="#1f2937" stroke-width="1">
+            <line x1="40" y1="14" x2="546" y2="14"/><line x1="40" y1="77.5" x2="546" y2="77.5"/><line x1="40" y1="141" x2="546" y2="141"/><line x1="40" y1="204.5" x2="546" y2="204.5"/><line x1="40" y1="268" x2="546" y2="268"/>
+            <line x1="112.3" y1="14" x2="112.3" y2="268"/><line x1="184.6" y1="14" x2="184.6" y2="268"/><line x1="256.9" y1="14" x2="256.9" y2="268"/><line x1="329.1" y1="14" x2="329.1" y2="268"/><line x1="401.4" y1="14" x2="401.4" y2="268"/><line x1="473.7" y1="14" x2="473.7" y2="268"/>
+          </g>
+          <g fill="#8b98ab" font-size="11">
+            <text x="34" y="18" text-anchor="end">100%</text><text x="34" y="81.5" text-anchor="end">75%</text><text x="34" y="145" text-anchor="end">50%</text><text x="34" y="208.5" text-anchor="end">25%</text><text x="34" y="272" text-anchor="end">0%</text>
+            <text x="40" y="285" text-anchor="middle">30</text><text x="112.3" y="285" text-anchor="middle">40</text><text x="184.6" y="285" text-anchor="middle">50</text><text x="256.9" y="285" text-anchor="middle">60</text><text x="329.1" y="285" text-anchor="middle">70</text><text x="401.4" y="285" text-anchor="middle">80</text><text x="473.7" y="285" text-anchor="middle">90</text><text x="546" y="285" text-anchor="end">100 &deg;C</text>
+            <text x="293" y="298" text-anchor="middle">Graphics card temperature</text>
+          </g>
+          <!-- ceiling: above 50% -->
+          <rect x="40" y="14" width="484.3" height="127" fill="url(#hatch)"/>
+          <text x="48" y="32" fill="#e6edf6" font-size="11.5">Ceiling 50%: no mode takes these fans above it</text>
+          <!-- floor: under 20% -->
+          <rect x="40" y="217.2" width="506" height="50.8" fill="url(#hatch)"/>
+          <text x="48" y="260" fill="#e6edf6" font-size="11.5">Floor 20%: never slower, never stopped</text>
+          <!-- overheat band -->
+          <rect x="524.3" y="14" width="21.7" height="254" fill="#ffcf5e" opacity=".16"/>
+          <line x1="524.3" y1="14" x2="524.3" y2="268" stroke="#ffcf5e" stroke-width="1.5" stroke-dasharray="4 3"/>
+          <text x="518" y="60" text-anchor="end" fill="#e6edf6" font-size="11.5">From 97 &deg;C: full speed, ceiling ignored</text>
+          <!-- the curve -->
+          <polyline points="40,204.5 220.7,204.5 329.1,141 524.3,141" fill="none" stroke="#3987e5" stroke-width="2.5" stroke-linejoin="round"/>
+          <polyline points="524.3,141 524.3,14 546,14" fill="none" stroke="#3987e5" stroke-width="2.5" stroke-dasharray="5 4"/>
+          <!-- hover readout -->
+          <line x1="271.3" y1="14" x2="271.3" y2="268" stroke="#8b98ab" stroke-width="1" stroke-dasharray="2 3"/>
+          <circle cx="271.3" cy="175.3" r="4" fill="#3987e5" stroke="#111722" stroke-width="2"/>
+          <g><rect x="279" y="150" width="150" height="24" rx="6" fill="#161d2a" stroke="#2a3850"/><text x="287" y="166" fill="#e6edf6" font-size="11.5">62 &deg;C &rarr; 37% &middot; about 950 RPM</text></g>
+          <!-- draggable points -->
+          <circle cx="220.7" cy="204.5" r="6.5" fill="#3987e5" stroke="#111722" stroke-width="2"><title>55 °C, 25%</title></circle>
+          <circle cx="329.1" cy="141" r="6.5" fill="#3987e5" stroke="#111722" stroke-width="2"><title>70 °C, 50%</title></circle>
+          <!-- now -->
+          <circle cx="191.8" cy="204.5" r="5.5" fill="#111722" stroke="#e6edf6" stroke-width="2"/>
+          <text x="191.8" y="194" text-anchor="middle" fill="#e6edf6" font-size="11.5">now</text>
+        </svg>
+        <div class="ctl">
+          <span>Follows <span class="box">Graphics card &#9662;</span><span class="q">6</span></span>
+          <span>Floor <span class="box">20 %</span></span>
+          <span>Ceiling <span class="box">50 %</span><span class="q">7</span></span>
+        </div>
+        <div class="mute" style="margin-top:8px">Drag a point to move it. Click the line to add a point; right-click a point to remove it. The ring marked "now" is where the fans are.</div>
+      </div>
+    </div>
+  </div>
+  <div class="note"><span class="q" style="margin:0 6px 0 0">8</span>The overheat rule is the same in every mode and can't be switched off: the CPU at 92 &deg;C for 30 seconds, the graphics card at 97 &deg;C or the coolant at 55 &deg;C puts every fan and the pump at full speed, ceilings ignored, until the reading is 5 &deg;C lower. Nothing in this PC's history would have set it off: the CPU touched 93 &deg;C only for moments, and the graphics card peaked at 94 &deg;C.</div>
+  </section>
+
+  <!-- ============ PART 2: default curves ============ -->
+  <section id="p2">
+  <h2>Default curves <span class="q">9</span></h2>
+  <p class="sub">What each mode does out of the box. Balanced is what this PC does today. Every curve can be edited and reset. Where modes share a line, it is drawn in alternating dashes.</p>
+  <div class="legend"><span><i style="border-color:#3987e5"></i>Quiet</span><span><i style="border-color:#d95926"></i>Balanced</span><span><i style="border-color:#199e70"></i>Performance</span><span class="mute">Speed in % against the temperature each fan follows</span></div>
+  <div class="four">
+    <div class="card"><b>Radiator fans</b> <span class="mute">follow coolant</span>
+      <svg viewBox="0 0 520 210" width="100%" role="img" aria-label="Default radiator fan curves">
+        <g stroke="#1f2937"><line x1="40" y1="24" x2="504" y2="24"/><line x1="40" y1="104" x2="504" y2="104"/><line x1="40" y1="184" x2="504" y2="184"/></g>
+        <g fill="#8b98ab" font-size="11"><text x="34" y="28" text-anchor="end">100%</text><text x="34" y="108" text-anchor="end">50%</text><text x="34" y="188" text-anchor="end">0</text><text x="40" y="202" text-anchor="middle">25</text><text x="106.3" y="202" text-anchor="middle">30</text><text x="238.9" y="202" text-anchor="middle">40</text><text x="371.4" y="202" text-anchor="middle">50</text><text x="504" y="202" text-anchor="end">60 &deg;C</text></g>
+        <polyline points="40,120 106.3,120 265.4,24 504,24" stroke="#199e70"/>
+        <polyline points="40,152 106.3,152 265.4,56 344.9,24" stroke="#d95926"/>
+        <polyline points="344.9,24 397.9,24" stroke="#d95926" stroke-dasharray="8 8"/>
+        <polyline points="397.9,24 504,24" stroke="#d95926" stroke-dasharray="6 12"/>
+        <polyline points="40,152 106.3,152" stroke="#3987e5" stroke-dasharray="8 8"/>
+        <polyline points="106.3,152 159.3,152 265.4,112 331.7,72 397.9,24" stroke="#3987e5"/>
+        <polyline points="397.9,24 504,24" stroke="#3987e5" stroke-dasharray="6 12" stroke-dashoffset="12"/>
+        <g fill="#e6edf6" font-size="11.5"><text x="118" y="64">Performance</text><text x="228" y="90">Balanced</text><text x="300" y="134">Quiet</text><text x="500" y="17" text-anchor="end">all three: 100%</text></g>
+      </svg></div>
+    <div class="card"><b>Pump</b> <span class="mute">follows coolant</span>
+      <svg viewBox="0 0 520 210" width="100%" role="img" aria-label="Default pump curves">
+        <g stroke="#1f2937"><line x1="40" y1="24" x2="504" y2="24"/><line x1="40" y1="104" x2="504" y2="104"/><line x1="40" y1="184" x2="504" y2="184"/></g>
+        <rect x="40" y="104" width="464" height="80" fill="#8b98ab" opacity=".10"/>
+        <g fill="#8b98ab" font-size="11"><text x="34" y="28" text-anchor="end">100%</text><text x="34" y="108" text-anchor="end">50%</text><text x="34" y="188" text-anchor="end">0</text><text x="40" y="202" text-anchor="middle">25</text><text x="106.3" y="202" text-anchor="middle">30</text><text x="238.9" y="202" text-anchor="middle">40</text><text x="371.4" y="202" text-anchor="middle">50</text><text x="504" y="202" text-anchor="end">60 &deg;C</text><text x="272" y="150" text-anchor="middle">the pump never goes under 50%</text></g>
+        <polyline points="40,24 504,24" stroke="#199e70"/>
+        <polyline points="40,36.8 504,36.8" stroke="#d95926"/>
+        <polyline points="40,88 238.9,88 371.4,24" stroke="#3987e5"/>
+        <polyline points="371.4,24 504,24" stroke="#3987e5" stroke-dasharray="8 8"/>
+        <g fill="#e6edf6" font-size="11.5"><text x="46" y="17">Performance: 100%</text><text x="46" y="54">Balanced: today's speed, about 2,750 RPM</text><text x="46" y="81">Quiet</text></g>
+      </svg></div>
+    <div class="card"><b>Main Intake Fans</b> <span class="mute">follow graphics card</span>
+      <svg viewBox="0 0 520 210" width="100%" role="img" aria-label="Default intake curves">
+        <g stroke="#1f2937"><line x1="40" y1="24" x2="504" y2="24"/><line x1="40" y1="104" x2="504" y2="104"/><line x1="40" y1="184" x2="504" y2="184"/></g>
+        <g fill="#8b98ab" font-size="11"><text x="34" y="28" text-anchor="end">100%</text><text x="34" y="108" text-anchor="end">50%</text><text x="34" y="188" text-anchor="end">0</text><text x="40" y="202" text-anchor="middle">30</text><text x="172.6" y="202" text-anchor="middle">50</text><text x="305.1" y="202" text-anchor="middle">70</text><text x="437.7" y="202" text-anchor="middle">90</text><text x="504" y="202" text-anchor="end">100 &deg;C</text><text x="272" y="62" text-anchor="middle">ceiling 50%: nothing goes above it</text></g>
+        <polyline points="40,104 504,104" stroke="#d95926"/>
+        <polyline points="40,104 305.1,104" stroke="#199e70" stroke-dasharray="8 8"/>
+        <polyline points="305.1,104 504,104" stroke="#199e70" stroke-dasharray="6 12"/>
+        <polyline points="40,144 205.7,144 305.1,104" stroke="#3987e5"/>
+        <polyline points="305.1,104 504,104" stroke="#3987e5" stroke-dasharray="6 12" stroke-dashoffset="12"/>
+        <g fill="#e6edf6" font-size="11.5"><text x="46" y="97">Balanced and Performance: 50%</text><text x="500" y="97" text-anchor="end">from 70 &deg;C all three: 50%</text><text x="46" y="162">Quiet</text></g>
+      </svg></div>
+    <div class="card"><b>Exhaust Fan</b> <span class="mute">follows graphics card</span>
+      <svg viewBox="0 0 520 210" width="100%" role="img" aria-label="Default exhaust curves">
+        <g stroke="#1f2937"><line x1="40" y1="24" x2="504" y2="24"/><line x1="40" y1="104" x2="504" y2="104"/><line x1="40" y1="184" x2="504" y2="184"/></g>
+        <g fill="#8b98ab" font-size="11"><text x="34" y="28" text-anchor="end">100%</text><text x="34" y="108" text-anchor="end">50%</text><text x="34" y="188" text-anchor="end">0</text><text x="40" y="202" text-anchor="middle">30</text><text x="172.6" y="202" text-anchor="middle">50</text><text x="305.1" y="202" text-anchor="middle">70</text><text x="437.7" y="202" text-anchor="middle">90</text><text x="504" y="202" text-anchor="end">100 &deg;C</text></g>
+        <polyline points="40,24 504,24" stroke="#d95926"/>
+        <polyline points="40,24 338.3,24" stroke="#199e70" stroke-dasharray="8 8"/>
+        <polyline points="338.3,24 504,24" stroke="#199e70" stroke-dasharray="6 12"/>
+        <polyline points="40,120 205.7,120 338.3,24" stroke="#3987e5"/>
+        <polyline points="338.3,24 504,24" stroke="#3987e5" stroke-dasharray="6 12" stroke-dashoffset="12"/>
+        <g fill="#e6edf6" font-size="11.5"><text x="46" y="44">Balanced and Performance: 100%</text><text x="500" y="44" text-anchor="end">from 75 &deg;C all three</text><text x="46" y="138">Quiet</text></g>
+      </svg></div>
+  </div>
+  <table class="tbl">
+    <thead><tr><th>Fan</th><th>Follows</th><th>Quiet</th><th>Balanced (today)</th><th>Performance</th></tr></thead>
+    <tbody>
+      <tr><td>Radiator fans</td><td>Coolant</td><td>20% up to 34 &deg;C, 45% at 42, 70% at 47, 100% at 52</td><td>20% up to 30 &deg;C, 80% at 42, 100% at 48</td><td>40% up to 30 &deg;C, 100% at 42</td></tr>
+      <tr><td>Pump</td><td>Coolant</td><td>60% up to 40 &deg;C, 100% at 50</td><td>Steady, at today's speed (about 2,750 RPM)</td><td>100%</td></tr>
+      <tr><td>Main Intake Fans</td><td>Graphics card</td><td>25% up to 55 &deg;C, 50% at 70</td><td>50%</td><td>50%</td></tr>
+      <tr><td>Exhaust Fan</td><td>Graphics card</td><td>40% up to 55 &deg;C, 100% at 75</td><td>100%</td><td>100%</td></tr>
+    </tbody>
+  </table>
+  <div class="rules">
+    <div class="card"><b>Limits no curve can cross</b><span class="q">10</span>
+      <ul><li>Pump: never under 50%. Built in, not editable.</li><li>Fans: never under 20%, never stopped.</li><li>Main Intake Fans: ceiling 50% in every mode (yours to change).</li><li>A fan whose temperature stops arriving goes to its highest allowed speed.</li><li>A fan that reads 0 RPM gets full speed and a warning.</li></ul></div>
+    <div class="card"><b>What Quiet changes in light use</b>
+      <ul><li>Radiator fans: about 700 RPM instead of about 1,330.</li><li>Pump: about 2,090 RPM instead of about 2,750.</li><li>Intakes: about 540 RPM instead of 1,360.</li><li>Exhaust: about 920 RPM instead of 2,050.</li><li>In a game the intakes and the exhaust are back where they are today. The radiator fans and pump rise more slowly, so the coolant runs a few degrees warmer.</li></ul></div>
+  </div>
+  </section>
+
+  <!-- ============ PART 3: tray, other states, settings ============ -->
+  <section id="p3">
+  <h2>Tray menu, other states and Settings</h2>
+  <div class="three">
+    <div>
+      <div class="mute" style="margin-bottom:6px">Tray menu <span class="q">11</span></div>
+      <div class="menu"><div>Show dashboard</div><div>Lights: on</div><div class="hot"><span>Cooling: Quiet</span><span>&#9656;</span></div><hr><div>Quit DeadWare</div></div>
+      <div class="menu subm"><div><span>&#9679; Quiet</span></div><div>Balanced</div><div>Performance</div></div>
+    </div>
+    <div>
+      <div class="mute" style="margin-bottom:6px">The status line in other states <span class="q">12</span></div>
+      <div class="ban"><span class="mk wa">i</span><span>Fan control is off. The BIOS and the hub are running the fans.</span></div>
+      <div class="ban w"><span class="mk wa">!</span><span>FanControl is running. DeadWare won't touch the fans while it is. Quit FanControl, then turn fan control on.</span></div>
+      <div class="ban w"><span class="mk wa">!</span><span>The helper stopped unexpectedly at 18:42. The guard gave the fans back to the BIOS and the hub. DeadWare took them again 6 seconds later.</span></div>
+      <div class="ban b"><span class="mk no">!</span><span>The graphics card reached 97 &deg;C. Every fan and the pump are at full speed until it is back under 92 &deg;C.</span></div>
+      <div class="ban w"><span class="mk wa">!</span><span>The graphics card's temperature stopped arriving. The intakes and the exhaust are at their highest allowed speed until it returns.</span></div>
+      <div class="ban b"><span class="mk no">!</span><span>Exhaust Fan reads 0 RPM at 40%. DeadWare is holding it at full speed. Check the fan.</span></div>
+    </div>
+  </div>
+
+  <div class="app set" style="margin-top:16px">
+    <div class="head"><div class="t">Settings &rarr; Fan control</div></div>
+    <div class="line"><span class="switch"></span><span><b>Let DeadWare control the fans</b><span class="q">13</span><br><span class="mute">Off after the update. While it is off, DeadWare changes nothing and FanControl can keep running.</span></span></div>
+    <h4>Before it can be turned on</h4>
+    <div class="line"><span class="mk ok">&#10003;</span><span>DeadWare is running as administrator</span></div>
+    <div class="line"><span class="mk ok">&#10003;</span><span>The PawnIO driver is installed</span></div>
+    <div class="line"><span class="mk ok">&#10003;</span><span>The board's fan chip is one DeadWare can hand back: Nuvoton NCT6687D</span></div>
+    <div class="line"><span class="mk no">&#10005;</span><span>FanControl is running. Quit it and switch off its start with Windows.</span></div>
+    <h4>Which fans <span class="q">14</span></h4>
+    <div class="row"><span class="switch on"></span><span><b>Main Intake Fans</b></span><span class="mute">board header System Fan #1 &middot; you choose the name</span></div>
+    <div class="row"><span class="switch on"></span><span><b>Exhaust Fan</b></span><span class="mute">board header System Fan #2 &middot; you choose the name</span></div>
+    <div class="row dim"><span class="switch"></span><span>CPU Fan header</span><span class="mute">no fan found on it</span></div>
+    <div class="row dim"><span class="switch"></span><span>Pump Fan header</span><span class="mute">only reports the pump's speed; never controlled</span></div>
+    <div class="row dim"><span class="switch"></span><span>Radiator fans, Pump</span><span class="mute">on the hub &middot; arrive with the second stage, after the hub lighting step</span></div>
+    <div class="note">A fan DeadWare doesn't control stays on the BIOS. The graphics card's own fans are never touched.</div>
+  </div>
+  </section>
+</div>
+<script>
+  // ?part=1|2|3 shows one section only (used to take the screenshots).
+  var part = new URLSearchParams(location.search).get('part');
+  if (part) document.querySelectorAll('section').forEach(function (s) { if (s.id !== 'p' + part) s.style.display = 'none'; });
+</script>
+</body>
+</html>
