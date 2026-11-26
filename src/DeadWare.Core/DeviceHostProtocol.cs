@@ -13,7 +13,9 @@ public sealed record DeviceView(string Key,string Name,int Type,PaintKind Kind,s
     bool CanPaint=false,Dictionary<int,PaintedKey>? Paint=null,List<DeviceLayer>? Layers=null,IReadOnlyList<string>? Looks=null,string? Look=null,bool LookChanged=false,
     int SkippedKeys=0,IReadOnlyList<int>? SkippedLayerLights=null,
     // Lighting 4: the mouse's connection, battery and sleep time, for a device that is the Aerox 9 mouse.
-    MouseView? Mouse=null);
+    MouseView? Mouse=null,
+    // Lighting 5: how the Corsair hub is lit, one of HubRoutes; null for any other device.
+    string? Hub=null);
 // Connection is one of MouseConnections. Battery is a percentage and Charging whether it is charging, null while unknown; Stale: the reading is old.
 // SleepMinutes is the mouse's own sleep time when known; SleepSent: the host has sent the chosen one.
 public sealed record MouseView(string Connection,int? Battery,bool? Charging,bool Stale,int? SleepMinutes,bool SleepSent);
@@ -24,7 +26,9 @@ public static class MouseConnections{public const string Cable="cable",Wireless=
 public sealed record HostState(HostStatus Status,string Message,bool Elevated,IReadOnlyList<LightingConflict> Conflicts,IReadOnlyList<DeviceView> Devices,LightingSettings Settings,bool ConflictsChecked=false,
     bool KeyHook=false,
     // Lighting 4: why the lights are off beyond the saved switch (LightsOff.Idle, Locked or Waking), and plain-words problems with the shortcut and with everyday rules.
-    string? LightsOffReason=null,string? ShortcutProblem=null,string? EverydayProblem=null);
+    string? LightsOffReason=null,string? ShortcutProblem=null,string? EverydayProblem=null,
+    // Lighting 5: the Corsair hub, null from a host that does not know it.
+    HubView? Hub=null);
 [JsonPolymorphic(TypeDiscriminatorPropertyName="type")]
 [JsonDerivedType(typeof(GetStateRequest),"getState")]
 [JsonDerivedType(typeof(SetLightsOnRequest),"setLightsOn")]
@@ -50,6 +54,9 @@ public sealed record HostState(HostStatus Status,string Message,bool Elevated,IR
 [JsonDerivedType(typeof(DeleteLookRequest),"deleteLook")]
 [JsonDerivedType(typeof(SetEverydayRequest),"setEveryday")]
 [JsonDerivedType(typeof(SetMouseSleepRequest),"setMouseSleep")]
+[JsonDerivedType(typeof(ReadHubRequest),"readHub")]
+[JsonDerivedType(typeof(SetHubModeRequest),"setHubMode")]
+[JsonDerivedType(typeof(HubReadingsEvent),"hubReadings")]
 public abstract record HostMessage
 {
     [JsonRequired] public int Version { get; init; } = DeviceHostProtocol.Version;
@@ -59,6 +66,10 @@ public sealed record GetStateRequest : HostMessage;
 public sealed record SetLightsOnRequest(bool On) : HostMessage;
 public sealed record SetEverydayRequest(EverydaySettings Everyday) : HostMessage;
 public sealed record SetMouseSleepRequest(int? Minutes) : HostMessage;
+public sealed record ReadHubRequest : HostMessage;
+// Mode: HubModes.OpenRgb or HubModes.Driven.
+public sealed record SetHubModeRequest(string Mode) : HostMessage;
+public sealed record HubReadingsEvent(HubReadings Readings) : HostMessage;
 public sealed record SetBrightnessRequest(int Percent) : HostMessage;
 public sealed record SetAllColorsRequest(string Color) : HostMessage;
 public sealed record SetZoneColorRequest(string ZoneKey,string? Color) : HostMessage;
@@ -94,6 +105,7 @@ public static class HostReplyCodes
     public const string NotPaintable="not paintable",BadKey="bad key",BadLayer="bad layer",TooManyLayers="too many layers",TooManyLooks="too many looks",
         LookName="look name",LookTaken="look taken",NoLook="no look",NoRoom="no room";
     public const string BadEveryday="bad everyday",BadSleep="bad sleep time",ShortcutSlow="shortcut slow";
+    public const string HubBusy="hub busy",HubStale="hub stale",BadHubMode="bad hub mode";
     public static string Explain(string why)=>why switch
     {
         Starting=>"The lighting helper is still starting. Try again in a moment.",
@@ -116,6 +128,9 @@ public static class HostReplyCodes
         BadEveryday=>"Those everyday settings aren't valid.",
         BadSleep=>"That sleep time isn't one of the choices.",
         ShortcutSlow=>"Windows didn't answer about the shortcut in time. Try again.",
+        HubBusy=>"DeadWare is still switching. Try again in a moment.",
+        HubStale=>"That reading was more than two minutes old. Click the switch again.",
+        BadHubMode=>"That hub mode isn't one DeadWare knows.",
         _=>why,
     };
 }

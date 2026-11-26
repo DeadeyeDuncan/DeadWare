@@ -17,7 +17,13 @@ public class HostReplyCodesTests
     [InlineData(HostReplyCodes.BadEveryday,"Those everyday settings aren't valid.")]
     [InlineData(HostReplyCodes.BadSleep,"That sleep time isn't one of the choices.")]
     [InlineData(HostReplyCodes.ShortcutSlow,"Windows didn't answer about the shortcut in time. Try again.")]
+    [InlineData(HostReplyCodes.HubBusy,"DeadWare is still switching. Try again in a moment.")]
+    [InlineData(HostReplyCodes.HubStale,"That reading was more than two minutes old. Click the switch again.")]
+    [InlineData(HostReplyCodes.BadHubMode,"That hub mode isn't one DeadWare knows.")]
     public void Every_short_code_is_explained(string code,string text)=>Assert.Equal(text,HostReplyCodes.Explain(code));
+
+    [Fact]
+    public void The_hub_codes_are_these_words()=>Assert.Equal(("hub busy","hub stale","bad hub mode"),(HostReplyCodes.HubBusy,HostReplyCodes.HubStale,HostReplyCodes.BadHubMode));
 
     [Fact]
     public void A_sentence_from_the_host_is_shown_as_it_came()=>Assert.Equal("Brightness must be 0 to 100.",HostReplyCodes.Explain("Brightness must be 0 to 100."));

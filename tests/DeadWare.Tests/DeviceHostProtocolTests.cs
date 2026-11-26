@@ -14,6 +14,10 @@ public class DeviceHostProtocolTests
             [new LightingConflict(ConflictKind.ICue,"iCUE is running.",true)],
             [new DeviceView("k","Keys",5,PaintKind.Hardware,"Static","Rainbow",true,[new ZoneView("k:0",0,"Keyboard",104,"#010203",true)])],s);
     }
+    static HubReadings Readings()=>new([new HubPartReading(1,HubPartKinds.Pump,"Pump",2709,38.5),new HubPartReading(2,HubPartKinds.Fan,"Fan",1331),new HubPartReading(3,HubPartKinds.Fan,"Fan",null)],250);
+    static HubView FullHub()=>new(HubStates.GaveBack,HubReasons.OpenRgbHasIt,HubReasons.RestartSpent,Readings(),new DateTimeOffset(2026,11,25,19,42,0,TimeSpan.FromHours(1)),
+        new HubStop{Kind=HubStops.Slower,Part=HubPartKinds.Fan,Number=2,Before=1326,After=1193},
+        new HubReading(true,new DateTimeOffset(2026,11,25,19,41,0,TimeSpan.FromHours(1)),Readings(),HubReasons.ICue,"detail"),"silent","type 0x1A, model 0x01");
     public static IEnumerable<object[]> Messages()
     {
         yield return [new GetStateRequest{Id=1}];
@@ -52,6 +56,12 @@ public class DeviceHostProtocolTests
         yield return [new SetMouseSleepRequest(null){Id=53}];
         yield return [new StateEvent(st with{LightsOffReason=LightsOff.Idle,ShortcutProblem="in use",EverydayProblem="no hook",
             Devices=[st.Devices[0] with{Mouse=new MouseView(MouseConnections.Receiver,80,true,false,15,true)}]}){Id=54}];
+        // Lighting 5.
+        yield return [new ReadHubRequest{Id=60}];
+        yield return [new SetHubModeRequest(HubModes.Driven){Id=61}];
+        yield return [new SetHubModeRequest(HubModes.OpenRgb){Id=62}];
+        yield return [new HubReadingsEvent(Readings()){Id=63}];
+        yield return [new StateEvent(st with{Hub=FullHub(),Devices=[st.Devices[0] with{Hub=HubRoutes.Driven}]}){Id=64}];
     }
     static async Task<HostMessage?> RoundTrip(HostMessage m)
     {
@@ -94,6 +104,8 @@ public class DeviceHostProtocolTests
                 Assert.Equal(sent.KeyHook,s.KeyHook);
                 Assert.Equal((sent.LightsOffReason,sent.ShortcutProblem,sent.EverydayProblem),(s.LightsOffReason,s.ShortcutProblem,s.EverydayProblem));
                 Assert.Equal(sent.Devices[0].Mouse,d.Mouse);
+                Assert.Equal(sent.Devices[0].Hub,d.Hub);
+                Assert.Equal(System.Text.Json.JsonSerializer.Serialize(sent.Hub),System.Text.Json.JsonSerializer.Serialize(s.Hub));
                 if(!sent.KeyHook){Assert.False(d.CanPaint);Assert.Null(d.Paint);Assert.Null(d.Layers);Assert.Null(d.Looks);Assert.Null(d.Look);Assert.False(d.LookChanged);Assert.Equal(0,d.SkippedKeys);Assert.Null(d.SkippedLayerLights);break;}
                 Assert.True(d.CanPaint);
                 var key=Assert.Single(d.Paint!);Assert.Equal((3,"Key: W","#FF0000"),(key.Key,key.Value.Name,key.Value.Color));
@@ -124,6 +136,9 @@ public class DeviceHostProtocolTests
                 var pb=Assert.IsType<PreviewEvent>(back);
                 Assert.Equal(p.Colors,pb.Colors);
                 Assert.Equal(p.Lights,pb.Lights);
+                break;
+            case HubReadingsEvent h:
+                Assert.Equal(System.Text.Json.JsonSerializer.Serialize(h.Readings),System.Text.Json.JsonSerializer.Serialize(Assert.IsType<HubReadingsEvent>(back).Readings));
                 break;
             default: Assert.Equal(m,back); break;
         }
@@ -388,5 +403,28 @@ public class DeviceHostProtocolTests
     sealed class OneByteStream(byte[] data):MemoryStream(data)
     {
         public override ValueTask<int> ReadAsync(Memory<byte> buffer,CancellationToken ct=default)=>base.ReadAsync(buffer[..Math.Min(1,buffer.Length)],ct);
+    }
+    // Lighting 5: a 0.22.0 state has no hub members and reads with none.
+    [Fact] public async Task A_0_22_state_reads_with_no_hub()
+    {
+        const string json="""{"type":"state","Version":1,"Id":70,"State":{"Status":"Running","Message":"","Elevated":false,"Conflicts":[],"Devices":[{"Key":"k","Name":"Keys","Type":5,"Kind":"Hardware","Mode":"Static","OwnEffect":null,"StaysLitWhenOff":true,"Zones":[],"Mouse":null}],"Settings":{}}}""";
+        var state=Assert.IsType<StateEvent>(await DeviceHostProtocol.ReadAsync(Frame(json),default)).State;
+        Assert.Null(state.Hub);
+        Assert.Null(Assert.Single(state.Devices).Hub);
+    }
+    [Fact] public async Task The_hub_mode_travels_as_text()
+    {
+        var ms=new MemoryStream();
+        await DeviceHostProtocol.WriteAsync(ms,new SetHubModeRequest("driven"){Id=71},default);
+        var json=System.Text.Encoding.UTF8.GetString(ms.ToArray().AsSpan(4));
+        Assert.Contains("\"Mode\":\"driven\"",json);
+        Assert.Contains("\"type\":\"setHubMode\"",json);
+    }
+    [Fact] public async Task The_hub_messages_use_their_discriminators()
+    {
+        Assert.IsType<ReadHubRequest>(await DeviceHostProtocol.ReadAsync(Frame("""{"type":"readHub","Version":1,"Id":1}"""),default));
+        Assert.Equal("openrgb",Assert.IsType<SetHubModeRequest>(await DeviceHostProtocol.ReadAsync(Frame("""{"type":"setHubMode","Version":1,"Id":2,"Mode":"openrgb"}"""),default)).Mode);
+        var e=Assert.IsType<HubReadingsEvent>(await DeviceHostProtocol.ReadAsync(Frame("""{"type":"hubReadings","Version":1,"Id":3,"Readings":{"Parts":[{"Channel":1,"Kind":"pump","Name":"Pump","Rpm":2709,"Celsius":38.5}]}}"""),default));
+        Assert.Equal((1,"pump",2709,38.5,0),(e.Readings.Parts[0].Channel,e.Readings.Parts[0].Kind,e.Readings.Parts[0].Rpm,e.Readings.Parts[0].Celsius,e.Readings.AgeMs));
     }
 }
