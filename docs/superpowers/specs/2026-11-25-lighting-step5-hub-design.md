@@ -217,7 +217,7 @@ Timing, all on the worker's own clock (a `TimeProvider`, so tests use fake time)
 | What | Value |
 |---|---|
 | Colour frame after a change | at most one every 125 ms (about 8 a second) |
-| Unchanged colours re-sent | every 2 s (keep-alive; the merge design said 5 s, which leaves one missed round inside a 10 s fallback; 2 s leaves four) |
+| Unchanged colours re-sent | every 2 s (keep-alive; the merge design said 5 s, which leaves one missed round inside a 10 s fallback; 2 s leaves four. The 10 s was the report for firmware 2.4.438; 4.1.656 was measured on 2026-11-27 to fall back after 13 s to 64 s, so 2 s is conservative and stays) |
 | Readings (temperatures, then speeds) | every 3 s |
 | Wait for the shared lock | at most 250 ms, then skip the round |
 | Wait for one reply, and for one write | at most 250 ms each (the transport's own limits) |
@@ -453,7 +453,7 @@ Before it: the owner stops the Corsair service and sets it to Manual, and disabl
 3. Readings: the hub's card, the five Sensors rows, the coolant line after ticking the box. Log: parts listed; no reading lines unless availability changed.
 4. Lights off and on with the shortcut: the hub goes dark and comes back with no blink elsewhere. Log: no mode change, no let go.
 5. Quit DeadWare. Owner looks at: the hub changes to its own effect. Log: "hardware mode sent", the detector written on. Start the test build again: log shows a take with "hub was in its own mode".
-6. **The silence test** (approval (c)), once: an owner-run script ends the test build and its helper, the owner watches the hub for 20 s, then the build is started again. Owner's eye: whether the lights changed to the hub's own effect, and after how long. Log after restart: "hub was in its own mode" confirms the fallback; "hub was still held" refutes it. This is one of the session's two kill-and-relaunch tests.
+6. **The silence test** (approval (c)), once, if it is run at all. The fall-back itself was observed without it on 2026-11-27 on firmware 4.1.656 (the lighting helper's log of that day, recorded in the protocol notes): the hub was still held 13 s after its holder stopped, and in its own mode 64 s after the last read. So a short watch cannot tell a missing fall-back from a slow one. If run: an owner-run script ends the test build and its helper, the owner watches the hub for 90 s, then the build is started again. Owner's eye: whether the lights changed to the hub's own effect, and after how long. Log after restart: "hub was in its own mode" confirms the fall-back; only "hub was still held" after the full 90 s counts as no fall-back. This is one of the session's two kill-and-relaunch tests.
 7. Sleep the PC for a minute and wake it: the hub comes back by itself. Log: quiet, resume, take, wake repaint done.
 8. Switch the hub off again: the hub's lights return through OpenRGB with the same colours. Log: hardware mode sent, mode `openrgb`, detector on.
 

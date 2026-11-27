@@ -1665,10 +1665,45 @@ public sealed partial class DeviceHostTests
         Assert.Equal(2,runner.Count);
     }
 
-    // Fix wave 4c (review D2): DeadWare's own OpenRGB that did not exit when stopped, which exits later and which Windows still lists, is not
-    // another OpenRGB either: the status keeps saying it could not be restarted until it is no longer listed, then lighting starts again.
+    // Fix wave 4d (review wbr-6 D3): the guard names the very OpenRGB the take-over stopped, not any. The take-over stops OpenRGB A and drives the
+    // hub; later the relaunched OpenRGB B ends by itself and Windows still lists it; a switch back to openrgb while B is listed starts OpenRGB
+    // again: no "did not start it again", no "could not be restarted".
     [Fact]
-    public async Task Our_lingering_OpenRGB_that_exits_but_stays_listed_is_not_another_OpenRGB()
+    public async Task A_switch_off_after_a_take_over_while_a_later_crashed_OpenRGB_is_listed_starts_OpenRGB_again()
+    {
+        var (h,hub,_)=OwnerHost();
+        var states=Recorded(h);
+        await TakeOver(h,hub);
+        var at=await ToCheck(h,hub);
+        await RoundAt(h,hub,at,TimeSpan.FromSeconds(15),2716,ReadingFans);
+        await AdvanceUntil(()=>h.State.Hub?.State=="driving"&&runner.Count==2&&h.State.Status==HostStatus.Running);
+        var relaunch=NewHold();
+        Volatile.Write(ref beforeLaunch,()=>relaunch.Park());
+        var crashed=runner.At(1);
+        crashed.StaysListed=true;
+        try
+        {
+            crashed.Exit();
+            await AdvanceUntil(()=>relaunch.Parked,limit:TimeSpan.FromSeconds(60));
+            var before=Volatile.Read(ref scans);
+            await AdvanceUntil(()=>Volatile.Read(ref scans)>=before+1);
+            Assert.True((await Send(h,new SetHubModeRequest("openrgb"))).Ok);
+            await AdvanceUntil(()=>h.State.Hub?.State=="off");
+            await RunFor(TimeSpan.FromSeconds(2),DeviceHost.Tick);
+            Assert.Empty(LogLines("OpenRGB did not exit: DeadWare did not start it again"));
+            Assert.DoesNotContain(Copy(states),s=>s.Message=="OpenRGB could not be restarted: it did not exit when DeadWare stopped it.");
+        }
+        finally{crashed.StaysListed=false;Volatile.Write(ref beforeLaunch,null);relaunch.Release();}
+        await AdvanceUntil(()=>runner.Count==3&&h.State.Status==HostStatus.Running);
+        await RunFor(TimeSpan.FromSeconds(6),DeviceHost.Tick);
+        Assert.Equal(3,runner.Count);
+    }
+
+    // Fix wave 4d (review wbr-6 D1): today's behaviour, pinned and left open by ruling. DeadWare's own OpenRGB that did not exit when stopped, and
+    // that exits later while Windows still lists it, counts as another OpenRGB (lighting blocked with that text) until it leaves the list; then
+    // lighting starts again. Recording it as the ended one was taken back out, since that could overwrite a newer ended OpenRGB.
+    [Fact]
+    public async Task Our_lingering_OpenRGB_that_exits_but_stays_listed_counts_as_another_OpenRGB_until_it_leaves_the_list()
     {
         var (h,hub,_)=OwnerHost();
         var states=Recorded(h);
@@ -1687,13 +1722,13 @@ public sealed partial class DeviceHostTests
             leftover.StaysListed=true;
             leftover.Exit();
             await RunFor(TimeSpan.FromSeconds(12),DeviceHost.Tick);
-            Assert.Equal(HostStatus.OpenRgbFailed,h.State.Status);
-            Assert.Equal("OpenRGB could not be restarted: it did not exit when DeadWare stopped it.",h.State.Message);
-            Assert.DoesNotContain(Copy(states),s=>s.Status==HostStatus.Blocked||s.Message.Contains("Another OpenRGB"));
+            Assert.Equal(HostStatus.Blocked,h.State.Status);
+            Assert.Equal("Another OpenRGB is running. Quit it before turning on DeadWare lighting.",h.State.Message);
             Assert.Equal(2,runner.Count);
         }
         finally{leftover.StaysListed=false;leftover.Exit();}
         await AdvanceUntil(()=>runner.Count==3&&h.State.Status==HostStatus.Running);
+        Assert.Contains(Copy(states),s=>s.Status==HostStatus.Blocked);
     }
 
     // Ruling P23: a lock that stays busy skips every round without failing, so the check has an upper limit.
