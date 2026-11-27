@@ -35,7 +35,8 @@ internal sealed class HubTakeover
     // Take: the snapshot when it began (a let-go counts only when it says something new: one left from before is no answer) and when it began.
     // From the take on: the take's SoftwareAt, and whether a snapshot without PumpStopped has been seen (a stopped pump left from before is no verdict).
     HubSnapshot atTake=HubSnapshot.Idle;
-    long takeFrom,softwareAt;
+    // stoppedAt (fix wave 4, A): when OpenRGB's stop returned; takeFrom moves on while the stopped OpenRGB is still listed.
+    long takeFrom,softwareAt,stoppedAt;
     bool pumpClear;
     // BackOut: why, and the log line's phrase. BackOut and SwitchOff: when the wait for the worker began, the let-go asked for, whether the slow line
     // was written, whether the worker has let go (then only the restart is owed) and whether this turn's restart ends it (Issued).
@@ -136,7 +137,7 @@ internal sealed class HubTakeover
         if(Step!=HubStep.StopOpenRgb) return;
         if(!exited){Back(HubReasons.NoLighting,null,"OpenRGB did not exit");return;}
         log.Write("hub mode change: OpenRGB stopped");
-        atTake=host.Hub.Snapshot;pumpClear=!atTake.PumpStopped;takeFrom=time.GetTimestamp();
+        atTake=host.Hub.Snapshot;pumpClear=!atTake.PumpStopped;takeFrom=stoppedAt=time.GetTimestamp();
         Step=HubStep.Take;
     }
 
@@ -166,8 +167,17 @@ internal sealed class HubTakeover
             Done();
             return started?HubChore.None:Start();                     // OpenRGB without the hub: mode stopped keeps the detector off
         }
-        var why=HubHold.Why(t.Facts);
+        // Fix wave 4, A: the OpenRGB just stopped, still listed, is no reason to back out (a different OpenRGB still is, at once): the take waits
+        // for it, at most OpenRgbEngine.LingerWindow after the stop, and then backs out as a stop that did not end OpenRGB does. The take's own
+        // limit counts from the last turn it was listed.
+        var why=HubHold.Why(t.Facts with{Leftover=false});
         if(why.Reason is not null){Back(why.Reason==HubReasons.Waking?HubReasons.Asleep:why.Reason,why.Detail);return HubChore.None;}
+        if(Step==HubStep.Take&&t.Facts.Leftover)
+        {
+            if(time.GetElapsedTime(stoppedAt)>=OpenRgbEngine.LingerWindow) Back(HubReasons.NoLighting,null,"OpenRGB did not exit");
+            else takeFrom=time.GetTimestamp();
+            return HubChore.None;
+        }
         if(Step==HubStep.Take)
         {
             if(snap.State==HubStates.Driving){host.TakenAt=time.GetUtcNow();softwareAt=snap.SoftwareAt;Step=HubStep.StartOpenRgb;}
@@ -268,7 +278,7 @@ internal sealed class HubTakeover
     // take-over stops); quiet reads as asleep.
     static (string Reason,string? Detail)? Refused(HubFacts f)
     {
-        var (r,d)=HubHold.Why(f with{Mode=HubModes.Driven,ConnectedOnce=true,OpenRgbListsHub=false,LaunchedWithHub=false,RestartSpent=false});
+        var (r,d)=HubHold.Why(f with{Mode=HubModes.Driven,ConnectedOnce=true,OpenRgbListsHub=false,LaunchedWithHub=false,RestartSpent=false,Leftover=false});
         return r is null?null:(r==HubReasons.Waking?HubReasons.Asleep:r,d);
     }
 

@@ -77,7 +77,7 @@ internal static class Program
             using var hubLock=new CorsairLock(log);
             var hubCore=new HubCore(new HidHubTransport(),hubLock,TimeProvider.System,log);
             using var hub=new HubWorker(hubCore,log,()=>Environment.Exit(HubWorker.ExitCode));
-            await using var host=new DeviceHost(options,new LightingStore(lightingPath,guardLinks:Environment.IsPrivilegedProcess),engine,()=>new OpenRgbSession(),new ProcessConflictScanner(),TimeProvider.System,log,failure,keys:keys,signals:signals,input:input,mouse:mouse,hub:hubCore,detector:detector);
+            await using var host=new DeviceHost(options,new LightingStore(lightingPath,guardLinks:Environment.IsPrivilegedProcess),engine,()=>new OpenRgbSession(),new ProcessConflictScanner(log),TimeProvider.System,log,failure,keys:keys,signals:signals,input:input,mouse:mouse,hub:hubCore,detector:detector);
             await using var server=new HostPipeServer(DeviceHostProtocol.PipeName(sid),host.HandleAsync,log,clientGone:host.ClientGone);
             host.Initialize(); // settings are loaded before the pipe accepts a single request
             try{server.Open();}

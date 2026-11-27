@@ -47,7 +47,7 @@ Endpoints and their data types:
 
 ## Transactions
 
-Every transaction holds the shared named mutex `Global\CorsairLinkReadWriteGuardMutex` from its first frame to its last. The mutex is recursive per thread. Treat an abandoned mutex as acquired.
+Every transaction holds the shared named mutex `Global\CorsairLinkReadWriteGuardMutex` from its first frame to its last. The mutex is recursive per thread. Treat an abandoned mutex as acquired. A program that makes the mutex must give everyone full access to it: OpenRGB opens it with `CreateMutex`, which asks for all access, does not check whether that failed, and then loops for ever waiting on the failed handle, so it stops finding devices at the first Corsair device that uses the lock (measured 2026-11-27 with a lock made granting only Synchronize and Modify: access denied, error 5). OpenRGB itself makes it with a NULL DACL.
 
 - **Read:** close(ep), open(ep), read, close(ep). Accept the read only if status is `00` and the data type matches.
 - **Colour write:**
@@ -123,6 +123,10 @@ Fan speed against coolant temperature, each read while OpenRGB held the hub and 
 | 2026-11-25 | 43.7 °C | about 1,660 RPM |
 
 Each reading was on a different day, after OpenRGB had taken the hub afresh. They fit two explanations that they cannot tell apart: the hub keeps following its own stored curve while held, or it keeps the speed it had at the moment it was taken. Two readings within one hold at clearly different coolant temperatures would settle it; the Sensors history gives those once DeadWare drives the hub.
+
+### 2026-11-27 afternoon, firmware 4.1.656: how long the hub stays held without traffic
+
+From the lighting helper's log of that day: the hub was still held 13 s after its holder was stopped (OpenRGB of DeadWare 0.22.0 stopped at 20:41:45 UTC; a reading at 20:41:58 worked), and it was in its own mode at 20:43:02 with no program having sent hardware mode in between (the OpenRGB started at 20:42:04 was stuck on the shared lock before its first command to the hub). So the hub went back to its own mode by itself after somewhere between 13 s and 64 s without traffic (64 s counted from the last read, 77 s from the last colour frame).
 
 ## Attribution
 

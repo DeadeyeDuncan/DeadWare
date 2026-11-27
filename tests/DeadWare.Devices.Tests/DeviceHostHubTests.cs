@@ -1404,8 +1404,160 @@ public sealed partial class DeviceHostTests
             Assert.Empty(LogLines("hub mode change: OpenRGB stopped"));
             Assert.DoesNotContain("\"Hub\"",FileText());
             Assert.Equal("off",h.State.Hub!.State);
+            // Fix wave 4, C (review D1): the back-out's restart starts no second OpenRGB beside the one that did not exit; the status says so.
+            await AdvanceUntil(()=>LogLines("OpenRGB did not exit: DeadWare did not start it again").Length==1);
+            await RunFor(TimeSpan.FromSeconds(10),DeviceHost.Tick);
+            Assert.Equal(1,runner.Count);
+            Assert.Equal(HostStatus.OpenRgbFailed,h.State.Status);
+            Assert.Equal("OpenRGB could not be restarted: it did not exit when DeadWare stopped it.",h.State.Message);
         }
         finally{runner.At(0).Exit();}
+        await AdvanceUntil(()=>runner.Count==2&&h.State.Status==HostStatus.Running);
+    }
+
+    // Fix wave 4, C (review D3): "could not be restarted" belongs to the episode that set it. After it has ended (its OpenRGB gone, lighting
+    // running again), an OpenRGB a later conflict stop could not end is another OpenRGB to the scan once the conflict has gone, as before the
+    // episode: lighting stays blocked with that text, never "could not be restarted", and starts once it has gone. Fails if the flag is never
+    // cleared (CheckConflictsAsync's reset deleted) and if every lingering OpenRGB is passed to the scan as ours (the notRestarted gate removed).
+    [Fact]
+    public async Task After_a_could_not_restart_episode_a_later_conflict_leftover_is_another_OpenRGB()
+    {
+        var (h,hub,_)=OwnerHost();
+        await Until(()=>h.State.Status==HostStatus.Running);
+        runner.At(0).IgnoresKill=true;
+        try
+        {
+            await TakeOver(h,hub);
+            await AdvanceUntil(()=>runner.At(0).Killed);
+            await Elapse(TimeSpan.FromSeconds(5));
+            await AdvanceUntil(()=>h.State.Message=="OpenRGB could not be restarted: it did not exit when DeadWare stopped it.");
+        }
+        finally{runner.At(0).Exit();}
+        await AdvanceUntil(()=>runner.Count==2&&h.State.Status==HostStatus.Running);
+        var second=runner.At(1);
+        second.IgnoresKill=true;
+        try
+        {
+            lock(conflicts)conflicts.Add(DeadLight);
+            await AdvanceUntil(()=>second.Killed);
+            await Elapse(TimeSpan.FromSeconds(5));
+            await AdvanceUntil(()=>LogLines("hadn't exited 5 s after it was ended").Length==2);
+            lock(conflicts)conflicts.Clear();
+            await RunFor(TimeSpan.FromSeconds(12),DeviceHost.Tick);
+            Assert.Equal(HostStatus.Blocked,h.State.Status);
+            Assert.Equal("Another OpenRGB is running. Quit it before turning on DeadWare lighting.",h.State.Message);
+            Assert.Equal(2,runner.Count);
+        }
+        finally{second.Exit();}
+        await AdvanceUntil(()=>runner.Count==3&&h.State.Status==HostStatus.Running,limit:TimeSpan.FromSeconds(60));
+    }
+
+    // Fix wave 4, C (review D1): the one restart for an OpenRGB that still has the hub starts no second OpenRGB beside one that did not exit.
+    [Fact]
+    public async Task The_restart_for_OpenRGB_still_listing_the_hub_starts_none_beside_one_that_did_not_exit()
+    {
+        UseOwnerRig();
+        SaveMode("driven");
+        var hub=new FakeHub();
+        var h=Build(hub:hub,detector:new HubDetector());Start(h);
+        await Until(()=>runner.Count==1);
+        runner.At(0).IgnoresKill=true;
+        try
+        {
+            await AdvanceUntil(()=>runner.At(0).Killed);
+            await Elapse(TimeSpan.FromSeconds(5));
+            await AdvanceUntil(()=>LogLines("OpenRGB did not exit: DeadWare did not start it again").Length==1);
+            await RunFor(TimeSpan.FromSeconds(10),DeviceHost.Tick);
+            Assert.Equal(1,runner.Count);
+            Assert.Equal(HostStatus.OpenRgbFailed,h.State.Status);
+            Assert.Equal("OpenRGB could not be restarted: it did not exit when DeadWare stopped it.",h.State.Message);
+            Assert.DoesNotContain(hub.Allows,a=>a.Reason is null);
+        }
+        finally{runner.At(0).Exit();}
+        await AdvanceUntil(()=>runner.Count==2&&h.State.Status==HostStatus.Running);
+    }
+
+    // ---- Fix wave 4, A (F3 of the second hardware check): Windows may go on listing the OpenRGB DeadWare just ended, after DeadWare saw it exit.
+    // That same process (id and start time) is never another OpenRGB; the take waits for it to go, at most 10 s after the stop.
+    const string StoppedLine="hub mode change: OpenRGB stopped";
+    static bool SaysAnotherOpenRgb(HostState s)=>s.Status==HostStatus.Blocked||s.Message.Contains("Another OpenRGB")||s.Conflicts.Count>0||s.Hub?.Problem=="otherOpenRgb";
+
+    [Fact]
+    public async Task Our_stopped_OpenRGB_still_listed_for_1_5_s_is_waited_for_and_the_take_goes_on()
+    {
+        var (h,hub,_)=OwnerHost();
+        var states=Recorded(h);
+        await Until(()=>h.State.Status==HostStatus.Running);
+        runner.At(0).StaysListed=true;
+        await TakeOver(h,hub);
+        await AdvanceUntil(()=>LogLines(StoppedLine).Length==1);
+        Assert.True(runner.At(0).HasExited);
+        await RunFor(TimeSpan.FromMilliseconds(1500),DeviceHost.Tick);
+        Assert.False(Allowed(hub));
+        Assert.Equal("switching",h.State.Hub!.State);
+        Assert.Null(h.State.Hub.Problem);
+        runner.At(0).StaysListed=false;
+        await AdvanceUntil(()=>Allowed(hub));
+        hub.Drive(time,2716,ReadingFans);
+        await AdvanceUntil(()=>LogLines(StartedLine).Length==1&&runner.Count==2);
+        Assert.Empty(LogLines("hub take-over interrupted"));
+        Assert.Empty(LogLines("conflicts: "));
+        Assert.DoesNotContain(hub.Allows,a=>a.Reason=="otherOpenRgb");
+        Assert.DoesNotContain(Copy(states),SaysAnotherOpenRgb);
+        Assert.Equal("switching",h.State.Hub!.State);
+    }
+
+    [Fact]
+    public async Task Our_stopped_OpenRGB_still_listed_after_10_s_backs_out_and_starts_none_beside_it()
+    {
+        var (h,hub,_)=OwnerHost();
+        var states=Recorded(h);
+        await Until(()=>h.State.Status==HostStatus.Running);
+        runner.At(0).StaysListed=true;
+        try
+        {
+            await TakeOver(h,hub);
+            await AdvanceUntil(()=>LogLines(StoppedLine).Length==1);
+            var stopped=time.GetUtcNow();
+            await AdvanceUntil(()=>h.State.Hub?.Problem=="noLighting");
+            Assert.InRange(time.GetUtcNow()-stopped,TimeSpan.FromSeconds(10),TimeSpan.FromSeconds(12));
+            Assert.Single(LogLines("hub take-over interrupted: OpenRGB did not exit"));
+            await AdvanceUntil(()=>LogLines("OpenRGB did not exit: DeadWare did not start it again").Length==1);
+            await RunFor(TimeSpan.FromSeconds(10),DeviceHost.Tick);
+            Assert.Equal(1,runner.Count);
+            Assert.Equal(HostStatus.OpenRgbFailed,h.State.Status);
+            Assert.Equal("OpenRGB could not be restarted: it did not exit when DeadWare stopped it.",h.State.Message);
+            Assert.DoesNotContain(hub.Allows,a=>a.Reason is null);
+            Assert.DoesNotContain(Copy(states),SaysAnotherOpenRgb);
+            Assert.Equal("off",h.State.Hub!.State);
+            Assert.DoesNotContain("\"Hub\"",FileText());
+        }
+        finally{runner.At(0).StaysListed=false;}
+        // Once it is no longer listed, lighting starts again as after any conflict, with the detector on.
+        await AdvanceUntil(()=>runner.Count==2&&h.State.Status==HostStatus.Running);
+        Assert.Equal([true,true],Launches());
+        Assert.Equal("",h.State.Message);
+    }
+
+    [Theory]
+    [InlineData("another")]
+    [InlineData("reused id")]
+    public async Task A_different_OpenRGB_after_the_stop_is_refused_at_once(string row)
+    {
+        var (h,hub,_)=OwnerHost();
+        await Until(()=>h.State.Status==HostStatus.Running);
+        var ours=runner.At(0);
+        ours.StaysListed=row=="another";
+        await TakeOver(h,hub);
+        await AdvanceUntil(()=>LogLines(StoppedLine).Length==1);
+        var stopped=time.GetUtcNow();
+        // Another OpenRGB, or one under our stopped OpenRGB's id but started later (Windows reused the id): not the process DeadWare ended.
+        lock(runner.Started)runner.Others.Add(row=="another"?new RunningProcess(999,"OpenRGB",null,ours.Started):new RunningProcess(ours.Id,"OpenRGB",null,ours.Started.AddSeconds(30)));
+        await AdvanceUntil(()=>h.State.Hub?.Problem=="otherOpenRgb");
+        Assert.InRange(time.GetUtcNow()-stopped,TimeSpan.Zero,TimeSpan.FromSeconds(3));
+        Assert.Single(LogLines("hub take-over interrupted: another OpenRGB is running"));
+        Assert.DoesNotContain(hub.Allows,a=>a.Reason is null);
+        ours.StaysListed=false;
     }
 
     // Ruling P23: a lock that stays busy skips every round without failing, so the check has an upper limit.

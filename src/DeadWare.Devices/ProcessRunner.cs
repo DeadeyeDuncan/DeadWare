@@ -8,6 +8,8 @@ internal interface IProcessRunner { IRunningProcess Start(ProcessStartInfo info)
 internal interface IRunningProcess : IDisposable
 {
     int Id { get; }
+    // When it was started (fix wave 4, A): with Id, which process this is, since Windows reuses ids.
+    DateTime Started { get; }
     bool HasExited { get; }
     Task WaitForExitAsync(CancellationToken token);
     void KillTree();
@@ -32,6 +34,9 @@ internal sealed class SystemProcessRunner(ProcessJob? job=null,HostLog? log=null
     sealed class Running(Process process):IRunningProcess
     {
         public int Id=>process.Id;
+        // Read at once, while the process is surely there; DateTime.MinValue when Windows wouldn't say, which no listed process matches.
+        public DateTime Started{get;}=StartOf(process);
+        static DateTime StartOf(Process p){try{return p.StartTime;}catch(Exception e) when(e is InvalidOperationException or System.ComponentModel.Win32Exception or NotSupportedException){return DateTime.MinValue;}}
         public bool HasExited{get{try{return process.HasExited;}catch(InvalidOperationException){return true;}}}
         public Task WaitForExitAsync(CancellationToken token)=>process.WaitForExitAsync(token);
         // A tree kill that fails part-way throws AggregateException (for example a child the job is already ending); it is best effort.

@@ -42,6 +42,7 @@ public sealed class OpenRgbEngineTests : IAsyncLifetime
         readonly TaskCompletionSource exit=new(TaskCreationOptions.RunContinuationsAsynchronously);
         public volatile bool Killed;
         public int Id=>id;
+        public DateTime Started{get;}=new DateTime(2026,11,27,20,0,0).AddSeconds(id);
         public bool HasExited=>exit.Task.IsCompleted;
         public Task WaitForExitAsync(CancellationToken token)=>exit.Task.WaitAsync(token);
         public void KillTree(){Killed=true;if(exitsOnKill)exit.TrySetResult();}

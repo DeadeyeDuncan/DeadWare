@@ -123,6 +123,12 @@ internal sealed class OpenRgbEngine : IAsyncDisposable
             return id;
         }
     }
+    // Fix wave 4, A: the last OpenRGB this engine launched that has exited (its handle says so), by id and start time. Observed on the owner's PC
+    // on 2026-11-27: a scan found an OpenRGB within 1.5 s of this engine seeing its own exit, with no other OpenRGB known there. The working
+    // assumption, not proven, is that Windows still listed the exited process (fix wave 4b: the scanner now logs which OpenRGB a scan saw). So the
+    // host's scans never count this process as another OpenRGB while it is listed, and the take-over waits for it to go.
+    (int Id,DateTime Started)? ended;
+    public (int Id,DateTime Started)? Ended{get{lock(gate)return ended;}}
     public EngineStatus Status{get{lock(gate)return status;}}
     public string? FailureReason{get{lock(gate)return failureReason;}}
     public event Action? Changed;
@@ -205,7 +211,7 @@ internal sealed class OpenRgbEngine : IAsyncDisposable
                         bool gone;try{gone=proc.HasExited;}catch{gone=false;}
                         // One block: a stop either still sees this process in current (and this false lands after its reset) or sees none.
                         IRunningProcess? old=null;
-                        lock(gate){allGone=allGone&&gone;current=null;processId=null;endedAt=own?null:time.GetTimestamp();if(!gone){old=lingering;lingering=proc;}}
+                        lock(gate){allGone=allGone&&gone;current=null;processId=null;endedAt=own?null:time.GetTimestamp();if(!gone){old=lingering;lingering=proc;}else ended=(proc.Id,proc.Started);}
                         try{(gone?proc:old)?.Dispose();}catch{}
                     }
                     else lock(gate){current=null;processId=null;}

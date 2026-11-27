@@ -865,6 +865,9 @@ public sealed class HubCoreTests:IDisposable
         At(2.999);
         Assert.Equal(2,fake.Count(0x06,0x00));
         At(3);
+        // Fix wave 4, C (review D4): the interrupted write was not taken (the fake drops a chunk a test answered with a failure), so only the
+        // write again finishes a second colour write.
+        Assert.Equal(2,fake.ColourWrites);
         Assert.Equal(3,fake.Count(0x06,0x00));
         Assert.Equal(FourLit,fake.LastColours);
         Assert.Equal("driving",core.Snapshot.State);
@@ -916,9 +919,12 @@ public sealed class HubCoreTests:IDisposable
         Assert.Equal(new[]{"05 01 01 22","01 03 00 02"},sent.Skip(4));
         Assert.Equal(1,LogCount("hub: colour write answered 03 (entering software mode again, 1 of 3)"));
         Assert.Equal(0,LogCount("hub: first frame sent"));
+        Assert.Null(fake.LastColours);                                       // fix wave 4, C (review D4): the interrupted frame was not taken
         At(0.999);
         Assert.Equal(6,Commands().Skip(before).Count());
         At(1);
+        Assert.Equal(NineLit,fake.LastColours);                              // only the write again can have finished it
+        Assert.Equal(1,fake.ColourWrites);
         sent=Commands().Skip(before+6).ToList();
         Assert.Equal(5,sent.Count);
         Assert.StartsWith("07 00",sent[3]);

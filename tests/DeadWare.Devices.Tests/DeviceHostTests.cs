@@ -50,7 +50,10 @@ public sealed partial class DeviceHostTests : IAsyncLifetime
         public bool Killed;
         // Lighting 5, Task 10: an OpenRGB that does not exit when it is ended, until the test calls Exit.
         public volatile bool IgnoresKill;
+        // Fix wave 4, A: Windows still lists it after it has exited, until the test clears this.
+        public volatile bool StaysListed;
         public int Id=>id;
+        public DateTime Started{get;}=new DateTime(2026,11,27,20,0,0).AddSeconds(id);
         public bool HasExited=>exit.Task.IsCompleted;
         public Task WaitForExitAsync(CancellationToken token)=>exit.Task.WaitAsync(token);
         public void KillTree(){Killed=true;if(!IgnoresKill) exit.TrySetResult();}
@@ -66,10 +69,21 @@ public sealed partial class DeviceHostTests : IAsyncLifetime
         public int Count{get{lock(Started)return Started.Count;}}
         public FakeProcess At(int i){lock(Started)return Started[i];}
         public DateTimeOffset StartedAt(int i){lock(Started)return startedAt[i];}
-        // The OpenRGB processes still running, as a real scan would list them.
-        public IReadOnlyList<RunningProcess> Live(){lock(Started)return Started.Where(p=>!p.HasExited).Select(p=>new RunningProcess(p.Id,"OpenRGB",null)).ToList();}
+        // Processes a test adds to the list (another OpenRGB, or one under a reused id).
+        public readonly List<RunningProcess> Others=new();
+        // The OpenRGB processes still running (or still listed), as a real scan would list them, with the test's own.
+        public IReadOnlyList<RunningProcess> Live(){lock(Started)return Started.Where(p=>!p.HasExited||p.StaysListed).Select(p=>new RunningProcess(p.Id,"OpenRGB",null,p.Started)).Concat(Others).ToList();}
     }
-    sealed class Scanner(Func<int?,IReadOnlyList<LightingConflict>> f):IConflictScanner{public IReadOnlyList<LightingConflict> Scan(int? pid)=>f(pid);}
+    // f: the conflicts for the pid the host passes; ended, the engine's exited OpenRGB, reaches f2 when given (the list's own scan), else it is
+    // never listed.
+    sealed class Scanner(Func<int?,IReadOnlyList<LightingConflict>> f,Func<int?,(int Id,DateTime Started)?,(IReadOnlyList<LightingConflict> Found,bool Listed)>? f2=null):IConflictScanner
+    {
+        public IReadOnlyList<LightingConflict> Scan(int? pid,(int Id,DateTime Started)? ended,out bool listed)
+        {
+            if(f2 is null){listed=false;return f(pid);}
+            var (found,l)=f2(pid,ended);listed=l;return found;
+        }
+    }
     // Parks each thread that reaches it until the test releases it. A parked thread gives up after the real-time cap, so a failing test
     // cannot hang the run.
     sealed class Hold
@@ -96,13 +110,14 @@ public sealed partial class DeviceHostTests : IAsyncLifetime
         var engine=new OpenRgbEngine(exePath??exe,@"C:\cfg\openrgb",runner,portOpen??((_,_)=>Task.FromResult(true)),time,log,folderCheck,prepareConfig:prepare);
         built=engine;
         beforeHost?.Invoke(engine);
-        var scanner=new Scanner(pid=>
+        var scanner=new Scanner(_=>[],(pid,ended)=>
         {
             Interlocked.Increment(ref scans);
             Volatile.Read(ref scanHold)?.Park();
-            var found=LightingConflicts.Find(runner.Live(),pid).ToList();
+            var live=runner.Live();
+            var found=LightingConflicts.Find(live,pid,ended).ToList();
             lock(conflicts)found.AddRange(conflicts);
-            return found;
+            return (found,ended is{} e&&LightingConflicts.Listed(live,e));
         });
         var options=new HostOptions(exePath??exe,configDir,lightingPath,Path.Combine(dir,"logs"),startup,"S-1-5-21-1",1);
         return host=new DeviceHost(options,store??new LightingStore(lightingPath),engine,()=>session,scanner,time,log,startupFailure,keys:keys,signals:signals,input:input,mouse:mouse,hub:hub,detector:detector);

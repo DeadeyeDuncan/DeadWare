@@ -130,7 +130,7 @@ sealed class FakeHubTransport:IHubTransport
     readonly List<int> limits=new();
     readonly HubChannels<(byte Type,byte Model)> parts;
     readonly HubChannels<int?> rpm;
-    int opens,closes,payloadTotal,stale,wrongMode,endpointUnit,coloursUnit;
+    int opens,closes,payloadTotal,stale,wrongMode,endpointUnit,coloursUnit,colourWrites;
     bool software=true,coloursOpen;
     byte? openEndpoint;
     Port? endpointPort,coloursPort;
@@ -188,6 +188,8 @@ sealed class FakeHubTransport:IHubTransport
     public List<int> Limits{get{corsairLock.Check();lock(sync)return limits.ToList();}}
     // The LEDs of the last finished colour write (its close after the whole payload); null before the first.
     public Rgb[]? LastColours{get{corsairLock.Check();lock(sync)return lastColours?.ToArray();}}
+    // How many colour writes have finished (fix wave 4, C: an unchanged frame written again counts again).
+    public int ColourWrites{get{corsairLock.Check();lock(sync)return colourWrites;}}
     // Frames whose bytes from 3 start with command (compared before the trailing zeros are cut, so 07 00 counts an all-black chunk).
     public int Count(params byte[] command){corsairLock.Check();lock(sync)return writes.Count(w=>w.AsSpan(3).StartsWith(command));}
 
@@ -250,6 +252,9 @@ sealed class FakeHubTransport:IHubTransport
             var reply=Answer(port,frame.AsSpan(3),unit);
             last=reply;
             var shown=Reply is {} replace?replace(Command(frame),reply.ToArray()):reply.ToArray();
+            // Fix wave 4, C (review D4): a colour chunk whose answer a test turned from 00 into a failure was not taken, so the close after it
+            // finishes no colour write (LastColours and ColourWrites stay as they were).
+            if(frame[3] is 0x06 or 0x07&&reply[3]==0&&shown is not null&&shown[3]!=0){payload=null;pending=null;}
             if(shown is not null) port.Replies.Enqueue(shown);
         }
     }
@@ -269,7 +274,7 @@ sealed class FakeHubTransport:IHubTransport
             case 0x05:
                 if(c[3]==0x22)
                 {
-                    if(coloursOpen&&pending is not null) lastColours=pending;
+                    if(coloursOpen&&pending is not null){lastColours=pending;colourWrites++;}
                     coloursOpen=false;payload=null;pending=null;
                 }
                 else if(openEndpoint==c[3]) openEndpoint=null;

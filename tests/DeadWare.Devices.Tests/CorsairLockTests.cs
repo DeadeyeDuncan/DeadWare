@@ -1,4 +1,5 @@
 using System.Runtime.ExceptionServices;
+using System.Runtime.InteropServices;
 using System.Security.AccessControl;
 using System.Security.Principal;
 using Xunit;
@@ -115,7 +116,8 @@ public sealed class CorsairLockTests:IDisposable
         l.Exit();
     }
 
-    // The rule other users' programs need: Everyone (S-1-1-0) may Synchronize and Modify (0x100001), and that is what the lock grants when it makes the mutex.
+    // The rule other users' programs need: Everyone (S-1-1-0) has full access (0x1F0001; fix wave 4, E: OpenRGB asks for all of it), and that is
+    // what the lock grants when it makes the mutex.
     [Fact]
     public void The_lock_it_makes_lets_every_user_take_it()
     {
@@ -124,8 +126,73 @@ public sealed class CorsairLockTests:IDisposable
         l.Exit();
         using var made=MutexAcl.OpenExisting(name,MutexRights.ReadPermissions);
         var rules=made.GetAccessControl().GetAccessRules(true,false,typeof(SecurityIdentifier)).Cast<MutexAccessRule>().ToList();
-        Assert.Contains(rules,r=>r.IdentityReference.Value=="S-1-1-0"&&r.AccessControlType==AccessControlType.Allow&&(int)r.MutexRights==0x100001);
+        Assert.Contains(rules,r=>r.IdentityReference.Value=="S-1-1-0"&&r.AccessControlType==AccessControlType.Allow&&(int)r.MutexRights==0x1F0001);
     }
+
+    // Fix wave 4, E: OpenRGB's CorsairDeviceGuard opens the lock with CreateMutex, which asks for all access even when the mutex exists, and never
+    // checks for a NULL handle (it then waits on NULL in a loop for ever). So the lock this makes must give that call a handle it can wait on.
+    [Fact]
+    public void OpenRGB_can_open_and_take_the_lock_it_makes()
+    {
+        using var l=new CorsairLock(log,name);
+        Assert.True(l.Enter(0));
+        l.Exit();
+        var (handle,error)=OpenRgbOpens(name,nullDacl:true);
+        try
+        {
+            Assert.Equal(183,error);                                  // ERROR_ALREADY_EXISTS: the same mutex (5, access denied, before fix wave 4)
+            Assert.NotEqual(IntPtr.Zero,handle);
+            Assert.Equal(0u,WaitForSingleObject(handle,0));           // WAIT_OBJECT_0
+            Assert.True(ReleaseMutex(handle));
+        }
+        finally{if(handle!=IntPtr.Zero) CloseHandle(handle);}
+        var (plain,plainError)=OpenRgbOpens(name,nullDacl:false);    // a null attributes pointer asks for all access as well
+        try{Assert.NotEqual(IntPtr.Zero,plain);Assert.Equal(183,plainError);}
+        finally{if(plain!=IntPtr.Zero) CloseHandle(plain);}
+    }
+
+    // The reverse: OpenRGB made the mutex first (a present NULL DACL, everyone full access); the lock enters and leaves that same mutex.
+    [Fact]
+    public void A_lock_OpenRGB_made_is_entered_and_left()
+    {
+        var (handle,error)=OpenRgbOpens(name,nullDacl:true);
+        try
+        {
+            Assert.NotEqual(IntPtr.Zero,handle);
+            Assert.Equal(0,error);                                    // made here
+            using var l=new CorsairLock(log,name);
+            Assert.True(l.Enter(0));
+            Assert.Null(l.Problem);
+            Assert.Equal(258u,OnAnotherThread(()=>WaitForSingleObject(handle,0)));   // WAIT_TIMEOUT: the same mutex, held by the lock
+            l.Exit();
+            Assert.True(OnAnotherThread(()=>{var r=WaitForSingleObject(handle,0);if(r==0) ReleaseMutex(handle);return r==0;}));
+        }
+        finally{if(handle!=IntPtr.Zero) CloseHandle(handle);}
+    }
+
+    // CreateMutexW as OpenRGB calls it: bInitialOwner false, with security attributes whose descriptor has a present NULL DACL (nullDacl), or none.
+    static (IntPtr Handle,int Error) OpenRgbOpens(string name,bool nullDacl)
+    {
+        if(!nullDacl){var h=CreateMutexW(IntPtr.Zero,false,name);return (h,Marshal.GetLastWin32Error());}
+        var sd=Marshal.AllocHGlobal(64);
+        var sa=Marshal.AllocHGlobal(Marshal.SizeOf<SecurityAttributes>());
+        try
+        {
+            Assert.True(InitializeSecurityDescriptor(sd,1));
+            Assert.True(SetSecurityDescriptorDacl(sd,true,IntPtr.Zero,false));
+            Marshal.StructureToPtr(new SecurityAttributes{Length=Marshal.SizeOf<SecurityAttributes>(),Descriptor=sd,Inherit=false},sa,false);
+            var h=CreateMutexW(sa,false,name);
+            return (h,Marshal.GetLastWin32Error());
+        }
+        finally{Marshal.FreeHGlobal(sa);Marshal.FreeHGlobal(sd);}
+    }
+    [StructLayout(LayoutKind.Sequential)] struct SecurityAttributes{public int Length;public IntPtr Descriptor;[MarshalAs(UnmanagedType.Bool)] public bool Inherit;}
+    [DllImport("kernel32.dll",SetLastError=true,CharSet=CharSet.Unicode)] static extern IntPtr CreateMutexW(IntPtr attributes,[MarshalAs(UnmanagedType.Bool)] bool initialOwner,string name);
+    [DllImport("kernel32.dll",SetLastError=true)] static extern uint WaitForSingleObject(IntPtr handle,uint milliseconds);
+    [DllImport("kernel32.dll",SetLastError=true)] [return:MarshalAs(UnmanagedType.Bool)] static extern bool ReleaseMutex(IntPtr handle);
+    [DllImport("kernel32.dll",SetLastError=true)] [return:MarshalAs(UnmanagedType.Bool)] static extern bool CloseHandle(IntPtr handle);
+    [DllImport("advapi32.dll",SetLastError=true)] [return:MarshalAs(UnmanagedType.Bool)] static extern bool InitializeSecurityDescriptor(IntPtr descriptor,uint revision);
+    [DllImport("advapi32.dll",SetLastError=true)] [return:MarshalAs(UnmanagedType.Bool)] static extern bool SetSecurityDescriptorDacl(IntPtr descriptor,[MarshalAs(UnmanagedType.Bool)] bool present,IntPtr dacl,[MarshalAs(UnmanagedType.Bool)] bool defaulted);
 
     // Another program made the mutex granting every user only Synchronize and Modify, so making it with full rights is refused; the lock opens it instead.
     [Fact]

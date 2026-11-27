@@ -4,8 +4,10 @@ using System.Security.Principal;
 namespace DeadWare.Devices;
 
 // Lighting 5: the named mutex Corsair software and OpenRGB take around each of their own sequences on the hub. It is made on first use (an Enter,
-// or a look at Problem, so the worker can tell it cannot be made before it opens the hub) with one allow rule for Everyone (Synchronize and
-// Modify), so other users' programs can take it too; when another program made it without granting full rights, it is opened instead. The
+// or a look at Problem, so the worker can tell it cannot be made before it opens the hub) with one allow rule for Everyone, full access, as open
+// as the one OpenRGB makes (fix wave 4, E): OpenRGB opens it with CreateMutex, which asks for all access, never checks for a failed open and
+// then waits on nothing in a loop for ever, so a narrower rule stalls its device search. When another program made it without granting full
+// rights, it is opened instead. The
 // .NET 10 overloads that take wait-handle options are never used: their default limits the lock to the current user. Making it is tried once: if
 // neither way works, Enter is false for the run, Problem says why and nothing throws. The mutex is recursive per thread and owned by the thread
 // that entered it, so Enter and Exit belong on one thread.
@@ -65,7 +67,7 @@ internal sealed class CorsairLock:IHubLock,IDisposable
     static Mutex Make(string name)
     {
         var security=new MutexSecurity();
-        security.AddAccessRule(new MutexAccessRule(new SecurityIdentifier(WellKnownSidType.WorldSid,null),MutexRights.Synchronize|MutexRights.Modify,AccessControlType.Allow));
+        security.AddAccessRule(new MutexAccessRule(new SecurityIdentifier(WellKnownSidType.WorldSid,null),MutexRights.FullControl,AccessControlType.Allow));
         try{return MutexAcl.Create(false,name,out _,security);}
         catch(UnauthorizedAccessException){return Mutex.OpenExisting(name);}
     }
