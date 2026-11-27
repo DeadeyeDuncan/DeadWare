@@ -909,7 +909,7 @@ internal sealed class DeviceHost : IAsyncDisposable
                 return Mutate(request,s=>{s.Mouse.SleepMinutes=r.Minutes;return null;},out raise);
             // Lighting 5, Task 10: judged from the last scan; they never scan, wait for the hub or await, and the state they cause follows the reply.
             case ReadHubRequest:return HubRequest(request,t=>t.Read(HubAskLocked()),out raise);
-            case SetHubModeRequest r:return HubRequest(request,t=>t.SetMode(r.Mode,HubAskLocked()),out raise);
+            case SetHubModeRequest r:return HubRequest(request,t=>t.SetMode(r.Mode,HubAskLocked(),r.Shown),out raise);
             default:return Fail(request,HostReplyCodes.Unsupported);
         }
     }

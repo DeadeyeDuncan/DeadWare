@@ -166,6 +166,8 @@ public static class DeadLightRetire
     // Only elevated: switch off the task and stop its instance; then, only with a confirmed folder, end exactly DeadLight's electron.exe and then its
     // OpenRGB.exe by full path, and wait up to 5 s. It ends nothing by name alone, deletes nothing and sends nothing to the hub. When DeadWare's own
     // OpenRGB location (openRgbPath) is DeadLight's OpenRGB.exe, no OpenRGB.exe is ended at all.
+    // An exception from the Windows calls beyond Run's own try, as the window shows it: a failure with the reason in words.
+    public static RetireResult Failed(Exception e)=>new(false,Sentence.With("DeadWare couldn't retire DeadLight: ",e.Message));
     public static RetireResult Run(IDeadLightSystem system,bool elevated,string? openRgbPath)
     {
         if(!elevated) return new(false,DeadLightLines.NeedsAdmin);

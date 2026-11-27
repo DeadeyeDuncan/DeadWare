@@ -71,8 +71,8 @@ internal sealed class HubTakeover
     }
 
     // setHubMode. Null: accepted (the saved mode already, with nothing done, included); else the refusal. Driven only from openrgb, with the
-    // dialog's reading at most two minutes old and no blocker; a reading that could not be taken means no before reading.
-    public string? SetMode(string? mode,HubAsk a)
+    // dialog's reading at most two minutes old and no blocker; the before reading is the one the window says the dialog showed, none when it showed none.
+    public string? SetMode(string? mode,HubAsk a,HubReading? shown=null)
     {
         if(mode is not(HubModes.OpenRgb or HubModes.Driven)) return Refuse(HostReplyCodes.BadHubMode);
         if(host.Switching||a.Quiet) return Refuse(HostReplyCodes.HubBusy);
@@ -84,8 +84,10 @@ internal sealed class HubTakeover
         var reading=host.Hub.Snapshot.Read;
         if(reading is null||HubChecks.Stale(reading.At,a.Now)) return Refuse(HostReplyCodes.HubStale);
         if(reading.Blocker is not null) return Refuse(HubTexts.Blocked([(reading.Blocker,reading.Detail)]));
+        if(shown is not null&&HubChecks.Stale(shown.At,a.Now)) return Refuse(HostReplyCodes.HubStale);
         log.Write("hub mode change requested: driven");
-        BeginOn(reading);
+        // The check compares against exactly the reading the dialog showed, never against what the snapshot holds now.
+        BeginOn(shown);
         return null;
     }
     string Refuse(string why){log.Write("hub mode change refused: "+why);return why;}

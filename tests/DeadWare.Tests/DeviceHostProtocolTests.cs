@@ -420,6 +420,18 @@ public class DeviceHostProtocolTests
         Assert.Contains("\"Mode\":\"driven\"",json);
         Assert.Contains("\"type\":\"setHubMode\"",json);
     }
+    [Fact] public async Task The_dialogs_reading_travels_with_the_take_over_and_may_be_absent()
+    {
+        var ms=new MemoryStream();
+        await DeviceHostProtocol.WriteAsync(ms,new SetHubModeRequest("driven",new HubReading(true,new DateTimeOffset(2026,11,26,12,0,0,TimeSpan.Zero),Readings())){Id=72},default);
+        var json=System.Text.Encoding.UTF8.GetString(ms.ToArray().AsSpan(4));
+        Assert.Contains("\"Shown\":{\"Ok\":true,",json);
+        var echoed=Assert.IsType<SetHubModeRequest>(await RoundTrip(new SetHubModeRequest("driven",new HubReading(true,new DateTimeOffset(2026,11,26,12,0,0,TimeSpan.Zero),Readings())){Id=73}));
+        Assert.Equal(2709,echoed.Shown!.Readings!.Parts[0].Rpm);
+        var sent=Assert.IsType<SetHubModeRequest>(await DeviceHostProtocol.ReadAsync(Frame("""{"type":"setHubMode","Version":1,"Id":2,"Mode":"driven","Shown":{"Ok":true,"At":"2026-11-26T12:00:00+00:00"}}"""),default));
+        Assert.Equal(new DateTimeOffset(2026,11,26,12,0,0,TimeSpan.Zero),sent.Shown!.At);
+        Assert.Null(Assert.IsType<SetHubModeRequest>(await DeviceHostProtocol.ReadAsync(Frame("""{"type":"setHubMode","Version":1,"Id":2,"Mode":"driven"}"""),default)).Shown);
+    }
     [Fact] public async Task The_hub_messages_use_their_discriminators()
     {
         Assert.IsType<ReadHubRequest>(await DeviceHostProtocol.ReadAsync(Frame("""{"type":"readHub","Version":1,"Id":1}"""),default));

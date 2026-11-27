@@ -766,7 +766,7 @@ public sealed partial class DeviceHostTests
     {
         await Until(()=>h.State.Status==HostStatus.Running);
         PlaceReading(hub,ok:reading);
-        Assert.True((await Send(h,new SetHubModeRequest("driven"))).Ok);
+        Assert.True((await Send(h,new SetHubModeRequest("driven",hub.Snapshot.Read))).Ok);
     }
     // From the take-over's start to its check: the worker allowed once OpenRGB has stopped, the fake drives at the reading's speeds, and OpenRGB's
     // start is issued. Returns when the fake drove, which is its SoftwareAt.
@@ -849,7 +849,7 @@ public sealed partial class DeviceHostTests
         var (h,hub,_)=OwnerHost();
         await Until(()=>h.State.Status==HostStatus.Running);
         if(seconds>=0) PlaceReading(hub,TimeSpan.FromSeconds(seconds));
-        var reply=await Send(h,new SetHubModeRequest("driven"));
+        var reply=await Send(h,new SetHubModeRequest("driven",hub.Snapshot.Read));
         Assert.Equal(accepted?(true,(string?)null):(false,"hub stale"),(reply.Ok,reply.Error));
         Assert.Equal(accepted?"switching":"off",h.State.Hub!.State);
     }
@@ -934,7 +934,7 @@ public sealed partial class DeviceHostTests
         }
         var before=Volatile.Read(ref scans);
         Assert.True(Ask(new ReadHubRequest()).Ok);
-        Assert.True(Ask(new SetHubModeRequest("driven")).Ok);
+        Assert.True(Ask(new SetHubModeRequest("driven",hub.Snapshot.Read)).Ok);
         Assert.Equal("hub busy",Ask(new SetHubModeRequest("openrgb")).Error);
         Assert.Equal("bad hub mode",Ask(new SetHubModeRequest("stopped")).Error);
         Assert.Equal(0,Volatile.Read(ref scannedAsking));
@@ -1054,6 +1054,56 @@ public sealed partial class DeviceHostTests
         Assert.Equal(("noReading","fan",2,(int?)1326,(int?)null),(stop.Kind,stop.Part,stop.Number,stop.Before,stop.After));
         Assert.Contains("\"Kind\": \"noReading\"",FileText());
         Assert.Equal("hub check: pump 2,716 -> 2,716 RPM, fan 1 1,337 -> 1,337 RPM, fan 2 1,326 RPM -> no reading, fan 3 1,337 -> 1,337 RPM: fail",Text(LogLines("hub check:").Single()));
+    }
+
+    // The check compares against the reading the dialog showed (pump 2,716), not the newer one the snapshot holds (pump 2,000).
+    [Theory]
+    [InlineData(2445,"driving")]
+    [InlineData(2444,"gaveBack")]
+    public async Task The_check_compares_against_the_reading_the_dialog_showed(int pumpAfter,string expected)
+    {
+        var (h,hub,_)=OwnerHost();
+        await Until(()=>h.State.Status==HostStatus.Running);
+        var shown=new HubReading(true,time.GetUtcNow()-TimeSpan.FromSeconds(10),TheReading);
+        var newer=new HubReadings([..TheReading.Parts.Where(p=>p.Kind=="fan"),new(13,"pump","iCUE LINK TITAN 360",2000,43.7)]);
+        hub.Snapshot=hub.Snapshot with{Parts=OwnersParts,Read=new HubReading(true,time.GetUtcNow(),newer)};
+        Assert.True((await Send(h,new SetHubModeRequest("driven",shown))).Ok);
+        var at=await ToCheck(h,hub);
+        await RoundAt(h,hub,at,TimeSpan.FromSeconds(15),pumpAfter,ReadingFans);
+        await AdvanceUntil(()=>h.State.Hub?.State==expected);
+        Assert.Contains("pump 2,716 -> "+pumpAfter.ToString("N0",System.Globalization.CultureInfo.InvariantCulture)+" RPM",Text(LogLines("hub check:").Single()));
+    }
+
+    // A dialog that showed no reading means no before reading, whatever the snapshot holds by the time of the click.
+    [Fact]
+    public async Task A_take_over_after_a_no_reading_dialog_has_no_before_reading()
+    {
+        var (h,hub,_)=OwnerHost();
+        await Until(()=>h.State.Status==HostStatus.Running);
+        PlaceReading(hub);
+        Assert.True((await Send(h,new SetHubModeRequest("driven",null))).Ok);
+        var at=await ToCheck(h,hub);
+        await RoundAt(h,hub,at,TimeSpan.FromSeconds(14),1000,ReadingFans);
+        Assert.DoesNotContain("\"Hub\"",FileText());
+        await RoundAt(h,hub,at,TimeSpan.FromSeconds(15),1000,ReadingFans);
+        await AdvanceUntil(()=>h.State.Hub?.State=="driving");
+        Assert.Contains("\"Mode\": \"driven\"",FileText());
+        Assert.Null(h.State.Hub!.Before);
+        Assert.Equal("hub check: no before reading, pump 1,000 RPM, fan 1 1,337 RPM, fan 2 1,326 RPM, fan 3 1,337 RPM: pass",Text(LogLines("hub check:").Single()));
+    }
+
+    // The window's own reading is held to the same two minutes as the snapshot's.
+    [Theory]
+    [InlineData(120,true)]
+    [InlineData(121,false)]
+    public async Task A_shown_reading_older_than_two_minutes_is_refused(int seconds,bool accepted)
+    {
+        var (h,hub,_)=OwnerHost();
+        await Until(()=>h.State.Status==HostStatus.Running);
+        PlaceReading(hub);
+        var shown=new HubReading(true,time.GetUtcNow()-TimeSpan.FromSeconds(seconds),TheReading);
+        var reply=await Send(h,new SetHubModeRequest("driven",shown));
+        Assert.Equal(accepted?(true,(string?)null):(false,"hub stale"),(reply.Ok,reply.Error));
     }
 
     [Fact]
@@ -1397,7 +1447,7 @@ public sealed partial class DeviceHostTests
         PlaceReading(hub);
         var scan=NewHold();
         Volatile.Write(ref scanHold,scan);
-        Assert.True((await Send(h,new SetHubModeRequest("driven"))).Ok);
+        Assert.True((await Send(h,new SetHubModeRequest("driven",hub.Snapshot.Read))).Ok);
         await AdvanceUntil(()=>scan.Parked);
         Volatile.Write(ref scanHold,null);
         Assert.True((await Send(h,new StopRequest())).Ok);

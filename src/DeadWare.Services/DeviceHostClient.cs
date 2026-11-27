@@ -34,8 +34,8 @@ internal sealed class DeviceHostClient : IAsyncDisposable
         LaunchProblem="The lighting helper couldn't be started.",
         FailedProblem="The lighting helper connection failed.";
     static readonly TimeSpan RetryDelay=TimeSpan.FromMilliseconds(500),ReplyTimeout=TimeSpan.FromSeconds(5),ExitTimeout=TimeSpan.FromSeconds(5);
-    internal const string NoAnswerText="The lighting helper didn't answer.";
-    static readonly Reply NotConnected=new(false,"The lighting helper isn't connected."),NoAnswer=new(false,NoAnswerText);
+    internal const string NoAnswerText=HubSwitchFlow.NoAnswerText;
+    static readonly Reply NotConnected=new(false,HubSwitchFlow.NoReplyText),NoAnswer=new(false,NoAnswerText);
     /// <summary>The status line's words for a change that failed: the host's short codes in plain words, and a change the host never answered as one whose outcome isn't known.</summary>
     internal static string FailedChangeText(string? why)=>why switch
     {

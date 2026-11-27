@@ -68,7 +68,8 @@ public sealed record SetEverydayRequest(EverydaySettings Everyday) : HostMessage
 public sealed record SetMouseSleepRequest(int? Minutes) : HostMessage;
 public sealed record ReadHubRequest : HostMessage;
 // Mode: HubModes.OpenRgb or HubModes.Driven.
-public sealed record SetHubModeRequest(string Mode) : HostMessage;
+// Shown: the reading the take-over dialog showed (null: it showed the no-reading form). The helper compares the check against exactly this.
+public sealed record SetHubModeRequest(string Mode,HubReading? Shown=null) : HostMessage;
 public sealed record HubReadingsEvent(HubReadings Readings) : HostMessage;
 public sealed record SetBrightnessRequest(int Percent) : HostMessage;
 public sealed record SetAllColorsRequest(string Color) : HostMessage;
