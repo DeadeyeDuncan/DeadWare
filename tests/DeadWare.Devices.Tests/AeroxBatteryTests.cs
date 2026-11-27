@@ -21,7 +21,7 @@ public sealed class AeroxBatteryTests:IDisposable
         log=new HostLog(Path.Combine(dir,"logs"));
         fake.Products.Add(AeroxDriver.Receiver);
         fake.Reply=Good;
-        driver=new AeroxDriver(fake,log);driver.Scan();
+        driver=new AeroxDriver(fake,log,RealTimeCap);driver.Scan();   // see DeviceHostMouseTests: the 1.5 s deadline is real time
         battery=new AeroxBattery(driver,time,log);
     }
     public void Dispose(){fake.HangWrite?.Set();driver.Dispose();log.Dispose();try{Directory.Delete(dir,true);}catch{}}

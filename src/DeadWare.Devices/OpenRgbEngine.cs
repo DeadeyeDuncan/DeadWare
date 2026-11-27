@@ -40,7 +40,8 @@ internal sealed class OpenRgbEngine : IAsyncDisposable
     // F5 item 3b (whole-branch review R4-D2): resumeAt is a time.GetTimestamp() value, so a step of the wall clock doesn't move it.
     long? resumeAt;
     bool gaveUp;
-    // Fix wave 2: when the last OpenRGB this engine launched was launched, and when the last one it launched ended (time.GetTimestamp() values).
+    // Fix wave 2: when the last OpenRGB this engine launched was launched, and when the last one it launched ended (time.GetTimestamp() values);
+    // fix wave 3, D5: endedAt only for one this engine ended (a stop or a kill), null after one that exited by itself.
     long? launchedAt,endedAt;
     // Fix wave 2, E: cancelled by a full stop, which ends a deliberate stop's wait for a young OpenRGB at once.
     CancellationTokenSource fullStop=new();
@@ -102,6 +103,26 @@ internal sealed class OpenRgbEngine : IAsyncDisposable
     }
     public static string FolderNameText(string configDir)=>$"OpenRGB's settings folder for DeadWare, {configDir}, isn't named openrgb, so DeadWare didn't start OpenRGB: OpenRGB would read settings and keep its log in another folder.";
     public int? ProcessId{get{lock(gate)return processId;}}
+    // Fix wave 3, D1/D2: the last OpenRGB this engine ended that had not exited by the end of its wait, kept until it has; Lingering is its
+    // id while it still runs, null once it has exited (then it is let go).
+    IRunningProcess? lingering;
+    public int? Lingering
+    {
+        get
+        {
+            IRunningProcess? gone=null;int? id=null;
+            lock(gate)
+            {
+                if(lingering is {} p)
+                {
+                    bool done;try{done=p.HasExited;}catch{done=true;}
+                    if(done){gone=p;lingering=null;}else id=p.Id;
+                }
+            }
+            try{gone?.Dispose();}catch{}
+            return id;
+        }
+    }
     public EngineStatus Status{get{lock(gate)return status;}}
     public string? FailureReason{get{lock(gate)return failureReason;}}
     public event Action? Changed;
@@ -177,12 +198,15 @@ internal sealed class OpenRgbEngine : IAsyncDisposable
                 {
                     if(proc is not null)
                     {
+                        // Fix wave 3, D5: one that had exited by itself before any stop or kill was not ended by this engine: no endedAt.
+                        bool own;try{own=!quitting&&!ct.IsCancellationRequested&&proc.HasExited;}catch{own=false;}
                         try{proc.KillTree();}catch{}
                         await Exited(proc).ConfigureAwait(false);
                         bool gone;try{gone=proc.HasExited;}catch{gone=false;}
                         // One block: a stop either still sees this process in current (and this false lands after its reset) or sees none.
-                        lock(gate){allGone=allGone&&gone;current=null;processId=null;endedAt=time.GetTimestamp();}
-                        try{proc.Dispose();}catch{}
+                        IRunningProcess? old=null;
+                        lock(gate){allGone=allGone&&gone;current=null;processId=null;endedAt=own?null:time.GetTimestamp();if(!gone){old=lingering;lingering=proc;}}
+                        try{(gone?proc:old)?.Dispose();}catch{}
                     }
                     else lock(gate){current=null;processId=null;}
                 }
@@ -268,11 +292,16 @@ internal sealed class OpenRgbEngine : IAsyncDisposable
         if(refusal==taken&&ended is long end&&time.GetElapsedTime(end)<LingerWindow)
         {
             log.Write($"openrgb port still in use {Seconds(end)} s after DeadWare ended its OpenRGB; checking again every second");
-            while(refusal==taken&&LingerWindow-time.GetElapsedTime(end) is {Ticks:>0} left)
+            // Fix wave 3, D5: a stop during the checks still logs their end.
+            try
             {
-                await Task.Delay(left<LingerRetry?left:LingerRetry,time,ct).ConfigureAwait(false);
-                refusal=Guard();
+                while(refusal==taken&&LingerWindow-time.GetElapsedTime(end) is {Ticks:>0} left)
+                {
+                    await Task.Delay(left<LingerRetry?left:LingerRetry,time,ct).ConfigureAwait(false);
+                    refusal=Guard();
+                }
             }
+            catch(OperationCanceledException){log.Write($"openrgb port checks stopped {Seconds(end)} s after DeadWare ended its OpenRGB");throw;}
             log.Write(refusal is null?$"openrgb port free again {Seconds(end)} s after DeadWare ended its OpenRGB":$"openrgb port still in use {Seconds(end)} s after DeadWare ended its OpenRGB");
         }
         if(refusal is not null) log.Write("openrgb port guard refused: "+refusal);
@@ -375,7 +404,7 @@ internal sealed class OpenRgbEngine : IAsyncDisposable
         Set(EngineStatus.Stopped,null);
         return gone;
     }
-    public async ValueTask DisposeAsync(){await StopAsync().ConfigureAwait(false);lock(gate)cts.Dispose();}
+    public async ValueTask DisposeAsync(){await StopAsync().ConfigureAwait(false);IRunningProcess? left;lock(gate){cts.Dispose();left=lingering;lingering=null;}try{left?.Dispose();}catch{}}
 
     // Real port probe: one TCP connect to 127.0.0.1.
     public static async Task<bool> ProbePort(int port,CancellationToken token)

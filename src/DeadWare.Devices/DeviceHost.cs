@@ -160,9 +160,12 @@ internal sealed class DeviceHost : IAsyncDisposable
     (IReadOnlyList<LightingConflict> Found,bool Failed)? ownScan;
     public event Action<HubReadingsEvent>? HubReadingsChanged;
     const string RestartingText="OpenRGB is restarting. Lighting will resume in a moment.";
-    // Fix wave 2, E: a back-out's or switch-off's deliberate stop that could not end OpenRGB; no second OpenRGB is started beside it. The
-    // conflict check then sees that OpenRGB as another one (our pid is cleared) and blocks until it has gone, then starts OpenRGB as usual.
+    // Fix wave 2, E: a back-out's or switch-off's deliberate stop that could not end OpenRGB; no second OpenRGB is started beside it.
+    // Fix wave 3, D1/D2: NotRestarted clears engineActive and sets notRestarted (under gate); while the engine's Lingering says that OpenRGB
+    // still runs, the conflict check counts it as ours and keeps this status; once it has gone, whether or not a scan saw it, the check
+    // starts OpenRGB as usual.
     internal const string NotRestartedText="OpenRGB could not be restarted: it did not exit when DeadWare stopped it.";
+    bool notRestarted;
 
     // startupFailure: set when the host could not prepare OpenRGB's config folder; it reports OpenRgbFailed and never starts OpenRGB.
     // callClock: the clock of the bound on OpenRGB calls; real time unless a test supplies one.
@@ -443,7 +446,9 @@ internal sealed class DeviceHost : IAsyncDisposable
         IReadOnlyList<LightingConflict> found;
         var scanFailed=false;
         var pidBefore=engine.ProcessId;
-        try{found=scanner.Scan(pidBefore);}
+        int? lingering;
+        lock(gate)lingering=notRestarted?engine.Lingering:null;
+        try{found=scanner.Scan(pidBefore??lingering);}
         catch(Exception e){if(lastScanError!=e.Message){lastScanError=e.Message;log.Write("conflict scan failed: "+e.Message);}found=[];scanFailed=true;}
         if(!scanFailed) lastScanError=null;
         // OpenRGB relaunched during the scan: the result may call our own new process foreign. Discard it; the next tick scans again.
@@ -453,6 +458,7 @@ internal sealed class DeviceHost : IAsyncDisposable
         lock(gate)
         {
             if(status==HostStatus.Stopping) return;
+            if(lingering is null) notRestarted=false;
             var key=scanFailed?"scan failed":string.Join("|",found.Select(c=>c.Description));
             if(key!=lastConflictKey)
             {
@@ -468,6 +474,7 @@ internal sealed class DeviceHost : IAsyncDisposable
                 if(engineActive){engineActive=false;stop=true;sessionOk=false;}
                 if(status!=HostStatus.Blocked||message!=text){status=HostStatus.Blocked;message=text;changed=true;}
             }
+            else if(lingering is not null){if(status!=HostStatus.OpenRgbFailed||message!=NotRestartedText){status=HostStatus.OpenRgbFailed;message=NotRestartedText;changed=true;}}
             else if(!engineActive){engineActive=true;start=true;status=HostStatus.Starting;message="";changed=true;}
             // Lighting 5: the worker lets go before OpenRGB is stopped, with the blocking conflict's reason (noLighting for a failed scan).
             if(stop&&hubHost is not null) HubAllowLocked(false);
@@ -621,7 +628,7 @@ internal sealed class DeviceHost : IAsyncDisposable
     void NotRestarted()
     {
         log.Write("OpenRGB did not exit: DeadWare did not start it again");
-        lock(gate){if(status==HostStatus.Stopping) return;status=HostStatus.OpenRgbFailed;message=NotRestartedText;}
+        lock(gate){if(status==HostStatus.Stopping) return;status=HostStatus.OpenRgbFailed;message=NotRestartedText;engineActive=false;notRestarted=true;}
         Raise();
     }
 

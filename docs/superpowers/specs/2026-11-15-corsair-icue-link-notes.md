@@ -86,7 +86,7 @@ Treat an unknown type, model or reply layout as a reason to stop, not to guess.
   - **Hardware mode** is the hub's default. It runs the lighting effect and cooling curves stored in its memory.
   - **Software mode** means the host drives both.
 - Entering hardware mode resets the lighting to the stored effect.
-- With no speed commands in software mode, the development PC's hub held the pump at about 2,716 RPM and the fans at about 1,330 RPM (2026-11-15). This behaviour isn't documented anywhere.
+- With no speed commands in software mode, the development PC's hub ran the pump at about 2,716 RPM and the fans at about 1,330 RPM on 2026-11-15, and at other speeds on other days (see the table under "2026-11-27" below). Whether the speeds change within one hold isn't known yet. This behaviour isn't documented anywhere.
 - Cooperating tools take the shared mutex. iCUE reportedly doesn't honour it and expects exclusive access, so never drive the hub while iCUE runs.
 - Polling temperatures and speeds every 2–3 s is plenty: coolant temperature moves over minutes.
 
@@ -122,7 +122,7 @@ Fan speed against coolant temperature, each read while OpenRGB held the hub and 
 | 2026-11-15 | 38.4 °C | about 1,330 RPM |
 | 2026-11-25 | 43.7 °C | about 1,660 RPM |
 
-The fans follow coolant temperature while the hub is held.
+Each reading was on a different day, after OpenRGB had taken the hub afresh. They fit two explanations that they cannot tell apart: the hub keeps following its own stored curve while held, or it keeps the speed it had at the moment it was taken. Two readings within one hold at clearly different coolant temperatures would settle it; the Sensors history gives those once DeadWare drives the hub.
 
 ## Attribution
 

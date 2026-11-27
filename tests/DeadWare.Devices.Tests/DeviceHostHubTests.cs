@@ -1323,12 +1323,67 @@ public sealed partial class DeviceHostTests
             await RunFor(TimeSpan.FromSeconds(10),DeviceHost.Tick);
             Assert.Equal(2,runner.Count);
             Assert.Contains(Copy(states),s=>s.Status==HostStatus.OpenRgbFailed&&s.Message=="OpenRGB could not be restarted: it did not exit when DeadWare stopped it.");
+            // Fix wave 3b (review M7): the status still says so 10 s later, while that OpenRGB runs on.
+            Assert.Equal(HostStatus.OpenRgbFailed,h.State.Status);
+            Assert.Equal("OpenRGB could not be restarted: it did not exit when DeadWare stopped it.",h.State.Message);
             Assert.Equal("noHub",h.State.Hub!.Problem);
         }
         finally{runner.At(1).Exit();}
         // Once that OpenRGB has gone, lighting starts again as after any conflict, with the detector on.
         await AdvanceUntil(()=>runner.Count==3&&h.State.Status==HostStatus.Running);
         Assert.Equal([true,false,true],Launches());
+    }
+
+    // Fix wave 3, D1: the OpenRGB the deliberate stop could not end exits before any conflict scan has seen it: the next scan finds nothing in
+    // the way and OpenRGB is started again; the status leaves the failed text.
+    [Fact]
+    public async Task A_leftover_that_exits_before_any_scan_sees_it_lets_OpenRGB_start_again()
+    {
+        var (h,hub,_)=OwnerHost();
+        await TakeOver(h,hub);
+        await ToCheck(h,hub);
+        await AdvanceUntil(()=>runner.Count==2&&h.State.Status==HostStatus.Running);
+        var leftover=runner.At(1);
+        leftover.IgnoresKill=true;
+        // It exits at the very end of the stop, after the stop found it still running and before the host logs that, so no scan sees it.
+        var engine=built!;
+        engine.Changed+=()=>{if(leftover.Killed&&engine.Status==EngineStatus.Stopped) leftover.Exit();};
+        hub.Snapshot=hub.Snapshot with{State="letGo",Reason="noHub",SoftwareAt=0};
+        hub.Raise();
+        await AdvanceUntil(()=>leftover.Killed);
+        await Elapse(TimeSpan.FromSeconds(5));
+        await AdvanceUntil(()=>LogLines("OpenRGB did not exit: DeadWare did not start it again").Length==1);
+        Assert.True(leftover.HasExited);
+        await AdvanceUntil(()=>runner.Count==3&&h.State.Status==HostStatus.Running);
+        Assert.Equal("",h.State.Message);
+        Assert.Equal([true,false,true],Launches());
+    }
+
+    // Fix wave 3, D2: while DeadWare's own OpenRGB that did not exit lingers, the status keeps saying it could not be restarted (it is not
+    // another OpenRGB); once it has gone the status clears as usual.
+    [Fact]
+    public async Task While_our_own_leftover_OpenRGB_lingers_the_status_says_it_could_not_be_restarted()
+    {
+        var (h,hub,_)=OwnerHost();
+        await TakeOver(h,hub);
+        await ToCheck(h,hub);
+        await AdvanceUntil(()=>runner.Count==2&&h.State.Status==HostStatus.Running);
+        try
+        {
+            runner.At(1).IgnoresKill=true;
+            hub.Snapshot=hub.Snapshot with{State="letGo",Reason="noHub",SoftwareAt=0};
+            hub.Raise();
+            await AdvanceUntil(()=>runner.At(1).Killed);
+            await Elapse(TimeSpan.FromSeconds(5));
+            await AdvanceUntil(()=>LogLines("OpenRGB did not exit: DeadWare did not start it again").Length==1);
+            await RunFor(TimeSpan.FromSeconds(10),DeviceHost.Tick);
+            Assert.Equal(HostStatus.OpenRgbFailed,h.State.Status);
+            Assert.Equal("OpenRGB could not be restarted: it did not exit when DeadWare stopped it.",h.State.Message);
+            Assert.Equal(2,runner.Count);
+        }
+        finally{runner.At(1).Exit();}
+        await AdvanceUntil(()=>runner.Count==3&&h.State.Status==HostStatus.Running);
+        Assert.Equal("",h.State.Message);
     }
 
     // Ruling P4: an OpenRGB that does not exit is a hub still in use.
@@ -1608,7 +1663,8 @@ public sealed partial class DeviceHostTests
             Assert.Equal(HostStatus.Starting,h.State.Status);
             Assert.True((await Send(h,new SetHubModeRequest("openrgb"))).Ok);
             // Stopped by the switch-off within a few turns, not by OpenRGB's own 30 s port wait running out.
-            // Fix wave 2, E: no sooner than 5 s after its launch.
+            // Fix wave 2, E: the kill may wait until OpenRGB is 5 s old; that lower bound is the engine test's
+            // (A_deliberate_stop_waits_until_OpenRGB_is_5_s_old). Here only the upper bound is checked, measured from the switch-off.
             Assert.InRange(await AdvanceUntil(()=>runner.At(0).Killed),TimeSpan.Zero,TimeSpan.FromSeconds(5));
             Assert.InRange(await AdvanceUntil(()=>Launches().Count==2),TimeSpan.Zero,TimeSpan.FromSeconds(5));
             Assert.Equal([false,true],Launches());

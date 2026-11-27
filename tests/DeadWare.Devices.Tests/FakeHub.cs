@@ -275,6 +275,9 @@ sealed class FakeHubTransport:IHubTransport
                 else if(openEndpoint==c[3]) openEndpoint=null;
                 return Ack(op,0);
             case 0x0D:
+                // Fix wave 3b (review M14a): WrongMode spent on open colours models nothing real any more, since a held hub answers that open
+                // with 03 too. Its 03 here does not open the colour endpoint, so the colour write after it answers NotOpen (a let-go), not 03 (a
+                // re-entry). A test that wants a re-entry sets WrongMode when a read endpoint's open is next.
                 if(wrongMode>0){wrongMode--;return Ack(op,3);}
                 if(!software) return Ack(op,3);
                 // Fix wave 2, A: the real hub, held, answered open colours with status 03 on 2026-11-27 (and the colour write after it with 00),

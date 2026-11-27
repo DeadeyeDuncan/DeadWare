@@ -852,6 +852,70 @@ public sealed class OpenRgbEngineTests : IAsyncLifetime
         Assert.Empty(LogLines("openrgb port still in use"));
     }
 
+    // Fix wave 3b (review M5): the port taken 11 s after DeadWare's own stop, past the 10 s window: final at once, no checks again.
+    [Fact]
+    public async Task A_port_taken_11_s_after_our_own_stop_is_refused_at_once()
+    {
+        var clock=new Clock();
+        var taken=0;
+        var e=Track(new OpenRgbEngine(exe,@"C:\cfg\openrgb",runner,(_,_)=>Task.FromResult(true),clock,log,
+            portGuard:()=>Volatile.Read(ref taken)>0?OpenRgbPortLock.PortTakenText(6744):null));
+        await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
+        clock.Advance(TimeSpan.FromSeconds(5));
+        Assert.True(await e.StopForRestartAsync().WaitAsync(RealTimeCap));
+        clock.Advance(TimeSpan.FromSeconds(11));
+        Volatile.Write(ref taken,1);
+        await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
+        await Until(()=>e.Status==EngineStatus.Failed);
+        Assert.Equal("Another program is using OpenRGB's network port 6744, so DeadWare won't run OpenRGB as administrator. Quit that program, then turn lighting off and on in Settings.",e.FailureReason);
+        Assert.Equal(1,runner.Count);
+        Assert.Empty(LogLines("openrgb port still in use"));
+        Assert.Empty(LogLines("openrgb port free again"));
+    }
+
+    // Fix wave 3, D5: an OpenRGB that exited by itself was not ended by the engine, so the port taken at the restart after its crash backoff
+    // is refused at once, with no checks again.
+    [Fact]
+    public async Task A_port_taken_after_OpenRGB_exited_by_itself_is_refused_at_once()
+    {
+        var clock=new Clock();
+        var taken=0;
+        var e=Track(new OpenRgbEngine(exe,@"C:\cfg\openrgb",runner,(_,_)=>Task.FromResult(true),clock,log,
+            portGuard:()=>Volatile.Read(ref taken)>0?OpenRgbPortLock.PortTakenText(6744):null));
+        await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
+        Assert.Equal(EngineStatus.Running,e.Status);
+        Volatile.Write(ref taken,1);
+        runner.At(0).Exit();
+        await Until(()=>clock.Waiting(TimeSpan.FromSeconds(4)));
+        clock.Advance(TimeSpan.FromSeconds(4));                             // the crash backoff ends: the port is taken
+        await Until(()=>e.Status==EngineStatus.Failed);
+        Assert.Equal("Another program is using OpenRGB's network port 6744, so DeadWare won't run OpenRGB as administrator. Quit that program, then turn lighting off and on in Settings.",e.FailureReason);
+        Assert.Equal(1,runner.Count);
+        Assert.Empty(LogLines("openrgb port still in use"));
+    }
+
+    // Fix wave 3, D5: a stop during the checks again still writes the closing line.
+    [Fact]
+    public async Task A_stop_during_the_port_checks_still_logs_their_end()
+    {
+        var clock=new Clock();
+        var taken=0;
+        var e=Track(new OpenRgbEngine(exe,@"C:\cfg\openrgb",runner,(_,_)=>Task.FromResult(true),clock,log,
+            portGuard:()=>Volatile.Read(ref taken)>0?OpenRgbPortLock.PortTakenText(6744):null));
+        await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
+        clock.Advance(TimeSpan.FromSeconds(5));
+        Assert.True(await e.StopForRestartAsync().WaitAsync(RealTimeCap));
+        Volatile.Write(ref taken,1);
+        await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
+        await Until(()=>clock.Waiting(TimeSpan.FromSeconds(4)));
+        clock.Advance(TimeSpan.FromSeconds(4));                             // the check 4 s after the stop: taken, checks start
+        await Until(()=>clock.Waiting(TimeSpan.FromSeconds(1)));
+        await e.StopAsync().WaitAsync(RealTimeCap);
+        Assert.Single(LogLines("openrgb port still in use 4 s after DeadWare ended its OpenRGB; checking again every second"));
+        Assert.Single(LogLines("openrgb port checks stopped 4 s after DeadWare ended its OpenRGB"));
+        Assert.Equal(1,runner.Count);
+    }
+
     // F5 item 2 (whole-branch review D15, Ruling BG): an elevated host's port guard (OpenRgbPortLock.Ensure) is consulted before every
     // launch. A reason means OpenRGB isn't started, with exactly that text; like the folder refusal it is final and isn't retried.
     [Fact]

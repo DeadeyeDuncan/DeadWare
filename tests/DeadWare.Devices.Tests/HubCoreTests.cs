@@ -800,6 +800,133 @@ public sealed class HubCoreTests:IDisposable
         Settled();
     }
 
+    // Fix wave 3, D6: a colour frame due in the same step as a round's re-entry is not sent during the pause after software mode; it goes after
+    // the repeated round 1 s later.
+    [Fact]
+    public void A_frame_due_at_a_rounds_re_entry_waits_out_the_pause()
+    {
+        Take();
+        core.Post(Four);
+        At(0);
+        Assert.Equal(1,fake.Count(0x06,0x00));
+        int before=fake.Writes.Count;
+        fake.WrongMode=1;
+        Assert.Equal(TimeSpan.FromSeconds(1),At(3));                         // the round and the keep-alive (due since 2 s) are both due
+        Assert.Equal(new[]{"05 01 01 21","0D 01 21","01 03 00 02"},Commands().Skip(before));
+        At(3.999);
+        Assert.Equal(3,Commands().Skip(before).Count());
+        At(4);
+        Assert.Equal(new[]{"05 01 01 21","0D 01 21","08 01","05 01 01 21","05 01 01 17","0D 01 17","08 01","05 01 01 17","05 01 01 22","0D 00 22"},
+            Commands().Skip(before+3).Take(10));
+        Assert.Equal(2,fake.Count(0x06,0x00));
+        Settled();
+    }
+
+    // Fix wave 3, D8: the lock busy when the second unit of a take of a hub in its own mode starts: the hub stays held (software mode was sent),
+    // nothing is closed or sent, and the rest of the take follows one pause later, with no second software mode.
+    [Fact]
+    public void A_busy_lock_at_the_takes_second_unit_keeps_the_hub_and_waits_another_pause()
+    {
+        fake.Software=false;
+        core.Allow(null);
+        Assert.Equal(TimeSpan.FromSeconds(1),At(0));
+        corsairLock.Busy=true;
+        Assert.Equal(TimeSpan.FromSeconds(1),At(1));
+        Assert.Equal(5,Commands().Count);
+        Assert.Equal(0,fake.Closes);
+        Assert.Equal(1,fake.Opens);
+        Assert.NotEqual("driving",core.Snapshot.State);
+        corsairLock.Busy=false;
+        At(1.999);
+        Assert.Equal(5,Commands().Count);
+        At(2);
+        Assert.Equal("driving",core.Snapshot.State);
+        Assert.Equal(1,fake.Count(0x01,0x03,0x00,0x02));
+        Assert.Equal(1,fake.Count(0x02,0x13));
+        Assert.Equal(0,fake.Closes);
+        Assert.Equal(1,LogCount("hub taken"));
+        Settled();
+    }
+
+    // Fix wave 3, D9: a keep-alive (an unchanged frame) whose colour write answers 03 is due again at once after the 1 s pause, not a keep-alive
+    // gap after the interrupted write.
+    [Fact]
+    public void An_interrupted_keep_alive_is_written_again_straight_after_the_pause()
+    {
+        Take();
+        core.Post(Four);
+        At(0);
+        Assert.Equal(1,fake.Count(0x06,0x00));
+        int once=0;
+        fake.Reply=(command,reply)=>{if(command[0]==0x06&&once++==0) reply[3]=0x03;return reply;};
+        Assert.Equal(TimeSpan.FromSeconds(1),At(2));                         // the keep-alive, interrupted
+        Assert.Equal(2,fake.Count(0x06,0x00));
+        Assert.Equal(1,LogCount("hub: colour write answered 03 (entering software mode again, 1 of 3)"));
+        At(2.999);
+        Assert.Equal(2,fake.Count(0x06,0x00));
+        At(3);
+        Assert.Equal(3,fake.Count(0x06,0x00));
+        Assert.Equal(FourLit,fake.LastColours);
+        Assert.Equal("driving",core.Snapshot.State);
+        Settled();
+    }
+
+    // Fix wave 3, D15: a frame of more than 167 LEDs goes in two chunks, 06 00 then 07 00, all of it written.
+    static readonly Rgb[] Nine=[A,B,C,D,A,B,C,D,A];
+    static readonly Rgb[] NineLit=Leds((A,8),(B,8),(C,8),(D,34),(A,34),(B,34),(C,34),(D,34),(A,20));
+    void FiveQx(){for(int c=4;c<=8;c++) fake.Parts[c]=(0x01,0x00);}
+
+    [Fact]
+    public void A_frame_of_214_LEDs_is_written_in_two_chunks()
+    {
+        FiveQx();
+        Take();
+        Assert.Equal(9,core.Snapshot.Parts!.Count);
+        int before=fake.Writes.Count;
+        core.Post(Nine);
+        core.Step();
+        var sent=Commands().Skip(before).ToList();
+        Assert.Equal(5,sent.Count);
+        Assert.Equal(new[]{"05 01 01 22","0D 00 22"},sent.Take(2));
+        Assert.StartsWith("06 00",sent[2]);
+        Assert.StartsWith("07 00",sent[3]);
+        Assert.Equal("05 01 01 22",sent[4]);
+        Assert.Equal(NineLit,fake.LastColours);
+        Assert.Equal(1,LogCount("hub: first frame sent"));
+        Settled();
+    }
+
+    // Fix wave 3, D15: the second chunk answering 03 closes the colour endpoint in the same unit before software mode; the whole frame is written
+    // again 1 s later.
+    [Fact]
+    public void A_second_chunk_answering_03_closes_colours_then_enters_software_mode_again()
+    {
+        FiveQx();
+        Take();
+        int once=0;
+        fake.Reply=(command,reply)=>{if(command[0]==0x07&&once++==0) reply[3]=0x03;return reply;};
+        int before=fake.Writes.Count;
+        core.Post(Nine);
+        Assert.Equal(TimeSpan.FromSeconds(1),At(0));
+        var sent=Commands().Skip(before).ToList();
+        Assert.Equal(6,sent.Count);
+        Assert.Equal(new[]{"05 01 01 22","0D 00 22"},sent.Take(2));
+        Assert.StartsWith("06 00",sent[2]);
+        Assert.StartsWith("07 00",sent[3]);
+        Assert.Equal(new[]{"05 01 01 22","01 03 00 02"},sent.Skip(4));
+        Assert.Equal(1,LogCount("hub: colour write answered 03 (entering software mode again, 1 of 3)"));
+        Assert.Equal(0,LogCount("hub: first frame sent"));
+        At(0.999);
+        Assert.Equal(6,Commands().Skip(before).Count());
+        At(1);
+        sent=Commands().Skip(before+6).ToList();
+        Assert.Equal(5,sent.Count);
+        Assert.StartsWith("07 00",sent[3]);
+        Assert.Equal(NineLit,fake.LastColours);
+        Assert.Equal(1,LogCount("hub: first frame sent"));
+        Settled();
+    }
+
     [Fact]
     public void Let_go_sends_hardware_mode_once_then_closes()
     {
