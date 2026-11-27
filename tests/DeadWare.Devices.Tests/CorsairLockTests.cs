@@ -64,7 +64,9 @@ public sealed class CorsairLockTests:IDisposable
     {
         using var l=new CorsairLock(log,name);
         Assert.True(OnAnotherThread(()=>l.Enter(0)));      // that thread ends still holding it
-        Assert.True(l.Enter(0));
+        // Windows marks the lock abandoned when the thread has really ended, a moment after its function returned: a wait of 0 lost that race
+        // once under load (the test package build of 2026-11-27). The 5 s is a liveness cap, not a deadline.
+        Assert.True(l.Enter(5000));
         Assert.Equal(1,LogCount("Corsair lock was left held by a program that ended"));
         Assert.False(OnAnotherThread(()=>l.Enter(0)));     // the thread that caught it owns it now
         l.Exit();
