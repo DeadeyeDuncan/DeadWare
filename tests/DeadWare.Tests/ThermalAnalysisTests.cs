@@ -392,7 +392,7 @@ public sealed class ThermalAnalysisTests
         Assert.True(assessment.ShouldWarn);
         Assert.Contains("Fan", assessment.Message);
         Assert.Contains("ambient", assessment.Message);
-        Assert.Contains("coolant", assessment.Message);
+        Assert.EndsWith("coolant and ambient temperatures are not part of this comparison.", assessment.Message);
     }
 
     [Fact]
