@@ -762,7 +762,8 @@ internal sealed class DeskPictureView : UserControl
         var litFans = fans.Where(f => LookOf(f).Look == Look.Lit).ToArray();
         if (litFans.Length > 0) Glow(ds, Union(fans.Select(f => f.Part.Box)), g => { foreach (var f in litFans) g.FillRoundedRectangle(R(f.Part.Box), 6, 6, LookOf(f).Color); });
         foreach (var f in fans) DrawFanBar(ds, f);
-        Caption(ds, "radiator fans 1–3 · Corsair iCUE LINK hub", 160, 80, 10, CaptionGrey, Anchor.Start, 410);
+        // Lighting 5: a hub on its own resolves as own effect, and the caption says so, as the approved mockup's does.
+        Caption(ds, fans.Any(f => f.OwnEffect) ? "radiator fans 1–3 · Corsair iCUE LINK hub " + HubTexts.OwnCaption : "radiator fans 1–3 · Corsair iCUE LINK hub", 160, 80, 10, CaptionGrey, Anchor.Start, 410);
 
         // Rear fan, unlit: furniture.
         ds.DrawCircle(186, 150, 30, CaseEdge, 3);
@@ -774,6 +775,7 @@ internal sealed class DeskPictureView : UserControl
         ds.DrawRoundedRectangle(236, 100, 210, 150, 6, 6, BoardEdge, 1);
         foreach (var p in Of(PartKind.PumpRing)) DrawPump(ds, p);
         Caption(ds, "pump", 306, 222, 10, Labels, Anchor.Middle, 100);
+        if (Of(PartKind.PumpRing).Any(p => p.OwnEffect)) Caption(ds, OwnEffectNote, 306, 235, 9, CaptionGrey, Anchor.Middle, 100);
         var sticks = Of(PartKind.RamStick);
         var litSticks = sticks.Where(r => LookOf(r).Look == Look.Lit).ToArray();
         if (litSticks.Length > 0) Glow(ds, Union(sticks.Select(r => r.Part.Box)), g => { foreach (var r in litSticks) g.FillRoundedRectangle(R(r.Part.Box), 2, 2, LookOf(r).Color); });

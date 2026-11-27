@@ -3,7 +3,7 @@ namespace DeadWare.Core;
 
 public static class GraphColorSettings
 {
-    public static IReadOnlyList<string> Kinds {get;}=Array.AsReadOnly(new[]{"cpu","cputemp","cpupump","gpu","gputemp","gpufan","memory","download","upload","diskread","diskwrite"});
+    public static IReadOnlyList<string> Kinds {get;}=Array.AsReadOnly(new[]{"cpu","cputemp","cpupump","cpucoolant","gpu","gputemp","gpufan","memory","download","upload","diskread","diskwrite"});
     public const int MaxCores=64;
     private const string CorePrefix="cpucore/";
     public static string CoreKey(int index)=>$"{CorePrefix}{index}";

@@ -370,6 +370,158 @@ public class DeviceHostClientTests:IAsyncLifetime
         await host.Push(new StateEvent(Sample)).WaitAsync(Bound); // a client that stopped reading would otherwise hang the run
         await Until(()=>client.State is not null&&Volatile.Read(ref changed)==1);
     }
+    [Fact] public async Task Hub_readings_keep_their_age_and_go_with_the_connection()
+    {
+        var client=Make();
+        await client.StartAsync(false,CancellationToken.None);
+        await Until(()=>client.State is not null);
+        Assert.Null(client.Hub);
+        await Driving(client);
+        await host.Push(new HubReadingsEvent(new HubReadings([new(13,"pump","Pump",2774,43.7)],300))).WaitAsync(Bound);
+        await Until(()=>client.Hub is not null);
+        var (readings,age)=client.Hub!.Value;
+        Assert.Equal(2774,Assert.Single(readings.Parts).Rpm);Assert.Equal(TimeSpan.FromMilliseconds(300),age);
+        time.Advance(TimeSpan.FromSeconds(2));
+        Assert.Equal(TimeSpan.FromMilliseconds(2300),client.Hub!.Value.Age);
+        host.Close();
+        await Until(()=>client.Hub is null,"the readings gone with the connection");
+    }
+    // Fix wave 1, D7: the readings go at once when a state says DeadWare is no longer driving the hub, not when they reach 10 s; driving and
+    // switching (the take-over's check) keep them.
+    [Fact] public async Task Hub_readings_go_when_the_hub_stops_being_driven()
+    {
+        var client=Make();
+        await client.StartAsync(false,CancellationToken.None);
+        await Until(()=>client.State is not null);
+        foreach(var gone in new[]{"letGo","gaveBack","off"})
+        {
+            await Driving(client);
+            await host.Push(new HubReadingsEvent(new HubReadings([new(13,"pump","Pump",2774,43.7)]))).WaitAsync(Bound);
+            await Until(()=>client.Hub is not null);
+            await host.Push(new StateEvent(Sample with{Hub=new HubView("switching")})).WaitAsync(Bound);
+            await Until(()=>client.State?.Hub?.State=="switching");
+            Assert.NotNull(client.Hub);
+            await host.Push(new StateEvent(Sample with{Hub=new HubView(gone)})).WaitAsync(Bound);
+            await Until(()=>client.State?.Hub?.State==gone);
+            Assert.Null(client.Hub);
+        }
+    }
+    // Fix wave 2, G (review D1): a readings event that arrives while the state says DeadWare is not driving the hub (a round's readings sent in
+    // the same host turn as a give-back, after its state) does not bring the readings back.
+    // Fix wave 3, D7: the readings are checked right after they were handled, before anything else could clear them: a preview frame pushed after
+    // them on the same pipe marks that point (a later state would clear stored readings itself and prove nothing).
+    [Fact] public async Task A_readings_event_after_a_state_that_is_not_driving_is_dropped()
+    {
+        host.Answer=Subscribe();
+        var client=Make();int hub=0,frames=0;client.HubReadingsChanged+=()=>Interlocked.Increment(ref hub);client.Preview+=_=>Interlocked.Increment(ref frames);
+        await client.StartAsync(false,CancellationToken.None);
+        await Until(()=>client.State is not null);
+        client.SetPreview(true);
+        await Until(()=>host.Count<SubscribePreviewRequest>()==1);
+        int n=0;
+        foreach(var gone in new[]{"gaveBack","letGo","off"})
+        {
+            await host.Push(new StateEvent(Sample with{Hub=new HubView(gone)})).WaitAsync(Bound);
+            await host.Push(new HubReadingsEvent(new HubReadings([new(13,"pump","Pump",2774,43.7)]))).WaitAsync(Bound);
+            await host.Push(new PreviewEvent(Frame)).WaitAsync(Bound);
+            n++;
+            await Until(()=>Volatile.Read(ref frames)==n);
+            Assert.Equal(gone,client.State?.Hub?.State);
+            Assert.Null(client.Hub);
+        }
+        Assert.Equal(0,Volatile.Read(ref hub));
+    }
+    // Fix wave 3, D11: readings that arrive while the state says switching (the take-over's check, while the worker drives the hub) are kept and
+    // raised.
+    [Fact] public async Task A_readings_event_while_switching_is_kept()
+    {
+        var client=Make();int hub=0;client.HubReadingsChanged+=()=>Interlocked.Increment(ref hub);
+        await client.StartAsync(false,CancellationToken.None);
+        await Until(()=>client.State is not null);
+        await host.Push(new StateEvent(Sample with{Hub=new HubView("switching")})).WaitAsync(Bound);
+        await Until(()=>client.State?.Hub?.State=="switching");
+        Assert.Null(client.Hub);
+        await host.Push(new HubReadingsEvent(new HubReadings([new(13,"pump","Pump",2716,36.5)]))).WaitAsync(Bound);
+        await Until(()=>Volatile.Read(ref hub)==1);
+        Assert.Equal(2716,Assert.Single(client.Hub!.Value.Readings.Parts).Rpm);
+    }
+    async Task Driving(DeviceHostClient client)
+    {
+        await host.Push(new StateEvent(Sample with{Hub=new HubView("driving")})).WaitAsync(Bound);
+        await Until(()=>client.State?.Hub?.State=="driving");
+    }
+    // A session built without its constructor, holding this client as its lighting client (and, when given, this collector).
+    static MonitorSession SessionWith(DeviceHostClient client,Collector? collector=null)
+    {
+        var session=(MonitorSession)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(MonitorSession));
+        typeof(MonitorSession).GetProperty("Lighting",System.Reflection.BindingFlags.Instance|System.Reflection.BindingFlags.NonPublic)!.SetValue(session,client);
+        if(collector is not null) typeof(MonitorSession).GetField("<Collector>k__BackingField",System.Reflection.BindingFlags.Instance|System.Reflection.BindingFlags.NonPublic)!.SetValue(session,collector);
+        return session;
+    }
+    // Fix wave 1, D5: the session ending's stop reaches a running lighting client: the host is sent its ordinary Stop.
+    [Fact] public async Task The_session_ending_stop_sends_the_host_its_stop()
+    {
+        var client=Make();
+        await client.StartAsync(false,CancellationToken.None);
+        await Until(()=>client.State is not null);
+        var stop=SessionWith(client).StopLightingForSessionEnding();
+        await Until(()=>host.Saw<StopRequest>(),"the host's Stop");
+        Assert.False(stop.IsFaulted);
+    }
+    // Fix wave 1, D4: the session's tick hands the collector the lighting client's hub readings. Fix wave 2, G (review D5): through the tick's
+    // own handler, Ticked, not through FeedHub called by the test. That the constructor subscribes Ticked to the timer is the next test's
+    // (fix wave 3, D10).
+    [Fact] public async Task The_session_feeds_the_collector_the_hub_readings()
+    {
+        var client=Make();
+        await client.StartAsync(false,CancellationToken.None);
+        await Until(()=>client.State is not null);
+        await Driving(client);
+        await host.Push(new HubReadingsEvent(new HubReadings([new(13,"pump","Pump",2774,43.7),new(1,"fan","Fan",1660)]))).WaitAsync(Bound);
+        await Until(()=>client.Hub is not null);
+        await using var collector=new Collector(new(HardwareEnabled:false,EtwEnabled:false,PollingIntervalSeconds:0.5));
+        var session=SessionWith(client,collector);
+        typeof(MonitorSession).GetField("<Settings>k__BackingField",System.Reflection.BindingFlags.Instance|System.Reflection.BindingFlags.NonPublic)!.SetValue(session,new UserSettings{SelectedGpuId="gpu"});
+        session.Ticked();
+        var seen=new TaskCompletionSource<Reading>(TaskCreationOptions.RunContinuationsAsynchronously);
+        collector.SampleAvailable+=r=>seen.TrySetResult(r);
+        collector.Start();
+        var reading=await seen.Task.WaitAsync(Bound);
+        Assert.Equal(["Coolant","Pump","Fan 1"],reading.Sensors.Where(s=>s.HardwareType=="CorsairLink").Select(s=>s.Name));
+        Assert.Equal(43.7,reading.Sample.Values["cpu/coolant"]);
+    }
+    // Fix wave 3, D10: the constructor subscribes Ticked to the session timer's Tick (timer.Tick+=Ticked). Running the constructor would read
+    // the owner's real settings and open the history databases under the real %LOCALAPPDATA%\DeadWare, so the test reads its compiled body
+    // instead: ldfld timer, ldarg.0, ldftn Ticked, newobj Action, callvirt ISessionTimer.add_Tick.
+    [Fact] public void The_session_constructor_subscribes_Ticked_to_its_timer()
+    {
+        const System.Reflection.BindingFlags any=System.Reflection.BindingFlags.Instance|System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Public;
+        var il=typeof(MonitorSession).GetConstructors().Single().GetMethodBody()!.GetILAsByteArray()!;
+        var timer=typeof(MonitorSession).GetField("timer",any)!.MetadataToken;
+        var ticked=typeof(MonitorSession).GetMethod("Ticked",any)!.MetadataToken;
+        var addTick=typeof(ISessionTimer).GetEvent("Tick")!.AddMethod!.MetadataToken;
+        static bool Token(byte[] b,int at,int token)=>at>=0&&at+4<=b.Length&&BitConverter.ToInt32(b,at)==token;
+        int found=0;
+        for(int i=6;i+16<=il.Length;i++)
+            if(il[i]==0xFE&&il[i+1]==0x06&&Token(il,i+2,ticked)&&il[i-1]==0x02&&il[i-6]==0x7B&&Token(il,i-5,timer)&&il[i+6]==0x73&&il[i+11]==0x6F&&Token(il,i+12,addTick)) found++;
+        Assert.Equal(1,found);
+    }
+    [Fact] public async Task A_readings_event_raises_only_its_own_event()
+    {
+        var client=Make();int changed=0,hub=0;
+        client.Changed+=()=>Interlocked.Increment(ref changed);client.HubReadingsChanged+=()=>Interlocked.Increment(ref hub);
+        await client.StartAsync(false,CancellationToken.None);
+        await Until(()=>client.State is not null&&Volatile.Read(ref changed)==1);
+        await Driving(client);
+        await Until(()=>Volatile.Read(ref changed)==2);
+        await host.Push(new HubReadingsEvent(new HubReadings([new(1,"fan","Fan",1660)]))).WaitAsync(Bound);
+        await Until(()=>Volatile.Read(ref hub)==1);
+        Assert.Equal(2,Volatile.Read(ref changed));
+        // A state pushed after the readings is read after them, so the readings' own raise has already been counted.
+        await host.Push(new StateEvent(Sample)).WaitAsync(Bound);
+        await Until(()=>Volatile.Read(ref changed)==3);
+        Assert.Equal(1,Volatile.Read(ref hub));
+    }
     [Fact] public async Task GetState_completes_when_its_state_event_arrives()
     {
         host.Answer=m=>m is GetStateRequest?[new StateEvent(Sample with {Message="state "+m.Id}){Id=m.Id}]:FakeHost.Answers(m);

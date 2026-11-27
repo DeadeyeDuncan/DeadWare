@@ -22,14 +22,14 @@ public static class LightingSettingsCodec
     // desk effect and layout, and a bad Everyday or Mouse no longer costs the device table). So its colours, brightness and modes still count; only a last failure drops it to defaults. Never quarantined.
     static LightingRead Finish(LightingSettings s)
     {
-        s.Effect??=new();s.Layout??=DeskLayouts.Empty();s.Devices??=new();s.Everyday??=new();s.Mouse??=new();
+        s.Effect??=new();s.Layout??=DeskLayouts.Empty();s.Devices??=new();s.Everyday??=new();s.Mouse??=new();s.Hub??=new();
         LightingEffects.Normalize(s.Effect);DeviceTunings.Normalize(s);
         var error=Validate(s);
         if(s.Version>LightingSettings.CurrentVersion)
         {
             if(error is not null)
             {
-                s.Everyday=new();s.Mouse=new();if(Validate(s) is null) return new(s,null,false,true);
+                s.Everyday=new();s.Mouse=new();s.Hub=new();if(Validate(s) is null) return new(s,null,false,true);
                 s.Devices=new();if(Validate(s) is null) return new(s,null,false,true);
                 s.Effect=new();s.Layout=DeskLayouts.Empty();if(Validate(s) is null) return new(s,null,false,true);
             }
@@ -46,7 +46,7 @@ public static class LightingSettingsCodec
         try
         {
             if(System.Text.Json.Nodes.JsonNode.Parse(json) is not System.Text.Json.Nodes.JsonObject o||!o.TryGetPropertyValue("Version",out var v)||v is null||v.GetValueKind()!=JsonValueKind.Number||!v.AsValue().TryGetValue<int>(out var version)||version<=LightingSettings.CurrentVersion) return null;
-            o.Remove("Effect");o.Remove("Layout");o.Remove("Devices");o.Remove("Everyday");o.Remove("Mouse");
+            o.Remove("Effect");o.Remove("Layout");o.Remove("Devices");o.Remove("Everyday");o.Remove("Mouse");o.Remove("Hub");
             LightingSettings? s;
             try{s=JsonSerializer.Deserialize<LightingSettings>(o.ToJsonString());}
             catch(JsonException e){return new(new(),$"Lighting settings are not valid JSON: {e.Message}",false,true);}
@@ -93,6 +93,7 @@ public static class LightingSettingsCodec
             if(key.Length>MaxKeyLength||mode is null||mode.Length>MaxKeyLength) return "A hardware mode entry is invalid.";
         if(Everydays.Validate(settings.Everyday) is{} badEveryday) return HostReplyCodes.Explain(badEveryday);
         if(!MouseSleep.Valid(settings.Mouse.SleepMinutes)) return HostReplyCodes.Explain(HostReplyCodes.BadSleep);
+        if(Hubs.Validate(settings.Hub) is{} badHub) return badHub;
         var devices=DeviceTunings.Validate(settings);
         if(devices is not null) return devices;
         return (settings.Effect is null?null:LightingEffects.Validate(settings.Effect))??(settings.Layout is null?null:DeskLayouts.Validate(settings.Layout));

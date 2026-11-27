@@ -20,12 +20,13 @@ public sealed record HistoryChartRequest(SampleHistory History,string Kind,strin
 /// <param name="DriveNames">Drive id to the drive's name (<see cref="StoragePresenter.Name"/>), for the hover readout; an unlisted drive shows its id.</param>
 /// <param name="Smoothed">Graph smoothing: from an hour up, draw each column's average with a band from its lowest to its highest reading.</param>
 /// <param name="DriveId">Limits a storage chart to one drive: its read and write become the traces and the per-drive lines are off.</param>
+/// <param name="Coolant">Show the hub's coolant temperature as a dashed line on the °C scale: on a cputemp chart, under the pump's rule.</param>
 /// <param name="PumpWithDevices">Keeps the pump line on a device comparison (the widget).</param>
 /// <param name="CoresWithDevices">Keeps the per-core lines on a device comparison (the widget).</param>
-public sealed record HistoryChartOptions(bool GpuFan=false,bool CpuPump=false,int Cores=0,IReadOnlyList<string>? Drives=null,IReadOnlyDictionary<string,string>? DriveNames=null,bool PumpWithDevices=false,bool CoresWithDevices=false,bool Smoothed=false,string? DriveId=null);
+public sealed record HistoryChartOptions(bool GpuFan=false,bool CpuPump=false,int Cores=0,IReadOnlyList<string>? Drives=null,IReadOnlyDictionary<string,string>? DriveNames=null,bool PumpWithDevices=false,bool CoresWithDevices=false,bool Smoothed=false,string? DriveId=null,bool Coolant=false);
 
 /// <summary>What a trace is, which decides its stroke and where it sits: cores and drives underneath, then the local share, then the rest.</summary>
-public enum ChartTraceRole {Main,Core,Drive,Local,Rpm}
+public enum ChartTraceRole {Main,Core,Drive,Local,Rpm,Coolant}
 
 /// <summary>A horizontal value line and its axis label.</summary>
 public sealed record ChartLine(double Y,string Label);
@@ -167,6 +168,7 @@ public static class HistoryChartModel
         int cores=kind=="cpu"&&(!request.CompareDevices||options.CoresWithDevices)?Math.Clamp(options.Cores,0,GraphColorSettings.MaxCores):0;
         bool showFan=options.GpuFan&&(kind=="gputemp"||kind=="cputemp"&&compare);
         bool showPump=options.CpuPump&&kind=="cputemp"&&(!compare||options.PumpWithDevices);
+        bool showCoolant=options.Coolant&&kind=="cputemp"&&(!compare||options.PumpWithDevices);
 
         // With per-core lines the aggregate CPU line is hidden (the cores replace it) but still laid out for the readout.
         var traces=new List<ChartTrace> {Trace(primary,drive is null?ColorKey(kind):"diskread",false,bytes||compare?.65:1,primaryData,maximum,band:true) with {Hidden=cores>0}};
@@ -190,6 +192,8 @@ public static class HistoryChartModel
             if(showFan)traces.Add(Trace(MetricId("gpufan",request.GpuId),"gpufan",false,0,fanData,rpmMaximum,band:true) with {Role=ChartTraceRole.Rpm,Dotted=true});
             if(showPump)traces.Add(Trace(MetricId("cpupump",request.GpuId),"cpupump",false,0,pumpData,rpmMaximum,band:true) with {Role=ChartTraceRole.Rpm,Dotted=true});
         }
+        // Coolant is a temperature: dashed, on the main scale, and it moves neither that scale nor the RPM one.
+        if(showCoolant)traces.Add(Trace(MetricId("cpucoolant",request.GpuId),"cpucoolant",true,0,Read(MetricId("cpucoolant",request.GpuId)),maximum) with {Role=ChartTraceRole.Coolant});
         for(int i=0;i<cores;i++)traces.Add(Trace(CoreMetric(i),GraphColorSettings.CoreKey(i),false,0,Read(CoreMetric(i)),maximum) with {Role=ChartTraceRole.Core,Index=i});
         if(kind=="storage"&&drive is null&&options.Drives is { } drives)
             for(int i=0;i<drives.Count;i++)
@@ -283,7 +287,7 @@ public static class HistoryChartModel
     /// <summary>The sample id a chart kind reads; a GPU kind with no card selected reads an id that never has samples.</summary>
     public static string MetricId(string kind,string? gpuId)=>kind switch
     {
-        "cpu"=>"cpu/usage","cputemp"=>"cpu/temperature","cpupump"=>"cpu/pump",
+        "cpu"=>"cpu/usage","cputemp"=>"cpu/temperature","cpupump"=>"cpu/pump","cpucoolant"=>"cpu/coolant",
         "gpu"=>(gpuId??"unavailable")+"/usage","gputemp"=>(gpuId??"unavailable")+"/temperature","gpufan"=>(gpuId??"unavailable")+"/fan",
         "memory"=>"memory/usage","storage"=>"storage/total/read",_=>"network/download",
     };

@@ -61,7 +61,8 @@ public class GraphHistoryServiceTests
         var history=new SampleHistory();var live=Reading(now,1);history.Add(live.Sample);
         var second=new GraphHistoryService(fixture.Path,"machine",history);
         var startup=typeof(GraphHistoryService).GetField("startup",BindingFlags.NonPublic|BindingFlags.Instance)!;
-        using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        // Only so a hang ends: on a CI disk the read at start once took more than 5 s (2026-11-27, PR #145). What the test proves is in its asserts.
+        using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(60));
         try
         {
             second.Start();
@@ -128,7 +129,7 @@ public class GraphHistoryServiceTests
         reading=reading with {Gpus=[..reading.Gpus,new("/gpu/1","Same model")],Sensors=[..reading.Sensors,new("private-extra","Same model","GPU Core","%",50,"/gpu/1","GpuAmd","Load","Available")]};
         var mapping=GraphHistoryProjection.Mappings(reading,"machine");
         Assert.DoesNotContain(mapping.Values,key=>key.StartsWith("/gpu/"));
-        Assert.Equal(8,mapping.Count); // network 2 + RAM 1 + CPU 3 + disk totals 2
+        Assert.Equal(9,mapping.Count); // network 2 + RAM 1 + CPU 4 (usage, temperature, pump, coolant) + disk totals 2
         Assert.DoesNotContain(mapping.Keys,key=>key.Contains("Test CPU")||key.Contains("private"));
     }
 
@@ -345,8 +346,8 @@ public class GraphHistoryServiceTests
         var records=store.Read(DateTimeOffset.UtcNow).OrderBy(r=>r.Timestamp).ToArray();
         Assert.Equal(21,records.Length);
         Assert.All(records,r=>Assert.True(r.Values.Count<=64));
-        Assert.All(records,r=>Assert.Contains(r.Values.Keys,k=>!k.Contains("/c")));
-        var withCores=records.Where(r=>r.Values.Keys.Any(k=>k.Contains("/c"))).ToArray();
+        Assert.All(records,r=>Assert.Contains(r.Values.Keys,k=>!IsCoreKey(k)));
+        var withCores=records.Where(r=>r.Values.Keys.Any(k=>IsCoreKey(k))).ToArray();
         Assert.Equal(6,withCores.Length);
         Assert.Equal(origin.AddSeconds(2).UtcDateTime,withCores[1].Timestamp.UtcDateTime);
         Assert.Contains(withCores[1].Values,p=>p.Key.EndsWith("/c47")&&p.Value is not null);
@@ -383,7 +384,7 @@ public class GraphHistoryServiceTests
         await service.StopAsync();
         var store=new GraphHistoryStore(fixture.Path);store.Initialize();
         var records=store.Read(DateTimeOffset.UtcNow);
-        Assert.Equal(2,records.Count);Assert.All(records,r=>Assert.Contains(r.Values.Keys,k=>k.Contains("/c")));
+        Assert.Equal(2,records.Count);Assert.All(records,r=>Assert.Contains(r.Values.Keys,k=>IsCoreKey(k)));
     }
 
     private static async Task<SampleHistory> RestoreCores(Fixture fixture,IReadOnlyList<DateTimeOffset> stamps,int cores)
@@ -446,7 +447,7 @@ public class GraphHistoryServiceTests
         var store=new GraphHistoryStore(fixture.Path);store.Initialize();
         var records=store.Read(DateTimeOffset.UtcNow);
         Assert.Equal(stamps.Count,records.Count);
-        Assert.All(records,r=>Assert.Contains(r.Values.Keys,k=>k.Contains("/c")));
+        Assert.All(records,r=>Assert.Contains(r.Values.Keys,k=>IsCoreKey(k)));
     }
     private static StorageDrive Drive(string? serial,int index,bool removable=false)=>new(StorageProjection.DriveId(serial,"USB",index),StorageProjection.Normalize(serial),"USB",index,"NVMe",1000,removable,[]);
     private static Reading ReadingWithDrives(params StorageDrive[] drives)=>Reading(DateTimeOffset.UtcNow,1) with {Storage=new StorageReading(drives,[],"")};
@@ -497,6 +498,8 @@ public class GraphHistoryServiceTests
         Assert.Contains(write,p=>p.Value==201);Assert.Equal(10,write[^1].Value);
     }
 
+    /// <summary>A per-core key has /c in it; the CPU's coolant key also contains "/c" and is not one.</summary>
+    private static bool IsCoreKey(string key)=>key.Contains("/c")&&!key.EndsWith("/coolant",StringComparison.Ordinal);
     private static Reading WithCores(Reading reading,int count)
     {
         var values=reading.Sample.Values.ToDictionary(p=>p.Key,p=>p.Value);

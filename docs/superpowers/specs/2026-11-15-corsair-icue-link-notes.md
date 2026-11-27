@@ -14,7 +14,7 @@ Status: reference material for [the lighting spec](2026-11-15-lighting-design.md
 - **Input report**, with offsets counted after the report-ID byte (HidSharp returns that byte at index 0):
   - `[0]` = `0x00`, `[1]` = `0x00`
   - `[2]` = the opcode echoed back
-  - `[3]` = status: `0x00` means OK, `0x03` means "wrong mode", i.e. the hub is in hardware mode
+  - `[3]` = status: `0x00` means OK. `0x03` on the open of a read endpoint means "wrong mode", i.e. the hub is in hardware mode. On the open of the colour endpoint (`0D 00 22`) the hub answered `0x03` while it was held (2026-11-27, below), so there it is not a mode signal.
   - endpoint reads only: `[4..5]` = data type, `[6]` = count, payload from `[7]`
 - Replies to open and close carry leftover bytes from earlier buffers after the header. Ignore them.
 
@@ -47,7 +47,7 @@ Endpoints and their data types:
 
 ## Transactions
 
-Every transaction holds the shared named mutex `Global\CorsairLinkReadWriteGuardMutex` from its first frame to its last. The mutex is recursive per thread. Treat an abandoned mutex as acquired.
+Every transaction holds the shared named mutex `Global\CorsairLinkReadWriteGuardMutex` from its first frame to its last. The mutex is recursive per thread. Treat an abandoned mutex as acquired. A program that makes the mutex must give everyone full access to it: OpenRGB opens it with `CreateMutex`, which asks for all access, does not check whether that failed, and then loops for ever waiting on the failed handle, so it stops finding devices at the first Corsair device that uses the lock (measured 2026-11-27 with a lock made granting only Synchronize and Modify: access denied, error 5). OpenRGB itself makes it with a NULL DACL.
 
 - **Read:** close(ep), open(ep), read, close(ep). Accept the read only if status is `00` and the data type matches.
 - **Colour write:**
@@ -55,7 +55,7 @@ Every transaction holds the shared named mutex `Global\CorsairLinkReadWriteGuard
   - Send close(`0x22`), then open the colour endpoint (`0D 00 22`).
   - Send the payload in chunks of up to 508 bytes: the first chunk with `06 00`, the rest with `07 00`.
   - Finish with close(`0x22`).
-- **Keep it awake:** in software mode the host must keep talking to the hub. After about 10 s of silence the hub has been reported to fall back to hardware mode. That was seen on firmware 2.4.438 and is unconfirmed on 4.x.
+- **Keep it awake:** in software mode the host must keep talking to the hub. On firmware 2.4.438 the hub was reported to fall back to hardware mode after about 10 s of silence. On firmware 4.1.656 (measured 2026-11-27, below) it was still held after 13 s of silence and had fallen back by itself after somewhere between 13 s and 64 s.
 
 ## Parsing
 
@@ -86,7 +86,7 @@ Treat an unknown type, model or reply layout as a reason to stop, not to guess.
   - **Hardware mode** is the hub's default. It runs the lighting effect and cooling curves stored in its memory.
   - **Software mode** means the host drives both.
 - Entering hardware mode resets the lighting to the stored effect.
-- With no speed commands in software mode, the development PC's hub held the pump at about 2,716 RPM and the fans at about 1,330 RPM (2026-11-15). This behaviour isn't documented anywhere.
+- With no speed commands in software mode, the development PC's hub ran the pump at about 2,716 RPM and the fans at about 1,330 RPM on 2026-11-15, and at other speeds on other days (see the table under "2026-11-27" below). Whether the speeds change within one hold isn't known yet. This behaviour isn't documented anywhere.
 - Cooperating tools take the shared mutex. iCUE reportedly doesn't honour it and expects exclusive access, so never drive the hub while iCUE runs.
 - Polling temperatures and speeds every 2–3 s is plenty: coolant temperature moves over minutes.
 
@@ -100,6 +100,33 @@ Treat an unknown type, model or reply layout as a reason to stop, not to guess.
 | Speeds | fans 1,337 / 1,326 / 1,337 RPM; pump 2,716 RPM |
 
 The motherboard's PUMP_FAN header reads the same pump speed, so the hub feeds the pump tachometer to the board.
+
+### 2026-11-27, firmware 4.1.656, hub held by OpenRGB
+
+One colour transaction was sent while OpenRGB held the hub, with an open of the temperature endpoint answering `0x00` before and after it as the control. The replies' status bytes:
+
+| Exchange | Status |
+|---|---|
+| close colours (`05 01 01 22`) | `0x00` |
+| open colours (`0D 00 22`) | `0x03` |
+| colour write (`06 00 …`, 44 LEDs) | `0x00` |
+| close colours (`05 01 01 22`) | `0x00` |
+
+The hub was still held afterwards. So `0x03` on the open of the colour endpoint is not a mode signal.
+
+Fan speed against coolant temperature, each read while OpenRGB held the hub and sent no speed command:
+
+| Date | Coolant | Fans |
+|---|---|---|
+| 2026-11-27 | 36.5 °C | about 1,155 RPM |
+| 2026-11-15 | 38.4 °C | about 1,330 RPM |
+| 2026-11-25 | 43.7 °C | about 1,660 RPM |
+
+Each reading was on a different day, after OpenRGB had taken the hub afresh. They fit two explanations that they cannot tell apart: the hub keeps following its own stored curve while held, or it keeps the speed it had at the moment it was taken. Two readings within one hold at clearly different coolant temperatures would settle it; the Sensors history gives those once DeadWare drives the hub.
+
+### 2026-11-27 afternoon, firmware 4.1.656: how long the hub stays held without traffic
+
+From the lighting helper's log of that day: the hub was still held 13 s after its holder was stopped (OpenRGB of DeadWare 0.22.0 stopped at 20:41:45 UTC; a reading at 20:41:58 worked), and it was in its own mode at 20:43:02 with no program having sent hardware mode in between (the OpenRGB started at 20:42:04 was stuck on the shared lock before its first command to the hub). So the hub went back to its own mode by itself after somewhere between 13 s and 64 s without traffic (64 s counted from the last read, 77 s from the last colour frame).
 
 ## Attribution
 

@@ -61,7 +61,7 @@ internal sealed class GraphPopout : UserControl
     private readonly string? driveId;
     private readonly bool joined;
     private readonly HistoryChartView chart;
-    private readonly TextBlock value = Reading(22), second = Reading(14), local = Small(), status = Small(), fan = Small(), pump = Small();
+    private readonly TextBlock value = Reading(22), second = Reading(14), local = Small(), status = Small(), fan = Small(), pump = Small(), coolant = Small();
     private readonly TextBlock details = new() { FontSize = 12, Opacity = 0.7, TextWrapping = TextWrapping.Wrap }, statistics = new() { FontSize = 12, Opacity = 0.7, TextWrapping = TextWrapping.Wrap };
     private readonly List<ToggleButton> ranges = [];
     private readonly Dictionary<TextBlock, Windows.UI.Color> tints = [];
@@ -141,10 +141,10 @@ internal sealed class GraphPopout : UserControl
         Grid.SetColumn(options, 2);
         header.Children.Add(options);
 
-        status.Visibility = fan.Visibility = pump.Visibility = Visibility.Collapsed;
+        status.Visibility = fan.Visibility = pump.Visibility = coolant.Visibility = Visibility.Collapsed;
         ToolTipService.SetToolTip(fan, "Selected GPU's first reported fan · separate left RPM scale");
         ToolTipService.SetToolTip(pump, "CPU cooler pump, or the CPU Fan header · separate left RPM scale");
-        var annotations = new StackPanel { Children = { status, fan, pump } };
+        var annotations = new StackPanel { Children = { status, fan, pump, coolant } };
 
         var layout = new Grid();
         layout.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
@@ -201,6 +201,11 @@ internal sealed class GraphPopout : UserControl
         pump.Visibility = showPump ? Visibility.Visible : Visibility.Collapsed;
         if (showPump) { Tint(pump, "cpupump"); pump.Text = OverviewPresenter.Rpm("CPU pump", session.Stale, Live(session.MetricId("cpupump")), Pattern("cpupump", dotted: true)); }
 
+        // Lighting 5: the Corsair hub's coolant line, dashed, beside the pump's while the option is ticked. The words are Core's.
+        bool showCoolant = session.Settings.ShowCoolantTemperature && kind == "cputemp";
+        coolant.Visibility = showCoolant ? Visibility.Visible : Visibility.Collapsed;
+        if (showCoolant) { Tint(coolant, "cpucoolant"); coolant.Text = HubTexts.CoolantLegend(Live(session.MetricId("cpucoolant")), session.Hub?.State, Pattern("cpucoolant", dashed: true)); }
+
         Tint(value, OverviewPresenter.ColorKey(chartKind));
         Tint(second, joined ? (chartKind == "cpu" ? "gpu" : "gputemp") : kind == "storage" ? "diskwrite" : "upload");
         if (joined)
@@ -250,6 +255,7 @@ internal sealed class GraphPopout : UserControl
         }
         if (showFan) details.Text += $"\n\nGPU first fan: {Pattern("gpufan", dotted: true)} line\nSeparate left RPM scale.";
         if (showPump) details.Text += $"\n\nCPU pump: {Pattern("cpupump", dotted: true)} line\nSeparate left RPM scale.";
+        if (showCoolant) details.Text += $"\n\nCoolant: {Pattern("cpucoolant", dashed: true)} line\nOn the same °C scale.";
 
         bool unavailable = current is null || (joined && other is null) || (kind == "network" && session.Value("network/upload") is null) || (kind == "storage" && session.Value(writeId) is null);
         status.Text = data is null ? "Discovering hardware…" : session.Stale ? "Stale · waiting for fresh readings" : unavailable ? "Reading unavailable" : "";

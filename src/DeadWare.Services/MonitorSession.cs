@@ -34,6 +34,12 @@ public sealed class MonitorSession
     public UserSettings Settings {get;}
     /// <summary>The lighting host's client; null while lighting is off or no OpenRGB path is set.</summary>
     internal DeviceHostClient? Lighting {get;private set;}
+    /// <summary>The hub's last readings on the lighting client, with their age; null without a client or before any arrive.</summary>
+    public (HubReadings Readings,TimeSpan Age)? HubReadings=>Lighting?.Hub;
+    /// <summary>What the hub's state says, or null without a state.</summary>
+    public HubView? Hub=>Lighting?.State?.Hub;
+    /// <summary>The owner's desk picture applies to the devices listed now; false without a state. A picture that does not apply names no radiator fans.</summary>
+    public bool PictureApplies=>Lighting?.State is {} state&&DeskPictures.Applies(state.Devices.Select(v=>v.Name),state.Settings.Layout.Picture) is not null;
     private readonly SemaphoreSlim lightingGate=new(1,1);
     // Shared by every lighting client, so a host is never launched within 4 s of the previous one's exit, even across a toggle or a new path.
     private readonly HostLaunchPacer lightingPacer=new(TimeProvider.System);
@@ -120,14 +126,19 @@ public sealed class MonitorSession
         Connections.Configure(Settings.ConnectionsRecording,home?.Point);Connections.SetExclusions(excludedKeys);
         Collector.SampleAvailable+=Connections.TryRecord;
         Collector.FinalConnectionsAvailable+=Connections.TryRecord;
-        timer.Tick+=()=>
-        {
-            if(Settings.SelectedGpuId is null && Current is {Gpus.Count:>0} reading)
-            {Settings.SelectedGpuId=DeviceSelection.Resolve(null,reading.Gpus);_ = SaveAsync();}
-            CheckClearStates();
-            Changed?.Invoke();
-        };
+        timer.Tick+=Ticked;
     }
+    /// <summary>The timer's tick (fix wave 2: its own method, so a test reaches it): the GPU choice, the clear states, the hub feed, Changed.</summary>
+    internal void Ticked()
+    {
+        if(Settings.SelectedGpuId is null && Current is {Gpus.Count:>0} reading)
+        {Settings.SelectedGpuId=DeviceSelection.Resolve(null,reading.Gpus);_ = SaveAsync();}
+        CheckClearStates();
+        FeedHub();
+        Changed?.Invoke();
+    }
+    /// <summary>Hands the collector the lighting client's hub readings and whether the picture names the radiator fans; on every tick.</summary>
+    internal void FeedHub()=>Collector.SetHub(Lighting?.Hub,PictureApplies);
     private DeviceHostClient NewLightingClient()=>new(Settings.OpenRgbPath!,new DeviceHostLauncher(),DeviceHostPipe.ConnectAsync,TimeProvider.System,Environment.IsPrivilegedProcess,lightingPacer);
     /// <param name="signIn">True when Windows launched DeadWare at sign-in; the lighting host then waits before touching devices.</param>
     public void Start(bool signIn=false)
@@ -250,6 +261,11 @@ public sealed class MonitorSession
     {
         if(Settings.ShowGpuFanSpeed==enabled)return;
         Settings.ShowGpuFanSpeed=enabled;Changed?.Invoke();_ = SaveAsync();
+    }
+    public void SetCoolantTemperature(bool enabled)
+    {
+        if(Settings.ShowCoolantTemperature==enabled)return;
+        Settings.ShowCoolantTemperature=enabled;Changed?.Invoke();_ = SaveAsync();
     }
     public void SetCpuPumpSpeed(bool enabled)
     {
@@ -441,7 +457,7 @@ public sealed class MonitorSession
         Cooling.Configure(Settings.CoolingRecording,Settings.CoolingNotifications,Settings.CoolingDetailedDays,Settings.CoolingSummaryDays,Settings.CoolingConfigurationId);
         _ = SaveAsync();
     }
-    public string MetricId(string kind)=>kind switch {"cpu"=>"cpu/usage","cputemp"=>"cpu/temperature","cpupump"=>"cpu/pump","gpu"=>(SelectedGpuId??"unavailable")+"/usage","gputemp"=>(SelectedGpuId??"unavailable")+"/temperature","gpufan"=>(SelectedGpuId??"unavailable")+"/fan","memory"=>"memory/usage","storage"=>"storage/total/read",_=>"network/download"};
+    public string MetricId(string kind)=>kind switch {"cpu"=>"cpu/usage","cputemp"=>"cpu/temperature","cpupump"=>"cpu/pump","cpucoolant"=>"cpu/coolant","gpu"=>(SelectedGpuId??"unavailable")+"/usage","gputemp"=>(SelectedGpuId??"unavailable")+"/temperature","gpufan"=>(SelectedGpuId??"unavailable")+"/fan","memory"=>"memory/usage","storage"=>"storage/total/read",_=>"network/download"};
     // The front end's pop-out windows. Until a front end adopts the layout, saves leave Settings.OpenWindows as loaded.
     private bool managesWindows;
     private Action? captureWindows;
@@ -542,6 +558,28 @@ public sealed class MonitorSession
         }
         catch(TimeoutException e) {diagnostics?.Record("session_end_collector_stop_timeout",new {DeadlineSeconds=SessionEndingDeadline.TotalSeconds},e);}
         catch(Exception e) {diagnostics?.Record("session_end_collector_stop_failed",error:e);}
+    }
+    /// <summary>How long the Windows session ending waits, in all, for the lighting stop it started first (lighting 5, ruling P30).</summary>
+    internal static readonly TimeSpan SessionEndingLightingWait=TimeSpan.FromSeconds(2);
+    /// <summary>
+    /// The Windows session ending's lighting stop: starts the lighting client's ordinary Stop, which hands a held Corsair hub back, and returns
+    /// it without waiting (a finished task without lighting). Never throws. The client's own 5 s window carries on behind any wait.
+    /// </summary>
+    internal Task StopLightingForSessionEnding()
+    {
+        try {return Lighting?.StopAsync()??Task.CompletedTask;}
+        catch(Exception e) {return Task.FromException(e);}
+    }
+    /// <summary>
+    /// Waits for <paramref name="stop"/> at most <paramref name="limit"/>: true when it has finished (or there is none), false when the limit ran
+    /// out, a zero or negative limit included. Never throws.
+    /// </summary>
+    internal static bool WaitBriefly(Task? stop,TimeSpan limit)
+    {
+        if(stop is null||stop.IsCompleted)return true;
+        if(limit<=TimeSpan.Zero)return false;
+        try {return stop.Wait(limit);}
+        catch(Exception) {return stop.IsCompleted;}
     }
     public Task ShutdownAsync()=>shutdown??=ShutdownCoreAsync();
     private async Task ShutdownCoreAsync()

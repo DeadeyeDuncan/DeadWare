@@ -193,15 +193,28 @@ public partial class App : Application
     /// <summary>
     /// Windows is signing out or shutting down: record the window layout and settings synchronously and stop the
     /// collector within its short deadline, as the WPF app does. The process is ended by Windows soon after.
+    /// Lighting 5 (ruling P30): the lighting helper's ordinary Stop is started first, so a sign-out hands a held Corsair hub
+    /// back; the window's own save runs next, never behind the wait, since Windows may end the process at any moment after
+    /// this returns; then the stop gets only what is left of 2 s, and the helper client's own 5 s window carries on behind it.
     /// </summary>
     private void OnSessionEnding()
     {
         lifetime.BeginSessionEnding();
         updateChecks.Cancel();
-        try { session?.SaveForSessionEnding(); }
+        var started = System.Diagnostics.Stopwatch.StartNew();
+        Task? lightingStop = null;
+        try
+        {
+            lightingStop = session?.StopLightingForSessionEnding();
+            session?.SaveForSessionEnding();
+        }
         finally
         {
-            try { session?.StopCollectorForSessionEnding(); }
+            try
+            {
+                MonitorSession.WaitBriefly(lightingStop, MonitorSession.SessionEndingLightingWait - started.Elapsed);
+                session?.StopCollectorForSessionEnding();
+            }
             finally { tray?.Dispose(); tray = null; }
         }
     }

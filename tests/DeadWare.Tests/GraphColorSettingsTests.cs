@@ -6,6 +6,14 @@ namespace DeadWare.Tests;
 public class GraphColorSettingsTests
 {
     [Fact] public void Disk_colour_kinds_exist(){ Assert.Contains("diskread",GraphColorSettings.Kinds);Assert.Contains("diskwrite",GraphColorSettings.Kinds);}
+    [Fact] public void Coolant_keeps_its_saved_colour_and_style()
+    {
+        Assert.Contains("cpucoolant",GraphColorSettings.Kinds);
+        var settings=new UserSettings {GraphColors=new(){{"cpucoolant","#3366ff"}},GraphStyles=new(){{"cpucoolant",new("dashed",true,1.5,2)}}};
+        var loaded=SettingsCodec.Read(SettingsCodec.Write(settings)).Settings;
+        Assert.Equal("#3366FF",loaded.GraphColors["cpucoolant"]);
+        Assert.Equal(new GraphLineStyle("dashed",true,1.5,2),loaded.GraphStyles["cpucoolant"]);
+    }
     [Fact] public void Core_keys_are_zero_based_plain_decimal(){ Assert.Equal("cpucore/0",GraphColorSettings.CoreKey(0));Assert.Equal("cpucore/63",GraphColorSettings.CoreKey(63));}
     [Theory][InlineData("cpucore/0",0)][InlineData("cpucore/5",5)][InlineData("cpucore/63",63)]
     public void Valid_core_keys_parse(string key,int expected){ Assert.True(GraphColorSettings.TryCoreIndex(key,out int index));Assert.Equal(expected,index);Assert.True(GraphColorSettings.IsKind(key));}

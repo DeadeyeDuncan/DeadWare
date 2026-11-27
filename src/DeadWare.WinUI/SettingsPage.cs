@@ -37,7 +37,7 @@ internal sealed class SettingsPage : Page
     private readonly CheckBox extended = new() { Content = "Extended sensors (may affect responsiveness)" }, storageSensors = new() { Content = "Storage sensors (temperature and health; restart to apply)" };
     private readonly TextBlock elevateResult = Muted("");
     // Appearance
-    private readonly CheckBox graphSmoothing = new() { Content = "Smooth long-range graphs (1, 3 and 6 hours)" }, gpuFanSpeed = new() { Content = "Show GPU fan speed on temperature graphs" }, cpuPumpSpeed = new() { Content = "Show CPU pump speed on CPU temperature graphs" };
+    private readonly CheckBox graphSmoothing = new() { Content = "Smooth long-range graphs (1, 3 and 6 hours)" }, gpuFanSpeed = new() { Content = "Show GPU fan speed on temperature graphs" }, cpuPumpSpeed = new() { Content = "Show CPU pump speed on CPU temperature graphs" }, coolantTemperature = new() { Content = HubTexts.CoolantOption };
     private readonly ComboBox line = new() { MinWidth = 220 };
     private readonly Border lineDot = new() { Width = 16, Height = 16, CornerRadius = new CornerRadius(8), VerticalAlignment = VerticalAlignment.Center };
     private readonly TextBlock lineColor = Muted("");
@@ -88,6 +88,8 @@ internal sealed class SettingsPage : Page
     // The note beside Browse… takes a share of its row only while it shows, so it wraps there instead of running off the row.
     private readonly ColumnDefinition browseNoteColumn = new() { Width = GridLength.Auto };
     private readonly StackPanel conflictLines = new() { Spacing = 4 };
+    // The Corsair iCUE LINK hub, iCUE and DeadLight headings between the folder message and Conflicts.
+    private readonly HubSection hubSection;
     private (string Text, bool Caution)[]? conflictsShown;
     // scanned: the last local scan's conflicts, kept while lighting is off. followingHost: whether the section last showed the
     // host's list rather than a local scan's; null until it has shown either. protectionFor: the path the folder message is for, and
@@ -114,6 +116,7 @@ internal sealed class SettingsPage : Page
         this.quit = quit;
         suggestions = new AppSuggestions(session);
         editor = new LineStyleEditor(session);
+        hubSection = new HubSection(session, () => XamlRoot, new WindowsHubFacts());
         // The banner is a polite live region, so a screen reader reads a new status without moving focus.
         AutomationProperties.SetLiveSetting(status, Microsoft.UI.Xaml.Automation.Peers.AutomationLiveSetting.Polite);
         panels = [Monitoring(), Appearance(), Widget(), Popouts(), Startup(), History(), Lighting()];
@@ -243,6 +246,8 @@ internal sealed class SettingsPage : Page
         panel.Children.Add(Muted("Adds the selected GPU's first reported fan on its own left RPM scale, dotted and amber by default. Unsupported fan readings stay unavailable; 0 RPM means stopped."));
         panel.Children.Add(Bind(cpuPumpSpeed, "Show CPU pump speed on CPU temperature graphs", session.SetCpuPumpSpeed));
         panel.Children.Add(Muted("Adds the CPU cooler's pump speed on its own left RPM scale, dotted and blue by default. DeadWare uses a motherboard or AIO header labeled as a pump, otherwise the CPU Fan header; this needs Extended sensors and a single CPU."));
+        panel.Children.Add(Bind(coolantTemperature, HubTexts.CoolantOption, session.SetCoolantTemperature));
+        panel.Children.Add(Muted(HubTexts.CoolantHelp));
 
         panel.Children.Add(Heading("Graph lines"));
         panel.Children.Add(Muted("Colour and line style for each trace across the dashboard, pop-outs and widget. Core lines appear here once per-core CPU usage has a reading."));
@@ -552,6 +557,8 @@ internal sealed class SettingsPage : Page
         panel.Children.Add(Muted("DeadWare is tested with OpenRGB 1.0rc3."));
         panel.Children.Add(protectionWarning);
 
+        panel.Children.Add(hubSection.Root);
+
         panel.Children.Add(Heading("Conflicts"));
         panel.Children.Add(conflictLines);
 
@@ -577,10 +584,16 @@ internal sealed class SettingsPage : Page
         SyncLightingControls();
         bool onScreen = LightingShown, cameOn = onScreen && !lightingOnScreen;
         lightingOnScreen = onScreen;
+        // The hub's sequence is stepped on every tick; the helper's changes and the iCUE and DeadLight facts are followed only while on screen.
+        hubSection.Update(onScreen, FactConflicts());
         if (!onScreen) return;
         RefreshProtection(force: cameOn);
         FollowConflicts(rescan: cameOn);
     }
+
+    /// <summary>The conflicts the page has for the iCUE and DeadLight lines: the helper's list once it has scanned, the local scan's while lighting is off, else none yet.</summary>
+    private IReadOnlyList<LightingConflict>? FactConflicts() =>
+        session.Lighting is { } client ? client.State is { ConflictsChecked: true } state ? state.Conflicts : null : scanned;
 
     /// <summary>The switch and its messages, the location and Browse… as the saved choices, the lighting client and a change under way leave them.</summary>
     private void SyncLightingControls()
@@ -884,6 +897,7 @@ internal sealed class SettingsPage : Page
             graphSmoothing.IsChecked = settings.GraphSmoothing;
             gpuFanSpeed.IsChecked = settings.ShowGpuFanSpeed;
             cpuPumpSpeed.IsChecked = settings.ShowCpuPumpSpeed;
+            coolantTemperature.IsChecked = settings.ShowCoolantTemperature;
             var selected = WidgetGraphSelection.Normalize(settings.WidgetGraphs);
             foreach (var (key, choice) in widgetChoices) choice.IsChecked = selected.Contains(key);
             widgetConnectionsMap.IsChecked = settings.WidgetConnectionsMap;

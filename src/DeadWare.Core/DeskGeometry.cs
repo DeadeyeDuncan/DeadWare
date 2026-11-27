@@ -15,7 +15,8 @@ public static class DeskGeometry
     public const double DragEpsilon=0.01,TowerHalf=0.06;
     private static double Clamp01(double n)=>Math.Min(1,Math.Max(0,n));
     private static double SnapTo(double n)=>Math.Round(Clamp01(n)*Snap,MidpointRounding.AwayFromZero)/Snap;
-    private static bool Own(DeviceView d)=>d.Kind==PaintKind.Hardware;
+    // A hardware effect, or a hub on its own (Lighting 5): neither is painted by DeadWare.
+    private static bool Own(DeviceView d)=>d.Kind==PaintKind.Hardware||d.Hub==HubRoutes.Own;
 
     private static List<DeviceView> Placeable(IEnumerable<DeviceView> devices)
     {

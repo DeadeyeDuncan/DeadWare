@@ -46,13 +46,26 @@ internal sealed class LightingDeviceService
     public bool MouseSaved{get;set;}
     public string? CableKey{get;private set;}
     public bool MouseAbsent=>route==MouseRoute.Absent;
-    public LightingDeviceService(IOpenRgbSession session,TimeProvider time,HostLog log,AeroxMouse? mouse=null){this.session=session;this.time=time;this.log=log;this.mouse=mouse;}
+    // Lighting 5: the hub is listed under HubIdentity.Key. With Hub null it is OpenRGB's (listed by its own index, painted as any device);
+    // with Hub set the helper owns it: OpenRGB's copy is left out and the hub is listed from the listing's parts, with no OpenRGB index, and
+    // painted through the worker only while Hub.Driving.
+    readonly IHub? hub;
+    HubListing? hubListing;
+    string hubShape="openrgb";
+    bool openRgbListsHub,twoHubs;
+    string? hubOldKey;
+    public HubListing? Hub{get=>Volatile.Read(ref hubListing);set=>Volatile.Write(ref hubListing,value);}
+    public string? HubOldKey{get{lock(gate)return hubOldKey;}}
+    public bool TwoHubs{get{lock(gate)return twoHubs;}}
+    public bool OpenRgbListsHub{get{lock(gate)return openRgbListsHub;}}
+    public LightingDeviceService(IOpenRgbSession session,TimeProvider time,HostLog log,AeroxMouse? mouse=null,IHub? hub=null){this.session=session;this.time=time;this.log=log;this.mouse=mouse;this.hub=hub;}
+    static string HubShapeOf(HubListing? l)=>l is null?HubRoutes.OpenRgb:l.Driving?"driving":HubRoutes.Own;
 
     // Names the light count and each zone's matrix size too, so a key map arriving or changing size raises a state; and (lighting 3b) a hash
     // of the light names in order, so lights that come back renamed or reordered raise one too, and the skipped counts follow.
     // A device with no OpenRGB index (the receiver or absent mouse) is named at index -1, and the mouse's route is named first.
-    static string Shape(IEnumerable<(string Key,int Index,IReadOnlyList<LightingZone> Zones,IReadOnlyList<string>? Names)> d,MouseRoute route)
-        =>"mouse:"+route+";"+string.Join(";",d.Select(x=>$"{x.Key}@{x.Index}/{x.Names?.Count??-1}/{NamesHash(x.Names):X16}:"+string.Join(",",x.Zones.Select(z=>$"{z.Index}/{z.Name}/{z.LedCount}/{(z.Matrix is {} m?$"{m.Width}x{m.Height}":"-")}"))));
+    static string Shape(IEnumerable<(string Key,int Index,IReadOnlyList<LightingZone> Zones,IReadOnlyList<string>? Names)> d,MouseRoute route,string hubShape)
+        =>"mouse:"+route+";hub:"+hubShape+";"+string.Join(";",d.Select(x=>$"{x.Key}@{x.Index}/{x.Names?.Count??-1}/{NamesHash(x.Names):X16}:"+string.Join(",",x.Zones.Select(z=>$"{z.Index}/{z.Name}/{z.LedCount}/{(z.Matrix is {} m?$"{m.Width}x{m.Height}":"-")}"))));
     // FNV-1a over each name's characters, with a step between names that no character gives, so ["ab","c"] and ["a","bc"] differ.
     static ulong NamesHash(IReadOnlyList<string>? names)
     {
@@ -102,18 +115,25 @@ internal sealed class LightingDeviceService
         }
         lock(gate)
         {
-            var oldShape=Shape(devices.Select(d=>(d.Key,indexByKey.TryGetValue(d.Key,out var i)?i:-1,d.Zones,d.LedNames)),route);
+            var oldShape=Shape(devices.Select(d=>(d.Key,indexByKey.TryGetValue(d.Key,out var i)?i:-1,d.Zones,d.LedNames)),route,hubShape);
+            var listing=Hub;
             var next=new List<LightingDevice>();
             var idx=new Dictionary<string,int>();
             string? cable=null;
+            var hubs=read.Where(c=>HubIdentity.Is(c.Name)).ToList();
+            twoHubs=hubs.Count>1;
+            hubOldKey=hubs.Count==1?LightingKeys.Device(hubs[0].Serial,hubs[0].Location):null;
+            if(listing is not null) openRgbListsHub=hubs.Count>0;
             foreach(var c in read)
             {
                 var own=LightingKeys.Device(c.Serial,c.Location);
                 var aerox=AeroxIdentity.Is(c.Name);
+                var isHub=HubIdentity.Is(c.Name);
+                if(isHub&&listing is not null) continue;
                 // Fix wave 1, F1 (spec: presence is what HID lists): OpenRGB keeps listing the cable device after the cable leaves, so with
                 // the receiver driver that device counts only while HID lists the cable product; else it is neither listed nor painted.
                 if(aerox&&mouse is not null&&!mouse.CablePresent) continue;
-                var key=aerox?AeroxIdentity.Key:own;
+                var key=aerox?AeroxIdentity.Key:isHub&&hubs.Count==1?HubIdentity.Key:own;
                 if(idx.ContainsKey(key)) continue; // an identical serial+location cannot be told apart; a second Aerox cable device neither
                 if(aerox) cable=own;
                 idx[key]=c.Index;
@@ -126,6 +146,8 @@ internal sealed class LightingDeviceService
                 :mouse is not null&&(mouse.Seen||MouseSaved)?MouseRoute.Absent:MouseRoute.None;
             if(route is MouseRoute.Receiver or MouseRoute.Absent) next.Add(AeroxIdentity.Receiver());
             if(route==MouseRoute.Receiver&&was!=MouseRoute.Receiver) mouse!.Must();
+            if(listing is not null&&listing.Parts.Where(p=>p.Leds>0).Select(p=>(p.Name,p.Leds)).ToList() is{Count:>0} zones) next.Add(HubIdentity.Device(zones));
+            hubShape=HubShapeOf(listing);
             // Another cable device (a new port gives a new location) is another OpenRGB controller: what was sent to the old one is forgotten.
             if(cable!=CableKey&&cable is not null) Forget(AeroxIdentity.Key);
             CableKey=cable;
@@ -139,7 +161,7 @@ internal sealed class LightingDeviceService
             foreach(var k in modeProblem.Keys.Where(k=>!idx.ContainsKey(k)).ToList()) modeProblem.Remove(k);
             directSet.RemoveWhere(k=>!idx.ContainsKey(k));
             foreach(var k in skipped.Keys.Where(k=>!idx.ContainsKey(k)).ToList()) skipped.Remove(k);
-            return oldShape!=Shape(next.Select(d=>(d.Key,idx.TryGetValue(d.Key,out var i)?i:-1,d.Zones,d.LedNames)),route);
+            return oldShape!=Shape(next.Select(d=>(d.Key,idx.TryGetValue(d.Key,out var i)?i:-1,d.Zones,d.LedNames)),route,hubShape);
         }
     }
 
@@ -156,7 +178,7 @@ internal sealed class LightingDeviceService
     // After an OpenRGB restart or reconnect the fresh process has received nothing: forget what was sent.
     public void Reset()
     {
-        lock(gate){lastSent.Clear();applied.Clear();directSet.Clear();activeMode.Clear();modeProblem.Clear();skipped.Clear();seeded=false;seedFailureLogged=false;}
+        lock(gate){lastSent.Clear();applied.Clear();directSet.Clear();activeMode.Clear();modeProblem.Clear();skipped.Clear();openRgbListsHub=false;seeded=false;seedFailureLogged=false;}
     }
 
     // presses (lighting 3b): live key presses for fade and ripple layers, stamped on the same clock as tMs.
@@ -187,7 +209,12 @@ internal sealed class LightingDeviceService
     {
         var paint=LightingPaint.Paint(settings,d,tMs,presses);
         if(paint.Kind==PaintKind.Unsupported) return;
-        if(!indexByKey.TryGetValue(d.Key,out var index)){PaintMouse(settings,d,paint);return;}
+        if(!indexByKey.TryGetValue(d.Key,out var index))
+        {
+            if(d.Key==HubIdentity.Key) PaintHub(d,paint);
+            else PaintMouse(settings,d,paint);
+            return;
+        }
         if(paint.Kind==PaintKind.Hardware)
         {
             var mi=d.Modes.ToList().IndexOf(paint.Mode!);
@@ -233,7 +260,23 @@ internal sealed class LightingDeviceService
         NoteModeProblem(settings,d);
         mouse.Paint(paint.Colors,settings.Mouse.SleepMinutes);
     }
-    bool Unlit(LightingDevice d)=>route==MouseRoute.Absent&&d.Key==AeroxIdentity.Key;
+    // The hub through the worker: one colour per zone (its first light), only while the helper drives it. The worker paces itself, so there
+    // is no frame cap and no refresh here.
+    void PaintHub(LightingDevice d,DevicePaint paint)
+    {
+        if(hub is null||Hub is not{Driving:true}||paint.Kind!=PaintKind.Direct) return;
+        var zones=new Rgb[d.Zones.Count];
+        var first=0;
+        for(var i=0;i<zones.Length;i++)
+        {
+            if(first>=paint.Colors.Length) return;
+            zones[i]=paint.Colors[first];
+            first+=d.Zones[i].LedCount;
+        }
+        hub.Post(zones);
+    }
+    // The hub without an OpenRGB index is lit only while the helper drives it: on its own, or between a switch-off and the next rescan, it is unlit.
+    bool Unlit(LightingDevice d)=>route==MouseRoute.Absent&&d.Key==AeroxIdentity.Key||d.Key==HubIdentity.Key&&!indexByKey.ContainsKey(d.Key)&&Hub is not{Driving:true};
     // Fix wave 1, F3 (spec line 232): whether an edit changes the receiver mouse's frame at tMs (the effective lights, its colours, tuning or
     // mode), which makes its next frame a must-send. An edit of other devices, looks, the layout or the everyday rules leaves it as it was.
     public bool MouseFrameDiffers(LightingSettings before,LightingSettings after,double tMs)
@@ -272,7 +315,17 @@ internal sealed class LightingDeviceService
     // Lighting 4, Task 8: the Aerox 9's view carries the mouse card's facts, whichever way it is listed (none without a mouse).
     public IReadOnlyList<DeviceView> Views(LightingSettings settings)
     {
-        lock(gate)return devices.Select(d=>d.Key==AeroxIdentity.Key&&mouse is not null?LightingPaint.View(settings,d) with{Mouse=mouse.View(settings.Mouse.SleepMinutes)}:LightingPaint.View(settings,d)).ToList();
+        lock(gate)
+        {
+            var listing=Hub;
+            return devices.Select(d=>
+            {
+                var v=LightingPaint.View(settings,d);
+                if(d.Key==AeroxIdentity.Key&&mouse is not null) v=v with{Mouse=mouse.View(settings.Mouse.SleepMinutes)};
+                if(d.Key==HubIdentity.Key) v=v with{Hub=indexByKey.ContainsKey(d.Key)?HubRoutes.OpenRgb:listing is{Driving:true}?HubRoutes.Driven:HubRoutes.Own};
+                return v;
+            }).ToList();
+        }
     }
 
     // Zone key -> #RRGGBB at tMs before tuning and brightness, for Direct devices and zones with LEDs: the colour of the zone's first light in

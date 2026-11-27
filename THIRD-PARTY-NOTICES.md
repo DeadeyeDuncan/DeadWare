@@ -28,6 +28,10 @@ DeadWare's MIT license applies to original DeadWare code. Included dependencies 
 
 - **OpenRGB.NET 3.1.1** — Diogo Trindade (diogotr7); MIT License. Copyright (c) 2022 Diogo Trindade, as the project's LICENSE file reads at the source revision below. Unmodified client library for OpenRGB's network SDK, built into the lighting helper, `DeadWare.Devices.exe`. Source revision `442b448c2ee76c554923918723d47121b6256552`: https://github.com/diogotr7/OpenRGB.NET. Package: https://www.nuget.org/packages/OpenRGB.NET/3.1.1. The package carries no license file, so that LICENSE file's MIT text, with its copyright line, is in `licenses/OPENRGB-NET-LICENSE.txt` and release `licenses/texts/`. Its manifest is included in the release inventory.
 
+Corsair iCUE LINK protocol details were learned from public documentation and source of OpenLinkHub (Nikola Jurkovic, GPL-3.0), OpenRGB's CorsairICueLink controller (Aiden Vigue, Adam Honse, Nikola Jurkovic; GPL-2.0-or-later), FanControl.CorsairLink (Evan Mulawski) and liquidctl's Commander Core protocol notes (GPL-3.0). No code from these projects is included. Corsair, iCUE and iCUE LINK are trademarks of Corsair; DeadWare is not affiliated with or endorsed by Corsair.
+
+`DeadWare.Devices.exe` uses HidSharp (listed above) directly, to talk to the hub.
+
 OpenRGB itself isn't distributed with DeadWare. DeadWare talks to a copy of OpenRGB that you install, over OpenRGB's network SDK.
 
 The restore dependency inventory may contain packages for non-Windows runtimes. This does not indicate DeadWare supports those operating systems or that all those assets are included in the Windows executable distribution.

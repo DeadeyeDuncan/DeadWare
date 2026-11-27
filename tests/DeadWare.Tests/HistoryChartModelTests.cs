@@ -244,6 +244,60 @@ public class HistoryChartModelTests
         Assert.Empty(none.RpmLines); Assert.Equal(0, none.RpmMaximum);
     }
 
+    [Fact] public void The_coolant_line_is_dashed_on_the_temperature_scale()
+    {
+        var history = Two(("cpu/temperature", 60), ("cpu/coolant", 38.5));
+        var without = HistoryChartModel.Build(Request("cputemp", history));
+        var chart = HistoryChartModel.Build(Request("cputemp", history) with { Options = new(Coolant: true) });
+        Assert.Equal(["cpu/temperature", "cpu/coolant"], chart.Traces.Select(t => t.Metric));
+        var coolant = chart.Traces[1];
+        Assert.Equal("cpucoolant", coolant.ColorKey); Assert.True(coolant.Dashed); Assert.False(coolant.Dotted); Assert.Equal(ChartTraceRole.Coolant, coolant.Role);
+        Assert.Equal(without.Maximum, chart.Maximum); Assert.Equal(0, chart.RpmMaximum); Assert.Empty(chart.RpmLines);
+        Assert.Equal(chart.Maximum, coolant.Maximum);
+        Assert.Equal(Plot.Top + Plot.Height * (1 - 38.5 / chart.Maximum), coolant.Runs[0][0].Y, 6);
+        // With the pump too, the coolant moves neither axis.
+        var both = HistoryChartModel.Build(Request("cputemp", Two(("cpu/temperature", 60), ("cpu/coolant", 38.5), ("cpu/pump", 2300))) with { Options = new(CpuPump: true, Coolant: true) });
+        Assert.Equal(3000, both.RpmMaximum); Assert.Equal(without.Maximum, both.Maximum);
+        Assert.Equal(["cpupump", "cpucoolant"], both.Traces.Skip(1).Select(t => t.ColorKey));
+    }
+
+    [Fact] public void Coolant_alone_gives_a_chart_no_readings()
+    {
+        var chart = HistoryChartModel.Build(Request("cputemp", Two(("cpu/temperature", null), ("cpu/coolant", 38.5))) with { Options = new(Coolant: true) });
+        Assert.Equal(2, chart.Traces.Count); Assert.NotEmpty(chart.Traces[1].Runs);
+        Assert.False(chart.HasReadings);
+    }
+
+    [Fact] public void The_option_does_nothing_on_other_charts()
+    {
+        var history = Two(("cpu/usage", 40), ("cpu/temperature", 60), ("gpu0/temperature", 50), ("cpu/coolant", 38.5));
+        var on = new HistoryChartOptions(Coolant: true);
+        Assert.DoesNotContain(HistoryChartModel.Build(Request("cpu", history) with { Options = on }).Traces, t => t.Role == ChartTraceRole.Coolant);
+        Assert.DoesNotContain(HistoryChartModel.Build(Request("gputemp", history) with { Options = on }).Traces, t => t.Role == ChartTraceRole.Coolant);
+        // A device comparison drops it as it drops the pump, unless the widget's rule keeps it.
+        Assert.DoesNotContain(HistoryChartModel.Build(Request("cputemp", history, compare: true) with { Options = on }).Traces, t => t.Role == ChartTraceRole.Coolant);
+        Assert.Contains(HistoryChartModel.Build(Request("cputemp", history, compare: true) with { Options = new(Coolant: true, PumpWithDevices: true) }).Traces, t => t.Role == ChartTraceRole.Coolant);
+        Assert.DoesNotContain(HistoryChartModel.Build(Request("cputemp", history)).Traces, t => t.Role == ChartTraceRole.Coolant);
+    }
+
+    [Fact] public void A_gap_in_the_samples_is_a_gap_in_the_line()
+    {
+        var history = History((57, "cpu/temperature", 60), (58, "cpu/temperature", 60), (59, "cpu/temperature", 60), (60, "cpu/temperature", 60),
+            (57, "cpu/coolant", 30), (58, "cpu/coolant", null), (59, "cpu/coolant", 32), (60, "cpu/coolant", 33));
+        var coolant = HistoryChartModel.Build(Request("cputemp", history) with { Options = new(Coolant: true) }).Traces[1];
+        Assert.Equal(2, coolant.Runs.Count); Assert.Single(coolant.Runs[0]); Assert.Equal(2, coolant.Runs[1].Count);
+    }
+
+    [Fact] public void Hover_reads_coolant_as_a_temperature()
+    {
+        var history = Two(("cpu/temperature", 60), ("cpu/coolant", 38.5));
+        var chart = HistoryChartModel.Build(Request("cputemp", history) with { Options = new(Coolant: true) });
+        var hover = HistoryChartModel.Hover(chart, x: 610, y: 60, pollingSeconds: 1)!;
+        Assert.Equal(["60°", "39°"], hover.Lines.Select(l => l.Text));
+        Assert.Equal(["cputemp", "cpucoolant"], hover.Lines.Select(l => l.ColorKey));
+        Assert.All(hover.Lines, l => Assert.NotNull(l.Dot));
+    }
+
     [Fact] public void Network_carries_the_local_share_muted_under_the_totals()
     {
         var history = Two(("network/download", 2_000_000), ("network/upload", 1_000_000), ("network/download/local", 500_000), ("network/upload/local", 100_000));

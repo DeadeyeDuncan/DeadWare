@@ -122,8 +122,8 @@ internal sealed class WidgetGraph : UserControl
     private readonly string kind;
     private readonly HistoryChartView chart;
     private readonly TextBlock title = new() { FontSize = 12, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center };
-    private readonly TextBlock primary = Reading(), secondary = Reading(), local = Reading(), fan = Reading(), pump = Reading();
-    private readonly StackPanel fanLegend, pumpLegend;
+    private readonly TextBlock primary = Reading(), secondary = Reading(), local = Reading(), fan = Reading(), pump = Reading(), coolant = Reading();
+    private readonly StackPanel fanLegend, pumpLegend, coolantLegend;
     private readonly List<(Line Line, TextBlock Text, string Key)> legends = [];
     private readonly Dictionary<string, Windows.UI.Color> shown = new(StringComparer.Ordinal);
 
@@ -153,9 +153,11 @@ internal sealed class WidgetGraph : UserControl
 
         fanLegend = Legend(fan, "gpufan", false, true);
         pumpLegend = Legend(pump, "cpupump", false, true);
-        fanLegend.Visibility = pumpLegend.Visibility = Visibility.Collapsed;
+        // Lighting 5: the coolant line, its swatch dashed (the pump's is dotted, and dotted means RPM).
+        coolantLegend = Legend(coolant, "cpucoolant", true, false);
+        fanLegend.Visibility = pumpLegend.Visibility = coolantLegend.Visibility = Visibility.Collapsed;
         // Short labels and no pattern, so both fit side by side in the widget's width; the tooltips carry the pattern and the scale.
-        var rpm = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10, Margin = new Thickness(0, 3, 0, 0), Children = { fanLegend, pumpLegend } };
+        var rpm = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10, Margin = new Thickness(0, 3, 0, 0), Children = { fanLegend, pumpLegend, coolantLegend } };
 
         var layout = new Grid();
         layout.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
@@ -215,6 +217,14 @@ internal sealed class WidgetGraph : UserControl
         {
             pump.Text = OverviewPresenter.Rpm("Pump", session.Stale, Live(session.MetricId("cpupump")));
             ToolTipService.SetToolTip(pumpLegend, $"CPU cooler pump, or the CPU Fan header · {Pattern("cpupump", dotted: true)} trace · " + (showFan ? "shares the left RPM scale with the GPU fan" : "separate left RPM scale"));
+        }
+        bool showCoolant = kind == "cputemp" && session.Settings.ShowCoolantTemperature;
+        coolantLegend.Visibility = showCoolant ? Visibility.Visible : Visibility.Collapsed;
+        if (showCoolant)
+        {
+            // The words are Core's: the live value, or why there is none, and how the line is drawn.
+            coolant.Text = HubTexts.CoolantLegend(Live(session.MetricId("cpucoolant")), session.Hub?.State, Pattern("cpucoolant", dashed: true));
+            ToolTipService.SetToolTip(coolantLegend, coolant.Text + " · same °C scale as the CPU temperature");
         }
 
         if (kind == "network")

@@ -34,6 +34,7 @@ sealed class Clock:FakeTimeProvider
         public bool Dead{get{lock(sync)return dead;}}
         // Armed for exactly d, not fired, and due at (or, if armed while the clock moved, no later than) at.
         public bool Waits(TimeSpan d,DateTimeOffset at){lock(sync)return !dead&&delay==d&&(due is null||due==at);}
+        public bool Holds(TimeSpan d){lock(sync)return !dead&&delay==d;}
         public void Arm(DateTimeOffset? at){lock(sync)due=at;}
         public void Fired(TimeSpan period){lock(sync){if(period==Timeout.InfiniteTimeSpan)dead=true;else{delay=period;due+=period;}}}
         public bool Change(TimeSpan dueTime,TimeSpan period)
@@ -47,6 +48,9 @@ sealed class Clock:FakeTimeProvider
         public ValueTask DisposeAsync(){Dispose();return ValueTask.CompletedTask;}
     }
     readonly List<Waiter> waiters=new();
+    int fired;
+    // Fix wave 2, D4: how many timer callbacks have run. A move of the clock after which it is unchanged released no continuation at all.
+    public int Fires=>Volatile.Read(ref fired);
 
     // The due time of a timer armed for dueTime when the clock read before; unknown (null) if the clock has moved since, or never due.
     DateTimeOffset? Due(DateTimeOffset before,TimeSpan dueTime)=>dueTime==Timeout.InfiniteTimeSpan||before!=GetUtcNow()?null:before+dueTime;
@@ -55,7 +59,7 @@ sealed class Clock:FakeTimeProvider
     {
         var waiter=new Waiter(this,dueTime);
         var before=GetUtcNow();
-        waiter.Inner=base.CreateTimer(s=>{waiter.Fired(period);callback(s);},state,dueTime,period);
+        waiter.Inner=base.CreateTimer(s=>{Interlocked.Increment(ref fired);waiter.Fired(period);callback(s);},state,dueTime,period);
         waiter.Arm(Due(before,dueTime));
         lock(waiters)waiters.Add(waiter);
         return waiter;
@@ -70,6 +74,16 @@ sealed class Clock:FakeTimeProvider
             var at=GetUtcNow()+delay;
             waiters.RemoveAll(w=>w.Dead);
             return waiters.Any(w=>w.Waits(delay,at));
+        }
+    }
+
+    // True while a timer armed for exactly delay has not fired yet, however far the clock has moved since: what waits on it has not run.
+    public bool Unfired(TimeSpan delay)
+    {
+        lock(waiters)
+        {
+            waiters.RemoveAll(w=>w.Dead);
+            return waiters.Any(w=>w.Holds(delay));
         }
     }
 }

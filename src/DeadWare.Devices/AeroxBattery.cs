@@ -16,6 +16,7 @@ internal sealed class AeroxBattery
     bool? wasCable;
     bool fromCable,spoiled;
     (int? Percent,bool? Charging,bool Stale) shown=(null,null,true);
+    (bool Cable,int Percent,bool Charging)? logged;                       // fix wave 2, F: the last reading logged
 
     public AeroxBattery(AeroxDriver driver,TimeProvider time,HostLog log){this.driver=driver;this.time=time;this.log=log;}
 
@@ -48,7 +49,11 @@ internal sealed class AeroxBattery
         if(!cable) Asked=r;
         triedAt=time.GetTimestamp();
         if(r!=AeroxResult.Sent){spoiled=true;return;}
+        // Fix wave 2, F: logged only when the source, percentage or charging state changed, or after a stale spell.
+        bool wasStale=Stale;
         Percent=p;Charging=c;readAt=triedAt;fromCable=cable;spoiled=false;
+        if(!wasStale&&logged==(cable,p,c)) return;
+        logged=(cable,p,c);
         log.Write($"battery: {(cable?"cable":"receiver")} {p}% {(c?"charging":"not charging")}");
     }
 }

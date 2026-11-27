@@ -22,7 +22,7 @@ public sealed class AeroxMouseTests:IDisposable
     {
         log=new HostLog(Path.Combine(dir,"logs"));
         fake.Products.Add(AeroxDriver.Receiver);
-        driver=new AeroxDriver(fake,log);
+        driver=new AeroxDriver(fake,log,RealTimeCap);                  // see DeviceHostMouseTests: no test here is about the deadline
         mouse=new AeroxMouse(driver,input,time,log);
         mouse.Tick();mouse.Scan();
     }
@@ -390,6 +390,10 @@ public sealed class AeroxMouseTests:IDisposable
 
 // Lighting 4, Task 7: the receiver mouse in the host (rulings P1, P5, R2) and the copy of the cable's colours, through DeviceHostTests'
 // harness.
+// Fix wave 3b: every driver here gets RealTimeCap as its exchange deadline, not the product's 1.5 s. That deadline is real time, and on a
+// loaded machine the thread-pool worker of an exchange can start later than 1.5 s after the host loop queued it; the exchange then ends
+// Failed at the deadline with nothing written, and the mouse treats it as a missing reply (R17), which spends a reopen's one attempt
+// (After_wake_a_silent_mouse_gets_one_attempt failed so on CI, 2026-11-27). No test here is about the deadline (AeroxDriverTests is).
 public sealed class DeviceHostMouseTests:IAsyncLifetime
 {
     readonly DeviceHostTests t=new();
@@ -412,7 +416,7 @@ public sealed class DeviceHostMouseTests:IAsyncLifetime
     {
         t.Session.Reorder(l=>l.Where(c=>!AeroxIdentity.Is(c.Name)).ToList());
         fake.Products.Add(AeroxDriver.Receiver);
-        driver=new AeroxDriver(fake,mouseLog);
+        driver=new AeroxDriver(fake,mouseLog,RealTimeCap);
         var h=t.BuildHost(signals,input,mouse:new AeroxMouse(driver,input,t.Time,mouseLog));t.StartHost(h);
         await Until(()=>h.State.Status==HostStatus.Running);
         return h;
@@ -608,7 +612,7 @@ public sealed class DeviceHostMouseTests:IAsyncLifetime
     public async Task On_the_cable_the_sleep_time_is_saved_and_waits()
     {
         fake.Products.Add(AeroxDriver.Cable);
-        driver=new AeroxDriver(fake,mouseLog);
+        driver=new AeroxDriver(fake,mouseLog,RealTimeCap);
         var h=t.BuildHost(signals,input,mouse:new AeroxMouse(driver,input,t.Time,mouseLog));t.StartHost(h);
         await Until(()=>h.State.Status==HostStatus.Running);
         Assert.True((await DeviceHostTests.SendTo(h,new SetMouseSleepRequest(5))).Ok);
@@ -664,7 +668,7 @@ public sealed class DeviceHostMouseTests:IAsyncLifetime
         t.BlockLighting();
         fake.Products.Add(AeroxDriver.Cable);
         fake.Reply=Battery75;
-        driver=new AeroxDriver(fake,mouseLog);
+        driver=new AeroxDriver(fake,mouseLog,RealTimeCap);
         driver.Scan();                                            // the cable known from the start, so only the host's state can hold the poll back
         var h=t.BuildHost(signals,input,mouse:new AeroxMouse(driver,input,t.Time,mouseLog));t.StartHost(h);
         await Until(()=>h.State.Status==HostStatus.Blocked);
@@ -768,7 +772,7 @@ public sealed class DeviceHostMouseTests:IAsyncLifetime
     public async Task The_cable_leaving_does_not_ask()
     {
         fake.Products.Add(AeroxDriver.Cable);
-        driver=new AeroxDriver(fake,mouseLog);
+        driver=new AeroxDriver(fake,mouseLog,RealTimeCap);
         var h=t.BuildHost(signals,input,mouse:new AeroxMouse(driver,input,t.Time,mouseLog));t.StartHost(h);
         await Until(()=>h.State.Status==HostStatus.Running);
         var aborts=t.Session.Aborts;
@@ -786,7 +790,7 @@ public sealed class DeviceHostMouseTests:IAsyncLifetime
     {
         Unlist();
         fake.Products.Add(AeroxDriver.Cable);
-        driver=new AeroxDriver(fake,mouseLog);
+        driver=new AeroxDriver(fake,mouseLog,RealTimeCap);
         var h=t.BuildHost(signals,input,mouse:new AeroxMouse(driver,input,t.Time,mouseLog));t.StartHost(h);
         await Until(()=>h.State.Status==HostStatus.Running);
         await t.StepFor(TimeSpan.FromSeconds(12),DeviceHost.Tick);

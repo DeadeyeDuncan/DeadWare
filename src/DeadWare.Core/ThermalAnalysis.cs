@@ -239,8 +239,8 @@ public static class CoolingAnalyzer
         string message = warning
             ? $"Temperature has remained {delta:0.0}°C above the reference at comparable power and load for ten minutes. Check cooling conditions; the cause is not identified."
             : $"Ten recent minutes matched the reference at comparable power and load; average temperature difference {delta:+0.0;-0.0;0.0}°C. This is a comparison, not a hardware health verdict.";
-        message += evidence.Any(e => e.MissingFan) ? " Fan context is incomplete; coolant and ambient temperatures are not measured." :
-            " Available fan speed was matched; coolant and ambient temperatures are not measured.";
+        message += evidence.Any(e => e.MissingFan) ? " Fan context is incomplete; coolant and ambient temperatures are not part of this comparison." :
+            " Available fan speed was matched; coolant and ambient temperatures are not part of this comparison.";
         return new(warning ? "Cooling change" : "Compared", message, evidence.Count, RequiredRecentWindows,
             currentMean, expectedMean, delta, evidence.Average(e => e.Low), evidence.Average(e => e.High), warning);
     }

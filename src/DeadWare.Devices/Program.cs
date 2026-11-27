@@ -10,7 +10,8 @@ internal static class Program
     // handle when the host ends, however it ends, and that ends OpenRGB with it.
     static ProcessJob? job;
 
-    // Exit codes: 0 after Stop, 1 unexpected failure, 2 bad arguments, 3 another host already runs in this session, 4 the pipe could not be created.
+    // Exit codes: 0 after Stop, 1 unexpected failure, 2 bad arguments, 3 another host already runs in this session, 4 the pipe could not be created,
+    // 5 the hub's USB call was stuck.
     private static async Task<int> Main(string[] args)
     {
         string? openRgb=null;var startup=false;
@@ -57,7 +58,9 @@ internal static class Program
             // that choice and gives the engine the lock's guard, its filters and then its self-check (F6 items 1 and 3).
             var portGuard=OpenRgbPortLock.GuardFor(Environment.IsPrivilegedProcess,log.Write,out var portLock);
             using var heldLock=portLock;
-            var engine=new OpenRgbEngine(options.OpenRgbPath,configDir,new SystemProcessRunner(job,log),OpenRgbEngine.ProbePort,TimeProvider.System,log,ProtectedFolders.OpenRgbFolderCheck(Environment.IsPrivilegedProcess),dir=>OpenRgbConfig.Prepare(dir,log),portGuard);
+            // Lighting 5: one read of the detector's On per launch, recorded as LaunchedOn. Nothing sets On to false before the host does.
+            var detector=new HubDetector();
+            var engine=new OpenRgbEngine(options.OpenRgbPath,configDir,new SystemProcessRunner(job,log),OpenRgbEngine.ProbePort,TimeProvider.System,log,ProtectedFolders.OpenRgbFolderCheck(Environment.IsPrivilegedProcess),dir=>OpenRgbConfig.Prepare(dir,log,detector.Launching()),portGuard);
             // Lighting 3b: the key-press hook. The host starts it only while a keyboard's fade or ripple layer needs key presses and stops it
             // when it stops; it is disposed after the host.
             using IKeyPressSource keys=new KeyPressHook();
@@ -68,13 +71,20 @@ internal static class Program
             // disposed after the host.
             using var aerox=new AeroxDriver(new HidAeroxTransport(),log);
             var mouse=new AeroxMouse(aerox,input,TimeProvider.System,log);
-            await using var host=new DeviceHost(options,new LightingStore(lightingPath,guardLinks:Environment.IsPrivilegedProcess),engine,()=>new OpenRgbSession(),new ProcessConflictScanner(),TimeProvider.System,log,failure,keys:keys,signals:signals,input:input,mouse:mouse);
+            // Lighting 5: the hub's worker on its own thread, with the watchdog that ends the helper (exit code 5) when a USB call stays stuck
+            // under the shared Corsair lock. Declared before the host, so they are disposed after it. Until the host allows holding (mode driven,
+            // lighting connected, nothing else wanting the hub) the thread idles and never opens the hub.
+            using var hubLock=new CorsairLock(log);
+            var hubCore=new HubCore(new HidHubTransport(),hubLock,TimeProvider.System,log);
+            using var hub=new HubWorker(hubCore,log,()=>Environment.Exit(HubWorker.ExitCode));
+            await using var host=new DeviceHost(options,new LightingStore(lightingPath,guardLinks:Environment.IsPrivilegedProcess),engine,()=>new OpenRgbSession(),new ProcessConflictScanner(log),TimeProvider.System,log,failure,keys:keys,signals:signals,input:input,mouse:mouse,hub:hubCore,detector:detector);
             await using var server=new HostPipeServer(DeviceHostProtocol.PipeName(sid),host.HandleAsync,log,clientGone:host.ClientGone);
             host.Initialize(); // settings are loaded before the pipe accepts a single request
             try{server.Open();}
             catch(Exception e){log.Write("pipe could not be created: "+e.Message);return 4;}
             host.StateChanged+=state=>_=server.SendAsync(new StateEvent(state));
             host.PreviewChanged+=e=>_=server.SendAsync(e);
+            host.HubReadingsChanged+=e=>_=server.SendAsync(e);
             using var pipeCts=new CancellationTokenSource();
             using var hostCts=new CancellationTokenSource();
             var serving=server.RunAsync(pipeCts.Token);

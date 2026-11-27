@@ -191,6 +191,8 @@ internal sealed class OverviewCard : UserControl
     // A temperature card's fan (GPU) or pump (CPU) speed, after MIN / AVG / MAX while its line is drawn; null on other cards.
     private readonly TextBlock rpm = new() { Text = "—", FontSize = 11, VerticalAlignment = VerticalAlignment.Bottom };
     private readonly StackPanel? rpmItem;
+    // Lighting 5: the CPU temperature card's coolant legend, beside the pump's while the option is ticked.
+    private readonly TextBlock coolant = new() { Text = "—", FontSize = 11, VerticalAlignment = VerticalAlignment.Bottom, TextTrimming = TextTrimming.CharacterEllipsis, MaxWidth = 280 };
     private readonly Border tile = new() { Width = 24, Height = 24, CornerRadius = new CornerRadius(7) };
     private readonly Microsoft.UI.Xaml.Shapes.Path glyph = new()
     {
@@ -275,6 +277,11 @@ internal sealed class OverviewCard : UserControl
             rpmItem = Item(kind == "gputemp" ? "FAN" : "PUMP", rpm);
             rpmItem.Visibility = Visibility.Collapsed;
             statsLine.Children.Add(rpmItem);
+            if (kind == "cputemp")
+            {
+                coolant.Visibility = Visibility.Collapsed;
+                statsLine.Children.Add(coolant);
+            }
         }
 
         var metric = new StackPanel { Margin = new Thickness(0, 2, 0, 2), Spacing = 1 };
@@ -406,6 +413,19 @@ internal sealed class OverviewCard : UserControl
                 // The whole line the card used to give it, then which fan or header it is.
                 Tip(rpmItem, OverviewPresenter.Rpm(fan ? "GPU fan" : "CPU pump", session.Stale, speed, OverviewPresenter.Pattern(SavedPattern(key), dotted: true))
                     + (fan ? "\nThe selected GPU's first reported fan" : "\nThe CPU cooler pump, or the CPU Fan header"));
+            }
+        }
+
+        if (kind == "cputemp")
+        {
+            bool show = session.Settings.ShowCoolantTemperature;
+            coolant.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
+            if (show)
+            {
+                // The words are Core's: the live value, or why there is none, and how the line is drawn (dashed by default).
+                Tint(coolant, "cpucoolant");
+                coolant.Text = HubTexts.CoolantLegend(Live(session.MetricId("cpucoolant")), session.Hub?.State, OverviewPresenter.Pattern(SavedPattern("cpucoolant"), dashed: true));
+                Tip(coolant, coolant.Text);
             }
         }
 

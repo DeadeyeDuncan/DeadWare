@@ -16,6 +16,10 @@ internal sealed class OpenRgbEngine : IAsyncDisposable
     public static readonly TimeSpan PortWait=TimeSpan.FromSeconds(30),PortProbe=TimeSpan.FromMilliseconds(500);
     // F6 item 9 (Ruling BH): how long the supervisor waits for an OpenRGB it killed to exit before it finishes.
     public static readonly TimeSpan ExitWait=TimeSpan.FromSeconds(5);
+    // Fix wave 2, D: a port the self-check finds taken less than LingerWindow after this engine ended an OpenRGB is checked again every
+    // LingerRetry until LingerWindow after that end (the OpenRGB it killed may still be running down). E: a deliberate stop never ends an
+    // OpenRGB younger than YoungStop; it waits out the rest first.
+    public static readonly TimeSpan LingerWindow=TimeSpan.FromSeconds(10),LingerRetry=TimeSpan.FromSeconds(1),YoungStop=TimeSpan.FromSeconds(5);
     readonly string exePath,configDir;
     readonly IProcessRunner runner;
     readonly Func<int,CancellationToken,Task<bool>> portOpen;
@@ -27,13 +31,20 @@ internal sealed class OpenRgbEngine : IAsyncDisposable
     readonly object gate=new();
     IRunningProcess? current;
     Task? supervisor;
-    volatile bool quitting;
+    volatile bool quitting,deliberate;
+    // Lighting 5: false once an OpenRGB the supervisor ended had not exited by the end of its wait; StopForRestartAsync's answer.
+    bool allGone=true;
     bool started;
     // F4 item 3 (whole-branch review D8, D9): the restart history a conflict stop keeps and a full stop clears, with the backoff's count.
     // resumeAt: the earliest the next launch may start, armed with each restart delay. gaveUp: the backoff gave up, so a start fails at once.
     // F5 item 3b (whole-branch review R4-D2): resumeAt is a time.GetTimestamp() value, so a step of the wall clock doesn't move it.
     long? resumeAt;
     bool gaveUp;
+    // Fix wave 2: when the last OpenRGB this engine launched was launched, and when the last one it launched ended (time.GetTimestamp() values);
+    // fix wave 3, D5: endedAt only for one this engine ended (a stop or a kill), null after one that exited by itself.
+    long? launchedAt,endedAt;
+    // Fix wave 2, E: cancelled by a full stop, which ends a deliberate stop's wait for a young OpenRGB at once.
+    CancellationTokenSource fullStop=new();
     EngineStatus status=EngineStatus.Stopped;
     int? processId;
     string? failureReason;
@@ -92,6 +103,32 @@ internal sealed class OpenRgbEngine : IAsyncDisposable
     }
     public static string FolderNameText(string configDir)=>$"OpenRGB's settings folder for DeadWare, {configDir}, isn't named openrgb, so DeadWare didn't start OpenRGB: OpenRGB would read settings and keep its log in another folder.";
     public int? ProcessId{get{lock(gate)return processId;}}
+    // Fix wave 3, D1/D2: the last OpenRGB this engine ended that had not exited by the end of its wait, kept until it has; Lingering is its
+    // id while it still runs, null once it has exited (then it is let go).
+    IRunningProcess? lingering;
+    public int? Lingering
+    {
+        get
+        {
+            IRunningProcess? gone=null;int? id=null;
+            lock(gate)
+            {
+                if(lingering is {} p)
+                {
+                    bool done;try{done=p.HasExited;}catch{done=true;}
+                    if(done){gone=p;lingering=null;}else id=p.Id;
+                }
+            }
+            try{gone?.Dispose();}catch{}
+            return id;
+        }
+    }
+    // Fix wave 4, A: the last OpenRGB this engine launched that has exited (its handle says so), by id and start time. Observed on the owner's PC
+    // on 2026-11-27: a scan found an OpenRGB within 1.5 s of this engine seeing its own exit, with no other OpenRGB known there. The working
+    // assumption, not proven, is that Windows still listed the exited process (fix wave 4b: the scanner now logs which OpenRGB a scan saw). So the
+    // host's scans never count this process as another OpenRGB while it is listed, and the take-over waits for it to go.
+    (int Id,DateTime Started)? ended;
+    public (int Id,DateTime Started)? Ended{get{lock(gate)return ended;}}
     public EngineStatus Status{get{lock(gate)return status;}}
     public string? FailureReason{get{lock(gate)return failureReason;}}
     public event Action? Changed;
@@ -140,7 +177,7 @@ internal sealed class OpenRgbEngine : IAsyncDisposable
                 if(Refusal() is {} refusal){Set(EngineStatus.Failed,refusal);return;}
                 // F5 item 2 (whole-branch review D15, Ruling BG): an elevated host launches OpenRGB only with its SDK port locked to the
                 // host, confirmed before each launch; a refusal is final in the same way.
-                if(PortRefusal() is {} denied){Set(EngineStatus.Failed,denied);return;}
+                if(await PortRefusalAsync(ct).ConfigureAwait(false) is {} denied){Set(EngineStatus.Failed,denied);return;}
                 if(!Prepared()){Set(EngineStatus.Failed,ConfigFailedText(configDir));return;}
                 // B5: the check and the settings write take a while, and a Stop (a conflict's, say) that lands during them starts nothing.
                 if(quitting||ct.IsCancellationRequested) break;
@@ -151,7 +188,7 @@ internal sealed class OpenRgbEngine : IAsyncDisposable
                     foreach(var a in Arguments(configDir)) info.ArgumentList.Add(a);
                     SetEnvironment(info,Path.GetDirectoryName(exePath)??"",AppData(configDir)!); // StartAsync refused a folder for which AppData is null
                     proc=runner.Start(info);
-                    lock(gate){current=proc;processId=proc.Id;}
+                    lock(gate){current=proc;processId=proc.Id;launchedAt=time.GetTimestamp();}
                     if(await WaitForPort(proc,ct).ConfigureAwait(false))
                     {
                         Set(EngineStatus.Running,null);
@@ -165,14 +202,32 @@ internal sealed class OpenRgbEngine : IAsyncDisposable
                 catch(Exception e) when(e is not OperationCanceledException){log.Write("openrgb launch failed: "+e.Message);}
                 finally
                 {
-                    if(proc is not null){try{proc.KillTree();}catch{}await Exited(proc).ConfigureAwait(false);try{proc.Dispose();}catch{}}
-                    lock(gate){current=null;processId=null;}
+                    if(proc is not null)
+                    {
+                        // Fix wave 3, D5: one that had exited by itself before any stop or kill was not ended by this engine: no endedAt.
+                        bool own;try{own=!quitting&&!ct.IsCancellationRequested&&proc.HasExited;}catch{own=false;}
+                        try{proc.KillTree();}catch{}
+                        await Exited(proc).ConfigureAwait(false);
+                        bool gone;try{gone=proc.HasExited;}catch{gone=false;}
+                        // One block: a stop either still sees this process in current (and this false lands after its reset) or sees none.
+                        IRunningProcess? old=null;
+                        lock(gate){allGone=allGone&&gone;current=null;processId=null;endedAt=own?null:time.GetTimestamp();if(!gone){old=lingering;lingering=proc;}else ended=(proc.Id,proc.Started);}
+                        try{(gone?proc:old)?.Dispose();}catch{}
+                    }
+                    else lock(gate){current=null;processId=null;}
                 }
                 // F4 item 3 (whole-branch review D8): every OpenRGB that was launched and ended counts, one a stop ended included, so a program
                 // that comes and goes can't cycle OpenRGB faster or longer than crashes can. A full stop clears the count after it.
                 if(quitting&&proc is null) break;
+                // Lighting 5: a deliberate stop (the hub's take-over) counts nothing, so no number of them reaches the give-up, but it arms
+                // the 4 s floor, or keeps a longer delay already armed.
+                if(deliberate)
+                {
+                    lock(gate){var floor=Deadline(RestartBackoff.Base);resumeAt=resumeAt is {} armed&&armed>floor?armed:floor;}
+                    break;
+                }
                 var delay=backoff.RecordFailure(time); // on the monotonic clock, as resumeAt is (F6 item 4, whole-branch review D4)
-                lock(gate){if(delay is null) gaveUp=true;else resumeAt=time.GetTimestamp()+(long)(delay.Value.Ticks*(double)time.TimestampFrequency/TimeSpan.TicksPerSecond);}
+                lock(gate){if(delay is null) gaveUp=true;else resumeAt=Deadline(delay.Value);}
                 if(quitting) break;
                 if(delay is null){Set(EngineStatus.Failed,GaveUpText);return;}
                 var wait=Task.Delay(delay.Value,time,ct); // registered before the status change so a clock advance can't miss it
@@ -184,6 +239,9 @@ internal sealed class OpenRgbEngine : IAsyncDisposable
         catch(OperationCanceledException){}
         finally{firstAttempt.TrySetResult();}
     }
+
+    // The time.GetTimestamp() value a delay from now ends at, in the timestamp units Left reads.
+    long Deadline(TimeSpan delay)=>time.GetTimestamp()+(long)(delay.Ticks*(double)time.TimestampFrequency/TimeSpan.TicksPerSecond);
 
     // F5 item 3b (whole-branch review R4-D2): what is left until a deadline on the monotonic clock (a time.GetTimestamp() value), never
     // more than the backoff's cap.
@@ -227,16 +285,40 @@ internal sealed class OpenRgbEngine : IAsyncDisposable
     }
 
     // The port lock's refusal, or null when the lock is in place or the host has none (it isn't elevated). A guard that throws couldn't
-    // confirm the lock either, so it gets the lock's refusal with the exception's code and message.
-    string? PortRefusal()
+    // confirm the lock either, so it gets the lock's refusal with the exception's code and message. Fix wave 2, D: the port taken less than
+    // LingerWindow after this engine ended an OpenRGB is checked again every LingerRetry until LingerWindow after that end, with one line
+    // when the checks start and one when they end; a stop cancels the wait. Every other refusal is final at once.
+    async Task<string?> PortRefusalAsync(CancellationToken ct)
     {
         if(portGuard is null) return null;
-        string? refusal;
-        try{refusal=portGuard();}
-        catch(Exception e){refusal=OpenRgbPortLock.RefusalText(e is Win32Exception w?w.NativeErrorCode:e.HResult,e.Message);}
+        var refusal=Guard();
+        long? ended;
+        lock(gate)ended=endedAt;
+        var taken=OpenRgbPortLock.PortTakenText(Port);
+        if(refusal==taken&&ended is long end&&time.GetElapsedTime(end)<LingerWindow)
+        {
+            log.Write($"openrgb port still in use {Seconds(end)} s after DeadWare ended its OpenRGB; checking again every second");
+            // Fix wave 3, D5: a stop during the checks still logs their end.
+            try
+            {
+                while(refusal==taken&&LingerWindow-time.GetElapsedTime(end) is {Ticks:>0} left)
+                {
+                    await Task.Delay(left<LingerRetry?left:LingerRetry,time,ct).ConfigureAwait(false);
+                    refusal=Guard();
+                }
+            }
+            catch(OperationCanceledException){log.Write($"openrgb port checks stopped {Seconds(end)} s after DeadWare ended its OpenRGB");throw;}
+            log.Write(refusal is null?$"openrgb port free again {Seconds(end)} s after DeadWare ended its OpenRGB":$"openrgb port still in use {Seconds(end)} s after DeadWare ended its OpenRGB");
+        }
         if(refusal is not null) log.Write("openrgb port guard refused: "+refusal);
         return refusal;
     }
+    string? Guard()
+    {
+        try{return portGuard!();}
+        catch(Exception e){return OpenRgbPortLock.RefusalText(e is Win32Exception w?w.NativeErrorCode:e.HResult,e.Message);}
+    }
+    string Seconds(long since)=>((int)time.GetElapsedTime(since).TotalSeconds).ToString(CultureInfo.InvariantCulture);
 
     async Task<bool> WaitForPort(IRunningProcess proc,CancellationToken ct)
     {
@@ -279,24 +361,56 @@ internal sealed class OpenRgbEngine : IAsyncDisposable
     // keepHistory: a conflict stop (F4 item 3, whole-branch review D8): the OpenRGB it ends counts towards the give-up, and the next start
     // waits out the delay that armed and fails at once after a give-up. A full stop, the host stopping for lighting turned off or Quit,
     // clears all of that.
-    public async Task StopAsync(bool keepHistory=false)
+    public Task StopAsync(bool keepHistory=false)=>Stop(keepHistory,false);
+
+    // Lighting 5: the stop before DeadWare's own driver takes the hub. It counts nothing towards the give-up, arms the 4 s floor for the next
+    // launch (or keeps a longer delay already armed) and keeps the history as a conflict stop does. True when no OpenRGB of this engine
+    // remains; false when one had not exited by the end of the supervisor's wait, which the caller must treat as a hub still in use.
+    // Fix wave 2, E: an OpenRGB launched less than YoungStop ago is ended only once it is YoungStop old (a kill in the middle of its USB
+    // detection is the rapid cycle the backoff exists to avoid); the token and a full stop end that wait at once, and the stop goes on.
+    public async Task<bool> StopForRestartAsync(CancellationToken token=default)
     {
+        TimeSpan young;
+        CancellationToken full;
+        lock(gate){young=current is not null&&launchedAt is long at?YoungStop-time.GetElapsedTime(at):TimeSpan.Zero;full=fullStop.Token;}
+        if(young>TimeSpan.Zero)
+        {
+            using var cut=CancellationTokenSource.CreateLinkedTokenSource(token,full);
+            var wait=Task.Delay(young,time,cut.Token);
+            ageing=true;
+            try{await wait.ConfigureAwait(false);}
+            catch(OperationCanceledException){}
+            finally{ageing=false;}
+        }
+        return await Stop(true,true).ConfigureAwait(false);
+    }
+    volatile bool ageing;
+    // Test seam: true while a deliberate stop waits for a young OpenRGB to reach YoungStop (its wait is armed).
+    internal bool Ageing=>ageing;
+
+    async Task<bool> Stop(bool keepHistory,bool isDeliberate)
+    {
+        if(!keepHistory){CancellationTokenSource ended;lock(gate){ended=fullStop;fullStop=new();}ended.Cancel();}
+        deliberate=isDeliberate; // before the cancel: the supervisor reads it once the process has ended
         quitting=true;
         Task? sup;
         IRunningProcess? proc;
-        lock(gate){sup=supervisor;proc=current;}
+        lock(gate){sup=supervisor;proc=current;allGone=true;}
         try{cts.Cancel();}catch(ObjectDisposedException){}
         try{proc?.KillTree();}catch{}
         if(sup is not null){try{await sup.ConfigureAwait(false);}catch{}}
+        bool gone;
         // Re-arm so the host can start the engine again after a conflict clears; disposal cancels the fresh token below.
         lock(gate)
         {
-            started=false;supervisor=null;cts.Dispose();cts=new();firstAttempt=new(TaskCreationOptions.RunContinuationsAsynchronously);quitting=false;
+            gone=allGone;
+            started=false;supervisor=null;cts.Dispose();cts=new();firstAttempt=new(TaskCreationOptions.RunContinuationsAsynchronously);quitting=false;deliberate=false;
             if(!keepHistory){backoff.Reset();resumeAt=null;gaveUp=false;}
         }
         Set(EngineStatus.Stopped,null);
+        return gone;
     }
-    public async ValueTask DisposeAsync(){await StopAsync().ConfigureAwait(false);lock(gate)cts.Dispose();}
+    public async ValueTask DisposeAsync(){await StopAsync().ConfigureAwait(false);IRunningProcess? left;lock(gate){cts.Dispose();left=lingering;lingering=null;}try{left?.Dispose();}catch{}}
 
     // Real port probe: one TCP connect to 127.0.0.1.
     public static async Task<bool> ProbePort(int port,CancellationToken token)

@@ -32,6 +32,23 @@ public sealed class SystemProcessRunnerTests
         finally{Environment.SetEnvironmentVariable("DW_PLANTED_VARIABLE",null);try{Directory.Delete(dir,true);}catch{}}
     }
 
+    // Fix wave 4c (review D5): the start time the runner reports for a child is exactly what Windows gives a second, independent read of that
+    // process, to the tick, so the host's ended OpenRGB matches its entry in the process list. ping stands in; nothing named OpenRGB is started.
+    [Fact]
+    public async Task The_start_time_the_runner_reports_is_the_one_Windows_lists()
+    {
+        using var child=new SystemProcessRunner().Start(new ProcessStartInfo(Path.Combine(Environment.SystemDirectory,"PING.EXE")){ArgumentList={"-n","3","127.0.0.1"}});
+        try
+        {
+            DateTime listed;
+            using(var again=Process.GetProcessById(child.Id)) listed=again.StartTime;
+            Assert.NotEqual(DateTime.MinValue,child.Started);
+            Assert.Equal(listed.Ticks,child.Started.Ticks);
+            Assert.Equal(listed.Kind,child.Started.Kind);
+        }
+        finally{child.KillTree();await child.WaitForExitAsync(CancellationToken.None).WaitAsync(RealTimeCap);}
+    }
+
     // A wrongly sized limit structure makes SetInformationJobObject fail with ERROR_BAD_LENGTH, leaving no kill-on-close.
     [Fact]
     public void Job_limit_structure_has_the_native_size()=>Assert.Equal(IntPtr.Size==8?144:112,ProcessJob.ExtendedLimitSize);

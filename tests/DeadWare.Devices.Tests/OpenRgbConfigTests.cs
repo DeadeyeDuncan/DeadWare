@@ -18,7 +18,7 @@ public sealed class OpenRgbConfigTests:IDisposable
 
     // F4 item 6: the same pass caps OpenRGB's own logs at 2 files, the run in progress and the one before it (LogManager.file_count_limit, which LogManager::configure reads only as
     // an integer), whether there is no file, a file without a LogManager section or one with other LogManager keys.
-    const string Minimal="{\"Detectors\":{\"detectors\":{\"SteelSeries Aerox 9 Wireless\":false}},\"LogManager\":{\"file_count_limit\":2}}";
+    const string Minimal="{\"Detectors\":{\"detectors\":{\"SteelSeries Aerox 9 Wireless\":false,\"Corsair iCUE Link System Hub\":true}},\"LogManager\":{\"file_count_limit\":2}}";
     int LogLimit()=>Saved()["LogManager"]!["file_count_limit"]!.GetValue<int>();
 
     [Fact] public void Fresh_folder_gets_only_the_disabled_detector_and_the_log_cap()
@@ -71,5 +71,107 @@ public sealed class OpenRgbConfigTests:IDisposable
     {
         Directory.CreateDirectory(File_); // OpenRGB.json is a folder: nothing can replace it
         Assert.ThrowsAny<Exception>(()=>OpenRgbConfig.Prepare(dir,log));
+    }
+
+    // Lighting 5: the hub's detector is written on every launch, off while DeadWare drives the hub and on again otherwise.
+    string LogText(){var path=Path.Combine(dir,"logs","devices.log");return File.Exists(path)?File.ReadAllText(path):"";}
+    bool? HubKey()=>(bool?)Saved()["Detectors"]!["detectors"]!["Corsair iCUE Link System Hub"];
+
+    [Fact] public void The_hub_detector_is_written_off_and_on_again()
+    {
+        OpenRgbConfig.Prepare(dir,log,false);
+        Assert.False(HubKey());
+        Assert.Contains("openrgb hub detector: off",LogText());
+        OpenRgbConfig.Prepare(dir,log);
+        Assert.True(HubKey());
+        Assert.Contains("openrgb hub detector: on",LogText());
+    }
+
+    [Fact] public void The_hub_key_joins_the_other_detectors()
+    {
+        File.WriteAllText(File_,"{\"Detectors\":{\"detectors\":{\"Corsair Lighting Node Pro\":true,\"Some Other Device\":false}}}");
+        OpenRgbConfig.Prepare(dir,log,false);
+        var detectors=Saved()["Detectors"]!["detectors"]!;
+        Assert.True((bool)detectors["Corsair Lighting Node Pro"]!);
+        Assert.False((bool)detectors["Some Other Device"]!);
+        Assert.False((bool)detectors["Corsair iCUE Link System Hub"]!);
+        Assert.False((bool)detectors["SteelSeries Aerox 9 Wireless"]!);
+    }
+
+    [Fact] public void Hub_detector_on_writes_only_true_and_keeps_the_rest()
+    {
+        File.WriteAllText(File_,"{\"Theme\":\"dark\",\"Detectors\":{\"detectors\":{\"Corsair Lighting Node Pro\":true,\"Some Other Device\":false,\"Corsair iCUE Link System Hub\":false}},\"LogManager\":{\"file_count_limit\":2}}");
+        OpenRgbConfig.HubDetectorOn(dir,log);
+        var saved=Saved();
+        Assert.True((bool)saved["Detectors"]!["detectors"]!["Corsair iCUE Link System Hub"]!);
+        Assert.True((bool)saved["Detectors"]!["detectors"]!["Corsair Lighting Node Pro"]!);
+        Assert.False((bool)saved["Detectors"]!["detectors"]!["Some Other Device"]!);
+        Assert.Equal("dark",(string?)saved["Theme"]);
+        Assert.Equal(2,LogLimit());
+        Assert.Contains("openrgb hub detector: on (at stop)",LogText());
+        Assert.Empty(Directory.GetFiles(dir,"*.tmp"));
+    }
+
+    [Fact] public void Hub_detector_on_with_no_folder_does_nothing()
+    {
+        // "" joins to the relative OpenRGB.json, the current directory's: without the guard a file there would be rewritten.
+        var relative=Path.Combine(Environment.CurrentDirectory,OpenRgbConfig.FileName);
+        Assert.False(File.Exists(relative)); // the test's own folder holds none
+        const string text="{\"Detectors\":{\"detectors\":{\"Corsair iCUE Link System Hub\":false}}}";
+        File.WriteAllText(relative,text);
+        try
+        {
+            OpenRgbConfig.HubDetectorOn("",log);
+            Assert.Equal(text,File.ReadAllText(relative));
+            Assert.DoesNotContain("hub detector",LogText());
+        }
+        finally{File.Delete(relative);}
+        OpenRgbConfig.HubDetectorOn("",log); // and with no such file, nothing appears
+        Assert.False(File.Exists(relative));
+    }
+
+    [Fact] public void Hub_detector_on_with_no_file_creates_nothing()
+    {
+        var missing=Path.Combine(dir,"nope");
+        OpenRgbConfig.HubDetectorOn(missing,log);
+        Assert.False(Directory.Exists(missing));
+        var empty=Directory.CreateDirectory(Path.Combine(dir,"empty")).FullName;
+        OpenRgbConfig.HubDetectorOn(empty,log);
+        Assert.Empty(Directory.GetFileSystemEntries(empty));
+        Assert.DoesNotContain("hub detector",LogText());
+    }
+
+    [Fact] public void Hub_detector_on_leaves_a_true_key_untouched()
+    {
+        File.WriteAllText(File_,"{\"Detectors\":{\"detectors\":{\"Corsair iCUE Link System Hub\":true}}}");
+        var stamp=new DateTime(2020,1,2,3,4,5,DateTimeKind.Utc);
+        File.SetLastWriteTimeUtc(File_,stamp);
+        OpenRgbConfig.HubDetectorOn(dir,log);
+        Assert.Equal(stamp,File.GetLastWriteTimeUtc(File_));
+        Assert.DoesNotContain("hub detector",LogText());
+    }
+
+    [Fact] public void A_write_that_fails_is_logged_not_thrown()
+    {
+        File.WriteAllText(File_,"{\"Detectors\":{\"detectors\":{\"Corsair iCUE Link System Hub\":false}}}");
+        using(new FileStream(File_,FileMode.Open,FileAccess.Read,FileShare.Read)) // readable, but nothing can replace it
+            OpenRgbConfig.HubDetectorOn(dir,log);
+        Assert.Contains("openrgb hub detector couldn't be set on",LogText());
+        Assert.False(HubKey());
+        Assert.Empty(Directory.GetFiles(dir,"*.tmp"));
+    }
+
+    [Fact] public void The_detector_records_what_each_launch_used()
+    {
+        var detector=new HubDetector();
+        Assert.True(detector.On);
+        Assert.True(detector.LaunchedOn);
+        detector.On=false;
+        Assert.False(detector.Launching());
+        Assert.False(detector.LaunchedOn);
+        detector.On=true;
+        Assert.False(detector.LaunchedOn); // no launch since
+        Assert.True(detector.Launching());
+        Assert.True(detector.LaunchedOn);
     }
 }

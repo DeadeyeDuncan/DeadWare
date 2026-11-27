@@ -499,7 +499,7 @@ public sealed class LightingDeviceServiceTests : IDisposable
         if(receiver) fake.Products.Add(AeroxDriver.Receiver);
         if(cable) fake.Products.Add(AeroxDriver.Cable);
         if(!listCable) session.Reorder(l=>l.Where(c=>!AeroxIdentity.Is(c.Name)).ToList());
-        driver=new AeroxDriver(fake,log);
+        driver=new AeroxDriver(fake,log,Waits.RealTimeCap);   // see DeviceHostMouseTests: the 1.5 s deadline is real time
         mouse=new AeroxMouse(driver,input,time,log);
         mouse.Tick();mouse.Scan();
         var s=new LightingDeviceService(session,time,log,mouse);

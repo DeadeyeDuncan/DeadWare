@@ -50,6 +50,8 @@ internal sealed class HistoryChartView : UserControl
         // The WPF app's default theme draws the GPU fan amber and the CPU pump blue (its Warning and Download colours), as
         // the Settings help says; without these both fell back to the accent colour.
         ["gpufan"] = Color.FromArgb(255, 0xF2, 0xCD, 0x91), ["cpupump"] = Color.FromArgb(255, 0x82, 0xAD, 0xFF),
+        // Lighting 5: the Corsair hub's coolant temperature, teal and dashed.
+        ["cpucoolant"] = Color.FromArgb(255, 0x3F, 0xE0, 0xC5),
     };
 
     private readonly MonitorSession session;
@@ -144,6 +146,7 @@ internal sealed class HistoryChartView : UserControl
         var options = new HistoryChartOptions(
             GpuFan: settings.ShowGpuFanSpeed,
             CpuPump: settings.ShowCpuPumpSpeed,
+            Coolant: settings.ShowCoolantTemperature,
             Cores: settings.ShowCpuCoreUsage ? session.Current?.CpuCoreCount ?? 0 : 0,
             Drives: drives.Select(drive => drive.Id).ToList(),
             DriveNames: drives.GroupBy(drive => drive.Id).ToDictionary(group => group.Key, group => StoragePresenter.Name(group.First())),
@@ -158,7 +161,7 @@ internal sealed class HistoryChartView : UserControl
         var request = new HistoryChartRequest(session.Collector.History, kind, session.SelectedGpuId, compare,
             session.HistorySeconds, session.Collector.ElapsedSeconds, DateTimeOffset.Now, plot, TimeZoneInfo.Local, Options: options, Lead: lead);
         bool slides = Slides(plot.Width, request.Seconds, settings.PollingIntervalSeconds);
-        var shape = new ChartShape(plot, request.Seconds, request.GpuId, lead, slides, options.GpuFan, options.CpuPump, options.Cores, options.Smoothed,
+        var shape = new ChartShape(plot, request.Seconds, request.GpuId, lead, slides, options.GpuFan, options.CpuPump, options.Coolant, options.Cores, options.Smoothed,
             string.Join('|', drives.Select(drive => drive.Id + "=" + options.DriveNames!.GetValueOrDefault(drive.Id))), request.Zone?.Id);
         double sample = session.Current?.Sample.MonotonicSeconds ?? double.NegativeInfinity;
         if (!NeedsBuild(shape, request, sample)) return;
@@ -168,7 +171,7 @@ internal sealed class HistoryChartView : UserControl
     }
 
     /// <summary>Everything a frame is built from except the time. A change in any of it rebuilds at once.</summary>
-    private sealed record ChartShape(ChartPlot Plot, int Seconds, string? Gpu, double Lead, bool Slides, bool GpuFan, bool CpuPump, int Cores, bool Smoothed, string Drives, string? Zone);
+    private sealed record ChartShape(ChartPlot Plot, int Seconds, string? Gpu, double Lead, bool Slides, bool GpuFan, bool CpuPump, bool Coolant, int Cores, bool Smoothed, string Drives, string? Zone);
 
     /// <summary>
     /// Whether a refresh needs a new frame. A change of size, range, GPU, options, drives or cadence rebuilds at once, and a sliding
@@ -503,7 +506,8 @@ internal sealed class HistoryChartView : UserControl
                     session.FillCircle((float)run[0].X, (float)run[0].Y, 2, color);
                     continue;
                 }
-                if (trace.Fill > 0)
+                // The coolant line is a line only, with no area under it.
+                if (trace.Fill > 0 && trace.Role != ChartTraceRole.Coolant)
                 {
                     using var area = new CanvasPathBuilder(sender);
                     area.BeginFigure((float)run[0].X, baseline);

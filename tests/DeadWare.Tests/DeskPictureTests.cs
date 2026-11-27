@@ -36,6 +36,16 @@ public class DeskPictureTests
         Assert.Null(DeskPictures.Applies([board],"some-other-picture"));
         Assert.Null(DeskPictures.Named("nope"));Assert.Null(DeskPictures.Named(null));
     }
+    // A hub on its own is drawn as an own effect, as the front fans are; driven or through OpenRGB it is lit like any direct device.
+    [Fact] public void A_hub_on_its_own_resolves_as_own_effect()
+    {
+        List<DeviceView> WithHub(string? route)=>Rig().Select(d=>d.Name=="Corsair iCUE Link System Hub"?d with{Hub=route}:d).ToList();
+        var own=DeskPictures.Resolve(DeskPictures.OwnerRig,WithHub(HubRoutes.Own));
+        foreach(var id in new[]{"fan1","fan2","fan3","pump"}) Assert.True(own.Parts.Single(p=>p.Part.Id==id).OwnEffect,id);
+        Assert.False(own.Parts.Single(p=>p.Part.Id=="keyboard").OwnEffect);
+        foreach(var route in new[]{HubRoutes.Driven,HubRoutes.OpenRgb,null})
+            Assert.All(DeskPictures.Resolve(DeskPictures.OwnerRig,WithHub(route)).Parts.Where(p=>p.Part.Id is "fan1" or "fan2" or "fan3" or "pump"),p=>Assert.False(p.OwnEffect));
+    }
     [Fact] public void Every_part_resolves_to_its_device_and_zone()
     {
         var s=DeskPictures.Resolve(DeskPictures.OwnerRig,Rig());

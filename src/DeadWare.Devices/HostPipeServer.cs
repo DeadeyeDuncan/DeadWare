@@ -11,7 +11,8 @@ namespace DeadWare.Devices;
 // so the pipe name never disappears between clients. Any client I/O failure or write timeout drops that client only.
 // Writes are serialised (frames never interleave). A reply is always written before any broadcast its request caused, and broadcasts
 // are coalesced to the latest pending state, so a stalled client cannot queue frames or receive states out of order. Preview frames have a
-// slot of their own, written only when no state waits. clientGone is called after each client's teardown, outside the server's locks.
+// slot of their own, written only when no state waits, and hub readings (lighting 5) a third, written only when neither waits. clientGone
+// is called after each client's teardown, outside the server's locks.
 internal sealed class HostPipeServer : IAsyncDisposable
 {
     public static readonly TimeSpan DefaultWriteTimeout=TimeSpan.FromSeconds(5);
@@ -29,8 +30,8 @@ internal sealed class HostPipeServer : IAsyncDisposable
     Stream? current;
     CancellationTokenSource? clientCts;
     // pending: the latest state (or other broadcast); pendingPreview: the latest preview frame, written only when no state waits, so a
-    // preview never delays or displaces a state.
-    HostMessage? pending,pendingPreview;
+    // preview never delays or displaces a state; pendingReadings: the latest hub readings, written after both, so readings never replace either.
+    HostMessage? pending,pendingPreview,pendingReadings;
     bool handling;
     readonly Action? clientGone;
     public HostPipeServer(string pipeName,Func<HostMessage,Task<HostMessage>> handle,HostLog log,bool? elevated=null,TimeSpan? writeTimeout=null,string? labelLevel=null,Action? clientGone=null)
@@ -90,7 +91,7 @@ internal sealed class HostPipeServer : IAsyncDisposable
             {
                 await server!.WaitForConnectionAsync(ct).ConfigureAwait(false);
                 client=CancellationTokenSource.CreateLinkedTokenSource(ct);
-                lock(sync){clientCts=client;current=server;handling=false;pending=null;pendingPreview=null;}
+                lock(sync){clientCts=client;current=server;handling=false;pending=null;pendingPreview=null;pendingReadings=null;}
                 await ServeAsync(server,client.Token).ConfigureAwait(false);
             }
             catch(OperationCanceledException) when(ct.IsCancellationRequested){break;}
@@ -99,7 +100,7 @@ internal sealed class HostPipeServer : IAsyncDisposable
             await writeGate.WaitAsync(CancellationToken.None).ConfigureAwait(false);
             try
             {
-                lock(sync){current=null;clientCts=null;pending=null;pendingPreview=null;handling=false;}
+                lock(sync){current=null;clientCts=null;pending=null;pendingPreview=null;pendingReadings=null;handling=false;}
                 try{client?.Dispose();}catch(ObjectDisposedException){}
                 try{server!.Disconnect();}
                 catch(Exception){lock(sync){try{server!.Dispose();}catch{}server=null;try{server=Create();}catch(Exception e){log.Write("pipe could not be recreated: "+e.Message);throw;}}}
@@ -146,9 +147,10 @@ internal sealed class HostPipeServer : IAsyncDisposable
         await DeviceHostProtocol.WriteAsync(stream,message,timeout.Token).ConfigureAwait(false);
     }
 
-    bool HasWork(){lock(sync)return !handling&&(pending is not null||pendingPreview is not null)&&current is not null;}
+    bool HasWork(){lock(sync)return !handling&&(pending is not null||pendingPreview is not null||pendingReadings is not null)&&current is not null;}
 
-    // Writes the latest pending state, else the latest pending preview. If another write holds the gate it re-checks for pending work when it finishes.
+    // Writes the latest pending state, else the latest pending preview, else the latest hub readings. If another write holds the gate it re-checks for
+    // pending work when it finishes.
     async Task PumpAsync()
     {
         do
@@ -159,8 +161,10 @@ internal sealed class HostPipeServer : IAsyncDisposable
                 HostMessage? message;Stream? stream;CancellationTokenSource? client;
                 lock(sync)
                 {
-                    if(handling||current is null||(pending??pendingPreview) is null) continue;
-                    if(pending is not null){message=pending;pending=null;}else{message=pendingPreview!;pendingPreview=null;}
+                    if(handling||current is null||(pending??pendingPreview??pendingReadings) is null) continue;
+                    if(pending is not null){message=pending;pending=null;}
+                    else if(pendingPreview is not null){message=pendingPreview;pendingPreview=null;}
+                    else{message=pendingReadings!;pendingReadings=null;}
                     stream=current;client=clientCts;
                 }
                 try{await WriteAsync(stream,message,client?.Token??cts.Token).ConfigureAwait(false);}
@@ -175,10 +179,14 @@ internal sealed class HostPipeServer : IAsyncDisposable
     }
 
     // Queues a broadcast for the connected client (none connected: dropped, the window asks for state on connect). Only the latest of each
-    // kind survives: a preview in its own slot, anything else in pending.
+    // kind survives: a preview in its own slot, hub readings in theirs, anything else in pending.
     public Task SendAsync(HostMessage message)
     {
-        lock(sync){if(current is null) return Task.CompletedTask;if(message is PreviewEvent) pendingPreview=message;else pending=message;}
+        lock(sync)
+        {
+            if(current is null) return Task.CompletedTask;
+            if(message is PreviewEvent) pendingPreview=message;else if(message is HubReadingsEvent) pendingReadings=message;else pending=message;
+        }
         return PumpAsync();
     }
 

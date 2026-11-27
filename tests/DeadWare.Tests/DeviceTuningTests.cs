@@ -62,14 +62,22 @@ public class DeviceTuningTests
         Assert.Equal(88,c["k"].Correction!.G);Assert.Equal(55,c["k"].Mode!.Speed);Assert.Equal(70,c["k"].Brightness);
     }
     [Fact]
+    public void WrittenVersion_is_5_only_while_the_hub_mode_is_not_openrgb()
+    {
+        var s=new LightingSettings();
+        s.Hub.Mode="driven";Assert.Equal(5,DeviceTunings.WrittenVersion(s));
+        s.Hub.Mode="stopped";Assert.Equal(5,DeviceTunings.WrittenVersion(s));
+        s.Hub.Mode="openrgb";s.Everyday.IdleOff=true;Assert.Equal(4,DeviceTunings.WrittenVersion(s));
+    }
+    [Fact]
     public void WrittenVersion_is_2_only_with_entries()
     {
         var s=new LightingSettings();
         Assert.Equal(1,DeviceTunings.WrittenVersion(s));
         s.Devices["k"]=new(){Brightness=5};
         Assert.Equal(2,DeviceTunings.WrittenVersion(s));
-        s.Version=5;
-        Assert.Equal(5,DeviceTunings.WrittenVersion(s));
+        s.Version=6;
+        Assert.Equal(6,DeviceTunings.WrittenVersion(s));
     }
 
     static DeviceLook Lk(string name)=>new(){Name=name,Keys=new(){[1]=new(){Name="W",Color="#010203"}}};
@@ -152,8 +160,8 @@ public class DeviceTuningTests
         Assert.Equal(3,DeviceTunings.WrittenVersion(s));
         s.Devices["k"]=new(){Look="A"};
         Assert.Equal(3,DeviceTunings.WrittenVersion(s));
-        s.Version=5;
-        Assert.Equal(5,DeviceTunings.WrittenVersion(s));
+        s.Version=6;
+        Assert.Equal(6,DeviceTunings.WrittenVersion(s));
         s.Version=1;s.Devices.Clear();
         Assert.Equal(1,DeviceTunings.WrittenVersion(s));
     }

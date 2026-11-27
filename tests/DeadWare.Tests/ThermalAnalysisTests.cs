@@ -381,7 +381,9 @@ public sealed class ThermalAnalysisTests
     {
         var recent = Recent(80).Select(w => w with { FanRpm = Metric(currentFan) }).ToArray();
         var reference = Reference() with { Windows = Reference().Windows.Select(w => w with { FanRpm = Metric(referenceFan) }).ToArray() };
-        Assert.True(CoolingAnalyzer.Assess(recent, reference, Epoch.AddMinutes(110)).ShouldWarn);
+        var assessment = CoolingAnalyzer.Assess(recent, reference, Epoch.AddMinutes(110));
+        Assert.True(assessment.ShouldWarn);
+        Assert.EndsWith(" Available fan speed was matched; coolant and ambient temperatures are not part of this comparison.", assessment.Message);
     }
 
     [Fact]
@@ -392,7 +394,7 @@ public sealed class ThermalAnalysisTests
         Assert.True(assessment.ShouldWarn);
         Assert.Contains("Fan", assessment.Message);
         Assert.Contains("ambient", assessment.Message);
-        Assert.Contains("coolant", assessment.Message);
+        Assert.EndsWith("coolant and ambient temperatures are not part of this comparison.", assessment.Message);
     }
 
     [Fact]

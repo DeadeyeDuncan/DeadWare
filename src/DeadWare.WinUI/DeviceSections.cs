@@ -57,6 +57,11 @@ internal sealed class DeviceSections
     private readonly ComboBox sleep = new() { VerticalAlignment = VerticalAlignment.Center, MinWidth = 200 };
     private readonly TextBlock sleepStatus = LightingPage.Muted("");
     private readonly Border sleepNote, batterySection, sleepSection;
+    // Lighting 5, the hub: the Readings section. Its rows are HubTexts.ReadingRows, rebuilt only when they change (readingsShown).
+    private readonly StackPanel readingRows = new() { Spacing = 4 };
+    private readonly TextBlock readingsNote = LightingPage.Muted(HubTexts.ReadingsNote);
+    private readonly Border readingsSection;
+    private string readingsShown = "";
     // sleepSending: sleep time changes on their way, while which a state doesn't move the drop-down.
     private int sleepSending;
     // Key colours and Layers: the count, the button that opens the large keyboard view on that part, and why it can't be used.
@@ -130,6 +135,8 @@ internal sealed class DeviceSections
         sleepNote = NoteBox(new TextBlock { Text = MouseTexts.Note, TextWrapping = TextWrapping.Wrap });
         sleepSection = Section(Label(MouseTexts.Sleep), sleepRow, sleepStatus, sleepNote);
 
+        readingsSection = Section(Label(HubTexts.ReadingsHead), readingRows, readingsNote);
+
         foreach (var element in Sections.Append(Note).Append(Looks)) LightingPage.Show(element, false);
     }
 
@@ -137,10 +144,10 @@ internal sealed class DeviceSections
     public Border Note { get; }
 
     /// <summary>
-    /// The sections in order, which go under the card's zone rows: the mouse's line, Battery and Sleep (lighting 4), then Key colours,
+    /// The sections in order, which go under the card's zone rows: the mouse's line, Battery and Sleep (lighting 4), the hub's Readings (lighting 5), then Key colours,
     /// Lighting mode, Layers, Brightness, Colour correction.
     /// </summary>
-    public IEnumerable<UIElement> Sections => [sharedColours, batterySection, sleepSection, keyColoursSection, modeSection, layersSection, brightnessSection, correctionSection];
+    public IEnumerable<UIElement> Sections => [sharedColours, batterySection, sleepSection, readingsSection, keyColoursSection, modeSection, layersSection, brightnessSection, correctionSection];
 
     /// <summary>A keyboard's Saved looks section, which goes above the card's zone rows; collapsed for any other device.</summary>
     public Border Looks => looks.Root;
@@ -155,7 +162,9 @@ internal sealed class DeviceSections
     /// <param name="labels">In picture mode, the device's parts' labels; null in plain mode.</param>
     /// <param name="live">The host is running.</param>
     /// <param name="viewable">The large keyboard view can open: the page is in picture mode.</param>
-    public void Update(DeviceView next, int page, IReadOnlyList<string>? labels, bool live, bool viewable)
+    /// <param name="hubReadings">The session's last hub readings with their age, for the hub's Readings section.</param>
+    /// <param name="pictureApplies">The desk picture applies, so the hub's fans are the radiator's.</param>
+    public void Update(DeviceView next, int page, IReadOnlyList<string>? labels, bool live, bool viewable, (HubReadings Readings, TimeSpan Age)? hubReadings, bool pictureApplies)
     {
         device = next;
         pageBrightness = page;
@@ -197,6 +206,43 @@ internal sealed class DeviceSections
         ShowCorrection();
         ShowParts(labels);
         ShowMouse(live);
+        ShowReadings(next.Hub, hubReadings, pictureApplies);
+    }
+
+    /// <summary>
+    /// Lighting 5: the hub's Readings section, shown only for a view with <see cref="DeviceView.Hub"/>. It only renders
+    /// <see cref="HubTexts.ReadingRows"/>: an entry without a value is the section's one line, entries with values are rows, and the
+    /// muted note goes under the rows of a hub DeadWare drives. The rule behind the rows is Core's.
+    /// </summary>
+    private void ShowReadings(string? route, (HubReadings Readings, TimeSpan Age)? hubReadings, bool pictureApplies)
+    {
+        LightingPage.Show(readingsSection, route is not null);
+        if (route is null) return;
+        var rows = HubTexts.ReadingRows(route, hubReadings?.Readings, hubReadings?.Age, pictureApplies);
+        string signature = string.Join("\n", rows.Select(row => row.Label + "\t" + row.Value));
+        if (signature != readingsShown)
+        {
+            readingsShown = signature;
+            readingRows.Children.Clear();
+            foreach (var (label, value) in rows)
+            {
+                if (value is null)
+                {
+                    readingRows.Children.Add(new TextBlock { Text = label, TextWrapping = TextWrapping.Wrap });
+                    continue;
+                }
+                var line = new Grid { ColumnSpacing = 12, MaxWidth = TuningSlider.MaxRowWidth, HorizontalAlignment = HorizontalAlignment.Stretch };
+                line.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+                line.ColumnDefinitions.Add(new ColumnDefinition());
+                var name = LightingPage.Muted(label);
+                var reading = new TextBlock { Text = value, TextWrapping = TextWrapping.Wrap, HorizontalAlignment = HorizontalAlignment.Right };
+                Grid.SetColumn(reading, 1);
+                line.Children.Add(name);
+                line.Children.Add(reading);
+                readingRows.Children.Add(line);
+            }
+        }
+        LightingPage.Show(readingsNote, route == HubRoutes.Driven);
     }
 
     /// <summary>
