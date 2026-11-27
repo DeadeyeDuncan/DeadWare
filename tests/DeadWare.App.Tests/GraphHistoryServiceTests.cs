@@ -61,7 +61,8 @@ public class GraphHistoryServiceTests
         var history=new SampleHistory();var live=Reading(now,1);history.Add(live.Sample);
         var second=new GraphHistoryService(fixture.Path,"machine",history);
         var startup=typeof(GraphHistoryService).GetField("startup",BindingFlags.NonPublic|BindingFlags.Instance)!;
-        using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        // Only so a hang ends: on a CI disk the read at start once took more than 5 s (2026-11-27, PR #145). What the test proves is in its asserts.
+        using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(60));
         try
         {
             second.Start();
