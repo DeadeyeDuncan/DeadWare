@@ -162,6 +162,8 @@ public static class HubTexts
         HubStates.LetGo or HubStates.GaveBack=>"Coolant · no reading (the hub is on its own)",
         _=>"Coolant · no reading",
     };
+    // A reading older than 10 s, or none, shows as —.
+    public static bool Fresh(HubReadings? readings,TimeSpan? age)=>readings is not null&&age is{} a&&a<=TimeSpan.FromSeconds(10);
     // The hub card's Readings section. An entry without a value is a line of text, not a row.
     public static IReadOnlyList<(string Label,string? Value)> ReadingRows(string? route,HubReadings? readings,TimeSpan? age,bool picture)
     {
@@ -170,8 +172,7 @@ public static class HubTexts
             case HubRoutes.OpenRgb: return [(ReadingsOff,null)];
             case HubRoutes.Own: return [(ReadingsOwn,null)];
             case HubRoutes.Driven:
-                bool fresh=readings is not null&&age is{} a&&a<=TimeSpan.FromSeconds(10);
-                if(!fresh) return [(Coolant,Dash),(Pump,Dash),(FansLabel(picture),Dash)];
+                if(!Fresh(readings,age)) return [(Coolant,Dash),(Pump,Dash),(FansLabel(picture),Dash)];
                 return [(Coolant,Celsius(Of(readings,HubPartKinds.Pump).FirstOrDefault()?.Celsius)),(Pump,Rpm(Of(readings,HubPartKinds.Pump).FirstOrDefault()?.Rpm)),
                     (FansLabel(picture),Fans(Of(readings,HubPartKinds.Fan).Select(p=>p.Rpm)))];
             default: return [];

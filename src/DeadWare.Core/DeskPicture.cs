@@ -80,7 +80,8 @@ public static class DeskPictures
             var match=lit.Where(d=>p.Prefix?d.Name.StartsWith(p.DeviceName,StringComparison.Ordinal):d.Name==p.DeviceName).OrderBy(d=>d.Key,StringComparer.Ordinal).Skip(p.Ordinal).FirstOrDefault();
             if(match is null||!match.ZoneIndexes.Contains(p.ShownZone)){parts.Add(new(p,null,[],null,false));continue;}
             var keys=p.Zones.Where(match.ZoneIndexes.Contains).Select(i=>LightingKeys.Zone(match.Key,i)).ToList();
-            parts.Add(new(p,match.Key,keys,LightingKeys.Zone(match.Key,p.ShownZone),devices.First(d=>d.Key==match.Key).Kind==PaintKind.Hardware));
+            var shown=devices.First(d=>d.Key==match.Key);   // a hardware effect, or a hub on its own, is drawn as the device's own effect
+            parts.Add(new(p,match.Key,keys,LightingKeys.Zone(match.Key,p.ShownZone),shown.Kind==PaintKind.Hardware||shown.Hub==HubRoutes.Own));
         }
         // Named with its count of lit zones no part covers: all of them for a device without a part, the extra ones for a device with one.
         var covered=new HashSet<string>(parts.SelectMany(r=>r.ZoneKeys),StringComparer.Ordinal);var off=new List<string>();

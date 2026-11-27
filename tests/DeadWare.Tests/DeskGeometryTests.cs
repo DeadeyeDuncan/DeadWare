@@ -50,6 +50,16 @@ public class DeskGeometryTests
         var hw=Dev("h|1","Apex Mouse",kind:PaintKind.Hardware);var s=Scene(Arranged(hw),new[]{hw});
         Assert.True(Assert.Single(s.Items,i=>i.Kind==DeskItemKind.Device).OwnEffect);
     }
+    // A hub on its own is never painted: drawn as an own effect in the plain layout too, as the picture draws it.
+    [Fact] public void Scene_HubOnItsOwn_HasOwnEffectOnlyWhileOwn()
+    {
+        foreach(var (route,own) in new[]{(HubRoutes.Own,true),(HubRoutes.Driven,false),(HubRoutes.OpenRgb,false)})
+        {
+            var hub=Dev("linkhub|1","Corsair iCUE Link System Hub",kind:PaintKind.Direct)with{Hub=route};var s=Scene(Arranged(hub),new[]{hub},open:true);
+            Assert.Equal(own,Assert.Single(s.Items,i=>i.Kind==DeskItemKind.Device).OwnEffect);
+            Assert.Equal(own?"Own effect":"Inside PC",DeskGeometry.Where(Arranged(hub),hub));
+        }
+    }
     [Fact] public void Scene_UnplacedDevice_IsInNotPlacedWithNoItem()
     {
         var l=Arranged(Kb,Ram);l=DeskGeometry.SetUnplaced(l,new[]{Kb,Ram},Kb.Key,true);

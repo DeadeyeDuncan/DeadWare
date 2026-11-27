@@ -223,6 +223,12 @@ public class HubTextsTests
         Assert.Equal(stale,HubTexts.ReadingRows("driven",null,TimeSpan.FromSeconds(1),false).Select(r=>(r.Label,r.Value!)));
         Assert.Equal(stale,HubTexts.ReadingRows("driven",Reads(),null,false).Select(r=>(r.Label,r.Value!)));
     }
+    [Fact] public void Readings_are_fresh_up_to_ten_seconds_and_not_without_an_age()
+    {
+        Assert.True(HubTexts.Fresh(Reads(),TimeSpan.FromSeconds(10)));
+        Assert.False(HubTexts.Fresh(Reads(),TimeSpan.FromMilliseconds(10001)));
+        Assert.False(HubTexts.Fresh(null,TimeSpan.Zero));Assert.False(HubTexts.Fresh(Reads(),null));
+    }
     [Fact] public void The_coolant_is_the_first_pump_parts_reading()
     {
         // A fan part carrying a Celsius is not the coolant (a part has a coolant sensor exactly when it is a pump).

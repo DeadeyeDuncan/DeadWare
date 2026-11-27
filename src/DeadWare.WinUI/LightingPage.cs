@@ -163,6 +163,8 @@ internal sealed class LightingPage : Page, IHeaderTool
     // The client the page follows, and what it last showed of it.
     private DeviceHostClient? client;
     private HostState? shownState;
+    // Lighting 5: whether the hub readings were fresh when the page last rendered, so the once-a-second change renders again as they go stale.
+    private bool hubFresh;
     // The effect the effect bar last showed from a state, which it keeps showing, disabled, while the host reconnects.
     private EffectSettings? shownEffect;
     // allShown and zoneShown: each picker's colour as last set by the page or picked, so a repeated colour is not sent again.
@@ -398,6 +400,8 @@ internal sealed class LightingPage : Page, IHeaderTool
         var current = session.Lighting;
         // The same client: only the wait for a running host's first device is looked at again, which no state need end.
         if (showing && ReferenceEquals(current, client) && noneSince is not null) ShowDeskArea();
+        // Lighting 5: readings that stopped coming are shown as — once they are too old, with no state or event to say so.
+        if (showing && ReferenceEquals(current, client) && hubFresh && !ReadingsFresh()) Render();
         if (!showing || ReferenceEquals(current, client)) return;
         Unhook();
         Reset(current);
@@ -410,6 +414,7 @@ internal sealed class LightingPage : Page, IHeaderTool
     {
         if (client is not { } source) return;
         source.Changed += OnClientChanged;
+        source.HubReadingsChanged += OnClientChanged;
         // The handler names its client, so a frame the old client raised as the page moved on is told apart from the new one's.
         previewHandler = colors => OnPreview(source, colors);
         source.Preview += previewHandler;
@@ -422,6 +427,7 @@ internal sealed class LightingPage : Page, IHeaderTool
         Interlocked.Exchange(ref pendingFrame, null);
         if (client is not { } source) return;
         source.Changed -= OnClientChanged;
+        source.HubReadingsChanged -= OnClientChanged;
         if (previewHandler is not null) source.Preview -= previewHandler;
         previewHandler = null;
         source.SetPreview(false);
@@ -551,6 +557,8 @@ internal sealed class LightingPage : Page, IHeaderTool
         ShowDeskArea();
     }
 
+    private bool ReadingsFresh() => session.HubReadings is { } hub && HubTexts.Fresh(hub.Readings, hub.Age);
+
     /// <summary>Brings the page up to date with the followed client, on the UI thread.</summary>
     private void Render()
     {
@@ -567,6 +575,7 @@ internal sealed class LightingPage : Page, IHeaderTool
         var state = snapshot.State;
         shownState = state;
         shownSeq = snapshot.Seq;
+        hubFresh = ReadingsFresh();
         bool connected = state is not null, wasLive = live;
         // Colours go only to a running host; until it runs, the cards stay as they were, disabled.
         live = state is { Status: HostStatus.Running };
@@ -652,26 +661,13 @@ internal sealed class LightingPage : Page, IHeaderTool
         if (sendError is not null) alerts.Add(sendError);
         // The reason line is its own: it never counts as an alert, so the running text below still shows.
         string? why = shownState is { Settings.Everyday: { } rules } reasoned ? EverydayTexts.ReasonLine(reasoned.LightsOffReason, rules.IdleMinutes) : null;
+        // Lighting 5: the hub's line shows only when the everyday reason has none, so one reason line shows at a time.
+        why ??= HubTexts.ReasonLine(shownState?.Hub, session.PictureApplies);
         ShowLines(reason, why is null ? [] : [why]);
         // A running host with no problem to report: how many devices and what the lights are doing, above the administrator note.
-        if (alerts.Count == 0 && shownState is { Status: HostStatus.Running, Settings: { } running } runningState) notes.Insert(0, RunningText(runningState, running));
+        if (alerts.Count == 0 && shownState is { Status: HostStatus.Running, Settings: not null } runningState) notes.Insert(0, HubTexts.Running(runningState));
         ShowLines(alert, alerts);
         ShowLines(status, notes);
-    }
-
-    /// <summary>
-    /// "8 devices through OpenRGB · Wave is running", "… · Static is on", or "… · lights off" whenever the lights are off: the switch, or
-    /// (lighting 4) a reason holding them off (<see cref="EverydayTexts.Lit"/>). The mouse counts only on its cable, the one way it comes
-    /// through OpenRGB: on its receiver or not connected it is DeadWare's own (ruling P16).
-    /// </summary>
-    private static string RunningText(HostState state, LightingSettings settings)
-    {
-        int count = (state.Devices ?? []).Where(device => device is { Key: not null } && device.Mouse is null or { Connection: MouseConnections.Cable })
-            .Select(device => device.Key).Distinct(StringComparer.Ordinal).Count();
-        string devices = count == 1 ? "1 device through OpenRGB" : $"{count} devices through OpenRGB";
-        if (!EverydayTexts.Lit(state)) return $"{devices} · lights off";
-        var kind = LightingEffects.KindOf(settings.Effect?.Kind);
-        return kind == EffectKind.Static ? $"{devices} · Static is on" : $"{devices} · {kind} is running";
     }
 
     /// <summary>Shows the lines in a status text, hidden while there are none; a screen reader hears it when it changes.</summary>
@@ -908,8 +904,9 @@ internal sealed class LightingPage : Page, IHeaderTool
             }
         }
         var colors = new Dictionary<string, string>(StringComparer.Ordinal);
-        // Lighting 4 (ruling P7): a mouse that isn't connected gives no colours, so it is drawn unlit, still found and selectable.
-        foreach (var device in deskDevices.Where(device => !MouseTexts.Unlit(device)))
+        // Lighting 4 (ruling P7): a mouse that isn't connected gives no colours, so it is drawn unlit, still found and selectable. Lighting 5:
+        // so does a hub on its own (a part drawn as own effect, selectable all the same).
+        foreach (var device in deskDevices.Where(device => !MouseTexts.Unlit(device) && device.Hub != HubRoutes.Own))
             foreach (var zone in device.Zones ?? [])
                 if (zone?.Key is { } key && zone.Color is { } color) colors[key] = color;
         picture.SetStateColors(colors);
@@ -1653,6 +1650,8 @@ internal sealed class LightingPage : Page, IHeaderTool
         private PictureMark? mark;
         // Lighting 4: the mouse's connection and battery when the device is the Aerox 9 mouse, whose card has its own heading and sub-line.
         private MouseView? mouse;
+        // Lighting 5: how the device is lit when it is the Corsair hub (HubRoutes), else null.
+        private string? hub;
 
         public DeviceCard(LightingPage page)
         {
@@ -1695,7 +1694,10 @@ internal sealed class LightingPage : Page, IHeaderTool
         private void ShowTitle()
         {
             string heading = mouse is not null ? MouseTexts.Heading : mark?.Title ?? Name;
-            string? sub = mouse is { } shown ? MouseTexts.SubLine(shown) : mark?.Sub;
+            // Lighting 5: the hub's card says how it is lit, after the picture's own sub-line in picture mode.
+            string? sub = mouse is { } shown ? MouseTexts.SubLine(shown)
+                : hub is { } route ? mark?.Sub is { } marked ? marked + " · " + HubTexts.CardSub(route) : HubTexts.CardSub(route)
+                : mark?.Sub;
             if (title.Text != heading) title.Text = heading;
             if (subtitle.Text != (sub ?? "")) subtitle.Text = sub ?? "";
             Show(subtitle, sub is not null);
@@ -1708,12 +1710,14 @@ internal sealed class LightingPage : Page, IHeaderTool
         {
             Name = name;
             mouse = device.Mouse;
+            hub = device.Hub;
             ShowTitle();
             bool hardware = device.Kind == PaintKind.Hardware, unsupported = device.Kind == PaintKind.Unsupported;
             // The device's own effect and whether it stays lit with lights off don't change with Lights on (Ruling AB), so the card
             // names the effect while the lights are off too, and warns before they go off that the device will stay lit. The note
             // naming the effect goes first, and the tuning sections show disabled (DeviceSections).
-            sections.Update(device, page.shownState?.Settings?.Brightness ?? 100, mark?.Parts, live, page.shownPicture is not null);
+            sections.Update(device, page.shownState?.Settings?.Brightness ?? 100, mark?.Parts, live, page.shownPicture is not null,
+                page.session.HubReadings, page.session.PictureApplies);
             Show(staysLit, hardware && device.StaysLitWhenOff);
             Show(cannotDrive, unsupported);
             // Only a device DeadWare paints lists its zones. One running its own effect keeps its zones' colours, but they don't show on it,
@@ -1724,7 +1728,7 @@ internal sealed class LightingPage : Page, IHeaderTool
             Show(zones, paints);
             Show(noZones, paints && list.Length == 0);
             // A mouse that isn't connected shows its rows dimmed; they stay usable, and its colours are saved for when it is back.
-            zones.Opacity = mouse is { } dimmed && MouseTexts.Dimmed(dimmed) ? 0.38 : 1;
+            zones.Opacity = mouse is { } dimmed && MouseTexts.Dimmed(dimmed) || hub == HubRoutes.Own ? 0.38 : 1;
             if (!list.Select(zone => zone.Key).SequenceEqual(zoneKeys))
             {
                 zoneKeys = [.. list.Select(zone => zone.Key)];

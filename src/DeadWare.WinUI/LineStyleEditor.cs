@@ -20,7 +20,7 @@ internal sealed class LineStyleEditor
     /// <summary>Each fixed trace's graph colour key and name, in the order Settings lists them. The colour dots are named from it too.</summary>
     public static readonly (string Key, string Label)[] Lines =
     [
-        ("cpu", "CPU usage"), ("cputemp", "CPU temperature"), ("cpupump", "CPU pump speed"), ("gpu", "GPU usage"), ("gputemp", "GPU temperature"),
+        ("cpu", "CPU usage"), ("cputemp", "CPU temperature"), ("cpupump", "CPU pump speed"), ("cpucoolant", "Coolant temperature"), ("gpu", "GPU usage"), ("gputemp", "GPU temperature"),
         ("gpufan", "GPU fan speed"), ("memory", "RAM usage"), ("download", "Download"), ("upload", "Upload"), ("diskread", "Disk read"), ("diskwrite", "Disk write"),
     ];
     private static readonly string[] Swatches = ["#68E0BD", "#52D6E8", "#82ADFF", "#B69CFF", "#EF8FE0", "#FF8899", "#F0B76C", "#F2D56B", "#A9DE7A", "#FFFFFF", "#A6B4C6", "#182A3B"];
@@ -322,7 +322,7 @@ internal sealed class LineStyleDot
     /// <summary>The traces whose dots a card of this kind carries, in header order.</summary>
     public static string[] Keys(string kind) => kind switch
     {
-        "cputemp" => ["cputemp", "cpupump"], "gputemp" => ["gputemp", "gpufan"], "network" => ["download", "upload"], "storage" => ["diskread", "diskwrite"],
+        "cputemp" => ["cputemp", "cpupump", "cpucoolant"], "gputemp" => ["gputemp", "gpufan"], "network" => ["download", "upload"], "storage" => ["diskread", "diskwrite"],
         _ => [kind],
     };
 
@@ -332,7 +332,7 @@ internal sealed class LineStyleDot
     /// </summary>
     public void Refresh(HistoryChartView chart, Color? known = null)
     {
-        bool show = Key switch { "cpupump" => session.Settings.ShowCpuPumpSpeed, "gpufan" => session.Settings.ShowGpuFanSpeed, _ => true };
+        bool show = Key switch { "cpupump" => session.Settings.ShowCpuPumpSpeed, "cpucoolant" => session.Settings.ShowCoolantTemperature, "gpufan" => session.Settings.ShowGpuFanSpeed, _ => true };
         if (show != visible)
         {
             visible = show;
