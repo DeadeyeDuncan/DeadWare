@@ -70,6 +70,22 @@ public class HubIdentityTests
     }
 
     [Fact]
+    public void The_listed_hubs_old_key_comes_first_whatever_its_zone_names()
+    {
+        // A stale hub entry from an earlier USB location sorts before the listed hub's key and carries iCUE LINK names; the listed hub's own entry
+        // carries other names. The listed hub's colours and tuning are the ones copied.
+        const string Stale=@"SERIAL-1|HID: \\?\HID#FAKE-0";
+        var s=new LightingSettings();Hub(s,Stale,"#AAAAAA");
+        for(var i=0;i<4;i++) s.ZoneColors[LightingKeys.Zone(Old,i)]=new ZoneColorEntry{Color="#112233",ZoneName="Hub zone "+i};
+        s.Devices[Stale]=new DeviceTuning{Brightness=10};s.Devices[Old]=new DeviceTuning{Brightness=40};
+        Assert.True(HubIdentity.CanAdopt(s,Old));
+        Assert.True(HubIdentity.Adopt(s,Old));
+        for(var i=0;i<4;i++) Assert.Equal("#112233",Color(s,"linkhub",i));
+        Assert.Equal("Hub zone 0",s.ZoneColors["linkhub#0"].ZoneName);
+        Assert.Equal(40,s.Devices["linkhub"].Brightness);
+    }
+
+    [Fact]
     public void A_device_with_any_other_zone_name_is_never_taken()
     {
         var s=new LightingSettings();

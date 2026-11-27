@@ -9,7 +9,8 @@ namespace DeadWare.Devices;
 // handed the hub back, which takes nothing while forbidden). The order that holds everywhere, with no time limit that overrides it: OpenRGB is
 // stopped before the worker may take the hub, and the worker has let go before OpenRGB is started with its detector on. A mode is saved only when
 // settled, and always through the host's SetHubModeLocked (adopted even when its save throws): driven after a passed check, stopped after a failed
-// one or a stopped pump, openrgb when switching off. A take-over cut short saves nothing, so openrgb stays on disk.
+// one or a stopped pump, openrgb when switching off. A take-over cut short saves nothing, so openrgb stays on disk; so does a verdict the settings
+// refuse, which backs out as an interruption does.
 internal enum HubStep{None,Scan,StopOpenRgb,Take,StartOpenRgb,Check,BackOut,SwitchOff}
 // The work a turn leaves for the host, off the lock: OpenRGB's deliberate stop (its answer goes to Stopped), its start, or the restart (a deliberate
 // stop while an OpenRGB of ours exists, Starting included, then the start).
@@ -106,7 +107,7 @@ internal sealed class HubTakeover
 
     // The step's work for this turn, under the host's gate, before the host sends its Allow; settle is the host's SetHubModeLocked. Nothing while
     // the host is stopping: its finally hands the hub back and writes the detector on, and a Stop waits for nothing else.
-    public HubChore Turn(HubTurn t,Action<HubSettings,string> settle)
+    public HubChore Turn(HubTurn t,Func<HubSettings,string,bool> settle)
     {
         if(Step==HubStep.None||t.Facts.Stopping) return HubChore.None;
         switch(Step)
@@ -153,14 +154,15 @@ internal sealed class HubTakeover
 
     // Take, StartOpenRgb and Check: from the moment the worker may take the hub until the verdict. A stopped pump is the verdict, never a back-out;
     // then a forbid (quiet reads as asleep) and a snapshot that has left driving are back-outs.
-    HubChore Taking(HubTurn t,Action<HubSettings,string> settle)
+    HubChore Taking(HubTurn t,Func<HubSettings,string,bool> settle)
     {
         var snap=t.Snap;
         if(!snap.PumpStopped) pumpClear=true;
         else if(pumpClear)
         {
             var started=Step==HubStep.Check;
-            settle(Settled(HubModes.Stopped,new HubStop{Kind=HubStops.PumpStopped,Part=HubPartKinds.Pump,Number=1},snap),"hub mode settled: openrgb -> stopped (the pump read 0 RPM)");
+            if(!settle(Settled(HubModes.Stopped,new HubStop{Kind=HubStops.PumpStopped,Part=HubPartKinds.Pump,Number=1},snap),"hub mode settled: openrgb -> stopped (the pump read 0 RPM)"))
+            {Back(HubReasons.CantSave,null);return HubChore.None;}
             Done();
             return started?HubChore.None:Start();                     // OpenRGB without the hub: mode stopped keeps the detector off
         }
@@ -187,14 +189,16 @@ internal sealed class HubTakeover
     HubChore Start(){log.Write("hub mode change: OpenRGB started without the hub");return HubChore.StartOpenRgb;}
 
     // The check at the first round 15 s or more after the take: a pass (or no before reading) settles driven, a fail settles stopped, whose mode
-    // forbids holding, so the worker hands back at its next step while OpenRGB keeps running without the hub. Before and TakenAt stay.
-    void Verdict(HubSnapshot snap,Action<HubSettings,string> settle)
+    // forbids holding, so the worker hands back at its next step while OpenRGB keeps running without the hub. Before and TakenAt stay. A verdict the
+    // settings refuse (fix wave 1, D3) is never dropped: it is an interruption, so the worker lets go first, nothing is saved and openrgb stays.
+    void Verdict(HubSnapshot snap,Func<HubSettings,string,bool> settle)
     {
         var after=snap.Readings!;
         var stop=host.Before is{} before?HubChecks.Compare(before,after):null;
         log.Write("hub check: "+CheckText(host.Before,after)+(stop is null?": pass":": fail"));
-        if(stop is null) settle(Settled(HubModes.Driven,null,snap),"hub mode settled: openrgb -> driven");
-        else settle(Settled(HubModes.Stopped,stop,snap),"hub mode settled: openrgb -> stopped");
+        var settled=stop is null?settle(Settled(HubModes.Driven,null,snap),"hub mode settled: openrgb -> driven")
+            :settle(Settled(HubModes.Stopped,stop,snap),"hub mode settled: openrgb -> stopped");
+        if(!settled){Back(HubReasons.CantSave,null);return;}
         Done();
     }
     static HubSettings Settled(string mode,HubStop? stop,HubSnapshot snap)=>new(){Mode=mode,Stop=stop,Parts=snap.Parts is{Count:>0} parts?HubParts.ToSaved(parts):null};
@@ -224,7 +228,7 @@ internal sealed class HubTakeover
     }
     // Until the worker has let go nothing more happens: no save, no detector on, no start. Then openrgb is settled (a new HubSettings: no stop, no
     // parts) and OpenRGB comes back with its detector on.
-    HubChore SwitchOff(HubTurn t,Action<HubSettings,string> settle)
+    HubChore SwitchOff(HubTurn t,Func<HubSettings,string,bool> settle)
     {
         if(!letGone)
         {

@@ -153,7 +153,7 @@ internal sealed class DeviceHost : IAsyncDisposable
     readonly IHub? hub;
     readonly HubHost? hubHost;
     readonly HubTakeover? takeover;
-    readonly Action<HubSettings,string> settleMode;
+    readonly Func<HubSettings,string,bool> settleMode;
     bool connectedOnce,hubStateDue,hubScanFailed,startDue;
     (string? Reason,string? Detail) hubWhy=(HubReasons.Starting,null);
     HubView? lastHubView;
@@ -523,19 +523,19 @@ internal sealed class DeviceHost : IAsyncDisposable
         }
         if(raise) Raise();
         if(readings is not null) try{HubReadingsChanged?.Invoke(readings);}catch(Exception e){log.Write("HubReadingsChanged handler failed: "+e.Message);}
-        if(restart){await StopOpenRgbForRestartAsync().ConfigureAwait(false);StartOpenRgb(ct);}
+        if(restart){await StopOpenRgbForRestartAsync(ct).ConfigureAwait(false);StartOpenRgb(ct);}
         if(chore!=HubChore.None&&!ct.IsCancellationRequested)
         {
             if(chore==HubChore.StopOpenRgb)
             {
-                var exited=await StopOpenRgbForRestartAsync().ConfigureAwait(false);
+                var exited=await StopOpenRgbForRestartAsync(ct).ConfigureAwait(false);
                 lock(gate)takeover.Stopped(exited);
             }
             else
             {
                 // Ruling P19: an OpenRGB of ours that exists, Starting included (launched, its port not open yet), is stopped first. With none,
                 // StartOpenRgb alone; a launch still in its floor wait reads the detector by itself, and the engine starts nothing twice.
-                if(chore==HubChore.Restart&&engine.ProcessId is not null) await StopOpenRgbForRestartAsync().ConfigureAwait(false);
+                if(chore==HubChore.Restart&&engine.ProcessId is not null) await StopOpenRgbForRestartAsync(ct).ConfigureAwait(false);
                 StartOpenRgb(ct);
             }
         }
@@ -586,10 +586,11 @@ internal sealed class DeviceHost : IAsyncDisposable
 
     // How the host itself sets the hub mode and its saved parts (the stopped pump, new parts; Task 10's verdict). Unlike Change it adopts the
     // candidate even when the save throws (ruling P17): the mode then holds for this run, and a later successful save of any change writes it.
-    void SetHubModeLocked(HubSettings next,string logLine)
+    // False when the settings refuse the candidate (fix wave 1, D3): nothing changed, and the take-over backs out.
+    bool SetHubModeLocked(HubSettings next,string logLine)
     {
         var candidate=Clone(settings);candidate.Hub=next;
-        if(LightingSettingsCodec.Validate(candidate) is{} error){log.Write("hub settings not changed: "+error);return;}
+        if(LightingSettingsCodec.Validate(candidate) is{} error){log.Write("hub settings not changed: "+error);return false;}
         if(saveAllowed)
         {
             try{store.Save(candidate);}
@@ -598,17 +599,19 @@ internal sealed class DeviceHost : IAsyncDisposable
         settings=candidate;
         log.Write(logLine);
         hubStateDue=true;
+        return true;
     }
 
     // Lighting 5: OpenRGB stopped on purpose, to start again without the hub. The session is dropped as HardwareRescanLocked does, since
     // OnEngineChanged leaves it set on Stopped, and the status says OpenRGB is restarting; engineActive stays true, so the conflict check
-    // starts nothing by itself. The stop can last ExitWait: before every such stop the last Allow sent forbids holding, so a Stop request
-    // arriving during it is safe. False when OpenRGB did not exit.
-    async Task<bool> StopOpenRgbForRestartAsync()
+    // starts nothing by itself. The stop can last ExitWait: before every such stop the last Allow sent forbids holding, and the wait ends at once
+    // on the stop token (fix wave 1, D10), so a Stop request arriving during it reaches the hand-back without waiting for OpenRGB's exit; the
+    // engine's own stop goes on and the host's final engine stop waits for it. False when OpenRGB did not exit.
+    async Task<bool> StopOpenRgbForRestartAsync(CancellationToken ct)
     {
         lock(gate){session.Abort();sessionOk=false;service.Reset();ForgetPreview();status=HostStatus.Waiting;message=RestartingText;}
         Raise();
-        return await engine.StopForRestartAsync().ConfigureAwait(false);
+        return await engine.StopForRestartAsync().WaitAsync(ct).ConfigureAwait(false);
     }
 
     // OpenRGB's start after a deliberate stop, as CheckConflictsAsync starts it. Never over a start that is still pending: the loop issues it on

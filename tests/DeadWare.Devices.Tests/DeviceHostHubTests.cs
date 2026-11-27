@@ -266,7 +266,8 @@ public sealed partial class DeviceHostTests
         Assert.True((await Send(h,new StopRequest())).Ok);
         await Until(()=>hub.LetGos==1);
         Assert.Equal("noLighting",LastAllow(hub).Reason);
-        await Task.Delay(100);
+        // The stop now waits on the 1.5 s hand-back limit, on fake time that has not moved: OpenRGB's stop can only come after it.
+        await Until(()=>time.Waiting(TimeSpan.FromMilliseconds(1500)));
         Assert.False(runner.At(0).HasExited);
         Assert.False(run!.IsCompleted);
         hub.HoldLetGo!.SetResult();
@@ -1153,6 +1154,35 @@ public sealed partial class DeviceHostTests
         Assert.Single(LogLines("saving the hub mode failed"));
     }
 
+    // Fix wave 1, D3: a verdict the settings refuse is an interruption, never dropped while the take-over is marked done. Parts out of channel order
+    // stand here for any refusal (a file at the 1 MiB cap among them): the worker lets go first, nothing is saved, the mode stays openrgb, OpenRGB
+    // comes back with its detector on and the red line says why.
+    [Fact]
+    public async Task A_verdict_the_settings_refuse_backs_out_and_saves_nothing()
+    {
+        Watched? watched=null;
+        var (h,hub,detector)=OwnerHost(wrap:f=>watched=new Watched(f,NewestRuns));
+        await TakeOver(h,hub);
+        var at=await ToCheck(h,hub);
+        hub.Snapshot=hub.Snapshot with{Parts=[OwnersParts[3],OwnersParts[0],OwnersParts[1],OwnersParts[2]]};
+        await RoundAt(h,hub,at,TimeSpan.FromSeconds(15),2716,ReadingFans);
+        await AdvanceUntil(()=>h.State.Hub?.Problem=="cantSave");
+        Assert.Equal("off",h.State.Hub!.State);
+        Assert.Single(LogLines("hub settings not changed: "));
+        Assert.Single(LogLines("hub take-over interrupted: "));
+        Assert.Empty(LogLines("hub mode settled"));
+        Assert.Equal("openrgb",h.State.Settings.Hub.Mode);
+        Assert.DoesNotContain("\"Hub\"",FileText());
+        // The forbid with the reason came before the relaunch, which comes with the detector on.
+        var forbid=watched!.Seen.FindIndex(a=>a.Reason=="cantSave");
+        Assert.True(forbid>=0);
+        Assert.Equal(1,hub.LetGos);
+        await AdvanceUntil(()=>Launches().Count==3);
+        Assert.Equal([true,false,true],Launches());
+        Assert.True(detector.On);
+        Assert.NotEqual("driving",hub.Snapshot.State);
+    }
+
     // Ruling P20: a pump that stops during the check is the check's verdict, never an interruption.
     [Fact]
     public async Task A_stopped_pump_during_the_check_saves_stopped()
@@ -1435,6 +1465,36 @@ public sealed partial class DeviceHostTests
         Assert.Equal(1,hub.LetGos);
         Assert.DoesNotContain("\"Hub\"",FileText());
         Assert.True((bool)JsonNode.Parse(File.ReadAllText(file))!["Detectors"]!["detectors"]!["Corsair iCUE Link System Hub"]!);
+        Assert.Empty(LogLines("hub mode settled"));
+    }
+
+    // Fix wave 1, D10: a Stop while the loop waits for OpenRGB's deliberate stop (an OpenRGB that ignores its kill, whose exit wait is 5 s) is not
+    // held up by that wait: the hand-back and the detector come with the fake clock not moved at all, well inside the 1.5 s hand-back limit.
+    [Fact]
+    public async Task A_stop_while_OpenRGB_is_slow_to_exit_hands_back_at_once()
+    {
+        var cfg=Path.Combine(dir,"openrgb-cfg");Directory.CreateDirectory(cfg);
+        var file=Path.Combine(cfg,"OpenRGB.json");
+        File.WriteAllText(file,"{\"Detectors\":{\"detectors\":{\"Corsair iCUE Link System Hub\":false}}}");
+        var (h,hub,_)=OwnerHost(configDir:cfg);
+        try
+        {
+            await Until(()=>h.State.Status==HostStatus.Running);
+            runner.At(0).IgnoresKill=true;
+            await TakeOver(h,hub);
+            await AdvanceUntil(()=>runner.At(0).Killed);
+            var at=time.GetUtcNow();
+            Assert.True((await Send(h,new StopRequest())).Ok);
+            await Until(()=>LogLines("host stopping").Length==1);
+            await Until(()=>hub.LetGos==1);
+            await Until(()=>{try{return File.ReadAllText(file).Contains("true");}catch(IOException){return false;}});
+            Assert.True((bool)JsonNode.Parse(File.ReadAllText(file))!["Detectors"]!["detectors"]!["Corsair iCUE Link System Hub"]!);
+            Assert.Equal(at,time.GetUtcNow());
+            Assert.Equal("noLighting",LastAllow(hub).Reason);
+            Assert.DoesNotContain("\"Hub\"",FileText());
+        }
+        finally{runner.At(0).Exit();}
+        await run!.WaitAsync(RealTimeCap);
         Assert.Empty(LogLines("hub mode settled"));
     }
 

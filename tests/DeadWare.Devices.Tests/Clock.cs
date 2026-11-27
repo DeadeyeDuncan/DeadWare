@@ -34,6 +34,7 @@ sealed class Clock:FakeTimeProvider
         public bool Dead{get{lock(sync)return dead;}}
         // Armed for exactly d, not fired, and due at (or, if armed while the clock moved, no later than) at.
         public bool Waits(TimeSpan d,DateTimeOffset at){lock(sync)return !dead&&delay==d&&(due is null||due==at);}
+        public bool Holds(TimeSpan d){lock(sync)return !dead&&delay==d;}
         public void Arm(DateTimeOffset? at){lock(sync)due=at;}
         public void Fired(TimeSpan period){lock(sync){if(period==Timeout.InfiniteTimeSpan)dead=true;else{delay=period;due+=period;}}}
         public bool Change(TimeSpan dueTime,TimeSpan period)
@@ -70,6 +71,16 @@ sealed class Clock:FakeTimeProvider
             var at=GetUtcNow()+delay;
             waiters.RemoveAll(w=>w.Dead);
             return waiters.Any(w=>w.Waits(delay,at));
+        }
+    }
+
+    // True while a timer armed for exactly delay has not fired yet, however far the clock has moved since: what waits on it has not run.
+    public bool Unfired(TimeSpan delay)
+    {
+        lock(waiters)
+        {
+            waiters.RemoveAll(w=>w.Dead);
+            return waiters.Any(w=>w.Holds(delay));
         }
     }
 }

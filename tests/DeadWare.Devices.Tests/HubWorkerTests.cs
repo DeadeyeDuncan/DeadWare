@@ -173,9 +173,13 @@ public sealed class HubWorkerTests:IDisposable
         {
             await Waits.Until(()=>core.Snapshot.State=="driving");
             fake.HangRead=hang;fake.ReadEntered=entered;
+            // The watchdog runs on real time (amendment 2), so this test cannot use fake time. It pins a lower bound only, which a slow machine
+            // cannot break: the clock starts before the unit does, so it reads at least what the watchdog read when it closed.
+            var clock=Stopwatch.StartNew();
             core.Post(Four);                                                 // the paint's unit, held at its first read
             Assert.True(entered.Wait(Waits.RealTimeCap));
             await Waits.Until(()=>core.Snapshot.State=="letGo");             // about 1.5 to 1.75 s of real time
+            Assert.True(clock.Elapsed>=TimeSpan.FromMilliseconds(1500),$"closed after {clock.Elapsed.TotalMilliseconds:0} ms");
             Assert.Equal("silent",core.Snapshot.Reason);
             Assert.Equal(0L,core.BusySince);
             Assert.False(corsairLock.Held);
@@ -200,9 +204,12 @@ public sealed class HubWorkerTests:IDisposable
         {
             await Waits.Until(()=>core.Snapshot.State=="driving");
             fake.StuckRead=stuck;fake.ReadEntered=entered;
+            // Real time, as above (amendment 2): a lower bound only, with the clock started before the unit.
+            var clock=Stopwatch.StartNew();
             core.Post(Four);                                                 // the paint's unit, stuck at its first read
             Assert.True(entered.Wait(Waits.RealTimeCap));
             await Waits.Until(()=>Volatile.Read(ref ended)>0);               // about 4.5 to 4.75 s of real time
+            Assert.True(clock.Elapsed>=TimeSpan.FromMilliseconds(4500),$"ended after {clock.Elapsed.TotalMilliseconds:0} ms");
             var lines=Lines();
             Assert.Equal(1,lines.Count(l=>l==StuckLine));
             Assert.Equal(1,lines.Count(l=>l==EndLine));

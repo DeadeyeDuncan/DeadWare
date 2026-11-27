@@ -90,8 +90,15 @@ public class HubTextsTests
     static HubReadings Now()=>new([new HubPartReading(1,"pump","Pump",2709,38.5),new HubPartReading(2,"fan","Fan",1331),new HubPartReading(3,"fan","Fan",1326),new HubPartReading(4,"fan","Fan",1340)]);
     [Fact] public void The_driving_line()
     {
-        Assert.Equal("On. DeadWare is driving the hub.  Coolant 38.5 °C · Pump 2,709 RPM · Fans 1,331 · 1,326 · 1,340 RPM",HubTexts.Driving(Now()));
-        Assert.Equal("On. DeadWare is driving the hub.",HubTexts.Driving(null));
+        Assert.Equal("On. DeadWare is driving the hub.  Coolant 38.5 °C · Pump 2,709 RPM · Fans 1,331 · 1,326 · 1,340 RPM",HubTexts.Driving(Now(),TimeSpan.FromSeconds(1)));
+        Assert.Equal("On. DeadWare is driving the hub.",HubTexts.Driving(null,null));
+    }
+    // The hub card's 10 s rule: a reading older than that, or one without an age, shows its values as —.
+    [Fact] public void The_driving_line_dashes_a_reading_older_than_ten_seconds()
+    {
+        Assert.Equal("On. DeadWare is driving the hub.  Coolant 38.5 °C · Pump 2,709 RPM · Fans 1,331 · 1,326 · 1,340 RPM",HubTexts.Driving(Now(),TimeSpan.FromSeconds(10)));
+        Assert.Equal("On. DeadWare is driving the hub.  Coolant — · Pump — · Fans —",HubTexts.Driving(Now(),TimeSpan.FromMilliseconds(10001)));
+        Assert.Equal("On. DeadWare is driving the hub.  Coolant — · Pump — · Fans —",HubTexts.Driving(Now(),null));
     }
     [Fact] public void The_taken_line_gives_today_or_the_date()
     {
@@ -137,6 +144,28 @@ public class HubTextsTests
             HubTexts.ReasonLine(new HubView("gaveBack",Stop:new HubStop{Kind="pumpStopped"}),false));
         Assert.Null(HubTexts.ReasonLine(new HubView("driving"),false));
         Assert.Null(HubTexts.ReasonLine(null,false));
+    }
+    [Fact] public void The_gave_back_reason_line_names_the_part_that_stopped_the_check()
+    {
+        Assert.Equal("DeadWare gave the Corsair hub back because fan 2 ran slower after the take-over. Choose what to do in Settings → Lighting.",
+            HubTexts.ReasonLine(new HubView("gaveBack",Stop:new HubStop{Kind="slower",Part="fan",Number=2,Before=1337,After=1100}),false));
+        Assert.Equal("DeadWare gave the Corsair hub back because radiator fan 2 ran slower after the take-over. Choose what to do in Settings → Lighting.",
+            HubTexts.ReasonLine(new HubView("gaveBack",Stop:new HubStop{Kind="slower",Part="fan",Number=2,Before=1337,After=1100}),true));
+        Assert.Equal("DeadWare gave the Corsair hub back because it got no speed reading for fan 2 after the take-over. Choose what to do in Settings → Lighting.",
+            HubTexts.ReasonLine(new HubView("gaveBack",Stop:new HubStop{Kind="noReading",Part="fan",Number=2,Before=1337}),false));
+        Assert.Equal("DeadWare gave the Corsair hub back because it got no speed reading for radiator fan 2 after the take-over. Choose what to do in Settings → Lighting.",
+            HubTexts.ReasonLine(new HubView("gaveBack",Stop:new HubStop{Kind="noReading",Part="fan",Number=2,Before=1337}),true));
+        Assert.Equal("DeadWare gave the Corsair hub back because the pump ran slower after the take-over. Choose what to do in Settings → Lighting.",
+            HubTexts.ReasonLine(new HubView("gaveBack",Stop:new HubStop{Kind="slower",Part="pump",Number=1,Before=2716,After=2010}),true));
+    }
+    // The card's sub-line starts with the route, then the picture's selection; on its own the route's line stands alone, as the mockup has it.
+    [Fact] public void The_card_sub_line_starts_with_the_route()
+    {
+        Assert.Equal("lit through OpenRGB · radiator fan 2 selected",HubTexts.CardSubLine("openrgb","radiator fan 2 selected"));
+        Assert.Equal("driven by DeadWare · radiator fan 2 selected",HubTexts.CardSubLine("driven","radiator fan 2 selected"));
+        Assert.Equal("on its own · DeadWare is not lighting it",HubTexts.CardSubLine("own","radiator fan 2 selected"));
+        Assert.Equal("driven by DeadWare",HubTexts.CardSubLine("driven",null));
+        Assert.Equal("lit through OpenRGB",HubTexts.CardSubLine("openrgb",null));
     }
     [Fact] public void Card_and_legend_texts()
     {
@@ -234,7 +263,7 @@ public class HubTextsTests
         // A fan part carrying a Celsius is not the coolant (a part has a coolant sensor exactly when it is a pump).
         var r=new HubReadings([new HubPartReading(1,"fan","Fan",1000,99.0),new HubPartReading(2,"pump","Pump",2000,40.0)]);
         Assert.Equal("40.0 °C",HubTexts.ReadingRows("driven",r,TimeSpan.Zero,false)[0].Value);
-        Assert.StartsWith("On. DeadWare is driving the hub.  Coolant 40.0 °C",HubTexts.Driving(r));
+        Assert.StartsWith("On. DeadWare is driving the hub.  Coolant 40.0 °C",HubTexts.Driving(r,TimeSpan.Zero));
     }
 
     static HostState State(int views,string? hubView,HubView? hub,string effect="Wave",bool lightsOn=true)

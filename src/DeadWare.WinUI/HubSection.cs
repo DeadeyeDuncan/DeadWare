@@ -154,7 +154,7 @@ internal sealed class HubSection
                 line = HubTexts.SwitchingLine;
                 break;
             case HubStates.Driving:
-                line = HubTexts.Driving(session.HubReadings?.Readings);
+                line = HubTexts.Driving(session.HubReadings?.Readings, session.HubReadings?.Age);
                 taken = HubTexts.TakenLine(hub.Before, hub.TakenAt, DateTimeOffset.Now);
                 break;
             case HubStates.LetGo:

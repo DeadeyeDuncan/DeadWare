@@ -75,7 +75,8 @@ public static class DeadLightLines
         Retired="DeadLight is retired. Its folder and its settings are still on this PC; delete them yourself whenever you like.",JustNow="Retired just now.",
         DialogTitle="Retire DeadLight?",DialogLead="DeadWare will:",DialogTask="• switch off DeadLight's start-up task. It is not deleted, so you can switch it back on in Task Scheduler;",
         DialogStop="• stop DeadLight and the OpenRGB it started, if they are running.",DialogNothing="Nothing is deleted.",
-        NotConfirmed="DeadWare switched off the start-up task but could not confirm which programs are DeadLight's, so it stopped none. If DeadLight is still running, quit it from its icon by the clock.";
+        NotConfirmed="DeadWare switched off the start-up task but could not confirm which programs are DeadLight's, so it stopped none. If DeadLight is still running, quit it from its icon by the clock.",
+        NotConfirmedNoTask="DeadWare could not confirm which programs are DeadLight's, so it stopped none. If DeadLight is still running, quit it from its icon by the clock.";
     // A task that could not be read shows the section, so its "could not check" line is seen instead of the section being hidden.
     public static bool Found(DeadLightFacts f)=>f.Running||f.Task!=null||f.TaskError!=null;
     public static bool CanRetire(DeadLightFacts f)=>f.Running||f.Task is {Enabled:true};
@@ -180,7 +181,8 @@ public static class DeadLightRetire
         catch(Exception e){return new(false,Sentence.With("DeadWare couldn't switch off DeadLight's start-up task: ",e.Message));}
         var processes=system.Processes();
         var folder=DeadLightFolder.Find([task?.Command,task?.Arguments,task?.WorkingDirectory],processes.Select(p=>p.Path).OfType<string>(),system.ReadText);
-        if(folder is null) return new(true,DeadLightLines.NotConfirmed);
+        // Without a task nothing was switched off, and the line does not say it was.
+        if(folder is null) return new(true,task!=null?DeadLightLines.NotConfirmed:DeadLightLines.NotConfirmedNoTask);
         string electron=DeadLightFolder.Electron(folder),openRgb=DeadLightFolder.OpenRgb(folder);
         bool own=DeadLightFolder.SamePath(openRgbPath,openRgb);
         var asked=new List<int>();

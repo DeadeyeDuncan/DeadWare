@@ -385,6 +385,63 @@ public class DeviceHostClientTests:IAsyncLifetime
         host.Close();
         await Until(()=>client.Hub is null,"the readings gone with the connection");
     }
+    // Fix wave 1, D7: the readings go at once when a state says DeadWare is no longer driving the hub, not when they reach 10 s; driving and
+    // switching (the take-over's check) keep them.
+    [Fact] public async Task Hub_readings_go_when_the_hub_stops_being_driven()
+    {
+        var client=Make();
+        await client.StartAsync(false,CancellationToken.None);
+        await Until(()=>client.State is not null);
+        foreach(var gone in new[]{"letGo","gaveBack","off"})
+        {
+            await host.Push(new HubReadingsEvent(new HubReadings([new(13,"pump","Pump",2774,43.7)]))).WaitAsync(Bound);
+            await Until(()=>client.Hub is not null);
+            await host.Push(new StateEvent(Sample with{Hub=new HubView("driving")})).WaitAsync(Bound);
+            await Until(()=>client.State?.Hub?.State=="driving");
+            Assert.NotNull(client.Hub);
+            await host.Push(new StateEvent(Sample with{Hub=new HubView("switching")})).WaitAsync(Bound);
+            await Until(()=>client.State?.Hub?.State=="switching");
+            Assert.NotNull(client.Hub);
+            await host.Push(new StateEvent(Sample with{Hub=new HubView(gone)})).WaitAsync(Bound);
+            await Until(()=>client.State?.Hub?.State==gone);
+            Assert.Null(client.Hub);
+        }
+    }
+    // A session built without its constructor, holding this client as its lighting client (and, when given, this collector).
+    static MonitorSession SessionWith(DeviceHostClient client,Collector? collector=null)
+    {
+        var session=(MonitorSession)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(MonitorSession));
+        typeof(MonitorSession).GetProperty("Lighting",System.Reflection.BindingFlags.Instance|System.Reflection.BindingFlags.NonPublic)!.SetValue(session,client);
+        if(collector is not null) typeof(MonitorSession).GetField("<Collector>k__BackingField",System.Reflection.BindingFlags.Instance|System.Reflection.BindingFlags.NonPublic)!.SetValue(session,collector);
+        return session;
+    }
+    // Fix wave 1, D5: the session ending's stop reaches a running lighting client: the host is sent its ordinary Stop.
+    [Fact] public async Task The_session_ending_stop_sends_the_host_its_stop()
+    {
+        var client=Make();
+        await client.StartAsync(false,CancellationToken.None);
+        await Until(()=>client.State is not null);
+        var stop=SessionWith(client).StopLightingForSessionEnding();
+        await Until(()=>host.Saw<StopRequest>(),"the host's Stop");
+        Assert.False(stop.IsFaulted);
+    }
+    // Fix wave 1, D4: the session's tick hands the collector the lighting client's hub readings.
+    [Fact] public async Task The_session_feeds_the_collector_the_hub_readings()
+    {
+        var client=Make();
+        await client.StartAsync(false,CancellationToken.None);
+        await Until(()=>client.State is not null);
+        await host.Push(new HubReadingsEvent(new HubReadings([new(13,"pump","Pump",2774,43.7),new(1,"fan","Fan",1660)]))).WaitAsync(Bound);
+        await Until(()=>client.Hub is not null);
+        await using var collector=new Collector(new(HardwareEnabled:false,EtwEnabled:false,PollingIntervalSeconds:0.5));
+        SessionWith(client,collector).FeedHub();
+        var seen=new TaskCompletionSource<Reading>(TaskCreationOptions.RunContinuationsAsynchronously);
+        collector.SampleAvailable+=r=>seen.TrySetResult(r);
+        collector.Start();
+        var reading=await seen.Task.WaitAsync(Bound);
+        Assert.Equal(["Coolant","Pump","Fan 1"],reading.Sensors.Where(s=>s.HardwareType=="CorsairLink").Select(s=>s.Name));
+        Assert.Equal(43.7,reading.Sample.Values["cpu/coolant"]);
+    }
     [Fact] public async Task A_readings_event_raises_only_its_own_event()
     {
         var client=Make();int changed=0,hub=0;

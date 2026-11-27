@@ -131,10 +131,12 @@ public sealed class MonitorSession
             if(Settings.SelectedGpuId is null && Current is {Gpus.Count:>0} reading)
             {Settings.SelectedGpuId=DeviceSelection.Resolve(null,reading.Gpus);_ = SaveAsync();}
             CheckClearStates();
-            Collector.SetHub(Lighting?.Hub,PictureApplies);
+            FeedHub();
             Changed?.Invoke();
         };
     }
+    /// <summary>Hands the collector the lighting client's hub readings and whether the picture names the radiator fans; on every tick.</summary>
+    internal void FeedHub()=>Collector.SetHub(Lighting?.Hub,PictureApplies);
     private DeviceHostClient NewLightingClient()=>new(Settings.OpenRgbPath!,new DeviceHostLauncher(),DeviceHostPipe.ConnectAsync,TimeProvider.System,Environment.IsPrivilegedProcess,lightingPacer);
     /// <param name="signIn">True when Windows launched DeadWare at sign-in; the lighting host then waits before touching devices.</param>
     public void Start(bool signIn=false)

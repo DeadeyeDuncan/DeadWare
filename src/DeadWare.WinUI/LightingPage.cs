@@ -1694,9 +1694,9 @@ internal sealed class LightingPage : Page, IHeaderTool
         private void ShowTitle()
         {
             string heading = mouse is not null ? MouseTexts.Heading : mark?.Title ?? Name;
-            // Lighting 5: the hub's card says how it is lit, after the picture's own sub-line in picture mode.
+            // Lighting 5: the hub's card says how it is lit first, then the picture's own sub-line in picture mode.
             string? sub = mouse is { } shown ? MouseTexts.SubLine(shown)
-                : hub is { } route ? mark?.Sub is { } marked ? marked + " · " + HubTexts.CardSub(route) : HubTexts.CardSub(route)
+                : hub is { } route ? HubTexts.CardSubLine(route, mark?.Sub)
                 : mark?.Sub;
             if (title.Text != heading) title.Text = heading;
             if (subtitle.Text != (sub ?? "")) subtitle.Text = sub ?? "";

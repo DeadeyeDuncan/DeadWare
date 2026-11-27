@@ -261,7 +261,8 @@ internal sealed class DeviceHostClient : IAsyncDisposable
                 if(message is Reply reply)Complete(c,reply.Id,reply,null);
                 else if(message is StateEvent update)
                 {
-                    bool first;long before;lock(gate){before=seq;state=update.State;seq++;first=!c.Checked;c.Checked=true;}
+                    // Fix wave 1, D7: a state that says DeadWare no longer drives the hub drops its readings at once (switching, the take-over's check, keeps them).
+                    bool first;long before;lock(gate){before=seq;state=update.State;seq++;first=!c.Checked;c.Checked=true;if(update.State.Hub?.State is not(HubStates.Driving or HubStates.Switching))hubReadings=null;}
                     if(update.Id!=0)Complete(c,update.Id,new Reply(true,null),before);
                     RaiseChanged();
                     if(first&&windowElevated&&!update.State.Elevated)return ServeEnd.WrongElevation;

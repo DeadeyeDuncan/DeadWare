@@ -66,10 +66,11 @@ public static class HubTexts
     public static bool TakesInAMoment(string? reason)=>reason is HubReasons.Starting or HubReasons.Waking;
 
     static IEnumerable<HubPartReading> Of(HubReadings? r,string kind)=>(r?.Parts??[]).Where(p=>p.Kind==kind).OrderBy(p=>p.Channel);
-    public static string Driving(HubReadings? now)
+    public static string Driving(HubReadings? now,TimeSpan? age)
     {
         const string head="On. DeadWare is driving the hub.";
         if(now is null) return head;
+        if(!Fresh(now,age)) return $"{head}  {Coolant} {Dash} · {Pump} {Dash} · Fans {Dash}";
         var coolant=Of(now,HubPartKinds.Pump).FirstOrDefault()?.Celsius;
         return $"{head}  {Coolant} {Celsius(coolant)} · {Pump} {Rpm(Of(now,HubPartKinds.Pump).FirstOrDefault()?.Rpm)} · Fans {Fans(Of(now,HubPartKinds.Fan).Select(p=>p.Rpm))}";
     }
@@ -142,9 +143,9 @@ public static class HubTexts
         if(hub.State!=HubStates.GaveBack||hub.Stop is null) return null;
         string because=hub.Stop.Kind switch
         {
-            HubStops.NoReading=>"it got no speed reading for the pump after the take-over",
+            HubStops.NoReading=>$"it got no speed reading for {PartName(hub.Stop,picture)} after the take-over",
             HubStops.PumpStopped=>"the pump stopped",
-            _=>"the pump ran slower after the take-over",
+            _=>$"{PartName(hub.Stop,picture)} ran slower after the take-over",
         };
         return $"DeadWare gave the Corsair hub back because {because}. Choose what to do in Settings → Lighting.";
     }
@@ -154,6 +155,8 @@ public static class HubTexts
         HubRoutes.Own=>"on its own · DeadWare is not lighting it",
         _=>"lit through OpenRGB",
     };
+    // The hub card's sub-line: the route first, then the picture's selection (marked); a hub on its own shows its route's line alone.
+    public static string CardSubLine(string? route,string? marked)=>marked is null||route==HubRoutes.Own?CardSub(route):CardSub(route)+" · "+marked;
     public static string FanName(int number,bool picture)=>picture?$"Radiator fan {number}":$"Fan {number}";
     public static string FansLabel(bool picture)=>picture?"Radiator fans":"Fans";
     public static string CoolantLegend(double? celsius,string? hubState,string pattern)=>celsius is{} c?$"Coolant · {Celsius(c)} · {pattern}":hubState switch

@@ -254,7 +254,8 @@ public sealed class OpenRgbEngineTests : IAsyncLifetime
         Assert.Equal(EngineStatus.Restarting,e.Status);
         Assert.True(clock.Waiting(TimeSpan.FromSeconds(4)));
         clock.Advance(TimeSpan.FromSeconds(4)-TimeSpan.FromTicks(1));
-        await Task.Delay(100);
+        // One tick early the 4 s wait has not fired, on fake time alone, so nothing waiting on it has launched.
+        Assert.True(clock.Unfired(TimeSpan.FromSeconds(4)));
         Assert.Equal(1,runner.Count);
         clock.Advance(TimeSpan.FromTicks(1));
         await Until(()=>runner.Count==2&&e.Status==EngineStatus.Running);
@@ -324,7 +325,7 @@ public sealed class OpenRgbEngineTests : IAsyncLifetime
         Assert.Equal(EngineStatus.Restarting,e.Status);
         Assert.True(clock.Waiting(TimeSpan.FromSeconds(7)));
         clock.Advance(TimeSpan.FromSeconds(7)-TimeSpan.FromTicks(1));
-        await Task.Delay(100);
+        Assert.True(clock.Unfired(TimeSpan.FromSeconds(7)));
         Assert.Equal(2,runner.Count);
         clock.Advance(TimeSpan.FromTicks(1));
         await Until(()=>runner.Count==3&&e.Status==EngineStatus.Running);
@@ -346,7 +347,7 @@ public sealed class OpenRgbEngineTests : IAsyncLifetime
         Assert.Equal(EngineStatus.Restarting,e.Status);
         Assert.True(clock.Waiting(TimeSpan.FromSeconds(2)));
         clock.Advance(TimeSpan.FromSeconds(2)-TimeSpan.FromTicks(1));
-        await Task.Delay(100);
+        Assert.True(clock.Unfired(TimeSpan.FromSeconds(2)));
         Assert.Equal(1,runner.Count);
         clock.Advance(TimeSpan.FromTicks(1));
         await Until(()=>runner.Count==2&&e.Status==EngineStatus.Running);
@@ -393,7 +394,7 @@ public sealed class OpenRgbEngineTests : IAsyncLifetime
         var e=Track(new OpenRgbEngine(exe,@"C:\cfg\openrgb",runner,(_,_)=>Task.FromResult(true),clock,log));
         await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
         var stop=e.StopForRestartAsync();
-        await Until(()=>clock.Waiting(OpenRgbEngine.ExitWait));
+        await Until(()=>clock.Waiting(TimeSpan.FromSeconds(5)));
         Assert.False(stop.IsCompleted);
         clock.Advance(TimeSpan.FromSeconds(5));
         Assert.False(await stop.WaitAsync(RealTimeCap));

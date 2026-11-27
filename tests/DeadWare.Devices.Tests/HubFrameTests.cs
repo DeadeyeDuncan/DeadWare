@@ -152,4 +152,22 @@ public sealed class HubFrameTests
             Assert.Throws<ArgumentOutOfRangeException>(()=>HubFrame.Open((HubEndpoint)bad));
         }
     }
+
+    // Amendment 15, the port's side: a frame from the builder type is the only thing the transport's port can send. By reflection only: nothing here
+    // constructs the HID transport or lists a device.
+    [Fact] public void The_port_can_send_nothing_but_a_frame()
+    {
+        const BindingFlags every=BindingFlags.Public|BindingFlags.NonPublic|BindingFlags.Static|BindingFlags.Instance|BindingFlags.DeclaredOnly;
+        static string Sig(MethodInfo m)=>m.Name+"("+string.Join(",",m.GetParameters().Select(p=>p.ParameterType.Name))+")";
+        Assert.Equal(new[]{"Read(Int32)","Write(HubFrame)"},typeof(IHubPort).GetMethods(every).Select(Sig).Order().ToArray());
+        Assert.Equal(new[]{typeof(IDisposable)},typeof(IHubPort).GetInterfaces());
+        Assert.Empty(typeof(IHubPort).GetProperties(every));Assert.Empty(typeof(IHubPort).GetEvents(every));
+        Assert.Equal(new[]{"Count()","Open()"},typeof(IHubTransport).GetMethods(every).Select(Sig).Order().ToArray());
+        // The HID port: exactly the interface's three, and no other nested type in the transport.
+        var nested=typeof(HidHubTransport).GetNestedTypes(every).Where(n=>!n.IsDefined(typeof(System.Runtime.CompilerServices.CompilerGeneratedAttribute))).ToArray();
+        var port=Assert.Single(nested);
+        Assert.Equal("Port",port.Name);
+        Assert.Equal(new[]{"Dispose()","Read(Int32)","Write(HubFrame)"},port.GetMethods(every).Where(m=>!m.IsPrivate).Select(Sig).Order().ToArray());
+        Assert.Equal(new[]{"Count()","Open()"},typeof(HidHubTransport).GetMethods(every).Where(m=>!m.IsPrivate).Select(Sig).Order().ToArray());
+    }
 }

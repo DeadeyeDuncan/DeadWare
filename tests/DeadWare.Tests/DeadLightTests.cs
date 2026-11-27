@@ -152,6 +152,14 @@ public class DeadLightTests
         Assert.Equal(new RetireResult(true,NotConfirmed),DeadLightRetire.Run(system,true,null));
         Assert.Equal(["DisableTask","EndTask"],system.Changes);
     }
+    [Fact] public void Without_a_task_or_a_confirmed_folder_the_line_does_not_claim_a_task_was_switched_off()
+    {
+        var system=new FakeSystem{TaskOnDisk=null,Running=[new(11,"electron",Electron)]};
+        system.Files.Clear();
+        Assert.Equal(new RetireResult(true,"DeadWare could not confirm which programs are DeadLight's, so it stopped none. If DeadLight is still running, quit it from its icon by the clock."),
+            DeadLightRetire.Run(system,true,null));
+        Assert.Empty(system.Changes);
+    }
     [Fact] public void Without_a_task_only_DeadLights_processes_are_ended()
     {
         // The folder is confirmed from the running electron alone.
