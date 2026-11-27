@@ -57,6 +57,7 @@ public sealed partial class DeviceHostTests
     DeviceHost BuildScanned(IHub hub,Func<int?,IReadOnlyList<LightingConflict>> scan)
     {
         var engine=new OpenRgbEngine(exe,@"C:\cfg\openrgb",runner,(_,_)=>Task.FromResult(true),time,log);
+        built=engine;
         var options=new HostOptions(exe,"",lightingPath,Path.Combine(dir,"logs"),false,"S-1-5-21-1",1);
         return host=new DeviceHost(options,new LightingStore(lightingPath),engine,()=>session,new Scanner(scan),time,log,hub:hub);
     }
@@ -1205,6 +1206,29 @@ public sealed partial class DeviceHostTests
         Assert.Empty(LogLines("hub check:"));
     }
 
+    // Fix wave 2, G (review D3): the stopped-pump branch's guard. A stopped pump during the check whose settlement the settings refuse (parts out
+    // of channel order) is an interruption, never a finished take-over: nothing saved, mode openrgb, the red line, OpenRGB back with its detector on.
+    [Fact]
+    public async Task A_stopped_pump_the_settings_refuse_backs_out_and_saves_nothing()
+    {
+        var (h,hub,detector)=OwnerHost();
+        await TakeOver(h,hub);
+        var at=await ToCheck(h,hub);
+        await AdvanceUntil(()=>time.GetUtcNow()-at>=TimeSpan.FromSeconds(10));
+        hub.Snapshot=hub.Snapshot with{State="letGo",SoftwareAt=0,PumpStopped=true,Parts=[OwnersParts[3],OwnersParts[0],OwnersParts[1],OwnersParts[2]]};
+        hub.Raise();
+        await AdvanceUntil(()=>h.State.Hub?.Problem=="cantSave");
+        Assert.Equal("off",h.State.Hub!.State);
+        Assert.Single(LogLines("hub settings not changed: "));
+        Assert.Single(LogLines("hub take-over interrupted: "));
+        Assert.Empty(LogLines("hub mode settled"));
+        Assert.Equal("openrgb",h.State.Settings.Hub.Mode);
+        Assert.DoesNotContain("\"Hub\"",FileText());
+        await AdvanceUntil(()=>Launches().Count==3);
+        Assert.Equal([true,false,true],Launches());
+        Assert.True(detector.On);
+    }
+
     // Review Focus 3: a take-over cut short saves nothing, ends in openrgb, and brings OpenRGB back with its detector on (ruling R10: not from the
     // Scan step, where nothing was stopped).
     [Theory]
@@ -1276,6 +1300,35 @@ public sealed partial class DeviceHostTests
         Assert.Equal([true,true],Launches());
         Assert.Equal(HostStatus.Running,h.State.Status);
         Assert.DoesNotContain("\"Hub\"",FileText());
+    }
+
+    // Fix wave 2, E: a back-out whose deliberate stop finds OpenRGB not exiting starts no second OpenRGB beside it; it logs that, and the
+    // status says OpenRGB could not be restarted.
+    [Fact]
+    public async Task A_back_out_whose_stop_cannot_end_OpenRGB_starts_no_second_one()
+    {
+        var (h,hub,_)=OwnerHost();
+        var states=Recorded(h);
+        await TakeOver(h,hub);
+        await ToCheck(h,hub);
+        await AdvanceUntil(()=>runner.Count==2&&h.State.Status==HostStatus.Running);
+        try
+        {
+            runner.At(1).IgnoresKill=true;
+            hub.Snapshot=hub.Snapshot with{State="letGo",Reason="noHub",SoftwareAt=0};
+            hub.Raise();
+            await AdvanceUntil(()=>runner.At(1).Killed);
+            await Elapse(TimeSpan.FromSeconds(5));
+            await AdvanceUntil(()=>LogLines("OpenRGB did not exit: DeadWare did not start it again").Length==1);
+            await RunFor(TimeSpan.FromSeconds(10),DeviceHost.Tick);
+            Assert.Equal(2,runner.Count);
+            Assert.Contains(Copy(states),s=>s.Status==HostStatus.OpenRgbFailed&&s.Message=="OpenRGB could not be restarted: it did not exit when DeadWare stopped it.");
+            Assert.Equal("noHub",h.State.Hub!.Problem);
+        }
+        finally{runner.At(1).Exit();}
+        // Once that OpenRGB has gone, lighting starts again as after any conflict, with the detector on.
+        await AdvanceUntil(()=>runner.Count==3&&h.State.Status==HostStatus.Running);
+        Assert.Equal([true,false,true],Launches());
     }
 
     // Ruling P4: an OpenRGB that does not exit is a hub still in use.
@@ -1555,7 +1608,8 @@ public sealed partial class DeviceHostTests
             Assert.Equal(HostStatus.Starting,h.State.Status);
             Assert.True((await Send(h,new SetHubModeRequest("openrgb"))).Ok);
             // Stopped by the switch-off within a few turns, not by OpenRGB's own 30 s port wait running out.
-            Assert.InRange(await AdvanceUntil(()=>runner.At(0).Killed),TimeSpan.Zero,TimeSpan.FromSeconds(2));
+            // Fix wave 2, E: no sooner than 5 s after its launch.
+            Assert.InRange(await AdvanceUntil(()=>runner.At(0).Killed),TimeSpan.Zero,TimeSpan.FromSeconds(5));
             Assert.InRange(await AdvanceUntil(()=>Launches().Count==2),TimeSpan.Zero,TimeSpan.FromSeconds(5));
             Assert.Equal([false,true],Launches());
             Assert.Empty(LogLines("openrgb port did not open"));

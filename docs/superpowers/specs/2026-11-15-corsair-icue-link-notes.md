@@ -14,7 +14,7 @@ Status: reference material for [the lighting spec](2026-11-15-lighting-design.md
 - **Input report**, with offsets counted after the report-ID byte (HidSharp returns that byte at index 0):
   - `[0]` = `0x00`, `[1]` = `0x00`
   - `[2]` = the opcode echoed back
-  - `[3]` = status: `0x00` means OK, `0x03` means "wrong mode", i.e. the hub is in hardware mode
+  - `[3]` = status: `0x00` means OK. `0x03` on the open of a read endpoint means "wrong mode", i.e. the hub is in hardware mode. On the open of the colour endpoint (`0D 00 22`) the hub answered `0x03` while it was held (2026-11-27, below), so there it is not a mode signal.
   - endpoint reads only: `[4..5]` = data type, `[6]` = count, payload from `[7]`
 - Replies to open and close carry leftover bytes from earlier buffers after the header. Ignore them.
 
@@ -100,6 +100,29 @@ Treat an unknown type, model or reply layout as a reason to stop, not to guess.
 | Speeds | fans 1,337 / 1,326 / 1,337 RPM; pump 2,716 RPM |
 
 The motherboard's PUMP_FAN header reads the same pump speed, so the hub feeds the pump tachometer to the board.
+
+### 2026-11-27, firmware 4.1.656, hub held by OpenRGB
+
+One colour transaction was sent while OpenRGB held the hub, with an open of the temperature endpoint answering `0x00` before and after it as the control. The replies' status bytes:
+
+| Exchange | Status |
+|---|---|
+| close colours (`05 01 01 22`) | `0x00` |
+| open colours (`0D 00 22`) | `0x03` |
+| colour write (`06 00 …`, 44 LEDs) | `0x00` |
+| close colours (`05 01 01 22`) | `0x00` |
+
+The hub was still held afterwards. So `0x03` on the open of the colour endpoint is not a mode signal.
+
+Fan speed against coolant temperature, each read while OpenRGB held the hub and sent no speed command:
+
+| Date | Coolant | Fans |
+|---|---|---|
+| 2026-11-27 | 36.5 °C | about 1,155 RPM |
+| 2026-11-15 | 38.4 °C | about 1,330 RPM |
+| 2026-11-25 | 43.7 °C | about 1,660 RPM |
+
+The fans follow coolant temperature while the hub is held.
 
 ## Attribution
 

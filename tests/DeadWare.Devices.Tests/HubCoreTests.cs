@@ -93,7 +93,10 @@ public sealed class HubCoreTests:IDisposable
     public void The_take_logs_its_trace(bool software,string probe)
     {
         fake.Software=software;
-        Take();
+        core.Allow(null);
+        core.Step();
+        if(!software) At(1);                                                 // fix wave 2, B: a hub in its own mode gets the rest 1 s later
+        Assert.Equal("driving",core.Snapshot.State);
         Assert.Equal(new[]{"hub: take started","hub firmware 4.1.656",probe,"hub: software mode entered",
             "hub part: channel 1, type 0x0F, model 0x00, 8 LEDs","hub part: channel 2, type 0x0F, model 0x00, 8 LEDs","hub part: channel 3, type 0x0F, model 0x00, 8 LEDs",
             "hub part: channel 13, type 0x11, model 0x02, 20 LEDs","hub taken"},Lines());
@@ -448,7 +451,7 @@ public sealed class HubCoreTests:IDisposable
         Assert.Equal(1,fake.Closes);
         Assert.Equal("letGo",core.Snapshot.State);
         Assert.Equal("silent",core.Snapshot.Reason);
-        Assert.Equal(1,LogCount("hub: let go (the hub stopped answering)"));
+        Assert.Equal(1,LogCount("hub: firmware: no reply (let go: the hub stopped answering)"));   // fix wave 2, C
         var opened=new List<int>{0};
         for(int t=5;t<=2770;t+=5)
         {
@@ -515,9 +518,14 @@ public sealed class HubCoreTests:IDisposable
         Take();
         int once=0;
         fake.Reply=(command,reply)=>{if(command[0]==0x08&&reply[4]==0x25&&once++==0) reply[3]=0x03;return reply;};
+        int before=fake.Writes.Count;
         At(3);
+        // Fix wave 2, B: the read's endpoint is closed in its own unit, then software mode, and the unit ends; the speeds come 1 s later.
+        Assert.Equal(new[]{"05 01 01 21","0D 01 21","08 01","05 01 01 21","05 01 01 17","0D 01 17","08 01","05 01 01 17","01 03 00 02"},Commands().Skip(before));
+        Assert.Equal(1,LogCount("hub: read speeds answered 03 (entering software mode again, 1 of 3)"));   // fix wave 2, C
+        At(4);
+        Assert.Equal(new[]{"05 01 01 17","0D 01 17","08 01","05 01 01 17"},Commands().Skip(before+9));
         Assert.Equal("driving",core.Snapshot.State);
-        Assert.Equal(1,LogCount("hub fell back to its own mode: entering software mode again (1 of 3)"));
         Assert.Equal(2774,Pump().Rpm);
         Settled();
     }
@@ -578,27 +586,36 @@ public sealed class HubCoreTests:IDisposable
         Take();
         int before=fake.Writes.Count;
         fake.WrongMode=1;
-        At(3);
+        // Fix wave 2, B: software mode ends the unit; nothing is sent for 1 s, then the transaction is repeated in a unit of its own.
+        Assert.Equal(TimeSpan.FromSeconds(1),At(3));
+        Assert.Equal(new[]{"05 01 01 21","0D 01 21","01 03 00 02"},Commands().Skip(before));
+        Assert.Equal(2,corsairLock.Enters);
+        Assert.Equal(1,LogCount("hub: open temperatures answered 03 (entering software mode again, 1 of 3)"));   // fix wave 2, C
+        At(3.999);
+        Assert.Equal(3,Commands().Skip(before).Count());
+        At(4);
         Assert.Equal(new[]{"05 01 01 21","0D 01 21","01 03 00 02","05 01 01 21","0D 01 21","08 01","05 01 01 21","05 01 01 17","0D 01 17","08 01","05 01 01 17"},
             Commands().Skip(before));
-        Assert.Equal(1,LogCount("hub fell back to its own mode: entering software mode again (1 of 3)"));
-        fake.WrongMode=1;At(6);
-        fake.WrongMode=1;At(9);
-        Assert.Equal(1,LogCount("hub fell back to its own mode: entering software mode again (2 of 3)"));
-        Assert.Equal(1,LogCount("hub fell back to its own mode: entering software mode again (3 of 3)"));
+        Assert.Equal(4,corsairLock.Enters);
+        fake.WrongMode=1;At(6);At(7);
+        fake.WrongMode=1;At(9);At(10);
+        Assert.Equal(1,LogCount("hub: open temperatures answered 03 (entering software mode again, 2 of 3)"));
+        Assert.Equal(1,LogCount("hub: open temperatures answered 03 (entering software mode again, 3 of 3)"));
         Assert.Equal("driving",core.Snapshot.State);
         fake.WrongMode=1;At(12);
         Assert.Equal("letGo",core.Snapshot.State);
         Assert.Equal("fallsBack",core.Snapshot.Reason);
         Assert.Equal("01 03 00 01",Last());
         Assert.Equal(1,fake.Closes);
+        Assert.Equal(1,LogCount("hub: open temperatures answered 03 (let go: the hub keeps falling back to its own mode)"));
         At(41);
         Assert.Equal(1,fake.Opens);                                          // the retry is armed: 30 s after 12 s
-        At(42);
+        At(42);At(43);                                                        // handed back, the hub is in its own mode: the take pauses 1 s
         Assert.Equal("driving",core.Snapshot.State);
         fake.WrongMode=1;
-        At(3+600+1);                                                          // 10 min 1 s after the first
-        Assert.Equal(2,LogCount("hub fell back to its own mode: entering software mode again (1 of 3)"));
+        At(3+600+1);                                                         // 10 min 1 s after the first
+        Assert.Equal(2,LogCount("hub: open temperatures answered 03 (entering software mode again, 1 of 3)"));
+        At(3+600+2);
         Assert.Equal("driving",core.Snapshot.State);
         Settled();
     }
@@ -608,11 +625,178 @@ public sealed class HubCoreTests:IDisposable
     public void Wrong_mode_during_the_take_enters_software_mode_again()
     {
         fake.WrongMode=2;                                                    // the probe's open, then the device list's
-        Take();
+        core.Allow(null);
+        // Fix wave 2, B: firmware, probe and software mode; 1 s later the device list, whose 03 enters software mode again; 1 s later the rest.
+        Assert.Equal(TimeSpan.FromSeconds(1),At(0));
         Assert.Equal(1,LogCount("hub was in its own mode"));
-        Assert.Equal(1,LogCount("hub fell back to its own mode: entering software mode again (1 of 3)"));
+        Assert.Equal(TimeSpan.FromSeconds(1),At(1));
+        Assert.Equal(1,LogCount("hub: open device list answered 03 (entering software mode again, 1 of 3)"));
+        Assert.NotEqual("driving",core.Snapshot.State);
+        At(2);
+        Assert.Equal("driving",core.Snapshot.State);
         Assert.Equal(2,fake.Count(0x01,0x03,0x00,0x02));
+        Assert.Equal(3,corsairLock.Enters);
+        Settled();
+    }
+
+    // Fix wave 2, A: the real hub, held, answers open colours with 03 and the colour write after it with 00 (2026-11-27). That 03 is not a mode
+    // signal: the frame is written and nothing enters software mode again. The fake answers 03 there by default; 00 goes on as well.
+    [Theory]
+    [InlineData(0x03)]
+    [InlineData(0x00)]
+    public void Open_colours_answering_00_or_03_while_held_goes_on(int status)
+    {
+        Take();
+        fake.Reply=(command,reply)=>{if(Hex(command)=="0D 00 22") reply[3]=(byte)status;return reply;};
+        int before=fake.Writes.Count;
+        core.Post(Four);
+        core.Step();
+        var sent=Commands().Skip(before).ToList();
+        Assert.Equal(4,sent.Count);
+        Assert.Equal("0D 00 22",sent[1]);
+        Assert.Equal(FourLit,fake.LastColours);
+        Assert.Equal("driving",core.Snapshot.State);
+        Assert.Equal(1,fake.Count(0x01,0x03,0x00,0x02));                    // the take's only
+        Assert.DoesNotContain(Lines(),l=>l.Contains("entering software mode again"));
+        Assert.Equal(1,LogCount("hub: first frame sent"));
+        Settled();
+    }
+
+    // Fix wave 2, A and B: a colour write answering 03 is still wrong mode: the colour endpoint is closed, software mode is sent and the unit ends;
+    // the frame is written again 1 s later.
+    [Fact]
+    public void A_colour_write_answering_03_enters_software_mode_again_and_repeats_1_s_later()
+    {
+        Take();
+        int once=0;
+        fake.Reply=(command,reply)=>{if(command[0]==0x06&&once++==0) reply[3]=0x03;return reply;};
+        int before=fake.Writes.Count;
+        core.Post(Four);
+        Assert.Equal(TimeSpan.FromSeconds(1),At(0));
+        var sent=Commands().Skip(before).ToList();
+        Assert.Equal(new[]{"05 01 01 22","0D 00 22"},sent.Take(2));
+        Assert.StartsWith("06 00",sent[2]);
+        Assert.Equal(new[]{"05 01 01 22","01 03 00 02"},sent.Skip(3));
+        Assert.Equal(1,LogCount("hub: colour write answered 03 (entering software mode again, 1 of 3)"));
+        Assert.Equal(0,LogCount("hub: first frame sent"));
+        At(0.999);
+        Assert.Equal(5,Commands().Skip(before).Count());
+        At(1);
+        sent=Commands().Skip(before+5).ToList();
+        Assert.Equal(4,sent.Count);
+        Assert.Equal("05 01 01 22",sent[3]);
+        Assert.Equal(FourLit,fake.LastColours);
+        Assert.Equal("driving",core.Snapshot.State);
+        Assert.Equal(1,LogCount("hub: first frame sent"));
+        Settled();
+    }
+
+    // Fix wave 2, A and C: open colours answering anything but 00 or 03 is a failure, and its line names the exchange and the status.
+    [Fact]
+    public void Open_colours_answering_another_status_is_a_failure()
+    {
+        Take();
+        fake.Reply=(command,reply)=>{if(Hex(command)=="0D 00 22") reply[3]=0x01;return reply;};
+        core.Post(Four);
+        core.Step();
+        Assert.Equal("letGo",core.Snapshot.State);
+        Assert.Equal("silent",core.Snapshot.Reason);
+        Assert.Equal(0,fake.Count(0x06,0x00));
+        Assert.Equal(1,LogCount("hub: open colours answered 01 (let go: the hub stopped answering)"));
+        Settled();
+    }
+
+    // Fix wave 2, C: a read with no reply names its exchange.
+    [Fact]
+    public void A_read_with_no_reply_names_the_exchange()
+    {
+        Take();
+        fake.Reply=(command,reply)=>command[0]==0x08&&reply[4]==0x25?null:reply;
+        At(3);
+        Assert.Equal("letGo",core.Snapshot.State);
+        Assert.Equal(1,LogCount("hub: read speeds: no reply (let go: the hub stopped answering)"));
+        Settled();
+    }
+
+    // Fix wave 2, B: a take whose probe finds the hub in its own mode is two units: firmware, probe and software mode, then nothing for 1 s with the
+    // lock released, then the device list, temperatures and speeds. A frame posted during the pause is painted once the take is done.
+    [Fact]
+    public void A_take_of_a_hub_in_its_own_mode_pauses_1_s_after_software_mode()
+    {
+        fake.Software=false;
+        core.Allow(null);
+        Assert.Equal(TimeSpan.FromSeconds(1),At(0));
+        Assert.Equal(new[]{"02 13","05 01 01 21","0D 01 21","05 01 01 21","01 03 00 02"},Commands());
+        Assert.NotEqual("driving",core.Snapshot.State);
         Assert.Equal(1,corsairLock.Enters);
+        core.Post(Four);
+        Assert.Equal(TimeSpan.FromMilliseconds(500),At(0.5));
+        At(0.999);
+        Assert.Equal(5,Commands().Count);
+        Assert.False(corsairLock.Held);
+        Assert.Equal(1,corsairLock.Enters);
+        At(1);
+        Assert.Equal(new[]{"05 01 01 36","0D 01 36","08 01","05 01 01 36","05 01 01 21","0D 01 21","08 01","05 01 01 21","05 01 01 17","0D 01 17","08 01","05 01 01 17"},
+            Commands().Skip(5).Take(12));
+        Assert.Equal("driving",core.Snapshot.State);
+        Assert.Equal(FourLit,fake.LastColours);
+        Assert.Equal(3,corsairLock.Enters);                                  // the take's two units, then the frame
+        Assert.Equal(1,LogCount("hub taken"));
+        Settled();
+    }
+
+    // Fix wave 2, B: a let-go that arrives during the pause wins: the hub is handed back and the interrupted transaction is never repeated.
+    [Fact]
+    public void A_let_go_during_the_pause_wins()
+    {
+        Take();
+        fake.WrongMode=1;
+        Assert.Equal(TimeSpan.FromSeconds(1),At(3));
+        int before=fake.Writes.Count;
+        core.Allow("icue");
+        At(3.5);
+        Assert.Equal(new[]{"01 03 00 01"},Commands().Skip(before));
+        Assert.Equal("letGo",core.Snapshot.State);
+        Assert.Equal("icue",core.Snapshot.Reason);
+        At(4);At(5);
+        Assert.Single(Commands().Skip(before));
+        Settled();
+    }
+
+    // Fix wave 2, B: a quiet during the pause wins: nothing at all is sent, and nothing after it.
+    [Fact]
+    public void A_quiet_during_the_pause_wins()
+    {
+        Take();
+        fake.WrongMode=1;
+        Assert.Equal(TimeSpan.FromSeconds(1),At(3));
+        int before=fake.Writes.Count;
+        core.Quiet();
+        At(3.5);At(4);At(5);
+        Assert.Equal(before,fake.Writes.Count);
+        Assert.Equal("letGo",core.Snapshot.State);
+        Assert.Equal("waking",core.Snapshot.Reason);
+        Assert.Equal(1,fake.Closes);
+        Settled();
+    }
+
+    // Fix wave 2, B: dark and the readings survive a re-entry's pause: the round is finished 1 s later and dark is painted after it.
+    [Fact]
+    public void Dark_and_readings_survive_the_pause()
+    {
+        Take();
+        var readAt=core.Snapshot.ReadingsAt;
+        fake.WrongMode=1;
+        At(3);
+        core.SetDark(true);
+        At(3.5);
+        Assert.Equal(0,fake.Count(0x06,0x00));
+        Assert.Equal(readAt,core.Snapshot.ReadingsAt);
+        Assert.Equal(2774,Pump().Rpm);
+        At(4);
+        Assert.NotEqual(readAt,core.Snapshot.ReadingsAt);
+        Assert.Equal(1,fake.Count(0x06,0x00));
+        Assert.Equal(new Rgb[44],fake.LastColours);
         Settled();
     }
 
@@ -660,7 +844,7 @@ public sealed class HubCoreTests:IDisposable
         Assert.Equal(1,fake.Closes);
         Assert.Equal("letGo",core.Snapshot.State);
         Assert.Equal("icue",core.Snapshot.Reason);
-        Assert.Equal(1,LogCount("hub: hardware mode not sent: the hub stopped answering"));
+        Assert.Equal(1,LogCount("hub: hardware mode: no reply (hardware mode not sent)"));   // fix wave 2, C
         Settled();
     }
 
@@ -699,7 +883,7 @@ public sealed class HubCoreTests:IDisposable
         Assert.Equal("01 03 00 01",Last());
         Assert.Equal(1,LogCount("hub: let go (iCUE is running)"));
         core.Allow(null);
-        At(2);
+        At(2);At(3);                                                         // handed back, the hub is in its own mode: the take pauses 1 s (fix wave 2, B)
         Assert.Equal("driving",core.Snapshot.State);
         Assert.Equal(1,LogCount("hub taken again"));
         Assert.Equal(2,fake.Opens);
@@ -749,13 +933,13 @@ public sealed class HubCoreTests:IDisposable
         Assert.Equal(1,LogCount("hub unsupported: the hub has a part DeadWare doesn't know (type 0x1A, model 0x01)"));
         for(int t=30;t<=600;t+=30){core.Recheck();At(t);}
         Assert.Equal(1,fake.Opens);
-        core.Resume();At(601);
+        core.Resume();At(601);At(602);                                      // handed back, the hub is in its own mode: the take pauses 1 s (fix wave 2, B)
         Assert.Equal(2,fake.Opens);
         Assert.Equal("unknownPart",core.Snapshot.Reason);
         // A Recheck that finds the hub after it was missing ends the hold too.
-        fake.Hubs=0;core.Recheck();At(602);
+        fake.Hubs=0;core.Recheck();At(603);
         fake.Parts.Remove(5);
-        fake.Hubs=1;core.Recheck();At(603);
+        fake.Hubs=1;core.Recheck();At(604);At(605);
         Assert.Equal(3,fake.Opens);
         Assert.Equal("driving",core.Snapshot.State);
         Settled();
@@ -816,7 +1000,7 @@ public sealed class HubCoreTests:IDisposable
         Assert.Equal(0,fake.Count(0x01,0x03));
         Assert.False(fake.Software);
         Assert.Equal(1,fake.Closes);
-        Assert.Equal(1,LogCount("hub reading: could not read (nobody holds the hub)"));
+        Assert.Equal(1,LogCount("hub reading: open device list answered 03 (could not read: nobody holds the hub)"));   // fix wave 2, C
         Settled();
     }
 
@@ -930,7 +1114,7 @@ public sealed class HubCoreTests:IDisposable
         Assert.Equal(1,fake.Opens);
         core.Allow("off");At(121);
         Assert.True(core.Snapshot.PumpStopped);
-        core.Allow(null);At(122);
+        core.Allow(null);At(122);At(123);                                   // the take pauses 1 s after software mode (fix wave 2, B)
         Assert.Equal("driving",core.Snapshot.State);
         Assert.False(core.Snapshot.PumpStopped);
         Assert.Equal(2,fake.Opens);

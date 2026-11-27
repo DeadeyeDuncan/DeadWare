@@ -160,6 +160,9 @@ internal sealed class DeviceHost : IAsyncDisposable
     (IReadOnlyList<LightingConflict> Found,bool Failed)? ownScan;
     public event Action<HubReadingsEvent>? HubReadingsChanged;
     const string RestartingText="OpenRGB is restarting. Lighting will resume in a moment.";
+    // Fix wave 2, E: a back-out's or switch-off's deliberate stop that could not end OpenRGB; no second OpenRGB is started beside it. The
+    // conflict check then sees that OpenRGB as another one (our pid is cleared) and blocks until it has gone, then starts OpenRGB as usual.
+    internal const string NotRestartedText="OpenRGB could not be restarted: it did not exit when DeadWare stopped it.";
 
     // startupFailure: set when the host could not prepare OpenRGB's config folder; it reports OpenRgbFailed and never starts OpenRGB.
     // callClock: the clock of the bound on OpenRGB calls; real time unless a test supplies one.
@@ -535,8 +538,9 @@ internal sealed class DeviceHost : IAsyncDisposable
             {
                 // Ruling P19: an OpenRGB of ours that exists, Starting included (launched, its port not open yet), is stopped first. With none,
                 // StartOpenRgb alone; a launch still in its floor wait reads the detector by itself, and the engine starts nothing twice.
-                if(chore==HubChore.Restart&&engine.ProcessId is not null) await StopOpenRgbForRestartAsync(ct).ConfigureAwait(false);
-                StartOpenRgb(ct);
+                // Fix wave 2, E: a stop that could not end OpenRGB starts none beside it; the status says so.
+                if(chore==HubChore.Restart&&engine.ProcessId is not null&&!await StopOpenRgbForRestartAsync(ct).ConfigureAwait(false)) NotRestarted();
+                else StartOpenRgb(ct);
             }
         }
         bool ended;
@@ -611,7 +615,14 @@ internal sealed class DeviceHost : IAsyncDisposable
     {
         lock(gate){session.Abort();sessionOk=false;service.Reset();ForgetPreview();status=HostStatus.Waiting;message=RestartingText;}
         Raise();
-        return await engine.StopForRestartAsync().WaitAsync(ct).ConfigureAwait(false);
+        return await engine.StopForRestartAsync(ct).WaitAsync(ct).ConfigureAwait(false);
+    }
+
+    void NotRestarted()
+    {
+        log.Write("OpenRGB did not exit: DeadWare did not start it again");
+        lock(gate){if(status==HostStatus.Stopping) return;status=HostStatus.OpenRgbFailed;message=NotRestartedText;}
+        Raise();
     }
 
     // OpenRGB's start after a deliberate stop, as CheckConflictsAsync starts it. Never over a start that is still pending: the loop issues it on

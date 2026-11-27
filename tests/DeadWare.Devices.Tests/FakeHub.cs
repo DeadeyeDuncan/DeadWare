@@ -98,7 +98,7 @@ sealed class HubChannels<T>:IEnumerable<KeyValuePair<int,T>>
 }
 
 // Lighting 5: a small iCUE LINK hub. It answers each written frame as the notes and HubFixtures describe: the firmware; status 00 to a mode
-// command, a close or an open; an endpoint read with the endpoint's data, built from Parts, Coolant and Rpm (with the defaults, byte for byte
+// command, a close or an endpoint open, and 03 to open colours while held (the real hub's answer, fix wave 2); an endpoint read with the endpoint's data, built from Parts, Coolant and Rpm (with the defaults, byte for byte
 // HubFixtures.DeviceList, Temperatures and Speeds); a reply to anything but a read or the firmware is 00 00 <opcode> <status> followed by the
 // leftovers of the reply before it from offset 4 on, as the hub's are. In its own mode (Software false) an open, a read and a colour chunk
 // answer 03; 01 03 00 02 ends its own mode and 01 03 00 01 starts it. A read with no endpoint open, or a colour chunk without the colour
@@ -277,8 +277,10 @@ sealed class FakeHubTransport:IHubTransport
             case 0x0D:
                 if(wrongMode>0){wrongMode--;return Ack(op,3);}
                 if(!software) return Ack(op,3);
-                if(c[1]==0x00){coloursOpen=true;payload=null;pending=null;coloursUnit=unit;coloursPort=port;}
-                else{openEndpoint=c[2];endpointUnit=unit;endpointPort=port;}
+                // Fix wave 2, A: the real hub, held, answered open colours with status 03 on 2026-11-27 (and the colour write after it with 00),
+                // so the fake does too: the colour endpoint opens and the reply says 03.
+                if(c[1]==0x00){coloursOpen=true;payload=null;pending=null;coloursUnit=unit;coloursPort=port;return Ack(op,3);}
+                openEndpoint=c[2];endpointUnit=unit;endpointPort=port;
                 return Ack(op,0);
             case 0x08:
                 if(!software) return Ack(op,3);

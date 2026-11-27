@@ -120,8 +120,9 @@ public sealed class HubSwitchFlow
             }
             case Phase.WaitBack:
                 if(state is null) return Refused(null,null);
-                // The 60 s limit comes first: a hub that came back after it, while nobody looked, opens no dialog by itself.
-                if(time.GetElapsedTime(started)>=HubFlow.BackWait){phase=Phase.Idle;turningOn=false;ownRed=HubTexts.NotBack;return Show(state);}
+                // The 60 s limit comes first: a hub that came back after it, while nobody looked, opens no dialog by itself. Fix wave 2 (review D2):
+                // the "not come back yet" line only when it has not.
+                if(time.GetElapsedTime(started)>=HubFlow.BackWait){phase=Phase.Idle;turningOn=false;ownRed=HubFlow.BackThroughOpenRgb(state)?null:HubTexts.NotBack;return Show(state);}
                 if(HubFlow.BackThroughOpenRgb(state)) return StartRead();
                 return Show(state);
             default: return Show(state);

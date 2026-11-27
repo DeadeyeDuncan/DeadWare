@@ -150,8 +150,9 @@ public class HubSwitchFlowTests
         Assert.Equal("The hub has not come back through OpenRGB yet. Click the switch when its lights are back.",shown.Red);
         Assert.True(shown.Enabled);Assert.False(shown.On);Assert.Equal(HubSend.None,shown.Send);
     }
-    // Nobody looked during the wait (Settings was not loaded); the hub came back through OpenRGB after the 60 s: no read, no dialog, the line stays.
-    [Fact] public void Try_again_unwatched_past_60_s_gives_up_even_when_the_hub_is_back()
+    // Nobody looked during the wait (Settings was not loaded); the hub came back through OpenRGB meanwhile. Past the 60 s: no read and no dialog
+    // (fix wave 1, D14), and no "not come back yet" line either, since it has (fix wave 2, review D2): the wait ends quietly, the switch off.
+    [Fact] public void Try_again_unwatched_past_60_s_gives_up_quietly_when_the_hub_is_back()
     {
         var flow=Flow();var gaveBack=State("gaveBack");
         flow.Retry(gaveBack);flow.Reply(gaveBack,true,null);
@@ -159,12 +160,12 @@ public class HubSwitchFlowTests
         var back=State("off",route:"openrgb");
         var shown=flow.Look(back);
         Assert.Equal(HubSend.None,shown.Send);Assert.Null(shown.Ask);
-        Assert.Equal("The hub has not come back through OpenRGB yet. Click the switch when its lights are back.",shown.Red);
+        Assert.Null(shown.Red);
         Assert.False(shown.On);Assert.True(shown.Enabled);
         clock.Advance(TimeSpan.FromSeconds(5));
         var later=flow.Look(back);
         Assert.Equal(HubSend.None,later.Send);Assert.Null(later.Ask);
-        Assert.Equal("The hub has not come back through OpenRGB yet. Click the switch when its lights are back.",later.Red);
+        Assert.Null(later.Red);
     }
     [Fact] public void The_switch_turned_on_in_gave_back_retries_first()
     {

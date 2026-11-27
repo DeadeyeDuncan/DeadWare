@@ -23,6 +23,8 @@ public sealed partial class DeviceHostTests : IAsyncLifetime
     Hold? scanHold; // once set, conflict scans park the host loop in the scanner until it is released
     readonly string zoneKey=LightingKeys.Zone(LightingKeys.Device("SERIAL-1","I2C: FAKE-1"),0);
     DeviceHost? host;
+    // Fix wave 2, E: the engine of the host built last, whose deliberate stop may wait for a young OpenRGB with the loop parked (AdvanceUntil).
+    OpenRgbEngine? built;
     Task? run;
 
     public DeviceHostTests()
@@ -92,6 +94,7 @@ public sealed partial class DeviceHostTests : IAsyncLifetime
         var log=hostLog??this.log;
         Action<string>? prepare=detector is null?null:_=>{Volatile.Read(ref beforeLaunch)?.Invoke();var on=detector.Launching();lock(launchDetector)launchDetector.Add(on);};
         var engine=new OpenRgbEngine(exePath??exe,@"C:\cfg\openrgb",runner,portOpen??((_,_)=>Task.FromResult(true)),time,log,folderCheck,prepareConfig:prepare);
+        built=engine;
         beforeHost?.Invoke(engine);
         var scanner=new Scanner(pid=>
         {
@@ -131,7 +134,8 @@ public sealed partial class DeviceHostTests : IAsyncLifetime
     // its next tick, so the loop has done each tick's work, and armed what comes next, before the clock moves on, however late the thread
     // pool runs it. Fails once limit (FakeTimeLimit unless raised) of fake time has passed without the condition and work still queued has
     // had RealTimeCap to finish, or after RealTimeCap of real time in which the loop never waited on its tick. Returns the fake time moved.
-    // tick: the loop's tick, DeviceHost.FastTick while an effect runs with the lights on; the step defaults to it.
+    // tick: the loop's tick, DeviceHost.FastTick while an effect runs with the lights on; the step defaults to it. Fix wave 2, E: the clock
+    // also moves while the loop is parked in a deliberate stop that waits for a young OpenRGB (its wait is armed, the loop has no tick then).
     async Task<TimeSpan> AdvanceUntil(Func<bool> cond,TimeSpan? step=null,TimeSpan? limit=null,TimeSpan? tick=null,[CallerArgumentExpression(nameof(cond))] string what="")
     {
         var t=tick??DeviceHost.Tick;
@@ -141,7 +145,7 @@ public sealed partial class DeviceHostTests : IAsyncLifetime
         var idle=Stopwatch.StartNew();
         while(!cond())
         {
-            if(moved<max&&time.Waiting(t)){time.Advance(s);moved+=s;idle.Restart();}
+            if(moved<max&&(time.Waiting(t)||built?.Ageing==true)){time.Advance(s);moved+=s;idle.Restart();}
             else if(idle.Elapsed>RealTimeCap)
                 Assert.Fail(moved>=max
                     ?$"condition not reached within the {max.TotalSeconds:0.#} s fake-time limit: {what}"

@@ -181,6 +181,29 @@ public sealed class AeroxBatteryTests:IDisposable
         Assert.Equal(2,LogCount("battery: "));
     }
 
+    // Fix wave 2, F: a reading is logged only when its source, percentage or charging state changed since the last logged one, and once after a
+    // stale spell ends: five identical cable readings give one line.
+    [Fact]
+    public void Only_a_changed_reading_is_logged()
+    {
+        Cable(true);
+        for(int k=0;k<5;k++){battery.Poll(true,true,false);Step(10_000);}
+        Assert.Equal(5,Wired);
+        Assert.Equal(1,LogCount("battery: "));
+        fake.Reply=w=>w[1]==0x92?[0x92,0x93]:Good(w);                   // 90% charging: changed
+        battery.Poll(true,true,false);
+        Assert.Equal(1,LogCount("battery: cable 90% charging"));
+        Step(10_000);
+        fake.Reply=_=>[0x92,0];
+        battery.Poll(true,true,false);                            // invalid: stale
+        Assert.True(battery.Stale);
+        Step(10_000);
+        fake.Reply=w=>w[1]==0x92?[0x92,0x93]:Good(w);
+        battery.Poll(true,true,false);                            // the same 90% again, after a stale spell: logged once
+        Assert.Equal(2,LogCount("battery: cable 90% charging"));
+        Assert.Equal(3,LogCount("battery: "));
+    }
+
     // Ruling R2: the wake's end marks the reading stale and lets the next allowed poll read at once.
     [Fact]
     public void Invalidate_makes_it_stale_and_reads_again_at_once()

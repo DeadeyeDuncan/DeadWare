@@ -48,6 +48,9 @@ sealed class Clock:FakeTimeProvider
         public ValueTask DisposeAsync(){Dispose();return ValueTask.CompletedTask;}
     }
     readonly List<Waiter> waiters=new();
+    int fired;
+    // Fix wave 2, D4: how many timer callbacks have run. A move of the clock after which it is unchanged released no continuation at all.
+    public int Fires=>Volatile.Read(ref fired);
 
     // The due time of a timer armed for dueTime when the clock read before; unknown (null) if the clock has moved since, or never due.
     DateTimeOffset? Due(DateTimeOffset before,TimeSpan dueTime)=>dueTime==Timeout.InfiniteTimeSpan||before!=GetUtcNow()?null:before+dueTime;
@@ -56,7 +59,7 @@ sealed class Clock:FakeTimeProvider
     {
         var waiter=new Waiter(this,dueTime);
         var before=GetUtcNow();
-        waiter.Inner=base.CreateTimer(s=>{waiter.Fired(period);callback(s);},state,dueTime,period);
+        waiter.Inner=base.CreateTimer(s=>{Interlocked.Increment(ref fired);waiter.Fired(period);callback(s);},state,dueTime,period);
         waiter.Arm(Due(before,dueTime));
         lock(waiters)waiters.Add(waiter);
         return waiter;

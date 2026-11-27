@@ -267,7 +267,14 @@ internal sealed class DeviceHostClient : IAsyncDisposable
                     RaiseChanged();
                     if(first&&windowElevated&&!update.State.Elevated)return ServeEnd.WrongElevation;
                 }
-                else if(message is HubReadingsEvent readings) {lock(gate){hubReadings=readings.Readings;hubArrived=time.GetTimestamp();}RaiseHubReadingsChanged();}
+                // Fix wave 2, G (review D1): readings that arrive after a state saying DeadWare no longer drives the hub (a round's readings sent in
+                // the same host turn as a give-back) are dropped, so they cannot undo D7.
+                else if(message is HubReadingsEvent readings)
+                {
+                    bool kept;
+                    lock(gate){kept=state?.Hub?.State is HubStates.Driving or HubStates.Switching;if(kept){hubReadings=readings.Readings;hubArrived=time.GetTimestamp();}}
+                    if(kept)RaiseHubReadingsChanged();
+                }
                 // A frame the host queued before an unsubscribe can still arrive after it: dropped while frames aren't wanted.
                 else if(message is PreviewEvent frame) {bool wanted;lock(gate)wanted=previewWanted;if(wanted)RaisePreview(new PreviewColors(frame.Colors,frame.Lights));}
             }

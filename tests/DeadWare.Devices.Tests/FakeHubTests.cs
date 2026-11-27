@@ -152,7 +152,7 @@ public sealed class FakeHubTests
         Assert.True(corsairLock.Enter(250));
         using var port=fake.Open();
         Assert.Equal(Hex("00 00 05 00"),Head(Send(port,HubFrame.CloseColours())));
-        Assert.Equal(Hex("00 00 0D 00"),Head(Send(port,HubFrame.OpenColours())));
+        Assert.Equal(Hex("00 00 0D 03"),Head(Send(port,HubFrame.OpenColours())));   // fix wave 2, A: as the real hub answered while held
         var frame=Assert.Single(HubFrame.Colours(Enumerable.Repeat(new Rgb(1,2,3),44).ToArray()));
         Assert.Equal(Hex("00 00 06 00"),Head(Send(port,frame)));
         Assert.Null(fake.LastColours);                                       // finished only when the colour endpoint is closed

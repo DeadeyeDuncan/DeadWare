@@ -126,14 +126,16 @@ public sealed class MonitorSession
         Connections.Configure(Settings.ConnectionsRecording,home?.Point);Connections.SetExclusions(excludedKeys);
         Collector.SampleAvailable+=Connections.TryRecord;
         Collector.FinalConnectionsAvailable+=Connections.TryRecord;
-        timer.Tick+=()=>
-        {
-            if(Settings.SelectedGpuId is null && Current is {Gpus.Count:>0} reading)
-            {Settings.SelectedGpuId=DeviceSelection.Resolve(null,reading.Gpus);_ = SaveAsync();}
-            CheckClearStates();
-            FeedHub();
-            Changed?.Invoke();
-        };
+        timer.Tick+=Ticked;
+    }
+    /// <summary>The timer's tick (fix wave 2: its own method, so a test reaches it): the GPU choice, the clear states, the hub feed, Changed.</summary>
+    internal void Ticked()
+    {
+        if(Settings.SelectedGpuId is null && Current is {Gpus.Count:>0} reading)
+        {Settings.SelectedGpuId=DeviceSelection.Resolve(null,reading.Gpus);_ = SaveAsync();}
+        CheckClearStates();
+        FeedHub();
+        Changed?.Invoke();
     }
     /// <summary>Hands the collector the lighting client's hub readings and whether the picture names the radiator fans; on every tick.</summary>
     internal void FeedHub()=>Collector.SetHub(Lighting?.Hub,PictureApplies);

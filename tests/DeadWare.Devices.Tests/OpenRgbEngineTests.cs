@@ -26,6 +26,15 @@ public sealed class OpenRgbEngineTests : IAsyncLifetime
         finally{log.Dispose();try{Directory.Delete(dir,true);}catch{}}
     }
     OpenRgbEngine Track(OpenRgbEngine e){engines.Add(e);return e;}
+    // The log's lines that contain the text, read while the engine may still write (fix wave 2).
+    string[] LogLines(string contains)
+    {
+        var path=Path.Combine(dir,"logs","devices.log");
+        if(!File.Exists(path)) return [];
+        using var fs=new FileStream(path,FileMode.Open,FileAccess.Read,FileShare.ReadWrite|FileShare.Delete);
+        using var r=new StreamReader(fs);
+        return r.ReadToEnd().Split('\n').Select(l=>l.TrimEnd('\r')).Where(l=>l.Contains(contains)).ToArray();
+    }
 
     // exitsOnKill false: a kill ends nothing until the test calls Exit, as an OpenRGB that takes a while to die (or never does).
     sealed class FakeProcess(int id,bool exitsOnKill=true):IRunningProcess
@@ -248,14 +257,16 @@ public sealed class OpenRgbEngineTests : IAsyncLifetime
         var clock=new Clock();
         var e=Track(new OpenRgbEngine(exe,@"C:\cfg\openrgb",runner,(_,_)=>Task.FromResult(true),clock,log));
         await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
+        clock.Advance(TimeSpan.FromSeconds(5));                            // fix wave 2, E: OpenRGB is 5 s old, so the stop ends it at once
         Assert.True(await e.StopForRestartAsync().WaitAsync(RealTimeCap));
         Assert.True(runner.At(0).Killed);
         await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
         Assert.Equal(EngineStatus.Restarting,e.Status);
         Assert.True(clock.Waiting(TimeSpan.FromSeconds(4)));
+        var fires=clock.Fires;
         clock.Advance(TimeSpan.FromSeconds(4)-TimeSpan.FromTicks(1));
-        // One tick early the 4 s wait has not fired, on fake time alone, so nothing waiting on it has launched.
-        Assert.True(clock.Unfired(TimeSpan.FromSeconds(4)));
+        // Fix wave 2, D4: one tick early no timer at all has fired, on fake time alone, so no continuation was released and nothing launched.
+        Assert.Equal(fires,clock.Fires);
         Assert.Equal(1,runner.Count);
         clock.Advance(TimeSpan.FromTicks(1));
         await Until(()=>runner.Count==2&&e.Status==EngineStatus.Running);
@@ -276,6 +287,7 @@ public sealed class OpenRgbEngineTests : IAsyncLifetime
                 clock.Advance(TimeSpan.FromSeconds(4));
             }
             await Until(()=>runner.Count==i+1&&e.Status==EngineStatus.Running);
+            clock.Advance(TimeSpan.FromSeconds(5));                        // fix wave 2, E
             Assert.True(await e.StopForRestartAsync().WaitAsync(RealTimeCap));
         }
         await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
@@ -297,6 +309,7 @@ public sealed class OpenRgbEngineTests : IAsyncLifetime
         await Until(()=>e.Status==EngineStatus.Restarting&&clock.Waiting(TimeSpan.FromSeconds(8)));
         clock.Advance(TimeSpan.FromSeconds(8));
         await Until(()=>runner.Count==3&&e.Status==EngineStatus.Running);
+        clock.Advance(TimeSpan.FromSeconds(5));                            // fix wave 2, E
         Assert.True(await e.StopForRestartAsync().WaitAsync(RealTimeCap));
         await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
         Assert.Equal(EngineStatus.Restarting,e.Status);
@@ -324,8 +337,9 @@ public sealed class OpenRgbEngineTests : IAsyncLifetime
         await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
         Assert.Equal(EngineStatus.Restarting,e.Status);
         Assert.True(clock.Waiting(TimeSpan.FromSeconds(7)));
+        var fires=clock.Fires;
         clock.Advance(TimeSpan.FromSeconds(7)-TimeSpan.FromTicks(1));
-        Assert.True(clock.Unfired(TimeSpan.FromSeconds(7)));
+        Assert.Equal(fires,clock.Fires);                                     // fix wave 2, D4: no timer fired, so nothing was released
         Assert.Equal(2,runner.Count);
         clock.Advance(TimeSpan.FromTicks(1));
         await Until(()=>runner.Count==3&&e.Status==EngineStatus.Running);
@@ -346,8 +360,9 @@ public sealed class OpenRgbEngineTests : IAsyncLifetime
         await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
         Assert.Equal(EngineStatus.Restarting,e.Status);
         Assert.True(clock.Waiting(TimeSpan.FromSeconds(2)));
+        var fires=clock.Fires;
         clock.Advance(TimeSpan.FromSeconds(2)-TimeSpan.FromTicks(1));
-        Assert.True(clock.Unfired(TimeSpan.FromSeconds(2)));
+        Assert.Equal(fires,clock.Fires);                                     // fix wave 2, D4: no timer fired, so nothing was released
         Assert.Equal(1,runner.Count);
         clock.Advance(TimeSpan.FromTicks(1));
         await Until(()=>runner.Count==2&&e.Status==EngineStatus.Running);
@@ -361,6 +376,7 @@ public sealed class OpenRgbEngineTests : IAsyncLifetime
         runner.SlowToDie=true;
         var e=Track(new OpenRgbEngine(exe,@"C:\cfg\openrgb",runner,(_,_)=>Task.FromResult(true),clock,log));
         await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
+        clock.Advance(TimeSpan.FromSeconds(5));                            // fix wave 2, E
         var first=e.StopForRestartAsync();
         await Until(()=>clock.Waiting(TimeSpan.FromSeconds(5)));
         clock.Advance(TimeSpan.FromSeconds(5));
@@ -371,6 +387,7 @@ public sealed class OpenRgbEngineTests : IAsyncLifetime
         await Until(()=>clock.Waiting(TimeSpan.FromSeconds(4)));
         clock.Advance(TimeSpan.FromSeconds(4));
         await Until(()=>runner.Count==2&&e.Status==EngineStatus.Running);
+        clock.Advance(TimeSpan.FromSeconds(5));                            // fix wave 2, E
         Assert.True(await e.StopForRestartAsync().WaitAsync(RealTimeCap));
     }
 
@@ -379,6 +396,7 @@ public sealed class OpenRgbEngineTests : IAsyncLifetime
     {
         var e=Engine();
         await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
+        time.Advance(TimeSpan.FromSeconds(5));                             // fix wave 2, E
         Assert.True(await e.StopForRestartAsync().WaitAsync(RealTimeCap));
         await e.StopAsync().WaitAsync(RealTimeCap);
         await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
@@ -393,6 +411,7 @@ public sealed class OpenRgbEngineTests : IAsyncLifetime
         runner.SlowToDie=true; // the kill ends nothing
         var e=Track(new OpenRgbEngine(exe,@"C:\cfg\openrgb",runner,(_,_)=>Task.FromResult(true),clock,log));
         await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
+        clock.Advance(TimeSpan.FromSeconds(5));                            // fix wave 2, E
         var stop=e.StopForRestartAsync();
         await Until(()=>clock.Waiting(TimeSpan.FromSeconds(5)));
         Assert.False(stop.IsCompleted);
@@ -401,8 +420,10 @@ public sealed class OpenRgbEngineTests : IAsyncLifetime
         Assert.True(runner.At(0).Killed);
 
         // One that exits on the kill: true. None running: true.
-        var other=Track(new OpenRgbEngine(exe,@"C:\cfg\openrgb",new FakeRunner(),(_,_)=>Task.FromResult(true),new Clock(),log));
+        var otherClock=new Clock();
+        var other=Track(new OpenRgbEngine(exe,@"C:\cfg\openrgb",new FakeRunner(),(_,_)=>Task.FromResult(true),otherClock,log));
         await other.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
+        otherClock.Advance(TimeSpan.FromSeconds(5));                       // fix wave 2, E
         Assert.True(await other.StopForRestartAsync().WaitAsync(RealTimeCap));
         var idle=Engine();
         Assert.True(await idle.StopForRestartAsync().WaitAsync(RealTimeCap));
@@ -716,6 +737,119 @@ public sealed class OpenRgbEngineTests : IAsyncLifetime
         Assert.Equal(EngineStatus.Running,e.Status);
         Assert.Equal(1,runner.Count);
         Assert.Equal(1,checks);
+    }
+
+    // Fix wave 2, E: a deliberate stop never ends an OpenRGB less than 5 s after its launch; it waits out the rest of the 5 s first.
+    [Fact]
+    public async Task A_deliberate_stop_waits_until_OpenRGB_is_5_s_old()
+    {
+        var clock=new Clock();
+        var e=Track(new OpenRgbEngine(exe,@"C:\cfg\openrgb",runner,(_,_)=>Task.FromResult(true),clock,log));
+        await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
+        clock.Advance(TimeSpan.FromSeconds(2));
+        var stop=e.StopForRestartAsync();
+        await Until(()=>clock.Waiting(TimeSpan.FromSeconds(3)));
+        var fires=clock.Fires;
+        clock.Advance(TimeSpan.FromSeconds(3)-TimeSpan.FromTicks(1));
+        Assert.Equal(fires,clock.Fires);
+        Assert.False(runner.At(0).Killed);
+        Assert.False(stop.IsCompleted);
+        clock.Advance(TimeSpan.FromTicks(1));
+        Assert.True(await stop.WaitAsync(RealTimeCap));
+        Assert.True(runner.At(0).Killed);
+    }
+
+    // Fix wave 2, E: the stop token and a full stop each end that wait at once, and OpenRGB is ended at once as before.
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task The_stop_token_or_a_full_stop_ends_the_wait_at_once(bool token)
+    {
+        var clock=new Clock();
+        var e=Track(new OpenRgbEngine(exe,@"C:\cfg\openrgb",runner,(_,_)=>Task.FromResult(true),clock,log));
+        await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
+        using var cts=new CancellationTokenSource();
+        var stop=e.StopForRestartAsync(cts.Token);
+        await Until(()=>clock.Waiting(TimeSpan.FromSeconds(5)));
+        var at=clock.GetUtcNow();
+        if(token) cts.Cancel();
+        else await e.StopAsync().WaitAsync(RealTimeCap);
+        Assert.True(await stop.WaitAsync(RealTimeCap));
+        Assert.True(runner.At(0).Killed);
+        Assert.Equal(at,clock.GetUtcNow());
+    }
+
+    // Fix wave 2, D: the port still taken just after DeadWare's own stop (the OpenRGB it killed still running down) is checked again every
+    // second until 10 s after that stop; a check that finds it free launches, and nothing is refused.
+    [Fact]
+    public async Task A_port_still_taken_just_after_our_own_stop_is_checked_again()
+    {
+        var clock=new Clock();
+        var taken=0;
+        var e=Track(new OpenRgbEngine(exe,@"C:\cfg\openrgb",runner,(_,_)=>Task.FromResult(true),clock,log,
+            portGuard:()=>Volatile.Read(ref taken)>0?OpenRgbPortLock.PortTakenText(6744):null));
+        await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
+        clock.Advance(TimeSpan.FromSeconds(5));
+        Assert.True(await e.StopForRestartAsync().WaitAsync(RealTimeCap));
+        Volatile.Write(ref taken,1);
+        await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
+        await Until(()=>clock.Waiting(TimeSpan.FromSeconds(4)));
+        clock.Advance(TimeSpan.FromSeconds(4));                             // the check 4 s after the stop: taken
+        await Until(()=>clock.Waiting(TimeSpan.FromSeconds(1)));
+        clock.Advance(TimeSpan.FromSeconds(1));                             // 5 s: taken
+        await Until(()=>clock.Waiting(TimeSpan.FromSeconds(1)));
+        Assert.Equal(EngineStatus.Starting,e.Status);
+        Assert.Equal(1,runner.Count);
+        Volatile.Write(ref taken,0);
+        clock.Advance(TimeSpan.FromSeconds(1));                             // 6 s: free
+        await Until(()=>runner.Count==2&&e.Status==EngineStatus.Running);
+        Assert.Null(e.FailureReason);
+        Assert.Single(LogLines("openrgb port still in use 4 s after DeadWare ended its OpenRGB; checking again every second"));
+        Assert.Single(LogLines("openrgb port free again 6 s after DeadWare ended its OpenRGB"));
+        Assert.Empty(LogLines("openrgb port guard refused"));
+    }
+
+    // Fix wave 2, D: still taken 10 s after the stop: the same final refusal as before.
+    [Fact]
+    public async Task A_port_still_taken_10_s_after_our_own_stop_is_refused()
+    {
+        var clock=new Clock();
+        var taken=0;
+        var e=Track(new OpenRgbEngine(exe,@"C:\cfg\openrgb",runner,(_,_)=>Task.FromResult(true),clock,log,
+            portGuard:()=>Volatile.Read(ref taken)>0?OpenRgbPortLock.PortTakenText(6744):null));
+        await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
+        clock.Advance(TimeSpan.FromSeconds(5));
+        Assert.True(await e.StopForRestartAsync().WaitAsync(RealTimeCap));
+        var stopped=clock.GetUtcNow();
+        Volatile.Write(ref taken,1);
+        await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
+        await Until(()=>clock.Waiting(TimeSpan.FromSeconds(4)));
+        clock.Advance(TimeSpan.FromSeconds(4));
+        for(var s=5;s<=10;s++)
+        {
+            await Until(()=>clock.Waiting(TimeSpan.FromSeconds(1)));
+            Assert.Equal(EngineStatus.Starting,e.Status);
+            clock.Advance(TimeSpan.FromSeconds(1));
+        }
+        await Until(()=>e.Status==EngineStatus.Failed);
+        Assert.Equal(TimeSpan.FromSeconds(10),clock.GetUtcNow()-stopped);
+        Assert.Equal("Another program is using OpenRGB's network port 6744, so DeadWare won't run OpenRGB as administrator. Quit that program, then turn lighting off and on in Settings.",e.FailureReason);
+        Assert.Equal(1,runner.Count);
+        Assert.Single(LogLines("openrgb port still in use 10 s after DeadWare ended its OpenRGB"));
+        Assert.Single(LogLines("openrgb port guard refused: Another program is using OpenRGB's network port 6744, so DeadWare won't run OpenRGB as administrator. Quit that program, then turn lighting off and on in Settings."));
+    }
+
+    // Fix wave 2, D: the port taken with no recent end of DeadWare's own: final at once, no retry.
+    [Fact]
+    public async Task A_port_taken_with_no_recent_end_of_our_own_is_refused_at_once()
+    {
+        var clock=new Clock();
+        var e=Track(new OpenRgbEngine(exe,@"C:\cfg\openrgb",runner,(_,_)=>Task.FromResult(true),clock,log,portGuard:()=>OpenRgbPortLock.PortTakenText(6744)));
+        await e.StartAsync(CancellationToken.None).WaitAsync(RealTimeCap);
+        Assert.Equal(EngineStatus.Failed,e.Status);
+        Assert.Equal(OpenRgbPortLock.PortTakenText(6744),e.FailureReason);
+        Assert.Equal(0,runner.Count);
+        Assert.Empty(LogLines("openrgb port still in use"));
     }
 
     // F5 item 2 (whole-branch review D15, Ruling BG): an elevated host's port guard (OpenRgbPortLock.Ensure) is consulted before every

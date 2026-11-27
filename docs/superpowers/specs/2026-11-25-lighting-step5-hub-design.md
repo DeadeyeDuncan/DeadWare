@@ -92,7 +92,7 @@ A read-only reading of the owner's hub (firmware, device list, temperatures, spe
 - Speeds: 26 entries. Entry 0 unavailable; fans 1,660, 1,654 and 1,663 RPM; pump 2,774 RPM.
 - Replies to close and open carry leftover bytes from earlier replies after the header, as the notes say.
 - The shared lock `Global\CorsairLinkReadWriteGuardMutex` existed (OpenRGB creates it) and the reading ran under it without disturbing the lights, as on 2026-11-15.
-- **The fans are not at one fixed speed while OpenRGB holds the hub.** On 2026-11-15 they read about 1,330 RPM with coolant at 38.4 °C; now about 1,660 RPM with coolant at 43.7 °C (pump 2,716 then, 2,774 now). Either the hub keeps following its own stored curve when no speed is commanded, or it holds whatever speed it had when it was taken. Two readings cannot tell which. The step's readings will show it within a day of use; it matters to fan control, not to this step's design.
+- **The fans are not at one fixed speed while OpenRGB holds the hub.** On 2026-11-15 they read about 1,330 RPM with coolant at 38.4 °C; now about 1,660 RPM with coolant at 43.7 °C (pump 2,716 then, 2,774 now). A third reading on 2026-11-27, about 1,155 RPM with coolant at 36.5 °C, settles it: the fans follow coolant temperature while the hub is held with no speed command. It matters to fan control, not to this step's design.
 
 Fixtures in the repository are these replies with every id replaced by a synthetic one of the same length.
 
@@ -542,6 +542,17 @@ Three more, ruled by the design session on the plan check's open minors:
 - **Starting is not "let go".** Until lighting has connected once in a helper run and the hub has not yet been held, the reason is "starting". Like "waking" it shows no caution line in Settings and no hub line on the Lighting page, and for both the Settings state line reads "On. DeadWare takes the hub in a moment."
 - **"OpenRGB still has the hub", once the one restart is spent,** reads "when DeadWare is restarted" and "until DeadWare is restarted".
 - **Retire never ends DeadWare's own OpenRGB.** When the chosen OpenRGB location is the one inside DeadLight's folder, Retire ends no `OpenRGB.exe` and the result line adds "DeadWare's own OpenRGB runs from DeadLight's folder, so it was left running."
+
+## Amendments after the first hardware check (2026-11-27, Claude's calls; where they differ from the text above, these win)
+
+Sources, in step 5's records folder: `progress.md` ("Hardware check (owner present), 2026-11-27"), `debug-f1-f2.md` and the colour probe's output. The numbering is this section's own.
+
+1. **Open colours' answer is not a mode signal.** Held by OpenRGB, the real hub answered the open of the colour endpoint with status 03 and the colour write after it with 00, and it was still held afterwards. So a 00 or a 03 to open colours means go on, and any other status is a failure. Wrong mode is still judged on each colour write's reply and on the opens of the read endpoints.
+2. **A pause after software mode.** After the worker sends software mode to a hub that was in its own mode, it sends nothing for 1 s, with the shared lock released, then goes on. A take whose probe found the hub in its own mode is therefore two locked units: firmware, probe and software mode, then 1 s later the device list, temperatures and speeds; a take that found it still held stays one unit. A re-entry ends its unit after software mode, and the interrupted transaction is repeated 1 s later in a unit of its own; the count of re-entries and its 10-minute window are unchanged. A let-go or a suspend during the pause wins.
+3. **A failure names its exchange.** Every log line for a hub failure, a re-entry and a let-go caused by the hub's answers says which exchange it was and its status byte, for example "hub: colour write answered 03 (entering software mode again, 1 of 3)" or "hub: read speeds: no reply (let go: the hub stopped answering)". It stays one line per event.
+4. **The port just after DeadWare's own stop.** When the check before a launch finds OpenRGB's port taken less than 10 s after the engine itself ended an OpenRGB, it checks again every second until 10 s after that end; a check that finds the port free launches, and after the 10 s the refusal is final as before. Every other refusal stays final at once. One line is logged when the checks start and one when they end.
+5. **No OpenRGB is ended within 5 s of its launch by a deliberate stop.** The stop waits out the rest of the 5 s first; the helper's stop and a full stop end that wait at once. When the deliberate stop of a back-out or a switch-off finds that OpenRGB did not exit, no second OpenRGB is started beside it: the helper logs it and the status says OpenRGB could not be restarted, until the conflict check, which now sees that OpenRGB as another one, has seen it go and starts OpenRGB as usual.
+6. **A battery reading is logged only when it changes.** The mouse's battery is logged when its source, percentage or charging state differs from the last one logged, and once after a stale spell ends; an unchanged reading every 10 s on the cable is not logged again.
 
 ## Constraints carried from the hand-over
 

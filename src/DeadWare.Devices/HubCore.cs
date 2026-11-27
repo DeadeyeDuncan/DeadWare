@@ -11,7 +11,10 @@ internal sealed class HubCore:IHub
 {
     public static readonly TimeSpan FrameGap=TimeSpan.FromMilliseconds(125),KeepAlive=TimeSpan.FromSeconds(2),ReadingsEvery=TimeSpan.FromSeconds(3),
         TransactionLimit=TimeSpan.FromMilliseconds(1500),ReadingLimit=TimeSpan.FromSeconds(2),RetryMin=TimeSpan.FromSeconds(30),RetryMax=TimeSpan.FromMinutes(10),
-        ReEntryWindow=TimeSpan.FromMinutes(10),IdleWait=TimeSpan.FromSeconds(5);
+        ReEntryWindow=TimeSpan.FromMinutes(10),IdleWait=TimeSpan.FromSeconds(5),
+        // Fix wave 2, B: after software mode is sent to a hub that was in its own mode (a take's probe said so, or a re-entry), nothing is sent for
+        // this long, with the lock released; then the take or the interrupted transaction goes on in a unit of its own.
+        SoftwarePause=TimeSpan.FromSeconds(1);
     public const int LockLimitMs=250,ReplyLimitMs=250,DrainLimitMs=1,MaxSkipped=16,ReEntries=3;
     // A dialog's reading that found the lock busy is tried again this soon (inside its 2 s); a take refused for a busy lock no sooner than
     // TakeAgain (ruling R21: each try lists the hubs, opens one and waits up to LockLimitMs). A reading round or frame skipped for a busy lock
@@ -19,17 +22,23 @@ internal sealed class HubCore:IHub
     static readonly TimeSpan BusyAgain=TimeSpan.FromMilliseconds(250),TakeAgain=TimeSpan.FromSeconds(1),Least=TimeSpan.FromMilliseconds(1);
     const string SilentText="the hub stopped answering",SlowText="the hub answered too slowly",BusyText="the Corsair lock was busy";
 
-    enum Outcome{Done,Busy,Failed,OwnMode,FallsBack,NoLock,Quiet}
+    enum Outcome{Done,Busy,Failed,OwnMode,FallsBack,NoLock,Quiet,Paused}
+    // Fix wave 2, B: what goes on once a pause after software mode has ended: the rest of the take, or the round that was interrupted. An interrupted
+    // colour write needs no mark: it is due again at once (coloured false).
+    enum Then{None,Take,Round}
     // NoHub, TwoHubs and Unsupported end at a Recheck that shows the change, or at Resume; NoLock lasts the run; PumpStopped ends at an Allow(null)
     // that follows a forbid.
     enum Hold{None,NoHub,TwoHubs,Unsupported,NoLock,PumpStopped}
     readonly record struct Inputs(Rgb[]? Posted,bool Dark,string? Forbidden,string? Detail,int Forbids,bool Quiet,int Quiets,int Resumes,bool Recheck,long? Asked,
         List<TaskCompletionSource>? Waiters);
-    sealed class Fault:Exception;                                          // a missing or malformed reply
-    sealed class Slow:Exception;                                           // a unit past its limit on the core's clock
-    sealed class WrongMode:Exception;                                      // status 03: the hub is in its own mode
-    sealed class FallsBack:Exception;                                      // a fourth wrong mode inside the window
+    // Fix wave 2, C: each carries what happened at which exchange, for the log ("read speeds: no reply", "colour write answered 03").
+    abstract class HubError(string what):Exception{public string What{get;}=what;}
+    sealed class Fault(string what):HubError(what);                       // a missing or malformed reply
+    sealed class Slow(string what):HubError(what);                        // a unit past its limit on the core's clock
+    sealed class WrongMode(string what):HubError(what);                   // status 03: the hub is in its own mode
+    sealed class FallsBack(string what):HubError(what);                   // a fourth wrong mode inside the window
     sealed class Quieted:Exception;                                        // Quiet was called during this step
+    sealed class Paused:Exception;                                         // software mode was sent to a hub in its own mode: the unit ends
 
     readonly IHubTransport transport;
     readonly IHubLock corsairLock;
@@ -54,7 +63,11 @@ internal sealed class HubCore:IHub
     Hold hold;
     string? holdReason,holdDetail;                                         // what the hold's let-go says, to show again after the wake's end
     int seenQuiets,seenResumes,stopForbids,lastCount=-1,reEntries,stalled;
-    long softwareAt,readAt,colourAt,armedAt,skippedAt,reEntryFrom,unitFrom;
+    long softwareAt,readAt,colourAt,armedAt,skippedAt,reEntryFrom,unitFrom,pauseFrom;   // pauseFrom: when the pause began, 0 when none
+    Then resume;
+    HubFrame? sending;HubEndpoint? sendingData;                            // the exchange under way, for the log
+    string? what;                                                          // the last unit's failure at its exchange, null when none
+    HubValue[]? takeT,roundT;                                              // temperatures read before a pause, kept for the repeat
     List<TaskCompletionSource>? stepWaiters;                               // the let-go tasks this step took: completed on every way out, the last guard's too
     long? reading;                                                         // the dialog's request being served: when it was made
     TimeSpan unitLimit,retryWait,nextWait=RetryMin;
@@ -153,6 +166,7 @@ internal sealed class HubCore:IHub
         var now=time.GetTimestamp();
         if(held)
         {
+            if(pauseFrom!=0) return SoftwarePause-time.GetElapsedTime(pauseFrom,now);
             var next=ReadingsEvery-time.GetElapsedTime(readAt,now);
             return ColourIn(now) is TimeSpan c?Min(next,c):next;
         }
@@ -189,8 +203,14 @@ internal sealed class HubCore:IHub
         if(n!=1){HoldOn(n==0?Hold.NoHub:Hold.TwoHubs);return;}
         if(corsairLock.Problem is string problem){Lost(problem);return;}
         if(!Opened()){Failed();return;}
-        built=null;first=null;
-        switch(Run(TransactionLimit,TakeUnit))
+        built=null;first=null;takeT=null;pauseFrom=0;resume=Then.None;
+        Took(Run(TransactionLimit,TakeUnit),false);
+    }
+
+    // again: the outcome of the take's second unit, after a pause; a busy lock there waits another pause, the hub stays held.
+    void Took(Outcome r,bool again)
+    {
+        switch(r)
         {
             case Outcome.Done when built!.Blocker is not null:
                 parts=built.Parts;
@@ -199,37 +219,52 @@ internal sealed class HubCore:IHub
                 hold=Hold.Unsupported;holdReason=built.Blocker;holdDetail=built.Detail;missing=false;
                 break;
             case Outcome.Done: Taken();break;
+            case Outcome.Paused: resume=Then.Take;break;
+            case Outcome.Busy when again: resume=Then.Take;pauseFrom=time.GetTimestamp();break;
             case Outcome.Busy: ClosePort();held=false;skipped=true;skippedAt=time.GetTimestamp();break;   // a skipped round: its port is closed again
-            case Outcome.FallsBack: HandBack(HubReasons.FallsBack,null);Arm();break;
+            case Outcome.FallsBack: FellBack();break;
             case Outcome.NoLock: Lost(why);break;
             case Outcome.Quiet: GoQuiet(Volatile.Read(ref quiets));break;
-            default: Failed();break;
+            default: Failed(what);break;
         }
     }
 
-    // One locked unit, from the firmware read to the first speeds reply. The core holds the hub from the moment software mode is sent.
+    // One locked unit, from the firmware read to the first speeds reply, when the hub was still held. The core holds the hub from the moment
+    // software mode is sent. Fix wave 2, B: a hub that was in its own mode gets the rest (TakeRest) in a second unit after a pause.
     void TakeUnit()
     {
-        var firmware=HubParser.Firmware(Send(HubFrame.Firmware()))??throw new Fault();
+        var firmware=HubParser.Firmware(Send(HubFrame.Firmware()))??throw new Fault("firmware: unreadable reply");
         Log("hub firmware "+firmware);
         Send(HubFrame.Close(HubEndpoint.Temperatures));
-        var probe=HubParser.Status(Send(HubFrame.Open(HubEndpoint.Temperatures)));
-        if(probe==HubStatus.Other) throw new Fault();
+        var reply=Send(HubFrame.Open(HubEndpoint.Temperatures));
+        var probe=HubParser.Status(reply);
+        if(probe==HubStatus.Other) throw new Fault(Answered(reply));
         Send(HubFrame.Close(HubEndpoint.Temperatures));
         Log(probe==HubStatus.WrongMode?"hub was in its own mode":"hub was still held");
         held=true;everHeld=true;
         Mode(HubFrame.SoftwareMode());
         softwareAt=time.GetTimestamp();
         Log("hub: software mode entered");
-        HubList? list=null;
-        Again(()=>list=HubParser.Devices(Transaction(HubEndpoint.Devices)));
-        built=HubParts.Build(list??throw new Fault());
+        if(probe==HubStatus.WrongMode) Pause();
+        TakeRest();
+    }
+
+    // The device list, temperatures and speeds; what a pause interrupted is done again, what came before it is kept.
+    void TakeRest()
+    {
+        if(built is null)
+        {
+            HubList? list=null;
+            Again(()=>list=HubParser.Devices(Transaction(HubEndpoint.Devices)));
+            built=HubParts.Build(list??throw new Fault("read device list: unreadable data"));
+            if(built.Blocker is not null) return;
+            foreach(var p in built.Parts) Log($"hub part: channel {p.Channel}, type 0x{p.Type:X2}, model 0x{p.Model:X2}, {p.Leds} LEDs");
+        }
         if(built.Blocker is not null) return;
-        foreach(var p in built.Parts) Log($"hub part: channel {p.Channel}, type 0x{p.Type:X2}, model 0x{p.Model:X2}, {p.Leds} LEDs");
-        HubValue[]? t=null,s=null;
-        Again(()=>t=Values(HubEndpoint.Temperatures));
+        if(takeT is null) Again(()=>takeT=Values(HubEndpoint.Temperatures));
+        HubValue[]? s=null;
         Again(()=>s=Values(HubEndpoint.Speeds));
-        first=HubParts.Readings(built.Parts,t!,s!);
+        first=HubParts.Readings(built.Parts,takeT!,s!);
     }
 
     void Taken()
@@ -248,19 +283,29 @@ internal sealed class HubCore:IHub
 
     // ---- while held
 
+    // Fix wave 2, B: nothing during a pause after software mode; then the rest of the take or the interrupted round first.
     void Drive(Rgb[]? posted)
     {
-        if(time.GetElapsedTime(readAt)>=ReadingsEvery) Round();
-        if(held) Colours(posted);
+        if(pauseFrom!=0){if(time.GetElapsedTime(pauseFrom)<SoftwarePause) return;pauseFrom=0;}
+        if(resume==Then.Take){resume=Then.None;Took(Run(TransactionLimit,TakeRest),true);if(!held||pauseFrom!=0) return;}
+        if(resume==Then.Round||time.GetElapsedTime(readAt)>=ReadingsEvery) Round();
+        if(held&&pauseFrom==0) Colours(posted);
     }
 
-    // Temperatures, then speeds, each its own unit. A round skipped for a busy lock waits for the next one, 3 s on.
+    // Temperatures, then speeds, each its own unit. A round skipped for a busy lock waits for the next one, 3 s on. A round a pause interrupted
+    // goes on after it: temperatures already read are kept, and its 3 s still count from its start.
     void Round()
     {
-        readAt=time.GetTimestamp();
-        HubValue[]? t=null,s=null;
-        if(!Held(()=>t=Values(HubEndpoint.Temperatures))||!Held(()=>s=Values(HubEndpoint.Speeds))) return;
-        var readings=HubParts.Readings(parts,t!,s!);
+        if(resume!=Then.Round){readAt=time.GetTimestamp();roundT=null;}
+        resume=Then.None;
+        HubValue[]? s=null;
+        if((roundT is null&&!Held(()=>roundT=Values(HubEndpoint.Temperatures)))||!Held(()=>s=Values(HubEndpoint.Speeds)))
+        {
+            if(pauseFrom!=0) resume=Then.Round;
+            return;
+        }
+        var readings=HubParts.Readings(parts,roundT!,s!);
+        roundT=null;
         Note(readings);
         Publish(snapshot with{Readings=readings,ReadingsAt=time.GetTimestamp()});
         stalled=HubChecks.PumpStalled(readings)?stalled+1:0;
@@ -287,7 +332,7 @@ internal sealed class HubCore:IHub
         var zones=wantDark?null:good;
         var leds=Expand(zones);
         colourAt=now;coloured=true;
-        if(!Held(()=>Paint(leds))) return;
+        if(!Held(()=>Paint(leds))){if(pauseFrom!=0) coloured=false;return;}   // after a pause the frame is due at once
         sentDark=wantDark;sentZones=zones;
         if(!firstFrame){firstFrame=true;Log("hub: first frame sent");}
     }
@@ -322,35 +367,39 @@ internal sealed class HubCore:IHub
         {
             case Outcome.Done: return true;
             case Outcome.Busy: return false;
-            case Outcome.FallsBack: HandBack(HubReasons.FallsBack,null);Arm();return false;
+            case Outcome.Paused: return false;
+            case Outcome.FallsBack: FellBack();return false;
             case Outcome.NoLock: Lost(why);return false;
             case Outcome.Quiet: GoQuiet(Volatile.Read(ref quiets));return false;
-            default: Failed();return false;
+            default: Failed(what);return false;
         }
     }
 
-    // While held a 03 reply means the hub fell back to its own mode: software mode again at once and the transaction repeated, in the same unit,
-    // at most ReEntries times in ReEntryWindow; the next one lets go. Ruling R22 (the spec's "at most 3 times in 10 minutes"): the re-entry and the
-    // repeat share one unit, so no other program takes the hub between them; the window is fixed, from its first re-entry; and the count persists
-    // across a fallsBack let-go and Resume, so a wrong mode soon after the retake lets go at once.
+    void FellBack(){HandBack(HubReasons.FallsBack,null,$"hub: {what} (let go: {Phrase(HubReasons.FallsBack,null)})");Arm();}
+
+    // While held a 03 reply means the hub fell back to its own mode (open colours' 03 excepted, fix wave 2, A): software mode again at once, at
+    // most ReEntries times in ReEntryWindow; the next one lets go. The window is fixed, from its first re-entry, and the count persists across a
+    // fallsBack let-go and Resume, so a wrong mode soon after the retake lets go at once (ruling R22). Fix wave 2, B: software mode ends the unit,
+    // and the interrupted transaction is repeated SoftwarePause later in a unit of its own.
     void Again(Action transaction)
     {
-        for(;;)
-        {
-            try{transaction();return;}
-            catch(WrongMode){ReEnter();}
-        }
+        try{transaction();}
+        catch(WrongMode e){ReEnter(e.What);}
     }
 
-    void ReEnter()
+    void ReEnter(string failed)
     {
         var now=time.GetTimestamp();
         if(reEntries==0||time.GetElapsedTime(reEntryFrom,now)>ReEntryWindow){reEntries=0;reEntryFrom=now;}
-        if(reEntries>=ReEntries) throw new FallsBack();
+        if(reEntries>=ReEntries) throw new FallsBack(failed);
         reEntries++;
-        Log($"hub fell back to its own mode: entering software mode again ({reEntries} of {ReEntries})");
+        Log($"hub: {failed} (entering software mode again, {reEntries} of {ReEntries})");
         Mode(HubFrame.SoftwareMode());
+        Pause();
     }
+
+    // Ends the unit after software mode; Drive sends nothing more until SoftwarePause has passed.
+    void Pause(){pauseFrom=time.GetTimestamp();throw new Paused();}
 
     // ---- letting go
 
@@ -360,26 +409,30 @@ internal sealed class HubCore:IHub
         Log(line??$"hub: let go ({Phrase(reason,detail)})");
         var r=Run(TransactionLimit,()=>Mode(HubFrame.HardwareMode()));
         if(r==Outcome.Quiet){GoQuiet(Volatile.Read(ref quiets),pumpStopped);return;}
-        Log(r==Outcome.Done?"hub: hardware mode sent":"hub: hardware mode not sent: "+why);
-        ClosePort();held=false;softwareAt=0;
+        Log(r==Outcome.Done?"hub: hardware mode sent":what is not null?$"hub: {what} (hardware mode not sent)":"hub: hardware mode not sent: "+why);
+        Release();
         Publish(snapshot with{State=HubStates.LetGo,Reason=reason,Detail=detail,SoftwareAt=0,PumpStopped=pumpStopped});
     }
 
-    // The hub stopped answering (or answered too slowly, or something threw): no hardware mode, the port closed, the retry armed.
-    void Failed()
+    // The hub stopped answering (or answered too slowly, or something threw): no hardware mode, the port closed, the retry armed. failed: the
+    // exchange and what it answered, when the failure was at one.
+    void Failed(string? failed=null)
     {
-        ClosePort();held=false;softwareAt=0;
+        Release();
         Publish(snapshot with{State=HubStates.LetGo,Reason=HubReasons.Silent,Detail=null,SoftwareAt=0});
-        Log($"hub: let go ({SilentText})");
+        Log(failed is null?$"hub: let go ({SilentText})":$"hub: {failed} (let go: {SilentText})");
         Arm();
     }
+
+    // Not held any more: the port closed, and no pause or repeat left over.
+    void Release(){ClosePort();held=false;softwareAt=0;pauseFrom=0;resume=Then.None;}
 
     void Arm(){armed=true;armedAt=time.GetTimestamp();retryWait=nextWait;nextWait=nextWait+nextWait>RetryMax?RetryMax:nextWait+nextWait;}
 
     // The lock cannot be had at all: nothing can be sent, so the port is only closed, and the core does not try again in this run.
     void Lost(string problem)
     {
-        ClosePort();held=false;softwareAt=0;hold=Hold.NoLock;holdReason=HubReasons.NoLock;holdDetail=null;
+        Release();hold=Hold.NoLock;holdReason=HubReasons.NoLock;holdDetail=null;
         Publish(snapshot with{State=HubStates.LetGo,Reason=HubReasons.NoLock,Detail=null,SoftwareAt=0});
         Log($"hub: let go ({Phrase(HubReasons.NoLock,null)}: {problem})");
     }
@@ -399,7 +452,7 @@ internal sealed class HubCore:IHub
     void GoQuiet(int seq,bool pumpStopped=false)
     {
         seenQuiets=seq;quieted=true;
-        ClosePort();held=false;softwareAt=0;
+        Release();
         Publish(snapshot with{State=HubStates.LetGo,Reason=HubReasons.Waking,Detail=null,SoftwareAt=0,PumpStopped=pumpStopped||snapshot.PumpStopped});
         Log("hub: quiet until the wake's end");
     }
@@ -447,15 +500,15 @@ internal sealed class HubCore:IHub
         ClosePort();
         if(r==Outcome.Busy) return;
         if(r==Outcome.Quiet){GoQuiet(Volatile.Read(ref quiets));Answer("the PC is going to sleep");return;}
-        if(r!=Outcome.Done){Answer(why);return;}
+        if(r!=Outcome.Done){Answer(why,what);return;}
         Publish(snapshot with{Parts=built!.Parts});
         Read(built.Blocker,built.Detail,first);
     }
 
     void ReadingUnit()
     {
-        if(HubParser.Firmware(Send(HubFrame.Firmware())) is null) throw new Fault();
-        built=HubParts.Build(HubParser.Devices(Transaction(HubEndpoint.Devices))??throw new Fault());
+        if(HubParser.Firmware(Send(HubFrame.Firmware())) is null) throw new Fault("firmware: unreadable reply");
+        built=HubParts.Build(HubParser.Devices(Transaction(HubEndpoint.Devices))??throw new Fault("read device list: unreadable data"));
         if(built.Blocker is not null) return;
         first=HubParts.Readings(built.Parts,Values(HubEndpoint.Temperatures),Values(HubEndpoint.Speeds));
     }
@@ -467,11 +520,11 @@ internal sealed class HubCore:IHub
         Log("hub reading: "+(blocker is not null?Phrase(blocker,detail):ReadingText(readings!)));
     }
 
-    void Answer(string because)
+    void Answer(string because,string? failed=null)
     {
         reading=null;
         Publish(snapshot with{Read=new HubReading(false,time.GetUtcNow())});
-        Log($"hub reading: could not read ({because})");
+        Log(failed is null?$"hub reading: could not read ({because})":$"hub reading: {failed} (could not read: {because})");
     }
 
     static string ReadingText(HubReadings r)
@@ -486,13 +539,15 @@ internal sealed class HubCore:IHub
     // Every way out of a unit is an outcome; its log lines are written after the lock is let go.
     Outcome Run(TimeSpan limit,Action body)
     {
-        deferred=[];
+        deferred=[];what=null;sending=null;
         try{return Unit(limit,body);}
         catch(Quieted){return Outcome.Quiet;}
-        catch(FallsBack){return Outcome.FallsBack;}
-        catch(WrongMode){why="nobody holds the hub";return Outcome.OwnMode;}
-        catch(Slow){why=SlowText;return Outcome.Failed;}
-        catch(Exception){why=SilentText;return Outcome.Failed;}
+        catch(Paused){return Outcome.Paused;}
+        catch(FallsBack e){what=e.What;return Outcome.FallsBack;}
+        catch(WrongMode e){why="nobody holds the hub";what=e.What;return Outcome.OwnMode;}
+        catch(Slow e){why=SlowText;what=e.What;return Outcome.Failed;}
+        catch(HubError e){why=SilentText;what=e.What;return Outcome.Failed;}
+        catch(Exception){why=SilentText;what=sending is null?null:Sending()+": failed";return Outcome.Failed;}
         finally{var lines=deferred;deferred=null;foreach(var line in lines) log.Write(line);}
     }
 
@@ -526,6 +581,7 @@ internal sealed class HubCore:IHub
     byte[] Send(HubFrame frame,HubEndpoint? data=null)
     {
         var p=Volatile.Read(ref port)??throw new ObjectDisposedException(nameof(IHubPort));
+        sending=frame;sendingData=data;
         for(int n=0;n<MaxSkipped;n++){var waiting=p.Read(DrainLimitMs);Within();if(waiting is null) break;}
         if(Volatile.Read(ref quiets)!=seenQuiets) throw new Quieted();
         p.Write(frame);
@@ -533,54 +589,83 @@ internal sealed class HubCore:IHub
         {
             var reply=p.Read(ReplyLimitMs);
             Within();
-            if(reply is null) throw new Fault();
+            if(reply is null) throw new Fault(Sending()+": no reply");
             if(HubParser.Echoes(reply,frame.Opcode)&&(data is not HubEndpoint ep||IsData(reply,ep))) return reply;
-            if(others>=MaxSkipped) throw new Fault();
+            if(others>=MaxSkipped) throw new Fault(Sending()+": no matching reply");
         }
     }
 
-    static bool IsData(byte[] reply,HubEndpoint ep)=>HubParser.Status(reply) switch
+    bool IsData(byte[] reply,HubEndpoint ep)=>HubParser.Status(reply) switch
     {
-        HubStatus.WrongMode=>throw new WrongMode(),
-        HubStatus.Other=>throw new Fault(),
+        HubStatus.WrongMode=>throw new WrongMode(Answered(reply)),
+        HubStatus.Other=>throw new Fault(Answered(reply)),
         _=>HubParser.IsData(reply,ep),
     };
 
-    void Within(){if(time.GetElapsedTime(unitFrom)>unitLimit) throw new Slow();}
+    void Within(){if(time.GetElapsedTime(unitFrom)>unitLimit) throw new Slow(Sending()+": too slow");}
 
-    // close, open, read, close of one endpoint. A close's status is not looked at.
+    // close, open, read, close of one endpoint. A close's status is not looked at. Fix wave 2, B: a read answering 03 closes its endpoint in the
+    // same unit before the re-entry, so no transaction is split across units.
     byte[] Transaction(HubEndpoint ep)
     {
         Send(HubFrame.Close(ep));
         Ok(Send(HubFrame.Open(ep)));
-        var data=Send(HubFrame.Read(),ep);
+        byte[] data;
+        try{data=Send(HubFrame.Read(),ep);}
+        catch(WrongMode){Send(HubFrame.Close(ep));throw;}
         Send(HubFrame.Close(ep));
         return data;
     }
 
-    HubValue[] Values(HubEndpoint ep)=>HubParser.Values(Transaction(ep))??throw new Fault();
+    HubValue[] Values(HubEndpoint ep)=>HubParser.Values(Transaction(ep))??throw new Fault($"read {Endpoint((byte)ep)}: unreadable data");
 
-    // close colours, open colours, the chunks, close colours.
+    // close colours, open colours, the chunks, close colours. Fix wave 2, A: open colours' status is not a mode signal (the real hub answers 03
+    // there while held): 00 and 03 go on, anything else is a failure; wrong mode is judged on each chunk's reply, and a chunk answering 03 closes
+    // the colour endpoint in the same unit before the re-entry.
     void Paint(Rgb[] leds)
     {
         Send(HubFrame.CloseColours());
-        Ok(Send(HubFrame.OpenColours()));
-        foreach(var f in HubFrame.Colours(leds)) Ok(Send(f));
+        var opened=Send(HubFrame.OpenColours());
+        if(HubParser.Status(opened)==HubStatus.Other) throw new Fault(Answered(opened));
+        try{foreach(var f in HubFrame.Colours(leds)) Ok(Send(f));}
+        catch(WrongMode){Send(HubFrame.CloseColours());throw;}
         Send(HubFrame.CloseColours());
     }
 
-    void Mode(HubFrame frame){if(HubParser.Status(Send(frame))!=HubStatus.Ok) throw new Fault();}
+    void Mode(HubFrame frame){var reply=Send(frame);if(HubParser.Status(reply)!=HubStatus.Ok) throw new Fault(Answered(reply));}
 
     // A reply that must say 00: 03 is wrong mode, anything else a failure.
-    static void Ok(byte[] reply)
+    void Ok(byte[] reply)
     {
         switch(HubParser.Status(reply))
         {
             case HubStatus.Ok: return;
-            case HubStatus.WrongMode: throw new WrongMode();
-            default: throw new Fault();
+            case HubStatus.WrongMode: throw new WrongMode(Answered(reply));
+            default: throw new Fault(Answered(reply));
         }
     }
+
+    // Fix wave 2, C: the exchange under way and its reply's status byte, "open temperatures answered 03"; never any byte past the status.
+    string Answered(byte[] reply)=>reply.Length<4?Sending()+": a short reply":$"{Sending()} answered {reply[3]:X2}";
+
+    string Sending()=>sending is null?"no exchange":Name(sending,sendingData);
+
+    // The exchange a frame is, by its command bytes (from [3]).
+    static string Name(HubFrame frame,HubEndpoint? data)
+    {
+        var b=frame.Bytes.Span;
+        return b[3] switch
+        {
+            0x02=>"firmware",
+            0x01=>b[6]==0x02?"software mode":"hardware mode",
+            0x05=>"close "+Endpoint(b[6]),
+            0x0D=>"open "+Endpoint(b[5]),
+            0x08=>data is HubEndpoint ep?"read "+Endpoint((byte)ep):"read",
+            _=>"colour write",
+        };
+    }
+
+    static string Endpoint(byte ep)=>ep switch{0x36=>"device list",0x21=>"temperatures",0x17=>"speeds",_=>"colours"};
 
     // ---- small parts
 
