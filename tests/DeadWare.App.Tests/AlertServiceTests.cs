@@ -44,9 +44,10 @@ public class AlertServiceTests
         await Until(() => Task.FromResult(usage.PendingSamples == 0));
         Assert.Equal(0, usage.DroppedSamples);
     }
-    private static async Task Until(Func<Task<bool>> condition)
+    // limit: only so a hang ends. A test whose wait is long on a slow disk (CI) names a longer one; what it proves is in its asserts.
+    private static async Task Until(Func<Task<bool>> condition, TimeSpan? limit = null)
     {
-        using var deadline = new CancellationTokenSource(Timeout);
+        using var deadline = new CancellationTokenSource(limit ?? Timeout);
         while (!await condition()) await Task.Delay(25, deadline.Token);
     }
     private static async Task<AlertLogView> Log(AlertService alerts) => await alerts.ReadEpisodesAsync(Start.AddDays(-1), Start.AddDays(1));
@@ -328,7 +329,8 @@ public class AlertServiceTests
             // Ten polls, each in its own minute, posted faster than the worker reads them.
             for (int poll = 0; poll < 10; poll++)
                 alerts.TryRecordNetworkUse(R(Start.AddMinutes(poll), true, Apps(poll * 1024, 1024, Start.AddMinutes(poll))));
-            await Until(async () => (await alerts.ReadEpisodesAsync(Start.AddDays(-1), Start.AddDays(1), 1)).Total == 10 * 1024 || alerts.Failed);
+            // 10,240 episodes took more than the usual 10 s on a CI disk once (2026-11-27, PR #145): this wait gets two minutes.
+            await Until(async () => (await alerts.ReadEpisodesAsync(Start.AddDays(-1), Start.AddDays(1), 1)).Total == 10 * 1024 || alerts.Failed, TimeSpan.FromMinutes(2));
             await alerts.StopAsync();
             Assert.False(alerts.Failed); Assert.Equal(AlertService.SavedStatus, alerts.Status); Assert.Equal(0, alerts.DroppedObservations);
             for (int poll = 0; poll < 10; poll++)
