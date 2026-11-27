@@ -334,7 +334,7 @@ Also at that point, after the hand-back and in every mode: the helper sets OpenR
 
 The Windows session ending (sign-out, shut down) does not stop the helper today (`App.xaml.cs:197-207`). Claude's call: step 5 makes the window send the helper its ordinary Stop there too, without waiting more than 2 s, so a sign-out hands the hub back; on a shut down it makes no difference.
 
-Nothing runs when the helper is killed or hangs. Then the hub's own fallback after about 10 s of silence applies, which the hardware check's silence test confirms or refutes for firmware 4.1.656. If it does not fall back, the hub keeps its last colours and whatever its speeds do until the helper, restarted by the window after 4 s, takes it again; the design accepts that.
+Nothing runs when the helper is killed or hangs. Then the hub's own fallback applies: measured on 2026-11-27 on firmware 4.1.656, with nothing talking to it the hub went back to its own lights and fan settings by itself after somewhere between 13 s and about a minute (64 s from the last read). Until then the hub keeps its last colours and whatever its speeds do, unless the helper, restarted by the window after 4 s, takes it again first; the design accepts that.
 
 In mode `openrgb` none of this section applies except the detector line: Quit ends OpenRGB as 0.22 does and DeadWare does not touch the hub.
 

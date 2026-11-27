@@ -55,7 +55,7 @@ Every transaction holds the shared named mutex `Global\CorsairLinkReadWriteGuard
   - Send close(`0x22`), then open the colour endpoint (`0D 00 22`).
   - Send the payload in chunks of up to 508 bytes: the first chunk with `06 00`, the rest with `07 00`.
   - Finish with close(`0x22`).
-- **Keep it awake:** in software mode the host must keep talking to the hub. After about 10 s of silence the hub has been reported to fall back to hardware mode. That was seen on firmware 2.4.438 and is unconfirmed on 4.x.
+- **Keep it awake:** in software mode the host must keep talking to the hub. On firmware 2.4.438 the hub was reported to fall back to hardware mode after about 10 s of silence. On firmware 4.1.656 (measured 2026-11-27, below) it was still held after 13 s of silence and had fallen back by itself after somewhere between 13 s and 64 s.
 
 ## Parsing
 

@@ -3,8 +3,8 @@ namespace DeadWare.Devices;
 
 // Lighting 5: what the host knows on a loop turn that decides whether the worker may hold the hub. Conflicts: everything the last scan found,
 // the legacy Corsair service included (it doesn't block lighting). LaunchedWithHub: an OpenRGB of ours exists and its launch wrote the hub
-// detector on. RestartSpent: the one restart for a detector left on has been used in this helper run. Leftover (fix wave 4, A): during a mode
-// change, the OpenRGB the take-over stopped is still listed; it may still have the hub, so holding is forbidden as for LaunchedWithHub.
+// detector on. RestartSpent: the one restart for a detector left on has been used in this helper run. Leftover (fix wave 4, A; 4c: the Take step
+// only, so the hub is still kept through a later OpenRGB crash): the OpenRGB the take-over stopped is still listed; it may still have the hub, so holding is forbidden as for LaunchedWithHub.
 internal readonly record struct HubFacts(string Mode,bool Stopping,bool Quiet,bool EngineActive,bool ConnectedOnce,HostStatus Status,
     IReadOnlyList<LightingConflict> Conflicts,bool ScanFailed,bool OpenRgbListsHub,bool LaunchedWithHub,bool RestartSpent=false,bool Leftover=false);
 

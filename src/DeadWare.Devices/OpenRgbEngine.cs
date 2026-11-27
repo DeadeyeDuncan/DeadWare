@@ -116,7 +116,8 @@ internal sealed class OpenRgbEngine : IAsyncDisposable
                 if(lingering is {} p)
                 {
                     bool done;try{done=p.HasExited;}catch{done=true;}
-                    if(done){gone=p;lingering=null;}else id=p.Id;
+                    // Fix wave 4c (review D2): once it has exited it is the ended one, so while still listed it is not another OpenRGB.
+                    if(done){gone=p;lingering=null;ended=(p.Id,p.Started);}else id=p.Id;
                 }
             }
             try{gone?.Dispose();}catch{}

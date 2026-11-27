@@ -1560,6 +1560,142 @@ public sealed partial class DeviceHostTests
         ours.StaysListed=false;
     }
 
+    // Fix wave 4c (review D6): while the stopped OpenRGB is listed the take looks again on every turn, not only at the 5 s conflict check.
+    [Fact]
+    public async Task While_our_stopped_OpenRGB_is_listed_the_take_scans_every_turn()
+    {
+        var (h,hub,_)=OwnerHost();
+        await Until(()=>h.State.Status==HostStatus.Running);
+        runner.At(0).StaysListed=true;
+        try
+        {
+            await TakeOver(h,hub);
+            await AdvanceUntil(()=>LogLines(StoppedLine).Length==1);
+            await RunFor(TimeSpan.FromMilliseconds(500),DeviceHost.Tick);
+            var before=Volatile.Read(ref scans);
+            await RunFor(TimeSpan.FromSeconds(2),DeviceHost.Tick);
+            Assert.InRange(Volatile.Read(ref scans)-before,4,6);
+            Assert.False(Allowed(hub));
+        }
+        finally{runner.At(0).StaysListed=false;}
+    }
+
+    // Fix wave 4c (review D7): the take's own 10 s limit counts from the last turn the stopped OpenRGB was listed. Listed for 9 s, then a hub that
+    // takes 2 s more to be driven: the take still goes on.
+    [Fact]
+    public async Task The_takes_limit_counts_from_the_last_turn_our_stopped_OpenRGB_was_listed()
+    {
+        var (h,hub,_)=OwnerHost();
+        await Until(()=>h.State.Status==HostStatus.Running);
+        runner.At(0).StaysListed=true;
+        await TakeOver(h,hub);
+        await AdvanceUntil(()=>LogLines(StoppedLine).Length==1);
+        var stopped=time.GetUtcNow();
+        await AdvanceUntil(()=>time.GetUtcNow()-stopped>=TimeSpan.FromSeconds(9));
+        runner.At(0).StaysListed=false;
+        await AdvanceUntil(()=>Allowed(hub));
+        await RunFor(TimeSpan.FromSeconds(2),DeviceHost.Tick);
+        Assert.True(time.GetUtcNow()-stopped>TimeSpan.FromSeconds(10));
+        Assert.Null(h.State.Hub!.Problem);
+        Assert.Equal("switching",h.State.Hub.State);
+        hub.Drive(time,2716,ReadingFans);
+        await AdvanceUntil(()=>LogLines(StartedLine).Length==1);
+        Assert.Empty(LogLines("hub take-over interrupted"));
+    }
+
+    // Fix wave 4c (review D1): after the take, the OpenRGB the take-over started without the hub ends by itself and Windows still lists it: the
+    // hub is kept through that crash, as through any OpenRGB crash; nothing forbids holding and the take-over does not back out.
+    [Fact]
+    public async Task After_the_take_a_crashed_OpenRGB_still_listed_does_not_make_the_worker_let_go()
+    {
+        var (h,hub,_)=OwnerHost();
+        await TakeOver(h,hub);
+        await ToCheck(h,hub);
+        await AdvanceUntil(()=>runner.Count==2&&h.State.Status==HostStatus.Running);
+        var allows=hub.Allows.Count;
+        var crashed=runner.At(1);
+        crashed.StaysListed=true;
+        try
+        {
+            crashed.Exit();
+            await AdvanceUntil(()=>LogLines("openrgb exited").Length==1);
+            var before=Volatile.Read(ref scans);
+            await AdvanceUntil(()=>Volatile.Read(ref scans)>=before+2);
+            await RunFor(TimeSpan.FromSeconds(2),DeviceHost.Tick);
+            Assert.Equal(allows,hub.Allows.Count);
+            Assert.Null(LastAllow(hub).Reason);
+            Assert.Null(h.State.Hub!.Problem);
+            Assert.Equal("switching",h.State.Hub.State);
+            Assert.Empty(LogLines("hub take-over interrupted"));
+        }
+        finally{crashed.StaysListed=false;}
+    }
+
+    // Fix wave 4c (review D3): a switch-off while OpenRGB is between a crash and its relaunch (the crashed one still listed) is not "could not be
+    // restarted": the guard is for the OpenRGB the take-over stopped. OpenRGB runs again afterwards, launched once.
+    [Fact]
+    public async Task A_switch_off_during_a_crash_relaunch_is_not_could_not_be_restarted()
+    {
+        SaveHub("{\"Mode\":\"driven\",\"Parts\":"+FourParts+"}");
+        var (h,hub,_)=OwnerHost();
+        var states=Recorded(h);
+        await Until(()=>h.State.Status==HostStatus.Running);
+        await AdvanceUntil(()=>Allowed(hub));
+        hub.Drive(time);
+        await AdvanceUntil(()=>h.State.Hub?.State=="driving");
+        var relaunch=NewHold();
+        Volatile.Write(ref beforeLaunch,()=>relaunch.Park());
+        var crashed=runner.At(0);
+        crashed.StaysListed=true;
+        try
+        {
+            crashed.Exit();
+            await AdvanceUntil(()=>relaunch.Parked,limit:TimeSpan.FromSeconds(60));
+            var before=Volatile.Read(ref scans);
+            await AdvanceUntil(()=>Volatile.Read(ref scans)>=before+1);
+            Assert.True((await Send(h,new SetHubModeRequest("openrgb"))).Ok);
+            await AdvanceUntil(()=>h.State.Hub?.State=="off");
+            await RunFor(TimeSpan.FromSeconds(2),DeviceHost.Tick);
+            Assert.Empty(LogLines("OpenRGB did not exit: DeadWare did not start it again"));
+            Assert.DoesNotContain(Copy(states),s=>s.Message=="OpenRGB could not be restarted: it did not exit when DeadWare stopped it.");
+        }
+        finally{crashed.StaysListed=false;Volatile.Write(ref beforeLaunch,null);relaunch.Release();}
+        await AdvanceUntil(()=>runner.Count==2&&h.State.Status==HostStatus.Running);
+        await RunFor(TimeSpan.FromSeconds(6),DeviceHost.Tick);
+        Assert.Equal(2,runner.Count);
+    }
+
+    // Fix wave 4c (review D2): DeadWare's own OpenRGB that did not exit when stopped, which exits later and which Windows still lists, is not
+    // another OpenRGB either: the status keeps saying it could not be restarted until it is no longer listed, then lighting starts again.
+    [Fact]
+    public async Task Our_lingering_OpenRGB_that_exits_but_stays_listed_is_not_another_OpenRGB()
+    {
+        var (h,hub,_)=OwnerHost();
+        var states=Recorded(h);
+        await TakeOver(h,hub);
+        await ToCheck(h,hub);
+        await AdvanceUntil(()=>runner.Count==2&&h.State.Status==HostStatus.Running);
+        var leftover=runner.At(1);
+        leftover.IgnoresKill=true;
+        try
+        {
+            hub.Snapshot=hub.Snapshot with{State="letGo",Reason="noHub",SoftwareAt=0};
+            hub.Raise();
+            await AdvanceUntil(()=>leftover.Killed);
+            await Elapse(TimeSpan.FromSeconds(5));
+            await AdvanceUntil(()=>LogLines("OpenRGB did not exit: DeadWare did not start it again").Length==1);
+            leftover.StaysListed=true;
+            leftover.Exit();
+            await RunFor(TimeSpan.FromSeconds(12),DeviceHost.Tick);
+            Assert.Equal(HostStatus.OpenRgbFailed,h.State.Status);
+            Assert.Equal("OpenRGB could not be restarted: it did not exit when DeadWare stopped it.",h.State.Message);
+            Assert.DoesNotContain(Copy(states),s=>s.Status==HostStatus.Blocked||s.Message.Contains("Another OpenRGB"));
+            Assert.Equal(2,runner.Count);
+        }
+        finally{leftover.StaysListed=false;leftover.Exit();}
+        await AdvanceUntil(()=>runner.Count==3&&h.State.Status==HostStatus.Running);
+    }
+
     // Ruling P23: a lock that stays busy skips every round without failing, so the check has an upper limit.
     [Fact]
     public async Task A_check_with_no_reading_round_ends_after_60_s()

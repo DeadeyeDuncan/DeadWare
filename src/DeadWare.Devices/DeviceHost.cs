@@ -171,6 +171,9 @@ internal sealed class DeviceHost : IAsyncDisposable
     // while it is listed the take-over waits before the take (at most OpenRgbEngine.LingerWindow after the stop), and after notRestarted it is
     // treated as the lingering one is.
     bool leftover;
+    // Fix wave 4c (review D1, D3; under gate): leftover counts for the hold only on the take-over's Take step, and for the Restart chore only when the
+    // engine's ended OpenRGB is takeStopped, the one the take-over's own stop ended.
+    (int Id,DateTime Started)? takeStopped;
 
     // startupFailure: set when the host could not prepare OpenRGB's config folder; it reports OpenRgbFailed and never starts OpenRGB.
     // callClock: the clock of the bound on OpenRGB calls; real time unless a test supplies one.
@@ -550,7 +553,7 @@ internal sealed class DeviceHost : IAsyncDisposable
             if(chore==HubChore.StopOpenRgb)
             {
                 var exited=await StopOpenRgbForRestartAsync(ct).ConfigureAwait(false);
-                lock(gate)takeover.Stopped(exited);
+                lock(gate){takeover.Stopped(exited);if(exited) takeStopped=engine.Ended;}
             }
             else
             {
@@ -558,8 +561,10 @@ internal sealed class DeviceHost : IAsyncDisposable
                 // StartOpenRgb alone; a launch still in its floor wait reads the detector by itself, and the engine starts nothing twice.
                 // Fix wave 2, E: a stop that could not end OpenRGB starts none beside it; the status says so. Fix wave 4 (A, and C for review D1):
                 // nor does a restart with no OpenRGB of ours running while the one the take-over stopped still lingers or is still listed.
+                // Fix wave 4c (review D3): a listed leftover counts only when it is the OpenRGB the take-over itself stopped, never one that
+                // ended by itself and that the engine is about to start again.
                 bool own;
-                lock(gate)own=leftover;
+                lock(gate)own=leftover&&takeStopped is{} stopped&&engine.Ended==stopped;
                 if(chore==HubChore.Restart&&engine.ProcessId is not null&&!await StopOpenRgbForRestartAsync(ct).ConfigureAwait(false)) NotRestarted();
                 else if(chore==HubChore.Restart&&engine.ProcessId is null&&(engine.Lingering is not null||own)) NotRestarted();
                 else StartOpenRgb(ct);
@@ -594,7 +599,7 @@ internal sealed class DeviceHost : IAsyncDisposable
         var own=ownScan;
         return new(hubHost!.Mode(settings),status==HostStatus.Stopping,everyday.Quiet,engineActive,connectedOnce,status,own?.Found??conflicts,own?.Failed??hubScanFailed,
             service.OpenRgbListsHub,hubHost.Restarting||engine.ProcessId is not null&&hubHost.LaunchedOn,hubHost.Restarted&&!hubHost.Restarting,
-            leftover&&hubHost.Switching);
+            leftover&&takeover!.Step==HubStep.Take);
     }
 
     // Sends the forbid (Force wins) and returns the facts' own answer. Ruling R30: after a forbid, or before any Allow in this run, holding is

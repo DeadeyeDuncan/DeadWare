@@ -23,6 +23,24 @@ public sealed class ProcessConflictScannerTests:IDisposable
     static readonly RunningProcess Ours=new(100,"OpenRGB",@"C:\o\OpenRGB.exe",new DateTime(2026,11,27,20,41,55,0,DateTimeKind.Utc));
     static readonly RunningProcess Other=new(200,"OpenRGB",null,null);
 
+    // Fix wave 4c (review D4): the scanner passes the engine's ended OpenRGB on and says whether it is still listed: the same process (id and start)
+    // is not another OpenRGB and is listed; the same id with a later start is another one and the ended one is not listed.
+    [Fact]
+    public void The_ended_OpenRGB_is_passed_on_and_its_listing_reported()
+    {
+        var scanner=new ProcessConflictScanner(log,()=>listed);
+        var ended=(Ours.Id,Ours.Started!.Value);
+        listed=[Ours];
+        Assert.Empty(scanner.Scan(null,ended,out var stillListed));
+        Assert.True(stillListed);
+        listed=[Ours with{Started=Ours.Started.Value.AddSeconds(30)}];
+        Assert.Equal(ConflictKind.ForeignOpenRgb,Assert.Single(scanner.Scan(null,ended,out stillListed)).Kind);
+        Assert.False(stillListed);
+        listed=[];
+        Assert.Empty(scanner.Scan(null,ended,out stillListed));
+        Assert.False(stillListed);
+    }
+
     [Fact]
     public void Another_OpenRGB_is_logged_once_per_change_and_again_after_a_clean_scan()
     {
