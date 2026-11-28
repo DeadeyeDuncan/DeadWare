@@ -11,6 +11,8 @@ namespace DeadWare.App.Tests;
 [Collection(TestHostThreadPool.TimingCollection)]
 public class UsageHistoryServiceTests
 {
+    /// <summary>Only so a hang ends: what each test proves is in its asserts. GitHub's CI machines run these tests several times slower than a PC.</summary>
+    private static readonly TimeSpan HangLimit = TimeSpan.FromSeconds(60);
     private static readonly DateTimeOffset Start = UsageMetrics.Floor(DateTimeOffset.UtcNow.AddMinutes(-10));
 
     [Fact]
@@ -69,7 +71,7 @@ public class UsageHistoryServiceTests
         {
             for (int i = 0; i < 121; i++) service.TryRecord(Reading(Start.AddSeconds(i), i));
             Assert.Equal(1, service.DroppedSamples); ready.SetResult();
-            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            using var timeout = new CancellationTokenSource(HangLimit);
             while (service.PendingSamples > 0) await Task.Delay(10, timeout.Token);
             for (int i = 121; i < 181; i++) service.TryRecord(Reading(Start.AddSeconds(i), i));
             await service.StopAsync();
@@ -107,7 +109,7 @@ public class UsageHistoryServiceTests
         for (int i = 0; i <= 60; i++) service.TryRecord(Reading(Start.AddSeconds(i), i, processes: [new ProcessTraffic(1, 1, "steam.exe", null, null, i, 0)]));
         try
         {
-            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            using var deadline = new CancellationTokenSource(HangLimit);
             while ((await service.ReadMetricAsync(UsageMetrics.Cpu, null, Start, Start.AddMinutes(1))).Minutes == 0) await Task.Delay(20, deadline.Token);
             string metrics = fixture.Path + ".metrics.csv", apps = fixture.Path + ".apps.csv";
             await service.ExportCsvAsync(metrics, false, Start, Start.AddMinutes(1));
@@ -288,7 +290,7 @@ public class UsageHistoryServiceTests
             Assert.True(File.Exists(Marker(fixture.Path)));
             // Recording continues.
             for (int i = 0; i <= 60; i++) service.TryRecord(Reading(Start.AddSeconds(i), i));
-            using (var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10)))
+            using (var deadline = new CancellationTokenSource(HangLimit))
                 while ((await service.ReadMetricAsync(UsageMetrics.Cpu, null, Start, Start.AddMinutes(1))).Minutes == 0) await Task.Delay(20, deadline.Token);
             service.RetryClear();
             await Until(() => service.ClearState.Phase == HistoryClearPhase.Done);
@@ -329,7 +331,7 @@ public class UsageHistoryServiceTests
             Assert.Equal(new HistoryClearState(HistoryClearPhase.Clearing, null, null, true, true), service.ClearState);
             gate.Set();
             // Done for the resumed clear alone leaves app1 and app2; the new request's rows are gone only once it runs.
-            using (var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(20)))
+            using (var deadline = new CancellationTokenSource(HangLimit))
                 while (!(service.ClearState.Phase == HistoryClearPhase.Done && Count(fixture.Path, "SELECT COUNT(*) FROM application_minutes") == 0))
                 {
                     try { await Task.Delay(20, deadline.Token); } catch (OperationCanceledException) { break; }

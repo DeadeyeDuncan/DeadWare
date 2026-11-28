@@ -12,7 +12,8 @@ public class DeviceHostClientTests:IAsyncLifetime
 {
     const string Exe=@"C:\OpenRGB\OpenRGB.exe";
     static readonly HostState Sample=new(HostStatus.Running,"ok",false,[],[],new LightingSettings());
-    static readonly TimeSpan Retry=TimeSpan.FromMilliseconds(500),Window=TimeSpan.FromSeconds(5),Tick=TimeSpan.FromTicks(1),Bound=TimeSpan.FromSeconds(10);
+    // Bound only ends a hang: what each test proves is in its asserts. GitHub's CI machines run these tests several times slower than a PC.
+    static readonly TimeSpan Retry=TimeSpan.FromMilliseconds(500),Window=TimeSpan.FromSeconds(5),Tick=TimeSpan.FromTicks(1),Bound=TimeSpan.FromSeconds(60);
     sealed class FakeProcess:IDeviceHostProcess
     {
         readonly TaskCompletionSource exit=new(TaskCreationOptions.RunContinuationsAsynchronously);

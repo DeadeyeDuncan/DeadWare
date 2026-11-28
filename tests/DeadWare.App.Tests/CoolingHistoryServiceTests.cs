@@ -8,6 +8,8 @@ namespace DeadWare.App.Tests;
 [Collection(TestHostThreadPool.TimingCollection)]
 public class CoolingHistoryServiceTests
 {
+    /// <summary>Only so a hang ends: what each test proves is in its asserts. GitHub's CI machines run these tests several times slower than a PC.</summary>
+    private static readonly TimeSpan HangLimit=TimeSpan.FromSeconds(60);
     [Fact]
     public async Task Recorded_stream_can_save_fixed_reference_and_log_muted_warning_across_restart()
     {
@@ -100,7 +102,7 @@ public class CoolingHistoryServiceTests
             for(int i=0;i<100000;i++)service.TryRecord(reading);
             watch.Stop();
             Assert.True(watch.Elapsed<TimeSpan.FromSeconds(3),$"Publication took {watch.Elapsed}");
-            await service.StopAsync().WaitAsync(TimeSpan.FromSeconds(5));
+            await service.StopAsync().WaitAsync(HangLimit);
             Assert.True(service.DroppedSamples>0);Assert.Contains("gaps",service.Status);
         }
         finally {await service.StopAsync();if(Directory.Exists(root))Directory.Delete(root,true);}

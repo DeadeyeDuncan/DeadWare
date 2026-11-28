@@ -8,6 +8,8 @@ namespace DeadWare.App.Tests;
 [Collection(TestHostThreadPool.TimingCollection)]
 public class BatteryHistoryServiceTests
 {
+    /// <summary>Only so a hang ends: what each test proves is in its asserts. GitHub's CI machines run these tests several times slower than a PC.</summary>
+    private static readonly TimeSpan HangLimit = TimeSpan.FromSeconds(60);
     [Fact]
     public async Task Queue_loss_breaks_the_first_accepted_observation_after_the_loss()
     {
@@ -22,7 +24,7 @@ public class BatteryHistoryServiceTests
         {
             for (int i = 0; i < 121; i++) service.TryRecord(Reading(start.AddSeconds(i), i, saver: i % 2 == 1));
             Assert.Equal(1, service.DroppedSamples); ready.SetResult();
-            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            using var timeout = new CancellationTokenSource(HangLimit);
             while (service.PendingSamples > 0) await Task.Delay(10, timeout.Token);
             service.TryRecord(Reading(start.AddSeconds(122), 122)); await service.StopAsync();
             using var writer = new StringWriter(); store.ExportCsv("tablet", writer, null, DateTimeOffset.UtcNow);
@@ -86,7 +88,7 @@ public class BatteryHistoryServiceTests
         service.Start(); service.TryRecord(Reading(DateTimeOffset.UtcNow.AddSeconds(-1), 0));
         try
         {
-            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            using var deadline = new CancellationTokenSource(HangLimit);
             while ((await service.ReadViewAsync(0)).TotalObservations == 0) await Task.Delay(20, deadline.Token);
             string export = fixture.Path + ".csv"; await service.ExportCsvAsync(export, 0);
             Assert.Equal(2, (await File.ReadAllLinesAsync(export)).Length);

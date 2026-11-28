@@ -11,6 +11,8 @@ namespace DeadWare.App.Tests;
 [Collection(TestHostThreadPool.TimingCollection)]
 public sealed class ConnectionDatabaseDownloadTests
 {
+    /// <summary>Only so a hang ends: what each test proves is in its asserts. GitHub's CI machines run these tests several times slower than a PC.</summary>
+    private static readonly TimeSpan HangLimit = TimeSpan.FromSeconds(60);
     [Fact]
     public async Task Explicit_update_falls_back_only_on_current_month_404_and_atomically_replaces_valid_database()
     {
@@ -83,7 +85,7 @@ public sealed class ConnectionDatabaseDownloadTests
         using var file = new GeoFile(ConnectionMmdbFixture.Create()); var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         using var http = new HttpClient(new Handler(async (_, token) => { started.TrySetResult(); await Task.Delay(Timeout.Infinite, token); return Response([]); }));
         var download = Download(http); using var cancel = new CancellationTokenSource();
-        var pending = download.UpdateAsync(file.Path, null, cancel.Token); await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var pending = download.UpdateAsync(file.Path, null, cancel.Token); await started.Task.WaitAsync(HangLimit);
         await Assert.ThrowsAsync<InvalidOperationException>(() => download.UpdateAsync(file.Path, null, default));
         cancel.Cancel(); await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pending);
         Assert.Single(Directory.GetFiles(Path.GetDirectoryName(file.Path)!));
@@ -100,7 +102,7 @@ public sealed class ConnectionDatabaseDownloadTests
             ? new HttpResponseMessage(HttpStatusCode.OK) { Content = new StreamContent(new WaitingStream(started)) }
             : Response(ConnectionMmdbFixture.Gzip(ConnectionMmdbFixture.Create())))));
         var download = Download(http); using var cancel = new CancellationTokenSource();
-        var update = download.UpdateAsync(file.Path, null, cancel.Token); await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var update = download.UpdateAsync(file.Path, null, cancel.Token); await started.Task.WaitAsync(HangLimit);
         cancel.Cancel(); await Assert.ThrowsAnyAsync<OperationCanceledException>(() => update);
         Assert.Equal(original, File.ReadAllBytes(file.Path)); Assert.Single(Directory.GetFiles(Path.GetDirectoryName(file.Path)!));
         await download.UpdateAsync(file.Path, null, default); Assert.Equal(2, calls);

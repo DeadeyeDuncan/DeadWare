@@ -55,13 +55,15 @@ public class CoolingShutdownTests
             Assert.Single(savedGraphs.Read(DateTimeOffset.UtcNow));
             Assert.Single((await history.ReadViewAsync(null,null,1)).Devices);
             var stop=(Task)typeof(MonitorSession).GetField("collectorStop",flags)!.GetValue(session)!;
-            blocked.SetResult();await stop.WaitAsync(TimeSpan.FromSeconds(3));
+            blocked.SetResult();await stop.WaitAsync(HangLimit);
             typeof(MonitorSession).GetMethod("StopCollectorForSessionEnding",flags)!.Invoke(session,null);
             Assert.Same(stop,typeof(MonitorSession).GetField("collectorStop",flags)!.GetValue(session));
         }
         finally {blocked.TrySetResult();await Task.WhenAll(history.StopAsync(),graphs.StopAsync(),battery.StopAsync());if(Directory.Exists(root))Directory.Delete(root,true);}
     }
     private const BindingFlags Flags=BindingFlags.Instance|BindingFlags.NonPublic;
+    /// <summary>Only so a hang ends: what each test proves is in its asserts. GitHub's CI machines run these tests several times slower than a PC.</summary>
+    private static readonly TimeSpan HangLimit=TimeSpan.FromSeconds(60);
     private static void SetField(object target,string name,object value)=>target.GetType().GetField(name,Flags)!.SetValue(target,value);
     private static string Root()=>Path.Combine(Path.GetTempPath(),"DeadWare-tests-"+Guid.NewGuid().ToString("N"));
     /// <summary>Normal Quit shape: the final drain may use the whole provider deadline; history has its own cap.</summary>
@@ -139,7 +141,7 @@ public class CoolingShutdownTests
             }
             Assert.True(connections.StopAsync().IsCompleted);Assert.Equal(71,await SavedBytes(connections,now));
             // Native stop is still blocked: concurrent callers share its task without waiting on it.
-            var calls=await Task.WhenAll(Task.Factory.StartNew(collector.StopNetworkCaptureAsync),Task.Factory.StartNew(collector.StopNetworkCaptureAsync)).WaitAsync(TimeSpan.FromSeconds(2));
+            var calls=await Task.WhenAll(Task.Factory.StartNew(collector.StopNetworkCaptureAsync),Task.Factory.StartNew(collector.StopNetworkCaptureAsync)).WaitAsync(HangLimit);
             Assert.Same(calls[0],calls[1]);Assert.False(calls[0].IsCompleted);
         }
         finally {release.Set();worker.TrySetResult();await connections.StopAsync();if(Directory.Exists(root))Directory.Delete(root,true);}
@@ -172,7 +174,7 @@ public class CoolingShutdownTests
         {
             // StuckSession, like a session built before process history existed, never sets ProcessHistory.
             Assert.Null(typeof(MonitorSession).GetProperty("ProcessHistory")!.GetValue(session));
-            var stop=Task.Run(()=>typeof(MonitorSession).GetMethod("StopCollectorForSessionEnding",Flags)!.Invoke(session,null));await stop.WaitAsync(TimeSpan.FromSeconds(5));
+            var stop=Task.Run(()=>typeof(MonitorSession).GetMethod("StopCollectorForSessionEnding",Flags)!.Invoke(session,null));await stop.WaitAsync(HangLimit);
             Assert.True(connections.StopAsync().IsCompleted);string trace=Path.Combine(root,"trace.jsonl");
             string text=File.ReadAllText(trace);Assert.Contains("session_end_collector_stopped",text);Assert.DoesNotContain("session_end_collector_stop_failed",text);
             // A stage that misses its deadline records collector_stop_timeout and the stop still ends in session_end_collector_stopped.
@@ -195,7 +197,7 @@ public class CoolingShutdownTests
             // flushes take seconds (3.1 s measured), and creation plus the drain then outlasts the cap. The wait is a hang guard.
             using(var warm=new CancellationTokenSource(TimeSpan.FromSeconds(60)))
                 while(history.PendingSamples>0)await Task.Delay(10,warm.Token);
-            await Stop(session,TimeSpan.FromSeconds(1)).WaitAsync(TimeSpan.FromSeconds(15));
+            await Stop(session,TimeSpan.FromSeconds(1)).WaitAsync(HangLimit);
             Assert.True(history.StopAsync().IsCompleted);
             var view=await history.ReadApplicationsAsync(ProcessHistoryServiceTests.Start,ProcessHistoryServiceTests.Start.AddMinutes(1),ProcessRank.CpuTime);
             Assert.Equal(1,view.RecordedMinutes);Assert.Equal(2.9,Assert.Single(view.Rows).CpuSeconds,6);Assert.False(history.Failed);
@@ -230,7 +232,7 @@ public class CoolingShutdownTests
         try
         {
             connections.Start();await SavedBytes(connections,now);Observe(capture,collector);
-            await Assert.ThrowsAsync<ArgumentNullException>(()=>Stop(session,TimeSpan.FromSeconds(1)).WaitAsync(TimeSpan.FromSeconds(10)));
+            await Assert.ThrowsAsync<ArgumentNullException>(()=>Stop(session,TimeSpan.FromSeconds(1)).WaitAsync(HangLimit));
             Assert.True(connections.StopAsync().IsCompleted);Assert.Equal(71,await SavedBytes(connections,now));
         }
         finally {await connections.StopAsync();if(Directory.Exists(root))Directory.Delete(root,true);}
@@ -245,7 +247,7 @@ public class CoolingShutdownTests
         try
         {
             var dispose=collector.DisposeAsync().AsTask();
-            await fake.Stopped.WaitAsync(TimeSpan.FromSeconds(3));
+            await fake.Stopped.WaitAsync(HangLimit);
             Assert.Equal(1,fake.Stops);Assert.False(fake.Running);Assert.False(worker.Task.IsCompleted);Assert.False(dispose.IsCompleted);
         }
         finally {worker.TrySetResult();await collector.DisposeAsync();await connections.StopAsync();if(Directory.Exists(root))Directory.Delete(root,true);}
@@ -266,10 +268,10 @@ public class CoolingShutdownTests
         try
         {
             connections.Start();await SavedBytes(connections,now);Observe(capture,collector);
-            collector.Start();Assert.True(parked.Wait(TimeSpan.FromSeconds(10)));
+            collector.Start();Assert.True(parked.Wait(HangLimit));
             var stop=collector.StopNetworkCaptureAsync();
             await Task.WhenAny(stop,Task.Delay(300));release.Set();
-            await stop.WaitAsync(TimeSpan.FromSeconds(10));await collector.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(10));
+            await stop.WaitAsync(HangLimit);await collector.DisposeAsync().AsTask().WaitAsync(HangLimit);
             await connections.StopAsync();Assert.Equal(71,await SavedBytes(connections,now));
         }
         finally {release.Set();await collector.DisposeAsync();await connections.StopAsync();if(Directory.Exists(root))Directory.Delete(root,true);}

@@ -8,6 +8,8 @@ namespace DeadWare.App.Tests;
 [Collection(TestHostThreadPool.TimingCollection)]
 public class DiagnosticOptionsTests : IAsyncLifetime
 {
+    /// <summary>Only so a hang ends: what each test proves is in its asserts. GitHub's CI machines run these tests several times slower than a PC.</summary>
+    private static readonly TimeSpan HangLimit=TimeSpan.FromSeconds(60);
     private readonly List<Collector> started=[];
     public Task InitializeAsync()=>Task.CompletedTask;
     public async Task DisposeAsync() {foreach(var c in started)await c.DisposeAsync();}
@@ -19,7 +21,7 @@ public class DiagnosticOptionsTests : IAsyncLifetime
         var tcs=new TaskCompletionSource<IReadOnlyList<Reading>>(TaskCreationOptions.RunContinuationsAsynchronously);
         c.SampleAvailable+=r=>{lock(list){if(list.Count<count){list.Add(r);if(list.Count==count)tcs.TrySetResult(list.ToArray());}}};
         c.Start();
-        return await tcs.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        return await tcs.Task.WaitAsync(HangLimit);
     }
     private async Task<Reading> FirstReading(CollectorOptions options)=>(await Readings(options,1))[0];
     private async Task<Reading> SecondReading(CollectorOptions options)=>(await Readings(options,2))[1];

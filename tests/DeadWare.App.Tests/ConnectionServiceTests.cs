@@ -6,6 +6,8 @@ namespace DeadWare.App.Tests;
 [Collection(TestHostThreadPool.TimingCollection)]
 public class ConnectionServiceTests
 {
+    /// <summary>Only so a hang ends: what each test proves is in its asserts. GitHub's CI machines run these tests several times slower than a PC.</summary>
+    private static readonly TimeSpan HangLimit=TimeSpan.FromSeconds(60);
     private static readonly DateTimeOffset Epoch=new(2026,10,29,12,0,0,TimeSpan.Zero);
     private static readonly ConnectionPeer Peer=new(new(10,1,"fixture"),"192.168.1.2",100,"8.8.8.8",443,ConnectionProtocol.Tcp);
     private static Reading Reading(long sequence,int seconds,long bytes=10,bool complete=true,DateTimeOffset? coverage=null,string segment="segment")
@@ -31,10 +33,10 @@ public class ConnectionServiceTests
         public void Add(IReadOnlyList<ConnectionHistoryRecord> records,IReadOnlyList<ConnectionCoverage> coverage) {lock(sync)calls.Add((records.ToArray(),coverage.ToArray()));}
         public (IReadOnlyList<ConnectionHistoryRecord> Records,IReadOnlyList<ConnectionCoverage> Coverage)[] All {get {lock(sync)return calls.ToArray();}}
         public (IReadOnlyList<ConnectionHistoryRecord> Records,IReadOnlyList<ConnectionCoverage> Coverage)[] WithRecords=>All.Where(c=>c.Records.Count>0).ToArray();
-        /// <summary>Waits up to 15 s (or the given timeout) for the nth append that carries records, and returns it.</summary>
+        /// <summary>Waits up to <see cref="HangLimit"/> (or the given timeout) for the nth append that carries records, and returns it.</summary>
         public async Task<(IReadOnlyList<ConnectionHistoryRecord> Records,IReadOnlyList<ConnectionCoverage> Coverage)> WaitFor(int n,TimeSpan? timeout=null)
         {
-            var deadline=DateTime.UtcNow+(timeout??TimeSpan.FromSeconds(15));
+            var deadline=DateTime.UtcNow+(timeout??HangLimit);
             while(WithRecords.Length<n)
             {
                 if(DateTime.UtcNow>deadline)Assert.Fail($"Expected {n} appends with records before the timeout; saw {WithRecords.Length}.");
@@ -87,7 +89,7 @@ public class ConnectionServiceTests
     {
         using var entered=new ManualResetEventSlim();using var release=new ManualResetEventSlim();
         var service=Service((_,_)=>{entered.Set();release.Wait();},options:new(QueueCapacity:2,MaximumBufferedDeltas:3,FlushInterval:TimeSpan.FromMilliseconds(10)));
-        service.Start();service.TryRecord(Reading(1,1));Assert.True(entered.Wait(TimeSpan.FromSeconds(3)));
+        service.Start();service.TryRecord(Reading(1,1));Assert.True(entered.Wait(HangLimit));
         try {for(int i=2;i<20;i++)service.TryRecord(Reading(i,i,i));Assert.InRange(service.PendingPublications,0,2);Assert.InRange(service.BufferedDeltas,0,3);Assert.True(service.DroppedObservations>0);Assert.Equal(19,Assert.Single(service.Live.Connections).Traffic.ReceivedBytes);}
         finally {release.Set();await service.StopAsync();}
     }
@@ -101,13 +103,13 @@ public class ConnectionServiceTests
     {
         using var entered=new ManualResetEventSlim();using var release=new ManualResetEventSlim();var saved=new List<ConnectionHistoryRecord>();
         var service=Service((r,_)=>saved.AddRange(r),new Resolver(_=>{entered.Set();release.Wait();return null;}),new(EnrichmentBudget:TimeSpan.FromMinutes(1)));
-        service.Start();service.TryRecord(Reading(1,1,71));Assert.True(entered.Wait(TimeSpan.FromSeconds(3)));
+        service.Start();service.TryRecord(Reading(1,1,71));Assert.True(entered.Wait(HangLimit));
         try {await service.StopAsync().WaitAsync(TimeSpan.FromSeconds(2));Assert.Equal(71,Assert.Single(saved).Delta.ReceivedBytes);}
         finally {release.Set();}
     }
     private static async Task Until(Func<bool> predicate)
     {
-        using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(15));// an upper bound for a slow runner, not a timing property
+        using var timeout=new CancellationTokenSource(HangLimit);// an upper bound for a slow runner, not a timing property
         while(!predicate())await Task.Delay(5,timeout.Token);
     }
     [Fact] public async Task First_observation_uses_location_available_before_first_flush()
@@ -115,7 +117,7 @@ public class ConnectionServiceTests
         using var entered=new ManualResetEventSlim();using var release=new ManualResetEventSlim();
         var place=new ConnectionLocation("GB","United Kingdom",null,"London",new(51,0),"fixture");var saved=new List<ConnectionHistoryRecord>();
         var service=Service((r,_)=>saved.AddRange(r),new Resolver(_=>{entered.Set();release.Wait();return place;}),new(EnrichmentBudget:TimeSpan.Zero));
-        service.Start();service.TryRecord(Reading(1,1));Assert.True(entered.Wait(TimeSpan.FromSeconds(3)));
+        service.Start();service.TryRecord(Reading(1,1));Assert.True(entered.Wait(HangLimit));
         service.TryRecord(Reading(2,2));await Until(()=>service.PendingPublications==0);
         release.Set();await Until(()=>service.Live.Connections[0].Location is not null);
         await service.StopAsync();Assert.Equal(place,saved[0].Location);
@@ -125,8 +127,8 @@ public class ConnectionServiceTests
         using var entered=new ManualResetEventSlim();using var release=new ManualResetEventSlim();
         var saved=new TaskCompletionSource<ConnectionHistoryRecord>(TaskCreationOptions.RunContinuationsAsynchronously);
         var service=Service((r,_)=>saved.TrySetResult(r[0]),new Resolver(_=>{entered.Set();release.Wait();return null;}),new(FlushInterval:TimeSpan.FromMilliseconds(30),EnrichmentBudget:TimeSpan.FromMilliseconds(5)),()=>Epoch.AddSeconds(100));
-        service.Start();service.TryRecord(Reading(1,1));Assert.True(entered.Wait(TimeSpan.FromSeconds(3)));
-        try {Assert.Null((await saved.Task.WaitAsync(TimeSpan.FromSeconds(2))).Location);await service.StopAsync();}
+        service.Start();service.TryRecord(Reading(1,1));Assert.True(entered.Wait(HangLimit));
+        try {Assert.Null((await saved.Task.WaitAsync(HangLimit)).Location);await service.StopAsync();}
         finally {release.Set();}
     }
     [Fact] public async Task Failed_storage_retries_keep_the_original_payload_when_lookup_later_changes()
@@ -135,9 +137,9 @@ public class ConnectionServiceTests
         var retry=new TaskCompletionSource<ConnectionHistoryRecord>(TaskCreationOptions.RunContinuationsAsynchronously);int attempts=0;
         var place=new ConnectionLocation("GB","United Kingdom",null,"London",new(51,0),"fixture");
         var service=Service((r,_)=>{if(Interlocked.Increment(ref attempts)==1){first.SetResult(r[0]);throw new System.IO.IOException();}retry.TrySetResult(r[0]);},new Resolver(_=>{release.Wait();return place;}),new(FlushInterval:TimeSpan.FromMilliseconds(80),EnrichmentBudget:TimeSpan.Zero),()=>Epoch.AddSeconds(100));
-        service.Start();service.TryRecord(Reading(1,1));var original=await first.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        service.Start();service.TryRecord(Reading(1,1));var original=await first.Task.WaitAsync(HangLimit);
         release.Set();await Until(()=>service.Live.Connections[0].Location is not null);
-        Assert.Equal(original,await retry.Task.WaitAsync(TimeSpan.FromSeconds(3)));await service.StopAsync();
+        Assert.Equal(original,await retry.Task.WaitAsync(HangLimit));await service.StopAsync();
     }
     [Fact] public async Task Resume_omits_aggregates_that_include_paused_observations_and_skew_stays_out_of_current_buckets()
     {
@@ -197,7 +199,7 @@ public class ConnectionServiceTests
     }
     private static async Task UntilAsync(Func<Task<bool>> predicate)
     {
-        using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        using var timeout=new CancellationTokenSource(HangLimit);
         while(!await predicate())await Task.Delay(10,timeout.Token);
     }
     [Theory] [InlineData(false)] [InlineData(true)]
@@ -326,7 +328,7 @@ public class ConnectionServiceTests
         var service=Service((r,_)=>{if(r.Count>0)flushed.TrySetResult(r[0].Delta.ReceivedBytes);},new Resolver(_=>{release.Wait();return null;}),new(FlushInterval:TimeSpan.FromMilliseconds(20),EnrichmentBudget:TimeSpan.FromMilliseconds(200)),()=>Epoch.AddSeconds(100));
         service.Start();for(int i=1;i<=5;i++)service.TryRecord(Reading(i,i));
         // R4 froze the minute at a tick while publications were still queued: fewer than all five 10-byte readings.
-        try {Assert.InRange(await flushed.Task.WaitAsync(TimeSpan.FromSeconds(3)),10,40);}
+        try {Assert.InRange(await flushed.Task.WaitAsync(HangLimit),10,40);}
         finally {await service.StopAsync();release.Set();}
     }
     [Fact] public async Task Capture_loss_counters_stay_visible_in_the_shared_live_status()
@@ -340,9 +342,9 @@ public class ConnectionServiceTests
         // A faulting first Reload used to take the worker down: lookups never resolved and ReloadGeolocationAsync never completed.
         var resolver=new ConnectionGeolocation("unused",_=>throw new System.IO.InvalidDataException("Expected a DB-IP City Lite MMDB database."));
         var service=Service((_,_)=>{},resolver);service.Start();
-        await service.ReloadGeolocationAsync().WaitAsync(TimeSpan.FromSeconds(10));
+        await service.ReloadGeolocationAsync().WaitAsync(HangLimit);
         Assert.Contains("could not be read",service.LookupStatus);
-        service.TryRecord(Reading(1,1));await service.ReloadGeolocationAsync().WaitAsync(TimeSpan.FromSeconds(10));
+        service.TryRecord(Reading(1,1));await service.ReloadGeolocationAsync().WaitAsync(HangLimit);
         Assert.Null(Assert.Single(service.Live.Connections).Location);await service.StopAsync();
     }
     [Fact] public async Task Destinations_export_writes_a_new_utf8_file_without_a_bom_and_never_overwrites()
@@ -413,7 +415,7 @@ public class ConnectionServiceTests
             await Until(()=>service.PendingPublications==0);Volatile.Write(ref seconds,30);
             // 68 s past the minute-1 unit's end, beyond the hold: R2 freezes it and the same step retires it.
             service.TryRecord(Reading(2,30,30,false,Epoch.AddSeconds(29),"new"));
-            if(stopImmediately)await service.StopAsync().WaitAsync(TimeSpan.FromSeconds(3));
+            if(stopImmediately)await service.StopAsync().WaitAsync(HangLimit);
             else
             {
                 await Until(()=>service.DroppedObservations==1);Volatile.Write(ref seconds,95);
@@ -441,7 +443,7 @@ public class ConnectionServiceTests
         {
             // Two minute-1 deltas: Peer at + 100 s and Peer on port 80 at + 70 s. R4 freezes the unit at the first tick.
             var old=Reading(1,100,10,coverage:Epoch.AddSeconds(99)).Connections!;var other=Reading(1,70,5).Connections!.Deltas[0] with {Peer=Peer with {RemotePort=80}};
-            service.Start();service.TryRecord(old with {Deltas=[old.Deltas[0],other]});await attempted.Task.WaitAsync(TimeSpan.FromSeconds(15));// a loaded CI runner needs more than 3 s to start the writer
+            service.Start();service.TryRecord(old with {Deltas=[old.Deltas[0],other]});await attempted.Task.WaitAsync(HangLimit);// a loaded CI runner needs more than 3 s to start the writer
             // After the step back the unit is 68 s ahead: the next attempt retires it whole, and R6 writes the new unit.
             Volatile.Write(ref seconds,30);service.TryRecord(Reading(2,30,30,false,segment:"new"));release.Set();
             await Until(()=>service.DroppedObservations==2);await service.StopAsync();
@@ -495,7 +497,7 @@ public class ConnectionServiceTests
             service.Start();capture.TakeSnapshot(DateTimeOffset.UtcNow,collector.ElapsedSeconds);RecordSeconds(service,clock,1,30);
             // The session-ending budget: 3 s for providers, the connections stop after 1.5 s at the latest, 3 s for history.
             var stop=StopCollector(session,TimeSpan.FromSeconds(3),TimeSpan.FromSeconds(1.5),TimeSpan.FromSeconds(3));
-            await stop.WaitAsync(TimeSpan.FromSeconds(10));
+            await stop.WaitAsync(HangLimit);
             var row=Assert.Single((await service.ReadViewAsync(new(Epoch,Epoch.AddMinutes(1)))).Rows);Assert.Equal((Epoch,300L),(row.Minute,row.ReceivedBytes));
         }
         finally {await collector.DisposeAsync();await service.StopAsync();if(System.IO.Directory.Exists(root))System.IO.Directory.Delete(root,true);}
@@ -507,7 +509,7 @@ public class ConnectionServiceTests
         {
             RecordSeconds(service,clock,1,10);await Until(()=>service.PendingPublications==0);
             service.Configure(false,null);
-            var paused=Assert.Single((await calls.WaitFor(1,TimeSpan.FromSeconds(1))).Records);
+            var paused=Assert.Single((await calls.WaitFor(1)).Records);
             Assert.Equal((Epoch,100L,ConnectionMinuteFolder.BatchId("segment",Epoch,0,0)),(paused.Delta.Minute,paused.Delta.ReceivedBytes,paused.BatchId));
             service.Configure(true,null);RecordSeconds(service,clock,11,20);await service.StopAsync();
             Assert.Equal(2,calls.WithRecords.Length);var resumed=Assert.Single(calls.WithRecords[1].Records);
@@ -648,7 +650,7 @@ public class ConnectionServiceTests
             {
                 calls.Add(r,c);
                 // The R1 write fails only after the list has changed, so the retry follows the change.
-                if(r.Count>0&&Interlocked.Increment(ref failures)==1){changed.Wait(TimeSpan.FromSeconds(10));throw new System.IO.IOException();}
+                if(r.Count>0&&Interlocked.Increment(ref failures)==1){changed.Wait(HangLimit);throw new System.IO.IOException();}
             },options:new(FlushInterval:TimeSpan.FromMilliseconds(50)),clock:clock.Read);
         service.Start();
         try
@@ -708,7 +710,7 @@ public class ConnectionServiceTests
         public (ConnectionHistoryRecord[] Records,ConnectionCoverage[] Coverage,int Maintenance,bool Pending)[] WithRecords=>All.Where(c=>c.Records.Length>0).ToArray();
         public async Task WaitFor(int n)
         {
-            var deadline=DateTime.UtcNow+TimeSpan.FromSeconds(15);
+            var deadline=DateTime.UtcNow+HangLimit;
             while(WithRecords.Length<n)
             {
                 if(DateTime.UtcNow>deadline)Assert.Fail($"Expected {n} appends with records before the timeout; saw {WithRecords.Length}.");
@@ -725,7 +727,7 @@ public class ConnectionServiceTests
     }
     private static async Task UntilClear(ConnectionService service,HistoryClearPhase phase)
     {
-        var deadline=DateTime.UtcNow+TimeSpan.FromSeconds(15);
+        var deadline=DateTime.UtcNow+HangLimit;
         while(service.ClearState.Phase!=phase)
         {
             if(DateTime.UtcNow>deadline)Assert.Fail($"Expected the clear to reach {phase}; it is {service.ClearState}.");

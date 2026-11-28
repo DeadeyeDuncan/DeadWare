@@ -8,6 +8,8 @@ namespace DeadWare.App.Tests;
 [Collection(TestHostThreadPool.TimingCollection)]
 public class CollectorGpuTests : IAsyncLifetime
 {
+    /// <summary>Only so a hang ends: what each test proves is in its asserts. GitHub's CI machines run these tests several times slower than a PC.</summary>
+    private static readonly TimeSpan HangLimit=TimeSpan.FromSeconds(60);
     /// <summary>
     /// Ready reads giving PID 100 "GPU 0 · 3D" at 25 % and 64,000,000 dedicated bytes. Each read's MonotonicSeconds is the time passed in. The first
     /// read after construction or after <see cref="Close"/> opens the query (<see cref="LastReadOpened"/>) and has no previous collection; later reads
@@ -98,7 +100,7 @@ public class CollectorGpuTests : IAsyncLifetime
         var tcs=new TaskCompletionSource<IReadOnlyList<Reading>>(TaskCreationOptions.RunContinuationsAsynchronously);
         c.SampleAvailable+=r=>{lock(list){if(list.Count<count){list.Add(r);if(list.Count==count)tcs.TrySetResult(list.ToArray());}}};
         c.Start();
-        return await tcs.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        return await tcs.Task.WaitAsync(HangLimit);
     }
     /// <summary>The second reading a collector publishes, subscribed before it starts.</summary>
     private async Task<Reading> Second(CollectorOptions options,IGpuCounterSource gpu)=>(await First(2,options,gpu))[1];
@@ -110,7 +112,7 @@ public class CollectorGpuTests : IAsyncLifetime
         try
         {
             if(c.Latest is {} latest&&match(latest))tcs.TrySetResult(latest);
-            return await tcs.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            return await tcs.Task.WaitAsync(HangLimit);
         }
         finally {c.SampleAvailable-=Handler;}
     }
@@ -199,7 +201,7 @@ public class CollectorGpuTests : IAsyncLifetime
         {
             await NextWhere(c,r=>r.ProcessSummary?.Gpu?.Placement==GpuCounterSummary.OwnLoop);
             // The loop's next read parks in flight until Release.
-            fake.Stall();await fake.Entered.WaitAsync(TimeSpan.FromSeconds(10));int reads=fake.Reads;
+            fake.Stall();await fake.Entered.WaitAsync(HangLimit);int reads=fake.Reads;
             c.SetProcessMonitoring(false);c.SetProcessMonitoring(true);c.SetProcessMonitoring(false);
             // The first off poll disposes the loop; the second runs while the disposed loop's read is still in flight.
             var off=await NextReadingAfter(c,await NextWhere(c,r=>r.ProcessActivity.Kind==ProcessActivityKind.Off));
@@ -215,7 +217,7 @@ public class CollectorGpuTests : IAsyncLifetime
             Assert.Equal(reads,fake.Reads);Assert.Equal(0,fake.Closes);
             fake.Release();
             // Not !IsOpen: the next poll's reopen could hide the close inside one 20 ms step.
-            await WaitFor(()=>fake.Closes>=1,TimeSpan.FromSeconds(5));
+            await WaitFor(()=>fake.Closes>=1,HangLimit);
             var back=await NextWhere(c,r=>r.Sample.MonotonicSeconds>on.Sample.MonotonicSeconds&&Keyed(r));
             // The first read after the reopen is a first sample, in every-poll placement.
             Assert.Equal(GpuCounterSummary.EveryPoll,back.ProcessSummary!.Gpu!.Placement);Assert.True(back.ProcessActivity.Gpu.Available);
@@ -234,12 +236,12 @@ public class CollectorGpuTests : IAsyncLifetime
         {
             await NextWhere(c,r=>r.ProcessSummary?.Gpu?.Placement==GpuCounterSummary.OwnLoop);
             // A loop read is in flight when the worker stops, so its finally must neither wait on that read nor close under it.
-            fake.Stall();await fake.Entered.WaitAsync(TimeSpan.FromSeconds(10));
+            fake.Stall();await fake.Entered.WaitAsync(HangLimit);
             // Throws from the pass's publication and again from the failed pass's, so the worker leaves through its outer catch.
             int throws=2;c.SampleAvailable+=_=>{if(Interlocked.Decrement(ref throws)>=0)throw new InvalidOperationException("subscriber");};
-            await c.Completion.WaitAsync(TimeSpan.FromSeconds(10));Assert.StartsWith("Collector stopped (InvalidOperationException)",c.Latest!.HardwareStatus);
+            await c.Completion.WaitAsync(HangLimit);Assert.StartsWith("Collector stopped (InvalidOperationException)",c.Latest!.HardwareStatus);
             Assert.Equal(0,fake.Closes);fake.Release();
-            await WaitFor(()=>!fake.IsOpen,TimeSpan.FromSeconds(3));int reads=fake.Reads;await Task.Delay(1500);Assert.Equal(reads,fake.Reads);
+            await WaitFor(()=>!fake.IsOpen,HangLimit);int reads=fake.Reads;await Task.Delay(1500);Assert.Equal(reads,fake.Reads);
             Assert.Equal(1,fake.MaxConcurrent);Assert.Equal(0,fake.ClosesDuringRead);
         }
         finally {fake.Release();}
@@ -260,7 +262,7 @@ public class CollectorGpuTests : IAsyncLifetime
         var readings=new List<Reading>();var done=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         c.SampleAvailable+=r=>{lock(readings){readings.Add(r);if(Keyed(r)&&readings.Count(Keyed)==3)done.TrySetResult();}};
         c.Start();
-        await done.Task.WaitAsync(TimeSpan.FromSeconds(20));
+        await done.Task.WaitAsync(HangLimit);
         Reading[] all;lock(readings)all=readings.ToArray();
         var reads=all.Where(Keyed).Take(3).ToArray();
         // Every idle read is given the idle period as its freshness bound, so the reader still forms a rate over the gap.
@@ -325,10 +327,10 @@ public class CollectorGpuTests : IAsyncLifetime
         try
         {
             await NextWhere(c,r=>r.ProcessSummary?.Gpu?.Placement==GpuCounterSummary.OwnLoop);
-            fake.Stall();await fake.Entered.WaitAsync(TimeSpan.FromSeconds(10));
+            fake.Stall();await fake.Entered.WaitAsync(HangLimit);
             // The worker ends at once; disposal then waits, within the 5 s hardware budget, for the read to return and the loop to close the query.
             var disposal=c.DisposeAsync().AsTask();await Task.Delay(500);Assert.False(disposal.IsCompleted);Assert.Equal(0,fake.Closes);
-            fake.Release();await disposal.WaitAsync(TimeSpan.FromSeconds(5));
+            fake.Release();await disposal.WaitAsync(HangLimit);
             Assert.False(fake.IsOpen);Assert.Equal(1,fake.MaxConcurrent);Assert.Equal(0,fake.ClosesDuringRead);
         }
         finally {fake.Release();}

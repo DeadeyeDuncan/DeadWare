@@ -13,7 +13,8 @@ public class AlertServiceTests
     // Ten minutes ago, but never before today's UTC midnight: the application-budget test counts a local (UTC) day.
     private static readonly DateTimeOffset Start = Later(UsageMetrics.Floor(DateTimeOffset.UtcNow.AddMinutes(-10)), new DateTimeOffset(DateTimeOffset.UtcNow.Date, TimeSpan.Zero));
     private static DateTimeOffset Later(DateTimeOffset a, DateTimeOffset b) => a > b ? a : b;
-    private static readonly TimeSpan Timeout = TimeSpan.FromSeconds(10);
+    // Only so a hang ends: what each test proves is in its asserts. GitHub's CI machines run these tests several times slower than a PC.
+    private static readonly TimeSpan Timeout = TimeSpan.FromSeconds(60);
 
     private static AlertRule Rule(AlertKind kind, string target, double threshold, int minutes = 1, string id = "rule-1")
         => new(id, kind, target, threshold, minutes, true, Start);

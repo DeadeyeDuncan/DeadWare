@@ -10,6 +10,8 @@ namespace DeadWare.App.Tests;
 [Collection(TestHostThreadPool.TimingCollection)]
 public class GraphHistoryServiceTests
 {
+    /// <summary>Only so a hang ends: what each test proves is in its asserts. GitHub's CI machines run these tests several times slower than a PC.</summary>
+    private static readonly TimeSpan HangLimit=TimeSpan.FromSeconds(60);
     [Fact]
     public async Task Quit_flushes_graphs_and_restart_restores_old_values_without_replacing_live_sample()
     {
@@ -93,7 +95,7 @@ public class GraphHistoryServiceTests
             var waited=Stopwatch.StartNew();
             while(true)
             {
-                Assert.True(waited.Elapsed<TimeSpan.FromSeconds(5),$"No flush within 5 s. Service status: {second.Status}");
+                Assert.True(waited.Elapsed<HangLimit,$"No flush within {HangLimit.TotalSeconds} s. Service status: {second.Status}");
                 try {if(reader.Read(DateTimeOffset.UtcNow).Count==2)break;}
                 catch(Microsoft.Data.Sqlite.SqliteException) { }
                 await Task.Delay(20);
@@ -147,7 +149,7 @@ public class GraphHistoryServiceTests
             var waited=System.Diagnostics.Stopwatch.StartNew();
             while(true)
             {
-                Assert.True(waited.Elapsed<TimeSpan.FromSeconds(5),$"No periodic flush within 5 s. Service status: {service.Status}");
+                Assert.True(waited.Elapsed<HangLimit,$"No periodic flush within {HangLimit.TotalSeconds} s. Service status: {service.Status}");
                 try {if(reader.Read(DateTimeOffset.UtcNow).Count==1)break;}
                 catch(Microsoft.Data.Sqlite.SqliteException) { }
                 await Task.Delay(20);
@@ -179,7 +181,7 @@ public class GraphHistoryServiceTests
         service.Start();var reading=Reading(DateTimeOffset.UtcNow,1);var watch=Stopwatch.StartNew();
         for(int i=0;i<100000;i++)service.TryRecord(reading);
         Assert.True(watch.Elapsed<TimeSpan.FromSeconds(3));Assert.InRange(service.PendingSamples,0,120);
-        await service.StopAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        await service.StopAsync().WaitAsync(HangLimit);
         Assert.Contains("unavailable",service.Status,StringComparison.OrdinalIgnoreCase);
         Assert.Equal("preserve-corrupt-cache",File.ReadAllText(fixture.Path));
         Assert.Equal(0,service.PendingSamples);
@@ -207,7 +209,7 @@ public class GraphHistoryServiceTests
         service.Start();var reading=Reading(DateTimeOffset.UtcNow,1);var watch=Stopwatch.StartNew();
         for(int i=0;i<100000;i++)service.TryRecord(reading);
         Assert.True(watch.Elapsed<TimeSpan.FromSeconds(3));Assert.InRange(service.PendingSamples,0,120);
-        await service.StopAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        await service.StopAsync().WaitAsync(HangLimit);
         Assert.True(service.DroppedSamples>0);Assert.Contains("gaps",service.Status);
         Assert.DoesNotContain("unavailable",service.Status,StringComparison.OrdinalIgnoreCase);
         var store=new GraphHistoryStore(fixture.Path);store.Initialize();Assert.Single(store.Read(DateTimeOffset.UtcNow));
@@ -225,7 +227,7 @@ public class GraphHistoryServiceTests
         service.TryRecord(Reading(origin.AddSeconds(121),121,download:121));
         Assert.Equal(120,service.PendingSamples);Assert.Equal(1,service.DroppedSamples);
         service.Start();
-        using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        using var timeout=new CancellationTokenSource(HangLimit);
         while(service.PendingSamples>0)await Task.Delay(1,timeout.Token);
         service.TryRecord(Reading(origin.AddSeconds(122),122,download:122));
         await service.StopAsync();

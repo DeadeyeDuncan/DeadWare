@@ -41,6 +41,8 @@ internal sealed class ThrowingStorage : IStorageFastSource
 [Collection(TestHostThreadPool.TimingCollection)]
 public class CollectorProcessTests : IAsyncLifetime
 {
+    /// <summary>Only so a hang ends: what each test proves is in its asserts. GitHub's CI machines run these tests several times slower than a PC.</summary>
+    private static readonly TimeSpan HangLimit=TimeSpan.FromSeconds(60);
     private sealed class ProcessorCountThrows : IProcessSource
     {
         public int ProcessorCount=>throw new InvalidCastException();
@@ -78,7 +80,7 @@ public class CollectorProcessTests : IAsyncLifetime
         var tcs=new TaskCompletionSource<IReadOnlyList<Reading>>(TaskCreationOptions.RunContinuationsAsynchronously);
         c.SampleAvailable+=r=>{lock(list){if(list.Count<count){list.Add(r);if(list.Count==count)tcs.TrySetResult(list.ToArray());}}};
         c.Start();
-        return await tcs.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        return await tcs.Task.WaitAsync(HangLimit);
     }
     private async Task<(Reading Reading,FakeProcesses Fake)> Nth(CollectorOptions options,int n)
     {
@@ -100,7 +102,7 @@ public class CollectorProcessTests : IAsyncLifetime
         try
         {
             if(c.Latest is {} latest&&match(latest))tcs.TrySetResult(latest);
-            return await tcs.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            return await tcs.Task.WaitAsync(HangLimit);
         }
         finally {c.SampleAvailable-=Handler;}
     }

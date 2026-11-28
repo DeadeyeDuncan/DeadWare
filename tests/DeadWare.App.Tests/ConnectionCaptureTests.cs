@@ -7,6 +7,8 @@ namespace DeadWare.App.Tests;
 [Collection(TestHostThreadPool.TimingCollection)]
 public class ConnectionCaptureTests
 {
+    /// <summary>Only so a hang ends: what each test proves is in its asserts. GitHub's CI machines run these tests several times slower than a PC.</summary>
+    private static readonly TimeSpan HangLimit=TimeSpan.FromSeconds(60);
     private static readonly DateTimeOffset Time=new(2026,10,29,12,0,0,TimeSpan.Zero);
     [Theory]
     [InlineData(ConnectionProtocol.Tcp,false,false)] [InlineData(ConnectionProtocol.Tcp,true,false)]
@@ -63,7 +65,7 @@ public class ConnectionCaptureTests
         using var entered=new ManualResetEventSlim();using var release=new ManualResetEventSlim();
         var capture=new EtwNetwork(_=>{entered.Set();release.Wait();return new(11,Time.Ticks,"fixture");});
         var record=Task.Run(()=>capture.RecordEndpoint(11,Time,25,true,IPAddress.Loopback,1,IPAddress.Parse("8.8.8.8"),443,ConnectionProtocol.Tcp));
-        Assert.True(entered.Wait(TimeSpan.FromSeconds(3)));
+        Assert.True(entered.Wait(HangLimit));
         var loss=Task.Run(()=>capture.ObserveLoss(1));release.Set();await Task.WhenAll(record,loss);
         var snapshot=capture.TakeSnapshot(Time.AddSeconds(1),2);
         Assert.Empty(snapshot.Processes);Assert.Empty(snapshot.Connections.Live);Assert.Empty(snapshot.Connections.Deltas);
@@ -134,7 +136,7 @@ public class ConnectionCaptureTests
         try {stop=collector.DisposeAsync().AsTask();Thread.Sleep(100);Assert.Equal(0,Volatile.Read(ref finals));}
         finally {Monitor.Exit(publication);}
         // Only the in-flight publication delays the final drain; the stuck hardware worker does not.
-        try {Assert.True(SpinWait.SpinUntil(()=>Volatile.Read(ref finals)==1,TimeSpan.FromSeconds(3)));Assert.False(stop.IsCompleted);}
+        try {Assert.True(SpinWait.SpinUntil(()=>Volatile.Read(ref finals)==1,HangLimit));Assert.False(stop.IsCompleted);}
         finally {worker.SetResult();await stop;}
         Assert.Equal(1,finals);
     }
@@ -153,7 +155,7 @@ public class ConnectionCaptureTests
         typeof(Collector).GetField("etw",System.Reflection.BindingFlags.Instance|System.Reflection.BindingFlags.NonPublic)!.SetValue(collector,capture);
         var terminal=new List<ConnectionSample>();collector.FinalConnectionsAvailable+=terminal.Add;
         var first=collector.DisposeAsync().AsTask();var second=collector.DisposeAsync().AsTask();
-        try {await Task.WhenAll(first,second).WaitAsync(TimeSpan.FromSeconds(3));}catch(InvalidOperationException) { }
+        try {await Task.WhenAll(first,second).WaitAsync(HangLimit);}catch(InvalidOperationException) { }
         Assert.Equal(1,disposals);Assert.False(Assert.Single(terminal).Available);Assert.False(terminal[0].Complete);Assert.Contains("shutdown unavailable",capture.Status);
         await collector.DisposeAsync();Assert.Equal(1,disposals);
     }
@@ -164,7 +166,7 @@ public class ConnectionCaptureTests
         var capture=new EtwNetwork(_=>new(11,Time.Ticks,"fixture"),stopNative:()=>{entered.Set();release.Wait();},disposeNative:()=>Interlocked.Increment(ref disposals));
         typeof(Collector).GetField("etw",System.Reflection.BindingFlags.Instance|System.Reflection.BindingFlags.NonPublic)!.SetValue(collector,capture);
         collector.FinalConnectionsAvailable+=_=>Interlocked.Increment(ref finals);
-        var first=collector.DisposeAsync().AsTask();Assert.True(entered.Wait(TimeSpan.FromSeconds(3)));var second=collector.DisposeAsync().AsTask();
+        var first=collector.DisposeAsync().AsTask();Assert.True(entered.Wait(HangLimit));var second=collector.DisposeAsync().AsTask();
         release.Set();await Task.WhenAll(first,second);await collector.DisposeAsync();
         Assert.Same(first,second);Assert.Equal(1,finals);Assert.Equal(1,disposals);
     }
@@ -188,8 +190,8 @@ public class ConnectionCaptureTests
         lock(endpointGate)
         {
             record=Task.Run(()=>capture.RecordEndpoint(11,Time,25,true,IPAddress.Loopback,1,IPAddress.Parse("8.8.8.8"),443,ConnectionProtocol.Tcp));
-            Assert.True(SpinWait.SpinUntil(()=>attribution.Take(1).Count==1,TimeSpan.FromSeconds(3)));
-            loss=Task.Run(()=>{started.Set();capture.ObserveLoss(1);});Assert.True(started.Wait(TimeSpan.FromSeconds(3)));
+            Assert.True(SpinWait.SpinUntil(()=>attribution.Take(1).Count==1,HangLimit));
+            loss=Task.Run(()=>{started.Set();capture.ObserveLoss(1);});Assert.True(started.Wait(HangLimit));
             // Give the reset a chance to enter while the endpoint ledger is deliberately blocked.
             Assert.False(SpinWait.SpinUntil(()=>attribution.Take(2).Count==0,TimeSpan.FromMilliseconds(100)));
         }
