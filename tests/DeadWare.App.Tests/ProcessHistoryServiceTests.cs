@@ -11,6 +11,8 @@ namespace DeadWare.App.Tests;
 [Collection(TestHostThreadPool.TimingCollection)]
 public class ProcessHistoryServiceTests
 {
+    /// <summary>Only so a hang ends: what each test proves is in its asserts. GitHub's CI machines run these tests several times slower than a PC.</summary>
+    private static readonly TimeSpan HangLimit = TimeSpan.FromSeconds(60);
     internal static readonly DateTimeOffset Start = UsageMetrics.Floor(DateTimeOffset.UtcNow.AddMinutes(-10));
 
     [Theory][InlineData(true, true, 1)][InlineData(true, false, 0)][InlineData(false, true, 0)]
@@ -77,7 +79,7 @@ public class ProcessHistoryServiceTests
         {
             // The activity at 60 s closes minute 0; only the timer can save it before stop.
             for (int i = 0; i <= 60; i++) service.TryRecord(Reading(i));
-            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            using var deadline = new CancellationTokenSource(HangLimit);
             while ((await Read(service)).RecordedMinutes == 0) await Task.Delay(20, deadline.Token);
             Assert.Equal(1, (await Read(service)).RecordedMinutes);
         }
@@ -187,7 +189,7 @@ public class ProcessHistoryServiceTests
         service.Configure(true, false); service.Start();
         try
         {
-            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            using var deadline = new CancellationTokenSource(HangLimit);
             while (Minutes(fixture).Count == 2) await Task.Delay(20, deadline.Token);
             Assert.Equal([Start], Minutes(fixture));
             Assert.False(service.Failed);
@@ -282,7 +284,7 @@ public class ProcessHistoryServiceTests
     {
         long revision = (long)typeof(MonitorSession).GetField("saveRevision", All)!.GetValue(session)!;
         var writer = typeof(MonitorSession).GetField("writer", All)!.GetValue(session)!;
-        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        using var deadline = new CancellationTokenSource(HangLimit);
         while ((long)writer.GetType().GetField("savedRevision", All)!.GetValue(writer)! != revision) await Task.Delay(10, deadline.Token);
     }
 

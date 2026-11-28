@@ -7,6 +7,8 @@ namespace DeadWare.App.Tests;
 
 public class StorageSensorLoopTests
 {
+    /// <summary>Only so a hang ends: what each test proves is in its asserts. GitHub's CI machines run these tests several times slower than a PC.</summary>
+    private static readonly TimeSpan HangLimit=TimeSpan.FromSeconds(60);
     private static readonly TimeSpan Period=TimeSpan.FromMilliseconds(50);
     private static SmartSummary Ok=>new(true,false,90,40,70,0,0,0,100,50,false);
     private static StorageDrive Drive(string? serial,string model,int index)=>
@@ -26,7 +28,7 @@ public class StorageSensorLoopTests
     {
         loop.Start();
         var sw=Stopwatch.StartNew();
-        while(loop.Latest.Count==0&&sw.Elapsed<TimeSpan.FromSeconds(5))await Task.Delay(10);
+        while(loop.Latest.Count==0&&sw.Elapsed<HangLimit)await Task.Delay(10);
         return loop.Latest;
     }
 
@@ -65,7 +67,7 @@ public class StorageSensorLoopTests
         var tcs=new TaskCompletionSource<Reading>(TaskCreationOptions.RunContinuationsAsynchronously);
         collector.SampleAvailable+=r=>tcs.TrySetResult(r);
         collector.Start();
-        var r=await tcs.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        var r=await tcs.Task.WaitAsync(HangLimit);
         Assert.Equal(2,r.Storage.Health.Count);
         Assert.All(r.Storage.Health,h=>Assert.Equal("Unavailable · storage sensors off",h.Unavailable));
     }
@@ -76,7 +78,7 @@ public class StorageSensorLoopTests
         var blocked=new FakeHealth(()=>{entered.Set();gate.Wait();return [];});
         var collector=new Collector(new(HardwareEnabled:false,EtwEnabled:false,PollingIntervalSeconds:0.5),new FakeFast([Drive("S1","A",0)]),blocked,Period);
         collector.Start();
-        Assert.True(entered.Wait(TimeSpan.FromSeconds(5)));
+        Assert.True(entered.Wait(HangLimit));
         var sw=Stopwatch.StartNew();
         await collector.DisposeAsync();
         sw.Stop();gate.Set();
@@ -96,10 +98,10 @@ public class StorageSensorLoopTests
         Assert.Empty(loop.Sensors);
         loop.Start();
         var sw=Stopwatch.StartNew();
-        while(loop.Sensors.Count==0&&sw.Elapsed<TimeSpan.FromSeconds(5))await Task.Delay(10);
+        while(loop.Sensors.Count==0&&sw.Elapsed<HangLimit)await Task.Delay(10);
         Assert.Same(row,Assert.Single(loop.Sensors));
         // Rows older than the last read are not shown as current.
-        while(Volatile.Read(ref reads)<=3&&sw.Elapsed<TimeSpan.FromSeconds(10))await Task.Delay(10);
+        while(Volatile.Read(ref reads)<=3&&sw.Elapsed<2*HangLimit)await Task.Delay(10);
         Assert.Empty(loop.Sensors);Assert.StartsWith("Storage health unavailable (IOException)",loop.Status);
     }
 
@@ -121,7 +123,7 @@ public class StorageSensorLoopTests
         var outstanding=updates.Outstanding();
         Assert.False(outstanding.IsCompleted);
         gate.Set();
-        Assert.True(outstanding.Wait(TimeSpan.FromSeconds(5)));
+        Assert.True(outstanding.Wait(HangLimit));
         Assert.True(updates.Run(key,()=>{},TimeSpan.FromSeconds(5)));
     }
 
@@ -134,7 +136,7 @@ public class StorageSensorLoopTests
         Assert.Equal(0,Volatile.Read(ref secondStarted));
         Assert.False(closed.Wait(100));
         gate.Set();
-        Assert.True(closed.Wait(TimeSpan.FromSeconds(5)));
+        Assert.True(closed.Wait(HangLimit));
     }
 
     private sealed record FakeSmart(bool HasSmart=true,bool StatusBad=false,int? Temperature=38,int? TemperatureWarning=70,int? TemperatureCritical=null,double? Life=90,ulong PowerOnHours=1234,

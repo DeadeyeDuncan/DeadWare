@@ -34,13 +34,13 @@ internal sealed class FakeTrace(TimeSpan startDelay=default,ManualResetEventSlim
     public void Start()
     {
         entered.TrySetResult();
-        if(startGate is not null)Assert.True(startGate.Wait(TimeSpan.FromSeconds(10)));
+        if(startGate is not null)Assert.True(startGate.Wait(DiskTraceTesting.HangLimit));
         else if(startDelay>TimeSpan.Zero)Thread.Sleep(startDelay);
         lock(gate){starts++;running=true;log.Add("start");}
     }
     public Task StopAsync()
     {
-        if(stopGate is not null)Assert.True(stopGate.Wait(TimeSpan.FromSeconds(10)));
+        if(stopGate is not null)Assert.True(stopGate.Wait(DiskTraceTesting.HangLimit));
         lock(gate){stops++;running=false;log.Add("stop");}
         stopped.TrySetResult();
         return Task.CompletedTask;
@@ -51,13 +51,15 @@ internal sealed class FakeTrace(TimeSpan startDelay=default,ManualResetEventSlim
 
 internal static class DiskTraceTesting
 {
+    /// <summary>Only so a hang ends: what each test proves is in its asserts. GitHub's CI machines run these tests several times slower than a PC.</summary>
+    internal static readonly TimeSpan HangLimit=TimeSpan.FromSeconds(60);
     /// <summary>Awaits the controller's serialized lifecycle work until no further step was queued behind it.</summary>
     public static async Task Drain(DiskTraceController controller)
     {
         for(int i=0;i<100;i++)
         {
             var idle=controller.Idle;
-            await idle.WaitAsync(TimeSpan.FromSeconds(10));
+            await idle.WaitAsync(HangLimit);
             if(ReferenceEquals(idle,controller.Idle))return;
         }
         throw new TimeoutException("The disk lifecycle kept queuing work.");
@@ -70,6 +72,7 @@ internal static class DiskTraceTesting
 [Collection(TestHostThreadPool.TimingCollection)]
 public class EtwDiskTests
 {
+    private static readonly TimeSpan HangLimit=DiskTraceTesting.HangLimit;
     private static readonly IReadOnlyDictionary<int,ProcessIdentity> Index=new Dictionary<int,ProcessIdentity>();
     private static EtwDisk Disk(Func<int,ProcessIdentity?>? resolve=null,Func<long>? readLoss=null,Action? stopNative=null)=>new(resolve??(pid=>new(pid,10,"a.exe")),readLoss,stopNative);
     private static DiskTake Take(EtwDisk d,double at)=>d.Take(at,Index);
@@ -126,7 +129,7 @@ public class EtwDiskTests
         loss+=1;Assert.Equal(DiskTraceState.Paused,d.Take(9,Index).State);
         var t=d.Take(11,Index);
         Assert.Equal(DiskTraceState.Paused,t.State);Assert.Equal("Disk tracing paused for 5 minutes after Windows dropped events repeatedly",t.Status);
-        await stopped.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        await stopped.Task.WaitAsync(HangLimit);
     }
     [Fact] public void A_clean_take_restarts_the_loss_storm_count()
     {
@@ -151,17 +154,17 @@ public class EtwDiskTests
         // The stop of the first trace is held, so the second start waits in the queue when disposal closes it.
         c.Request(false);c.Request(true);
         var stop=c.StopAsync();stopGate.Set();
-        await stop.WaitAsync(TimeSpan.FromSeconds(3));await DiskTraceTesting.Drain(c);
+        await stop.WaitAsync(HangLimit);await DiskTraceTesting.Drain(c);
         Assert.Equal(1,fake.Starts);Assert.Equal(1,fake.Stops);Assert.False(fake.Running);Assert.Equal(1,fake.Factories);
     }
     [Fact] public async Task Running_start_finishes_then_stops()
     {
         using var startGate=new ManualResetEventSlim();
         var fake=new FakeTrace(startGate:startGate);var c=new DiskTraceController(fake.Create);
-        c.Request(true);await fake.Entered.WaitAsync(TimeSpan.FromSeconds(3));
+        c.Request(true);await fake.Entered.WaitAsync(HangLimit);
         var stop=c.StopAsync();
         Assert.False(stop.IsCompleted);
-        startGate.Set();await stop.WaitAsync(TimeSpan.FromSeconds(3));
+        startGate.Set();await stop.WaitAsync(HangLimit);
         Assert.Equal(["start","stop"],fake.Log);Assert.False(fake.Running);
         c.Request(true);await DiskTraceTesting.Drain(c);
         Assert.Equal(1,fake.Starts);Assert.Equal(DiskTake.Off,c.Take(1,Index));
@@ -175,13 +178,13 @@ public class EtwDiskTests
         await DiskTraceTesting.Drain(c);
         Assert.Equal(last,fake.Running);Assert.Equal(fake.Starts-(last?1:0),fake.Stops);
         if(last)Assert.Same(fake.Result,c.Take(1,Index));else Assert.Equal(DiskTake.Off,c.Take(1,Index));
-        await c.StopAsync().WaitAsync(TimeSpan.FromSeconds(3));
+        await c.StopAsync().WaitAsync(HangLimit);
         Assert.False(fake.Running);Assert.Equal(fake.Starts,fake.Stops);
     }
     [Fact] public async Task Stop_queued_behind_a_slow_start_finishes_within_three_seconds()
     {
         var fake=new FakeTrace(startDelay:TimeSpan.FromMilliseconds(200));var c=new DiskTraceController(fake.Create);
-        c.Request(true);await fake.Entered.WaitAsync(TimeSpan.FromSeconds(3));
+        c.Request(true);await fake.Entered.WaitAsync(HangLimit);
         var sw=Stopwatch.StartNew();await c.StopAsync().WaitAsync(TimeSpan.FromSeconds(3));
         Assert.True(sw.Elapsed<TimeSpan.FromSeconds(3));Assert.Equal(1,fake.Starts);Assert.Equal(1,fake.Stops);Assert.False(fake.Running);
     }
@@ -190,7 +193,7 @@ public class EtwDiskTests
         using var startGate=new ManualResetEventSlim();
         var fake=new FakeTrace(startGate:startGate);var c=new DiskTraceController(fake.Create);
         Assert.Equal(DiskTake.Off,c.Take(0,Index));Assert.NotEqual("",DiskTake.Off.Status);
-        c.Request(true);await fake.Entered.WaitAsync(TimeSpan.FromSeconds(3));
+        c.Request(true);await fake.Entered.WaitAsync(HangLimit);
         var starting=c.Take(1,Index);
         Assert.Equal(DiskTraceState.Starting,starting.State);Assert.Equal("Starting disk tracing…",starting.Status);
         startGate.Set();await DiskTraceTesting.Drain(c);
@@ -221,7 +224,7 @@ public class EtwDiskTests
         Assert.Equal(DiskTraceState.Starting,c.Take(400,Index).State);
         await DiskTraceTesting.Drain(c);
         Assert.Equal(2,fake.Starts);Assert.True(fake.Running);Assert.Same(fake.Result,c.Take(401,Index));
-        await c.StopAsync().WaitAsync(TimeSpan.FromSeconds(3));Assert.False(fake.Running);
+        await c.StopAsync().WaitAsync(HangLimit);Assert.False(fake.Running);
     }
 
     // Collector wiring. These collectors never open a kernel session: the trace is always the fake.
@@ -233,7 +236,7 @@ public class EtwDiskTests
         int seen=0;var tcs=new TaskCompletionSource<Reading>(TaskCreationOptions.RunContinuationsAsynchronously);
         void Handler(Reading r) {if(Interlocked.Increment(ref seen)==count)tcs.TrySetResult(r);}
         c.SampleAvailable+=Handler;
-        try {c.Start();return await tcs.Task.WaitAsync(TimeSpan.FromSeconds(10));}
+        try {c.Start();return await tcs.Task.WaitAsync(HangLimit);}
         finally {c.SampleAvailable-=Handler;}
     }
     [Fact] public async Task Worker_that_stops_after_an_error_stops_the_disk_trace()
@@ -244,7 +247,7 @@ public class EtwDiskTests
             await Readings(c,2);await DiskTraceTesting.Drain(c);Assert.True(fake.Running);
             // Throws from the pass's publication and again from the failed pass's, so the worker leaves through its outer catch.
             int throws=2;c.SampleAvailable+=_=>{if(Interlocked.Decrement(ref throws)>=0)throw new InvalidOperationException("subscriber");};
-            await c.Completion.WaitAsync(TimeSpan.FromSeconds(10));
+            await c.Completion.WaitAsync(HangLimit);
             Assert.StartsWith("Collector stopped (InvalidOperationException)",c.Latest!.HardwareStatus);
             await DiskTraceTesting.Drain(c);Assert.Equal(1,fake.Stops);Assert.False(fake.Running);
             await c.DisposeAsync();Assert.Equal(1,fake.Starts);Assert.Equal(1,fake.Stops);
@@ -260,12 +263,12 @@ public class EtwDiskTests
         try
         {
             // Armed only once the start runs: a start that is still only queued when the worker stops is dropped, the case Queued_start_is_dropped_after_stop covers.
-            c.Start();await fake.Entered.WaitAsync(TimeSpan.FromSeconds(10));var held=DiskTraceTesting.Controller(c).Idle;Interlocked.Exchange(ref throws,2);
-            await stopped.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            c.Start();await fake.Entered.WaitAsync(HangLimit);var held=DiskTraceTesting.Controller(c).Idle;Interlocked.Exchange(ref throws,2);
+            await stopped.Task.WaitAsync(HangLimit);
             // The start is released only once the worker's stop has queued behind it, so the stop always meets a running start.
-            for(int i=0;i<500&&ReferenceEquals(DiskTraceTesting.Controller(c).Idle,held);i++)await Task.Delay(20);
+            for(var polled=Stopwatch.StartNew();polled.Elapsed<HangLimit&&ReferenceEquals(DiskTraceTesting.Controller(c).Idle,held);)await Task.Delay(20);
             Assert.NotSame(held,DiskTraceTesting.Controller(c).Idle);
-            gate.Set();await c.Completion.WaitAsync(TimeSpan.FromSeconds(10));await DiskTraceTesting.Drain(c);
+            gate.Set();await c.Completion.WaitAsync(HangLimit);await DiskTraceTesting.Drain(c);
             Assert.Equal(1,fake.Starts);Assert.Equal(1,fake.Stops);Assert.False(fake.Running);
         }
         finally {gate.Set();await c.DisposeAsync();}

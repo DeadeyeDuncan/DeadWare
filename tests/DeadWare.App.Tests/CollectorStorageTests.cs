@@ -6,6 +6,8 @@ namespace DeadWare.App.Tests;
 
 public class CollectorStorageTests
 {
+    /// <summary>Only so a hang ends: what each test proves is in its asserts. GitHub's CI machines run these tests several times slower than a PC.</summary>
+    private static readonly TimeSpan HangLimit=TimeSpan.FromSeconds(60);
     private sealed class FakeStorage(IReadOnlyList<StorageDrive> drives,bool fail) : IStorageFastSource
     {
         public IReadOnlyList<StorageDrive> Drives(double now)=>drives;
@@ -28,7 +30,7 @@ public class CollectorStorageTests
         var tcs=new TaskCompletionSource<Reading>(TaskCreationOptions.RunContinuationsAsynchronously);
         collector.SampleAvailable+=r=>tcs.TrySetResult(r);
         collector.Start();
-        return await tcs.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        return await tcs.Task.WaitAsync(HangLimit);
     }
     [Fact] public async Task Fast_metrics_are_published_per_drive_and_volume()
     {
@@ -73,7 +75,7 @@ public class CollectorStorageTests
         var tcs=new TaskCompletionSource<Reading>(TaskCreationOptions.RunContinuationsAsynchronously);
         collector.SampleAvailable+=r=>{if(r.Storage.Health.Count>0)tcs.TrySetResult(r);};
         collector.Start();
-        var r=await tcs.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        var r=await tcs.Task.WaitAsync(HangLimit);
         Assert.Equal(41,r.Sample.Values["storage/S1/temperature"]);
         Assert.Null(r.Sample.Values["storage/S1/life"]);
         Assert.Equal(55,r.Sample.Values["storage/S1/used"]);
@@ -96,7 +98,7 @@ public class CollectorStorageTests
         var tcs=new TaskCompletionSource<Reading>(TaskCreationOptions.RunContinuationsAsynchronously);
         collector.SampleAvailable+=r=>{if(r.Storage.Status.Contains(expected))tcs.TrySetResult(r);};
         collector.Start();
-        return await tcs.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        return await tcs.Task.WaitAsync(HangLimit);
     }
     [Fact] public async Task Health_loop_failure_is_published_in_storage_status()
     {
@@ -124,7 +126,7 @@ public class CollectorStorageTests
         var readings=new List<Reading>();var three=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         collector.SampleAvailable+=r=>{lock(readings){if(readings.Count<3&&r.Sensors.Any(s=>s.Id==DriveTemperature.Id)){readings.Add(r);if(readings.Count==3)three.TrySetResult();}}};
         collector.Start();
-        await three.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        await three.Task.WaitAsync(HangLimit);
         // The poll that first sees the read records its value; the next polls show the row without repeating it in the history.
         Assert.Equal(41,readings[0].Sample.Values[DriveTemperature.Id]);
         Assert.All(readings.Skip(1),r=>Assert.False(r.Sample.Values.ContainsKey(DriveTemperature.Id)));
@@ -136,7 +138,7 @@ public class CollectorStorageTests
         var tcs=new TaskCompletionSource<Reading>(TaskCreationOptions.RunContinuationsAsynchronously);
         collector.SampleAvailable+=r=>{if(r.Storage.Health.Count>0)tcs.TrySetResult(r);};
         collector.Start();
-        var r=await tcs.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        var r=await tcs.Task.WaitAsync(HangLimit);
         Assert.DoesNotContain(r.Sensors,s=>s.HardwareType=="Storage");Assert.False(r.Sample.Values.ContainsKey(DriveTemperature.Id));
         Assert.Equal(41,r.Sample.Values["storage/S1/temperature"]);
     }

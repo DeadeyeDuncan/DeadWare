@@ -8,6 +8,8 @@ namespace DeadWare.App.Tests;
 [Collection(TestHostThreadPool.TimingCollection)]
 public class GpuCounterLoopTests : IAsyncLifetime
 {
+    /// <summary>Only so a hang ends: what each test proves is in its asserts. GitHub's CI machines run these tests several times slower than a PC.</summary>
+    private static readonly TimeSpan HangLimit=TimeSpan.FromSeconds(60);
     /// <summary>
     /// A GPU counter source whose read carries the time passed in as MonotonicSeconds and the gap since its previous read as IntervalSeconds
     /// (null for the first after open). It answers at once, except that with <c>block</c> every call, and with <c>blockFrom:k</c> every call
@@ -44,7 +46,7 @@ public class GpuCounterLoopTests : IAsyncLifetime
             var sw=Stopwatch.StartNew();
             while(Reads<count)
             {
-                if(sw.Elapsed>TimeSpan.FromSeconds(15))throw new TimeoutException($"{Reads} of {count} GPU reads");
+                if(sw.Elapsed>HangLimit)throw new TimeoutException($"{Reads} of {count} GPU reads");
                 await Task.Delay(10);
             }
         }
@@ -90,7 +92,7 @@ public class GpuCounterLoopTests : IAsyncLifetime
         while(true)
         {
             if(loop.Take() is {} take&&match(take))return take;
-            if(sw.Elapsed>TimeSpan.FromSeconds(15))throw new TimeoutException("No matching GPU take.");
+            if(sw.Elapsed>HangLimit)throw new TimeoutException("No matching GPU take.");
             await Task.Delay(10);
         }
     }
@@ -148,7 +150,7 @@ public class GpuCounterLoopTests : IAsyncLifetime
         var fake=new FakeGpuSource(block:true);var (loop,_)=Loop(source:fake);await fake.Entered;
         var sw=Stopwatch.StartNew();await loop.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(6));
         Assert.True(sw.Elapsed<TimeSpan.FromSeconds(5.5),$"Dispose took {sw.Elapsed}");Assert.Equal(0,fake.Closes);Assert.False(loop.Stopped.IsCompleted);
-        fake.Release();await loop.Stopped.WaitAsync(TimeSpan.FromSeconds(5));Assert.Equal(1,fake.Closes);Assert.Equal(1,fake.MaxConcurrent);
+        fake.Release();await loop.Stopped.WaitAsync(HangLimit);Assert.Equal(1,fake.Closes);Assert.Equal(1,fake.MaxConcurrent);
         // A second disposal (Task 5: monitoring off, the worker's finally, DisposeCoreAsync) returns at once and never throws.
         await loop.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(1));Assert.Equal(1,fake.Closes);
     }

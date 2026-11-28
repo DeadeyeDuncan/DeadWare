@@ -8,6 +8,8 @@ namespace DeadWare.App.Tests;
 [Collection(TestHostThreadPool.TimingCollection)]
 public sealed class ConnectionGeolocationTests
 {
+    /// <summary>Only so a hang ends: what each test proves is in its asserts. GitHub's CI machines run these tests several times slower than a PC.</summary>
+    private static readonly TimeSpan HangLimit = TimeSpan.FromSeconds(60);
     [Fact]
     public void Loads_real_mmdb_on_reload_and_resolves_ipv4_and_ipv6()
     {
@@ -81,7 +83,7 @@ public sealed class ConnectionGeolocationTests
         using var entered = new ManualResetEventSlim(); using var release = new ManualResetEventSlim();
         var old = new FakeReader { Entered = entered, Release = release }; var next = new FakeReader(); int opens = 0;
         using var resolver = new ConnectionGeolocation("unused", _ => ++opens == 1 ? old : next); resolver.Reload();
-        var lookup = Task.Run(() => resolver.Lookup("8.8.8.8")); Assert.True(entered.Wait(TimeSpan.FromSeconds(5)));
+        var lookup = Task.Run(() => resolver.Lookup("8.8.8.8")); Assert.True(entered.Wait(HangLimit));
         var reload = Task.Run(resolver.Reload);
         try { await Task.Delay(50); Assert.False(old.Disposed); }
         finally { release.Set(); }
@@ -96,7 +98,7 @@ public sealed class ConnectionGeolocationTests
     {
         using var entered = new ManualResetEventSlim(); using var release = new ManualResetEventSlim();
         var reader = new FakeReader { Entered = entered, Release = release }; var resolver = Resolver(reader); resolver.Reload();
-        var lookup = Task.Run(() => resolver.Lookup("8.8.8.8")); Assert.True(entered.Wait(TimeSpan.FromSeconds(5)));
+        var lookup = Task.Run(() => resolver.Lookup("8.8.8.8")); Assert.True(entered.Wait(HangLimit));
         var close = Task.Run(resolver.Dispose);
         try { await Task.Delay(50); Assert.False(reader.Disposed); }
         finally { release.Set(); }

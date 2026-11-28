@@ -12,6 +12,8 @@ namespace DeadWare.App.Tests;
 [Collection(TestHostThreadPool.TimingCollection)]
 public class UpdateServiceTests
 {
+    /// <summary>Only so a hang ends: what each test proves is in its asserts. GitHub's CI machines run these tests several times slower than a PC.</summary>
+    private static readonly TimeSpan HangLimit=TimeSpan.FromSeconds(60);
     [Fact] public async Task Startup_checks_once_and_announces_each_newer_version_once_without_downloading()
     {
         string root=Path.Combine(Path.GetTempPath(),"DeadWare-startup-update-"+Guid.NewGuid().ToString("N"));
@@ -49,8 +51,8 @@ public class UpdateServiceTests
     {
         var handler=new WaitingHandler();using var http=new HttpClient(handler);using var cancellation=new CancellationTokenSource();
         var service=new UpdateService("0.6.0",http:http);var notices=new List<ReleaseInfo>();Subscribe(service,notices.Add);
-        var check=Startup(service,cancellation.Token);await handler.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        Assert.False(check.IsCompleted);cancellation.Cancel();await check.WaitAsync(TimeSpan.FromSeconds(5));
+        var check=Startup(service,cancellation.Token);await handler.Started.Task.WaitAsync(HangLimit);
+        Assert.False(check.IsCompleted);cancellation.Cancel();await check.WaitAsync(HangLimit);
         Assert.Empty(notices);Assert.False(service.State.Busy);Assert.Contains("cancelled",service.State.Status,StringComparison.OrdinalIgnoreCase);
     }
     private static Task Startup(UpdateService service,CancellationToken token=default)
@@ -153,7 +155,7 @@ public class UpdateServiceTests
             string job=paths.Legacy!.JobDirectory(id),stage=Package(job,"package","0.6.39"),executable=Path.Combine(job,"helper.exe");
             File.Copy(Path.Combine(Environment.SystemDirectory,"cmd.exe"),executable);
             helper=Process.Start(new ProcessStartInfo(executable){UseShellExecute=false,CreateNoWindow=true,RedirectStandardInput=true,RedirectStandardOutput=true,RedirectStandardError=true})!;
-            int pid=helper.Id;Assert.True(SpinWait.SpinUntil(()=>{try{using var probe=Process.GetProcessById(pid);return probe.MainModule is not null;}catch(Exception){return false;}},TimeSpan.FromSeconds(10)));
+            int pid=helper.Id;Assert.True(SpinWait.SpinUntil(()=>{try{using var probe=Process.GetProcessById(pid);return probe.MainModule is not null;}catch(Exception){return false;}},HangLimit));
             using var self=Process.GetCurrentProcess();
             SafeFiles.WriteJson(Path.Combine(job,"request.json"),new UpdateJob(id,paths.Key,installed,stage,"0.6.38","0.6.39","update",new ProcessIdentity(self.Id,1,self.SessionId,sid,Path.Combine(installed,"DeadWare.exe")),
                 Packages.Hash(Path.Combine(stage,Packages.ManifestName)),DateTimeOffset.UtcNow));
@@ -319,9 +321,9 @@ public class UpdateServiceTests
     {
         var handler=new NotesWaitingHandler();using var http=new HttpClient(handler);using var cancellation=new CancellationTokenSource();
         var service=new UpdateService("0.6.2",http:http);var notices=new List<ReleaseInfo>();Subscribe(service,notices.Add);
-        var check=service.CheckAsync(cancellation.Token);await handler.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var check=service.CheckAsync(cancellation.Token);await handler.Started.Task.WaitAsync(HangLimit);
         Assert.Single(notices);Assert.True(service.State.HasNewerRelease);Assert.Single(service.State.ReleaseNotes);
-        cancellation.Cancel();await check.WaitAsync(TimeSpan.FromSeconds(5));
+        cancellation.Cancel();await check.WaitAsync(HangLimit);
         Assert.False(service.State.Busy);Assert.Contains("cancelled",service.State.Status,StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("Loading",service.State.ReleaseNotesStatus);Assert.Single(service.State.ReleaseNotes);
     }
@@ -336,10 +338,10 @@ public class UpdateServiceTests
             var files=new Dictionary<string,string>{{"DeadWare.exe","app"},{"DeadWare.dll","assembly"},{"DeadWare.Updater.exe","helper"}};
             foreach(var pair in files)File.WriteAllText(Path.Combine(root,pair.Key),pair.Value);
             SafeFiles.WriteJson(Path.Combine(root,Packages.ManifestName),new PackageManifest(1,"0.6.2",files.ToDictionary(p=>p.Key,p=>Packages.Hash(Path.Combine(root,p.Key)))));
-            check=service.CheckAsync(cancellation.Token);await handler.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            check=service.CheckAsync(cancellation.Token);await handler.Started.Task.WaitAsync(HangLimit);
             Assert.True(service.State.Busy);await service.ReadLocalAsync();
             Assert.True(service.State.InstallationVerified);Assert.False(service.State.CanUpdate);
-            cancellation.Cancel();await check.WaitAsync(TimeSpan.FromSeconds(5));
+            cancellation.Cancel();await check.WaitAsync(HangLimit);
             Assert.True(service.State.CanUpdate);
         }
         finally{cancellation.Cancel();await check;Directory.Delete(root,true);}
@@ -394,11 +396,11 @@ public class UpdateServiceTests
     {
         var handler=new HistoryWaitingHandler();using var http=new HttpClient(handler);using var cancellation=new CancellationTokenSource();
         var service=new UpdateService("0.6.5",http:http);string status=service.State.Status;
-        var loading=service.ReadHistoryAsync(cancellation.Token);await handler.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var loading=service.ReadHistoryAsync(cancellation.Token);await handler.Started.Task.WaitAsync(HangLimit);
         Assert.True(service.State.Busy);Assert.True(service.State.CanCancel);Assert.Contains("Loading",service.State.ReleaseHistoryStatus);
         await service.ReadHistoryAsync(CancellationToken.None);await service.CheckAsync(CancellationToken.None);
         Assert.Equal(1,handler.Calls);
-        cancellation.Cancel();await loading.WaitAsync(TimeSpan.FromSeconds(5));
+        cancellation.Cancel();await loading.WaitAsync(HangLimit);
         Assert.False(service.State.ReleaseHistoryLoaded);Assert.Empty(service.State.ReleaseHistory);
         Assert.Contains("cancelled",service.State.ReleaseHistoryStatus,StringComparison.OrdinalIgnoreCase);
         Assert.Equal(status,service.State.Status);Assert.False(service.State.Busy);Assert.False(service.State.CanCancel);
@@ -411,10 +413,10 @@ public class UpdateServiceTests
     {
         var handler=new HistoryWaitingHandler();using var http=new HttpClient(handler);using var cancellation=new CancellationTokenSource();
         var service=new UpdateService("0.6.5",http:http);
-        var loading=service.ReadHistoryAsync(cancellation.Token);await handler.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var loading=service.ReadHistoryAsync(cancellation.Token);await handler.Started.Task.WaitAsync(HangLimit);
         service.ReportFailure(new IOException("Newer operation status"));string reported=service.State.Status;
         if(cancel)cancellation.Cancel();else handler.Continue.TrySetResult();
-        await loading.WaitAsync(TimeSpan.FromSeconds(5));
+        await loading.WaitAsync(HangLimit);
         Assert.Equal(reported,service.State.Status);Assert.False(service.State.Busy);
     }
     [Fact] public async Task Empty_history_is_successful_and_explicit_requests_refresh_it()
